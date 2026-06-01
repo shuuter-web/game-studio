@@ -1,0 +1,86 @@
+# Game Studio - Claude Code 運用ルール
+
+このリポジトリは複数のゲームアイディアを試作・本制作するためのスタジオです。
+12体のサブエージェントが役割分担して動きます。
+
+## エージェント一覧
+
+### 司令塔
+- `producer` - タスク分解と委譲、進捗管理
+
+### 企画・設計
+- `game-designer` - コアメカニクス、ゲームループ
+- `narrative-designer` - シナリオ、世界観、キャラクター
+- `system-designer` - 数値バランス、経済、進行設計
+
+### 技術
+- `tech-lead` - アーキテクチャ、技術選定、レビュー
+- `gameplay-engineer` - ゲームロジック実装
+- `tools-engineer` - ビルド、CI/CD、開発環境
+- `graphics-engineer` - 描画、シェーダー、最適化
+
+### 体験
+- `ui-ux-designer` - UI/UX設計
+- `audio-director` - サウンドデザイン指示
+- `localization-director` - 多言語対応設計
+
+### 品質
+- `qa-engineer` - テスト、品質保証
+
+## 基本ワークフロー
+
+1. **入口は producer**: 新規要望はまず producer に振る
+2. **計画レビュー**: 実装前に Plan Mode で計画を確認
+3. **ドキュメント駆動**: 重要判断は ADR、設計は TDD/GDD に残す
+4. **小さく区切る**: 1機能 = 1ブランチ = 数コミット
+
+## ディレクトリ構造
+
+```
+.
+├── .claude/
+│   ├── agents/          # サブエージェント定義
+│   └── commands/        # カスタムスラッシュコマンド
+├── docs/
+│   ├── gdd/             # Game Design Documents
+│   ├── tdd/             # Technical Design Documents
+│   ├── decisions/       # ADR (Architecture Decision Records)
+│   ├── narrative/       # 世界観・キャラクター・シナリオ
+│   ├── system-design/   # 数値設計の意図
+│   ├── ui/              # UI/UX設計
+│   ├── audio/           # サウンド設計
+│   ├── localization/    # 多言語化設計
+│   ├── qa/              # テスト計画・バグ管理
+│   └── roadmap.md       # マイルストーン
+├── ideas/               # アイディア倉庫（GDD化前）
+├── prototypes/          # 試作（複数同時可）
+├── projects/            # 本制作（複数同時可）
+│   └── <project-name>/
+│       ├── CLAUDE.md    # プロジェクト固有ルール
+│       └── src/
+├── data/
+│   └── balance/         # 数値データ（CSV/JSON）
+├── locales/             # 翻訳ファイル
+└── tests/               # 自動テスト
+```
+
+## コーディング規約（共通）
+- TypeScript: strict、`any` 禁止
+- 命名は省略しない
+- コメントは「なぜ」を書く
+- マジックナンバー禁止、データは `data/` に切り出し
+- すべてのユーザー向け文字列は i18n を通す（ハードコード禁止）
+
+## コミットメッセージ
+Conventional Commits 形式:
+- `feat:` 新機能
+- `fix:` バグ修正
+- `docs:` ドキュメント
+- `refactor:` リファクタリング
+- `test:` テスト追加・修正
+- `chore:` その他
+
+## 大事な原則
+- **エンジン非依存**: コアロジックはエンジンに依存しない層に置く
+- **ローカライズ前提**: 全UIは多言語対応を最初から想定
+- **データ駆動**: バランス調整がコード変更を伴わないようにする
