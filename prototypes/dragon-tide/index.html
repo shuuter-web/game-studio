@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
-<title>竜潮 / Dragon Tide — Phase 1</title>
+<title>竜潮 / Dragon Tide — Phase 2</title>
 <style>
   html, body {
     margin: 0;
@@ -21,7 +21,7 @@
   }
   #stage { display: block; width: 100%; height: 100%; }
 
-  /* FPS HUD (右上、デバッグ用) */
+  /* 右上 HUD */
   #hud {
     position: fixed;
     top: env(safe-area-inset-top, 8px);
@@ -40,6 +40,38 @@
   }
   #hud .k { color: #6fa6c8; margin-right: 4px; }
 
+  /* 左上 HUD: 自軍残数 */
+  #hud-left {
+    position: fixed;
+    top: env(safe-area-inset-top, 8px);
+    left: 8px;
+    padding: 6px 8px;
+    background: rgba(8, 16, 26, 0.70);
+    border: 1px solid rgba(120, 200, 255, 0.20);
+    border-radius: 6px;
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #fff;
+    pointer-events: none;
+  }
+  #hud-left .label { color: #6fa6c8; font-size: 10px; }
+
+  /* 右下 HUD: ウェーブ数 */
+  #hud-wave {
+    position: fixed;
+    bottom: calc(20vh + env(safe-area-inset-bottom, 0px) + 8px);
+    right: 8px;
+    padding: 6px 10px;
+    background: rgba(8, 16, 26, 0.70);
+    border: 1px solid rgba(120, 200, 255, 0.20);
+    border-radius: 6px;
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+    font-size: 13px;
+    color: #aed6f1;
+    pointer-events: none;
+  }
+
   /* 隊形切替ボタン — 画面下部 */
   #formation-bar {
     position: fixed;
@@ -51,7 +83,6 @@
     justify-content: center;
     gap: 16px;
     padding-bottom: env(safe-area-inset-bottom, 0px);
-    /* タッチ開始を canvas に通すため pointer-events を制御 */
     pointer-events: none;
   }
   .formation-btn {
@@ -75,45 +106,77 @@
     border-color: #6fc0ff;
     box-shadow: 0 0 12px rgba(111, 192, 255, 0.40);
   }
+
+  /* リトライボタン (非表示時は display:none) */
+  #retry-btn {
+    position: fixed;
+    bottom: calc(20vh + env(safe-area-inset-bottom, 0px) + 20px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 14px 40px;
+    background: rgba(180, 40, 40, 0.85);
+    border: 2px solid rgba(255, 100, 100, 0.60);
+    border-radius: 30px;
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+    font-size: 16px;
+    cursor: pointer;
+    display: none;
+    pointer-events: auto;
+    letter-spacing: 0.1em;
+  }
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
 
-<!-- FPS表示 (デバッグ用、右上) -->
+<!-- 右上 HUD -->
 <div id="hud">
   <span class="k">FPS</span><span id="h-fps">--</span><br/>
   <span class="k">avg</span><span id="h-avg">--</span>
 </div>
 
+<!-- 左上 HUD: 自軍残数 -->
+<div id="hud-left">
+  <div class="label">FLOCK</div>
+  <span id="h-alive">20</span> / <span id="h-max">20</span>
+</div>
+
+<!-- 右下 HUD: ウェーブ -->
+<div id="hud-wave">Wave 1</div>
+
 <!-- 隊形ボタン: ●（密集）/ ∴（散開）/ ○（円環）-->
 <div id="formation-bar">
-  <button class="formation-btn active" id="btn-tight"   data-formation="tight">●</button>
-  <button class="formation-btn"        id="btn-spread"  data-formation="spread">∴</button>
-  <button class="formation-btn"        id="btn-ring"    data-formation="ring">○</button>
+  <button class="formation-btn active" id="btn-tight"   data-formation="tight">&#9679;</button>
+  <button class="formation-btn"        id="btn-spread"  data-formation="spread">&#8756;</button>
+  <button class="formation-btn"        id="btn-ring"    data-formation="ring">&#9675;</button>
 </div>
+
+<!-- リトライボタン -->
+<button id="retry-btn">R — リトライ</button>
 
 <script>
 "use strict";
 
 /* ============================================================
- * 竜潮 / Dragon Tide — Phase 1: The Toy
+ * 竜潮 / Dragon Tide — Phase 2: Battle Core
  *
  * 検証目標:
- *   「敵ゼロ・スコアゼロ・無限の空モードだけで、
- *    テスターが平均3分以上触り続けるか」
+ *   「隊形切り替えがバトルにどう影響するか」を体感できること
+ *   - 密集で突っ込むと強いが被弾も多い
+ *   - 散開で敵を包囲する動きが自然発生する
+ *   - 円環で耐えながら戦う戦術が機能する
  *
- * 実装方針 (GDD §11, TDD §1):
- *   - Boidsプロト資産をベースに隊形3種・触覚フィードバックを追加
- *   - data/balance/dragon-tide.json の boids セクションを fetch 使用
- *     （失敗時はフォールバック値を内包）
- *   - setInterval(16ms) 固定、rAF 不使用
- *   - Canvas 2D のみ、外部ライブラリ禁止
+ * 実装方針:
+ *   - Phase 1 の Boids・ウェイポイント・隊形コードを最大限流用
+ *   - 敵 Boids は別配列で管理（同じ SoA 構造体を使い回す）
+ *   - パーティクルは配列プール方式（最大50個）
+ *   - setInterval(16ms) 固定維持
  * ============================================================ */
 
 // -----------------------------------------------------------------
 // バランスデータ: fetch 失敗時のフォールバック値
-// (ソース: data/balance/dragon-tide.json §boids)
+// (ソース: data/balance/dragon-tide.json §boids + §formations)
 // -----------------------------------------------------------------
 const BALANCE_FALLBACK = {
   base: {
@@ -139,9 +202,37 @@ const BALANCE_FALLBACK = {
     spread: { wCohesion: 0.4, wSeparation: 2.5, perception: 55, separationRadius: 28 },
     ring:   { wCohesion: 1.5, wSeparation: 1.2, perception: 45, separationRadius: 22, ringRadius: 80 },
   },
-  transitionSeconds:  0.15,
+  transitionSeconds:   0.15,
   transitionJitterMax: 0.08,
 };
+
+// 隊形別戦闘パラメータ (GDD §9.2 / data/balance/dragon-tide.json §formations)
+// フェーズ2では属性は全て「火」に固定
+const FORMATION_COMBAT = {
+  // 密集: 高ダメージ・被弾増 / 散開: 範囲攻撃・被弾減 / 円環: 低ダメージ・被弾大幅減
+  tight: {
+    damageMultiplier:   1.5,   // 集中火力
+    defenseMultiplier:  1.2,   // 密集してて当たりやすい
+    aoeRadius:          0,     // 単体攻撃
+    flashColor:         "rgba(255,80,40,0.18)", // 切替フラッシュ色（赤）
+  },
+  spread: {
+    damageMultiplier:   1.0,
+    defenseMultiplier:  0.9,   // 散らばって当たりにくい
+    aoeRadius:          20,    // 自分周囲20px内の敵全員にダメージ
+    flashColor:         "rgba(60,120,255,0.18)", // 青
+  },
+  ring: {
+    damageMultiplier:   0.8,
+    defenseMultiplier:  0.6,   // 盾になる
+    aoeRadius:          0,
+    flashColor:         "rgba(40,200,100,0.18)", // 緑
+  },
+};
+
+// ステージ1の敵数 (data/balance/dragon-tide.json stages[0].enemyCount = 7)
+// フェーズ2検証用に10〜15体に設定（GDD仕様通り）
+const ENEMY_COUNT_PER_WAVE = 12;
 
 // -----------------------------------------------------------------
 // ランタイム設定: fetch 後に BASE_CFG へ注入
@@ -154,7 +245,6 @@ let JITTER_MAX       = BALANCE_FALLBACK.transitionJitterMax;
 // バランス JSON を非同期 fetch（失敗時はフォールバックのまま続行）
 (async () => {
   try {
-    // prototypes から実行した場合の相対パス
     const resp = await fetch("../../data/balance/dragon-tide.json");
     if (!resp.ok) throw new Error("fetch status " + resp.status);
     const data = await resp.json();
@@ -176,10 +266,10 @@ const canvas = document.getElementById("stage");
 const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
 
 let viewW = 0, viewH = 0, dpr = 1;
-let bottomUIHeight = 0; // 画面下 20% のボタン領域高さ
+let bottomUIHeight = 0;
 
 function resize() {
-  dpr = Math.min(window.devicePixelRatio || 1, 2); // DPR 2 キャップ
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
   viewW = window.innerWidth;
   viewH = window.innerHeight;
   bottomUIHeight = viewH * 0.20;
@@ -194,12 +284,11 @@ window.addEventListener("orientationchange", resize);
 resize();
 
 // -----------------------------------------------------------------
-// Spatial Hash (プロトから流用・セルサイズ = perception)
+// Spatial Hash (自軍・敵共用)
 // -----------------------------------------------------------------
 const grid = new Map();
 
 function gridKey(cx, cy) {
-  // 整数ハッシュ: 大量セルでも衝突が少ない素数乗算
   return (cx * 73856093 ^ cy * 19349663);
 }
 function gridClear() { grid.clear(); }
@@ -224,16 +313,20 @@ function gridQuery(x, y, cellSize, out) {
 }
 
 // -----------------------------------------------------------------
-// Boids SoA (Structure of Arrays)
+// Boids SoA — 自軍
 // -----------------------------------------------------------------
-const MAX_BOIDS = 20; // フェーズ1: 固定20体
+const MAX_BOIDS = 20;
 let N = 0;
 let px, py, vx, vy;
+let boidHp;         // 自軍HP (各3)
+let boidDead;       // 消滅フラグ
+let boidFadeTimer;  // 消滅アニメーション秒数 (0.3秒でフェード)
 
-// 隊形補間用: 個体ごとに独立した lerp 進捗 [0..1] と遅延 (秒)
-// これにより「ざわっ」とした有機的な再配置感を生む (GDD §11.3)
-let formationLerp;   // Float32Array: lerp進捗
-let formationDelay;  // Float32Array: 各個体の遅延秒数
+let formationLerp;
+let formationDelay;
+
+const BOID_MAX_HP    = 3;
+const FADE_DURATION  = 0.3; // 消滅フェードアウト秒数 (GDD §11.4)
 
 function initBoids() {
   N = MAX_BOIDS;
@@ -241,10 +334,12 @@ function initBoids() {
   py             = new Float32Array(N);
   vx             = new Float32Array(N);
   vy             = new Float32Array(N);
+  boidHp         = new Float32Array(N);
+  boidDead       = new Uint8Array(N);
+  boidFadeTimer  = new Float32Array(N);
   formationLerp  = new Float32Array(N);
   formationDelay = new Float32Array(N);
 
-  // 初期配置: 画面中央付近でランダム分布
   const cx = viewW * 0.5;
   const cy = viewH * 0.5;
   for (let i = 0; i < N; i++) {
@@ -255,24 +350,265 @@ function initBoids() {
     const ang = Math.random() * Math.PI * 2;
     vx[i] = Math.cos(ang) * BASE_CFG.minSpeed;
     vy[i] = Math.sin(ang) * BASE_CFG.minSpeed;
+    boidHp[i]        = BOID_MAX_HP;
+    boidDead[i]      = 0;
+    boidFadeTimer[i] = 0;
     formationLerp[i]  = 1.0;
     formationDelay[i] = 0;
+  }
+}
+
+// 自軍の生存数を返す
+function countAliveBoids() {
+  let count = 0;
+  for (let i = 0; i < N; i++) {
+    if (!boidDead[i]) count++;
+  }
+  return count;
+}
+
+// -----------------------------------------------------------------
+// Boids SoA — 敵群
+// 敵も同じ SoA 構造。ただし Spatial Hash は別フェーズで使う。
+// -----------------------------------------------------------------
+const MAX_ENEMIES = 20;
+let EN = 0; // 現在の敵数
+
+let epx, epy, evx, evy;
+let enemyHp;
+let enemyDead;
+let enemyFadeTimer;
+
+const ENEMY_MAX_HP   = 3;
+const ENEMY_SPEED    = 60; // 自軍の重心へ近づく速度 (px/s)
+
+function initEnemies(count) {
+  EN = count;
+  epx          = new Float32Array(MAX_ENEMIES);
+  epy          = new Float32Array(MAX_ENEMIES);
+  evx          = new Float32Array(MAX_ENEMIES);
+  evy          = new Float32Array(MAX_ENEMIES);
+  enemyHp      = new Float32Array(MAX_ENEMIES);
+  enemyDead    = new Uint8Array(MAX_ENEMIES);
+  enemyFadeTimer = new Float32Array(MAX_ENEMIES);
+
+  for (let i = 0; i < EN; i++) {
+    spawnEnemy(i);
+  }
+}
+
+// 敵を画面端のランダム位置に配置する
+function spawnEnemy(i) {
+  // 4辺のいずれかから出現
+  const side = Math.floor(Math.random() * 4);
+  let spawnX, spawnY;
+  if (side === 0) {      // 上
+    spawnX = Math.random() * viewW;
+    spawnY = -20;
+  } else if (side === 1) { // 下
+    spawnX = Math.random() * viewW;
+    spawnY = viewH + 20;
+  } else if (side === 2) { // 左
+    spawnX = -20;
+    spawnY = Math.random() * viewH;
+  } else {               // 右
+    spawnX = viewW + 20;
+    spawnY = Math.random() * viewH;
+  }
+  epx[i] = spawnX;
+  epy[i] = spawnY;
+  evx[i] = 0;
+  evy[i] = 0;
+  enemyHp[i]        = ENEMY_MAX_HP;
+  enemyDead[i]      = 0;
+  enemyFadeTimer[i] = 0;
+}
+
+function countAliveEnemies() {
+  let count = 0;
+  for (let i = 0; i < EN; i++) {
+    if (!enemyDead[i]) count++;
+  }
+  return count;
+}
+
+// -----------------------------------------------------------------
+// パーティクルプール (最大50個、GCゼロ設計)
+// -----------------------------------------------------------------
+const MAX_PARTICLES = 50;
+
+const partX      = new Float32Array(MAX_PARTICLES);
+const partY      = new Float32Array(MAX_PARTICLES);
+const partVx     = new Float32Array(MAX_PARTICLES);
+const partVy     = new Float32Array(MAX_PARTICLES);
+const partLife   = new Float32Array(MAX_PARTICLES); // 残り寿命 (秒)
+const partActive = new Uint8Array(MAX_PARTICLES);   // 使用中フラグ
+
+// ヒット時パーティクルを3〜5個発火させる
+function spawnHitParticles(x, y) {
+  const count = 3 + Math.floor(Math.random() * 3); // 3〜5個
+  let spawned = 0;
+  for (let i = 0; i < MAX_PARTICLES && spawned < count; i++) {
+    if (partActive[i]) continue;
+    partActive[i] = 1;
+    partX[i] = x;
+    partY[i] = y;
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 40 + Math.random() * 80;
+    partVx[i]   = Math.cos(angle) * speed;
+    partVy[i]   = Math.sin(angle) * speed;
+    partLife[i] = 0.25 + Math.random() * 0.15;
+    spawned++;
+  }
+}
+
+function updateParticles(dt) {
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    if (!partActive[i]) continue;
+    partX[i]    += partVx[i] * dt;
+    partY[i]    += partVy[i] * dt;
+    partVx[i]   *= 0.85; // 減速
+    partVy[i]   *= 0.85;
+    partLife[i] -= dt;
+    if (partLife[i] <= 0) partActive[i] = 0;
+  }
+}
+
+// -----------------------------------------------------------------
+// 卵システム
+// 敵消滅時にその場に金色の小円を残す
+// -----------------------------------------------------------------
+const MAX_EGGS = 30;
+const eggX        = new Float32Array(MAX_EGGS);
+const eggY        = new Float32Array(MAX_EGGS);
+const eggActive   = new Uint8Array(MAX_EGGS);
+const eggFalling  = new Uint8Array(MAX_EGGS); // ウェーブクリア演出用
+
+// 卵を配置してスロットインデックスを返す。空きがなければ -1 を返す。
+function spawnEgg(x, y) {
+  for (let i = 0; i < MAX_EGGS; i++) {
+    if (eggActive[i]) continue;
+    eggActive[i]  = 1;
+    eggX[i]       = x;
+    eggY[i]       = y;
+    eggFalling[i] = 0;
+    return i;
+  }
+  return -1;
+}
+
+// 自軍の近く(60px以内)の卵を回収する
+function collectNearbyEggs(dt) {
+  for (let e = 0; e < MAX_EGGS; e++) {
+    if (!eggActive[e]) continue;
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i]) continue;
+      const dx = eggX[e] - px[i];
+      const dy = eggY[e] - py[i];
+      if (dx * dx + dy * dy < 60 * 60) {
+        eggActive[e] = 0; // 回収
+        break;
+      }
+    }
+  }
+}
+
+// -----------------------------------------------------------------
+// 画面フラッシュ
+// 隊形切替後の最初のヒット時に発火
+// -----------------------------------------------------------------
+let flashTimer  = 0;   // フラッシュ残り時間 (秒)
+let flashColor  = "";  // フラッシュ色
+let formationJustChanged = false; // 隊形切替直後フラグ
+
+function triggerFlash(color) {
+  flashTimer = 0.1;
+  flashColor = color;
+}
+
+// -----------------------------------------------------------------
+// 戦闘状態
+// -----------------------------------------------------------------
+const COMBAT_RANGE     = 30;   // 近接判定距離 (px)
+// 散開の範囲攻撃半径 (GDD仕様: 自分周囲20px内の敵全員)
+const SPREAD_AOE_RANGE = 20;
+// フレームごとの攻撃確率 (確定ではない)
+// 16ms×62.5フレーム = 1秒。毎フレーム10%で≒1.6発/秒
+const ATTACK_PROB_PER_FRAME = 0.10;
+
+// -----------------------------------------------------------------
+// ウェーブ・ゲーム状態管理
+// -----------------------------------------------------------------
+let currentWave   = 1;
+let gameState     = "playing"; // "playing" | "defeat" | "wave_clear"
+let defeatTimer   = 0;  // 敗北演出タイマー (秒)
+let waveClearTimer = 0; // ウェーブクリア演出タイマー (秒)
+
+const hudAlive = document.getElementById("h-alive");
+const hudMax   = document.getElementById("h-max");
+const hudWave  = document.getElementById("hud-wave");
+const retryBtn = document.getElementById("retry-btn");
+
+// resetFriendlies: リトライ時は true、ウェーブ継続時は false
+// - リトライ: 自軍HP・生死を全回復してから開始
+// - ウェーブ継続: 自軍の状態を引き継ぐ（損耗がリスクとして残る）
+function startWave(waveNumber, resetFriendlies) {
+  currentWave = waveNumber;
+  gameState   = "playing";
+  defeatTimer = 0;
+  waveClearTimer = 0;
+  formationJustChanged = false;
+  retryBtn.style.display = "none";
+  hudWave.textContent    = "Wave " + waveNumber;
+
+  // 敵を初期化
+  initEnemies(ENEMY_COUNT_PER_WAVE);
+
+  if (resetFriendlies) {
+    // リトライ時のみ自軍をフル回復
+    for (let i = 0; i < N; i++) {
+      boidHp[i]        = BOID_MAX_HP;
+      boidDead[i]      = 0;
+      boidFadeTimer[i] = 0;
+    }
+  }
+
+  // 卵をリセット
+  for (let e = 0; e < MAX_EGGS; e++) eggActive[e] = 0;
+}
+
+function triggerDefeat() {
+  gameState   = "defeat";
+  defeatTimer = 2.0; // 2秒演出
+  retryBtn.style.display = "block";
+  hapticPulse(400); // GDD §7.3: 失敗時は弱く長い振動
+}
+
+function triggerWaveClear() {
+  gameState      = "wave_clear";
+  waveClearTimer = 3.0; // 3秒演出: 卵が上から降ってくる
+
+  // 全卵を画面上から降らせる演出用に設定
+  for (let e = 0; e < MAX_EGGS; e++) {
+    if (eggActive[e]) eggFalling[e] = 1;
+  }
+  // 追加の卵を数個降らせる
+  for (let k = 0; k < 5; k++) {
+    const slotIndex = spawnEgg(Math.random() * viewW, -20);
+    if (slotIndex >= 0) eggFalling[slotIndex] = 1;
   }
 }
 
 // -----------------------------------------------------------------
 // リーダー & ウェイポイントパス
 // -----------------------------------------------------------------
-// リングバッファ方式で GC を最小化 (TDD §4.3)
 const PATH_MAX = 240;
-const pathBuf = new Float32Array(PATH_MAX * 2); // [x0,y0, x1,y1, ...]
-let pathHead = 0; // 次に書き込むインデックス（0..PATH_MAX-1）
-let pathLen  = 0; // 有効な点数
-let leaderPathConsumeIdx = 0; // リーダーが次に目指すウェイポイントの論理インデックス
+const pathBuf = new Float32Array(PATH_MAX * 2);
+let pathHead = 0;
+let pathLen  = 0;
+let leaderPathConsumeIdx = 0;
 
-// パスバッファからの読み取り（ringbuffer 考慮）
 function pathGet(logicalIdx) {
-  // logicalIdx 0 = 最古, pathLen-1 = 最新
   const ring = (pathHead - pathLen + logicalIdx + PATH_MAX) % PATH_MAX;
   return { x: pathBuf[ring * 2], y: pathBuf[ring * 2 + 1] };
 }
@@ -280,7 +616,6 @@ function pathGet(logicalIdx) {
 function pathClear() {
   pathLen  = 0;
   pathHead = 0;
-  // リーダーの追従インデックスも一緒にリセット（新ライン開始時に先頭から追う）
   leaderPathConsumeIdx = 0;
 }
 
@@ -288,8 +623,6 @@ function pathPush(x, y) {
   if (pathLen > 0) {
     const last = pathGet(pathLen - 1);
     const dx = x - last.x, dy = y - last.y;
-    // 過密点の間引き: GDD 指定 30px 以上離れた点だけ記録
-    // (プロトの pathMinSegment は 8px だがフェーズ1仕様は 30px を優先)
     const minSeg = Math.max(BASE_CFG.pathMinSegment, 30);
     if (dx * dx + dy * dy < minSeg * minSeg) return;
   }
@@ -307,7 +640,6 @@ function resetLeader() {
   leader.vx = 0;
   leader.vy = 0;
   pathClear();
-  // アイドル旋回の初期角度
   idleAngle = 0;
 }
 
@@ -323,15 +655,13 @@ function setFormation(name) {
   prevFormation    = currentFormation;
   currentFormation = name;
 
-  // 個体ごとにランダム遅延を設定 → 「ざわっ」感 (GDD §11.3)
   for (let i = 0; i < N; i++) {
     formationLerp[i]  = 0;
     formationDelay[i] = Math.random() * JITTER_MAX;
   }
 
-  // 振動フィードバック (GDD §11.3 中パルス 30ms)
   hapticPulse(30);
-
+  formationJustChanged = true; // 次ヒットでフラッシュ発火
   updateFormationButtons(name);
 }
 
@@ -348,9 +678,15 @@ document.querySelectorAll(".formation-btn").forEach(btn => {
   });
 });
 
+retryBtn.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  // リトライ: ウェーブ1から自軍をフル回復して再挑戦
+  resetLeader();
+  startWave(1, true);
+});
+
 // -----------------------------------------------------------------
-// 触覚フィードバック (GDD §11, TDD haptics.js)
-// navigator.vibrate 非対応ブラウザでは no-op
+// 触覚フィードバック
 // -----------------------------------------------------------------
 function hapticPulse(durationMs) {
   try { navigator.vibrate?.(durationMs); } catch (_) {}
@@ -358,20 +694,15 @@ function hapticPulse(durationMs) {
 
 // -----------------------------------------------------------------
 // 入力システム
-// 画面下 20% からの入力 → ボタン領域（canvas では処理しない）
-// それ以外 → ライン描画 (GDD §10)
 // -----------------------------------------------------------------
-let inputMode    = "NONE"; // "DRAW" | "UI" | "NONE"
-let isDrawing    = false;
+let inputMode = "NONE";
+let isDrawing = false;
 
-// 指先の光リング (GDD §11.1)
 let touchRing = { active: false, x: 0, y: 0, opacity: 0 };
 
-// ライン残光 (GDD §11.2)
-// 各区間に誕生時刻を持たせて 1.2 秒でフェードアウト
-const TRAIL_LIFETIME = 1.2; // 秒
-const trailPoints = []; // { x, y, bornAt }
-let trailMaxPoints = 400;
+const TRAIL_LIFETIME = 1.2;
+const trailPoints    = [];
+let trailMaxPoints   = 400;
 
 function addTrailPoint(x, y, now) {
   if (trailPoints.length >= trailMaxPoints) trailPoints.shift();
@@ -379,7 +710,6 @@ function addTrailPoint(x, y, now) {
 }
 
 function inputStart(x, y, now) {
-  // 押し始めの y 座標で操作モードを確定 (GDD §4.2、touchstart で一度きり判定)
   if (y >= viewH - bottomUIHeight) {
     inputMode = "UI";
     return;
@@ -390,13 +720,11 @@ function inputStart(x, y, now) {
   pathPush(x, y);
   addTrailPoint(x, y, now);
 
-  // 指先の光リングを即時表示 (GDD §11.1)
   touchRing.active  = true;
   touchRing.x       = x;
   touchRing.y       = y;
   touchRing.opacity = 0.30;
 
-  // タッチ開始の弱パルス (GDD §11.1 10ms)
   hapticPulse(10);
 }
 
@@ -429,32 +757,229 @@ canvas.addEventListener("touchmove", (e) => {
 canvas.addEventListener("touchend",    (e) => { inputEnd(); e.preventDefault(); }, { passive: false });
 canvas.addEventListener("touchcancel", (e) => { inputEnd(); e.preventDefault(); }, { passive: false });
 
-// 開発用マウスフォールバック
 canvas.addEventListener("mousedown",  (e) => inputStart(e.clientX, e.clientY, performance.now()));
 canvas.addEventListener("mousemove",  (e) => { if (isDrawing) inputMove(e.clientX, e.clientY, performance.now()); });
 canvas.addEventListener("mouseup",    () => inputEnd());
 canvas.addEventListener("mouseleave", () => inputEnd());
 
 // -----------------------------------------------------------------
-// アイドル旋回 (GDD §11.5-2 / §11.5-3: 眺める体験の成立)
-// ライン入力がない間、群れは緩やかに旋回し続ける
+// アイドル旋回
 // -----------------------------------------------------------------
 let idleAngle = 0;
-const IDLE_ANGULAR_SPEED = 0.35; // rad/s — ゆっくりした旋回感
+const IDLE_ANGULAR_SPEED = 0.35;
 
 function getIdleLeaderTarget(dt) {
   idleAngle += IDLE_ANGULAR_SPEED * dt;
   const r = BASE_CFG.idleWanderRadius;
   return {
     x: viewW * 0.5 + Math.cos(idleAngle) * r,
-    y: viewH * 0.45 + Math.sin(idleAngle) * r * 0.6, // 縦持ち画面では縦を少し縮める
+    y: viewH * 0.45 + Math.sin(idleAngle) * r * 0.6,
   };
 }
 
 // -----------------------------------------------------------------
-// Simulation step
+// 自軍の重心を計算する
 // -----------------------------------------------------------------
-const neighbours = []; // 毎フレーム再利用するスクラッチ配列（GCゼロ）
+function calcFriendlyCentroid() {
+  let cx = 0, cy = 0, count = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+    cx += px[i];
+    cy += py[i];
+    count++;
+  }
+  if (count === 0) return { x: viewW * 0.5, y: viewH * 0.5 };
+  return { x: cx / count, y: cy / count };
+}
+
+// -----------------------------------------------------------------
+// 敵 Boids シミュレーション
+// 敵は Boids ロジックを使いつつ自軍重心へ緩やかに接近
+// -----------------------------------------------------------------
+const eNeighbours = [];
+
+function simEnemies(dt) {
+  const centroid = calcFriendlyCentroid();
+
+  for (let i = 0; i < EN; i++) {
+    if (enemyDead[i]) continue;
+
+    // 敵どうしの簡易分離 (O(n^2) だが敵数が少ないので許容)
+    let sepX = 0, sepY = 0;
+    const SEP_R = 20;
+    for (let j = 0; j < EN; j++) {
+      if (j === i || enemyDead[j]) continue;
+      const dx = epx[i] - epx[j];
+      const dy = epy[i] - epy[j];
+      const d2 = dx * dx + dy * dy;
+      if (d2 < SEP_R * SEP_R && d2 > 0) {
+        const invD = 1 / Math.sqrt(d2);
+        sepX += dx * invD;
+        sepY += dy * invD;
+      }
+    }
+
+    // 自軍重心へ向かう引力
+    const tdx = centroid.x - epx[i];
+    const tdy = centroid.y - epy[i];
+    const td  = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
+
+    // 加速度: 引力 + 分離力
+    let ax = (tdx / td) * 80 + sepX * 40;
+    let ay = (tdy / td) * 80 + sepY * 40;
+
+    evx[i] += ax * dt;
+    evy[i] += ay * dt;
+
+    // 速度キャップ
+    const sp = Math.sqrt(evx[i] * evx[i] + evy[i] * evy[i]);
+    if (sp > ENEMY_SPEED) {
+      evx[i] = evx[i] / sp * ENEMY_SPEED;
+      evy[i] = evy[i] / sp * ENEMY_SPEED;
+    }
+
+    epx[i] += evx[i] * dt;
+    epy[i] += evy[i] * dt;
+  }
+}
+
+// -----------------------------------------------------------------
+// 戦闘シミュレーション
+// 近接した自軍個体と敵個体が確率的に攻撃し合う
+// -----------------------------------------------------------------
+function simCombat(dt) {
+  if (gameState !== "playing") return;
+
+  const combatParams = FORMATION_COMBAT[currentFormation];
+
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+
+    for (let e = 0; e < EN; e++) {
+      if (enemyDead[e]) continue;
+
+      const dx = px[i] - epx[e];
+      const dy = py[i] - epy[e];
+      const d2 = dx * dx + dy * dy;
+
+      if (d2 > COMBAT_RANGE * COMBAT_RANGE) continue;
+
+      // --- 自軍が敵を攻撃 ---
+      if (Math.random() < ATTACK_PROB_PER_FRAME) {
+        const damage = combatParams.damageMultiplier;
+
+        if (combatParams.aoeRadius > 0) {
+          // 散開: 自分周囲の敵全員にダメージ
+          applyAoeDamage(px[i], py[i], combatParams.aoeRadius, damage);
+        } else {
+          // 密集・円環: 単体攻撃
+          applyDamageToEnemy(e, damage);
+        }
+
+        spawnHitParticles(epx[e], epy[e]);
+
+        // 隊形切替後の最初のヒットにフラッシュ (GDD §11.3)
+        if (formationJustChanged) {
+          triggerFlash(combatParams.flashColor);
+          formationJustChanged = false;
+        }
+
+        hapticPulse(20);
+      }
+
+      // --- 敵が自軍を攻撃 ---
+      if (Math.random() < ATTACK_PROB_PER_FRAME) {
+        const incomingDamage = 1 * combatParams.defenseMultiplier;
+        applyDamageToBoid(i, incomingDamage);
+      }
+    }
+  }
+}
+
+function applyDamageToEnemy(enemyIndex, damage) {
+  enemyHp[enemyIndex] -= damage;
+  if (enemyHp[enemyIndex] <= 0 && !enemyDead[enemyIndex]) {
+    enemyDead[enemyIndex]      = 1;
+    enemyFadeTimer[enemyIndex] = FADE_DURATION;
+    // 卵を落とす (GDD §4.1)
+    spawnEgg(epx[enemyIndex], epy[enemyIndex]);
+  }
+}
+
+function applyAoeDamage(x, y, radius, damage) {
+  const r2 = radius * radius;
+  for (let e = 0; e < EN; e++) {
+    if (enemyDead[e]) continue;
+    const dx = x - epx[e];
+    const dy = y - epy[e];
+    if (dx * dx + dy * dy < r2) {
+      applyDamageToEnemy(e, damage);
+    }
+  }
+}
+
+function applyDamageToBoid(boidIndex, damage) {
+  boidHp[boidIndex] -= damage;
+  if (boidHp[boidIndex] <= 0 && !boidDead[boidIndex]) {
+    boidDead[boidIndex]      = 1;
+    boidFadeTimer[boidIndex] = FADE_DURATION;
+  }
+}
+
+// -----------------------------------------------------------------
+// 消滅フェードタイマー更新
+// -----------------------------------------------------------------
+function updateDeathTimers(dt) {
+  for (let i = 0; i < N; i++) {
+    if (boidFadeTimer[i] > 0) boidFadeTimer[i] = Math.max(0, boidFadeTimer[i] - dt);
+  }
+  for (let e = 0; e < EN; e++) {
+    if (enemyFadeTimer[e] > 0) enemyFadeTimer[e] = Math.max(0, enemyFadeTimer[e] - dt);
+  }
+}
+
+// -----------------------------------------------------------------
+// ゲーム状態チェック
+// -----------------------------------------------------------------
+function checkGameConditions() {
+  if (gameState !== "playing") return;
+
+  const aliveCount = countAliveBoids();
+  if (aliveCount === 0) {
+    triggerDefeat();
+    return;
+  }
+
+  const enemyAliveCount = countAliveEnemies();
+  if (enemyAliveCount === 0) {
+    triggerWaveClear();
+  }
+}
+
+// -----------------------------------------------------------------
+// ウェーブクリア演出後の次ウェーブ開始
+// -----------------------------------------------------------------
+function updateWaveClear(dt) {
+  waveClearTimer -= dt;
+
+  // 卵が上から降ってくる演出
+  for (let e = 0; e < MAX_EGGS; e++) {
+    if (eggActive[e] && eggFalling[e]) {
+      eggY[e] += 60 * dt;
+      if (eggY[e] > viewH + 30) eggActive[e] = 0;
+    }
+  }
+
+  if (waveClearTimer <= 0) {
+    // 次ウェーブへ。自軍の損耗を引き継ぐことでウェーブ継続のリスクを演出する。
+    startWave(currentWave + 1, false);
+  }
+}
+
+// -----------------------------------------------------------------
+// Simulation step — 自軍 Boids
+// -----------------------------------------------------------------
+const neighbours = [];
 
 function buildFormationParams() {
   const ov = FORMATION_OVERRIDES[currentFormation] ?? {};
@@ -480,43 +1005,38 @@ function buildPrevFormationParams() {
   };
 }
 
-// 線形補間
 function lerpVal(a, b, t) { return a + (b - a) * t; }
 
 function simStep(dt) {
-  // --- リーダー位置の更新 ---
   updateLeader(dt);
 
-  // --- 個体ごとの隊形補間進捗更新 ---
-  // 切替開始から TRANSITION_SECS + 各自の jitter 秒で lerp が 1 に達する
   for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
     if (formationDelay[i] > 0) {
       formationDelay[i] -= dt;
     } else if (formationLerp[i] < 1) {
-      // lerp の速度: 0→1 を TRANSITION_SECS で通過
       formationLerp[i] = Math.min(1, formationLerp[i] + dt / TRANSITION_SECS);
     }
   }
 
-  // --- 現在と前回の隊形パラメータ ---
   const paramsNext = buildFormationParams();
   const paramsPrev = buildPrevFormationParams();
 
-  // --- Spatial Hash 構築 (perception は現在隊形のものを使用) ---
   gridClear();
-  for (let i = 0; i < N; i++) gridInsert(i, px[i], py[i], paramsNext.perception);
-
-  // --- 各 Boid のステアリング力計算 ---
   for (let i = 0; i < N; i++) {
-    const t = formationLerp[i];
+    if (!boidDead[i]) gridInsert(i, px[i], py[i], paramsNext.perception);
+  }
 
-    // 隊形パラメータを個体ごとの lerp 進捗で補間
-    const perc     = lerpVal(paramsPrev.perception,       paramsNext.perception,       t);
-    const sepR     = lerpVal(paramsPrev.separationRadius, paramsNext.separationRadius, t);
-    const wSep     = lerpVal(paramsPrev.wSeparation,      paramsNext.wSeparation,      t);
-    const wAli     = paramsNext.wAlignment;
-    const wCoh     = lerpVal(paramsPrev.wCohesion,        paramsNext.wCohesion,        t);
-    const ringR    = lerpVal(paramsPrev.ringRadius,       paramsNext.ringRadius,       t);
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+
+    const t = formationLerp[i];
+    const perc  = lerpVal(paramsPrev.perception,       paramsNext.perception,       t);
+    const sepR  = lerpVal(paramsPrev.separationRadius, paramsNext.separationRadius, t);
+    const wSep  = lerpVal(paramsPrev.wSeparation,      paramsNext.wSeparation,      t);
+    const wAli  = paramsNext.wAlignment;
+    const wCoh  = lerpVal(paramsPrev.wCohesion,        paramsNext.wCohesion,        t);
+    const ringR = lerpVal(paramsPrev.ringRadius,       paramsNext.ringRadius,       t);
 
     const perc2 = perc * perc;
     const sep2  = sepR * sepR;
@@ -530,7 +1050,7 @@ function simStep(dt) {
     gridQuery(xi, yi, paramsNext.perception, neighbours);
     for (let k = 0; k < neighbours.length; k++) {
       const j = neighbours[k];
-      if (j === i) continue;
+      if (j === i || boidDead[j]) continue;
       const dx = xi - px[j], dy = yi - py[j];
       const d2 = dx * dx + dy * dy;
       if (d2 > perc2 || d2 === 0) continue;
@@ -559,12 +1079,10 @@ function simStep(dt) {
       ay += (cohY * inv - yi) * wCoh;
     }
 
-    // リーダー引力: 通常はリーダー点へ seek、円環は ringRadius の円周上を目標 (TDD §5.2)
     {
       const ldx = leader.x - xi, ldy = leader.y - yi;
       const ld  = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
       if (ringR > 0) {
-        // リーダーから ringRadius 離れた点（リーダー方向の逆）が目標
         const targetX = leader.x - (ldx / ld) * ringR;
         const targetY = leader.y - (ldy / ld) * ringR;
         ax += (targetX - xi) * BASE_CFG.wLeader * 1.5;
@@ -575,11 +1093,9 @@ function simStep(dt) {
       }
     }
 
-    // 加速度キャップ
     const am = Math.sqrt(ax * ax + ay * ay);
     if (am > BASE_CFG.maxForce) { const s = BASE_CFG.maxForce / am; ax *= s; ay *= s; }
 
-    // 速度積分
     let nvx = vx[i] + ax * dt;
     let nvy = vy[i] + ay * dt;
     const sp = Math.sqrt(nvx * nvx + nvy * nvy);
@@ -588,7 +1104,6 @@ function simStep(dt) {
     else if (sp <= 0.0001) { nvx = BASE_CFG.minSpeed; nvy = 0; }
     vx[i] = nvx; vy[i] = nvy;
 
-    // 位置積分 (トーラス折り返しで個体が消えない)
     let nx = xi + nvx * dt;
     let ny = yi + nvy * dt;
     if (nx < -10)             nx = viewW + 10;
@@ -601,14 +1116,12 @@ function simStep(dt) {
 
 function updateLeader(dt) {
   if (pathLen > 0) {
-    // パスの最新点に向かって進む (プロトの critically-damped seek を踏襲)
     if (leaderPathConsumeIdx >= pathLen) leaderPathConsumeIdx = pathLen - 1;
 
     let tgt = pathGet(Math.min(leaderPathConsumeIdx, pathLen - 1));
     let dx = tgt.x - leader.x, dy = tgt.y - leader.y;
     let d2 = dx * dx + dy * dy;
 
-    // 通過判定: 24px 以内に入ったら次のウェイポイントへ
     while (d2 < 24 * 24 && leaderPathConsumeIdx < pathLen - 1) {
       leaderPathConsumeIdx++;
       tgt = pathGet(leaderPathConsumeIdx);
@@ -619,11 +1132,9 @@ function updateLeader(dt) {
     const d = Math.sqrt(d2) || 1;
     const desiredVx = (dx / d) * BASE_CFG.leaderSpeed;
     const desiredVy = (dy / d) * BASE_CFG.leaderSpeed;
-    // critically-damped: 目標速度へスムーズに収束
     leader.vx += (desiredVx - leader.vx) * Math.min(1, dt * 8);
     leader.vy += (desiredVy - leader.vy) * Math.min(1, dt * 8);
   } else {
-    // アイドル: 緩やかに円を描く (GDD §11.5-2 眺める体験)
     const target = getIdleLeaderTarget(dt);
     leader.vx += ((target.x - leader.x) * 0.8 - leader.vx) * Math.min(1, dt * 2.0);
     leader.vy += ((target.y - leader.y) * 0.8 - leader.vy) * Math.min(1, dt * 2.0);
@@ -631,7 +1142,6 @@ function updateLeader(dt) {
 
   leader.x += leader.vx * dt;
   leader.y += leader.vy * dt;
-  // 画面端クランプ（トーラスにはしない — リーダーが消えると操作感が壊れる）
   leader.x = Math.max(0, Math.min(viewW, leader.x));
   leader.y = Math.max(0, Math.min(viewH, leader.y));
 }
@@ -644,27 +1154,35 @@ function render(now) {
   ctx.fillStyle = "#08101a";
   ctx.fillRect(0, 0, viewW, viewH);
 
+  // 敗北演出: 画面全体が暗くなる (GDD §7.3)
+  if (gameState === "defeat") {
+    const darkness = Math.min(0.75, 1 - defeatTimer / 2.0);
+    ctx.fillStyle = `rgba(0,0,0,${darkness.toFixed(3)})`;
+    ctx.fillRect(0, 0, viewW, viewH);
+  }
+
   drawTrail(now);
+  drawEggs();
   drawBoids();
+  drawEnemies();
+  drawParticles();
   drawTouchRing(now);
+  drawFlash();
 }
 
-// ライン残光 (GDD §11.2: 1.2秒で消える水墨感)
+// ライン残光
 function drawTrail(now) {
   if (trailPoints.length < 2) return;
 
-  // 古い点を削除
   const cutoff = now - TRAIL_LIFETIME * 1000;
   while (trailPoints.length > 0 && trailPoints[0].bornAt < cutoff) {
     trailPoints.shift();
   }
   if (trailPoints.length < 2) return;
 
-  // 区間ごとに透明度を変えて描画
   for (let i = 1; i < trailPoints.length; i++) {
-    const p = trailPoints[i];
+    const p    = trailPoints[i];
     const prev = trailPoints[i - 1];
-    // 生存割合: 0=誕生 → 1=消滅
     const ageRatio = (now - p.bornAt) / (TRAIL_LIFETIME * 1000);
     const alpha    = Math.max(0, 1 - ageRatio) * 0.35;
 
@@ -678,7 +1196,122 @@ function drawTrail(now) {
   }
 }
 
-// タッチ開始時の指先リング (GDD §11.1)
+// 自軍 Boids 描画 (白/青系三角形)
+function drawBoids() {
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
+
+    let alpha = 0.75;
+    if (boidDead[i]) {
+      // 消滅フェードアウト
+      alpha = (boidFadeTimer[i] / FADE_DURATION) * 0.75;
+    }
+
+    const x = px[i], y = py[i];
+    const angle = Math.atan2(vy[i], vx[i]);
+    const cosA  = Math.cos(angle);
+    const sinA  = Math.sin(angle);
+
+    ctx.setTransform(dpr * cosA, dpr * sinA, -dpr * sinA, dpr * cosA, x * dpr, y * dpr);
+    ctx.fillStyle = `rgba(120, 180, 255, ${alpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(9,  0);
+    ctx.lineTo(-6,  4);
+    ctx.lineTo(-3,  0);
+    ctx.lineTo(-6, -4);
+    ctx.closePath();
+    ctx.fill();
+
+    // HP バー (生存中のみ、HP<MAX時に表示)
+    if (!boidDead[i] && boidHp[i] < BOID_MAX_HP) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const hpRatio = Math.max(0, boidHp[i] / BOID_MAX_HP);
+      const barW = 14;
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(x - barW / 2, y - 14, barW, 2);
+      ctx.fillStyle = hpRatio > 0.5 ? "#4adf80" : "#f0604a";
+      ctx.fillRect(x - barW / 2, y - 14, barW * hpRatio, 2);
+    }
+  }
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+// 敵 Boids 描画 (赤い半透明三角形, GDD §フェーズ2仕様)
+function drawEnemies() {
+  for (let i = 0; i < EN; i++) {
+    if (enemyDead[i] && enemyFadeTimer[i] <= 0) continue;
+
+    let alpha = 0.70;
+    if (enemyDead[i]) {
+      alpha = (enemyFadeTimer[i] / FADE_DURATION) * 0.70;
+    }
+
+    const x = epx[i], y = epy[i];
+    const angle = Math.atan2(evy[i], evx[i]);
+    const cosA  = Math.cos(angle);
+    const sinA  = Math.sin(angle);
+
+    ctx.setTransform(dpr * cosA, dpr * sinA, -dpr * sinA, dpr * cosA, x * dpr, y * dpr);
+    ctx.fillStyle = `rgba(220, 60, 60, ${alpha.toFixed(3)})`;
+    ctx.beginPath();
+    // 敵は逆向き気味の三角形でシルエット差別化
+    ctx.moveTo(8,  0);
+    ctx.lineTo(-5,  5);
+    ctx.lineTo(-2,  0);
+    ctx.lineTo(-5, -5);
+    ctx.closePath();
+    ctx.fill();
+
+    // 敵HP バー
+    if (!enemyDead[i] && enemyHp[i] < ENEMY_MAX_HP) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const hpRatio = Math.max(0, enemyHp[i] / ENEMY_MAX_HP);
+      const barW = 14;
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(x - barW / 2, y - 14, barW, 2);
+      ctx.fillStyle = "#e05050";
+      ctx.fillRect(x - barW / 2, y - 14, barW * hpRatio, 2);
+    }
+  }
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+// パーティクル描画 (小さな輝点)
+function drawParticles() {
+  ctx.save();
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    if (!partActive[i]) continue;
+    const lifeRatio = partLife[i] / 0.35; // 最大寿命で正規化
+    const alpha = Math.max(0, lifeRatio);
+    const radius = 2 + lifeRatio * 2;
+
+    ctx.fillStyle = `rgba(255, 220, 80, ${alpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// 卵描画 (金色の小円)
+function drawEggs() {
+  ctx.save();
+  for (let e = 0; e < MAX_EGGS; e++) {
+    if (!eggActive[e]) continue;
+    ctx.fillStyle = "rgba(255, 200, 40, 0.85)";
+    ctx.strokeStyle = "rgba(255, 240, 120, 0.60)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(eggX[e], eggY[e], 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// タッチリング
 function drawTouchRing(now) {
   if (!touchRing.active) return;
   ctx.strokeStyle = `rgba(200, 230, 255, ${touchRing.opacity.toFixed(3)})`;
@@ -688,31 +1321,26 @@ function drawTouchRing(now) {
   ctx.stroke();
 }
 
-// 群れの描画 (GDD §2.3: 半透明シルエット)
-function drawBoids() {
-  // 単一 fillStyle でバッチ描画 — iOS Safari では state 変更が最もコスト高い
-  ctx.fillStyle = "rgba(120, 180, 255, 0.75)";
+// 画面フラッシュ (隊形切替直後ヒット時)
+function drawFlash() {
+  if (flashTimer <= 0) return;
+  ctx.fillStyle = flashColor;
+  ctx.fillRect(0, 0, viewW, viewH);
+}
 
-  for (let i = 0; i < N; i++) {
-    const x = px[i], y = py[i];
-    const angle = Math.atan2(vy[i], vx[i]);
-    const cosA  = Math.cos(angle);
-    const sinA  = Math.sin(angle);
+// -----------------------------------------------------------------
+// HUD 更新 (毎フレームではなく 10フレームごとに DOM 更新)
+// -----------------------------------------------------------------
+let hudUpdateCounter = 0;
 
-    // ctx.save/restore を避け setTransform で直接変換 (TDD §5 レンダリング最適化)
-    ctx.setTransform(dpr * cosA, dpr * sinA, -dpr * sinA, dpr * cosA, x * dpr, y * dpr);
-    ctx.beginPath();
-    // 竜シルエット: やや細長い三角形（後でgraphics-engineerが磨く）
-    ctx.moveTo(9,  0);
-    ctx.lineTo(-6,  4);
-    ctx.lineTo(-3,  0);
-    ctx.lineTo(-6, -4);
-    ctx.closePath();
-    ctx.fill();
-  }
+function updateHUD() {
+  hudUpdateCounter++;
+  if (hudUpdateCounter < 10) return;
+  hudUpdateCounter = 0;
 
-  // グローバル変換を元に戻す
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const aliveCount = countAliveBoids();
+  hudAlive.textContent = aliveCount;
+  hudMax.textContent   = MAX_BOIDS;
 }
 
 // -----------------------------------------------------------------
@@ -720,7 +1348,7 @@ function drawBoids() {
 // -----------------------------------------------------------------
 let fpsFrames = 0;
 let fpsLast   = performance.now();
-let fpsEma    = 0; // EMA
+let fpsEma    = 0;
 const hudFps  = document.getElementById("h-fps");
 const hudAvg  = document.getElementById("h-avg");
 
@@ -738,27 +1366,49 @@ function tickFps(now) {
 }
 
 // -----------------------------------------------------------------
-// ゲームループ (setInterval 固定 16ms — TDD §2.1)
+// ゲームループ (setInterval 固定 16ms)
 // -----------------------------------------------------------------
 let lastTickTs = performance.now();
 
 function tick() {
   const now  = performance.now();
   let dtMs   = now - lastTickTs;
-  if (dtMs > BASE_CFG.maxDtMs) dtMs = BASE_CFG.maxDtMs; // 巨大 dt のクランプ
+  if (dtMs > BASE_CFG.maxDtMs) dtMs = BASE_CFG.maxDtMs;
   lastTickTs = now;
   const dt   = dtMs / 1000;
 
-  // update: ロジックのみ。Canvas API に触れない (TDD §2.2)
-  simStep(dt);
+  // --- Update ---
 
-  // render: 描画のみ。状態を書き換えない (TDD §2.2)
+  if (gameState === "playing") {
+    simStep(dt);
+    simEnemies(dt);
+    simCombat(dt);
+    updateDeathTimers(dt);
+    collectNearbyEggs(dt);
+    checkGameConditions();
+  } else if (gameState === "defeat") {
+    defeatTimer -= dt;
+    updateDeathTimers(dt);
+    // 敗北演出中も自軍の残骸フェード
+  } else if (gameState === "wave_clear") {
+    simStep(dt); // 自軍は動き続ける
+    updateWaveClear(dt);
+  }
+
+  // フラッシュタイマー更新
+  if (flashTimer > 0) flashTimer = Math.max(0, flashTimer - dt);
+
+  // パーティクル更新 (常時)
+  updateParticles(dt);
+
+  // --- Render ---
   render(now);
 
+  // HUD
+  updateHUD();
   tickFps(now);
 }
 
-// タブ復帰時に dt をリセット (プロトパターン踏襲)
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) lastTickTs = performance.now();
 });
@@ -766,12 +1416,12 @@ document.addEventListener("visibilitychange", () => {
 // -----------------------------------------------------------------
 // 起動
 // -----------------------------------------------------------------
-// DOMContentLoaded 後に起動することで、ビューポートが確定した状態で
-// resize() → initBoids() を呼ぶ（プレビュー環境での timing 問題を回避）
 function boot() {
-  resize(); // viewW/viewH を確定させてから boids を初期化
+  resize();
   initBoids();
   resetLeader();
+  // 起動時はリセットフラグなし (initBoids で既に HP 初期化済み)
+  startWave(1, false);
   setInterval(tick, BASE_CFG.fixedStepMs);
 }
 
