@@ -57,7 +57,7 @@
   }
   #hud-left .label { color: #6fa6c8; font-size: 10px; }
 
-  /* 右下 HUD: 卵カウント */
+  /* 右下 HUD: 卵カウント + ステージ */
   #hud-eggs {
     position: fixed;
     bottom: calc(20vh + env(safe-area-inset-bottom, 0px) + 8px);
@@ -70,6 +70,7 @@
     font-size: 13px;
     color: #ffd040;
     pointer-events: none;
+    line-height: 1.7;
   }
 
   /* 左下 HUD: ミニマップ */
@@ -84,6 +85,21 @@
     overflow: hidden;
   }
   #minimap { display: block; }
+
+  /* 残建物カウント（ミニマップの上） */
+  #hud-buildings {
+    position: fixed;
+    bottom: calc(20vh + env(safe-area-inset-bottom, 0px) + 8px + 60px + 4px);
+    left: 8px;
+    padding: 3px 8px;
+    background: rgba(8, 16, 26, 0.70);
+    border: 1px solid rgba(255, 180, 60, 0.25);
+    border-radius: 4px;
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+    font-size: 11px;
+    color: #ffb840;
+    pointer-events: none;
+  }
 
   /* 隊形切替ボタン — 画面下部 */
   #formation-bar {
@@ -162,6 +178,35 @@
     letter-spacing: 0.1em;
   }
   #retry-btn.visible { display: block; }
+
+  /* ステージ間演出オーバーレイ */
+  #stage-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  #stage-overlay.visible { opacity: 1; }
+  #stage-text {
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+    font-size: 42px;
+    color: #fff;
+    text-shadow: 0 0 30px rgba(255,200,80,0.9), 0 0 60px rgba(255,120,40,0.5);
+    letter-spacing: 0.12em;
+    text-align: center;
+  }
+  #stage-sub {
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+    font-size: 18px;
+    color: #ffd080;
+    margin-top: 12px;
+    letter-spacing: 0.2em;
+    text-align: center;
+  }
 </style>
 </head>
 <body>
@@ -178,8 +223,14 @@
   <span id="h-alive">20</span> / <span id="h-max">20</span>
 </div>
 
-<!-- 右下 HUD: 卵 -->
-<div id="hud-eggs">&#x1F95A; x <span id="h-eggs">0</span></div>
+<!-- 右下 HUD: 卵 + ステージ -->
+<div id="hud-eggs">
+  <div>&#x1F95A; x <span id="h-eggs">0</span></div>
+  <div id="h-stage" style="color:#80c8ff;font-size:11px;">STAGE 1/4</div>
+</div>
+
+<!-- 残建物カウント -->
+<div id="hud-buildings">&#x1F3F0; <span id="h-buildings">--/--</span></div>
 
 <!-- 左下: ミニマップ -->
 <div id="minimap-container">
@@ -205,20 +256,28 @@
   <button id="retry-btn">R — リスタート</button>
 </div>
 
+<!-- ステージ間演出 -->
+<div id="stage-overlay">
+  <div>
+    <div id="stage-text">STAGE 2</div>
+    <div id="stage-sub">ANCIENT CIVILIZATION</div>
+  </div>
+</div>
+
 <script>
 "use strict";
 
 /* ============================================================
- * 竜潮 / Dragon Tide — World Map Edition
+ * 竜潮 / Dragon Tide — Stage Edition
  *
  * コアファンタジー（GDD §3）:
  *   「竜の群れが世界を渡り歩き、文明を蹂躙していく」
  *
- * 実装方針:
- *   - Boids / ウェイポイント / 隊形ロジックは Phase2 から流用
- *   - ワールド座標系 + カメラ追従を新規追加
- *   - 集落（静的ターゲット）と投射物システムを新規実装
- *   - setInterval(16ms) 固定維持
+ * 改修 v2:
+ *   - 30〜40建物のクラスター配置（generateStageLayout）
+ *   - 4ステージ制（石器 → 古代 → 中世 → 近世要塞）
+ *   - ステージ間演出（フラッシュ → テキスト → 新マップ）
+ *   - HUD に STAGE N/4 と残建物数を追加
  * ============================================================ */
 
 // -----------------------------------------------------------------
@@ -226,6 +285,9 @@
 // -----------------------------------------------------------------
 const WORLD_W = 3200;
 const WORLD_H = 2400;
+
+// 建物同士の最小間隔（ピクセル）
+const MIN_BUILDING_SPACING = 80;
 
 // -----------------------------------------------------------------
 // バランスデータ（Phase2から流用）
@@ -255,13 +317,244 @@ const FORMATION_OVERRIDES = {
   ring:   { wCohesion: 1.5, wSeparation: 1.2, perception: 45, separationRadius: 22, ringRadius: 80 },
 };
 
-// 隊形別戦闘パラメータ（新仕様）
-// 密集: 攻撃力×2.0・被弾率×1.3 / 散開: ×0.8・×0.6 / 円環: ×0.6・×0.3
+// 隊形別戦闘パラメータ
 const FORMATION_COMBAT = {
   tight:  { attackMultiplier: 2.0, hitRateMultiplier: 1.3, flashColor: "rgba(255,80,40,0.15)" },
   spread: { attackMultiplier: 0.8, hitRateMultiplier: 0.6, flashColor: "rgba(60,120,255,0.15)" },
   ring:   { attackMultiplier: 0.6, hitRateMultiplier: 0.3, flashColor: "rgba(40,200,100,0.15)" },
 };
+
+// -----------------------------------------------------------------
+// ステージ定義
+// 各ステージに 建物プールと配置パラメータを持たせる
+// -----------------------------------------------------------------
+
+// 建物サイズ区分（サイズ種別ごとのHPと見た目半径）
+// size: "small" | "medium" | "large"
+const BUILDING_SIZE_PARAMS = {
+  small:  { hpMin: 10, hpMax: 15, radiusBase: 12 },
+  medium: { hpMin: 30, hpMax: 40, radiusBase: 20 },
+  large:  { hpMin: 70, hpMax: 100, radiusBase: 32 },
+};
+
+// ステージごとの建物テンプレート定義
+// 各ステージには small/medium/large ごとに見た目パラメータを指定する
+const STAGE_CONFIGS = [
+  // ===== ステージ1: 石器時代 =====
+  {
+    name: "STONE AGE",
+    subtitle: "THE FIRST CIVILIZATION",
+    bgColor: "#0d1a08",
+    gridColor: "rgba(40, 80, 20, 0.35)",
+
+    // 建物ごとの外観・投射物パラメータ（サイズ別）
+    buildings: {
+      small: {
+        colors: ["#c05820", "#a04010", "#d06828"],
+        shapes: ["circle", "polygon"],  // polygon = 不規則な多角形（焚き火・石組み）
+        attackRadius: 150,
+        projectileInterval: 3.5,
+        projectileSpeed: 75,
+        projectileDamage: 0.8,
+        projectileColor: "#c0a060",
+        projectileCount: 1,
+        projectileTracking: false,
+        reward: { eggMin: 2, eggMax: 4 },
+      },
+      medium: {
+        colors: ["#904818", "#b05820"],
+        shapes: ["circle", "polygon"],
+        attackRadius: 170,
+        projectileInterval: 2.8,
+        projectileSpeed: 80,
+        projectileDamage: 1,
+        projectileColor: "#b09050",
+        projectileCount: 1,
+        projectileTracking: false,
+        reward: { eggMin: 3, eggMax: 5 },
+      },
+      large: {
+        colors: ["#783010"],
+        shapes: ["polygon"],
+        attackRadius: 180,
+        projectileInterval: 2.2,
+        projectileSpeed: 85,
+        projectileDamage: 1.2,
+        projectileColor: "#a08040",
+        projectileCount: 2,
+        projectileTracking: false,
+        reward: { eggMin: 5, eggMax: 7 },
+      },
+    },
+
+    // クラスター生成パラメータ
+    clusterCount: 7,
+    // small:20〜25個 medium:8〜10個 large:2〜3個
+    smallCount:  22,
+    mediumCount: 9,
+    largeCount:  2,
+  },
+
+  // ===== ステージ2: 古代文明 =====
+  {
+    name: "ANCIENT ERA",
+    subtitle: "GODS WALK AMONG US",
+    bgColor: "#1a1408",
+    gridColor: "rgba(80, 60, 20, 0.35)",
+
+    buildings: {
+      small: {
+        colors: ["#4060b0", "#3050a0", "#6080c0"],
+        shapes: ["square", "triangle"],  // 小神殿・柱廊
+        attackRadius: 180,
+        projectileInterval: 2.8,
+        projectileSpeed: 85,
+        projectileDamage: 0.8,
+        projectileColor: "#8090d0",
+        projectileCount: 1,
+        projectileTracking: false,
+        reward: { eggMin: 2, eggMax: 4 },
+      },
+      medium: {
+        colors: ["#a08010", "#c0a020", "#906000"],
+        shapes: ["square", "triangle"],  // ピラミッド・フォルム
+        attackRadius: 200,
+        projectileInterval: 2.5,
+        projectileSpeed: 70,
+        projectileDamage: 1,
+        projectileColor: "#c0b040",
+        projectileCount: 1,
+        projectileTracking: false,
+        projectileAoe: 22,  // 範囲ダメージ（投石）
+        reward: { eggMin: 4, eggMax: 6 },
+      },
+      large: {
+        colors: ["#d0a000", "#b08800"],
+        shapes: ["triangle"],  // 大ピラミッド
+        attackRadius: 220,
+        projectileInterval: 2.0,
+        projectileSpeed: 75,
+        projectileDamage: 1.5,
+        projectileColor: "#ffe060",
+        projectileCount: 1,
+        projectileTracking: false,
+        projectileAoe: 28,
+        reward: { eggMin: 6, eggMax: 8 },
+      },
+    },
+
+    clusterCount: 7,
+    smallCount:  23,
+    mediumCount: 9,
+    largeCount:  3,
+  },
+
+  // ===== ステージ3: 中世 =====
+  {
+    name: "MEDIEVAL AGE",
+    subtitle: "IRON AND STONE",
+    bgColor: "#0e120e",
+    gridColor: "rgba(50, 70, 50, 0.35)",
+
+    buildings: {
+      small: {
+        colors: ["#707070", "#888888", "#606060"],
+        shapes: ["square"],  // 小屋・農家
+        attackRadius: 200,
+        projectileInterval: 2.2,
+        projectileSpeed: 100,
+        projectileDamage: 0.8,
+        projectileColor: "#aaaaaa",
+        projectileCount: 1,
+        projectileTracking: false,
+        reward: { eggMin: 2, eggMax: 4 },
+      },
+      medium: {
+        colors: ["#909090", "#a0a0a0", "#808080"],
+        shapes: ["squareTower"],  // 塔・城壁
+        attackRadius: 230,
+        projectileInterval: 1.8,
+        projectileSpeed: 110,
+        projectileDamage: 1,
+        projectileColor: "#cccccc",
+        projectileCount: 3,  // 扇状
+        projectileTracking: false,
+        reward: { eggMin: 4, eggMax: 6 },
+      },
+      large: {
+        colors: ["#c0c0c0", "#e0e0e0"],
+        shapes: ["squareTower"],  // 大聖堂・本城
+        attackRadius: 260,
+        projectileInterval: 1.5,
+        projectileSpeed: 120,
+        projectileDamage: 1.5,
+        projectileColor: "#ffffff",
+        projectileCount: 3,
+        projectileTracking: false,
+        reward: { eggMin: 6, eggMax: 9 },
+      },
+    },
+
+    clusterCount: 8,
+    smallCount:  24,
+    mediumCount: 10,
+    largeCount:  3,
+  },
+
+  // ===== ステージ4: 近世要塞 =====
+  {
+    name: "MODERN FORTRESS",
+    subtitle: "THE LAST BASTION",
+    bgColor: "#080810",
+    gridColor: "rgba(30, 30, 60, 0.35)",
+
+    buildings: {
+      small: {
+        colors: ["#304050", "#405060", "#303848"],
+        shapes: ["star4"],  // 小型稜堡
+        attackRadius: 250,
+        projectileInterval: 1.5,
+        projectileSpeed: 180,
+        projectileDamage: 1,
+        projectileColor: "#60a0ff",
+        projectileCount: 2,  // 2方向
+        projectileTracking: false,
+        reward: { eggMin: 3, eggMax: 5 },
+      },
+      medium: {
+        colors: ["#405060", "#506070"],
+        shapes: ["star"],  // 中型稜堡
+        attackRadius: 270,
+        projectileInterval: 1.2,
+        projectileSpeed: 220,
+        projectileDamage: 1.2,
+        projectileColor: "#80c0ff",
+        projectileCount: 4,
+        projectileTracking: false,
+        reward: { eggMin: 5, eggMax: 8 },
+      },
+      large: {
+        colors: ["#304858", "#405868"],
+        shapes: ["star"],  // 主城塞（ヴォーバン式）
+        attackRadius: 300,
+        projectileInterval: 0.8,
+        projectileSpeed: 260,
+        projectileDamage: 1.5,
+        projectileColor: "#a0d8ff",
+        projectileCount: 6,
+        projectileTracking: false,
+        reward: { eggMin: 8, eggMax: 12 },
+      },
+    },
+
+    clusterCount: 8,
+    smallCount:  25,
+    mediumCount: 10,
+    largeCount:  3,
+  },
+];
+
+const TOTAL_STAGES = STAGE_CONFIGS.length;
 
 // -----------------------------------------------------------------
 // Canvas セットアップ
@@ -295,7 +588,6 @@ resize();
 // -----------------------------------------------------------------
 const cam = { x: 400, y: WORLD_H / 2 };
 
-// ワールド座標 → スクリーン座標変換
 function worldToScreen(wx, wy) {
   return {
     x: wx - cam.x + viewW * 0.5,
@@ -303,7 +595,6 @@ function worldToScreen(wx, wy) {
   };
 }
 
-// スクリーン座標 → ワールド座標変換
 function screenToWorld(sx, sy) {
   return {
     x: sx + cam.x - viewW * 0.5,
@@ -311,187 +602,221 @@ function screenToWorld(sx, sy) {
   };
 }
 
-// カメラを群れの重心に向けてlerpで追従（追従係数0.08）
 function updateCamera(dt) {
   const centroid = calcFriendlyCentroid();
   const lerpFactor = 0.08;
   cam.x += (centroid.x - cam.x) * lerpFactor;
   cam.y += (centroid.y - cam.y) * lerpFactor;
-  // カメラをワールド境界内にクランプ
   cam.x = Math.max(viewW * 0.5, Math.min(WORLD_W - viewW * 0.5, cam.x));
   cam.y = Math.max(viewH * 0.5, Math.min(WORLD_H - viewH * 0.5, cam.y));
 }
 
 // -----------------------------------------------------------------
-// 集落定義
+// 集落（建物）の動的生成
+// クラスターベースのランダム配置。座標ハードコードなし。
 // -----------------------------------------------------------------
 
-// 集落種別パラメータ
-// hitProb: フレームごとの近接攻撃確率（基準値。隊形で補正）
-const SETTLEMENT_TYPES = {
-  village: {
-    name: "石器村",
-    color: "#e07030",
-    shape: "circle",
-    radius: 22,
-    maxHp: 20,
-    attackRadius: 180,
-    projectileInterval: 2.0,   // 秒
-    projectileSpeed: 90,
-    projectileDamage: 1,
-    projectileColor: "#c0a060",
-    projectileCount: 1,
-    projectileTracking: false,
-    reward: { eggMin: 3, eggMax: 5 },
-    hitProb: 0.15,
-  },
-  ancientCity: {
-    name: "古代都市",
-    color: "#4070c0",
-    shape: "square",
-    radius: 28,
-    maxHp: 40,
-    attackRadius: 220,
-    projectileInterval: 2.5,
-    projectileSpeed: 70,
-    projectileDamage: 1,        // 着弾時に周囲20pxに範囲ダメージ
-    projectileColor: "#8090d0",
-    projectileCount: 1,
-    projectileTracking: false,
-    projectileAoe: 20,
-    reward: { eggMin: 4, eggMax: 6 },
-    hitProb: 0.15,
-  },
-  medievalTown: {
-    name: "中世の町",
-    color: "#808080",
-    shape: "squareTower",
-    radius: 32,
-    maxHp: 60,
-    attackRadius: 250,
-    projectileInterval: 1.5,
-    projectileSpeed: 110,
-    projectileDamage: 1,
-    projectileColor: "#aaa",
-    projectileCount: 3,         // 扇状3本
-    projectileTracking: false,
-    reward: { eggMin: 5, eggMax: 7 },
-    hitProb: 0.15,
-  },
-  feudalCastle: {
-    name: "封建城",
-    color: "#e0e0e0",
-    shape: "square",
-    radius: 40,
-    maxHp: 100,
-    attackRadius: 300,
-    projectileInterval: 1.2,
-    projectileSpeed: 200,
-    projectileDamage: 1,
-    projectileColor: "#f0c040",
-    projectileCount: 1,
-    projectileTracking: false,
-    reward: { eggMin: 6, eggMax: 9 },
-    hitProb: 0.15,
-  },
-  templeCity: {
-    name: "神殿都市",
-    color: "#ffd700",
-    shape: "hexagon",
-    radius: 35,
-    maxHp: 80,
-    attackRadius: 280,
-    projectileInterval: 1.8,
-    projectileSpeed: 130,
-    projectileDamage: 1,
-    projectileColor: "#ffe060",
-    projectileCount: 1,
-    projectileTracking: true,   // 追尾あり
-    reward: { eggMin: 5, eggMax: 8 },
-    hitProb: 0.15,
-  },
-  modernFortress: {
-    name: "近世要塞",
-    color: "#405060",
-    shape: "star",
-    radius: 50,
-    maxHp: 150,
-    attackRadius: 320,
-    projectileInterval: 0.6,
-    projectileSpeed: 250,
-    projectileDamage: 1,
-    projectileColor: "#80c0ff",
-    projectileCount: 5,         // 多方向
-    projectileTracking: false,
-    reward: { eggMin: 8, eggMax: 12 },
-    hitProb: 0.15,
-    isFinalBoss: true,
-  },
-};
+// settlements 配列（動的に生成・置き換え）
+let settlements = [];
 
-// マップ上の集落配置
-const SETTLEMENT_DEFINITIONS = [
-  { type: "village",        wx: 400,  wy: 1200 },
-  { type: "village",        wx: 700,  wy: 600  },
-  { type: "village",        wx: 700,  wy: 1800 },
-  { type: "ancientCity",    wx: 1000, wy: 900  },
-  { type: "ancientCity",    wx: 1100, wy: 1600 },
-  { type: "medievalTown",   wx: 1500, wy: 700  },
-  { type: "medievalTown",   wx: 1600, wy: 1800 },
-  { type: "feudalCastle",   wx: 2000, wy: 1200 },
-  { type: "templeCity",     wx: 2400, wy: 700  },
-  { type: "templeCity",     wx: 2400, wy: 1700 },
-  { type: "modernFortress", wx: 3000, wy: 1200 },
-];
+// 乱数シード付き擬似乱数（同ステージ内の再現性は不要なので Math.random で可）
+function randRange(min, max) {
+  return min + Math.random() * (max - min);
+}
 
-// 集落の状態
-const settlements = SETTLEMENT_DEFINITIONS.map(def => ({
-  ...def,
-  params: SETTLEMENT_TYPES[def.type],
-  hp: SETTLEMENT_TYPES[def.type].maxHp,
-  fallen: false,
-  attackTimer: Math.random() * SETTLEMENT_TYPES[def.type].projectileInterval,
-}));
+function randInt(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function randChoice(array) {
+  return array[Math.floor(Math.random() * array.length)];
+}
+
+// 2点間の距離の2乗
+function dist2(ax, ay, bx, by) {
+  const dx = ax - bx, dy = ay - by;
+  return dx * dx + dy * dy;
+}
+
+// ステージレイアウトを生成して settlements 配列を返す
+// - マップを clusterCount のゾーンに分割
+// - 各ゾーンに数個の建物をクラスター状に配置
+// - MIN_BUILDING_SPACING を確保
+function generateStageLayout(stageIndex) {
+  const config = STAGE_CONFIGS[stageIndex];
+  const result = [];
+
+  // マップ左端100pxは群れのスタート地点なので除外
+  // さらに各端に100pxのマージンを設ける
+  const MARGIN_X_START = 150;
+  const MARGIN_X_END   = 100;
+  const MARGIN_Y       = 100;
+
+  const usableW = WORLD_W - MARGIN_X_START - MARGIN_X_END;
+  const usableH = WORLD_H - MARGIN_Y * 2;
+
+  const clusterCount = config.clusterCount;
+
+  // クラスター中心を均等にばらまく（グリッドジッター法）
+  const cols = Math.ceil(Math.sqrt(clusterCount * (usableW / usableH)));
+  const rows = Math.ceil(clusterCount / cols);
+  const cellW = usableW / cols;
+  const cellH = usableH / rows;
+
+  const clusterCenters = [];
+  for (let row = 0; row < rows && clusterCenters.length < clusterCount; row++) {
+    for (let col = 0; col < cols && clusterCenters.length < clusterCount; col++) {
+      // セル内でランダムにジッター（中心付近に寄せる）
+      const cx = MARGIN_X_START + col * cellW + randRange(cellW * 0.2, cellW * 0.8);
+      const cy = MARGIN_Y + row * cellH + randRange(cellH * 0.2, cellH * 0.8);
+      clusterCenters.push({ x: cx, y: cy });
+    }
+  }
+
+  // シャッフル（配置順序をランダムに）
+  for (let i = clusterCenters.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = clusterCenters[i];
+    clusterCenters[i] = clusterCenters[j];
+    clusterCenters[j] = tmp;
+  }
+
+  // 建物リストを作成（large が優先的に独自クラスター）
+  const buildingList = [];
+  for (let k = 0; k < config.largeCount; k++)  buildingList.push("large");
+  for (let k = 0; k < config.mediumCount; k++) buildingList.push("medium");
+  for (let k = 0; k < config.smallCount; k++)  buildingList.push("small");
+
+  // シャッフル
+  for (let i = buildingList.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = buildingList[i];
+    buildingList[i] = buildingList[j];
+    buildingList[j] = tmp;
+  }
+
+  // 各建物を適切なクラスターに割り当て
+  // large はなるべく異なるクラスターに分散させる
+  const largeAssignedClusters = new Set();
+  const clusterAssignments = [];
+  for (let k = 0; k < buildingList.length; k++) {
+    const size = buildingList[k];
+    if (size === "large") {
+      // 未使用クラスター優先
+      let available = [];
+      for (let c = 0; c < clusterCenters.length; c++) {
+        if (!largeAssignedClusters.has(c)) available.push(c);
+      }
+      if (available.length === 0) available = clusterCenters.map((_, i) => i);
+      const chosen = available[Math.floor(Math.random() * available.length)];
+      largeAssignedClusters.add(chosen);
+      clusterAssignments.push(chosen);
+    } else {
+      clusterAssignments.push(Math.floor(Math.random() * clusterCenters.length));
+    }
+  }
+
+  // 配置トライ
+  const MIN_SPACING2 = MIN_BUILDING_SPACING * MIN_BUILDING_SPACING;
+
+  for (let k = 0; k < buildingList.length; k++) {
+    const size      = buildingList[k];
+    const sizeParam = BUILDING_SIZE_PARAMS[size];
+    const bConfig   = config.buildings[size];
+    const clusterIdx = clusterAssignments[k];
+    const center    = clusterCenters[clusterIdx];
+
+    // large は広いスプレッド、small は狭く集まる
+    const spreadRadius = size === "large" ? 220 : (size === "medium" ? 160 : 110);
+
+    let placed = false;
+    // 最大50回トライ
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const r     = randRange(0, spreadRadius);
+      const wx    = Math.max(MARGIN_X_START, Math.min(WORLD_W - MARGIN_X_END, center.x + Math.cos(angle) * r));
+      const wy    = Math.max(MARGIN_Y, Math.min(WORLD_H - MARGIN_Y, center.y + Math.sin(angle) * r));
+
+      // 既存建物との間隔チェック
+      let tooClose = false;
+      for (let prev = 0; prev < result.length; prev++) {
+        if (dist2(wx, wy, result[prev].wx, result[prev].wy) < MIN_SPACING2) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+
+      // HP をサイズ範囲内でランダム決定
+      const hp = randInt(sizeParam.hpMin, sizeParam.hpMax);
+
+      result.push({
+        wx,
+        wy,
+        size,
+        color:  randChoice(bConfig.colors),
+        shape:  randChoice(bConfig.shapes),
+        radius: sizeParam.radiusBase,
+        maxHp:  hp,
+        hp,
+        fallen: false,
+        attackTimer: Math.random() * bConfig.projectileInterval,
+        // 攻撃パラメータを直接展開して持たせる（params参照不要にする）
+        attackRadius:        bConfig.attackRadius,
+        projectileInterval:  bConfig.projectileInterval,
+        projectileSpeed:     bConfig.projectileSpeed,
+        projectileDamage:    bConfig.projectileDamage,
+        projectileColor:     bConfig.projectileColor,
+        projectileCount:     bConfig.projectileCount,
+        projectileTracking:  bConfig.projectileTracking,
+        projectileAoe:       bConfig.projectileAoe ?? 0,
+        reward:              bConfig.reward,
+      });
+      placed = true;
+      break;
+    }
+    // 50回トライしても配置できなければスキップ（プール満杯時など）
+  }
+
+  return result;
+}
 
 // -----------------------------------------------------------------
 // 投射物プール（最大200個）
 // -----------------------------------------------------------------
 const MAX_PROJECTILES = 200;
 
-const projWx      = new Float32Array(MAX_PROJECTILES);
-const projWy      = new Float32Array(MAX_PROJECTILES);
-const projVx      = new Float32Array(MAX_PROJECTILES);
-const projVy      = new Float32Array(MAX_PROJECTILES);
-const projActive  = new Uint8Array(MAX_PROJECTILES);
-const projDmg     = new Float32Array(MAX_PROJECTILES);
-const projAoe     = new Float32Array(MAX_PROJECTILES); // 範囲半径 0=なし
-const projTracking = new Uint8Array(MAX_PROJECTILES);  // 追尾フラグ
-const projTargetIdx = new Int32Array(MAX_PROJECTILES); // 追尾対象boid index
-const projColor   = new Array(MAX_PROJECTILES).fill("#fff");
-const projTailX   = new Float32Array(MAX_PROJECTILES); // 1フレーム前の位置（尾描画）
-const projTailY   = new Float32Array(MAX_PROJECTILES);
+const projWx        = new Float32Array(MAX_PROJECTILES);
+const projWy        = new Float32Array(MAX_PROJECTILES);
+const projVx        = new Float32Array(MAX_PROJECTILES);
+const projVy        = new Float32Array(MAX_PROJECTILES);
+const projActive    = new Uint8Array(MAX_PROJECTILES);
+const projDmg       = new Float32Array(MAX_PROJECTILES);
+const projAoe       = new Float32Array(MAX_PROJECTILES);
+const projTracking  = new Uint8Array(MAX_PROJECTILES);
+const projTargetIdx = new Int32Array(MAX_PROJECTILES);
+const projColor     = new Array(MAX_PROJECTILES).fill("#fff");
+const projTailX     = new Float32Array(MAX_PROJECTILES);
+const projTailY     = new Float32Array(MAX_PROJECTILES);
 
-// 投射物をスポーンする。最も近いboidを対象にする。
 function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, aoe, isTracking) {
-  // 空スロットを探す
   let slot = -1;
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) { slot = i; break; }
   }
-  if (slot < 0) return; // プール枯渇は無視（GCゼロ設計）
+  if (slot < 0) return;
 
-  projActive[slot]  = 1;
-  projWx[slot]      = fromWx;
-  projWy[slot]      = fromWy;
-  projTailX[slot]   = fromWx;
-  projTailY[slot]   = fromWy;
-  projDmg[slot]     = damage;
-  projAoe[slot]     = aoe ?? 0;
-  projTracking[slot] = isTracking ? 1 : 0;
-  projTargetIdx[slot] = targetBoidIdx;
-  projColor[slot]   = color;
+  projActive[slot]     = 1;
+  projWx[slot]         = fromWx;
+  projWy[slot]         = fromWy;
+  projTailX[slot]      = fromWx;
+  projTailY[slot]      = fromWy;
+  projDmg[slot]        = damage;
+  projAoe[slot]        = aoe ?? 0;
+  projTracking[slot]   = isTracking ? 1 : 0;
+  projTargetIdx[slot]  = targetBoidIdx;
+  projColor[slot]      = color;
 
-  // 対象boidへの初期方向を計算
   if (targetBoidIdx >= 0 && !boidDead[targetBoidIdx]) {
     const dx = px[targetBoidIdx] - fromWx;
     const dy = py[targetBoidIdx] - fromWy;
@@ -499,13 +824,11 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
     projVx[slot] = (dx / d) * speed;
     projVy[slot] = (dy / d) * speed;
   } else {
-    // 対象なしのときは右方向に飛ばす
     projVx[slot] = speed;
     projVy[slot] = 0;
   }
 }
 
-// 最も近い生存boidのインデックスを返す（なければ-1）
 function findNearestAliveBoid(wx, wy) {
   let nearest = -1;
   let nearestDist2 = Infinity;
@@ -522,56 +845,76 @@ function findNearestAliveBoid(wx, wy) {
   return nearest;
 }
 
-// 集落の攻撃タイマーを更新し、必要なら投射物を発射する
 function updateSettlementAttacks(dt) {
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     if (settlement.fallen) continue;
 
-    const params = settlement.params;
-
     // 攻撃半径内に群れがいるか判定
     let inRange = false;
-    const atkR2 = params.attackRadius * params.attackRadius;
+    const atkR2 = settlement.attackRadius * settlement.attackRadius;
     for (let i = 0; i < N; i++) {
       if (boidDead[i]) continue;
       const dx = px[i] - settlement.wx;
       const dy = py[i] - settlement.wy;
       if (dx * dx + dy * dy < atkR2) { inRange = true; break; }
     }
-
     if (!inRange) continue;
 
     settlement.attackTimer -= dt;
     if (settlement.attackTimer > 0) continue;
-    settlement.attackTimer = params.projectileInterval;
+    settlement.attackTimer = settlement.projectileInterval;
 
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
 
-    // 投射物を発射（projectileCount本）
-    if (params.projectileCount === 1) {
+    const count = settlement.projectileCount;
+    if (count === 1) {
       spawnProjectile(
         settlement.wx, settlement.wy,
         targetIdx,
-        params.projectileSpeed,
-        params.projectileDamage,
-        params.projectileColor,
-        params.projectileAoe ?? 0,
-        params.projectileTracking,
+        settlement.projectileSpeed,
+        settlement.projectileDamage,
+        settlement.projectileColor,
+        settlement.projectileAoe,
+        settlement.projectileTracking,
       );
-    } else if (params.projectileCount === 3) {
+    } else if (count === 2) {
+      // 2方向（近世小型稜堡）
+      const baseAngle = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
+      for (let k = -1; k <= 0; k++) {
+        spawnFanProjectileRaw(
+          settlement.wx, settlement.wy,
+          baseAngle + k * 0.4,
+          settlement.projectileSpeed,
+          settlement.projectileDamage,
+          settlement.projectileColor,
+        );
+      }
+    } else if (count === 3) {
       // 扇状3本（中世の町）
       const baseAngle = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
       for (let k = -1; k <= 1; k++) {
-        spawnFanProjectile(settlement, targetIdx, baseAngle + k * 0.3, params);
+        spawnFanProjectileRaw(
+          settlement.wx, settlement.wy,
+          baseAngle + k * 0.3,
+          settlement.projectileSpeed,
+          settlement.projectileDamage,
+          settlement.projectileColor,
+        );
       }
     } else {
-      // 多方向（近世要塞）
-      const angleStep = (Math.PI * 2) / params.projectileCount;
+      // 多方向（count本を等分）
+      const angleStep = (Math.PI * 2) / count;
       const baseAngle = Math.random() * Math.PI * 2;
-      for (let k = 0; k < params.projectileCount; k++) {
-        spawnDirectedProjectile(settlement, baseAngle + k * angleStep, params);
+      for (let k = 0; k < count; k++) {
+        spawnFanProjectileRaw(
+          settlement.wx, settlement.wy,
+          baseAngle + k * angleStep,
+          settlement.projectileSpeed,
+          settlement.projectileDamage,
+          settlement.projectileColor,
+        );
       }
     }
   }
@@ -582,57 +925,37 @@ function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
   return Math.atan2(py[targetBoidIdx] - fromY, px[targetBoidIdx] - fromX);
 }
 
-function spawnFanProjectile(settlement, targetIdx, angle, params) {
+// 汎用：角度・速度・色を直接受け取って投射物を生成
+function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color) {
   let slot = -1;
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) { slot = i; break; }
   }
   if (slot < 0) return;
   projActive[slot]     = 1;
-  projWx[slot]         = settlement.wx;
-  projWy[slot]         = settlement.wy;
-  projTailX[slot]      = settlement.wx;
-  projTailY[slot]      = settlement.wy;
-  projVx[slot]         = Math.cos(angle) * params.projectileSpeed;
-  projVy[slot]         = Math.sin(angle) * params.projectileSpeed;
-  projDmg[slot]        = params.projectileDamage;
-  projAoe[slot]        = 0;
-  projTracking[slot]   = 0;
-  projTargetIdx[slot]  = targetIdx;
-  projColor[slot]      = params.projectileColor;
-}
-
-function spawnDirectedProjectile(settlement, angle, params) {
-  let slot = -1;
-  for (let i = 0; i < MAX_PROJECTILES; i++) {
-    if (!projActive[i]) { slot = i; break; }
-  }
-  if (slot < 0) return;
-  projActive[slot]     = 1;
-  projWx[slot]         = settlement.wx;
-  projWy[slot]         = settlement.wy;
-  projTailX[slot]      = settlement.wx;
-  projTailY[slot]      = settlement.wy;
-  projVx[slot]         = Math.cos(angle) * params.projectileSpeed;
-  projVy[slot]         = Math.sin(angle) * params.projectileSpeed;
-  projDmg[slot]        = params.projectileDamage;
+  projWx[slot]         = fromWx;
+  projWy[slot]         = fromWy;
+  projTailX[slot]      = fromWx;
+  projTailY[slot]      = fromWy;
+  projVx[slot]         = Math.cos(angle) * speed;
+  projVy[slot]         = Math.sin(angle) * speed;
+  projDmg[slot]        = damage;
   projAoe[slot]        = 0;
   projTracking[slot]   = 0;
   projTargetIdx[slot]  = -1;
-  projColor[slot]      = params.projectileColor;
+  projColor[slot]      = color;
 }
 
 function updateProjectiles(dt) {
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) continue;
 
-    // 追尾投射物: 対象へ向けて方向を補正（ゆるい追尾）
+    // 追尾補正
     if (projTracking[i] && projTargetIdx[i] >= 0 && !boidDead[projTargetIdx[i]]) {
       const dx = px[projTargetIdx[i]] - projWx[i];
       const dy = py[projTargetIdx[i]] - projWy[i];
       const d  = Math.sqrt(dx * dx + dy * dy) || 1;
       const currentSpeed = Math.sqrt(projVx[i] * projVx[i] + projVy[i] * projVy[i]);
-      // 少しずつ向きを変える（完全追尾でなく角度補正）
       projVx[i] += (dx / d * currentSpeed - projVx[i]) * 0.06;
       projVy[i] += (dy / d * currentSpeed - projVy[i]) * 0.06;
     }
@@ -643,28 +966,24 @@ function updateProjectiles(dt) {
     projWx[i] += projVx[i] * dt;
     projWy[i] += projVy[i] * dt;
 
-    // ワールド外に出たら消す
     if (projWx[i] < -50 || projWx[i] > WORLD_W + 50 || projWy[i] < -50 || projWy[i] > WORLD_H + 50) {
       projActive[i] = 0;
       continue;
     }
 
-    // boidとの当たり判定
     checkProjectileHitBoids(i);
   }
 }
 
 function checkProjectileHitBoids(projIdx) {
-  const HIT_R = 8;
+  const HIT_R  = 8;
   const HIT_R2 = HIT_R * HIT_R;
   for (let i = 0; i < N; i++) {
     if (boidDead[i]) continue;
     const dx = projWx[projIdx] - px[i];
     const dy = projWy[projIdx] - py[i];
     if (dx * dx + dy * dy < HIT_R2) {
-      // 命中
       if (projAoe[projIdx] > 0) {
-        // 範囲ダメージ
         applyAoeProjectileDamage(projWx[projIdx], projWy[projIdx], projAoe[projIdx], projDmg[projIdx]);
       } else {
         applyDamageToBoid(i, projDmg[projIdx]);
@@ -689,42 +1008,31 @@ function applyAoeProjectileDamage(wx, wy, aoeR, damage) {
 }
 
 // -----------------------------------------------------------------
-// 集落への近接攻撃（群れが集落に近づくとHP減少）
+// 近接攻撃（群れが建物に接触するとHP減少）
 // -----------------------------------------------------------------
 function updateSettlementMeleeAttacks(dt) {
   if (gameState !== "playing") return;
 
-  const combatParams = FORMATION_COMBAT[currentFormation];
-  // ベース確率: 0.05/フレーム ≒ 3.125ヒット/秒（16ms固定）
-  // 密集×2.0 = 6.25/秒、散開×0.8 = 2.5/秒、円環×0.6 = 1.875/秒
-  // 集落HP20の石器村：密集で約3.2秒、散開で約8秒で陥落
+  const combatParams   = FORMATION_COMBAT[currentFormation];
   const effectiveHitProb = 0.05 * combatParams.attackMultiplier;
 
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     if (settlement.fallen) continue;
 
-    const params = settlement.params;
-    // 近接判定: 集落のradius + 少し余裕を持たせた範囲
-    const meleeR = params.radius + 5;
+    const meleeR  = settlement.radius + 5;
     const meleeR2 = meleeR * meleeR;
 
-    // 近接範囲内にいるBoidを収集
-    let contactCount = 0;
     for (let i = 0; i < N; i++) {
       if (boidDead[i]) continue;
       const dx = px[i] - settlement.wx;
       const dy = py[i] - settlement.wy;
       if (dx * dx + dy * dy < meleeR2) {
-        contactCount++;
-        // 個体ごとに独立した確率で攻撃
-        // contactCountが多いほど集落へのダメージ機会が増えるが
-        // 1フレームあたりの期待ダメージ = contactCount × prob × multiplier
         if (Math.random() < effectiveHitProb) {
           settlement.hp -= 1;
           spawnHitParticles(
-            settlement.wx + (Math.random() - 0.5) * params.radius,
-            settlement.wy + (Math.random() - 0.5) * params.radius,
+            settlement.wx + (Math.random() - 0.5) * settlement.radius,
+            settlement.wy + (Math.random() - 0.5) * settlement.radius,
           );
           if (settlement.hp <= 0) {
             settlementFall(s);
@@ -741,20 +1049,21 @@ function settlementFall(settlementIndex) {
   settlement.fallen = true;
   settlement.hp = 0;
 
-  // 卵を3〜5個ドロップ
-  const params = settlement.params;
-  const eggCount = params.reward.eggMin + Math.floor(Math.random() * (params.reward.eggMax - params.reward.eggMin + 1));
+  const reward = settlement.reward;
+  const eggCount = reward.eggMin + Math.floor(Math.random() * (reward.eggMax - reward.eggMin + 1));
   for (let k = 0; k < eggCount; k++) {
     const angle = Math.random() * Math.PI * 2;
-    const r = params.radius + 10 + Math.random() * 40;
+    const r = settlement.radius + 10 + Math.random() * 40;
     spawnEgg(settlement.wx + Math.cos(angle) * r, settlement.wy + Math.sin(angle) * r);
   }
 
   hapticPulse(80);
+  updateHUDBuildings();
 
-  // 近世要塞陥落 = クリア
-  if (params.isFinalBoss) {
-    triggerClear();
+  // 全建物破壊チェック（ステージクリア）
+  const remaining = settlements.filter(s => !s.fallen).length;
+  if (remaining === 0) {
+    triggerStageClear();
   }
 }
 
@@ -814,7 +1123,6 @@ function initBoids() {
   formationLerp  = new Float32Array(N);
   formationDelay = new Float32Array(N);
 
-  // 群れの初期位置: マップ左端中央
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
   for (let i = 0; i < N; i++) {
@@ -833,6 +1141,24 @@ function initBoids() {
   }
 }
 
+// ステージクリア後の群れ位置リセット（HPは引き継ぎ）
+function resetBoidsPositionForNextStage() {
+  const startWx = 250;
+  const startWy = WORLD_H * 0.5;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+    const r = Math.random() * 80;
+    const a = Math.random() * Math.PI * 2;
+    px[i] = startWx + Math.cos(a) * r;
+    py[i] = startWy + Math.sin(a) * r;
+    const ang = Math.random() * Math.PI * 2;
+    vx[i] = Math.cos(ang) * BASE_CFG.minSpeed;
+    vy[i] = Math.sin(ang) * BASE_CFG.minSpeed;
+    formationLerp[i]  = 1.0;
+    formationDelay[i] = 0;
+  }
+}
+
 function countAliveBoids() {
   let count = 0;
   for (let i = 0; i < N; i++) {
@@ -845,7 +1171,7 @@ function countAliveBoids() {
 // パーティクルプール（最大80個）
 // -----------------------------------------------------------------
 const MAX_PARTICLES = 80;
-const partX      = new Float32Array(MAX_PARTICLES); // ワールド座標
+const partX      = new Float32Array(MAX_PARTICLES);
 const partY      = new Float32Array(MAX_PARTICLES);
 const partVx     = new Float32Array(MAX_PARTICLES);
 const partVy     = new Float32Array(MAX_PARTICLES);
@@ -884,7 +1210,7 @@ function updateParticles(dt) {
 // -----------------------------------------------------------------
 // 卵システム（ワールド座標）
 // -----------------------------------------------------------------
-const MAX_EGGS = 60;
+const MAX_EGGS = 120;  // 建物が増えたので容量増加
 const eggWx     = new Float32Array(MAX_EGGS);
 const eggWy     = new Float32Array(MAX_EGGS);
 const eggActive = new Uint8Array(MAX_EGGS);
@@ -901,7 +1227,6 @@ function spawnEgg(wx, wy) {
   return -1;
 }
 
-// 自軍個体が60px以内の卵を自動回収する
 function collectNearbyEggs() {
   for (let e = 0; e < MAX_EGGS; e++) {
     if (!eggActive[e]) continue;
@@ -925,27 +1250,33 @@ let flashTimer = 0;
 let flashColor = "";
 let formationJustChanged = false;
 
-function triggerFlash(color) {
-  flashTimer = 0.1;
+function triggerFlash(color, duration) {
+  flashTimer = duration ?? 0.1;
   flashColor = color;
 }
 
 // -----------------------------------------------------------------
-// ゲーム状態管理
+// ステージ状態管理
 // -----------------------------------------------------------------
-// "playing" | "defeat" | "clear"
+let currentStage = 0;  // 0-indexed
+
+// "playing" | "defeat" | "stage-clear" | "all-clear"
 let gameState = "playing";
 let defeatTimer = 0;
-let clearTimer  = 0;
+let stageClearPhase = "none"; // "none" | "silence" | "flash" | "text" | "transition"
+let stageClearTimer = 0;
 
 const overlayEl    = document.getElementById("overlay");
 const overlayTitle = document.getElementById("overlay-title");
 const retryBtn     = document.getElementById("retry-btn");
 
+const stageOverlayEl = document.getElementById("stage-overlay");
+const stageTextEl    = document.getElementById("stage-text");
+const stageSubEl     = document.getElementById("stage-sub");
+
 function triggerDefeat() {
   gameState   = "defeat";
   defeatTimer = 2.0;
-  // オーバーレイ表示（2秒後にリトライボタン表示）
   overlayEl.classList.add("visible");
   overlayTitle.textContent = "SCATTERED";
   setTimeout(() => {
@@ -955,50 +1286,108 @@ function triggerDefeat() {
   hapticPulse(400);
 }
 
-function triggerClear() {
-  gameState  = "clear";
-  clearTimer = 5.0;
+function triggerStageClear() {
+  if (gameState !== "playing") return;
+
+  if (currentStage >= TOTAL_STAGES - 1) {
+    // 全ステージクリア
+    triggerAllClear();
+    return;
+  }
+
+  gameState = "stage-clear";
+  stageClearPhase = "silence";
+  // 0.5秒の無音 → フラッシュ → テキスト表示（2秒） → 次ステージへ
+  stageClearTimer = 0.5;
+  hapticPulse(150);
+}
+
+function triggerAllClear() {
+  gameState = "all-clear";
   overlayEl.classList.add("visible");
-  overlayTitle.textContent = "EPOCH CONQUERED";
-  setTimeout(() => {
-    overlayTitle.classList.add("show");
-  }, 300);
-  setTimeout(() => {
-    retryBtn.classList.add("visible");
-  }, 1500);
-  hapticPulse(200);
+  overlayTitle.textContent = "ALL CIVILIZATIONS CONQUERED";
+  setTimeout(() => overlayTitle.classList.add("show"), 300);
+  setTimeout(() => retryBtn.classList.add("visible"), 1500);
+  hapticPulse(300);
+}
+
+// ステージクリア演出を毎フレーム更新
+function updateStageClearSequence(dt) {
+  if (gameState !== "stage-clear") return;
+
+  stageClearTimer -= dt;
+
+  if (stageClearPhase === "silence" && stageClearTimer <= 0) {
+    // フラッシュ開始
+    stageClearPhase = "flash";
+    triggerFlash("rgba(255,255,200,0.85)", 0.25);
+    stageClearTimer = 0.3;
+  } else if (stageClearPhase === "flash" && stageClearTimer <= 0) {
+    // テキスト表示
+    stageClearPhase = "text";
+    const nextStage = currentStage + 1;
+    const nextConfig = STAGE_CONFIGS[nextStage];
+    stageTextEl.textContent = "STAGE " + (nextStage + 1);
+    stageSubEl.textContent  = nextConfig.name;
+    stageOverlayEl.classList.add("visible");
+    stageClearTimer = 2.0;
+  } else if (stageClearPhase === "text" && stageClearTimer <= 0) {
+    // 次のステージへ遷移
+    stageClearPhase = "transition";
+    stageOverlayEl.classList.remove("visible");
+    advanceToNextStage();
+  }
+}
+
+function advanceToNextStage() {
+  currentStage++;
+  gameState = "playing";
+  stageClearPhase = "none";
+
+  // 投射物・パーティクルリセット（建物破壊演出の残滓を消す）
+  for (let i = 0; i < MAX_PROJECTILES; i++) projActive[i] = 0;
+  for (let i = 0; i < MAX_PARTICLES; i++)   partActive[i] = 0;
+  // 卵もリセット（次ステージで新たに獲得させる）
+  for (let e = 0; e < MAX_EGGS; e++)        eggActive[e] = 0;
+
+  // 新マップ生成
+  settlements = generateStageLayout(currentStage);
+
+  // 群れ位置をリセット（HPは引き継ぎ）
+  resetBoidsPositionForNextStage();
+  resetLeader();
+
+  updateHUDStage();
+  updateHUDBuildings();
 }
 
 function restartGame() {
-  gameState   = "playing";
-  defeatTimer = 0;
-  clearTimer  = 0;
-  totalEggCount = 0;
-  flashTimer  = 0;
+  gameState       = "playing";
+  defeatTimer     = 0;
+  stageClearPhase = "none";
+  stageClearTimer = 0;
+  currentStage    = 0;
+  totalEggCount   = 0;
+  flashTimer      = 0;
 
   overlayEl.classList.remove("visible");
   overlayTitle.classList.remove("show");
   retryBtn.classList.remove("visible");
+  stageOverlayEl.classList.remove("visible");
 
-  // 卵リセット
-  for (let e = 0; e < MAX_EGGS; e++) eggActive[e] = 0;
-  // 投射物リセット
-  for (let i = 0; i < MAX_PROJECTILES; i++) projActive[i] = 0;
-  // パーティクルリセット
-  for (let i = 0; i < MAX_PARTICLES; i++) partActive[i] = 0;
+  for (let e = 0; e < MAX_EGGS; e++)          eggActive[e]  = 0;
+  for (let i = 0; i < MAX_PROJECTILES; i++)   projActive[i] = 0;
+  for (let i = 0; i < MAX_PARTICLES; i++)     partActive[i] = 0;
 
-  // 集落リセット
-  SETTLEMENT_DEFINITIONS.forEach((def, idx) => {
-    settlements[idx].hp = settlements[idx].params.maxHp;
-    settlements[idx].fallen = false;
-    settlements[idx].attackTimer = Math.random() * settlements[idx].params.projectileInterval;
-  });
+  // ステージ1のレイアウトを生成
+  settlements = generateStageLayout(0);
 
-  // boidリセット
   initBoids();
   resetLeader();
   setFormation("tight");
   updateHUDEggs();
+  updateHUDStage();
+  updateHUDBuildings();
 }
 
 retryBtn.addEventListener("pointerdown", (e) => {
@@ -1045,7 +1434,6 @@ function pathPush(wx, wy) {
   if (pathLen < PATH_MAX) pathLen++;
 }
 
-// リーダーはワールド座標で管理
 const leader = { x: 250, y: WORLD_H * 0.5, vx: 0, vy: 0 };
 
 function resetLeader() {
@@ -1106,7 +1494,6 @@ let touchRing = { active: false, x: 0, y: 0 };
 const TRAIL_LIFETIME = 1.2;
 const trailPoints    = [];
 
-// 画面トレイルはスクリーン座標で保存（描画が楽なため）
 function addTrailPoint(sx, sy, now) {
   if (trailPoints.length >= 400) trailPoints.shift();
   trailPoints.push({ x: sx, y: sy, bornAt: now });
@@ -1120,7 +1507,6 @@ function inputStart(sx, sy, now) {
   inputMode = "DRAW";
   isDrawing = true;
   pathClear();
-  // スクリーン座標 → ワールド座標に変換してウェイポイントに追加
   const w = screenToWorld(sx, sy);
   pathPush(w.x, w.y);
   addTrailPoint(sx, sy, now);
@@ -1207,7 +1593,6 @@ function updateDeathTimers(dt) {
 
 function applyDamageToBoid(boidIndex, damage) {
   const combatParams = FORMATION_COMBAT[currentFormation];
-  // 被弾率補正: 隊形による被弾率を反映
   const effectiveDamage = damage * combatParams.hitRateMultiplier;
   boidHp[boidIndex] -= effectiveDamage;
   if (boidHp[boidIndex] <= 0 && !boidDead[boidIndex]) {
@@ -1227,8 +1612,7 @@ function checkGameConditions() {
 }
 
 // -----------------------------------------------------------------
-// Simulation step — 自軍Boids（ワールド座標）
-// Phase2コードを流用、ラップアラウンドをワールド境界クランプに変更
+// Simulation step — 自軍Boids
 // -----------------------------------------------------------------
 const neighbours = [];
 
@@ -1329,7 +1713,6 @@ function simStep(dt) {
       ay += (cohY * inv - yi) * wCoh;
     }
 
-    // リーダーへの引力
     {
       const ldx = leader.x - xi, ldy = leader.y - yi;
       const ld  = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
@@ -1357,8 +1740,6 @@ function simStep(dt) {
 
     let nx = xi + nvx * dt;
     let ny = yi + nvy * dt;
-    // ワールド境界でバウンス（速度反転 + 位置クランプ）
-    // ラップアラウンドをやめて広いマップの端を感じさせる
     if (nx < 10)         { nx = 10;         vx[i] = Math.abs(vx[i]) * 0.5; }
     else if (nx > WORLD_W - 10) { nx = WORLD_W - 10; vx[i] = -Math.abs(vx[i]) * 0.5; }
     if (ny < 10)         { ny = 10;         vy[i] = Math.abs(vy[i]) * 0.5; }
@@ -1395,7 +1776,6 @@ function updateLeader(dt) {
 
   leader.x += leader.vx * dt;
   leader.y += leader.vy * dt;
-  // リーダーもワールド境界内にクランプ
   leader.x = Math.max(0, Math.min(WORLD_W, leader.x));
   leader.y = Math.max(0, Math.min(WORLD_H, leader.y));
 }
@@ -1404,11 +1784,11 @@ function updateLeader(dt) {
 // 描画
 // -----------------------------------------------------------------
 function render(now) {
-  // 背景クリア（暗い緑 = 荒野）
-  ctx.fillStyle = "#0e1a0e";
+  // 背景色はステージによって変わる
+  const stageConfig = STAGE_CONFIGS[currentStage];
+  ctx.fillStyle = stageConfig.bgColor;
   ctx.fillRect(0, 0, viewW, viewH);
 
-  // カメラ変換を適用
   ctx.save();
   ctx.translate(-cam.x + viewW * 0.5, -cam.y + viewH * 0.5);
 
@@ -1422,12 +1802,10 @@ function render(now) {
 
   ctx.restore();
 
-  // スクリーン座標系の描画（トレイル・タッチリング）
   drawTrail(now);
   drawTouchRing();
   drawFlash();
 
-  // 敗北演出
   if (gameState === "defeat") {
     const darkness = Math.min(0.75, 1 - defeatTimer / 2.0);
     ctx.fillStyle = `rgba(0,0,0,${darkness.toFixed(3)})`;
@@ -1435,9 +1813,9 @@ function render(now) {
   }
 }
 
-// 格子線（ワールド広がりを示す）
 function drawWorldGrid() {
-  ctx.strokeStyle = "rgba(40, 80, 40, 0.35)";
+  const stageConfig = STAGE_CONFIGS[currentStage];
+  ctx.strokeStyle = stageConfig.gridColor;
   ctx.lineWidth = 1;
   const GRID_SIZE = 200;
   for (let x = 0; x <= WORLD_W; x += GRID_SIZE) {
@@ -1452,55 +1830,52 @@ function drawWorldGrid() {
     ctx.lineTo(WORLD_W, y);
     ctx.stroke();
   }
-  // ワールド境界線
-  ctx.strokeStyle = "rgba(60, 100, 60, 0.5)";
+  ctx.strokeStyle = "rgba(100, 120, 100, 0.4)";
   ctx.lineWidth = 2;
   ctx.strokeRect(0, 0, WORLD_W, WORLD_H);
 }
 
-// 集落の攻撃範囲を薄く表示
 function drawSettlementRanges() {
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     if (settlement.fallen) continue;
-    const params = settlement.params;
 
-    // 攻撃範囲円
-    ctx.strokeStyle = "rgba(180, 60, 60, 0.12)";
+    ctx.strokeStyle = "rgba(180, 60, 60, 0.10)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(settlement.wx, settlement.wy, params.attackRadius, 0, Math.PI * 2);
+    ctx.arc(settlement.wx, settlement.wy, settlement.attackRadius, 0, Math.PI * 2);
     ctx.stroke();
   }
 }
 
-// 集落描画
 function drawSettlements() {
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
-    const params = settlement.params;
-    const alpha = settlement.fallen ? 0.35 : 1.0;
-    const color = settlement.fallen ? "#444" : params.color;
+    const alpha = settlement.fallen ? 0.30 : 1.0;
+    const color = settlement.fallen ? "#444" : settlement.color;
 
     ctx.save();
     ctx.globalAlpha = alpha;
 
-    // 形状に応じて描画
-    switch (params.shape) {
-      case "circle":       drawSettlementCircle(settlement.wx, settlement.wy, params.radius, color); break;
-      case "square":       drawSettlementSquare(settlement.wx, settlement.wy, params.radius, color); break;
-      case "squareTower":  drawSettlementSquareTower(settlement.wx, settlement.wy, params.radius, color); break;
-      case "hexagon":      drawSettlementHexagon(settlement.wx, settlement.wy, params.radius, color); break;
-      case "star":         drawSettlementStar(settlement.wx, settlement.wy, params.radius, color); break;
+    switch (settlement.shape) {
+      case "circle":      drawSettlementCircle(settlement.wx, settlement.wy, settlement.radius, color); break;
+      case "square":      drawSettlementSquare(settlement.wx, settlement.wy, settlement.radius, color); break;
+      case "squareTower": drawSettlementSquareTower(settlement.wx, settlement.wy, settlement.radius, color); break;
+      case "hexagon":     drawSettlementHexagon(settlement.wx, settlement.wy, settlement.radius, color); break;
+      case "triangle":    drawSettlementTriangle(settlement.wx, settlement.wy, settlement.radius, color); break;
+      case "polygon":     drawSettlementPolygon(settlement.wx, settlement.wy, settlement.radius, color); break;
+      case "star":        drawSettlementStar(settlement.wx, settlement.wy, settlement.radius, color, 5); break;
+      case "star4":       drawSettlementStar(settlement.wx, settlement.wy, settlement.radius, color, 4); break;
+      default:            drawSettlementCircle(settlement.wx, settlement.wy, settlement.radius, color); break;
     }
 
-    // HP バー（陥落前のみ）
+    // HP バー
     if (!settlement.fallen) {
-      const hpRatio = Math.max(0, settlement.hp / params.maxHp);
-      const barW = params.radius * 2;
-      const barX = settlement.wx - params.radius;
-      const barY = settlement.wy - params.radius - 8;
-      ctx.globalAlpha = 0.8;
+      const hpRatio = Math.max(0, settlement.hp / settlement.maxHp);
+      const barW = settlement.radius * 2;
+      const barX = settlement.wx - settlement.radius;
+      const barY = settlement.wy - settlement.radius - 8;
+      ctx.globalAlpha = 0.85;
       ctx.fillStyle = "rgba(0,0,0,0.5)";
       ctx.fillRect(barX, barY, barW, 4);
       ctx.fillStyle = hpRatio > 0.5 ? "#50e070" : (hpRatio > 0.25 ? "#e0c040" : "#e04040");
@@ -1514,7 +1889,7 @@ function drawSettlements() {
 function drawSettlementCircle(wx, wy, r, color) {
   ctx.fillStyle = color;
   ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.arc(wx, wy, r, 0, Math.PI * 2);
   ctx.fill();
@@ -1523,20 +1898,18 @@ function drawSettlementCircle(wx, wy, r, color) {
 
 function drawSettlementSquare(wx, wy, r, color) {
   ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 1.5;
   ctx.fillRect(wx - r, wy - r, r * 2, r * 2);
   ctx.strokeRect(wx - r, wy - r, r * 2, r * 2);
 }
 
 function drawSettlementSquareTower(wx, wy, r, color) {
-  // 本体
   ctx.fillStyle = color;
   ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
   ctx.fillRect(wx - r, wy - r, r * 2, r * 2);
   ctx.strokeRect(wx - r, wy - r, r * 2, r * 2);
-  // 小塔（4隅）
   const towerSize = r * 0.4;
   const positions = [
     [wx - r, wy - r], [wx + r - towerSize, wy - r],
@@ -1551,7 +1924,7 @@ function drawSettlementSquareTower(wx, wy, r, color) {
 function drawSettlementHexagon(wx, wy, r, color) {
   ctx.fillStyle = color;
   ctx.strokeStyle = "rgba(255,255,255,0.5)";
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
   for (let k = 0; k < 6; k++) {
     const angle = (k * Math.PI * 2) / 6 - Math.PI / 6;
@@ -1563,14 +1936,50 @@ function drawSettlementHexagon(wx, wy, r, color) {
   ctx.stroke();
 }
 
-function drawSettlementStar(wx, wy, r, color) {
-  // 星形（5つの突起を持つ要塞）
+// 三角形（ピラミッド・神殿）
+function drawSettlementTriangle(wx, wy, r, color) {
+  ctx.fillStyle = color;
+  ctx.strokeStyle = "rgba(255,255,255,0.45)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(wx, wy - r);
+  ctx.lineTo(wx + r * 0.9, wy + r * 0.7);
+  ctx.lineTo(wx - r * 0.9, wy + r * 0.7);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+}
+
+// 不規則な多角形（洞窟・土塁・石器）
+function drawSettlementPolygon(wx, wy, r, color) {
+  ctx.fillStyle = color;
+  ctx.strokeStyle = "rgba(255,255,255,0.3)";
+  ctx.lineWidth = 1.5;
+  // 5〜7頂点の不規則な多角形（シードベースでほぼ固定形状にするため使い捨て乱数は使わない）
+  // 代わりに wx, wy を使って疑似的に安定させる
+  const sides = 5 + ((Math.round(wx + wy) % 3));
+  ctx.beginPath();
+  for (let k = 0; k < sides; k++) {
+    const baseAngle = (k * Math.PI * 2) / sides;
+    // ジッターは描画の度に変わらないよう頂点インデックスで固定
+    const jitter = 0.65 + 0.35 * ((Math.sin(k * 13.7 + wx * 0.01) + 1) * 0.5);
+    const rx = wx + Math.cos(baseAngle) * r * jitter;
+    const ry = wy + Math.sin(baseAngle) * r * jitter;
+    if (k === 0) ctx.moveTo(rx, ry);
+    else ctx.lineTo(rx, ry);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+}
+
+// 星形稜堡（spikes本の突起）
+function drawSettlementStar(wx, wy, r, color, spikes) {
   ctx.fillStyle = color;
   ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  const spikes = 5;
-  const innerR = r * 0.55;
+  const innerR = r * 0.50;
   for (let k = 0; k < spikes * 2; k++) {
     const angle = (k * Math.PI) / spikes - Math.PI / 2;
     const rad = k % 2 === 0 ? r : innerR;
@@ -1582,7 +1991,6 @@ function drawSettlementStar(wx, wy, r, color) {
   ctx.stroke();
 }
 
-// 簡易カラーシェーダー（明るさ調整）
 function shadeColor(hex, amount) {
   const num = parseInt(hex.replace("#", ""), 16);
   const r = Math.min(255, Math.max(0, (num >> 16) + amount));
@@ -1591,8 +1999,6 @@ function shadeColor(hex, amount) {
   return `rgb(${r},${g},${b})`;
 }
 
-// 自軍Boids描画（竜の群れ：青い矢印形）
-// カメラ変換ブロック内で呼ばれるため、ワールド座標をそのまま使う
 function drawBoids() {
   for (let i = 0; i < N; i++) {
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
@@ -1618,8 +2024,6 @@ function drawBoids() {
     ctx.fill();
     ctx.restore();
 
-    // HP バー（ダメージを受けた時のみ）
-    // カメラ変換が有効な状態でワールド座標を使う（setTransformを使わない）
     if (!boidDead[i] && boidHp[i] < BOID_MAX_HP) {
       const hpRatio = Math.max(0, boidHp[i] / BOID_MAX_HP);
       const barW = 14;
@@ -1631,18 +2035,14 @@ function drawBoids() {
   }
 }
 
-// 投射物描画（短い線分 = 彗星のような尾）
-// カメラ変換ブロック内で呼ばれるため、ワールド座標をそのまま使う
 function drawProjectiles() {
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) continue;
 
-    // 可視チェック: ワールド座標からスクリーン座標を計算して判定
     const sx = projWx[i] - cam.x + viewW * 0.5;
     const sy = projWy[i] - cam.y + viewH * 0.5;
     if (sx < -20 || sx > viewW + 20 || sy < -20 || sy > viewH + 20) continue;
 
-    // 尾（テール）: 細い線（ワールド座標で描画）
     ctx.strokeStyle = projColor[i];
     ctx.lineWidth = 1.5;
     ctx.lineCap = "round";
@@ -1651,7 +2051,6 @@ function drawProjectiles() {
     ctx.lineTo(projWx[i], projWy[i]);
     ctx.stroke();
 
-    // 頭部: 小さい輝点
     ctx.fillStyle = "#fff";
     ctx.beginPath();
     ctx.arc(projWx[i], projWy[i], 2, 0, Math.PI * 2);
@@ -1659,7 +2058,6 @@ function drawProjectiles() {
   }
 }
 
-// パーティクル描画
 function drawParticles() {
   ctx.save();
   for (let i = 0; i < MAX_PARTICLES; i++) {
@@ -1675,7 +2073,6 @@ function drawParticles() {
   ctx.restore();
 }
 
-// 卵描画（金色の小円）
 function drawEggs() {
   ctx.save();
   for (let e = 0; e < MAX_EGGS; e++) {
@@ -1691,7 +2088,6 @@ function drawEggs() {
   ctx.restore();
 }
 
-// ライン残光（スクリーン座標）
 function drawTrail(now) {
   if (trailPoints.length < 2) return;
   const cutoff = now - TRAIL_LIFETIME * 1000;
@@ -1715,7 +2111,6 @@ function drawTrail(now) {
   }
 }
 
-// タッチリング（スクリーン座標）
 function drawTouchRing() {
   if (!touchRing.active) return;
   ctx.strokeStyle = "rgba(200, 230, 255, 0.30)";
@@ -1725,7 +2120,6 @@ function drawTouchRing() {
   ctx.stroke();
 }
 
-// フラッシュ（スクリーン座標）
 function drawFlash() {
   if (flashTimer <= 0) return;
   ctx.fillStyle = flashColor;
@@ -1739,24 +2133,26 @@ const MINIMAP_W = 80;
 const MINIMAP_H = 60;
 
 function drawMinimap() {
-  minimapCtx.fillStyle = "#0e1a0e";
+  const stageConfig = STAGE_CONFIGS[currentStage];
+  minimapCtx.fillStyle = stageConfig.bgColor;
   minimapCtx.fillRect(0, 0, MINIMAP_W, MINIMAP_H);
 
   const scaleX = MINIMAP_W / WORLD_W;
   const scaleY = MINIMAP_H / WORLD_H;
 
-  // 集落を点で表示
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     const mx = settlement.wx * scaleX;
     const my = settlement.wy * scaleY;
-    minimapCtx.fillStyle = settlement.fallen ? "#444" : settlement.params.color;
+    // 大きさに応じてドットサイズを変える
+    const dotR = settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : 1.5);
+    minimapCtx.fillStyle = settlement.fallen ? "#444" : settlement.color;
     minimapCtx.beginPath();
-    minimapCtx.arc(mx, my, 2.5, 0, Math.PI * 2);
+    minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
     minimapCtx.fill();
   }
 
-  // 群れの位置（白い点）
+  // 群れの位置
   const centroid = calcFriendlyCentroid();
   const mx = centroid.x * scaleX;
   const my = centroid.y * scaleY;
@@ -1765,7 +2161,7 @@ function drawMinimap() {
   minimapCtx.arc(mx, my, 2, 0, Math.PI * 2);
   minimapCtx.fill();
 
-  // カメラ視野範囲（薄い矩形）
+  // カメラ視野範囲
   const vpLeft   = (cam.x - viewW * 0.5) * scaleX;
   const vpTop    = (cam.y - viewH * 0.5) * scaleY;
   const vpWidth  = viewW * scaleX;
@@ -1779,9 +2175,11 @@ function drawMinimap() {
 // HUD更新
 // -----------------------------------------------------------------
 let hudUpdateCounter = 0;
-const hudAlive = document.getElementById("h-alive");
-const hudMax   = document.getElementById("h-max");
-const hudEggs  = document.getElementById("h-eggs");
+const hudAlive     = document.getElementById("h-alive");
+const hudMax       = document.getElementById("h-max");
+const hudEggs      = document.getElementById("h-eggs");
+const hudStage     = document.getElementById("h-stage");
+const hudBuildings = document.getElementById("h-buildings");
 
 function updateHUD() {
   hudUpdateCounter++;
@@ -1796,6 +2194,16 @@ function updateHUD() {
 
 function updateHUDEggs() {
   hudEggs.textContent = totalEggCount;
+}
+
+function updateHUDStage() {
+  hudStage.textContent = "STAGE " + (currentStage + 1) + "/" + TOTAL_STAGES;
+}
+
+function updateHUDBuildings() {
+  const total     = settlements.length;
+  const remaining = settlements.filter(s => !s.fallen).length;
+  hudBuildings.textContent = remaining + "/" + total;
 }
 
 // -----------------------------------------------------------------
@@ -1830,7 +2238,6 @@ function tick() {
   lastTickTs = now;
   const dt   = dtMs / 1000;
 
-  // --- Update ---
   if (gameState === "playing") {
     simStep(dt);
     updateCamera(dt);
@@ -1841,29 +2248,26 @@ function tick() {
     updateParticles(dt);
     collectNearbyEggs();
     checkGameConditions();
+  } else if (gameState === "stage-clear") {
+    // ステージクリア演出中も群れは動き続ける
+    simStep(dt);
+    updateCamera(dt);
+    updateParticles(dt);
+    updateStageClearSequence(dt);
   } else if (gameState === "defeat") {
     defeatTimer -= dt;
     updateDeathTimers(dt);
     updateParticles(dt);
     updateCamera(dt);
-  } else if (gameState === "clear") {
-    clearTimer -= dt;
-    simStep(dt);        // 群れは動き続ける
+  } else if (gameState === "all-clear") {
+    simStep(dt);
     updateCamera(dt);
-    updateParticles(dt);
-    if (clearTimer <= 0) {
-      restartGame();
-    }
   }
 
-  // フラッシュタイマー
   if (flashTimer > 0) flashTimer = Math.max(0, flashTimer - dt);
 
-  // --- Render ---
   render(now);
   drawMinimap();
-
-  // HUD
   updateHUD();
   tickFps(now);
 }
@@ -1877,8 +2281,11 @@ document.addEventListener("visibilitychange", () => {
 // -----------------------------------------------------------------
 function boot() {
   resize();
+  settlements = generateStageLayout(0);
   initBoids();
   resetLeader();
+  updateHUDStage();
+  updateHUDBuildings();
   setInterval(tick, BASE_CFG.fixedStepMs);
 }
 
