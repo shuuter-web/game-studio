@@ -239,10 +239,11 @@
 
 <!-- 隊形ボタン -->
 <div id="formation-bar">
-  <button class="formation-btn active" id="btn-tight"  data-formation="tight">
+  <button class="formation-btn"        id="btn-tight"  data-formation="tight">
     <span class="icon">&#9679;</span><span class="label">密集</span>
   </button>
-  <button class="formation-btn"       id="btn-spread" data-formation="spread">
+  <!-- 変更3: 初期ハイライトを散開に -->
+  <button class="formation-btn active" id="btn-spread" data-formation="spread">
     <span class="icon">&#8756;</span><span class="label">散開</span>
   </button>
   <button class="formation-btn"       id="btn-ring"   data-formation="ring">
@@ -280,8 +281,11 @@
 // -----------------------------------------------------------------
 // ワールド定数
 // -----------------------------------------------------------------
-const WORLD_W = 3200;
-const WORLD_H = 2400;
+// 変更1: ワールドサイズを拡大（4800×3600）
+// オフスクリーンcanvasメモリ: 4800×3600×4byte = 69.1MB（許容範囲内）
+// 建物間隔も52px（旧26px）に広げているため、1町の占有面積は旧比約4倍になる
+const WORLD_W = 4800;
+const WORLD_H = 3600;
 
 // ブレス射程（px）
 const BREATH_RANGE = 80;
@@ -677,9 +681,10 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   // 町の色ヒント（同じ町は同系色。townBaseHues からシフト）
   const baseHue = config.townBaseHues[townIndex % config.townBaseHues.length];
 
-  // 小建物の格子パラメータ
-  const SMALL_SPACING = 26;   // 建物間隔 (20〜30px)
-  const GRID_JITTER   = 5;    // ±px のランダムオフセット
+  // 変更1: 建物間隔を広げて「広い都市」感を出す（26→52、2倍に）
+  // 縦横2倍の間隔 → 1町あたりの占有面積が約4倍になる
+  const SMALL_SPACING = 52;   // 建物間隔 (旧26px → 52px)
+  const GRID_JITTER   = 8;    // ±px のランダムオフセット（やや広め）
 
   // 格子サイズ推算: 小建物をほぼ正方形に詰める
   const gridCols = Math.ceil(Math.sqrt(smallCount * 1.1));
@@ -1334,6 +1339,87 @@ function updateBreathAttacks(dt) {
   }
 }
 
+// -----------------------------------------------------------------
+// 変更2: 直接衝突攻撃（ドラゴンが建物に体当たりしたときのダメージ＋ヒットストップ）
+// 群れの流れを止めないよう、衝突しても押し戻しはせず通過させる。
+// かわりにクールダウンで連続ヒットを防ぎ、単発の重い一撃感を出す。
+// -----------------------------------------------------------------
+function updateCollisionAttacks(dt) {
+  if (gameState !== "playing") return;
+
+  // ヒットストップタイマーとクールダウンを先に進める
+  for (let i = 0; i < N; i++) {
+    if (boidHitStopTimer[i] > 0)      boidHitStopTimer[i]    = Math.max(0, boidHitStopTimer[i] - dt);
+    if (boidCollisionCooldown[i] > 0) boidCollisionCooldown[i] = Math.max(0, boidCollisionCooldown[i] - dt);
+  }
+
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+    // クールダウン中はこの個体の衝突判定をスキップ
+    if (boidCollisionCooldown[i] > 0) continue;
+
+    // Spatial Hash で近傍建物を取得（BREATH_RANGE と同じグリッドを流用）
+    buildingGridQuery(px[i], py[i], _buildingNeighbourBuf);
+
+    for (const sIdx of _buildingNeighbourBuf) {
+      const s = settlements[sIdx];
+      if (!s || s.fallen) continue;
+
+      // 衝突判定: ドラゴン半径6px + 建物半径 の合計以内に入ったら衝突
+      const collideR = s.radius + 6;
+      const dx = s.wx - px[i];
+      const dy = s.wy - py[i];
+      if (dx * dx + dy * dy > collideR * collideR) continue;
+
+      // --- 衝突発生 ---
+
+      // 建物にダメージ（ブレスより大きい単発ダメージ）
+      s.hp -= COLLISION_DAMAGE;
+
+      // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）
+      boidHitStopTimer[i]    = HITSTOP_DURATION;
+      // クールダウンをセットして同じ建物への連続ヒットを防ぐ
+      boidCollisionCooldown[i] = COLLISION_COOLDOWN;
+
+      // 強めのパーティクル（破片が飛ぶ）
+      spawnCollisionParticles(s.wx, s.wy);
+
+      // 振動フィードバック（15ms）
+      hapticPulse(15);
+
+      // 建物破壊チェック
+      if (s.hp <= 0 && !s.fallen) {
+        settlementFall(sIdx);
+        buildingLayerDirty = true;
+      }
+
+      // 1個体につき1建物までで打ち切り（同フレームで複数衝突しない）
+      break;
+    }
+  }
+}
+
+// 衝突時の強めパーティクル（破片感）
+function spawnCollisionParticles(wx, wy) {
+  // 通常のブレスパーティクルより多く、速く、広がりも大きい
+  const count = 6 + Math.floor(Math.random() * 5); // 6〜10個
+  let spawned = 0;
+  for (let i = 0; i < MAX_PARTICLES && spawned < count; i++) {
+    if (partActive[i]) continue;
+    partActive[i] = 1;
+    partX[i] = wx + (Math.random() - 0.5) * 12;
+    partY[i] = wy + (Math.random() - 0.5) * 12;
+    const angle = Math.random() * Math.PI * 2;
+    // 通常の2〜3倍の初速で破片が吹き飛ぶ
+    const speed = 80 + Math.random() * 160;
+    partVx[i]   = Math.cos(angle) * speed;
+    partVy[i]   = Math.sin(angle) * speed;
+    // 寿命も少し長め
+    partLife[i] = 0.25 + Math.random() * 0.20;
+    spawned++;
+  }
+}
+
 function settlementFall(settlementIndex) {
   const settlement = settlements[settlementIndex];
   settlement.fallen = true;
@@ -1408,23 +1494,40 @@ let boidDead;
 let boidFadeTimer;
 let formationLerp;
 let formationDelay;
+// 変更2: 衝突ヒットストップタイマー（>0の間、その個体を停止させる）
+let boidHitStopTimer;
+// 変更2: 衝突クールダウン（建物インデックスごとに記録）
+// boidCollisionCooldown[i] は「最後に衝突した時刻からの残り秒数」
+let boidCollisionCooldown;
 
-const BOID_MAX_HP   = 3;
+// 変更4: 竜のHP を10倍（3 → 30）にして群れが簡単に壊滅しなくなる
+const BOID_MAX_HP   = 30;
 const FADE_DURATION = 0.3;
 const TRANSITION_SECS = 0.15;
 const JITTER_MAX = 0.08;
 
+// 変更2: 衝突攻撃パラメータ
+// ブレスより大きい単発ダメージ（毎秒換算ではなく1ヒット）
+const COLLISION_DAMAGE      = 8;
+// 衝突後の再発動クールダウン（同じドラゴンが同じ建物に連続ヒットしない）
+const COLLISION_COOLDOWN    = 0.5; // 秒
+// ヒットストップ持続（フレーム数を秒換算: 3フレーム≒0.048秒）
+const HITSTOP_DURATION      = 0.048;
+
 function initBoids() {
   N = MAX_BOIDS;
-  px             = new Float32Array(N);
-  py             = new Float32Array(N);
-  vx             = new Float32Array(N);
-  vy             = new Float32Array(N);
-  boidHp         = new Float32Array(N);
-  boidDead       = new Uint8Array(N);
-  boidFadeTimer  = new Float32Array(N);
-  formationLerp  = new Float32Array(N);
-  formationDelay = new Float32Array(N);
+  px                  = new Float32Array(N);
+  py                  = new Float32Array(N);
+  vx                  = new Float32Array(N);
+  vy                  = new Float32Array(N);
+  boidHp              = new Float32Array(N);
+  boidDead            = new Uint8Array(N);
+  boidFadeTimer       = new Float32Array(N);
+  formationLerp       = new Float32Array(N);
+  formationDelay      = new Float32Array(N);
+  // 変更2: ヒットストップ＋衝突クールダウン配列
+  boidHitStopTimer    = new Float32Array(N);
+  boidCollisionCooldown = new Float32Array(N);
 
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
@@ -1685,7 +1788,8 @@ function restartGame() {
 
   initBoids();
   resetLeader();
-  setFormation("tight");
+  // 変更3: リスタート後も散開をデフォルトにする
+  setFormation("spread");
   updateHUDEggs();
   updateHUDStage();
   updateHUDBuildings();
@@ -1749,8 +1853,9 @@ function resetLeader() {
 // -----------------------------------------------------------------
 // 隊形管理
 // -----------------------------------------------------------------
-let currentFormation = "tight";
-let prevFormation    = "tight";
+// 変更3: デフォルト隊形を散開にする
+let currentFormation = "spread";
+let prevFormation    = "spread";
 
 function setFormation(name) {
   if (name === currentFormation) return;
@@ -1955,6 +2060,10 @@ function simStep(dt) {
     }
   }
 
+  // 変更2: ヒットストップ中の個体は移動・加速を計算するが位置更新をスキップ
+  // （速度ベクトルは維持することで停止後にスムーズに動き出す）
+  const boidHitStopped = boidHitStopTimer; // 参照を短縮
+
   const paramsNext = buildFormationParams();
   const paramsPrev = buildPrevFormationParams();
 
@@ -2038,6 +2147,9 @@ function simStep(dt) {
     else if (sp < BASE_CFG.minSpeed && sp > 0.0001) { const s = BASE_CFG.minSpeed / sp; nvx *= s; nvy *= s; }
     else if (sp <= 0.0001) { nvx = BASE_CFG.minSpeed; nvy = 0; }
     vx[i] = nvx; vy[i] = nvy;
+
+    // 変更2: ヒットストップ中はこの個体の位置を更新しない（「ぶつかった重み」の表現）
+    if (boidHitStopped[i] > 0) continue;
 
     let nx = xi + nvx * dt;
     let ny = yi + nvy * dt;
@@ -2518,7 +2630,8 @@ function tick() {
     updateCamera(dt);
     updateSettlementAttacks(dt);
     updateProjectiles(dt);
-    updateBreathAttacks(dt);   // ブレス攻撃（メレー攻撃の代替）
+    updateBreathAttacks(dt);      // ブレス攻撃（レーザー照射）
+    updateCollisionAttacks(dt);   // 変更2: 直接衝突ダメージ＋ヒットストップ
     updateDeathTimers(dt);
     updateParticles(dt);
     collectNearbyEggs();
