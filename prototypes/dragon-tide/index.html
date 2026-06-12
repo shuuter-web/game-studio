@@ -268,16 +268,13 @@
 "use strict";
 
 /* ============================================================
- * 竜潮 / Dragon Tide — Stage Edition
+ * 竜潮 / Dragon Tide — Stage Edition v3
  *
- * コアファンタジー（GDD §3）:
- *   「竜の群れが世界を渡り歩き、文明を蹂躙していく」
- *
- * 改修 v2:
- *   - 30〜40建物のクラスター配置（generateStageLayout）
- *   - 4ステージ制（石器 → 古代 → 中世 → 近世要塞）
- *   - ステージ間演出（フラッシュ → テキスト → 新マップ）
- *   - HUD に STAGE N/4 と残建物数を追加
+ * v3改修:
+ *   - 街区（ブロック）方式マップ: 1ステージ150〜250建物
+ *   - 静的レイヤー（オフスクリーンCanvas）で建物描画コスト削減
+ *   - ブレス攻撃（レーザー）: 近接接触ダメージを廃止し連続照射方式に変更
+ *   - ブレス命中点にヒットパーティクル（0.2秒間引き）
  * ============================================================ */
 
 // -----------------------------------------------------------------
@@ -286,8 +283,12 @@
 const WORLD_W = 3200;
 const WORLD_H = 2400;
 
-// 建物同士の最小間隔（ピクセル）
-const MIN_BUILDING_SPACING = 80;
+// ブレス射程（px）
+const BREATH_RANGE = 80;
+// ブレス基礎ダメージ（毎フレーム・秒間換算: 0.05/frame × 60fps = 3/sec）
+const BREATH_DAMAGE_PER_SEC = 3.0;
+// ブレスヒットパーティクル間引き間隔（秒）
+const BREATH_PARTICLE_INTERVAL = 0.2;
 
 // -----------------------------------------------------------------
 // バランスデータ（Phase2から流用）
@@ -318,6 +319,7 @@ const FORMATION_OVERRIDES = {
 };
 
 // 隊形別戦闘パラメータ
+// attackMultiplier はブレスダメージ倍率に使用
 const FORMATION_COMBAT = {
   tight:  { attackMultiplier: 2.0, hitRateMultiplier: 1.3, flashColor: "rgba(255,80,40,0.15)" },
   spread: { attackMultiplier: 0.8, hitRateMultiplier: 0.6, flashColor: "rgba(60,120,255,0.15)" },
@@ -326,19 +328,14 @@ const FORMATION_COMBAT = {
 
 // -----------------------------------------------------------------
 // ステージ定義
-// 各ステージに 建物プールと配置パラメータを持たせる
 // -----------------------------------------------------------------
 
-// 建物サイズ区分（サイズ種別ごとのHPと見た目半径）
-// size: "small" | "medium" | "large"
 const BUILDING_SIZE_PARAMS = {
-  small:  { hpMin: 10, hpMax: 15, radiusBase: 12 },
-  medium: { hpMin: 30, hpMax: 40, radiusBase: 20 },
-  large:  { hpMin: 70, hpMax: 100, radiusBase: 32 },
+  small:  { hpMin: 10, hpMax: 15, radiusBase: 10 },
+  medium: { hpMin: 30, hpMax: 40, radiusBase: 16 },
+  large:  { hpMin: 70, hpMax: 100, radiusBase: 28 },
 };
 
-// ステージごとの建物テンプレート定義
-// 各ステージには small/medium/large ごとに見た目パラメータを指定する
 const STAGE_CONFIGS = [
   // ===== ステージ1: 石器時代 =====
   {
@@ -346,12 +343,13 @@ const STAGE_CONFIGS = [
     subtitle: "THE FIRST CIVILIZATION",
     bgColor: "#0d1a08",
     gridColor: "rgba(40, 80, 20, 0.35)",
+    // 街の色テーマ（町ごとに微妙に変化させる基準色）
+    townBaseHues: ["#c05820", "#a04010", "#d06828", "#b04818"],
 
-    // 建物ごとの外観・投射物パラメータ（サイズ別）
     buildings: {
       small: {
         colors: ["#c05820", "#a04010", "#d06828"],
-        shapes: ["circle", "polygon"],  // polygon = 不規則な多角形（焚き火・石組み）
+        shapes: ["circle", "polygon"],
         attackRadius: 150,
         projectileInterval: 3.5,
         projectileSpeed: 75,
@@ -386,13 +384,11 @@ const STAGE_CONFIGS = [
         reward: { eggMin: 5, eggMax: 7 },
       },
     },
-
-    // クラスター生成パラメータ
-    clusterCount: 7,
-    // small:20〜25個 medium:8〜10個 large:2〜3個
-    smallCount:  22,
-    mediumCount: 9,
-    largeCount:  2,
+    // 町数・建物密度
+    townCount: 5,
+    smallPerTown: 28,
+    mediumPerTown: 6,
+    largePerTown: 1,
   },
 
   // ===== ステージ2: 古代文明 =====
@@ -401,11 +397,12 @@ const STAGE_CONFIGS = [
     subtitle: "GODS WALK AMONG US",
     bgColor: "#1a1408",
     gridColor: "rgba(80, 60, 20, 0.35)",
+    townBaseHues: ["#4060b0", "#3050a0", "#6080c0", "#506890"],
 
     buildings: {
       small: {
         colors: ["#4060b0", "#3050a0", "#6080c0"],
-        shapes: ["square", "triangle"],  // 小神殿・柱廊
+        shapes: ["square", "triangle"],
         attackRadius: 180,
         projectileInterval: 2.8,
         projectileSpeed: 85,
@@ -417,7 +414,7 @@ const STAGE_CONFIGS = [
       },
       medium: {
         colors: ["#a08010", "#c0a020", "#906000"],
-        shapes: ["square", "triangle"],  // ピラミッド・フォルム
+        shapes: ["square", "triangle"],
         attackRadius: 200,
         projectileInterval: 2.5,
         projectileSpeed: 70,
@@ -425,12 +422,12 @@ const STAGE_CONFIGS = [
         projectileColor: "#c0b040",
         projectileCount: 1,
         projectileTracking: false,
-        projectileAoe: 22,  // 範囲ダメージ（投石）
+        projectileAoe: 22,
         reward: { eggMin: 4, eggMax: 6 },
       },
       large: {
         colors: ["#d0a000", "#b08800"],
-        shapes: ["triangle"],  // 大ピラミッド
+        shapes: ["triangle"],
         attackRadius: 220,
         projectileInterval: 2.0,
         projectileSpeed: 75,
@@ -442,11 +439,10 @@ const STAGE_CONFIGS = [
         reward: { eggMin: 6, eggMax: 8 },
       },
     },
-
-    clusterCount: 7,
-    smallCount:  23,
-    mediumCount: 9,
-    largeCount:  3,
+    townCount: 5,
+    smallPerTown: 30,
+    mediumPerTown: 7,
+    largePerTown: 1,
   },
 
   // ===== ステージ3: 中世 =====
@@ -455,11 +451,12 @@ const STAGE_CONFIGS = [
     subtitle: "IRON AND STONE",
     bgColor: "#0e120e",
     gridColor: "rgba(50, 70, 50, 0.35)",
+    townBaseHues: ["#707070", "#888888", "#606060", "#787868"],
 
     buildings: {
       small: {
         colors: ["#707070", "#888888", "#606060"],
-        shapes: ["square"],  // 小屋・農家
+        shapes: ["square"],
         attackRadius: 200,
         projectileInterval: 2.2,
         projectileSpeed: 100,
@@ -471,19 +468,19 @@ const STAGE_CONFIGS = [
       },
       medium: {
         colors: ["#909090", "#a0a0a0", "#808080"],
-        shapes: ["squareTower"],  // 塔・城壁
+        shapes: ["squareTower"],
         attackRadius: 230,
         projectileInterval: 1.8,
         projectileSpeed: 110,
         projectileDamage: 1,
         projectileColor: "#cccccc",
-        projectileCount: 3,  // 扇状
+        projectileCount: 3,
         projectileTracking: false,
         reward: { eggMin: 4, eggMax: 6 },
       },
       large: {
         colors: ["#c0c0c0", "#e0e0e0"],
-        shapes: ["squareTower"],  // 大聖堂・本城
+        shapes: ["squareTower"],
         attackRadius: 260,
         projectileInterval: 1.5,
         projectileSpeed: 120,
@@ -494,11 +491,10 @@ const STAGE_CONFIGS = [
         reward: { eggMin: 6, eggMax: 9 },
       },
     },
-
-    clusterCount: 8,
-    smallCount:  24,
-    mediumCount: 10,
-    largeCount:  3,
+    townCount: 6,
+    smallPerTown: 28,
+    mediumPerTown: 6,
+    largePerTown: 1,
   },
 
   // ===== ステージ4: 近世要塞 =====
@@ -507,23 +503,24 @@ const STAGE_CONFIGS = [
     subtitle: "THE LAST BASTION",
     bgColor: "#080810",
     gridColor: "rgba(30, 30, 60, 0.35)",
+    townBaseHues: ["#304050", "#405060", "#303848", "#384058"],
 
     buildings: {
       small: {
         colors: ["#304050", "#405060", "#303848"],
-        shapes: ["star4"],  // 小型稜堡
+        shapes: ["star4"],
         attackRadius: 250,
         projectileInterval: 1.5,
         projectileSpeed: 180,
         projectileDamage: 1,
         projectileColor: "#60a0ff",
-        projectileCount: 2,  // 2方向
+        projectileCount: 2,
         projectileTracking: false,
         reward: { eggMin: 3, eggMax: 5 },
       },
       medium: {
         colors: ["#405060", "#506070"],
-        shapes: ["star"],  // 中型稜堡
+        shapes: ["star"],
         attackRadius: 270,
         projectileInterval: 1.2,
         projectileSpeed: 220,
@@ -535,7 +532,7 @@ const STAGE_CONFIGS = [
       },
       large: {
         colors: ["#304858", "#405868"],
-        shapes: ["star"],  // 主城塞（ヴォーバン式）
+        shapes: ["star"],
         attackRadius: 300,
         projectileInterval: 0.8,
         projectileSpeed: 260,
@@ -546,11 +543,10 @@ const STAGE_CONFIGS = [
         reward: { eggMin: 8, eggMax: 12 },
       },
     },
-
-    clusterCount: 8,
-    smallCount:  25,
-    mediumCount: 10,
-    largeCount:  3,
+    townCount: 6,
+    smallPerTown: 30,
+    mediumPerTown: 7,
+    largePerTown: 1,
   },
 ];
 
@@ -564,6 +560,19 @@ const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
 
 const minimapCanvas = document.getElementById("minimap");
 const minimapCtx = minimapCanvas.getContext("2d");
+
+// オフスクリーンCanvas: 建物の静的レイヤー（毎フレーム再描画しない）
+let buildingLayerCanvas = null;
+let buildingLayerCtx    = null;
+let buildingLayerDirty  = true;
+
+function createBuildingLayer() {
+  buildingLayerCanvas = document.createElement("canvas");
+  buildingLayerCanvas.width  = WORLD_W;
+  buildingLayerCanvas.height = WORLD_H;
+  buildingLayerCtx = buildingLayerCanvas.getContext("2d");
+  buildingLayerDirty = true;
+}
 
 let viewW = 0, viewH = 0, dpr = 1;
 let bottomUIHeight = 0;
@@ -612,14 +621,10 @@ function updateCamera(dt) {
 }
 
 // -----------------------------------------------------------------
-// 集落（建物）の動的生成
-// クラスターベースのランダム配置。座標ハードコードなし。
+// 集落（建物）の動的生成 — 街区（ブロック）方式
 // -----------------------------------------------------------------
-
-// settlements 配列（動的に生成・置き換え）
 let settlements = [];
 
-// 乱数シード付き擬似乱数（同ステージ内の再現性は不要なので Math.random で可）
 function randRange(min, max) {
   return min + Math.random() * (max - min);
 }
@@ -632,153 +637,360 @@ function randChoice(array) {
   return array[Math.floor(Math.random() * array.length)];
 }
 
-// 2点間の距離の2乗
 function dist2(ax, ay, bx, by) {
   const dx = ax - bx, dy = ay - by;
   return dx * dx + dy * dy;
 }
 
-// ステージレイアウトを生成して settlements 配列を返す
-// - マップを clusterCount のゾーンに分割
-// - 各ゾーンに数個の建物をクラスター状に配置
-// - MIN_BUILDING_SPACING を確保
-function generateStageLayout(stageIndex) {
-  const config = STAGE_CONFIGS[stageIndex];
-  const result = [];
+// 町の中心座標を均等にマップへ配置（グリッドジッター法）
+function placeTownCenters(townCount) {
+  // 左端250pxは群れスタート地点なので除外
+  const MARGIN_LEFT  = 300;
+  const MARGIN_RIGHT = 150;
+  const MARGIN_Y     = 200;
 
-  // マップ左端100pxは群れのスタート地点なので除外
-  // さらに各端に100pxのマージンを設ける
-  const MARGIN_X_START = 150;
-  const MARGIN_X_END   = 100;
-  const MARGIN_Y       = 100;
-
-  const usableW = WORLD_W - MARGIN_X_START - MARGIN_X_END;
+  const usableW = WORLD_W - MARGIN_LEFT - MARGIN_RIGHT;
   const usableH = WORLD_H - MARGIN_Y * 2;
 
-  const clusterCount = config.clusterCount;
-
-  // クラスター中心を均等にばらまく（グリッドジッター法）
-  const cols = Math.ceil(Math.sqrt(clusterCount * (usableW / usableH)));
-  const rows = Math.ceil(clusterCount / cols);
+  const cols = Math.ceil(Math.sqrt(townCount * (usableW / usableH)));
+  const rows = Math.ceil(townCount / cols);
   const cellW = usableW / cols;
   const cellH = usableH / rows;
 
-  const clusterCenters = [];
-  for (let row = 0; row < rows && clusterCenters.length < clusterCount; row++) {
-    for (let col = 0; col < cols && clusterCenters.length < clusterCount; col++) {
-      // セル内でランダムにジッター（中心付近に寄せる）
-      const cx = MARGIN_X_START + col * cellW + randRange(cellW * 0.2, cellW * 0.8);
-      const cy = MARGIN_Y + row * cellH + randRange(cellH * 0.2, cellH * 0.8);
-      clusterCenters.push({ x: cx, y: cy });
+  const centers = [];
+  for (let row = 0; row < rows && centers.length < townCount; row++) {
+    for (let col = 0; col < cols && centers.length < townCount; col++) {
+      const cx = MARGIN_LEFT + col * cellW + randRange(cellW * 0.25, cellW * 0.75);
+      const cy = MARGIN_Y    + row * cellH + randRange(cellH * 0.25, cellH * 0.75);
+      centers.push({ x: cx, y: cy });
+    }
+  }
+  return centers;
+}
+
+// 1つの町を格子状街区として生成
+// - 小建物を格子に沿って配置（±jitter）
+// - 中型・大型は町の中心・角に配置
+function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCount, config, townIndex) {
+  const result = [];
+
+  // 町の色ヒント（同じ町は同系色。townBaseHues からシフト）
+  const baseHue = config.townBaseHues[townIndex % config.townBaseHues.length];
+
+  // 小建物の格子パラメータ
+  const SMALL_SPACING = 26;   // 建物間隔 (20〜30px)
+  const GRID_JITTER   = 5;    // ±px のランダムオフセット
+
+  // 格子サイズ推算: 小建物をほぼ正方形に詰める
+  const gridCols = Math.ceil(Math.sqrt(smallCount * 1.1));
+  const gridRows = Math.ceil(smallCount / gridCols);
+  const townW = gridCols * SMALL_SPACING;
+  const townH = gridRows * SMALL_SPACING;
+
+  const startX = townCenterX - townW * 0.5;
+  const startY = townCenterY - townH * 0.5;
+
+  // 道路の描画のためにレーン情報を保存（描画フェーズで使う）
+  // 道路幅（px）= SMALL_SPACING * 0.6 程度のすき間として視覚的に見える
+
+  // 小建物を格子配置
+  const bSmall = config.buildings.small;
+  let placed = 0;
+  const positions = [];
+  for (let row = 0; row < gridRows && placed < smallCount; row++) {
+    for (let col = 0; col < gridCols && placed < smallCount; col++) {
+      const wx = startX + col * SMALL_SPACING + randRange(-GRID_JITTER, GRID_JITTER);
+      const wy = startY + row * SMALL_SPACING + randRange(-GRID_JITTER, GRID_JITTER);
+
+      // ワールド境界チェック
+      if (wx < 10 || wx > WORLD_W - 10 || wy < 10 || wy > WORLD_H - 10) continue;
+
+      const hp = randInt(BUILDING_SIZE_PARAMS.small.hpMin, BUILDING_SIZE_PARAMS.small.hpMax);
+      // 同じ町の建物は基本色に近いが微妙にバリエーション
+      const colorVariant = shadeColor(baseHue, randInt(-15, 15));
+      result.push(makeBuilding(wx, wy, "small", colorVariant, bSmall, hp));
+      positions.push({ x: wx, y: wy });
+      placed++;
     }
   }
 
-  // シャッフル（配置順序をランダムに）
-  for (let i = clusterCenters.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const tmp = clusterCenters[i];
-    clusterCenters[i] = clusterCenters[j];
-    clusterCenters[j] = tmp;
-  }
+  // 中型建物: 格子の「交差点」相当に配置
+  const bMedium = config.buildings.medium;
+  const blockSize = SMALL_SPACING * 4; // ブロックサイズ目安
+  for (let m = 0; m < mediumCount; m++) {
+    // 格子内のランダムな「ブロック角」に配置
+    const col = randInt(0, gridCols - 1);
+    const row = randInt(0, gridRows - 1);
+    const wx = startX + col * SMALL_SPACING + SMALL_SPACING * 0.5 + randRange(-8, 8);
+    const wy = startY + row * SMALL_SPACING + SMALL_SPACING * 0.5 + randRange(-8, 8);
+    if (wx < 10 || wx > WORLD_W - 10 || wy < 10 || wy > WORLD_H - 10) continue;
 
-  // 建物リストを作成（large が優先的に独自クラスター）
-  const buildingList = [];
-  for (let k = 0; k < config.largeCount; k++)  buildingList.push("large");
-  for (let k = 0; k < config.mediumCount; k++) buildingList.push("medium");
-  for (let k = 0; k < config.smallCount; k++)  buildingList.push("small");
-
-  // シャッフル
-  for (let i = buildingList.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const tmp = buildingList[i];
-    buildingList[i] = buildingList[j];
-    buildingList[j] = tmp;
-  }
-
-  // 各建物を適切なクラスターに割り当て
-  // large はなるべく異なるクラスターに分散させる
-  const largeAssignedClusters = new Set();
-  const clusterAssignments = [];
-  for (let k = 0; k < buildingList.length; k++) {
-    const size = buildingList[k];
-    if (size === "large") {
-      // 未使用クラスター優先
-      let available = [];
-      for (let c = 0; c < clusterCenters.length; c++) {
-        if (!largeAssignedClusters.has(c)) available.push(c);
-      }
-      if (available.length === 0) available = clusterCenters.map((_, i) => i);
-      const chosen = available[Math.floor(Math.random() * available.length)];
-      largeAssignedClusters.add(chosen);
-      clusterAssignments.push(chosen);
-    } else {
-      clusterAssignments.push(Math.floor(Math.random() * clusterCenters.length));
+    // 小建物との重複チェック
+    let tooClose = false;
+    for (const p of positions) {
+      if (dist2(wx, wy, p.x, p.y) < 20 * 20) { tooClose = true; break; }
     }
+    if (tooClose) continue;
+
+    const hp = randInt(BUILDING_SIZE_PARAMS.medium.hpMin, BUILDING_SIZE_PARAMS.medium.hpMax);
+    const colorVariant = shadeColor(baseHue, randInt(-10, 20));
+    result.push(makeBuilding(wx, wy, "medium", colorVariant, bMedium, hp));
+    positions.push({ x: wx, y: wy });
   }
 
-  // 配置トライ
-  const MIN_SPACING2 = MIN_BUILDING_SPACING * MIN_BUILDING_SPACING;
+  // 大型建物: 町の中心・角に配置（教会・領主の館・城など）
+  const bLarge = config.buildings.large;
+  const largePositionOffsets = [
+    { x: 0, y: 0 },                   // 中心
+    { x: -townW * 0.35, y: -townH * 0.35 },  // 左上
+    { x:  townW * 0.35, y: -townH * 0.35 },  // 右上
+    { x: -townW * 0.35, y:  townH * 0.35 },  // 左下
+    { x:  townW * 0.35, y:  townH * 0.35 },  // 右下
+  ];
+  for (let k = 0; k < largeCount; k++) {
+    const offset = largePositionOffsets[k % largePositionOffsets.length];
+    const wx = Math.max(30, Math.min(WORLD_W - 30, townCenterX + offset.x + randRange(-20, 20)));
+    const wy = Math.max(30, Math.min(WORLD_H - 30, townCenterY + offset.y + randRange(-20, 20)));
+    const hp = randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax);
+    const largeColor = bLarge.colors[k % bLarge.colors.length];
+    result.push(makeBuilding(wx, wy, "large", largeColor, bLarge, hp));
+  }
 
-  for (let k = 0; k < buildingList.length; k++) {
-    const size      = buildingList[k];
-    const sizeParam = BUILDING_SIZE_PARAMS[size];
-    const bConfig   = config.buildings[size];
-    const clusterIdx = clusterAssignments[k];
-    const center    = clusterCenters[clusterIdx];
-
-    // large は広いスプレッド、small は狭く集まる
-    const spreadRadius = size === "large" ? 220 : (size === "medium" ? 160 : 110);
-
-    let placed = false;
-    // 最大50回トライ
-    for (let attempt = 0; attempt < 50; attempt++) {
-      const angle = Math.random() * Math.PI * 2;
-      const r     = randRange(0, spreadRadius);
-      const wx    = Math.max(MARGIN_X_START, Math.min(WORLD_W - MARGIN_X_END, center.x + Math.cos(angle) * r));
-      const wy    = Math.max(MARGIN_Y, Math.min(WORLD_H - MARGIN_Y, center.y + Math.sin(angle) * r));
-
-      // 既存建物との間隔チェック
-      let tooClose = false;
-      for (let prev = 0; prev < result.length; prev++) {
-        if (dist2(wx, wy, result[prev].wx, result[prev].wy) < MIN_SPACING2) {
-          tooClose = true;
-          break;
-        }
-      }
-      if (tooClose) continue;
-
-      // HP をサイズ範囲内でランダム決定
-      const hp = randInt(sizeParam.hpMin, sizeParam.hpMax);
-
-      result.push({
-        wx,
-        wy,
-        size,
-        color:  randChoice(bConfig.colors),
-        shape:  randChoice(bConfig.shapes),
-        radius: sizeParam.radiusBase,
-        maxHp:  hp,
-        hp,
-        fallen: false,
-        attackTimer: Math.random() * bConfig.projectileInterval,
-        // 攻撃パラメータを直接展開して持たせる（params参照不要にする）
-        attackRadius:        bConfig.attackRadius,
-        projectileInterval:  bConfig.projectileInterval,
-        projectileSpeed:     bConfig.projectileSpeed,
-        projectileDamage:    bConfig.projectileDamage,
-        projectileColor:     bConfig.projectileColor,
-        projectileCount:     bConfig.projectileCount,
-        projectileTracking:  bConfig.projectileTracking,
-        projectileAoe:       bConfig.projectileAoe ?? 0,
-        reward:              bConfig.reward,
-      });
-      placed = true;
-      break;
-    }
-    // 50回トライしても配置できなければスキップ（プール満杯時など）
+  // 道路情報を埋め込む（描画用メタデータ。最初の建物に付属させる）
+  if (result.length > 0) {
+    result[0]._townMeta = {
+      startX, startY, townW, townH,
+      gridCols, gridRows, spacing: SMALL_SPACING,
+    };
   }
 
   return result;
+}
+
+function makeBuilding(wx, wy, size, color, bConfig, hp) {
+  return {
+    wx,
+    wy,
+    size,
+    color,
+    shape:  randChoice(bConfig.shapes),
+    radius: BUILDING_SIZE_PARAMS[size].radiusBase,
+    maxHp:  hp,
+    hp,
+    fallen: false,
+    attackTimer: Math.random() * bConfig.projectileInterval,
+    attackRadius:        bConfig.attackRadius,
+    projectileInterval:  bConfig.projectileInterval,
+    projectileSpeed:     bConfig.projectileSpeed,
+    projectileDamage:    bConfig.projectileDamage,
+    projectileColor:     bConfig.projectileColor,
+    projectileCount:     bConfig.projectileCount,
+    projectileTracking:  bConfig.projectileTracking,
+    projectileAoe:       bConfig.projectileAoe ?? 0,
+    reward:              bConfig.reward,
+    // ブレスヒットパーティクルのインターバルカウンタ
+    _breathParticleTimer: 0,
+  };
+}
+
+function generateStageLayout(stageIndex) {
+  const config = STAGE_CONFIGS[stageIndex];
+  const townCenters = placeTownCenters(config.townCount);
+
+  const result = [];
+  for (let t = 0; t < townCenters.length; t++) {
+    const center = townCenters[t];
+    const townBuildings = generateTown(
+      center.x, center.y,
+      config.smallPerTown,
+      config.mediumPerTown,
+      config.largePerTown,
+      config,
+      t,
+    );
+    for (const b of townBuildings) result.push(b);
+  }
+  return result;
+}
+
+// -----------------------------------------------------------------
+// オフスクリーンCanvas: 建物の静的描画レイヤー
+// 建物が壊れたときだけ部分再描画する
+// -----------------------------------------------------------------
+function rebuildBuildingLayer() {
+  if (!buildingLayerCtx) return;
+  const bctx = buildingLayerCtx;
+
+  // 完全クリア
+  bctx.clearRect(0, 0, WORLD_W, WORLD_H);
+
+  // 道路ラインを先に描く（建物の下に来る）
+  drawRoadsOnLayer(bctx);
+
+  // 全建物を描画
+  for (let s = 0; s < settlements.length; s++) {
+    drawSettlementOnLayer(bctx, settlements[s]);
+  }
+
+  buildingLayerDirty = false;
+}
+
+function drawRoadsOnLayer(bctx) {
+  // 各町のメタ情報から道路を描く
+  for (let s = 0; s < settlements.length; s++) {
+    const meta = settlements[s]._townMeta;
+    if (!meta) continue;
+    drawTownRoadsOnLayer(bctx, meta);
+  }
+}
+
+function drawTownRoadsOnLayer(bctx, meta) {
+  const { startX, startY, townW, townH, gridCols, gridRows, spacing } = meta;
+  // 道路は建物間のすき間をうっすら明るく見せる（薄い線）
+  bctx.strokeStyle = "rgba(200, 180, 140, 0.08)";
+  bctx.lineWidth = spacing * 0.5;
+  bctx.lineCap = "butt";
+
+  // 横方向の道路（各行の中央）
+  for (let row = 0; row <= gridRows; row++) {
+    const y = startY + row * spacing;
+    bctx.beginPath();
+    bctx.moveTo(startX - spacing * 0.5, y);
+    bctx.lineTo(startX + townW + spacing * 0.5, y);
+    bctx.stroke();
+  }
+  // 縦方向の道路（各列の中央）
+  for (let col = 0; col <= gridCols; col++) {
+    const x = startX + col * spacing;
+    bctx.beginPath();
+    bctx.moveTo(x, startY - spacing * 0.5);
+    bctx.lineTo(x, startY + townH + spacing * 0.5);
+    bctx.stroke();
+  }
+}
+
+function drawSettlementOnLayer(bctx, settlement) {
+  const alpha = settlement.fallen ? 0.22 : 1.0;
+  const color = settlement.fallen ? "#333" : settlement.color;
+
+  bctx.save();
+  bctx.globalAlpha = alpha;
+
+  switch (settlement.shape) {
+    case "circle":      drawCircleOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
+    case "square":      drawSquareOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
+    case "squareTower": drawSquareTowerOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
+    case "hexagon":     drawHexagonOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
+    case "triangle":    drawTriangleOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
+    case "polygon":     drawPolygonOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
+    case "star":        drawStarOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color, 5); break;
+    case "star4":       drawStarOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color, 4); break;
+    default:            drawCircleOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
+  }
+
+  bctx.restore();
+}
+
+// -----------------------------------------------------------------
+// 建物形状描画（オフスクリーン用・メインCanvas用共通）
+// -----------------------------------------------------------------
+function drawCircleOnCtx(c, wx, wy, r, color) {
+  c.fillStyle = color;
+  c.strokeStyle = "rgba(255,255,255,0.4)";
+  c.lineWidth = 1.5;
+  c.beginPath();
+  c.arc(wx, wy, r, 0, Math.PI * 2);
+  c.fill();
+  c.stroke();
+}
+
+function drawSquareOnCtx(c, wx, wy, r, color) {
+  c.fillStyle = color;
+  c.strokeStyle = "rgba(255,255,255,0.35)";
+  c.lineWidth = 1.5;
+  c.fillRect(wx - r, wy - r, r * 2, r * 2);
+  c.strokeRect(wx - r, wy - r, r * 2, r * 2);
+}
+
+function drawSquareTowerOnCtx(c, wx, wy, r, color) {
+  c.fillStyle = color;
+  c.strokeStyle = "rgba(255,255,255,0.4)";
+  c.lineWidth = 1.5;
+  c.fillRect(wx - r, wy - r, r * 2, r * 2);
+  c.strokeRect(wx - r, wy - r, r * 2, r * 2);
+  const towerSize = r * 0.4;
+  const positions = [
+    [wx - r, wy - r], [wx + r - towerSize, wy - r],
+    [wx - r, wy + r - towerSize], [wx + r - towerSize, wy + r - towerSize],
+  ];
+  c.fillStyle = shadeColor(color, -20);
+  for (const [tx, ty] of positions) {
+    c.fillRect(tx, ty, towerSize, towerSize);
+  }
+}
+
+function drawHexagonOnCtx(c, wx, wy, r, color) {
+  c.fillStyle = color;
+  c.strokeStyle = "rgba(255,255,255,0.5)";
+  c.lineWidth = 1.5;
+  c.beginPath();
+  for (let k = 0; k < 6; k++) {
+    const angle = (k * Math.PI * 2) / 6 - Math.PI / 6;
+    if (k === 0) c.moveTo(wx + Math.cos(angle) * r, wy + Math.sin(angle) * r);
+    else c.lineTo(wx + Math.cos(angle) * r, wy + Math.sin(angle) * r);
+  }
+  c.closePath();
+  c.fill();
+  c.stroke();
+}
+
+function drawTriangleOnCtx(c, wx, wy, r, color) {
+  c.fillStyle = color;
+  c.strokeStyle = "rgba(255,255,255,0.45)";
+  c.lineWidth = 1.5;
+  c.beginPath();
+  c.moveTo(wx, wy - r);
+  c.lineTo(wx + r * 0.9, wy + r * 0.7);
+  c.lineTo(wx - r * 0.9, wy + r * 0.7);
+  c.closePath();
+  c.fill();
+  c.stroke();
+}
+
+function drawPolygonOnCtx(c, wx, wy, r, color) {
+  c.fillStyle = color;
+  c.strokeStyle = "rgba(255,255,255,0.3)";
+  c.lineWidth = 1.5;
+  const sides = 5 + ((Math.round(wx + wy) % 3));
+  c.beginPath();
+  for (let k = 0; k < sides; k++) {
+    const baseAngle = (k * Math.PI * 2) / sides;
+    const jitter = 0.65 + 0.35 * ((Math.sin(k * 13.7 + wx * 0.01) + 1) * 0.5);
+    const rx = wx + Math.cos(baseAngle) * r * jitter;
+    const ry = wy + Math.sin(baseAngle) * r * jitter;
+    if (k === 0) c.moveTo(rx, ry);
+    else c.lineTo(rx, ry);
+  }
+  c.closePath();
+  c.fill();
+  c.stroke();
+}
+
+function drawStarOnCtx(c, wx, wy, r, color, spikes) {
+  c.fillStyle = color;
+  c.strokeStyle = "rgba(255,255,255,0.4)";
+  c.lineWidth = 1.5;
+  c.beginPath();
+  const innerR = r * 0.50;
+  for (let k = 0; k < spikes * 2; k++) {
+    const angle = (k * Math.PI) / spikes - Math.PI / 2;
+    const rad = k % 2 === 0 ? r : innerR;
+    if (k === 0) c.moveTo(wx + Math.cos(angle) * rad, wy + Math.sin(angle) * rad);
+    else c.lineTo(wx + Math.cos(angle) * rad, wy + Math.sin(angle) * rad);
+  }
+  c.closePath();
+  c.fill();
+  c.stroke();
 }
 
 // -----------------------------------------------------------------
@@ -845,12 +1057,53 @@ function findNearestAliveBoid(wx, wy) {
   return nearest;
 }
 
+// 建物のSpatial Hash（ブレス射程判定用）
+// 建物は静的なのでステージ生成時に1回だけ構築する
+const buildingGrid = new Map();
+const BUILDING_GRID_CELL = 100; // セルサイズ（px）
+
+function buildingGridClear() { buildingGrid.clear(); }
+
+function buildingGridInsert(settlementIdx, wx, wy) {
+  const cx = (wx / BUILDING_GRID_CELL) | 0;
+  const cy = (wy / BUILDING_GRID_CELL) | 0;
+  const key = cx * 100003 + cy;
+  let bucket = buildingGrid.get(key);
+  if (!bucket) { bucket = []; buildingGrid.set(key, bucket); }
+  bucket.push(settlementIdx);
+}
+
+function buildingGridQuery(wx, wy, out) {
+  out.length = 0;
+  const cx = (wx / BUILDING_GRID_CELL) | 0;
+  const cy = (wy / BUILDING_GRID_CELL) | 0;
+  // BREATH_RANGE 80px を BUILDING_GRID_CELL 100px で割ると1セル以内に収まる
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const key = (cx + dx) * 100003 + (cy + dy);
+      const b = buildingGrid.get(key);
+      if (b) for (const idx of b) out.push(idx);
+    }
+  }
+}
+
+function rebuildBuildingGrid() {
+  buildingGridClear();
+  for (let s = 0; s < settlements.length; s++) {
+    if (!settlements[s].fallen) {
+      buildingGridInsert(s, settlements[s].wx, settlements[s].wy);
+    }
+  }
+}
+
+// 建物Spatial Hashの近傍クエリ用バッファ
+const _buildingNeighbourBuf = [];
+
 function updateSettlementAttacks(dt) {
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     if (settlement.fallen) continue;
 
-    // 攻撃半径内に群れがいるか判定
     let inRange = false;
     const atkR2 = settlement.attackRadius * settlement.attackRadius;
     for (let i = 0; i < N; i++) {
@@ -880,7 +1133,6 @@ function updateSettlementAttacks(dt) {
         settlement.projectileTracking,
       );
     } else if (count === 2) {
-      // 2方向（近世小型稜堡）
       const baseAngle = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
       for (let k = -1; k <= 0; k++) {
         spawnFanProjectileRaw(
@@ -892,7 +1144,6 @@ function updateSettlementAttacks(dt) {
         );
       }
     } else if (count === 3) {
-      // 扇状3本（中世の町）
       const baseAngle = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
       for (let k = -1; k <= 1; k++) {
         spawnFanProjectileRaw(
@@ -904,7 +1155,6 @@ function updateSettlementAttacks(dt) {
         );
       }
     } else {
-      // 多方向（count本を等分）
       const angleStep = (Math.PI * 2) / count;
       const baseAngle = Math.random() * Math.PI * 2;
       for (let k = 0; k < count; k++) {
@@ -925,7 +1175,6 @@ function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
   return Math.atan2(py[targetBoidIdx] - fromY, px[targetBoidIdx] - fromX);
 }
 
-// 汎用：角度・速度・色を直接受け取って投射物を生成
 function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color) {
   let slot = -1;
   for (let i = 0; i < MAX_PROJECTILES; i++) {
@@ -950,7 +1199,6 @@ function updateProjectiles(dt) {
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) continue;
 
-    // 追尾補正
     if (projTracking[i] && projTargetIdx[i] >= 0 && !boidDead[projTargetIdx[i]]) {
       const dx = px[projTargetIdx[i]] - projWx[i];
       const dy = py[projTargetIdx[i]] - projWy[i];
@@ -1008,39 +1256,81 @@ function applyAoeProjectileDamage(wx, wy, aoeR, damage) {
 }
 
 // -----------------------------------------------------------------
-// 近接攻撃（群れが建物に接触するとHP減少）
+// ブレス攻撃（レーザー照射）
+// 近接ダメージの代替: ドラゴンが射程内の最近建物へ連続照射
+// ブレスデータは描画フェーズで使えるよう毎フレーム収集する
 // -----------------------------------------------------------------
-function updateSettlementMeleeAttacks(dt) {
+
+// ブレス情報バッファ: { boidIdx, settlementIdx, hitX, hitY } の配列
+// 毎フレームのupdate時に構築し、draw時に参照する
+const activeBreaths = [];
+
+// ブレスのアニメーション時間（sin揺らぎ用）
+let breathTime = 0;
+
+function updateBreathAttacks(dt) {
   if (gameState !== "playing") return;
 
-  const combatParams   = FORMATION_COMBAT[currentFormation];
-  const effectiveHitProb = 0.05 * combatParams.attackMultiplier;
+  breathTime += dt;
+  activeBreaths.length = 0;
 
-  for (let s = 0; s < settlements.length; s++) {
-    const settlement = settlements[s];
-    if (settlement.fallen) continue;
+  const BREATH_R2 = BREATH_RANGE * BREATH_RANGE;
+  const combatParams = FORMATION_COMBAT[currentFormation];
+  // 毎秒ダメージ × dt × 隊形倍率
+  const damageThisFrame = BREATH_DAMAGE_PER_SEC * dt * combatParams.attackMultiplier;
 
-    const meleeR  = settlement.radius + 5;
-    const meleeR2 = meleeR * meleeR;
+  // Spatial Hash を使ってブレス射程内の建物候補を絞る
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
 
-    for (let i = 0; i < N; i++) {
-      if (boidDead[i]) continue;
-      const dx = px[i] - settlement.wx;
-      const dy = py[i] - settlement.wy;
-      if (dx * dx + dy * dy < meleeR2) {
-        if (Math.random() < effectiveHitProb) {
-          settlement.hp -= 1;
-          spawnHitParticles(
-            settlement.wx + (Math.random() - 0.5) * settlement.radius,
-            settlement.wy + (Math.random() - 0.5) * settlement.radius,
-          );
-          if (settlement.hp <= 0) {
-            settlementFall(s);
-            break;
-          }
-        }
+    // 各ドラゴンの最近建物を1つだけ探す（射程内に限定）
+    buildingGridQuery(px[i], py[i], _buildingNeighbourBuf);
+
+    let nearestSettlementIdx = -1;
+    let nearestDist2 = BREATH_R2 + 1;
+
+    for (const sIdx of _buildingNeighbourBuf) {
+      const settlement = settlements[sIdx];
+      if (!settlement || settlement.fallen) continue;
+      const dx = settlement.wx - px[i];
+      const dy = settlement.wy - py[i];
+      const d2 = dx * dx + dy * dy;
+      if (d2 < nearestDist2) {
+        nearestDist2 = d2;
+        nearestSettlementIdx = sIdx;
       }
     }
+
+    if (nearestSettlementIdx < 0) continue;
+
+    const settlement = settlements[nearestSettlementIdx];
+
+    // ダメージ適用
+    settlement.hp -= damageThisFrame;
+
+    // ヒットパーティクル（0.2秒間引き）
+    settlement._breathParticleTimer -= dt;
+    if (settlement._breathParticleTimer <= 0) {
+      settlement._breathParticleTimer = BREATH_PARTICLE_INTERVAL;
+      spawnHitParticles(
+        settlement.wx + (Math.random() - 0.5) * settlement.radius,
+        settlement.wy + (Math.random() - 0.5) * settlement.radius,
+      );
+    }
+
+    // 建物破壊チェック
+    if (settlement.hp <= 0 && !settlement.fallen) {
+      settlementFall(nearestSettlementIdx);
+      // 破壊された建物のグリッドエントリを更新（次フレームで再構築される）
+      buildingLayerDirty = true;
+    }
+
+    // ブレス描画データを収集
+    activeBreaths.push({
+      boidIdx: i,
+      targetWx: settlement.wx,
+      targetWy: settlement.wy,
+    });
   }
 }
 
@@ -1058,9 +1348,22 @@ function settlementFall(settlementIndex) {
   }
 
   hapticPulse(80);
+  // 建物レイヤーを部分的に再描画（fallen状態に更新）
+  if (buildingLayerCtx) {
+    const bc = buildingLayerCtx;
+    const padding = settlement.radius + 4;
+    bc.clearRect(
+      settlement.wx - padding,
+      settlement.wy - padding,
+      padding * 2,
+      padding * 2,
+    );
+    drawSettlementOnLayer(bc, settlement);
+  }
+  // 建物グリッドも更新
+  rebuildBuildingGrid();
   updateHUDBuildings();
 
-  // 全建物破壊チェック（ステージクリア）
   const remaining = settlements.filter(s => !s.fallen).length;
   if (remaining === 0) {
     triggerStageClear();
@@ -1141,7 +1444,6 @@ function initBoids() {
   }
 }
 
-// ステージクリア後の群れ位置リセット（HPは引き継ぎ）
 function resetBoidsPositionForNextStage() {
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
@@ -1168,9 +1470,9 @@ function countAliveBoids() {
 }
 
 // -----------------------------------------------------------------
-// パーティクルプール（最大80個）
+// パーティクルプール（最大120個。建物増加でブレスパーティクルが増えるため）
 // -----------------------------------------------------------------
-const MAX_PARTICLES = 80;
+const MAX_PARTICLES = 120;
 const partX      = new Float32Array(MAX_PARTICLES);
 const partY      = new Float32Array(MAX_PARTICLES);
 const partVx     = new Float32Array(MAX_PARTICLES);
@@ -1179,7 +1481,8 @@ const partLife   = new Float32Array(MAX_PARTICLES);
 const partActive = new Uint8Array(MAX_PARTICLES);
 
 function spawnHitParticles(wx, wy) {
-  const count = 3 + Math.floor(Math.random() * 3);
+  // ブレスの火花は少数（2〜4個）に抑えてパフォーマンスを確保
+  const count = 2 + Math.floor(Math.random() * 3);
   let spawned = 0;
   for (let i = 0; i < MAX_PARTICLES && spawned < count; i++) {
     if (partActive[i]) continue;
@@ -1187,10 +1490,10 @@ function spawnHitParticles(wx, wy) {
     partX[i] = wx;
     partY[i] = wy;
     const angle = Math.random() * Math.PI * 2;
-    const speed = 40 + Math.random() * 80;
+    const speed = 30 + Math.random() * 60;
     partVx[i]   = Math.cos(angle) * speed;
     partVy[i]   = Math.sin(angle) * speed;
-    partLife[i] = 0.25 + Math.random() * 0.15;
+    partLife[i] = 0.20 + Math.random() * 0.15;
     spawned++;
   }
 }
@@ -1210,7 +1513,7 @@ function updateParticles(dt) {
 // -----------------------------------------------------------------
 // 卵システム（ワールド座標）
 // -----------------------------------------------------------------
-const MAX_EGGS = 120;  // 建物が増えたので容量増加
+const MAX_EGGS = 200;
 const eggWx     = new Float32Array(MAX_EGGS);
 const eggWy     = new Float32Array(MAX_EGGS);
 const eggActive = new Uint8Array(MAX_EGGS);
@@ -1258,12 +1561,11 @@ function triggerFlash(color, duration) {
 // -----------------------------------------------------------------
 // ステージ状態管理
 // -----------------------------------------------------------------
-let currentStage = 0;  // 0-indexed
+let currentStage = 0;
 
-// "playing" | "defeat" | "stage-clear" | "all-clear"
 let gameState = "playing";
 let defeatTimer = 0;
-let stageClearPhase = "none"; // "none" | "silence" | "flash" | "text" | "transition"
+let stageClearPhase = "none";
 let stageClearTimer = 0;
 
 const overlayEl    = document.getElementById("overlay");
@@ -1290,14 +1592,12 @@ function triggerStageClear() {
   if (gameState !== "playing") return;
 
   if (currentStage >= TOTAL_STAGES - 1) {
-    // 全ステージクリア
     triggerAllClear();
     return;
   }
 
   gameState = "stage-clear";
   stageClearPhase = "silence";
-  // 0.5秒の無音 → フラッシュ → テキスト表示（2秒） → 次ステージへ
   stageClearTimer = 0.5;
   hapticPulse(150);
 }
@@ -1311,19 +1611,16 @@ function triggerAllClear() {
   hapticPulse(300);
 }
 
-// ステージクリア演出を毎フレーム更新
 function updateStageClearSequence(dt) {
   if (gameState !== "stage-clear") return;
 
   stageClearTimer -= dt;
 
   if (stageClearPhase === "silence" && stageClearTimer <= 0) {
-    // フラッシュ開始
     stageClearPhase = "flash";
     triggerFlash("rgba(255,255,200,0.85)", 0.25);
     stageClearTimer = 0.3;
   } else if (stageClearPhase === "flash" && stageClearTimer <= 0) {
-    // テキスト表示
     stageClearPhase = "text";
     const nextStage = currentStage + 1;
     const nextConfig = STAGE_CONFIGS[nextStage];
@@ -1332,7 +1629,6 @@ function updateStageClearSequence(dt) {
     stageOverlayEl.classList.add("visible");
     stageClearTimer = 2.0;
   } else if (stageClearPhase === "text" && stageClearTimer <= 0) {
-    // 次のステージへ遷移
     stageClearPhase = "transition";
     stageOverlayEl.classList.remove("visible");
     advanceToNextStage();
@@ -1344,16 +1640,17 @@ function advanceToNextStage() {
   gameState = "playing";
   stageClearPhase = "none";
 
-  // 投射物・パーティクルリセット（建物破壊演出の残滓を消す）
   for (let i = 0; i < MAX_PROJECTILES; i++) projActive[i] = 0;
   for (let i = 0; i < MAX_PARTICLES; i++)   partActive[i] = 0;
-  // 卵もリセット（次ステージで新たに獲得させる）
   for (let e = 0; e < MAX_EGGS; e++)        eggActive[e] = 0;
 
-  // 新マップ生成
-  settlements = generateStageLayout(currentStage);
+  activeBreaths.length = 0;
 
-  // 群れ位置をリセット（HPは引き継ぎ）
+  settlements = generateStageLayout(currentStage);
+  rebuildBuildingGrid();
+  buildingLayerDirty = true;
+  rebuildBuildingLayer();
+
   resetBoidsPositionForNextStage();
   resetLeader();
 
@@ -1379,8 +1676,12 @@ function restartGame() {
   for (let i = 0; i < MAX_PROJECTILES; i++)   projActive[i] = 0;
   for (let i = 0; i < MAX_PARTICLES; i++)     partActive[i] = 0;
 
-  // ステージ1のレイアウトを生成
+  activeBreaths.length = 0;
+
   settlements = generateStageLayout(0);
+  rebuildBuildingGrid();
+  buildingLayerDirty = true;
+  rebuildBuildingLayer();
 
   initBoids();
   resetLeader();
@@ -1784,7 +2085,6 @@ function updateLeader(dt) {
 // 描画
 // -----------------------------------------------------------------
 function render(now) {
-  // 背景色はステージによって変わる
   const stageConfig = STAGE_CONFIGS[currentStage];
   ctx.fillStyle = stageConfig.bgColor;
   ctx.fillRect(0, 0, viewW, viewH);
@@ -1793,9 +2093,21 @@ function render(now) {
   ctx.translate(-cam.x + viewW * 0.5, -cam.y + viewH * 0.5);
 
   drawWorldGrid();
+
+  // 建物静的レイヤーをオフスクリーンCanvasからコピー（カメラオフセット適用済み）
+  if (buildingLayerCanvas) {
+    // drawImage の座標はすでにctx変換行列が適用されているので (0,0) から描く
+    ctx.drawImage(buildingLayerCanvas, 0, 0);
+  }
+
+  // 攻撃射程リング（静的レイヤーの上に動的に描く）
   drawSettlementRanges();
-  drawSettlements();
+
+  // HP バーは動的なので毎フレーム描画
+  drawSettlementHPBars();
+
   drawEggs();
+  drawBreathAttacks(now);
   drawBoids();
   drawProjectiles();
   drawParticles();
@@ -1836,11 +2148,12 @@ function drawWorldGrid() {
 }
 
 function drawSettlementRanges() {
+  // 攻撃射程を薄く表示（既存の動作を維持）
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     if (settlement.fallen) continue;
 
-    ctx.strokeStyle = "rgba(180, 60, 60, 0.10)";
+    ctx.strokeStyle = "rgba(180, 60, 60, 0.08)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(settlement.wx, settlement.wy, settlement.attackRadius, 0, Math.PI * 2);
@@ -1848,155 +2161,102 @@ function drawSettlementRanges() {
   }
 }
 
-function drawSettlements() {
+// HP バーのみ動的に描画（建物形状はオフスクリーンに焼き付け済み）
+function drawSettlementHPBars() {
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
-    const alpha = settlement.fallen ? 0.30 : 1.0;
-    const color = settlement.fallen ? "#444" : settlement.color;
+    if (settlement.fallen) continue;
 
-    ctx.save();
-    ctx.globalAlpha = alpha;
-
-    switch (settlement.shape) {
-      case "circle":      drawSettlementCircle(settlement.wx, settlement.wy, settlement.radius, color); break;
-      case "square":      drawSettlementSquare(settlement.wx, settlement.wy, settlement.radius, color); break;
-      case "squareTower": drawSettlementSquareTower(settlement.wx, settlement.wy, settlement.radius, color); break;
-      case "hexagon":     drawSettlementHexagon(settlement.wx, settlement.wy, settlement.radius, color); break;
-      case "triangle":    drawSettlementTriangle(settlement.wx, settlement.wy, settlement.radius, color); break;
-      case "polygon":     drawSettlementPolygon(settlement.wx, settlement.wy, settlement.radius, color); break;
-      case "star":        drawSettlementStar(settlement.wx, settlement.wy, settlement.radius, color, 5); break;
-      case "star4":       drawSettlementStar(settlement.wx, settlement.wy, settlement.radius, color, 4); break;
-      default:            drawSettlementCircle(settlement.wx, settlement.wy, settlement.radius, color); break;
-    }
-
-    // HP バー
-    if (!settlement.fallen) {
-      const hpRatio = Math.max(0, settlement.hp / settlement.maxHp);
-      const barW = settlement.radius * 2;
-      const barX = settlement.wx - settlement.radius;
-      const barY = settlement.wy - settlement.radius - 8;
-      ctx.globalAlpha = 0.85;
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.fillRect(barX, barY, barW, 4);
-      ctx.fillStyle = hpRatio > 0.5 ? "#50e070" : (hpRatio > 0.25 ? "#e0c040" : "#e04040");
-      ctx.fillRect(barX, barY, barW * hpRatio, 4);
-    }
-
-    ctx.restore();
+    const hpRatio = Math.max(0, settlement.hp / settlement.maxHp);
+    const barW = settlement.radius * 2;
+    const barX = settlement.wx - settlement.radius;
+    const barY = settlement.wy - settlement.radius - 8;
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(barX, barY, barW, 4);
+    ctx.fillStyle = hpRatio > 0.5 ? "#50e070" : (hpRatio > 0.25 ? "#e0c040" : "#e04040");
+    ctx.fillRect(barX, barY, barW * hpRatio, 4);
+    ctx.globalAlpha = 1.0;
   }
 }
 
-function drawSettlementCircle(wx, wy, r, color) {
-  ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(wx, wy, r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-}
+// -----------------------------------------------------------------
+// ブレス（レーザー）描画
+// 口元から建物まで: 根元太く → 先端細く、sin波揺らぎ、橙〜赤グラデーション
+// -----------------------------------------------------------------
+function drawBreathAttacks(now) {
+  if (activeBreaths.length === 0) return;
 
-function drawSettlementSquare(wx, wy, r, color) {
-  ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,0.35)";
-  ctx.lineWidth = 1.5;
-  ctx.fillRect(wx - r, wy - r, r * 2, r * 2);
-  ctx.strokeRect(wx - r, wy - r, r * 2, r * 2);
-}
+  ctx.save();
+  ctx.lineCap = "round";
 
-function drawSettlementSquareTower(wx, wy, r, color) {
-  ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 1.5;
-  ctx.fillRect(wx - r, wy - r, r * 2, r * 2);
-  ctx.strokeRect(wx - r, wy - r, r * 2, r * 2);
-  const towerSize = r * 0.4;
-  const positions = [
-    [wx - r, wy - r], [wx + r - towerSize, wy - r],
-    [wx - r, wy + r - towerSize], [wx + r - towerSize, wy + r - towerSize],
-  ];
-  ctx.fillStyle = shadeColor(color, -20);
-  for (const [tx, ty] of positions) {
-    ctx.fillRect(tx, ty, towerSize, towerSize);
+  for (let k = 0; k < activeBreaths.length; k++) {
+    const breath = activeBreaths[k];
+    const bIdx = breath.boidIdx;
+    if (boidDead[bIdx]) continue;
+
+    const fromX = px[bIdx];
+    const fromY = py[bIdx];
+    const toX   = breath.targetWx;
+    const toY   = breath.targetWy;
+
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+    // sin波の揺らぎ（炎っぽさ）
+    // 法線方向に ±2px の振動
+    const normalX = -dy / dist;
+    const normalY =  dx / dist;
+    const wobble  = Math.sin(breathTime * 18 + bIdx * 2.3) * 2.0;
+
+    // 制御点（中間点にオフセット）
+    const midX = fromX + dx * 0.5 + normalX * wobble;
+    const midY = fromY + dy * 0.5 + normalY * wobble;
+
+    // グラデーション: 根元 橙(#ff8020) → 先端 深紅(#ff1000)
+    const grad = ctx.createLinearGradient(fromX, fromY, toX, toY);
+    grad.addColorStop(0.0, "rgba(255, 200, 60, 0.95)");   // 口元: 明るい橙
+    grad.addColorStop(0.35, "rgba(255, 100, 20, 0.90)");  // 中間: 橙
+    grad.addColorStop(1.0, "rgba(220, 20, 0, 0.80)");     // 先端: 深紅
+
+    // 根元3px → 先端0.5px のテーパー線（2本描画で表現）
+    // 外側グロー（薄く太め）
+    ctx.strokeStyle = "rgba(255, 80, 0, 0.20)";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.quadraticCurveTo(midX, midY, toX, toY);
+    ctx.stroke();
+
+    // メインレーザー
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.quadraticCurveTo(midX, midY, toX, toY);
+    ctx.stroke();
+
+    // コア（白く輝く中心線）
+    ctx.strokeStyle = "rgba(255, 255, 200, 0.70)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.quadraticCurveTo(midX, midY, toX, toY);
+    ctx.stroke();
+
+    // 命中点の輝点
+    ctx.fillStyle = "rgba(255, 200, 80, 0.90)";
+    ctx.beginPath();
+    ctx.arc(toX, toY, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255, 255, 255, 0.80)";
+    ctx.beginPath();
+    ctx.arc(toX, toY, 1.0, 0, Math.PI * 2);
+    ctx.fill();
   }
-}
 
-function drawSettlementHexagon(wx, wy, r, color) {
-  ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,0.5)";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let k = 0; k < 6; k++) {
-    const angle = (k * Math.PI * 2) / 6 - Math.PI / 6;
-    if (k === 0) ctx.moveTo(wx + Math.cos(angle) * r, wy + Math.sin(angle) * r);
-    else ctx.lineTo(wx + Math.cos(angle) * r, wy + Math.sin(angle) * r);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-}
-
-// 三角形（ピラミッド・神殿）
-function drawSettlementTriangle(wx, wy, r, color) {
-  ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,0.45)";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(wx, wy - r);
-  ctx.lineTo(wx + r * 0.9, wy + r * 0.7);
-  ctx.lineTo(wx - r * 0.9, wy + r * 0.7);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-}
-
-// 不規則な多角形（洞窟・土塁・石器）
-function drawSettlementPolygon(wx, wy, r, color) {
-  ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,0.3)";
-  ctx.lineWidth = 1.5;
-  // 5〜7頂点の不規則な多角形（シードベースでほぼ固定形状にするため使い捨て乱数は使わない）
-  // 代わりに wx, wy を使って疑似的に安定させる
-  const sides = 5 + ((Math.round(wx + wy) % 3));
-  ctx.beginPath();
-  for (let k = 0; k < sides; k++) {
-    const baseAngle = (k * Math.PI * 2) / sides;
-    // ジッターは描画の度に変わらないよう頂点インデックスで固定
-    const jitter = 0.65 + 0.35 * ((Math.sin(k * 13.7 + wx * 0.01) + 1) * 0.5);
-    const rx = wx + Math.cos(baseAngle) * r * jitter;
-    const ry = wy + Math.sin(baseAngle) * r * jitter;
-    if (k === 0) ctx.moveTo(rx, ry);
-    else ctx.lineTo(rx, ry);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-}
-
-// 星形稜堡（spikes本の突起）
-function drawSettlementStar(wx, wy, r, color, spikes) {
-  ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  const innerR = r * 0.50;
-  for (let k = 0; k < spikes * 2; k++) {
-    const angle = (k * Math.PI) / spikes - Math.PI / 2;
-    const rad = k % 2 === 0 ? r : innerR;
-    if (k === 0) ctx.moveTo(wx + Math.cos(angle) * rad, wy + Math.sin(angle) * rad);
-    else ctx.lineTo(wx + Math.cos(angle) * rad, wy + Math.sin(angle) * rad);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-}
-
-function shadeColor(hex, amount) {
-  const num = parseInt(hex.replace("#", ""), 16);
-  const r = Math.min(255, Math.max(0, (num >> 16) + amount));
-  const g = Math.min(255, Math.max(0, ((num >> 8) & 0xff) + amount));
-  const b = Math.min(255, Math.max(0, (num & 0xff) + amount));
-  return `rgb(${r},${g},${b})`;
+  ctx.restore();
 }
 
 function drawBoids() {
@@ -2062,10 +2322,11 @@ function drawParticles() {
   ctx.save();
   for (let i = 0; i < MAX_PARTICLES; i++) {
     if (!partActive[i]) continue;
-    const lifeRatio = partLife[i] / 0.35;
+    const lifeRatio = partLife[i] / 0.30;
     const alpha = Math.max(0, lifeRatio);
-    const radius = 2 + lifeRatio * 2;
-    ctx.fillStyle = `rgba(255, 220, 80, ${alpha.toFixed(3)})`;
+    const radius = 1.5 + lifeRatio * 2;
+    // ブレスパーティクル: 火花色（橙〜赤）
+    ctx.fillStyle = `rgba(255, ${(180 * lifeRatio) | 0}, 40, ${alpha.toFixed(3)})`;
     ctx.beginPath();
     ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
     ctx.fill();
@@ -2144,15 +2405,13 @@ function drawMinimap() {
     const settlement = settlements[s];
     const mx = settlement.wx * scaleX;
     const my = settlement.wy * scaleY;
-    // 大きさに応じてドットサイズを変える
     const dotR = settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : 1.5);
-    minimapCtx.fillStyle = settlement.fallen ? "#444" : settlement.color;
+    minimapCtx.fillStyle = settlement.fallen ? "#333" : settlement.color;
     minimapCtx.beginPath();
     minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
     minimapCtx.fill();
   }
 
-  // 群れの位置
   const centroid = calcFriendlyCentroid();
   const mx = centroid.x * scaleX;
   const my = centroid.y * scaleY;
@@ -2161,7 +2420,6 @@ function drawMinimap() {
   minimapCtx.arc(mx, my, 2, 0, Math.PI * 2);
   minimapCtx.fill();
 
-  // カメラ視野範囲
   const vpLeft   = (cam.x - viewW * 0.5) * scaleX;
   const vpTop    = (cam.y - viewH * 0.5) * scaleY;
   const vpWidth  = viewW * scaleX;
@@ -2227,6 +2485,23 @@ function tickFps(now) {
 }
 
 // -----------------------------------------------------------------
+// ユーティリティ
+// -----------------------------------------------------------------
+function shadeColor(hex, amount) {
+  // hex は "#rrggbb" 形式
+  let num;
+  try {
+    num = parseInt(hex.replace("#", ""), 16);
+  } catch (_) {
+    return hex;
+  }
+  const r = Math.min(255, Math.max(0, (num >> 16) + amount));
+  const g = Math.min(255, Math.max(0, ((num >> 8) & 0xff) + amount));
+  const b = Math.min(255, Math.max(0, (num & 0xff) + amount));
+  return `rgb(${r},${g},${b})`;
+}
+
+// -----------------------------------------------------------------
 // ゲームループ（setInterval固定16ms）
 // -----------------------------------------------------------------
 let lastTickTs = performance.now();
@@ -2243,13 +2518,12 @@ function tick() {
     updateCamera(dt);
     updateSettlementAttacks(dt);
     updateProjectiles(dt);
-    updateSettlementMeleeAttacks(dt);
+    updateBreathAttacks(dt);   // ブレス攻撃（メレー攻撃の代替）
     updateDeathTimers(dt);
     updateParticles(dt);
     collectNearbyEggs();
     checkGameConditions();
   } else if (gameState === "stage-clear") {
-    // ステージクリア演出中も群れは動き続ける
     simStep(dt);
     updateCamera(dt);
     updateParticles(dt);
@@ -2281,7 +2555,10 @@ document.addEventListener("visibilitychange", () => {
 // -----------------------------------------------------------------
 function boot() {
   resize();
+  createBuildingLayer();
   settlements = generateStageLayout(0);
+  rebuildBuildingGrid();
+  rebuildBuildingLayer();
   initBoids();
   resetLeader();
   updateHUDStage();
