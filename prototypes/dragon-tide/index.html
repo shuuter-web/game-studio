@@ -1531,6 +1531,8 @@ function initBoids() {
   // 変更2: ヒットストップ＋衝突クールダウン配列
   boidHitStopTimer    = new Float32Array(N);
   boidCollisionCooldown = new Float32Array(N);
+  // 尻尾角度履歴リングバッファ（TAIL_SEGS個前までの進行角度）
+  boidAngleHistory    = new Float32Array(N * TAIL_SEGS);
 
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
@@ -1547,6 +1549,10 @@ function initBoids() {
     boidFadeTimer[i] = 0;
     formationLerp[i]  = 1.0;
     formationDelay[i] = 0;
+    // 尻尾角度履歴：初期値は現在の進行角度で埋める
+    for (let s = 0; s < TAIL_SEGS; s++) {
+      boidAngleHistory[i * TAIL_SEGS + s] = ang;
+    }
   }
 }
 
@@ -2386,9 +2392,24 @@ function drawBoids() {
   const spritePx      = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
   const halfLogical   = DRAGON_SPRITE_LOGICAL / 2;
   const sprites       = dragonSprites["fire"]; // 現在は火属性のみ
+  const palette       = DRAGON_ELEMENT_COLORS.fire;
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
   if (!sprites || sprites.length === 0) return;
+
+  // ---- 角度履歴の更新（描画直前に1フレーム分シフト） ----
+  // s=0 が「現在フレームの角度」になるよう末尾から先頭方向へコピーしてから書く
+  // ヒットストップ中は vx/vy が凍結されているので履歴も同じ角度が積まれる（正しい挙動）
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
+    const base = i * TAIL_SEGS;
+    // 古い方向にシフト（末尾→前方向）
+    for (let s = TAIL_SEGS - 1; s > 0; s--) {
+      boidAngleHistory[base + s] = boidAngleHistory[base + s - 1];
+    }
+    // 最新角度を s=0 に書く
+    boidAngleHistory[base] = Math.atan2(vy[i], vx[i]);
+  }
 
   for (let i = 0; i < N; i++) {
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
@@ -2409,6 +2430,66 @@ function drawBoids() {
     const tNorm     = (Math.sin(phase) * 0.5 + 0.5);
     const frameIdx  = Math.floor(tNorm * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
     const sprite    = sprites[frameIdx];
+
+    // ---- 尻尾（動的描画）----
+    // 進行方向後方に TAIL_SEGS セグメントをカーブさせる。
+    // 各セグメントは「過去の角度履歴」を逆方向に使い、旋回に遅れて追従する。
+    // 速度が速いほど角度差が小さくなりまっすぐ伸び、急旋回ほど大きくしなる。
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.lineCap     = "round";
+    ctx.lineJoin    = "round";
+
+    // 尻尾の根元：胴体後端（進行方向の逆、約5px 後ろ）
+    const tailRootOffX = -Math.cos(angle) * 5;
+    const tailRootOffY = -Math.sin(angle) * 5;
+    let segX = wx + tailRootOffX;
+    let segY = wy + tailRootOffY;
+
+    const base = i * TAIL_SEGS;
+    // 速度の大きさで「尻尾のまっすぐ度」を調整（速いと旋回が少なくまっすぐ）
+    const speed    = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+    const maxSpeed = BASE_CFG.maxSpeed || 120;
+    // speedRatio: 0（低速）〜1（最高速）。低速ほどしなりを強調
+    const speedRatio = Math.min(1, speed / maxSpeed);
+    // 時間ベースの微小揺れ（個体ごとに位相をずらす）
+    const wobble = Math.sin(breathTime * 4.0 + BOID_FLAP_PHASE[i] * Math.PI * 2) * TAIL_WOBBLE;
+
+    for (let s = 0; s < TAIL_SEGS; s++) {
+      // s番目のセグメントは「s個前の角度履歴」の逆方向（後方）を使う
+      // 旋回差：現在角度と履歴角度の差をセグメント方向に加える
+      const histAngle  = boidAngleHistory[base + Math.min(s, TAIL_SEGS - 1)];
+      // 旋回差を -π〜+π に正規化
+      let   angleDiff  = histAngle - angle;
+      while (angleDiff >  Math.PI) angleDiff -= Math.PI * 2;
+      while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+      // しなり量：低速時に大きく、高速時に小さく。さらに時間揺れを足す
+      const curl       = angleDiff * (1 - speedRatio * 0.6) + wobble * (1 - s / TAIL_SEGS);
+      // セグメント方向：進行方向の逆 + 旋回差による横ずれ
+      const segAngle   = angle + Math.PI + curl;
+      const nextX      = segX + Math.cos(segAngle) * TAIL_SEG_LEN;
+      const nextY      = segY + Math.sin(segAngle) * TAIL_SEG_LEN;
+
+      // テーパリング：根元太く先細り
+      const taper      = (1 - (s + 1) / (TAIL_SEGS + 1));
+      const lineW      = Math.max(0.4, TAIL_WIDTH0 * taper);
+      // 先端に向けて少し透明に
+      const tailAlpha  = alpha * (0.75 + 0.25 * taper);
+
+      ctx.globalAlpha  = tailAlpha;
+      ctx.lineWidth    = lineW;
+      ctx.strokeStyle  = palette.body;
+      ctx.beginPath();
+      ctx.moveTo(segX, segY);
+      ctx.lineTo(nextX, nextY);
+      ctx.stroke();
+
+      segX = nextX;
+      segY = nextY;
+    }
+
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
 
     // ---- drawImage（rotate→translate。毎フレームパスを引かない） ----
     ctx.save();
@@ -2643,8 +2724,8 @@ const DRAGON_FLAP_FRAMES = 8;      // 羽ばたき1サイクルのフレーム�
 const DRAGON_FLAP_SPEED  = 3.5;   // 羽ばたきサイクル毎秒（breathTime に掛ける係数）
 
 // スプライト1枚の論理サイズ（翼を広げた最大幅を内包する正方形）
-// 竜全長は頭先〜尾先で約34px、翼幅（上下合計）は最大約32px
-// 回転しても切れないよう対角線分の余裕 → ceil(sqrt(34²+32²)) ≈ 47 → 52px
+// 胴体+翼+頭のみ（尻尾は動的描画に変更）
+// 頭先 x=13 ～ 翼後端 x≈-9、翼高さ ±17 → 幅22×高34 → 対角 ceil(sqrt(22²+34²))≈41 → 52px で余裕あり
 const DRAGON_SPRITE_LOGICAL = 52;
 
 // 要素 × フレームのスプライトキャッシュ
@@ -2658,6 +2739,20 @@ for (let i = 0; i < 20; i++) {
   // 黄金角分割でなるべく均等に散らす
   BOID_FLAP_PHASE[i] = (i * 0.618033988) % 1.0;
 }
+
+// -----------------------------------------------------------------
+// 尻尾：動的描画パラメータ
+// -----------------------------------------------------------------
+// 各boidの過去の進行角度を保持するリングバッファ
+// TAIL_SEGS セグメント分の角度を記録し、旋回に追従した「鞭のしなり」を実現する。
+// MAX_BOIDS=20、TAIL_SEGS=5 → 100要素のFloat32Array（≈400Bytes）
+const TAIL_SEGS     = 5;    // 尻尾セグメント数（多いほど滑らかだがコスト増）
+const TAIL_SEG_LEN  = 4.5;  // 1セグメントの長さ（論理px）
+const TAIL_WIDTH0   = 2.2;  // 根元の線幅（px）
+const TAIL_WOBBLE   = 0.06; // 時間ベースの微小揺れ振幅（ラジアン）。過剰にならない値
+// boidAngleHistory[i * TAIL_SEGS + s] = s 個前のフレームの進行角度
+// s=0 が最新（現在の angle）、s=TAIL_SEGS-1 が最も古い
+let boidAngleHistory; // initBoids() で確保
 
 /**
  * 竜シルエットを1フレーム分オフスクリーンcanvasに描画して返す。
@@ -2684,19 +2779,8 @@ function renderDragonFrame(element, wingAngle, spritePx) {
   // --- 全体を半透明に --- globalAlpha でなく fillStyle/strokeStyle に埋め込む
   // 死亡フェードは drawBoids 側で globalAlpha を設定するためここでは 1.0 で焼く
 
-  // ---- 尾（胴体後端から後方へ曲線で伸びる） ----
-  // 尾は中心から -X 方向（後方）に S字状
-  c.beginPath();
-  c.moveTo(-5, 0);
-  // 制御点: 少し上向きに曲がってから下へ落ちる
-  c.bezierCurveTo(-10, -3, -18, 2, -22, -1);
-  c.bezierCurveTo(-26, -3, -28, 1, -30, 0);
-  c.lineWidth   = 2.0;
-  c.strokeStyle = palette.body;
-  c.lineCap     = "round";
-  c.stroke();
-
   // ---- 胴体（細長い楕円形） ----
+  // 注意: 尻尾は毎フレーム drawBoids() で動的描画するためここでは焼かない
   // +X が頭方向。胴体は x=-5〜+12 の範囲、中心y=0
   c.beginPath();
   c.ellipse(4, 0, 9, 3.2, 0, 0, Math.PI * 2);
@@ -2711,9 +2795,9 @@ function renderDragonFrame(element, wingAngle, spritePx) {
   // wSpan: 翼の横方向長さ（水平から前後に広がる）
   // wUp/wDown: 翼先端の Y オフセット（wingAngle で変化）
   const wBase    = 2;   // 翼の付け根 x
-  const wSpanX   = 13;  // 翼先端の x オフセット（斜め後方）
+  const wSpanX   = 15;  // 翼先端の x オフセット（斜め後方）。13→15 で横リーチ拡大
   const wDepth   = -5;  // 翼先端の x 前後ずれ（後退翼らしさ）
-  const wOpen    = 13;  // 水平展開時の Y 振れ幅
+  const wOpen    = 17;  // 水平展開時の Y 振れ幅。13→17 で竜らしい翼幅に拡大
 
   // wingAngle が 0 = 水平（最大展開）、π/2 に近づく = たたんだ状態（翼を閉じる）
   const yOffset = Math.cos(wingAngle) * wOpen;   // 正= 下方向
