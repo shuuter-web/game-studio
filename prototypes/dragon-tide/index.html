@@ -2381,6 +2381,15 @@ function drawBreathAttacks(now) {
 }
 
 function drawBoids() {
+  // プリレンダスプライトのDPR（createDragonSprites で使ったものと一致させる）
+  const spriteDpr     = Math.min(window.devicePixelRatio || 1, 2);
+  const spritePx      = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
+  const halfLogical   = DRAGON_SPRITE_LOGICAL / 2;
+  const sprites       = dragonSprites["fire"]; // 現在は火属性のみ
+
+  // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
+  if (!sprites || sprites.length === 0) return;
+
   for (let i = 0; i < N; i++) {
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
 
@@ -2389,22 +2398,34 @@ function drawBoids() {
       alpha = (boidFadeTimer[i] / FADE_DURATION) * 0.85;
     }
 
-    const wx = px[i], wy = py[i];
+    const wx    = px[i], wy = py[i];
     const angle = Math.atan2(vy[i], vx[i]);
 
+    // ---- 羽ばたきフレーム選択 ----
+    // breathTime（毎フレーム dt 加算済み）に個体ごとの位相オフセットを加算
+    // → 群れが一斉でなくバラバラに羽ばたく
+    const phase     = breathTime * DRAGON_FLAP_SPEED + BOID_FLAP_PHASE[i] * Math.PI * 2;
+    // sin を 0〜1 に正規化してフレームインデックスへ
+    const tNorm     = (Math.sin(phase) * 0.5 + 0.5);
+    const frameIdx  = Math.floor(tNorm * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
+    const sprite    = sprites[frameIdx];
+
+    // ---- drawImage（rotate→translate。毎フレームパスを引かない） ----
     ctx.save();
+    ctx.globalAlpha = alpha;
     ctx.translate(wx, wy);
     ctx.rotate(angle);
-    ctx.fillStyle = `rgba(120, 200, 255, ${alpha.toFixed(3)})`;
-    ctx.beginPath();
-    ctx.moveTo(10,  0);
-    ctx.lineTo(-7,   5);
-    ctx.lineTo(-4,   0);
-    ctx.lineTo(-7,  -5);
-    ctx.closePath();
-    ctx.fill();
+    // スプライト中心が竜の重心に来るよう -halfLogical オフセット
+    ctx.drawImage(
+      sprite,
+      0, 0, spritePx, spritePx,             // ソース（物理px）
+      -halfLogical, -halfLogical,             // デスト位置（論理px）
+      DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL, // デストサイズ（論理px）
+    );
+    ctx.globalAlpha = 1.0;
     ctx.restore();
 
+    // ---- HPバー（既存ロジックを維持） ----
     if (!boidDead[i] && boidHp[i] < BOID_MAX_HP) {
       const hpRatio = Math.max(0, boidHp[i] / BOID_MAX_HP);
       const barW = 14;
@@ -2606,6 +2627,189 @@ function tickFps(now) {
 }
 
 // -----------------------------------------------------------------
+// 竜スプライト（プリレンダ方式）
+// -----------------------------------------------------------------
+// 属性カラーパレット定義 — 将来の属性追加時はここに追加するだけでよい
+const DRAGON_ELEMENT_COLORS = {
+  // 各属性: { body, wing, rimAlpha }
+  // bodyは胴体中心色、wingは翼の先端色、rimAlpha は縁の透明度
+  fire:   { body: "rgba(120, 200, 255, 1.0)", wing: "rgba(80, 160, 255, 1.0)",  rim: "rgba(60, 120, 220, 0.0)" },
+  ice:    { body: "rgba(180, 240, 255, 1.0)", wing: "rgba(140, 220, 255, 1.0)", rim: "rgba(100, 180, 240, 0.0)" },
+  shadow: { body: "rgba(180, 100, 255, 1.0)", wing: "rgba(120, 60, 200, 1.0)",  rim: "rgba(80, 30, 160, 0.0)" },
+};
+
+// プリレンダ設定
+const DRAGON_FLAP_FRAMES = 8;      // 羽ばたき1サイクルのフレーム数
+const DRAGON_FLAP_SPEED  = 3.5;   // 羽ばたきサイクル毎秒（breathTime に掛ける係数）
+
+// スプライト1枚の論理サイズ（翼を広げた最大幅を内包する正方形）
+// 竜全長は頭先〜尾先で約34px、翼幅（上下合計）は最大約32px
+// 回転しても切れないよう対角線分の余裕 → ceil(sqrt(34²+32²)) ≈ 47 → 52px
+const DRAGON_SPRITE_LOGICAL = 52;
+
+// 要素 × フレームのスプライトキャッシュ
+// dragonSprites["fire"][frameIndex] = OffscreenCanvas or HTMLCanvasElement
+const dragonSprites = {};
+
+// 個体ごとの羽ばたき位相オフセット（index で決定的に割り当て）
+// 0〜1 の値 × 2π がラジアン位相
+const BOID_FLAP_PHASE = new Float32Array(20); // MAX_BOIDS=20
+for (let i = 0; i < 20; i++) {
+  // 黄金角分割でなるべく均等に散らす
+  BOID_FLAP_PHASE[i] = (i * 0.618033988) % 1.0;
+}
+
+/**
+ * 竜シルエットを1フレーム分オフスクリーンcanvasに描画して返す。
+ * @param {string} element  "fire" | "ice" | "shadow"
+ * @param {number} wingAngle  翼の上下角度（ラジアン）。0=水平、+はたたんだ方向
+ * @param {number} spritePx  canvas物理解像度（= 論理サイズ × DPR）
+ * @returns {HTMLCanvasElement}
+ */
+function renderDragonFrame(element, wingAngle, spritePx) {
+  const oc = document.createElement("canvas");
+  oc.width  = spritePx;
+  oc.height = spritePx;
+  const c = oc.getContext("2d");
+
+  const palette = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
+  const half    = spritePx / 2;
+  // 論理サイズ→物理ピクセルへのスケール
+  const scale   = spritePx / DRAGON_SPRITE_LOGICAL;
+
+  c.save();
+  c.translate(half, half);
+  c.scale(scale, scale);
+
+  // --- 全体を半透明に --- globalAlpha でなく fillStyle/strokeStyle に埋め込む
+  // 死亡フェードは drawBoids 側で globalAlpha を設定するためここでは 1.0 で焼く
+
+  // ---- 尾（胴体後端から後方へ曲線で伸びる） ----
+  // 尾は中心から -X 方向（後方）に S字状
+  c.beginPath();
+  c.moveTo(-5, 0);
+  // 制御点: 少し上向きに曲がってから下へ落ちる
+  c.bezierCurveTo(-10, -3, -18, 2, -22, -1);
+  c.bezierCurveTo(-26, -3, -28, 1, -30, 0);
+  c.lineWidth   = 2.0;
+  c.strokeStyle = palette.body;
+  c.lineCap     = "round";
+  c.stroke();
+
+  // ---- 胴体（細長い楕円形） ----
+  // +X が頭方向。胴体は x=-5〜+12 の範囲、中心y=0
+  c.beginPath();
+  c.ellipse(4, 0, 9, 3.2, 0, 0, Math.PI * 2);
+  const bodyGrad = c.createRadialGradient(5, -1, 0.5, 4, 0, 9);
+  bodyGrad.addColorStop(0.0, palette.body);
+  bodyGrad.addColorStop(1.0, palette.rim);
+  c.fillStyle = bodyGrad;
+  c.fill();
+
+  // ---- 翼（左右対称。wingAngle で上下に開閉） ----
+  // 翼は胴体中央付近 (x=2, y=0) から伸びる。
+  // wSpan: 翼の横方向長さ（水平から前後に広がる）
+  // wUp/wDown: 翼先端の Y オフセット（wingAngle で変化）
+  const wBase    = 2;   // 翼の付け根 x
+  const wSpanX   = 13;  // 翼先端の x オフセット（斜め後方）
+  const wDepth   = -5;  // 翼先端の x 前後ずれ（後退翼らしさ）
+  const wOpen    = 13;  // 水平展開時の Y 振れ幅
+
+  // wingAngle が 0 = 水平（最大展開）、π/2 に近づく = たたんだ状態（翼を閉じる）
+  const yOffset = Math.cos(wingAngle) * wOpen;   // 正= 下方向
+
+  // 上翼
+  drawWing(c, wBase, 0, wBase + wDepth, -yOffset, wSpanX, palette, +1);
+  // 下翼
+  drawWing(c, wBase, 0, wBase + wDepth,  yOffset, wSpanX, palette, -1);
+
+  // ---- 頭（+X 方向の先端、小さな三角形の嘴） ----
+  c.beginPath();
+  c.moveTo(13, 0);    // 嘴先端
+  c.lineTo(9, -2.0);
+  c.lineTo(8,  0);
+  c.lineTo(9,  2.0);
+  c.closePath();
+  c.fillStyle = palette.body;
+  c.fill();
+
+  // ---- 小さな角（頭部上部） ----
+  c.beginPath();
+  c.moveTo(11, -1.5);
+  c.lineTo(13, -4);
+  c.lineTo(10, -2.5);
+  c.closePath();
+  c.fillStyle = palette.wing;
+  c.globalAlpha = 0.75;
+  c.fill();
+  c.globalAlpha = 1.0;
+
+  c.restore();
+  return oc;
+}
+
+/**
+ * 翼を1枚描画するヘルパー
+ * @param {CanvasRenderingContext2D} c
+ * @param {number} bx  翼の付け根 x
+ * @param {number} by  翼の付け根 y
+ * @param {number} mx  翼の中間折り返し x
+ * @param {number} my  翼の先端 y（上翼は負、下翼は正）
+ * @param {number} spanX  翼先端の x オフセット（後退翼）
+ * @param {Object} palette
+ * @param {number} sign  +1=上翼 -1=下翼（グラデーション方向用）
+ */
+function drawWing(c, bx, by, mx, my, spanX, palette, sign) {
+  // 翼の先端座標（後退翼: x が胴体より少し後ろへ）
+  const tipX = mx - spanX * 0.4;
+  const tipY = my;
+
+  // 翼形状: 付け根→翼膜前縁→先端→翼膜後縁→付け根
+  c.beginPath();
+  c.moveTo(bx, by);
+  // 前縁（進行方向側）
+  c.quadraticCurveTo(bx + 4, my * 0.5, tipX, tipY);
+  // 後縁（尾側）
+  c.quadraticCurveTo(bx - 3, my * 0.6, bx, by);
+  c.closePath();
+
+  // グラデーション: 付け根は body色、先端は wing色（より透明）
+  const grd = c.createLinearGradient(bx, by, tipX, tipY);
+  grd.addColorStop(0.0, palette.body);
+  grd.addColorStop(0.6, palette.wing);
+  grd.addColorStop(1.0, palette.rim);
+  c.fillStyle = grd;
+  c.fill();
+
+  // 翼の骨格ライン（輪郭を少し締める）
+  c.strokeStyle = palette.wing;
+  c.lineWidth   = 0.6;
+  c.globalAlpha = 0.5;
+  c.stroke();
+  c.globalAlpha = 1.0;
+}
+
+/**
+ * 起動時に全属性・全フレームのスプライトをプリレンダして dragonSprites に格納する。
+ * 呼び出し後は毎フレームの drawBoids で drawImage するだけでよい。
+ */
+function createDragonSprites() {
+  const spriteDpr  = Math.min(window.devicePixelRatio || 1, 2);
+  const spritePx   = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
+
+  for (const element of Object.keys(DRAGON_ELEMENT_COLORS)) {
+    dragonSprites[element] = [];
+    for (let f = 0; f < DRAGON_FLAP_FRAMES; f++) {
+      // 羽ばたきの位相: 0〜2π を FLAP_FRAMES 分割
+      // wingAngle: 0=水平（最大展開）→ π*0.65 = 約37度折りたたみ
+      const phase     = (f / DRAGON_FLAP_FRAMES) * Math.PI * 2;
+      const wingAngle = (Math.sin(phase) * 0.5 + 0.5) * (Math.PI * 0.65);
+      dragonSprites[element].push(renderDragonFrame(element, wingAngle, spritePx));
+    }
+  }
+}
+
+// -----------------------------------------------------------------
 // ユーティリティ
 // -----------------------------------------------------------------
 function shadeColor(hex, amount) {
@@ -2677,6 +2881,8 @@ document.addEventListener("visibilitychange", () => {
 // -----------------------------------------------------------------
 function boot() {
   resize();
+  // 竜スプライトを起動時に一度だけプリレンダする（DPR確定後に呼ぶこと）
+  createDragonSprites();
   createBuildingLayer();
   settlements = generateStageLayout(0);
   rebuildBuildingGrid();
