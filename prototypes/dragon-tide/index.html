@@ -2397,18 +2397,18 @@ function drawBoids() {
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
   if (!sprites || sprites.length === 0) return;
 
-  // ---- 角度履歴の更新（描画直前に1フレーム分シフト） ----
-  // s=0 が「現在フレームの角度」になるよう末尾から先頭方向へコピーしてから書く
-  // ヒットストップ中は vx/vy が凍結されているので履歴も同じ角度が積まれる（正しい挙動）
+  // ---- 尻尾の緩和チェーン更新 ----
+  // 先頭セグメントは現在の進行方向へ、後続は1つ前のセグメントへ、指数平滑で寄せる。
+  // これにより尻尾は遅れて柔らかくしなる（生の履歴シフトのカクつきを排除）。
+  // ヒットストップ中は vx/vy が凍結されるので尻尾はゆっくりまっすぐに落ち着く。
   for (let i = 0; i < N; i++) {
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
     const base = i * TAIL_SEGS;
-    // 古い方向にシフト（末尾→前方向）
-    for (let s = TAIL_SEGS - 1; s > 0; s--) {
-      boidAngleHistory[base + s] = boidAngleHistory[base + s - 1];
+    const head = Math.atan2(vy[i], vx[i]);
+    boidAngleHistory[base] = easeAngle(boidAngleHistory[base], head, TAIL_EASE_HEAD);
+    for (let s = 1; s < TAIL_SEGS; s++) {
+      boidAngleHistory[base + s] = easeAngle(boidAngleHistory[base + s], boidAngleHistory[base + s - 1], TAIL_EASE_SEG);
     }
-    // 最新角度を s=0 に書く
-    boidAngleHistory[base] = Math.atan2(vy[i], vx[i]);
   }
 
   for (let i = 0; i < N; i++) {
@@ -2453,7 +2453,7 @@ function drawBoids() {
     // speedRatio: 0（低速）〜1（最高速）。低速ほどしなりを強調
     const speedRatio = Math.min(1, speed / maxSpeed);
     // 時間ベースの微小揺れ（個体ごとに位相をずらす）
-    const wobble = Math.sin(breathTime * 4.0 + BOID_FLAP_PHASE[i] * Math.PI * 2) * TAIL_WOBBLE;
+    const wobble = Math.sin(breathTime * 1.5 + BOID_FLAP_PHASE[i] * Math.PI * 2) * TAIL_WOBBLE;
 
     for (let s = 0; s < TAIL_SEGS; s++) {
       // s番目のセグメントは「s個前の角度履歴」の逆方向（後方）を使う
@@ -2721,7 +2721,8 @@ const DRAGON_ELEMENT_COLORS = {
 
 // プリレンダ設定
 const DRAGON_FLAP_FRAMES = 8;      // 羽ばたき1サイクルのフレーム数
-const DRAGON_FLAP_SPEED  = 3.5;   // 羽ばたきサイクル毎秒（breathTime に掛ける係数）
+const DRAGON_FLAP_SPEED  = 1.6;   // 羽ばたきサイクル毎秒（breathTime に掛ける係数）。
+                                  // 低いほどゆったり滑空する。速いと虫のように見えるため抑えめ。
 
 // スプライト1枚の論理サイズ（翼を広げた最大幅を内包する正方形）
 // 胴体+翼+頭のみ（尻尾は動的描画に変更）
@@ -2749,10 +2750,23 @@ for (let i = 0; i < 20; i++) {
 const TAIL_SEGS     = 5;    // 尻尾セグメント数（多いほど滑らかだがコスト増）
 const TAIL_SEG_LEN  = 4.5;  // 1セグメントの長さ（論理px）
 const TAIL_WIDTH0   = 2.2;  // 根元の線幅（px）
-const TAIL_WOBBLE   = 0.06; // 時間ベースの微小揺れ振幅（ラジアン）。過剰にならない値
-// boidAngleHistory[i * TAIL_SEGS + s] = s 個前のフレームの進行角度
-// s=0 が最新（現在の angle）、s=TAIL_SEGS-1 が最も古い
+const TAIL_WOBBLE   = 0.07; // 時間ベースの微小揺れ振幅（ラジアン）。過剰にならない値
+// 尻尾は「緩和チェーン」で柔らかく追従させる。各フレーム、先頭は現在の進行方向へ、
+// 後続セグメントは1つ前のセグメントへ、指数平滑で少しずつ寄っていく（バネ/鞭のしなり）。
+// 係数が小さいほど遅れて柔らかくしなる。生の履歴をそのまま使うとカクつくため平滑化する。
+const TAIL_EASE_HEAD = 0.18; // 先頭セグメントが現在の進行方向へ寄る速さ
+const TAIL_EASE_SEG  = 0.16; // 後続セグメントが前セグメントへ寄る速さ
+// boidAngleHistory[i * TAIL_SEGS + s] = 平滑化された各セグメントの向き
+// s=0 が先頭（頭に近い）、s=TAIL_SEGS-1 が尾の先端
 let boidAngleHistory; // initBoids() で確保
+
+// 角度を最短回り（±π境界をまたがない）で target へ k だけ寄せる
+function easeAngle(cur, target, k) {
+  let d = target - cur;
+  while (d >  Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return cur + d * k;
+}
 
 /**
  * 竜シルエットを1フレーム分オフスクリーンcanvasに描画して返す。
