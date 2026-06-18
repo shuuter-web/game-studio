@@ -101,47 +101,6 @@
     pointer-events: none;
   }
 
-  /* 隊形切替ボタン — 画面下部 */
-  #formation-bar {
-    position: fixed;
-    bottom: 0;
-    left: 0; right: 0;
-    height: calc(20vh + env(safe-area-inset-bottom, 0px));
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 16px;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    pointer-events: none;
-  }
-  .formation-btn {
-    pointer-events: auto;
-    width: 56px;
-    height: 56px;
-    border-radius: 50%;
-    border: 2px solid rgba(120, 200, 255, 0.35);
-    background: rgba(10, 22, 38, 0.80);
-    color: #d8e6f2;
-    font-size: 11px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-    -webkit-tap-highlight-color: transparent;
-    line-height: 1.2;
-    gap: 2px;
-  }
-  .formation-btn .icon { font-size: 20px; line-height: 1; }
-  .formation-btn .label { font-size: 9px; color: #8ab; opacity: 0.8; }
-  .formation-btn.active {
-    background: rgba(30, 90, 138, 0.90);
-    border-color: #6fc0ff;
-    box-shadow: 0 0 12px rgba(111, 192, 255, 0.40);
-  }
-  .formation-btn.active .label { color: #adf; opacity: 1; }
-
   /* リトライ / クリアオーバーレイ */
   #overlay {
     position: fixed;
@@ -237,20 +196,6 @@
   <canvas id="minimap" width="80" height="60"></canvas>
 </div>
 
-<!-- 隊形ボタン -->
-<div id="formation-bar">
-  <button class="formation-btn"        id="btn-tight"  data-formation="tight">
-    <span class="icon">&#9679;</span><span class="label">密集</span>
-  </button>
-  <!-- 変更3: 初期ハイライトを散開に -->
-  <button class="formation-btn active" id="btn-spread" data-formation="spread">
-    <span class="icon">&#8756;</span><span class="label">散開</span>
-  </button>
-  <button class="formation-btn"       id="btn-ring"   data-formation="ring">
-    <span class="icon">&#9675;</span><span class="label">円環</span>
-  </button>
-</div>
-
 <!-- ゲームオーバー/クリアオーバーレイ -->
 <div id="overlay">
   <div id="overlay-title">EPOCH CONQUERED</div>
@@ -297,15 +242,16 @@ const BREATH_PARTICLE_INTERVAL = 0.2;
 // -----------------------------------------------------------------
 // バランスデータ（Phase2から流用）
 // -----------------------------------------------------------------
+// Boids パラメータ（散開相当の値を恒久固定値として採用）
 const BASE_CFG = {
-  perception:       40,
-  separationRadius: 18,
+  perception:       55,   // spread 値
+  separationRadius: 28,   // spread 値
   maxSpeed:         160,
   minSpeed:         60,
   maxForce:         320,
-  wSeparation:      1.8,
+  wSeparation:      2.5,  // spread 値
   wAlignment:       1.0,
-  wCohesion:        0.9,
+  wCohesion:        0.4,  // spread 値
   wLeader:          1.6,
   leaderSeekDist:   80,
   pathMaxPoints:    240,
@@ -314,20 +260,6 @@ const BASE_CFG = {
   idleWanderRadius: 120,
   fixedStepMs:      16,
   maxDtMs:          64,
-};
-
-const FORMATION_OVERRIDES = {
-  tight:  { wCohesion: 2.2, wSeparation: 0.8, perception: 30, separationRadius: 12 },
-  spread: { wCohesion: 0.4, wSeparation: 2.5, perception: 55, separationRadius: 28 },
-  ring:   { wCohesion: 1.5, wSeparation: 1.2, perception: 45, separationRadius: 22, ringRadius: 80 },
-};
-
-// 隊形別戦闘パラメータ
-// attackMultiplier はブレスダメージ倍率に使用
-const FORMATION_COMBAT = {
-  tight:  { attackMultiplier: 2.0, hitRateMultiplier: 1.3, flashColor: "rgba(255,80,40,0.15)" },
-  spread: { attackMultiplier: 0.8, hitRateMultiplier: 0.6, flashColor: "rgba(60,120,255,0.15)" },
-  ring:   { attackMultiplier: 0.6, hitRateMultiplier: 0.3, flashColor: "rgba(40,200,100,0.15)" },
 };
 
 // -----------------------------------------------------------------
@@ -588,7 +520,8 @@ function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   viewW = window.innerWidth;
   viewH = window.innerHeight;
-  bottomUIHeight = viewH * 0.20;
+  // 隊形ボタンを撤廃したため UI 領域は 0 — 画面全体が線描画エリア
+  bottomUIHeight = 0;
   canvas.width  = Math.floor(viewW * dpr);
   canvas.height = Math.floor(viewH * dpr);
   canvas.style.width  = viewW + "px";
@@ -1283,9 +1216,8 @@ function updateBreathAttacks(dt) {
   activeBreaths.length = 0;
 
   const BREATH_R2 = BREATH_RANGE * BREATH_RANGE;
-  const combatParams = FORMATION_COMBAT[currentFormation];
-  // 毎秒ダメージ × dt × 隊形倍率
-  const damageThisFrame = BREATH_DAMAGE_PER_SEC * dt * combatParams.attackMultiplier;
+  // attackMultiplier は隊形廃止により 1.0 固定
+  const damageThisFrame = BREATH_DAMAGE_PER_SEC * dt;
 
   // Spatial Hash を使ってブレス射程内の建物候補を絞る
   for (let i = 0; i < N; i++) {
@@ -1495,9 +1427,7 @@ let px, py, vx, vy;
 let boidHp;
 let boidDead;
 let boidFadeTimer;
-let formationLerp;
-let formationDelay;
-// 変更2: 衝突ヒットストップタイマー（>0の間、その個体を停止させる）
+// 衝突ヒットストップタイマー（>0の間、その個体を停止させる）
 let boidHitStopTimer;
 // 変更2: 衝突クールダウン（建物インデックスごとに記録）
 // boidCollisionCooldown[i] は「最後に衝突した時刻からの残り秒数」
@@ -1506,8 +1436,6 @@ let boidCollisionCooldown;
 // 変更4: 竜のHP を10倍（3 → 30）にして群れが簡単に壊滅しなくなる
 const BOID_MAX_HP   = 30;
 const FADE_DURATION = 0.3;
-const TRANSITION_SECS = 0.15;
-const JITTER_MAX = 0.08;
 
 // 変更2: 衝突攻撃パラメータ
 // ブレスより大きい単発ダメージ（毎秒換算ではなく1ヒット）
@@ -1526,9 +1454,7 @@ function initBoids() {
   boidHp              = new Float32Array(N);
   boidDead            = new Uint8Array(N);
   boidFadeTimer       = new Float32Array(N);
-  formationLerp       = new Float32Array(N);
-  formationDelay      = new Float32Array(N);
-  // 変更2: ヒットストップ＋衝突クールダウン配列
+  // ヒットストップ＋衝突クールダウン配列
   boidHitStopTimer    = new Float32Array(N);
   boidCollisionCooldown = new Float32Array(N);
   // 尻尾角度履歴リングバッファ（TAIL_SEGS個前までの進行角度）
@@ -1547,8 +1473,6 @@ function initBoids() {
     boidHp[i]        = BOID_MAX_HP;
     boidDead[i]      = 0;
     boidFadeTimer[i] = 0;
-    formationLerp[i]  = 1.0;
-    formationDelay[i] = 0;
     // 尻尾角度履歴：初期値は現在の進行角度で埋める
     for (let s = 0; s < TAIL_SEGS; s++) {
       boidAngleHistory[i * TAIL_SEGS + s] = ang;
@@ -1568,8 +1492,6 @@ function resetBoidsPositionForNextStage() {
     const ang = Math.random() * Math.PI * 2;
     vx[i] = Math.cos(ang) * BASE_CFG.minSpeed;
     vy[i] = Math.sin(ang) * BASE_CFG.minSpeed;
-    formationLerp[i]  = 1.0;
-    formationDelay[i] = 0;
   }
 }
 
@@ -1663,7 +1585,6 @@ function collectNearbyEggs() {
 // -----------------------------------------------------------------
 let flashTimer = 0;
 let flashColor = "";
-let formationJustChanged = false;
 
 function triggerFlash(color, duration) {
   flashTimer = duration ?? 0.1;
@@ -1797,8 +1718,6 @@ function restartGame() {
 
   initBoids();
   resetLeader();
-  // 変更3: リスタート後も散開をデフォルトにする
-  setFormation("spread");
   updateHUDEggs();
   updateHUDStage();
   updateHUDBuildings();
@@ -1858,39 +1777,6 @@ function resetLeader() {
   pathClear();
   idleAngle = 0;
 }
-
-// -----------------------------------------------------------------
-// 隊形管理
-// -----------------------------------------------------------------
-// 変更3: デフォルト隊形を散開にする
-let currentFormation = "spread";
-let prevFormation    = "spread";
-
-function setFormation(name) {
-  if (name === currentFormation) return;
-  prevFormation    = currentFormation;
-  currentFormation = name;
-  for (let i = 0; i < N; i++) {
-    formationLerp[i]  = 0;
-    formationDelay[i] = Math.random() * JITTER_MAX;
-  }
-  hapticPulse(30);
-  formationJustChanged = true;
-  updateFormationButtons(name);
-}
-
-function updateFormationButtons(name) {
-  document.querySelectorAll(".formation-btn").forEach(btn => {
-    btn.classList.toggle("active", btn.dataset.formation === name);
-  });
-}
-
-document.querySelectorAll(".formation-btn").forEach(btn => {
-  btn.addEventListener("pointerdown", (e) => {
-    e.stopPropagation();
-    setFormation(btn.dataset.formation);
-  });
-});
 
 // -----------------------------------------------------------------
 // 触覚フィードバック
@@ -2007,9 +1893,8 @@ function updateDeathTimers(dt) {
 }
 
 function applyDamageToBoid(boidIndex, damage) {
-  const combatParams = FORMATION_COMBAT[currentFormation];
-  const effectiveDamage = damage * combatParams.hitRateMultiplier;
-  boidHp[boidIndex] -= effectiveDamage;
+  // hitRateMultiplier は隊形廃止により 1.0 固定
+  boidHp[boidIndex] -= damage;
   if (boidHp[boidIndex] <= 0 && !boidDead[boidIndex]) {
     boidDead[boidIndex]      = 1;
     boidFadeTimer[boidIndex] = FADE_DURATION;
@@ -2031,54 +1916,23 @@ function checkGameConditions() {
 // -----------------------------------------------------------------
 const neighbours = [];
 
-function buildFormationParams() {
-  const ov = FORMATION_OVERRIDES[currentFormation] ?? {};
-  return {
-    perception:       ov.perception       ?? BASE_CFG.perception,
-    separationRadius: ov.separationRadius ?? BASE_CFG.separationRadius,
-    wSeparation:      ov.wSeparation      ?? BASE_CFG.wSeparation,
-    wAlignment:       BASE_CFG.wAlignment,
-    wCohesion:        ov.wCohesion        ?? BASE_CFG.wCohesion,
-    ringRadius:       ov.ringRadius       ?? 0,
-  };
-}
-
-function buildPrevFormationParams() {
-  const ov = FORMATION_OVERRIDES[prevFormation] ?? {};
-  return {
-    perception:       ov.perception       ?? BASE_CFG.perception,
-    separationRadius: ov.separationRadius ?? BASE_CFG.separationRadius,
-    wSeparation:      ov.wSeparation      ?? BASE_CFG.wSeparation,
-    wAlignment:       BASE_CFG.wAlignment,
-    wCohesion:        ov.wCohesion        ?? BASE_CFG.wCohesion,
-    ringRadius:       ov.ringRadius       ?? 0,
-  };
-}
-
-function lerpVal(a, b, t) { return a + (b - a) * t; }
-
 function simStep(dt) {
   updateLeader(dt);
 
-  for (let i = 0; i < N; i++) {
-    if (boidDead[i]) continue;
-    if (formationDelay[i] > 0) {
-      formationDelay[i] -= dt;
-    } else if (formationLerp[i] < 1) {
-      formationLerp[i] = Math.min(1, formationLerp[i] + dt / TRANSITION_SECS);
-    }
-  }
-
-  // 変更2: ヒットストップ中の個体は移動・加速を計算するが位置更新をスキップ
+  // ヒットストップ中の個体は移動・加速を計算するが位置更新をスキップ
   // （速度ベクトルは維持することで停止後にスムーズに動き出す）
   const boidHitStopped = boidHitStopTimer; // 参照を短縮
 
-  const paramsNext = buildFormationParams();
-  const paramsPrev = buildPrevFormationParams();
+  // 隊形廃止により BASE_CFG の固定値を直接参照
+  const perc = BASE_CFG.perception;
+  const sepR = BASE_CFG.separationRadius;
+  const wSep = BASE_CFG.wSeparation;
+  const wAli = BASE_CFG.wAlignment;
+  const wCoh = BASE_CFG.wCohesion;
 
   gridClear();
   for (let i = 0; i < N; i++) {
-    if (!boidDead[i]) gridInsert(i, px[i], py[i], paramsNext.perception);
+    if (!boidDead[i]) gridInsert(i, px[i], py[i], perc);
   }
 
   for (let i = 0; i < N; i++) {
@@ -2089,14 +1943,6 @@ function simStep(dt) {
     // 三角形がチラついて見えるため（ちらつき報告の原因）。
     if (boidHitStopped[i] > 0) continue;
 
-    const t    = formationLerp[i];
-    const perc = lerpVal(paramsPrev.perception,       paramsNext.perception,       t);
-    const sepR = lerpVal(paramsPrev.separationRadius, paramsNext.separationRadius, t);
-    const wSep = lerpVal(paramsPrev.wSeparation,      paramsNext.wSeparation,      t);
-    const wAli = paramsNext.wAlignment;
-    const wCoh = lerpVal(paramsPrev.wCohesion,        paramsNext.wCohesion,        t);
-    const ringR = lerpVal(paramsPrev.ringRadius,      paramsNext.ringRadius,       t);
-
     const perc2 = perc * perc;
     const sep2  = sepR * sepR;
     const xi = px[i], yi = py[i];
@@ -2106,7 +1952,7 @@ function simStep(dt) {
     let cohX = 0, cohY = 0;
     let nAli = 0, nCoh = 0;
 
-    gridQuery(xi, yi, paramsNext.perception, neighbours);
+    gridQuery(xi, yi, perc, neighbours);
     for (let k = 0; k < neighbours.length; k++) {
       const j = neighbours[k];
       if (j === i || boidDead[j]) continue;
@@ -2140,15 +1986,9 @@ function simStep(dt) {
     {
       const ldx = leader.x - xi, ldy = leader.y - yi;
       const ld  = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
-      if (ringR > 0) {
-        const targetX = leader.x - (ldx / ld) * ringR;
-        const targetY = leader.y - (ldy / ld) * ringR;
-        ax += (targetX - xi) * BASE_CFG.wLeader * 1.5;
-        ay += (targetY - yi) * BASE_CFG.wLeader * 1.5;
-      } else {
-        ax += (ldx / ld) * BASE_CFG.wLeader * 120;
-        ay += (ldy / ld) * BASE_CFG.wLeader * 120;
-      }
+      // 隊形廃止により ring 配置は常にスキップ — 通常リーダー追従のみ
+      ax += (ldx / ld) * BASE_CFG.wLeader * 120;
+      ay += (ldy / ld) * BASE_CFG.wLeader * 120;
     }
 
     const am = Math.sqrt(ax * ax + ay * ay);
