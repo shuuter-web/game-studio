@@ -240,6 +240,27 @@ const BREATH_DAMAGE_PER_SEC = 3.0;
 const BREATH_PARTICLE_INTERVAL = 0.2;
 
 // -----------------------------------------------------------------
+// 変更1: 卵持ち建物パラメータ
+// 全建物のうち約18%だけが陥落時に卵を落とす（EGG_BEARER_RATIO）。
+// 落とす卵は常に1個（EGG_DROP_COUNT）で群れの増加ペースを緩やかにする。
+// 視覚的な目印は毎フレーム動的描画（明滅アニメ付き）で陥落後は消える。
+// -----------------------------------------------------------------
+const EGG_BEARER_RATIO = 0.18; // 卵持ち建物の割合（0〜1）
+const EGG_DROP_COUNT   = 1;    // 陥落時に落とす卵の個数
+
+// -----------------------------------------------------------------
+// 変更2: ダウン/復帰モデル パラメータ
+// HP0 以下 → ダウン状態（フェードアウト → 一定秒後フェードインで全回復して復帰）
+// 恒久消滅はない。ダウン中は有効個体数から除外されカメラ・ブレス範囲に影響しない。
+// -----------------------------------------------------------------
+const BOID_DOWN_DURATION    = 5.0;  // ダウン継続秒数（この後フェードインで復帰）
+const BOID_REVIVE_DURATION  = 0.6;  // フェードイン復帰アニメ秒数
+
+// 1ヒットあたりのダメージ量（BOID_MAX_HP の約1/7 ≒ 数発耐える）
+// BOID_MAX_HP=30 → 約4.3ダメージ → 7発でダウン
+const PROJECTILE_HIT_DAMAGE = 4.3;
+
+// -----------------------------------------------------------------
 // バランスデータ（Phase2から流用）
 // -----------------------------------------------------------------
 // Boids パラメータ（散開相当の値を恒久固定値として採用）
@@ -737,6 +758,8 @@ function makeBuilding(wx, wy, size, color, bConfig, hp) {
     maxHp:  hp,
     hp,
     fallen: false,
+    // 変更1: 卵持ちフラグ（generateTown 内で EGG_BEARER_RATIO に従い後から設定する）
+    isEggBearer: false,
     attackTimer: Math.random() * bConfig.projectileInterval,
     attackRadius:        bConfig.attackRadius,
     projectileInterval:  bConfig.projectileInterval,
@@ -769,7 +792,48 @@ function generateStageLayout(stageIndex) {
     );
     for (const b of townBuildings) result.push(b);
   }
+
+  // 変更1: 卵持ちフラグをステージ全体に散らばらせて付与する。
+  // 町ごとに均等に割り当てることでクラスタ偏りを防ぐ。
+  // まず町の先頭インデックスを特定し、各町内でランダムに EGG_BEARER_RATIO 割合を選ぶ。
+  assignEggBearers(result);
+
   return result;
+}
+
+// 各町の建物リストから EGG_BEARER_RATIO の割合でランダムに卵持ちを選ぶ。
+// _townMeta を持つ建物が「町の先頭」なので、それを境界として町ごとに分割する。
+// 町ごとに割り当てることで全マップに散らばった配置になる。
+function assignEggBearers(buildings) {
+  // まず全フラグをリセット
+  for (const b of buildings) b.isEggBearer = false;
+
+  // _townMeta の有無で町の区切りを検出し、町ごとの配列を作る
+  const towns = [];
+  let current = null;
+  for (const b of buildings) {
+    if (b._townMeta) {
+      current = [];
+      towns.push(current);
+    }
+    if (current) current.push(b);
+  }
+  // _townMeta が一切ない場合は全体を1町として扱う（フォールバック）
+  if (towns.length === 0) towns.push(buildings);
+
+  for (const town of towns) {
+    // この町での卵持ち数（最低1、EGG_BEARER_RATIO で計算）
+    const count = Math.max(1, Math.round(town.length * EGG_BEARER_RATIO));
+    // シャッフル相当: インデックス配列をランダムに選んでフラグを立てる
+    const indices = [];
+    for (let i = 0; i < town.length; i++) indices.push(i);
+    // フィッシャー–イェーツで先頭 count 要素だけ選ぶ（部分シャッフル）
+    for (let i = 0; i < count; i++) {
+      const j = i + Math.floor(Math.random() * (indices.length - i));
+      const tmp = indices[i]; indices[i] = indices[j]; indices[j] = tmp;
+      town[indices[i]].isEggBearer = true;
+    }
+  }
 }
 
 // -----------------------------------------------------------------
@@ -1004,7 +1068,8 @@ function findNearestAliveBoid(wx, wy) {
   let nearest = -1;
   let nearestDist2 = Infinity;
   for (let i = 0; i < N; i++) {
-    if (boidDead[i]) continue;
+    // 変更2: ダウン中の個体は投射物のターゲットにしない
+    if (boidDead[i] || boidDowned[i]) continue;
     const dx = px[i] - wx;
     const dy = py[i] - wy;
     const d2 = dx * dx + dy * dy;
@@ -1066,7 +1131,8 @@ function updateSettlementAttacks(dt) {
     let inRange = false;
     const atkR2 = settlement.attackRadius * settlement.attackRadius;
     for (let i = 0; i < N; i++) {
-      if (boidDead[i]) continue;
+      // 変更2: ダウン中は攻撃射程判定から除外する
+      if (boidDead[i] || boidDowned[i]) continue;
       const dx = px[i] - settlement.wx;
       const dy = py[i] - settlement.wy;
       if (dx * dx + dy * dy < atkR2) { inRange = true; break; }
@@ -1183,9 +1249,9 @@ function updateProjectiles(dt) {
   }
 }
 
-// 投射物ダメージ係数: 0.0 = ダメージなし（規模エスカレーション方針）
-// 当たってもパーティクルのみ。群れは減らさない。
-const PROJECTILE_DAMAGE_MULTIPLIER = 0.0;
+// 投射物ダメージ係数: 1ヒットで BOID_MAX_HP の 1/7 程度（数発耐える）
+// 0.0 から復活。ダウンモデルにより恒久消滅しないのでダメージを有効化する。
+const PROJECTILE_DAMAGE_MULTIPLIER = 1.0;
 
 // 投射物命中時の軽いノックバック速度（px/s）
 // 竜が一瞬はじかれてすぐ戻る程度の軽い反発。死亡には絶対つながらない。
@@ -1195,16 +1261,18 @@ function checkProjectileHitBoids(projIdx) {
   const HIT_R  = 8;
   const HIT_R2 = HIT_R * HIT_R;
   for (let i = 0; i < N; i++) {
-    if (boidDead[i]) continue;
+    // 変更2: ダウン中は投射物の標的にならない
+    if (boidDead[i] || boidDowned[i]) continue;
     const dx = projWx[projIdx] - px[i];
     const dy = projWy[projIdx] - py[i];
     if (dx * dx + dy * dy < HIT_R2) {
-      // ダメージは 0（PROJECTILE_DAMAGE_MULTIPLIER = 0.0）
-      // パーティクルのみ表示し雰囲気として残す
+      // 変更2: ダメージを復活（PROJECTILE_HIT_DAMAGE = BOID_MAX_HP/7 程度）
+      // ダウンモデルにより恒久消滅しないので数発耐えるダメージを有効化する
+      applyDamageToBoid(i, PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER);
       spawnHitParticles(projWx[projIdx], projWy[projIdx]);
 
-      // 軽いノックバック（速度に反発ベクトルを加える。死亡につながらない）
-      applyProjectileKnockback(i, projIdx);
+      // 軽いノックバック（ダウン中でなければ適用）
+      if (!boidDowned[i]) applyProjectileKnockback(i, projIdx);
 
       projActive[projIdx] = 0;
       return;
@@ -1230,7 +1298,7 @@ function applyProjectileKnockback(boidIdx, projIdx) {
 function applyAoeProjectileDamage(wx, wy, aoeR, damage) {
   const r2 = aoeR * aoeR;
   for (let i = 0; i < N; i++) {
-    if (boidDead[i]) continue;
+    if (boidDead[i] || boidDowned[i]) continue;
     const dx = wx - px[i];
     const dy = wy - py[i];
     if (dx * dx + dy * dy < r2) {
@@ -1264,7 +1332,8 @@ function updateBreathAttacks(dt) {
 
   // Spatial Hash を使ってブレス射程内の建物候補を絞る
   for (let i = 0; i < N; i++) {
-    if (boidDead[i]) continue;
+    // 変更2: ダウン中はブレスを吐かない
+    if (boidDead[i] || boidDowned[i]) continue;
 
     // 各ドラゴンの最近建物を1つだけ探す（射程内に限定）
     buildingGridQuery(px[i], py[i], _buildingNeighbourBuf);
@@ -1332,7 +1401,8 @@ function updateCollisionAttacks(dt) {
   }
 
   for (let i = 0; i < N; i++) {
-    if (boidDead[i]) continue;
+    // 変更2: ダウン中は建物に衝突しない
+    if (boidDead[i] || boidDowned[i]) continue;
     // クールダウン中はこの個体の衝突判定をスキップ
     if (boidCollisionCooldown[i] > 0) continue;
 
@@ -1403,12 +1473,14 @@ function settlementFall(settlementIndex) {
   settlement.fallen = true;
   settlement.hp = 0;
 
-  const reward = settlement.reward;
-  const eggCount = reward.eggMin + Math.floor(Math.random() * (reward.eggMax - reward.eggMin + 1));
-  for (let k = 0; k < eggCount; k++) {
-    const angle = Math.random() * Math.PI * 2;
-    const r = settlement.radius + 10 + Math.random() * 40;
-    spawnEgg(settlement.wx + Math.cos(angle) * r, settlement.wy + Math.sin(angle) * r);
+  // 変更1: 卵持ち建物だけが卵を EGG_DROP_COUNT 個落とす。
+  // 残りの建物は壊しても卵を落とさない（破壊演出はそのまま）。
+  if (settlement.isEggBearer) {
+    for (let k = 0; k < EGG_DROP_COUNT; k++) {
+      const angle = Math.random() * Math.PI * 2;
+      const r = settlement.radius + 10 + Math.random() * 40;
+      spawnEgg(settlement.wx + Math.cos(angle) * r, settlement.wy + Math.sin(angle) * r);
+    }
   }
 
   hapticPulse(80);
@@ -1475,6 +1547,13 @@ let boidHitStopTimer;
 // 変更2: 衝突クールダウン（建物インデックスごとに記録）
 // boidCollisionCooldown[i] は「最後に衝突した時刻からの残り秒数」
 let boidCollisionCooldown;
+// 変更2 (ダウン/復帰モデル): ダウン状態フラグと復帰タイマー
+// boidDowned[i]=1 の間はダウン中。有効個体数から除外され、ブレス/衝突/ターゲット対象外。
+// boidDownTimer[i] > 0 の間タイマーが進み、0 になったらフェードインで復帰する。
+// boidReviveTimer[i] > 0 の間はフェードイン中（描画用）。
+let boidDowned;
+let boidDownTimer;
+let boidReviveTimer;
 
 // 変更4: 竜のHP を10倍（3 → 30）にして群れが簡単に壊滅しなくなる
 const BOID_MAX_HP   = 30;
@@ -1502,6 +1581,10 @@ function initBoids() {
   boidFadeTimer         = new Float32Array(MAX_BOIDS);
   boidHitStopTimer      = new Float32Array(MAX_BOIDS);
   boidCollisionCooldown = new Float32Array(MAX_BOIDS);
+  // 変更2: ダウン/復帰モデル配列
+  boidDowned            = new Uint8Array(MAX_BOIDS);
+  boidDownTimer         = new Float32Array(MAX_BOIDS);
+  boidReviveTimer       = new Float32Array(MAX_BOIDS);
   // 尻尾角度履歴リングバッファ（TAIL_SEGS個前までの進行角度）
   boidAngleHistory      = new Float32Array(MAX_BOIDS * TAIL_SEGS);
 
@@ -1514,8 +1597,11 @@ function initBoids() {
     boidHp[i]        = BOID_MAX_HP;
     boidDead[i]      = 1; // 一旦全部 dead にしてから N 体だけ有効化
     boidFadeTimer[i] = 0;
-    boidHitStopTimer[i]    = 0;
+    boidHitStopTimer[i]      = 0;
     boidCollisionCooldown[i] = 0;
+    boidDowned[i]            = 0;
+    boidDownTimer[i]         = 0;
+    boidReviveTimer[i]       = 0;
     // 尻尾角度履歴を 0 で初期化（後で有効化時に上書き）
     for (let s = 0; s < TAIL_SEGS; s++) {
       boidAngleHistory[i * TAIL_SEGS + s] = 0;
@@ -1544,6 +1630,15 @@ function resetBoidsPositionForNextStage() {
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
   for (let i = 0; i < N; i++) {
+    // 変更2: ダウン中の個体も次ステージ開始時に全回復・復帰させる
+    if (boidDowned[i]) {
+      boidDowned[i]      = 0;
+      boidDownTimer[i]   = 0;
+      boidReviveTimer[i] = 0;
+      boidDead[i]        = 0;
+      boidHp[i]          = BOID_MAX_HP;
+      boidFadeTimer[i]   = 0;
+    }
     if (boidDead[i]) continue;
     const r = Math.random() * 80;
     const a = Math.random() * Math.PI * 2;
@@ -1552,13 +1647,18 @@ function resetBoidsPositionForNextStage() {
     const ang = Math.random() * Math.PI * 2;
     vx[i] = Math.cos(ang) * BASE_CFG.minSpeed;
     vy[i] = Math.sin(ang) * BASE_CFG.minSpeed;
+    const base = i * TAIL_SEGS;
+    for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = ang;
   }
 }
 
 function countAliveBoids() {
+  // 変更2: ダウン中（boidDowned）は有効個体数から除外する。
+  // これによりカメラズーム・ブレス範囲・HUD表示がダウン分だけ薄まり、
+  // 復帰すると盛り返す気持ちいいフィードバックになる。
   let count = 0;
   for (let i = 0; i < N; i++) {
-    if (!boidDead[i]) count++;
+    if (!boidDead[i] && !boidDowned[i]) count++;
   }
   return count;
 }
@@ -1691,6 +1791,10 @@ function spawnBoidAtEgg(wx, wy) {
   boidFadeTimer[idx]        = 0;
   boidHitStopTimer[idx]     = 0;
   boidCollisionCooldown[idx] = 0;
+  // 変更2: ダウン/復帰モデル配列の初期化（NaN/未定義防止）
+  boidDowned[idx]      = 0;
+  boidDownTimer[idx]   = 0;
+  boidReviveTimer[idx] = 0;
 
   // 尻尾角度履歴：全セグメントを初期角度で埋める（NaN 防止）
   const base = idx * TAIL_SEGS;
@@ -1993,7 +2097,8 @@ function getIdleLeaderTarget(dt) {
 function calcFriendlyCentroid() {
   let cx = 0, cy = 0, count = 0;
   for (let i = 0; i < N; i++) {
-    if (boidDead[i]) continue;
+    // 変更2: ダウン中は重心計算から除外（カメラ追従が薄まるフィードバックのため）
+    if (boidDead[i] || boidDowned[i]) continue;
     cx += px[i];
     cy += py[i];
     count++;
@@ -2003,20 +2108,63 @@ function calcFriendlyCentroid() {
 }
 
 // -----------------------------------------------------------------
-// 消滅フェードタイマー更新
+// 消滅フェードタイマー更新 + 変更2: ダウンタイマー更新・復帰処理
 // -----------------------------------------------------------------
 function updateDeathTimers(dt) {
   for (let i = 0; i < N; i++) {
+    // 既存: フェードアウトタイマー（ダウン開始直後のフェードアウト）
     if (boidFadeTimer[i] > 0) boidFadeTimer[i] = Math.max(0, boidFadeTimer[i] - dt);
+
+    // 変更2: ダウンタイマーが進み、0になったら復帰開始
+    if (boidDowned[i]) {
+      boidDownTimer[i] = Math.max(0, boidDownTimer[i] - dt);
+      if (boidDownTimer[i] <= 0 && boidReviveTimer[i] <= 0) {
+        // 復帰開始: 群れの重心付近にフェードインで出現
+        const centroid = calcFriendlyCentroid();
+        const angle    = Math.random() * Math.PI * 2;
+        const scatter  = 40 + Math.random() * 60;
+        px[i] = centroid.x + Math.cos(angle) * scatter;
+        py[i] = centroid.y + Math.sin(angle) * scatter;
+        // 群れ平均速度に乗せる
+        let avgVx = 0, avgVy = 0, cnt = 0;
+        for (let j = 0; j < N; j++) {
+          if (!boidDead[j] && !boidDowned[j]) { avgVx += vx[j]; avgVy += vy[j]; cnt++; }
+        }
+        if (cnt > 0) { avgVx /= cnt; avgVy /= cnt; }
+        else { avgVx = BASE_CFG.minSpeed; avgVy = 0; }
+        vx[i] = avgVx + (Math.random() - 0.5) * 30;
+        vy[i] = avgVy + (Math.random() - 0.5) * 30;
+        // HP全回復・フラグリセット
+        boidHp[i]          = BOID_MAX_HP;
+        boidDowned[i]      = 0;
+        boidDead[i]        = 0;
+        boidFadeTimer[i]   = 0;
+        boidReviveTimer[i] = BOID_REVIVE_DURATION;
+        // 尻尾角度履歴を現在の速度方向で初期化（NaN防止）
+        const initAngle = Math.atan2(vy[i], vx[i]);
+        const base = i * TAIL_SEGS;
+        for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = initAngle;
+      }
+    }
+
+    // 変更2: フェードイン復帰アニメタイマー
+    if (boidReviveTimer[i] > 0) boidReviveTimer[i] = Math.max(0, boidReviveTimer[i] - dt);
   }
 }
 
 function applyDamageToBoid(boidIndex, damage) {
-  // hitRateMultiplier は隊形廃止により 1.0 固定
+  // 変更2: ダウン中・すでに dead の場合は何もしない
+  if (boidDead[boidIndex] || boidDowned[boidIndex]) return;
   boidHp[boidIndex] -= damage;
-  if (boidHp[boidIndex] <= 0 && !boidDead[boidIndex]) {
-    boidDead[boidIndex]      = 1;
+  if (boidHp[boidIndex] <= 0) {
+    // 変更2: 消滅ではなくダウン状態へ移行（恒久喪失なし）
+    boidDowned[boidIndex]    = 1;
+    boidDownTimer[boidIndex] = BOID_DOWN_DURATION;
+    boidReviveTimer[boidIndex] = 0;
+    // boidDead は立てない（dead=生存スロット外を意味するため）
+    // フェードアウトは boidFadeTimer で表現する
     boidFadeTimer[boidIndex] = FADE_DURATION;
+    boidHp[boidIndex]        = 0;
   }
 }
 
@@ -2025,7 +2173,14 @@ function applyDamageToBoid(boidIndex, damage) {
 // -----------------------------------------------------------------
 function checkGameConditions() {
   if (gameState !== "playing") return;
-  if (countAliveBoids() === 0) {
+  // 変更2: 全員ダウン中（boidDowned=1）でも復帰待ちなのでゲームオーバーにしない。
+  // 「生きている個体が0かつダウン中も0」のとき初めて全滅とみなす。
+  // ダウン中の個体がいる限りは復帰するので詰まらない。
+  let hasActive = false;
+  for (let i = 0; i < N; i++) {
+    if (!boidDead[i]) { hasActive = true; break; }
+  }
+  if (!hasActive) {
     triggerDefeat();
   }
 }
@@ -2051,11 +2206,13 @@ function simStep(dt) {
 
   gridClear();
   for (let i = 0; i < N; i++) {
-    if (!boidDead[i]) gridInsert(i, px[i], py[i], perc);
+    // 変更2: ダウン中の個体はグリッドに登録しない（他の個体の分離・整列計算対象外）
+    if (!boidDead[i] && !boidDowned[i]) gridInsert(i, px[i], py[i], perc);
   }
 
   for (let i = 0; i < N; i++) {
-    if (boidDead[i]) continue;
+    // 変更2: ダウン中も位置更新をスキップ（タイマーは updateDeathTimers で進む）
+    if (boidDead[i] || boidDowned[i]) continue;
 
     // ヒットストップ中は物理更新を丸ごとスキップして速度・向きも凍結する。
     // 位置だけ止めて速度を積分し続けると向き(atan2)が毎フレーム振れて
@@ -2191,6 +2348,7 @@ function render(now) {
   // HP バーは動的なので毎フレーム描画
   drawSettlementHPBars();
 
+  drawEggBearerMarkers(now);
   drawEggs();
   drawBreathAttacks(now);
   drawBoids();
@@ -2267,6 +2425,57 @@ function drawSettlementHPBars() {
     ctx.fillRect(barX, barY, barW * hpRatio, 4);
     ctx.globalAlpha = 1.0;
   }
+}
+
+// -----------------------------------------------------------------
+// 変更1: 卵持ち建物の目印描画
+// 立っている卵持ち建物の上に金色の小オーブを明滅させて描く。
+// cam.scale が小さい（引き画面）でも視認できるよう最低サイズを保証する。
+// fallen になると描画から除外されるので「陥落後に消える」を自動的に満たす。
+// -----------------------------------------------------------------
+function drawEggBearerMarkers(now) {
+  // 明滅周期: 1.2秒サイクル（sin波で 0.4〜1.0 の alpha 範囲）
+  const pulse = 0.4 + 0.6 * (Math.sin(now * 0.001 * Math.PI * 2 / 1.2) * 0.5 + 0.5);
+
+  ctx.save();
+  for (let s = 0; s < settlements.length; s++) {
+    const st = settlements[s];
+    if (st.fallen || !st.isEggBearer) continue;
+
+    // オーブ中心: 建物の真上（半径 + 10px）
+    const ox = st.wx;
+    const oy = st.wy - st.radius - 10;
+
+    // カメラズームに関係なくスクリーン上で最低 5px の半径を保証する。
+    // ワールド座標半径 = max(5 / cam.scale, 5) で計算する。
+    const worldR = Math.max(5 / cam.scale, 5);
+
+    // 外側グロー（金色・広め・薄め）
+    ctx.globalAlpha = pulse * 0.35;
+    ctx.fillStyle = "#ffd040";
+    ctx.beginPath();
+    ctx.arc(ox, oy, worldR * 2.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // メインオーブ（金色）
+    ctx.globalAlpha = pulse * 0.90;
+    ctx.fillStyle = "#ffe060";
+    ctx.strokeStyle = "#fff8a0";
+    ctx.lineWidth = Math.max(0.5, 1.5 / cam.scale);
+    ctx.beginPath();
+    ctx.arc(ox, oy, worldR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 中心ハイライト（白い点）
+    ctx.globalAlpha = pulse * 0.80;
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(ox, oy, worldR * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1.0;
+  ctx.restore();
 }
 
 // -----------------------------------------------------------------
@@ -2365,6 +2574,8 @@ function drawBoids() {
   // ヒットストップ中は vx/vy が凍結されるので尻尾はゆっくりまっすぐに落ち着く。
   for (let i = 0; i < N; i++) {
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
+    // 変更2: ダウン中でフェード完了かつ復帰フェードイン未開始は更新不要
+    if (boidDowned[i] && boidFadeTimer[i] <= 0 && boidReviveTimer[i] <= 0) continue;
     const base = i * TAIL_SEGS;
     const head = Math.atan2(vy[i], vx[i]);
     boidAngleHistory[base] = easeAngle(boidAngleHistory[base], head, TAIL_EASE_HEAD);
@@ -2374,10 +2585,20 @@ function drawBoids() {
   }
 
   for (let i = 0; i < N; i++) {
+    // dead かつフェード完了 → スキップ（従来通り）
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
+    // 変更2: ダウン中でフェードアウト完了（boidFadeTimer=0）かつ復帰フェードイン未開始 → 非表示
+    if (boidDowned[i] && boidFadeTimer[i] <= 0 && boidReviveTimer[i] <= 0) continue;
 
     let alpha = 0.85;
-    if (boidDead[i]) {
+    if (boidDowned[i] && boidFadeTimer[i] > 0) {
+      // ダウン開始直後: フェードアウト
+      alpha = (boidFadeTimer[i] / FADE_DURATION) * 0.85;
+    } else if (boidReviveTimer[i] > 0) {
+      // 復帰フェードイン: 0→0.85 へ
+      alpha = (1.0 - boidReviveTimer[i] / BOID_REVIVE_DURATION) * 0.85;
+    } else if (boidDead[i]) {
+      // 従来の dead フェードアウト（ダウンモデル移行後はほぼ使われない）
       alpha = (boidFadeTimer[i] / FADE_DURATION) * 0.85;
     }
 
