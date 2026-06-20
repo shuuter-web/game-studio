@@ -179,7 +179,7 @@
 <!-- 左上 HUD: FLOCK残数 -->
 <div id="hud-left">
   <div class="label">FLOCK</div>
-  <span id="h-alive">20</span> / <span id="h-max">20</span>
+  <span id="h-alive">10</span> / <span id="h-max">100</span>
 </div>
 
 <!-- 右下 HUD: 卵 + ステージ -->
@@ -533,21 +533,29 @@ window.addEventListener("orientationchange", resize);
 resize();
 
 // -----------------------------------------------------------------
-// カメラ（ワールド座標系でのカメラ中心）
+// カメラ（ワールド座標系でのカメラ中心＋ズームスケール）
 // -----------------------------------------------------------------
-const cam = { x: 400, y: WORLD_H / 2 };
+// scale: 1.0=寄り（少数）〜 0.6=引き（100体）。群れ数に応じてなめらかに変化する。
+const cam = { x: 400, y: WORLD_H / 2, scale: 1.0 };
+
+// 群れ数に応じた目標ズームスケールを計算する
+// 10体 → 1.0（寄り）、100体 → 0.6（引き）の線形補間
+function calcTargetCamScale(aliveCount) {
+  const t = Math.max(0, Math.min(1, (aliveCount - 10) / 90));
+  return 1.0 - t * 0.4;
+}
 
 function worldToScreen(wx, wy) {
   return {
-    x: wx - cam.x + viewW * 0.5,
-    y: wy - cam.y + viewH * 0.5,
+    x: (wx - cam.x) * cam.scale + viewW * 0.5,
+    y: (wy - cam.y) * cam.scale + viewH * 0.5,
   };
 }
 
 function screenToWorld(sx, sy) {
   return {
-    x: sx + cam.x - viewW * 0.5,
-    y: sy + cam.y - viewH * 0.5,
+    x: (sx - viewW * 0.5) / cam.scale + cam.x,
+    y: (sy - viewH * 0.5) / cam.scale + cam.y,
   };
 }
 
@@ -556,8 +564,18 @@ function updateCamera(dt) {
   const lerpFactor = 0.08;
   cam.x += (centroid.x - cam.x) * lerpFactor;
   cam.y += (centroid.y - cam.y) * lerpFactor;
-  cam.x = Math.max(viewW * 0.5, Math.min(WORLD_W - viewW * 0.5, cam.x));
-  cam.y = Math.max(viewH * 0.5, Math.min(WORLD_H - viewH * 0.5, cam.y));
+
+  // ズームスケール: 有効ワールド表示範囲をスケールで除した値でクランプする
+  // scale が小さいほど広い範囲が見えるため、境界余白はスケールを考慮する
+  const halfW = viewW * 0.5 / cam.scale;
+  const halfH = viewH * 0.5 / cam.scale;
+  cam.x = Math.max(halfW, Math.min(WORLD_W - halfW, cam.x));
+  cam.y = Math.max(halfH, Math.min(WORLD_H - halfH, cam.y));
+
+  // 群れ生存数に応じてスケールをなめらかに変化させる（lerpで追従）
+  const aliveCount = countAliveBoids();
+  const targetScale = calcTargetCamScale(aliveCount);
+  cam.scale += (targetScale - cam.scale) * Math.min(1, dt * 1.5);
 }
 
 // -----------------------------------------------------------------
@@ -1057,7 +1075,8 @@ function updateSettlementAttacks(dt) {
 
     settlement.attackTimer -= dt;
     if (settlement.attackTimer > 0) continue;
-    settlement.attackTimer = settlement.projectileInterval;
+    // 発射頻度を大幅に下げる（×4倍の間隔 = たまに飛ぶ「雰囲気」として残す）
+    settlement.attackTimer = settlement.projectileInterval * 4.0;
 
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
@@ -1164,6 +1183,14 @@ function updateProjectiles(dt) {
   }
 }
 
+// 投射物ダメージ係数: 0.0 = ダメージなし（規模エスカレーション方針）
+// 当たってもパーティクルのみ。群れは減らさない。
+const PROJECTILE_DAMAGE_MULTIPLIER = 0.0;
+
+// 投射物命中時の軽いノックバック速度（px/s）
+// 竜が一瞬はじかれてすぐ戻る程度の軽い反発。死亡には絶対つながらない。
+const PROJECTILE_KNOCKBACK_SPEED = 60;
+
 function checkProjectileHitBoids(projIdx) {
   const HIT_R  = 8;
   const HIT_R2 = HIT_R * HIT_R;
@@ -1172,15 +1199,31 @@ function checkProjectileHitBoids(projIdx) {
     const dx = projWx[projIdx] - px[i];
     const dy = projWy[projIdx] - py[i];
     if (dx * dx + dy * dy < HIT_R2) {
-      if (projAoe[projIdx] > 0) {
-        applyAoeProjectileDamage(projWx[projIdx], projWy[projIdx], projAoe[projIdx], projDmg[projIdx]);
-      } else {
-        applyDamageToBoid(i, projDmg[projIdx]);
-      }
+      // ダメージは 0（PROJECTILE_DAMAGE_MULTIPLIER = 0.0）
+      // パーティクルのみ表示し雰囲気として残す
       spawnHitParticles(projWx[projIdx], projWy[projIdx]);
+
+      // 軽いノックバック（速度に反発ベクトルを加える。死亡につながらない）
+      applyProjectileKnockback(i, projIdx);
+
       projActive[projIdx] = 0;
       return;
     }
+  }
+}
+
+function applyProjectileKnockback(boidIdx, projIdx) {
+  // 投射物の進行方向と逆方向にノックバック
+  const pvx = projVx[projIdx];
+  const pvy = projVy[projIdx];
+  const pspeed = Math.sqrt(pvx * pvx + pvy * pvy) || 1;
+  vx[boidIdx] -= (pvx / pspeed) * PROJECTILE_KNOCKBACK_SPEED;
+  vy[boidIdx] -= (pvy / pspeed) * PROJECTILE_KNOCKBACK_SPEED;
+  // 速度を maxSpeed でクランプして飛び出しを防ぐ
+  const sp = Math.sqrt(vx[boidIdx] * vx[boidIdx] + vy[boidIdx] * vy[boidIdx]);
+  if (sp > BASE_CFG.maxSpeed) {
+    vx[boidIdx] = (vx[boidIdx] / sp) * BASE_CFG.maxSpeed;
+    vy[boidIdx] = (vy[boidIdx] / sp) * BASE_CFG.maxSpeed;
   }
 }
 
@@ -1421,7 +1464,7 @@ function gridQuery(x, y, cellSize, out) {
 // -----------------------------------------------------------------
 // Boids SoA — 自軍（ワールド座標で管理）
 // -----------------------------------------------------------------
-const MAX_BOIDS = 20;
+const MAX_BOIDS = 100;
 let N = 0;
 let px, py, vx, vy;
 let boidHp;
@@ -1445,23 +1488,41 @@ const COLLISION_COOLDOWN    = 0.5; // 秒
 // ヒットストップ持続（フレーム数を秒換算: 3フレーム≒0.048秒）
 const HITSTOP_DURATION      = 0.048;
 
+// 群れの初期個体数（卵回収で MAX_BOIDS まで増える）
+const BOIDS_INITIAL = 10;
+
 function initBoids() {
-  N = MAX_BOIDS;
-  px                  = new Float32Array(N);
-  py                  = new Float32Array(N);
-  vx                  = new Float32Array(N);
-  vy                  = new Float32Array(N);
-  boidHp              = new Float32Array(N);
-  boidDead            = new Uint8Array(N);
-  boidFadeTimer       = new Float32Array(N);
-  // ヒットストップ＋衝突クールダウン配列
-  boidHitStopTimer    = new Float32Array(N);
-  boidCollisionCooldown = new Float32Array(N);
+  // 配列は常に MAX_BOIDS 分確保し、N は現在の有効個体数を管理する
+  px                    = new Float32Array(MAX_BOIDS);
+  py                    = new Float32Array(MAX_BOIDS);
+  vx                    = new Float32Array(MAX_BOIDS);
+  vy                    = new Float32Array(MAX_BOIDS);
+  boidHp                = new Float32Array(MAX_BOIDS);
+  boidDead              = new Uint8Array(MAX_BOIDS);
+  boidFadeTimer         = new Float32Array(MAX_BOIDS);
+  boidHitStopTimer      = new Float32Array(MAX_BOIDS);
+  boidCollisionCooldown = new Float32Array(MAX_BOIDS);
   // 尻尾角度履歴リングバッファ（TAIL_SEGS個前までの進行角度）
-  boidAngleHistory    = new Float32Array(N * TAIL_SEGS);
+  boidAngleHistory      = new Float32Array(MAX_BOIDS * TAIL_SEGS);
+
+  // 初期配置は BOIDS_INITIAL 体だけ。卵回収で増えていく雪だるま体験をさせる。
+  N = BOIDS_INITIAL;
 
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
+  for (let i = 0; i < MAX_BOIDS; i++) {
+    boidHp[i]        = BOID_MAX_HP;
+    boidDead[i]      = 1; // 一旦全部 dead にしてから N 体だけ有効化
+    boidFadeTimer[i] = 0;
+    boidHitStopTimer[i]    = 0;
+    boidCollisionCooldown[i] = 0;
+    // 尻尾角度履歴を 0 で初期化（後で有効化時に上書き）
+    for (let s = 0; s < TAIL_SEGS; s++) {
+      boidAngleHistory[i * TAIL_SEGS + s] = 0;
+    }
+  }
+
+  // 最初の N 体を有効化
   for (let i = 0; i < N; i++) {
     const r = Math.random() * 80;
     const a = Math.random() * Math.PI * 2;
@@ -1473,7 +1534,6 @@ function initBoids() {
     boidHp[i]        = BOID_MAX_HP;
     boidDead[i]      = 0;
     boidFadeTimer[i] = 0;
-    // 尻尾角度履歴：初期値は現在の進行角度で埋める
     for (let s = 0; s < TAIL_SEGS; s++) {
       boidAngleHistory[i * TAIL_SEGS + s] = ang;
     }
@@ -1574,9 +1634,68 @@ function collectNearbyEggs() {
       if (dx * dx + dy * dy < 60 * 60) {
         eggActive[e] = 0;
         totalEggCount++;
+        // 卵回収 = その場で竜+1（群れ上限未満のときのみ）
+        spawnBoidAtEgg(eggWx[e], eggWy[e]);
         break;
       }
     }
+  }
+}
+
+/**
+ * 卵の位置に竜を1体スポーンする。
+ * 群れが MAX_BOIDS に達していたら何もしない（カウンタは増える）。
+ * SoA の全要素を初期化して NaN/ゴミを防ぐ。
+ */
+function spawnBoidAtEgg(wx, wy) {
+  if (N >= MAX_BOIDS) return; // 上限到達時は追加しない
+
+  const idx = N; // 新しい個体スロット
+  N++;           // 有効個体数を先に増やす
+
+  // 群れの平均速度を取得して初速に使う（群れの流れに乗せる）
+  let avgVx = 0, avgVy = 0, aliveCount = 0;
+  for (let i = 0; i < N - 1; i++) {
+    if (!boidDead[i]) { avgVx += vx[i]; avgVy += vy[i]; aliveCount++; }
+  }
+  if (aliveCount > 0) {
+    avgVx /= aliveCount;
+    avgVy /= aliveCount;
+  } else {
+    // 群れが全滅していたら右方向に発射
+    avgVx = BASE_CFG.minSpeed;
+    avgVy = 0;
+  }
+  // 群れ平均速度にランダム成分を少し加える（単純コピーで整列しすぎないよう）
+  const randAngle = Math.random() * Math.PI * 2;
+  const randStrength = BASE_CFG.minSpeed * 0.3;
+  const initVx = avgVx + Math.cos(randAngle) * randStrength;
+  const initVy = avgVy + Math.sin(randAngle) * randStrength;
+
+  // 速度の大きさを minSpeed 以上に保証
+  const speed = Math.sqrt(initVx * initVx + initVy * initVy) || BASE_CFG.minSpeed;
+  const scale = speed < BASE_CFG.minSpeed ? BASE_CFG.minSpeed / speed : 1;
+  const finalVx = initVx * scale;
+  const finalVy = initVy * scale;
+
+  // 初期角度（尻尾の向き初期化に使う）
+  const initAngle = Math.atan2(finalVy, finalVx);
+
+  // SoA 全要素を正確に初期化
+  px[idx]                   = wx;
+  py[idx]                   = wy;
+  vx[idx]                   = finalVx;
+  vy[idx]                   = finalVy;
+  boidHp[idx]               = BOID_MAX_HP;
+  boidDead[idx]             = 0;
+  boidFadeTimer[idx]        = 0;
+  boidHitStopTimer[idx]     = 0;
+  boidCollisionCooldown[idx] = 0;
+
+  // 尻尾角度履歴：全セグメントを初期角度で埋める（NaN 防止）
+  const base = idx * TAIL_SEGS;
+  for (let s = 0; s < TAIL_SEGS; s++) {
+    boidAngleHistory[base + s] = initAngle;
   }
 }
 
@@ -2053,7 +2172,10 @@ function render(now) {
   ctx.fillRect(0, 0, viewW, viewH);
 
   ctx.save();
-  ctx.translate(-cam.x + viewW * 0.5, -cam.y + viewH * 0.5);
+  // カメラ変換: 画面中心を原点にしてズームスケールを適用してからワールドオフセット
+  ctx.translate(viewW * 0.5, viewH * 0.5);
+  ctx.scale(cam.scale, cam.scale);
+  ctx.translate(-cam.x, -cam.y);
 
   drawWorldGrid();
 
@@ -2362,8 +2484,9 @@ function drawProjectiles() {
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) continue;
 
-    const sx = projWx[i] - cam.x + viewW * 0.5;
-    const sy = projWy[i] - cam.y + viewH * 0.5;
+    // カメラ変換（スケール込み）でスクリーン座標を計算してカリング
+    const sx = (projWx[i] - cam.x) * cam.scale + viewW * 0.5;
+    const sy = (projWy[i] - cam.y) * cam.scale + viewH * 0.5;
     if (sx < -20 || sx > viewW + 20 || sy < -20 || sy > viewH + 20) continue;
 
     ctx.strokeStyle = projColor[i];
@@ -2483,10 +2606,13 @@ function drawMinimap() {
   minimapCtx.arc(mx, my, 2, 0, Math.PI * 2);
   minimapCtx.fill();
 
-  const vpLeft   = (cam.x - viewW * 0.5) * scaleX;
-  const vpTop    = (cam.y - viewH * 0.5) * scaleY;
-  const vpWidth  = viewW * scaleX;
-  const vpHeight = viewH * scaleY;
+  // ズームスケールを考慮した視野矩形: cam.scale が小さいほど広い範囲が見える
+  const vpWorldW  = viewW / cam.scale;
+  const vpWorldH  = viewH / cam.scale;
+  const vpLeft    = (cam.x - vpWorldW * 0.5) * scaleX;
+  const vpTop     = (cam.y - vpWorldH * 0.5) * scaleY;
+  const vpWidth   = vpWorldW * scaleX;
+  const vpHeight  = vpWorldH * scaleY;
   minimapCtx.strokeStyle = "rgba(120,200,255,0.25)";
   minimapCtx.lineWidth   = 0.5;
   minimapCtx.strokeRect(vpLeft, vpTop, vpWidth, vpHeight);
@@ -2509,6 +2635,7 @@ function updateHUD() {
 
   const aliveCount = countAliveBoids();
   hudAlive.textContent = aliveCount;
+  // 上限は常に MAX_BOIDS=100 を表示（現在 N が少なくても上限を示す）
   hudMax.textContent   = MAX_BOIDS;
   updateHUDEggs();
 }
@@ -2577,8 +2704,8 @@ const dragonSprites = {};
 
 // 個体ごとの羽ばたき位相オフセット（index で決定的に割り当て）
 // 0〜1 の値 × 2π がラジアン位相
-const BOID_FLAP_PHASE = new Float32Array(20); // MAX_BOIDS=20
-for (let i = 0; i < 20; i++) {
+const BOID_FLAP_PHASE = new Float32Array(MAX_BOIDS); // MAX_BOIDS=100
+for (let i = 0; i < MAX_BOIDS; i++) {
   // 黄金角分割でなるべく均等に散らす
   BOID_FLAP_PHASE[i] = (i * 0.618033988) % 1.0;
 }
