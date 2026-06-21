@@ -245,7 +245,14 @@ const BREATH_PARTICLE_INTERVAL = 0.2;
 // 落とす卵は常に1個（EGG_DROP_COUNT）で群れの増加ペースを緩やかにする。
 // 視覚的な目印は毎フレーム動的描画（明滅アニメ付き）で陥落後は消える。
 // -----------------------------------------------------------------
-const EGG_BEARER_RATIO = 0.18; // 卵持ち建物の割合（0〜1）
+// 実験: 建物密度の一括倍率。各ステージの町あたり建物数にこれを掛ける。
+// 卵割合はこの倍率で割って、卵の絶対数（＝群れの成長ペース）を一定に保つ。
+let BUILDING_DENSITY_MULT = 4; // 4=密な街（最適化済み後のデフォルト）
+                               // ビューポートカリング＋空間ハッシュゲートにより
+                               // 数千棟でも per-frame コストはほぼ一定。
+const EGG_BEARER_RATIO_BASE = 0.18; // 基準割合（密度1倍のときの値）
+// 実効割合は BASE / 密度倍率。密度を上げた分だけ割合を下げて卵の総数を一定に。
+function eggBearerRatio() { return EGG_BEARER_RATIO_BASE / BUILDING_DENSITY_MULT; }
 const EGG_DROP_COUNT   = 1;    // 陥落時に落とす卵の個数
 
 // -----------------------------------------------------------------
@@ -784,9 +791,9 @@ function generateStageLayout(stageIndex) {
     const center = townCenters[t];
     const townBuildings = generateTown(
       center.x, center.y,
-      config.smallPerTown,
-      config.mediumPerTown,
-      config.largePerTown,
+      Math.round(config.smallPerTown  * BUILDING_DENSITY_MULT),
+      Math.round(config.mediumPerTown * BUILDING_DENSITY_MULT),
+      Math.round(config.largePerTown  * BUILDING_DENSITY_MULT),
       config,
       t,
     );
@@ -822,8 +829,8 @@ function assignEggBearers(buildings) {
   if (towns.length === 0) towns.push(buildings);
 
   for (const town of towns) {
-    // この町での卵持ち数（最低1、EGG_BEARER_RATIO で計算）
-    const count = Math.max(1, Math.round(town.length * EGG_BEARER_RATIO));
+    // この町での卵持ち数（最低1、実効割合で計算。密度倍率で割って絶対数を一定に）
+    const count = Math.max(1, Math.round(town.length * eggBearerRatio()));
     // シャッフル相当: インデックス配列をランダムに選んでフラグを立てる
     const indices = [];
     for (let i = 0; i < town.length; i++) indices.push(i);
@@ -1123,15 +1130,55 @@ function rebuildBuildingGrid() {
 // 建物Spatial Hashの近傍クエリ用バッファ
 const _buildingNeighbourBuf = [];
 
+// 攻撃判定ゲート用: フレーム内で「射程内にドラゴンがいる」とマークされた建物インデックスの集合。
+// ドラゴン側から建物ハッシュをたどる逆引き方式で、群れから遠い建物の全ドラゴン走査を省く。
+// Set は毎フレームクリアして使い回す。
+const _settlementsInRange = new Set();
+
+// 攻撃判定に使う空間ハッシュのセルサイズ。
+// 最大attackRadius=300px を1クエリ(±1セル)でカバーするには cellSize >= 300 が必要。
+// BUILDING_GRID_CELL=100 は 100px 範囲クエリ用なので、攻撃判定用に別グリッドを持つ。
+// ただし、専用グリッドを別途維持するコストを避けるため、以下の方式を採る:
+// 「各ドラゴンの位置から最大攻撃射程(MAX_ATTACK_RADIUS)内の建物グリッドセルを走査し、
+//  ヒットした建物インデックスを _settlementsInRange に登録する」
+// BUILDING_GRID_CELL=100 で cellRadius=ceil(300/100)=3 → ±3セル(7×7=49セル) のクエリ
+const MAX_ATTACK_RADIUS = 300; // ステージ4 large の attackRadius（最大値）
+const _ATKCELL_RADIUS = Math.ceil(MAX_ATTACK_RADIUS / BUILDING_GRID_CELL); // = 3
+
+// ドラゴン位置周辺の建物を攻撃判定グリッドで収集する
+function _queryBuildingsForAttack(bx, by) {
+  const cx = (bx / BUILDING_GRID_CELL) | 0;
+  const cy = (by / BUILDING_GRID_CELL) | 0;
+  for (let dy = -_ATKCELL_RADIUS; dy <= _ATKCELL_RADIUS; dy++) {
+    for (let dx = -_ATKCELL_RADIUS; dx <= _ATKCELL_RADIUS; dx++) {
+      const key = (cx + dx) * 100003 + (cy + dy);
+      const bucket = buildingGrid.get(key);
+      if (bucket) {
+        for (const idx of bucket) _settlementsInRange.add(idx);
+      }
+    }
+  }
+}
+
 function updateSettlementAttacks(dt) {
-  for (let s = 0; s < settlements.length; s++) {
+  // (A) 逆引き方式: ドラゴン側から「近くの建物」を空間ハッシュで収集する。
+  // 群れ全体でO(N × (2*cellRadius+1)^2) ≈ O(N × 49)。
+  // 群れから遠い大多数の建物は Set に入らないため全ドラゴン走査から除外される。
+  _settlementsInRange.clear();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    _queryBuildingsForAttack(px[i], py[i]);
+  }
+
+  // (B) Set 内の建物だけ射程内判定・発射処理する。
+  // Set サイズは群れ近傍の建物数のみ（遠方の建物は含まれない）。
+  for (const s of _settlementsInRange) {
     const settlement = settlements[s];
-    if (settlement.fallen) continue;
+    if (!settlement || settlement.fallen) continue;
 
     let inRange = false;
     const atkR2 = settlement.attackRadius * settlement.attackRadius;
     for (let i = 0; i < N; i++) {
-      // 変更2: ダウン中は攻撃射程判定から除外する
       if (boidDead[i] || boidDowned[i]) continue;
       const dx = px[i] - settlement.wx;
       const dy = py[i] - settlement.wy;
@@ -2374,19 +2421,28 @@ function render(now) {
 
 function drawWorldGrid() {
   const stageConfig = STAGE_CONFIGS[currentStage];
+  const GRID_SIZE = 200;
+
+  // ビューポートカリング: 画面内に入る格子線だけ描く。
+  // グリッド座標をビューポートの世界境界でスナップして範囲を絞る。
+  const bounds = getViewBoundsWorld(GRID_SIZE); // 1セル分の余白
+  const startX = Math.floor(Math.max(0, bounds.minX) / GRID_SIZE) * GRID_SIZE;
+  const endX   = Math.min(WORLD_W, Math.ceil(bounds.maxX / GRID_SIZE) * GRID_SIZE);
+  const startY = Math.floor(Math.max(0, bounds.minY) / GRID_SIZE) * GRID_SIZE;
+  const endY   = Math.min(WORLD_H, Math.ceil(bounds.maxY / GRID_SIZE) * GRID_SIZE);
+
   ctx.strokeStyle = stageConfig.gridColor;
   ctx.lineWidth = 1;
-  const GRID_SIZE = 200;
-  for (let x = 0; x <= WORLD_W; x += GRID_SIZE) {
+  for (let x = startX; x <= endX; x += GRID_SIZE) {
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, WORLD_H);
+    ctx.moveTo(x, Math.max(0, bounds.minY));
+    ctx.lineTo(x, Math.min(WORLD_H, bounds.maxY));
     ctx.stroke();
   }
-  for (let y = 0; y <= WORLD_H; y += GRID_SIZE) {
+  for (let y = startY; y <= endY; y += GRID_SIZE) {
     ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(WORLD_W, y);
+    ctx.moveTo(Math.max(0, bounds.minX), y);
+    ctx.lineTo(Math.min(WORLD_W, bounds.maxX), y);
     ctx.stroke();
   }
   ctx.strokeStyle = "rgba(100, 120, 100, 0.4)";
@@ -2394,14 +2450,41 @@ function drawWorldGrid() {
   ctx.strokeRect(0, 0, WORLD_W, WORLD_H);
 }
 
+// -----------------------------------------------------------------
+// ビューポートカリング共通ヘルパー
+// ワールド座標での可視矩形を返す。margin はワールドpx単位の余白。
+// カメラ変換: screen_x = (world_x - cam.x) * cam.scale + viewW * 0.5
+// → world_x_visible: cam.x ± (viewW * 0.5 / cam.scale)
+// -----------------------------------------------------------------
+function getViewBoundsWorld(margin) {
+  const halfW = viewW * 0.5 / cam.scale;
+  const halfH = viewH * 0.5 / cam.scale;
+  return {
+    minX: cam.x - halfW - margin,
+    maxX: cam.x + halfW + margin,
+    minY: cam.y - halfH - margin,
+    maxY: cam.y + halfH + margin,
+  };
+}
+
 function drawSettlementRanges() {
-  // 攻撃射程を薄く表示（既存の動作を維持）
+  // ビューポートカリング: 攻撃射程（attackRadius）を余白として使う。
+  // 射程リングの一部が画面内にかかる建物だけを描画する。
+  // 最大 attackRadius は 300px 程度なので余白 300px で安全にカリングできる。
+  const RANGE_MARGIN = 300;
+  const bounds = getViewBoundsWorld(RANGE_MARGIN);
+
+  ctx.strokeStyle = "rgba(180, 60, 60, 0.08)";
+  ctx.lineWidth = 1;
+
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     if (settlement.fallen) continue;
 
-    ctx.strokeStyle = "rgba(180, 60, 60, 0.08)";
-    ctx.lineWidth = 1;
+    // ビューポート外の建物はスキップ（余白は射程半径分を含んでいる）
+    if (settlement.wx < bounds.minX || settlement.wx > bounds.maxX ||
+        settlement.wy < bounds.minY || settlement.wy > bounds.maxY) continue;
+
     ctx.beginPath();
     ctx.arc(settlement.wx, settlement.wy, settlement.attackRadius, 0, Math.PI * 2);
     ctx.stroke();
@@ -2410,21 +2493,32 @@ function drawSettlementRanges() {
 
 // HP バーのみ動的に描画（建物形状はオフスクリーンに焼き付け済み）
 function drawSettlementHPBars() {
+  // ビューポートカリング: 建物半径（最大28px）+ HPバー余白（8px）を余白として使う
+  const HP_MARGIN = 40;
+  const bounds = getViewBoundsWorld(HP_MARGIN);
+
+  ctx.globalAlpha = 0.85;
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     if (settlement.fallen) continue;
+
+    // 満タンの建物はバーを描かない（最大の節約ポイント）
+    if (settlement.hp >= settlement.maxHp) continue;
+
+    // ビューポート外の建物はスキップ
+    if (settlement.wx < bounds.minX || settlement.wx > bounds.maxX ||
+        settlement.wy < bounds.minY || settlement.wy > bounds.maxY) continue;
 
     const hpRatio = Math.max(0, settlement.hp / settlement.maxHp);
     const barW = settlement.radius * 2;
     const barX = settlement.wx - settlement.radius;
     const barY = settlement.wy - settlement.radius - 8;
-    ctx.globalAlpha = 0.85;
     ctx.fillStyle = "rgba(0,0,0,0.5)";
     ctx.fillRect(barX, barY, barW, 4);
     ctx.fillStyle = hpRatio > 0.5 ? "#50e070" : (hpRatio > 0.25 ? "#e0c040" : "#e04040");
     ctx.fillRect(barX, barY, barW * hpRatio, 4);
-    ctx.globalAlpha = 1.0;
   }
+  ctx.globalAlpha = 1.0;
 }
 
 // -----------------------------------------------------------------
@@ -2437,10 +2531,18 @@ function drawEggBearerMarkers(now) {
   // 明滅周期: 1.2秒サイクル（sin波で 0.4〜1.0 の alpha 範囲）
   const pulse = 0.4 + 0.6 * (Math.sin(now * 0.001 * Math.PI * 2 / 1.2) * 0.5 + 0.5);
 
+  // ビューポートカリング: オーブ表示範囲（最大5/cam.scale * 2.2 ≈ 数十px）の余白
+  const EGG_MARGIN = 60;
+  const bounds = getViewBoundsWorld(EGG_MARGIN);
+
   ctx.save();
   for (let s = 0; s < settlements.length; s++) {
     const st = settlements[s];
     if (st.fallen || !st.isEggBearer) continue;
+
+    // ビューポート外の建物はスキップ
+    if (st.wx < bounds.minX || st.wx > bounds.maxX ||
+        st.wy < bounds.minY || st.wy > bounds.maxY) continue;
 
     // オーブ中心: 建物の真上（半径 + 10px）
     const ox = st.wx;
