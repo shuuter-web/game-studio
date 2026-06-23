@@ -260,7 +260,7 @@ const EGG_DROP_COUNT   = 1;    // 陥落時に落とす卵の個数
 // HP0 以下 → ダウン状態（フェードアウト → 一定秒後フェードインで全回復して復帰）
 // 恒久消滅はない。ダウン中は有効個体数から除外されカメラ・ブレス範囲に影響しない。
 // -----------------------------------------------------------------
-const BOID_DOWN_DURATION    = 5.0;  // ダウン継続秒数（この後フェードインで復帰）
+const BOID_DOWN_DURATION    = 10.0;  // ダウン継続秒数（この後フェードインで復帰）
 const BOID_REVIVE_DURATION  = 0.6;  // フェードイン復帰アニメ秒数
 
 // 1ヒットあたりのダメージ量（BOID_MAX_HP の約1/7 ≒ 数発耐える）
@@ -1508,7 +1508,7 @@ const projStartWy   = new Float32Array(MAX_PROJECTILES);
 
 // 変更3: 投射物パラメータ定数
 // 弾速倍率: ステージ設定の projectileSpeed にこの倍率を掛けて「大型矢」の重厚な速さにする。
-const PROJECTILE_SPEED_MULT  = 1.8;
+const PROJECTILE_SPEED_MULT  = 3.6;
 // 飛距離上限（px）: この距離を超えた弾は自動消滅する。建物の攻撃射程（最大380px）より
 // 少し広く設定して「大型矢でも遠くまでは届かない」感を作る。
 const PROJECTILE_MAX_RANGE   = 420;
@@ -1803,20 +1803,33 @@ const PROJECTILE_KNOCKBACK_SPEED = 120;
 function checkProjectileHitBoids(projIdx) {
   const HIT_R  = 8;
   const HIT_R2 = HIT_R * HIT_R;
+
+  // トンネリング対策: 弾速が高いと1フレームで HIT_R を超える距離を移動しうる。
+  // テール（前フレーム位置）と現在位置の中間点でも判定することで
+  // 最大936 px/s（260 × 3.6）の弾でもすり抜けを防ぐ。
+  // 中間点 = tailX + (wx - tailX) * 0.5。2ステップで直径16pxのギャップをカバーできる。
+  const midX = (projWx[projIdx] + projTailX[projIdx]) * 0.5;
+  const midY = (projWy[projIdx] + projTailY[projIdx]) * 0.5;
+
   for (let i = 0; i < N; i++) {
-    // 変更2: ダウン中は投射物の標的にならない
     if (boidDead[i] || boidDowned[i]) continue;
-    const dx = projWx[projIdx] - px[i];
-    const dy = projWy[projIdx] - py[i];
-    if (dx * dx + dy * dy < HIT_R2) {
-      // 変更2: ダメージを復活（PROJECTILE_HIT_DAMAGE = BOID_MAX_HP/7 程度）
-      // ダウンモデルにより恒久消滅しないので数発耐えるダメージを有効化する
+
+    // 現在位置で判定
+    let dx = projWx[projIdx] - px[i];
+    let dy = projWy[projIdx] - py[i];
+    let hit = dx * dx + dy * dy < HIT_R2;
+
+    // 当たらなければ中間点でも判定（高速弾のトンネリングを防ぐ）
+    if (!hit) {
+      dx  = midX - px[i];
+      dy  = midY - py[i];
+      hit = dx * dx + dy * dy < HIT_R2;
+    }
+
+    if (hit) {
       applyDamageToBoid(i, PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER);
       spawnHitParticles(projWx[projIdx], projWy[projIdx]);
-
-      // 軽いノックバック（ダウン中でなければ適用）
       if (!boidDowned[i]) applyProjectileKnockback(i, projIdx);
-
       projActive[projIdx] = 0;
       return;
     }
@@ -2241,6 +2254,8 @@ const partVx     = new Float32Array(MAX_PARTICLES);
 const partVy     = new Float32Array(MAX_PARTICLES);
 const partLife   = new Float32Array(MAX_PARTICLES);
 const partActive = new Uint8Array(MAX_PARTICLES);
+// partType: 0=ブレス火花（橙〜赤）、1=出現エフェクト火花（金〜白〜薄橙）
+const partType   = new Uint8Array(MAX_PARTICLES);
 
 function spawnHitParticles(wx, wy) {
   // ブレスの火花は少数（2〜4個）に抑えてパフォーマンスを確保
@@ -2249,6 +2264,7 @@ function spawnHitParticles(wx, wy) {
   for (let i = 0; i < MAX_PARTICLES && spawned < count; i++) {
     if (partActive[i]) continue;
     partActive[i] = 1;
+    partType[i]   = 0; // ブレス火花
     partX[i] = wx;
     partY[i] = wy;
     const angle = Math.random() * Math.PI * 2;
@@ -2378,13 +2394,13 @@ function spawnBoidAtEgg(wx, wy) {
 // プール上限 12: 多数同時発生でも破綻しない軽量構造。
 // リングは拡大しながらフェードアウト（0.4秒）、火花は短命パーティクルを流用。
 // -----------------------------------------------------------------
-const MAX_APPEAR_FX = 12;
+const MAX_APPEAR_FX = 20;  // プール拡張: 多数同時出現（Katamari的に増える）に対応
 const appearFxWx    = new Float32Array(MAX_APPEAR_FX);
 const appearFxWy    = new Float32Array(MAX_APPEAR_FX);
 const appearFxLife  = new Float32Array(MAX_APPEAR_FX);  // 残り寿命（秒）
 const appearFxActive = new Uint8Array(MAX_APPEAR_FX);
-const APPEAR_FX_DURATION = 0.42; // リングの表示時間（秒）
-const APPEAR_FX_RING_MAX = 38;   // リングの最大半径（論理px）
+const APPEAR_FX_DURATION = 0.62; // リングの表示時間（秒）: 0.42→0.62 で一瞬すぎず目立つ
+const APPEAR_FX_RING_MAX = 76;   // リングの最大半径（論理px）: 38→76 で倍の広がり
 
 /**
  * 指定ワールド座標に竜出現エフェクトをスポーンする。
@@ -2408,20 +2424,23 @@ function spawnDragonAppearEffect(wx, wy) {
   appearFxWy[slot]     = wy;
   appearFxLife[slot]   = APPEAR_FX_DURATION;
 
-  // 金/白の火花パーティクルを数個: 既存パーティクルプールを流用
-  const SPARK_COUNT = 5;
+  // 金〜白〜薄橙の火花パーティクル: partType=1 で描画時に金色系で描き分ける
+  // 14個に増量、飛散半径・初速・サイズ大きめで「弾けるお祝い」感を出す
+  const SPARK_COUNT = 14;
   let spawned = 0;
   for (let i = 0; i < MAX_PARTICLES && spawned < SPARK_COUNT; i++) {
     if (partActive[i]) continue;
     partActive[i] = 1;
-    partX[i] = wx + (Math.random() - 0.5) * 8;
-    partY[i] = wy + (Math.random() - 0.5) * 8;
+    partType[i]   = 1; // 出現エフェクト火花（金〜白〜薄橙）
+    partX[i] = wx + (Math.random() - 0.5) * 14;
+    partY[i] = wy + (Math.random() - 0.5) * 14;
     const angle = Math.random() * Math.PI * 2;
-    const speed = 50 + Math.random() * 90;
+    // 内側の輝く粒子（遅め・大きめ）と外側に飛ぶ粒子（速め）を混在させる
+    const speed = 80 + Math.random() * 160;
     partVx[i]   = Math.cos(angle) * speed;
     partVy[i]   = Math.sin(angle) * speed;
-    // 金色は drawParticles の橙〜赤とは別に描くため寿命長め
-    partLife[i] = 0.30 + Math.random() * 0.18;
+    // 寿命: 0.45〜0.65秒（APPEAR_FX_DURATIONに近い長さで同期感）
+    partLife[i] = 0.45 + Math.random() * 0.20;
     spawned++;
   }
 
@@ -2439,30 +2458,68 @@ function updateAppearEffects(dt) {
 
 /**
  * 竜出現エフェクトを描画する。カメラ変換内（ワールド座標系）で呼ぶこと。
- * 外側へ広がるリングを拡大しながらフェードアウトさせる。色は金/白。
+ * 3重リング＋中心閃光で「嬉しい瞬間」を派手に祝う。
+ * リングはイーズアウトで減速しながら拡大し、progress二乗でフェードアウト。
  */
 function drawAppearEffects() {
   for (let i = 0; i < MAX_APPEAR_FX; i++) {
     if (!appearFxActive[i]) continue;
     const progress = 1.0 - appearFxLife[i] / APPEAR_FX_DURATION; // 0→1
-    const alpha    = Math.max(0, 1.0 - progress * progress); // イーズアウト
-    const radius   = APPEAR_FX_RING_MAX * progress;
+    // フェードアウト: 前半は不透明を保ち、後半で急速に消える（より存在感を出す）
+    const alpha    = Math.max(0, 1.0 - progress * progress * progress);
+    const wx       = appearFxWx[i];
+    const wy       = appearFxWy[i];
 
     ctx.save();
-    ctx.globalAlpha = alpha * 0.85;
-    ctx.strokeStyle = "#ffe060";
-    ctx.lineWidth   = Math.max(0.5, 2.5 * (1 - progress));
+
+    // ---- 中心閃光: 最初の20%だけ表示する小さな白い光球 ----
+    if (progress < 0.20) {
+      const flashP = progress / 0.20; // 0→1（最初の20%区間内）
+      // 始まりに強く光り、すぐ消える（エネルギーが放出される感じ）
+      const flashAlpha = Math.max(0, 1.0 - flashP * flashP) * 0.90;
+      const flashR     = 10 + flashP * 6; // 10→16px
+      ctx.globalAlpha  = flashAlpha;
+      const grd = ctx.createRadialGradient(wx, wy, 0, wx, wy, flashR);
+      grd.addColorStop(0, "#ffffff");
+      grd.addColorStop(0.4, "#fff8c0");
+      grd.addColorStop(1.0, "rgba(255,220,80,0)");
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(wx, wy, flashR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ---- 外側リング（金）: 最大半径まで広がるメインリング ----
+    const outerRadius = APPEAR_FX_RING_MAX * progress;
+    ctx.globalAlpha   = alpha * 0.90;
+    ctx.strokeStyle   = "#ffe060";
+    ctx.lineWidth     = Math.max(0.5, 3.5 * (1 - progress));
     ctx.beginPath();
-    ctx.arc(appearFxWx[i], appearFxWy[i], Math.max(0.5, radius), 0, Math.PI * 2);
+    ctx.arc(wx, wy, Math.max(0.5, outerRadius), 0, Math.PI * 2);
     ctx.stroke();
 
-    // 内側に薄い白リング（二重で豪華さを出す）
-    ctx.globalAlpha = alpha * 0.40;
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth   = Math.max(0.5, 1.5 * (1 - progress));
+    // ---- 中間リング（白）: 外側の75%の位置に追随 ----
+    const midRadius   = APPEAR_FX_RING_MAX * 0.75 * progress;
+    ctx.globalAlpha   = alpha * 0.65;
+    ctx.strokeStyle   = "#ffffff";
+    ctx.lineWidth     = Math.max(0.5, 2.0 * (1 - progress));
     ctx.beginPath();
-    ctx.arc(appearFxWx[i], appearFxWy[i], Math.max(0.5, radius * 0.6), 0, Math.PI * 2);
+    ctx.arc(wx, wy, Math.max(0.5, midRadius), 0, Math.PI * 2);
     ctx.stroke();
+
+    // ---- 内側リング（薄橙）: 外側の45%の位置、やや遅れて展開する感じ ----
+    // progress が 0.1 を過ぎてから表示（展開の「タメ」を演出）
+    if (progress > 0.08) {
+      const innerProgress = Math.min(1.0, (progress - 0.08) / 0.92);
+      const innerRadius   = APPEAR_FX_RING_MAX * 0.45 * innerProgress;
+      ctx.globalAlpha     = alpha * 0.50;
+      ctx.strokeStyle     = "#ffb040";
+      ctx.lineWidth       = Math.max(0.5, 1.5 * (1 - innerProgress));
+      ctx.beginPath();
+      ctx.arc(wx, wy, Math.max(0.5, innerRadius), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 }
@@ -3554,14 +3611,27 @@ function drawParticles() {
   ctx.save();
   for (let i = 0; i < MAX_PARTICLES; i++) {
     if (!partActive[i]) continue;
-    const lifeRatio = partLife[i] / 0.30;
-    const alpha = Math.max(0, lifeRatio);
-    const radius = 1.5 + lifeRatio * 2;
-    // ブレスパーティクル: 火花色（橙〜赤）
-    ctx.fillStyle = `rgba(255, ${(180 * lifeRatio) | 0}, 40, ${alpha.toFixed(3)})`;
-    ctx.beginPath();
-    ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
-    ctx.fill();
+    if (partType[i] === 1) {
+      // 出現エフェクト火花: 金〜白〜薄橙。寿命が長いので基準を0.55秒にする
+      const lifeRatio = Math.max(0, partLife[i] / 0.55);
+      const alpha  = Math.max(0, lifeRatio * lifeRatio); // 後半で急速フェード
+      // 輝く白→金→薄橙へ変化（序盤は白っぽく、末期は橙）
+      const g = (200 + (55 * lifeRatio)) | 0; // 200→255（白寄り→金）
+      const radius = Math.max(0.5, 1.0 + lifeRatio * 3.5); // 最大4.5px
+      ctx.fillStyle = `rgba(255, ${g}, ${(80 * (1 - lifeRatio)) | 0}, ${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // ブレスパーティクル: 火花色（橙〜赤）
+      const lifeRatio = partLife[i] / 0.30;
+      const alpha = Math.max(0, lifeRatio);
+      const radius = 1.5 + lifeRatio * 2;
+      ctx.fillStyle = `rgba(255, ${(180 * lifeRatio) | 0}, 40, ${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.restore();
 }
