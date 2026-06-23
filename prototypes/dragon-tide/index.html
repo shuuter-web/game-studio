@@ -304,7 +304,7 @@ const BUILDING_SIZE_PARAMS = {
 
 // -----------------------------------------------------------------
 // 首都要塞（capital district）パラメータ
-// ボス周囲を大型建物のリングで取り囲む「城下の要塞都市」を形成する。
+// ボス周囲を大型建物のリングで取り囲み、さらに城下の雑魚建物で埋める「首都城下町」。
 // -----------------------------------------------------------------
 // リング配置半径（ボス中心からの距離）
 const CAPITAL_RING_INNER = 80;   // ドーナツ内縁: ボス半径(46) + 最低間隔(34)
@@ -320,11 +320,23 @@ const CAPITAL_RADIUS_BASE = BUILDING_SIZE_PARAMS.large.radiusBase; // 28px
 // 首都建物同士の最小中心間距離（重なり防止）
 // radius*2 + 4px = 60px（ぎりぎり接触しない最小値）
 const CAPITAL_MIN_SPACING = CAPITAL_RADIUS_BASE * 2 + 4; // 60px
-// 小集落クラスタとの分離に使う「ボス＋リング」占有半径
-// リング外縁 + 首都建物の半径 + 余白で安全マージンを確保する
-const CAPITAL_EXCLUSION_RADIUS = CAPITAL_RING_OUTER + CAPITAL_RADIUS_BASE + 60; // 248px
-// ボスをマップ端から確保するマージン（リング外縁 + 余白がマップ外に出ないよう）
-const CAPITAL_BOSS_MARGIN = CAPITAL_RING_OUTER + CAPITAL_RADIUS_BASE + 80; // 268px
+
+// 変更1: 城下の雑魚建物（small）充填パラメータ
+// 大型リング（外縁180px）の外側〜360px の環状帯に small 建物を敷き詰めて城下町にする。
+// small radius=10px なので間隔26px あれば隣接せず、32px で余裕を確保。
+const CAPITAL_SMALL_INNER  = CAPITAL_RING_OUTER + 8;   // 188px: リング直外から開始
+const CAPITAL_SMALL_OUTER  = 360;  // 360px: 城下充填の外縁
+// small 建物内の充填試行数。ポアソンディスク風にランダム配置 × 試行でほぼ上限に収束。
+const CAPITAL_SMALL_COUNT  = 45;   // 目標棟数（実際は重なり除去で若干減る場合あり）
+const CAPITAL_SMALL_RADIUS = BUILDING_SIZE_PARAMS.small.radiusBase; // 10px
+// small 同士の最小間隔（radius*2 + 12px のゆとり）
+const CAPITAL_SMALL_MIN_SPACING = CAPITAL_SMALL_RADIUS * 2 + 12; // 32px
+
+// 小集落クラスタとの分離に使う「ボス＋リング＋城下充填」占有半径
+// 城下外縁 CAPITAL_SMALL_OUTER + small radius + 余白 → 他クラスタを外に追い出す
+const CAPITAL_EXCLUSION_RADIUS = CAPITAL_SMALL_OUTER + CAPITAL_SMALL_RADIUS + 60; // 430px
+// ボスをマップ端から確保するマージン（城下外縁 + 余白がマップ外に出ないよう）
+const CAPITAL_BOSS_MARGIN = CAPITAL_SMALL_OUTER + CAPITAL_SMALL_RADIUS + 80; // 450px
 
 // -----------------------------------------------------------------
 // ボス集落パラメータ
@@ -1078,6 +1090,52 @@ function placeCapitalDistrict(boss, config) {
     // （ボスが端に追い込まれた場合の安全網）
   }
 
+  // 変更1: 城下の雑魚建物（small）を CAPITAL_SMALL_INNER〜SMALL_OUTER の環状帯に充填する。
+  // ポアソンディスク風: 候補をランダムに生成し、既配置建物との最小間隔で除去する。
+  // ボスとの間隔も確保。卵持ち割当の対象に含める（_townMeta は持たないが
+  // assignEggBearers のフォールバックで全体1町として処理される）。
+  const smallPad = CAPITAL_SMALL_RADIUS + 10;
+  const smallMinD2 = CAPITAL_SMALL_MIN_SPACING * CAPITAL_SMALL_MIN_SPACING;
+  // ボス本体との最小距離（ボス半径 + small 半径 + 余白）
+  const bossSmallDist2 = (BOSS_RADIUS + CAPITAL_SMALL_RADIUS + 14) * (BOSS_RADIUS + CAPITAL_SMALL_RADIUS + 14);
+  // 配置された全建物（ring + small）を重なりチェックに使うためまとめて参照する
+  // result にはリング建物が入っているので、small 同士 + ring との距離も見る
+  const MAX_ATTEMPTS_SMALL = 6;
+
+  for (let k = 0; k < CAPITAL_SMALL_COUNT; k++) {
+    let placed = false;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS_SMALL && !placed; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      // 内縁〜外縁のランダム半径（均等分布にするため√変換を使う）
+      const rMin = CAPITAL_SMALL_INNER, rMax = CAPITAL_SMALL_OUTER;
+      const rnd  = Math.sqrt(Math.random());  // 外側に密度が偏らないよう補正
+      const r    = rMin + rnd * (rMax - rMin);
+
+      const wx = bossX + Math.cos(angle) * r;
+      const wy = bossY + Math.sin(angle) * r;
+
+      // ワールド境界チェック
+      if (wx < smallPad || wx > WORLD_W - smallPad || wy < smallPad || wy > WORLD_H - smallPad) continue;
+
+      // ボス本体との距離チェック
+      if (dist2(wx, wy, bossX, bossY) < bossSmallDist2) continue;
+
+      // 既配置建物（ring large + 先行small）との重なりチェック
+      let tooClose = false;
+      for (const cap of result) {
+        // ring の large と small では最小間隔を変える
+        const gap = (cap.size === "small")
+          ? CAPITAL_SMALL_MIN_SPACING
+          : CAPITAL_SMALL_RADIUS + CAPITAL_RADIUS_BASE + 14;
+        if (dist2(wx, wy, cap.wx, cap.wy) < gap * gap) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+
+      result.push(makeCapitalSmallBuilding(wx, wy, config));
+      placed = true;
+    }
+  }
+
   return result;
 }
 
@@ -1102,6 +1160,27 @@ function makeCapitalBuilding(wx, wy, config) {
   // 首都建物は要塞都市の一部であることを示すフラグ
   // （_townMeta は持たない → assignEggBearers のフォールバックで全体1町として卵割当対象に含まれる）
   building._isCapital = true;
+  return building;
+}
+
+/**
+ * 城下の雑魚建物（small サイズ）を生成する。
+ * 通常 small 帯と同じパラメータを使う（弱い・すぐ壊れる城下住民）。
+ * 卵持ち割当の対象になることでボス前で群れが育つ良い流れを作る。
+ *
+ * @param {number} wx  ワールドX座標
+ * @param {number} wy  ワールドY座標
+ * @param {Object} config  STAGE_CONFIGS[stageIndex]
+ * @returns {Object}  建物オブジェクト
+ */
+function makeCapitalSmallBuilding(wx, wy, config) {
+  const bSmall = config.buildings.small;
+  const hp     = randInt(BUILDING_SIZE_PARAMS.small.hpMin, BUILDING_SIZE_PARAMS.small.hpMax);
+  // 城下の small は small カラーから選ぶ（ステージテーマに合わせる）
+  const color  = randChoice(bSmall.colors);
+  const building = makeBuilding(wx, wy, "small", color, bSmall, hp);
+  // 城下建物フラグ（通常クラスタとの区別用。卵割当・カリング対象には通常通り含まれる）
+  building._isCapitalSmall = true;
   return building;
 }
 
@@ -1423,6 +1502,16 @@ const projTargetIdx = new Int32Array(MAX_PROJECTILES);
 const projColor     = new Array(MAX_PROJECTILES).fill("#fff");
 const projTailX     = new Float32Array(MAX_PROJECTILES);
 const projTailY     = new Float32Array(MAX_PROJECTILES);
+// 変更3: 飛距離管理用 SoA（発射点を記録して走破距離で消滅判定する）
+const projStartWx   = new Float32Array(MAX_PROJECTILES);
+const projStartWy   = new Float32Array(MAX_PROJECTILES);
+
+// 変更3: 投射物パラメータ定数
+// 弾速倍率: ステージ設定の projectileSpeed にこの倍率を掛けて「大型矢」の重厚な速さにする。
+const PROJECTILE_SPEED_MULT  = 1.8;
+// 飛距離上限（px）: この距離を超えた弾は自動消滅する。建物の攻撃射程（最大380px）より
+// 少し広く設定して「大型矢でも遠くまでは届かない」感を作る。
+const PROJECTILE_MAX_RANGE   = 420;
 
 function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, aoe, isTracking) {
   let slot = -1;
@@ -1431,11 +1520,17 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
   }
   if (slot < 0) return;
 
+  // 変更3: 弾速倍率を適用（大型矢の重厚な速さ）
+  const actualSpeed = speed * PROJECTILE_SPEED_MULT;
+
   projActive[slot]     = 1;
   projWx[slot]         = fromWx;
   projWy[slot]         = fromWy;
   projTailX[slot]      = fromWx;
   projTailY[slot]      = fromWy;
+  // 変更3: 発射点を記録（飛距離上限判定用）
+  projStartWx[slot]    = fromWx;
+  projStartWy[slot]    = fromWy;
   projDmg[slot]        = damage;
   projAoe[slot]        = aoe ?? 0;
   projTracking[slot]   = isTracking ? 1 : 0;
@@ -1446,10 +1541,10 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
     const dx = px[targetBoidIdx] - fromWx;
     const dy = py[targetBoidIdx] - fromWy;
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
-    projVx[slot] = (dx / d) * speed;
-    projVy[slot] = (dy / d) * speed;
+    projVx[slot] = (dx / d) * actualSpeed;
+    projVy[slot] = (dy / d) * actualSpeed;
   } else {
-    projVx[slot] = speed;
+    projVx[slot] = actualSpeed;
     projVy[slot] = 0;
   }
 }
@@ -1641,13 +1736,18 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color) {
     if (!projActive[i]) { slot = i; break; }
   }
   if (slot < 0) return;
+  // 変更3: 弾速倍率を適用
+  const actualSpeed = speed * PROJECTILE_SPEED_MULT;
   projActive[slot]     = 1;
   projWx[slot]         = fromWx;
   projWy[slot]         = fromWy;
   projTailX[slot]      = fromWx;
   projTailY[slot]      = fromWy;
-  projVx[slot]         = Math.cos(angle) * speed;
-  projVy[slot]         = Math.sin(angle) * speed;
+  // 変更3: 発射点を記録（飛距離上限判定用）
+  projStartWx[slot]    = fromWx;
+  projStartWy[slot]    = fromWy;
+  projVx[slot]         = Math.cos(angle) * actualSpeed;
+  projVy[slot]         = Math.sin(angle) * actualSpeed;
   projDmg[slot]        = damage;
   projAoe[slot]        = 0;
   projTracking[slot]   = 0;
@@ -1679,6 +1779,14 @@ function updateProjectiles(dt) {
       continue;
     }
 
+    // 変更3: 飛距離上限チェック（発射点からの直線距離で判定）
+    const tdx = projWx[i] - projStartWx[i];
+    const tdy = projWy[i] - projStartWy[i];
+    if (tdx * tdx + tdy * tdy > PROJECTILE_MAX_RANGE * PROJECTILE_MAX_RANGE) {
+      projActive[i] = 0;
+      continue;
+    }
+
     checkProjectileHitBoids(i);
   }
 }
@@ -1687,9 +1795,10 @@ function updateProjectiles(dt) {
 // 0.0 から復活。ダウンモデルにより恒久消滅しないのでダメージを有効化する。
 const PROJECTILE_DAMAGE_MULTIPLIER = 1.0;
 
-// 投射物命中時の軽いノックバック速度（px/s）
-// 竜が一瞬はじかれてすぐ戻る程度の軽い反発。死亡には絶対つながらない。
-const PROJECTILE_KNOCKBACK_SPEED = 60;
+// 変更3: 投射物命中時のノックバック速度（px/s）
+// 弾の進行方向と同方向に押し出す（矢が刺さって押される感覚）。
+// 120px/s は maxSpeed(160) の75%なので体感できるが maxSpeed クランプで飛び出さない。
+const PROJECTILE_KNOCKBACK_SPEED = 120;
 
 function checkProjectileHitBoids(projIdx) {
   const HIT_R  = 8;
@@ -1715,12 +1824,13 @@ function checkProjectileHitBoids(projIdx) {
 }
 
 function applyProjectileKnockback(boidIdx, projIdx) {
-  // 投射物の進行方向と逆方向にノックバック
+  // 変更3: 弾の進行方向と同方向にノックバック（矢が刺さって押し飛ばされる感覚）
+  // 旧実装は -= で逆方向（弾を跳ね返す向き）だったが、+=で弾の方向に押し出す。
   const pvx = projVx[projIdx];
   const pvy = projVy[projIdx];
   const pspeed = Math.sqrt(pvx * pvx + pvy * pvy) || 1;
-  vx[boidIdx] -= (pvx / pspeed) * PROJECTILE_KNOCKBACK_SPEED;
-  vy[boidIdx] -= (pvy / pspeed) * PROJECTILE_KNOCKBACK_SPEED;
+  vx[boidIdx] += (pvx / pspeed) * PROJECTILE_KNOCKBACK_SPEED;
+  vy[boidIdx] += (pvy / pspeed) * PROJECTILE_KNOCKBACK_SPEED;
   // 速度を maxSpeed でクランプして飛び出しを防ぐ
   const sp = Math.sqrt(vx[boidIdx] * vx[boidIdx] + vy[boidIdx] * vy[boidIdx]);
   if (sp > BASE_CFG.maxSpeed) {
@@ -2206,7 +2316,9 @@ function collectNearbyEggs() {
  * SoA の全要素を初期化して NaN/ゴミを防ぐ。
  */
 function spawnBoidAtEgg(wx, wy) {
-  if (N >= MAX_BOIDS) return; // 上限到達時は追加しない
+  if (N >= MAX_BOIDS) return; // 上限到達時は追加しない（エフェクトも出さない）
+  // 変更2: 竜出現エフェクトをスポーン（追加に成功したときのみ）
+  spawnDragonAppearEffect(wx, wy);
 
   const idx = N; // 新しい個体スロット
   N++;           // 有効個体数を先に増やす
@@ -2258,6 +2370,100 @@ function spawnBoidAtEgg(wx, wy) {
   const base = idx * TAIL_SEGS;
   for (let s = 0; s < TAIL_SEGS; s++) {
     boidAngleHistory[base + s] = initAngle;
+  }
+}
+
+// -----------------------------------------------------------------
+// 変更2: 竜出現エフェクト — 卵回収で竜+1したときの弾けるエフェクト
+// プール上限 12: 多数同時発生でも破綻しない軽量構造。
+// リングは拡大しながらフェードアウト（0.4秒）、火花は短命パーティクルを流用。
+// -----------------------------------------------------------------
+const MAX_APPEAR_FX = 12;
+const appearFxWx    = new Float32Array(MAX_APPEAR_FX);
+const appearFxWy    = new Float32Array(MAX_APPEAR_FX);
+const appearFxLife  = new Float32Array(MAX_APPEAR_FX);  // 残り寿命（秒）
+const appearFxActive = new Uint8Array(MAX_APPEAR_FX);
+const APPEAR_FX_DURATION = 0.42; // リングの表示時間（秒）
+const APPEAR_FX_RING_MAX = 38;   // リングの最大半径（論理px）
+
+/**
+ * 指定ワールド座標に竜出現エフェクトをスポーンする。
+ * プールが満杯のときは古いスロット（最も残り寿命が少ない）を上書き。
+ */
+function spawnDragonAppearEffect(wx, wy) {
+  // 空きスロットを探す
+  let slot = -1;
+  for (let i = 0; i < MAX_APPEAR_FX; i++) {
+    if (!appearFxActive[i]) { slot = i; break; }
+  }
+  // 空きがなければ残り寿命が最も少ないスロットを再利用
+  if (slot < 0) {
+    let minLife = Infinity;
+    for (let i = 0; i < MAX_APPEAR_FX; i++) {
+      if (appearFxLife[i] < minLife) { minLife = appearFxLife[i]; slot = i; }
+    }
+  }
+  appearFxActive[slot] = 1;
+  appearFxWx[slot]     = wx;
+  appearFxWy[slot]     = wy;
+  appearFxLife[slot]   = APPEAR_FX_DURATION;
+
+  // 金/白の火花パーティクルを数個: 既存パーティクルプールを流用
+  const SPARK_COUNT = 5;
+  let spawned = 0;
+  for (let i = 0; i < MAX_PARTICLES && spawned < SPARK_COUNT; i++) {
+    if (partActive[i]) continue;
+    partActive[i] = 1;
+    partX[i] = wx + (Math.random() - 0.5) * 8;
+    partY[i] = wy + (Math.random() - 0.5) * 8;
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 50 + Math.random() * 90;
+    partVx[i]   = Math.cos(angle) * speed;
+    partVy[i]   = Math.sin(angle) * speed;
+    // 金色は drawParticles の橙〜赤とは別に描くため寿命長め
+    partLife[i] = 0.30 + Math.random() * 0.18;
+    spawned++;
+  }
+
+  // 軽い振動フィードバック（8ms: 気づける程度、連打でも不快にならない長さ）
+  hapticPulse(8);
+}
+
+function updateAppearEffects(dt) {
+  for (let i = 0; i < MAX_APPEAR_FX; i++) {
+    if (!appearFxActive[i]) continue;
+    appearFxLife[i] -= dt;
+    if (appearFxLife[i] <= 0) appearFxActive[i] = 0;
+  }
+}
+
+/**
+ * 竜出現エフェクトを描画する。カメラ変換内（ワールド座標系）で呼ぶこと。
+ * 外側へ広がるリングを拡大しながらフェードアウトさせる。色は金/白。
+ */
+function drawAppearEffects() {
+  for (let i = 0; i < MAX_APPEAR_FX; i++) {
+    if (!appearFxActive[i]) continue;
+    const progress = 1.0 - appearFxLife[i] / APPEAR_FX_DURATION; // 0→1
+    const alpha    = Math.max(0, 1.0 - progress * progress); // イーズアウト
+    const radius   = APPEAR_FX_RING_MAX * progress;
+
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.85;
+    ctx.strokeStyle = "#ffe060";
+    ctx.lineWidth   = Math.max(0.5, 2.5 * (1 - progress));
+    ctx.beginPath();
+    ctx.arc(appearFxWx[i], appearFxWy[i], Math.max(0.5, radius), 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 内側に薄い白リング（二重で豪華さを出す）
+    ctx.globalAlpha = alpha * 0.40;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth   = Math.max(0.5, 1.5 * (1 - progress));
+    ctx.beginPath();
+    ctx.arc(appearFxWx[i], appearFxWy[i], Math.max(0.5, radius * 0.6), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
@@ -2357,6 +2563,7 @@ function advanceToNextStage() {
   for (let i = 0; i < MAX_PROJECTILES; i++) projActive[i] = 0;
   for (let i = 0; i < MAX_PARTICLES; i++)   partActive[i] = 0;
   for (let e = 0; e < MAX_EGGS; e++)        eggActive[e] = 0;
+  for (let i = 0; i < MAX_APPEAR_FX; i++)   appearFxActive[i] = 0;
 
   activeBreaths.length = 0;
 
@@ -2390,6 +2597,7 @@ function restartGame() {
   for (let e = 0; e < MAX_EGGS; e++)          eggActive[e]  = 0;
   for (let i = 0; i < MAX_PROJECTILES; i++)   projActive[i] = 0;
   for (let i = 0; i < MAX_PARTICLES; i++)     partActive[i] = 0;
+  for (let i = 0; i < MAX_APPEAR_FX; i++)     appearFxActive[i] = 0;
 
   activeBreaths.length = 0;
 
@@ -2814,6 +3022,7 @@ function render(now) {
   drawBoids();
   drawProjectiles();
   drawParticles();
+  drawAppearEffects();  // 変更2: 竜出現リングエフェクト（ワールド座標系）
 
   // 軌跡はワールド座標で保持しているのでカメラ変換の内側で描く。
   // これでドラゴンが実際に追う経路と一致し、地面に固定されたまま流れる。
@@ -3265,27 +3474,79 @@ function drawBoids() {
   }
 }
 
+/**
+ * 変更3: 投射物を「カタパルトの大きな矢（ボルト）」として描画する。
+ * 進行方向へ向いた太めのシャフト + 先端の三角鏃 + 末尾の小さな矢羽根（フレッチング）。
+ * 進行方向は速度ベクトル (projVx, projVy) から算出してキャンバスを回転させる。
+ * 色は既存の projColor を流用してステージ別テーマを維持する。
+ */
 function drawProjectiles() {
+  // 矢のサイズ定数（論理px。カメラズームはキャンバス変換で自動適用される）
+  const SHAFT_LEN      = 18;  // シャフト（矢柄）の長さ
+  const SHAFT_WIDTH    = 2.8; // シャフトの線幅
+  const HEAD_LEN       = 7;   // 鏃（やじり）の長さ（シャフト前端から先端まで）
+  const HEAD_HALF_W    = 3.5; // 鏃の幅の半分
+  const FLETCH_LEN     = 5;   // 矢羽根の長さ
+  const FLETCH_HALF_W  = 2.8; // 矢羽根の幅の半分
+
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) continue;
 
     // カメラ変換（スケール込み）でスクリーン座標を計算してカリング
     const sx = (projWx[i] - cam.x) * cam.scale + viewW * 0.5;
     const sy = (projWy[i] - cam.y) * cam.scale + viewH * 0.5;
-    if (sx < -20 || sx > viewW + 20 || sy < -20 || sy > viewH + 20) continue;
+    if (sx < -40 || sx > viewW + 40 || sy < -40 || sy > viewH + 40) continue;
 
-    ctx.strokeStyle = projColor[i];
-    ctx.lineWidth = 1.5;
-    ctx.lineCap = "round";
+    // 進行方向（速度ベクトルから算出）
+    const angle = Math.atan2(projVy[i], projVx[i]);
+    const color = projColor[i];
+
+    ctx.save();
+    // 矢の中心（弾頭先端の少し手前）をワールド座標の現在位置に合わせて配置
+    ctx.translate(projWx[i], projWy[i]);
+    ctx.rotate(angle);
+
+    // --- シャフト（矢柄）: 後端 (-SHAFT_LEN) → 0 ---
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = SHAFT_WIDTH;
+    ctx.lineCap     = "round";
     ctx.beginPath();
-    ctx.moveTo(projTailX[i], projTailY[i]);
-    ctx.lineTo(projWx[i], projWy[i]);
+    ctx.moveTo(-SHAFT_LEN, 0);
+    ctx.lineTo(0, 0);
     ctx.stroke();
 
-    ctx.fillStyle = "#fff";
+    // --- 鏃（やじり）: 三角形、先端が +HEAD_LEN の位置 ---
+    ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(projWx[i], projWy[i], 2, 0, Math.PI * 2);
+    ctx.moveTo(HEAD_LEN, 0);            // 先端
+    ctx.lineTo(0, -HEAD_HALF_W);        // 左後端
+    ctx.lineTo(0,  HEAD_HALF_W);        // 右後端
+    ctx.closePath();
     ctx.fill();
+
+    // 鏃に白いハイライト（輝き感）
+    ctx.strokeStyle = "rgba(255,255,255,0.55)";
+    ctx.lineWidth   = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(HEAD_LEN, 0);
+    ctx.lineTo(0, -HEAD_HALF_W);
+    ctx.stroke();
+
+    // --- フレッチング（矢羽根）: 末尾に小さなV字 ---
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.4;
+    ctx.globalAlpha = 0.80;
+    ctx.beginPath();
+    // 上羽根
+    ctx.moveTo(-SHAFT_LEN + FLETCH_LEN, 0);
+    ctx.lineTo(-SHAFT_LEN, -FLETCH_HALF_W);
+    // 下羽根
+    ctx.moveTo(-SHAFT_LEN + FLETCH_LEN, 0);
+    ctx.lineTo(-SHAFT_LEN, FLETCH_HALF_W);
+    ctx.stroke();
+    ctx.globalAlpha = 1.0;
+
+    ctx.restore();
   }
 }
 
@@ -3843,6 +4104,7 @@ function tick() {
     updateCollisionAttacks(dt);   // 変更2: 直接衝突ダメージ＋ヒットストップ
     updateDeathTimers(dt);
     updateParticles(dt);
+    updateAppearEffects(dt);      // 変更2: 竜出現エフェクト更新
     collectNearbyEggs();
     checkGameConditions();
   } else if (gameState === "stage-clear") {
