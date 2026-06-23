@@ -295,10 +295,39 @@ const BASE_CFG = {
 // -----------------------------------------------------------------
 
 const BUILDING_SIZE_PARAMS = {
-  small:  { hpMin: 10, hpMax: 15, radiusBase: 10 },
-  medium: { hpMin: 30, hpMax: 40, radiusBase: 16 },
-  large:  { hpMin: 70, hpMax: 100, radiusBase: 28 },
+  // small は「育成フィーダー」。すぐ壊れて卵が出て群れが育つことが目的。HP低め。
+  small:  { hpMin: 6, hpMax: 10, radiusBase: 10 },
+  medium: { hpMin: 25, hpMax: 35, radiusBase: 16 },
+  large:  { hpMin: 60, hpMax: 85, radiusBase: 28 },
+  // boss: 別途 BOSS_PARAMS で管理（サイズ/形状はここと独立）
 };
+
+// -----------------------------------------------------------------
+// ボス集落パラメータ
+// ボスはステージごとに1体だけ配置される高耐久・高火力の核心目標。
+// HP: 小集落の約15倍を起点に、ステージが進むほど係数を掛けて増やす。
+// 火力: 発射間隔=小集落の約1/3、projectileCount 3〜5、弾速・ダメージ高め。
+// 投射ダメージはダウン/復帰モデルのまま（恒久喪失なし）。
+// -----------------------------------------------------------------
+const BOSS_BASE_HP = 150;          // ステージ1のボスHP（小集落8の約18倍≈育成コスト感）
+const BOSS_HP_STAGE_MULT = 1.4;    // ステージごとのHP増加係数（1→210, 2→294, 3→411, 4→576）
+const BOSS_RADIUS = 46;            // ボスの見た目半径（小集落10の4.6倍、一目でボスと分かる）
+const BOSS_ATTACK_RADIUS = 380;    // ボスの攻撃射程（小集落の2.5倍以上）
+
+// ボスの投射パラメータ（ステージ4 large より強い）
+const BOSS_FIRE_PARAMS = {
+  // projectileInterval = 小集落の約1/3。高い頻度で群れをダウンさせる圧力になる。
+  projectileInterval: 0.6,         // 0.6秒ごと × 後で×4倍ゲートあり → 実質2.4秒
+  projectileSpeed:    260,
+  projectileDamage:   2.0,         // BOID_MAX_HP=30 → 約15発でダウン（ただし×複数本）
+  projectileCount:    4,           // 4方向にファン展開で群れを散らす
+  projectileTracking: false,
+};
+
+// ボスのHP計算（stageIndexは0始まり）
+function calcBossHp(stageIndex) {
+  return Math.round(BOSS_BASE_HP * Math.pow(BOSS_HP_STAGE_MULT, stageIndex));
+}
 
 const STAGE_CONFIGS = [
   // ===== ステージ1: 石器時代 =====
@@ -311,6 +340,7 @@ const STAGE_CONFIGS = [
     townBaseHues: ["#c05820", "#a04010", "#d06828", "#b04818"],
 
     buildings: {
+      // small は育成フィーダー。すぐ壊れて卵が出て群れを育てる役割。
       small: {
         colors: ["#c05820", "#a04010", "#d06828"],
         shapes: ["circle", "polygon"],
@@ -347,6 +377,13 @@ const STAGE_CONFIGS = [
         projectileTracking: false,
         reward: { eggMin: 5, eggMax: 7 },
       },
+    },
+    // ボス集落テーマ（見た目・色。HP/火力は BOSS_* 定数から計算）
+    boss: {
+      color: "#ff4400",           // 赤橙の巨大神殿——他の茶系と明確に差別化
+      glowColor: "#ff8800",       // ミニマップ/グロー用の明るい色
+      shape: "bossCircle",        // 専用形状（drawSettlementOnLayer で分岐）
+      projectileColor: "#ff6020",
     },
     // 町数・建物密度
     townCount: 5,
@@ -403,6 +440,12 @@ const STAGE_CONFIGS = [
         reward: { eggMin: 6, eggMax: 8 },
       },
     },
+    boss: {
+      color: "#c040ff",           // 紫の神殿——青系の小集落と明確に差別化
+      glowColor: "#e080ff",
+      shape: "bossCircle",
+      projectileColor: "#d060ff",
+    },
     townCount: 5,
     smallPerTown: 30,
     mediumPerTown: 7,
@@ -455,6 +498,12 @@ const STAGE_CONFIGS = [
         reward: { eggMin: 6, eggMax: 9 },
       },
     },
+    boss: {
+      color: "#ff2040",           // 深紅の要塞——グレー系小集落に映える
+      glowColor: "#ff6060",
+      shape: "bossCircle",
+      projectileColor: "#ff4060",
+    },
     townCount: 6,
     smallPerTown: 28,
     mediumPerTown: 6,
@@ -506,6 +555,12 @@ const STAGE_CONFIGS = [
         projectileTracking: false,
         reward: { eggMin: 8, eggMax: 12 },
       },
+    },
+    boss: {
+      color: "#00ffcc",           // シアン/エメラルド——青系小集落に対して補色で際立つ
+      glowColor: "#80ffe0",
+      shape: "bossCircle",
+      projectileColor: "#40ffcc",
     },
     townCount: 6,
     smallPerTown: 30,
@@ -767,6 +822,8 @@ function makeBuilding(wx, wy, size, color, bConfig, hp) {
     fallen: false,
     // 変更1: 卵持ちフラグ（generateTown 内で EGG_BEARER_RATIO に従い後から設定する）
     isEggBearer: false,
+    // ボス集落フラグ（通常建物は false。makeBossBuilding で true になる）
+    isBoss: false,
     attackTimer: Math.random() * bConfig.projectileInterval,
     attackRadius:        bConfig.attackRadius,
     projectileInterval:  bConfig.projectileInterval,
@@ -779,6 +836,42 @@ function makeBuilding(wx, wy, size, color, bConfig, hp) {
     reward:              bConfig.reward,
     // ブレスヒットパーティクルのインターバルカウンタ
     _breathParticleTimer: 0,
+  };
+}
+
+/**
+ * ボス集落を1体生成する。
+ * 高HP・高火力・大半径で、小集落の育成なしでは倒せない圧力を作る。
+ * isBoss=true を持つことでクリア条件・描画・ミニマップで特別扱いされる。
+ */
+function makeBossBuilding(wx, wy, stageIndex, bossTheme) {
+  const hp = calcBossHp(stageIndex);
+  // 攻撃タイマーはあえて0から始めて、ステージ開始直後から脅威感を出す
+  return {
+    wx,
+    wy,
+    size: "boss",
+    color: bossTheme.color,
+    shape: bossTheme.shape,        // "bossCircle" — 専用描画関数で処理
+    radius: BOSS_RADIUS,
+    maxHp: hp,
+    hp,
+    fallen: false,
+    isEggBearer: false,            // ボスは卵を落とさない（強すぎる報酬になるため）
+    isBoss: true,
+    attackTimer: 0,
+    attackRadius:       BOSS_ATTACK_RADIUS,
+    projectileInterval: BOSS_FIRE_PARAMS.projectileInterval,
+    projectileSpeed:    BOSS_FIRE_PARAMS.projectileSpeed,
+    projectileDamage:   BOSS_FIRE_PARAMS.projectileDamage,
+    projectileColor:    bossTheme.projectileColor,
+    projectileCount:    BOSS_FIRE_PARAMS.projectileCount,
+    projectileTracking: BOSS_FIRE_PARAMS.projectileTracking,
+    projectileAoe:      0,
+    reward:             { eggMin: 0, eggMax: 0 },
+    _breathParticleTimer: 0,
+    // ボス専用: グロー色（描画時に外輪のグロー効果に使う）
+    _bossGlowColor: bossTheme.glowColor,
   };
 }
 
@@ -805,7 +898,54 @@ function generateStageLayout(stageIndex) {
   // まず町の先頭インデックスを特定し、各町内でランダムに EGG_BEARER_RATIO 割合を選ぶ。
   assignEggBearers(result);
 
+  // ボス集落を1体、マップ右寄り中央付近（プレイヤーが小集落を経由して到達する配置）に配置する。
+  // 左端300pxはスタート地点除外のため、ボスはワールド右2/3エリアのランダム位置に置く。
+  // 小集落クラスタと重ならないよう、既存建物から十分離れた座標を探す。
+  const boss = placeBossBuilding(stageIndex, config, result);
+  result.push(boss);
+
   return result;
+}
+
+/**
+ * ボス集落を小集落クラスタから離れたワールド右寄り位置に配置する。
+ * 最大試行でも重複回避できない場合はマップ中央右に強制配置する。
+ */
+function placeBossBuilding(stageIndex, config, existingBuildings) {
+  const bossTheme = config.boss;
+  // ボスはワールド右2/3エリア（スタート地点と小集落クラスタから遠ざける）
+  const BOSS_MARGIN = 300;
+  const minX = WORLD_W * 0.45;
+  const maxX = WORLD_W - BOSS_MARGIN;
+  const minY = BOSS_MARGIN;
+  const maxY = WORLD_H - BOSS_MARGIN;
+
+  // 最小離隔距離：BOSS_RADIUS + 小集落の最大占有範囲を考慮した余裕
+  const MIN_DIST_FROM_TOWN = 250;
+  const MIN_DIST2 = MIN_DIST_FROM_TOWN * MIN_DIST_FROM_TOWN;
+
+  let bossWx = (minX + maxX) * 0.5;
+  let bossWy = (minY + maxY) * 0.5;
+
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const cx = minX + Math.random() * (maxX - minX);
+    const cy = minY + Math.random() * (maxY - minY);
+
+    // 既存建物との最近距離を確認
+    let tooClose = false;
+    for (const b of existingBuildings) {
+      const dx = b.wx - cx;
+      const dy = b.wy - cy;
+      if (dx * dx + dy * dy < MIN_DIST2) { tooClose = true; break; }
+    }
+    if (!tooClose) {
+      bossWx = cx;
+      bossWy = cy;
+      break;
+    }
+  }
+
+  return makeBossBuilding(bossWx, bossWy, stageIndex, bossTheme);
 }
 
 // 各町の建物リストから EGG_BEARER_RATIO の割合でランダムに卵持ちを選ぶ。
@@ -915,10 +1055,96 @@ function drawSettlementOnLayer(bctx, settlement) {
     case "polygon":     drawPolygonOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
     case "star":        drawStarOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color, 5); break;
     case "star4":       drawStarOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color, 4); break;
+    // ボス集落専用形状: 外輪グロー + 多重リング + 中心十字で一目でボスと分かる
+    case "bossCircle":
+      drawBossOnLayer(bctx, settlement, color);
+      break;
     default:            drawCircleOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
   }
 
   bctx.restore();
+}
+
+/**
+ * ボス集落をオフスクリーンCanvasに描画する。
+ * 外輪グロー（薄い大円）＋実体（二重リング）＋中心の8角星＋十字マークで
+ * 小集落とは明確に差別化した外観を作る。
+ * fallen 時は通常建物と同じく暗く潰れる（alpha=0.22, color="#333" で呼ばれる）。
+ */
+function drawBossOnLayer(bctx, settlement, color) {
+  const wx = settlement.wx;
+  const wy = settlement.wy;
+  const r  = settlement.radius;        // BOSS_RADIUS = 46
+  const glowColor = settlement._bossGlowColor ?? color;
+  const isFallen  = settlement.fallen;
+
+  if (isFallen) {
+    // 陥落後は単純な暗い大円にまとめる（視認は残すが存在感は消す）
+    bctx.fillStyle = color;
+    bctx.beginPath();
+    bctx.arc(wx, wy, r, 0, Math.PI * 2);
+    bctx.fill();
+    return;
+  }
+
+  // --- 外輪グロー（大きな半透明円） ---
+  // 半透明でじわっと広がる光。オフスクリーン焼き付けなので毎フレームコストゼロ。
+  bctx.globalAlpha = 0.18;
+  bctx.fillStyle   = glowColor;
+  bctx.beginPath();
+  bctx.arc(wx, wy, r * 1.7, 0, Math.PI * 2);
+  bctx.fill();
+
+  bctx.globalAlpha = 0.10;
+  bctx.fillStyle   = glowColor;
+  bctx.beginPath();
+  bctx.arc(wx, wy, r * 2.2, 0, Math.PI * 2);
+  bctx.fill();
+
+  bctx.globalAlpha = 1.0;
+
+  // --- 外リング（太い輪郭） ---
+  bctx.strokeStyle = glowColor;
+  bctx.lineWidth   = 4;
+  bctx.beginPath();
+  bctx.arc(wx, wy, r, 0, Math.PI * 2);
+  bctx.stroke();
+
+  // --- 実体（中塗り） ---
+  const grad = bctx.createRadialGradient(wx, wy, r * 0.1, wx, wy, r * 0.95);
+  grad.addColorStop(0.0, glowColor);
+  grad.addColorStop(0.5, color);
+  grad.addColorStop(1.0, "rgba(0,0,0,0.6)");
+  bctx.fillStyle = grad;
+  bctx.beginPath();
+  bctx.arc(wx, wy, r, 0, Math.PI * 2);
+  bctx.fill();
+
+  // --- 内リング --- （中心との境界を強調）
+  bctx.strokeStyle = "rgba(255,255,255,0.55)";
+  bctx.lineWidth   = 1.5;
+  bctx.beginPath();
+  bctx.arc(wx, wy, r * 0.55, 0, Math.PI * 2);
+  bctx.stroke();
+
+  // --- 8角星（中心マーク） ---
+  drawStarOnCtx(bctx, wx, wy, r * 0.35, glowColor, 8);
+
+  // --- 十字ライン（城砦感） ---
+  bctx.strokeStyle = "rgba(255,255,255,0.40)";
+  bctx.lineWidth   = 1.5;
+  const cr = r * 0.85;
+  bctx.beginPath();
+  bctx.moveTo(wx - cr, wy); bctx.lineTo(wx + cr, wy);
+  bctx.moveTo(wx, wy - cr); bctx.lineTo(wx, wy + cr);
+  bctx.stroke();
+
+  // --- 外縁の白い輪郭線（存在感を締める） ---
+  bctx.strokeStyle = "rgba(255,255,255,0.70)";
+  bctx.lineWidth   = 2;
+  bctx.beginPath();
+  bctx.arc(wx, wy, r + 2, 0, Math.PI * 2);
+  bctx.stroke();
 }
 
 // -----------------------------------------------------------------
@@ -1142,8 +1368,9 @@ const _settlementsInRange = new Set();
 // 「各ドラゴンの位置から最大攻撃射程(MAX_ATTACK_RADIUS)内の建物グリッドセルを走査し、
 //  ヒットした建物インデックスを _settlementsInRange に登録する」
 // BUILDING_GRID_CELL=100 で cellRadius=ceil(300/100)=3 → ±3セル(7×7=49セル) のクエリ
-const MAX_ATTACK_RADIUS = 300; // ステージ4 large の attackRadius（最大値）
-const _ATKCELL_RADIUS = Math.ceil(MAX_ATTACK_RADIUS / BUILDING_GRID_CELL); // = 3
+// ボスの BOSS_ATTACK_RADIUS=380 が最大値。空間ハッシュクエリ半径もこれに合わせる。
+const MAX_ATTACK_RADIUS = 380; // ボスの attackRadius（最大値）
+const _ATKCELL_RADIUS = Math.ceil(MAX_ATTACK_RADIUS / BUILDING_GRID_CELL); // = 4
 
 // ドラゴン位置周辺の建物を攻撃判定グリッドで収集する
 function _queryBuildingsForAttack(bx, by) {
@@ -1188,8 +1415,11 @@ function updateSettlementAttacks(dt) {
 
     settlement.attackTimer -= dt;
     if (settlement.attackTimer > 0) continue;
-    // 発射頻度を大幅に下げる（×4倍の間隔 = たまに飛ぶ「雰囲気」として残す）
-    settlement.attackTimer = settlement.projectileInterval * 4.0;
+    // 通常建物: 発射頻度を大幅に下げる（×4倍の間隔 = たまに飛ぶ「雰囲気」として残す）
+    // ボス: projectileInterval をそのまま使う（定数で設定した高頻度を活かす）
+    settlement.attackTimer = settlement.isBoss
+      ? settlement.projectileInterval
+      : settlement.projectileInterval * 4.0;
 
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
@@ -1534,7 +1764,8 @@ function settlementFall(settlementIndex) {
   // 建物レイヤーを部分的に再描画（fallen状態に更新）
   if (buildingLayerCtx) {
     const bc = buildingLayerCtx;
-    const padding = settlement.radius + 4;
+    // ボスはグロー外輪が radius * 2.2 まで広がるため、クリア矩形を大きめに取る
+    const padding = settlement.isBoss ? settlement.radius * 2.5 : settlement.radius + 4;
     bc.clearRect(
       settlement.wx - padding,
       settlement.wy - padding,
@@ -1547,8 +1778,10 @@ function settlementFall(settlementIndex) {
   rebuildBuildingGrid();
   updateHUDBuildings();
 
-  const remaining = settlements.filter(s => !s.fallen).length;
-  if (remaining === 0) {
+  // 変更3: クリア条件を「ボス集落の陥落」に変更。
+  // 小集落は育成用の餌であり、残っていてもボスを倒せば次ステージへ進む。
+  // ボスが高耐久なため、先に小集落で群れを育てる必要が自然に生まれる。
+  if (settlement.isBoss) {
     triggerStageClear();
   }
 }
@@ -1673,27 +1906,48 @@ function initBoids() {
   }
 }
 
-function resetBoidsPositionForNextStage() {
+/**
+ * ステージ開始時の群れ完全リセット（変更1）。
+ * boot / advanceToNextStage の両方からこの関数を通す（共通化）。
+ *
+ * - 群れを BOIDS_INITIAL=10 体に戻す
+ * - 全個体のHP・ダウン/復帰状態・フェード・衝突タイマーをクリア
+ * - 尻尾角度履歴も初期化
+ * - カメラズームは有効個体数=10 に下がることで自動的に寄りに戻る（追加処理不要）
+ *
+ * 前ステージの群れ数・HP・ダウン状態は一切持ち越さない。
+ * これにより「ステージ開始は寄り、育つと引き」という弧が毎ステージ生まれる。
+ */
+function resetBoidsForStageStart() {
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
+
+  // N を BOIDS_INITIAL に戻し、全スロットを dead でリセットしてから有効分を起こす
+  N = BOIDS_INITIAL;
+
+  for (let i = 0; i < MAX_BOIDS; i++) {
+    boidHp[i]                = BOID_MAX_HP;
+    boidDead[i]              = 1;           // 一旦全滅状態に
+    boidFadeTimer[i]         = 0;
+    boidHitStopTimer[i]      = 0;
+    boidCollisionCooldown[i] = 0;
+    boidDowned[i]            = 0;
+    boidDownTimer[i]         = 0;
+    boidReviveTimer[i]       = 0;
+    const base = i * TAIL_SEGS;
+    for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = 0;
+  }
+
+  // BOIDS_INITIAL 体だけ有効化・配置
   for (let i = 0; i < N; i++) {
-    // 変更2: ダウン中の個体も次ステージ開始時に全回復・復帰させる
-    if (boidDowned[i]) {
-      boidDowned[i]      = 0;
-      boidDownTimer[i]   = 0;
-      boidReviveTimer[i] = 0;
-      boidDead[i]        = 0;
-      boidHp[i]          = BOID_MAX_HP;
-      boidFadeTimer[i]   = 0;
-    }
-    if (boidDead[i]) continue;
-    const r = Math.random() * 80;
-    const a = Math.random() * Math.PI * 2;
-    px[i] = startWx + Math.cos(a) * r;
-    py[i] = startWy + Math.sin(a) * r;
+    const r   = Math.random() * 80;
+    const a   = Math.random() * Math.PI * 2;
+    px[i]     = startWx + Math.cos(a) * r;
+    py[i]     = startWy + Math.sin(a) * r;
     const ang = Math.random() * Math.PI * 2;
-    vx[i] = Math.cos(ang) * BASE_CFG.minSpeed;
-    vy[i] = Math.sin(ang) * BASE_CFG.minSpeed;
+    vx[i]     = Math.cos(ang) * BASE_CFG.minSpeed;
+    vy[i]     = Math.sin(ang) * BASE_CFG.minSpeed;
+    boidDead[i] = 0;
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = ang;
   }
@@ -1954,7 +2208,8 @@ function advanceToNextStage() {
   buildingLayerDirty = true;
   rebuildBuildingLayer();
 
-  resetBoidsPositionForNextStage();
+  // 変更1: 群れを BOIDS_INITIAL=10 体に完全リセット（HP・ダウン状態・タイマーすべてクリア）
+  resetBoidsForStageStart();
   resetLeader();
 
   updateHUDStage();
@@ -1986,7 +2241,8 @@ function restartGame() {
   buildingLayerDirty = true;
   rebuildBuildingLayer();
 
-  initBoids();
+  // 変更1: リスタートも共通の群れリセット関数を通す（initBoids は起動時のみ使用）
+  resetBoidsForStageStart();
   resetLeader();
   updateHUDEggs();
   updateHUDStage();
@@ -2470,8 +2726,8 @@ function getViewBoundsWorld(margin) {
 function drawSettlementRanges() {
   // ビューポートカリング: 攻撃射程（attackRadius）を余白として使う。
   // 射程リングの一部が画面内にかかる建物だけを描画する。
-  // 最大 attackRadius は 300px 程度なので余白 300px で安全にカリングできる。
-  const RANGE_MARGIN = 300;
+  // ボスの BOSS_ATTACK_RADIUS=380 が最大値なので余白を 400px に拡大する。
+  const RANGE_MARGIN = 400;
   const bounds = getViewBoundsWorld(RANGE_MARGIN);
 
   ctx.strokeStyle = "rgba(180, 60, 60, 0.08)";
@@ -2493,8 +2749,8 @@ function drawSettlementRanges() {
 
 // HP バーのみ動的に描画（建物形状はオフスクリーンに焼き付け済み）
 function drawSettlementHPBars() {
-  // ビューポートカリング: 建物半径（最大28px）+ HPバー余白（8px）を余白として使う
-  const HP_MARGIN = 40;
+  // ビューポートカリング: ボスのグロー外輪(radius*2.5)を余白として使う
+  const HP_MARGIN = Math.ceil(BOSS_RADIUS * 2.5) + 4;
   const bounds = getViewBoundsWorld(HP_MARGIN);
 
   ctx.globalAlpha = 0.85;
@@ -2502,22 +2758,67 @@ function drawSettlementHPBars() {
     const settlement = settlements[s];
     if (settlement.fallen) continue;
 
-    // 満タンの建物はバーを描かない（最大の節約ポイント）
-    if (settlement.hp >= settlement.maxHp) continue;
-
     // ビューポート外の建物はスキップ
     if (settlement.wx < bounds.minX || settlement.wx > bounds.maxX ||
         settlement.wy < bounds.minY || settlement.wy > bounds.maxY) continue;
 
-    const hpRatio = Math.max(0, settlement.hp / settlement.maxHp);
-    const barW = settlement.radius * 2;
-    const barX = settlement.wx - settlement.radius;
-    const barY = settlement.wy - settlement.radius - 8;
-    ctx.fillStyle = "rgba(0,0,0,0.5)";
-    ctx.fillRect(barX, barY, barW, 4);
-    ctx.fillStyle = hpRatio > 0.5 ? "#50e070" : (hpRatio > 0.25 ? "#e0c040" : "#e04040");
-    ctx.fillRect(barX, barY, barW * hpRatio, 4);
+    if (settlement.isBoss) {
+      // ボス専用HPバー: 常に表示、太く広く、視認性最優先
+      drawBossHPBar(settlement);
+    } else {
+      // 通常建物: 満タンはバーを描かない（節約）
+      if (settlement.hp >= settlement.maxHp) continue;
+      const hpRatio = Math.max(0, settlement.hp / settlement.maxHp);
+      const barW = settlement.radius * 2;
+      const barX = settlement.wx - settlement.radius;
+      const barY = settlement.wy - settlement.radius - 8;
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(barX, barY, barW, 4);
+      ctx.fillStyle = hpRatio > 0.5 ? "#50e070" : (hpRatio > 0.25 ? "#e0c040" : "#e04040");
+      ctx.fillRect(barX, barY, barW * hpRatio, 4);
+    }
   }
+  ctx.globalAlpha = 1.0;
+}
+
+/**
+ * ボス集落のHPバーを描画する。
+ * 通常建物より大きく（幅 radius*2.8、高さ 8px）、ラベル付きで一目でボスHPと分かる。
+ * ビューポートカリングは呼び出し元の drawSettlementHPBars で済んでいる。
+ */
+function drawBossHPBar(boss) {
+  const hpRatio = Math.max(0, boss.hp / boss.maxHp);
+  const barW    = boss.radius * 2.8;
+  const barH    = 8;
+  const barX    = boss.wx - barW * 0.5;
+  const barY    = boss.wy - boss.radius - 18;
+  const glowColor = boss._bossGlowColor ?? boss.color;
+
+  ctx.globalAlpha = 0.95;
+
+  // 背景
+  ctx.fillStyle = "rgba(0,0,0,0.70)";
+  ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+
+  // HP本体（HP残量で色変化）
+  const barColor = hpRatio > 0.6 ? glowColor
+                 : hpRatio > 0.3 ? "#e0c040"
+                 : "#e04040";
+  ctx.fillStyle = barColor;
+  ctx.fillRect(barX, barY, barW * hpRatio, barH);
+
+  // 枠線
+  ctx.strokeStyle = "rgba(255,255,255,0.50)";
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(barX, barY, barW, barH);
+
+  // ラベル "BOSS"
+  ctx.fillStyle   = "rgba(255,255,255,0.85)";
+  ctx.font        = `bold ${Math.max(7, Math.round(9 / cam.scale))}px monospace`;
+  ctx.textAlign   = "center";
+  ctx.fillText("BOSS", boss.wx, barY - 3);
+  ctx.textAlign   = "left"; // リセット
+
   ctx.globalAlpha = 1.0;
 }
 
@@ -2918,11 +3219,43 @@ function drawMinimap() {
     const settlement = settlements[s];
     const mx = settlement.wx * scaleX;
     const my = settlement.wy * scaleY;
-    const dotR = settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : 1.5);
-    minimapCtx.fillStyle = settlement.fallen ? "#333" : settlement.color;
-    minimapCtx.beginPath();
-    minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
-    minimapCtx.fill();
+
+    if (settlement.isBoss) {
+      // ボス集落: 目立つ大きなダイヤモンドマーカー（陥落後は暗く）
+      const bossR = settlement.fallen ? 3 : 5;
+      const glowColor = settlement._bossGlowColor ?? settlement.color;
+      if (!settlement.fallen) {
+        // 外グロー
+        minimapCtx.fillStyle = glowColor;
+        minimapCtx.globalAlpha = 0.35;
+        minimapCtx.beginPath();
+        minimapCtx.arc(mx, my, bossR * 2.0, 0, Math.PI * 2);
+        minimapCtx.fill();
+        minimapCtx.globalAlpha = 1.0;
+      }
+      // ダイヤモンド（回転した正方形）
+      minimapCtx.fillStyle = settlement.fallen ? "#333" : glowColor;
+      minimapCtx.beginPath();
+      minimapCtx.moveTo(mx,         my - bossR);
+      minimapCtx.lineTo(mx + bossR, my);
+      minimapCtx.lineTo(mx,         my + bossR);
+      minimapCtx.lineTo(mx - bossR, my);
+      minimapCtx.closePath();
+      minimapCtx.fill();
+      // 輪郭
+      if (!settlement.fallen) {
+        minimapCtx.strokeStyle = "#ffffff";
+        minimapCtx.lineWidth   = 0.8;
+        minimapCtx.stroke();
+      }
+    } else {
+      // 通常建物
+      const dotR = settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : 1.5);
+      minimapCtx.fillStyle = settlement.fallen ? "#333" : settlement.color;
+      minimapCtx.beginPath();
+      minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
+      minimapCtx.fill();
+    }
   }
 
   const centroid = calcFriendlyCentroid();
@@ -2976,9 +3309,24 @@ function updateHUDStage() {
 }
 
 function updateHUDBuildings() {
-  const total     = settlements.length;
-  const remaining = settlements.filter(s => !s.fallen).length;
-  hudBuildings.textContent = remaining + "/" + total;
+  // 変更3: ボスHPをメインで表示し、小集落の残数を括弧で添える。
+  // ボスが陥落済みならクリア状態なので "CLEARED" を表示する。
+  const boss = settlements.find(s => s.isBoss);
+  const smallRemaining = settlements.filter(s => !s.isBoss && !s.fallen).length;
+  const smallTotal     = settlements.filter(s => !s.isBoss).length;
+
+  if (!boss) {
+    hudBuildings.textContent = smallRemaining + "/" + smallTotal;
+    return;
+  }
+
+  if (boss.fallen) {
+    hudBuildings.textContent = "BOSS: FALLEN";
+    return;
+  }
+
+  const hpPct = Math.ceil((boss.hp / boss.maxHp) * 100);
+  hudBuildings.textContent = "BOSS " + hpPct + "% | " + smallRemaining + "/" + smallTotal;
 }
 
 // -----------------------------------------------------------------
@@ -3378,7 +3726,11 @@ function boot() {
   settlements = generateStageLayout(0);
   rebuildBuildingGrid();
   rebuildBuildingLayer();
+  // 変更1: initBoids で配列を確保してから resetBoidsForStageStart で初期状態を作る。
+  // initBoids は配列アロケーションのみ担い、resetBoidsForStageStart が
+  // boot/restart/advanceToNextStage の共通初期化パスになる。
   initBoids();
+  resetBoidsForStageStart();
   resetLeader();
   updateHUDStage();
   updateHUDBuildings();
