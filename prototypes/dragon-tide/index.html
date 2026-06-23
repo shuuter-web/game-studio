@@ -306,20 +306,33 @@ const BUILDING_SIZE_PARAMS = {
 };
 
 // -----------------------------------------------------------------
-// 変更4: tiny 集落散布パラメータ
-// マップ全体に均等散布するランダム極小集落。クラスタを作らず単体で配置。
-// 首都占有領域・既存建物との重なりを避け、最小間隔を確保する。
+// tiny ハムレット（クラスタ）パラメータ
+// tiny を単体バラバラではなく「小さな集落（ハムレット）」の塊として配置する。
+// 各クラスタ中心をマップに散在させ、そこから近距離に複数棟を密集配置することで
+// 「農村の集まり」という視覚的まとまりを作る。
 // -----------------------------------------------------------------
-// 1ステージあたりの tiny 集落数（定数化してデータ駆動）
-const TINY_SETTLEMENT_COUNT = 60;
-// tiny 集落同士の最小中心間距離（重なり防止）
-const TINY_MIN_SPACING = BUILDING_SIZE_PARAMS.tiny.radiusBase * 2 + 30; // 42px
+// ステージあたりのハムレット数（クラスタ数）
+const TINY_HAMLET_COUNT     = 10;  // 8〜12個を目標に中央値を採用
+// 1クラスタあたりの tiny 棟数（min/max でランダム）
+const TINY_PER_HAMLET_MIN   = 5;
+const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
+// クラスタ内での棟の散布半径（px）：密集して「集落」に見える大きさ
+const TINY_HAMLET_RADIUS_MIN = 40;
+const TINY_HAMLET_RADIUS_MAX = 65;
+// クラスタ中心同士の最小間隔（他クラスタとの分離）
+const TINY_HAMLET_MIN_SPACING = 280; // クラスタ同士がくっつかない最小値
+// 既存街区（small/medium/large）クラスタとの最小間隔
+const TINY_HAMLET_FROM_TOWN_GAP = 120;
+// クラスタ内 tiny 棟同士の最小中心間距離（重なり防止）
+const TINY_MIN_SPACING        = BUILDING_SIZE_PARAMS.tiny.radiusBase * 2 + 8; // 20px
 // 既存建物（small/medium/large）との最小間隔
-const TINY_FROM_EXISTING_GAP = BUILDING_SIZE_PARAMS.tiny.radiusBase + 10; // 16px
+const TINY_FROM_EXISTING_GAP  = BUILDING_SIZE_PARAMS.tiny.radiusBase + 10;   // 16px
 // マップ端からのマージン
 const TINY_MARGIN = 80;
-// 配置試行回数（ランダム候補からの衝突除去）
-const TINY_MAX_ATTEMPTS = 8;
+// クラスタ中心の配置試行回数
+const TINY_HAMLET_MAX_ATTEMPTS = 20;
+// クラスタ内各棟の配置試行回数
+const TINY_PER_BUILDING_MAX_ATTEMPTS = 12;
 
 // -----------------------------------------------------------------
 // 首都要塞（capital district）パラメータ
@@ -928,12 +941,14 @@ function makeBuilding(wx, wy, size, color, bConfig, hp) {
 }
 
 /**
- * 変更4: tiny 集落をマップ全体にランダム散布する。
- * クラスタを作らず単体で配置。首都占有領域・既存建物を避ける。
- * 卵持ち割当の対象に含まれるよう _tinySettlement フラグを付ける
- * （assignEggBearers のフォールバックで全体1町として処理される）。
- * 空間ハッシュ・ビューポートカリング・攻撃ゲートは既存の settlements 配列への
- * 追加によって自動的に対象に含まれる。
+ * tiny ハムレット（集落クラスタ）をマップ全体に配置する。
+ *
+ * 単体バラバラ配置から「ハムレット単位のクラスタ配置」に変更。
+ * 1クラスタ = TINY_PER_HAMLET_MIN〜MAX 棟の密集体。
+ * クラスタ中心はボス＋首都占有領域・既存街区・他クラスタと重ならない位置に散在させる。
+ *
+ * settlements 配列への追加 → 空間ハッシュ・ビューポートカリング・攻撃ゲート・
+ * オフスクリーン合成・ミニマップは自動的に対象になる（既存最適化を壊さない）。
  *
  * @param {Array}  existingBuildings  既存の建物リスト（重なりチェック用）
  * @param {number} bossWx            ボスのワールドX
@@ -944,51 +959,122 @@ function makeBuilding(wx, wy, size, color, bConfig, hp) {
 function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
   const result = [];
   const bSmall = config.buildings.small; // tiny は small のパラメータを流用（攻撃・色）
+  const tinyR  = BUILDING_SIZE_PARAMS.tiny.radiusBase;
 
   // 既存建物の位置リスト（tiny との重なりチェック用）
   const occupied = existingBuildings.map(b => ({ x: b.wx, y: b.wy, r: b.radius }));
 
   // 首都占有領域の二乗（ボス中心からの排除距離）
   const excl2 = CAPITAL_EXCLUSION_RADIUS * CAPITAL_EXCLUSION_RADIUS;
+  // クラスタ同士の最小間隔二乗
+  const hamletSpacing2 = TINY_HAMLET_MIN_SPACING * TINY_HAMLET_MIN_SPACING;
+  // 既存街区との最小間隔二乗（クラスタ中心 vs 既存建物中心）
+  const fromTown2 = TINY_HAMLET_FROM_TOWN_GAP * TINY_HAMLET_FROM_TOWN_GAP;
 
-  for (let k = 0; k < TINY_SETTLEMENT_COUNT; k++) {
-    let placed = false;
+  // 確定したクラスタ中心リスト（他クラスタとの分離チェック用）
+  const hamletCenters = [];
 
-    for (let attempt = 0; attempt < TINY_MAX_ATTEMPTS && !placed; attempt++) {
-      const wx = TINY_MARGIN + Math.random() * (WORLD_W - TINY_MARGIN * 2);
-      const wy = TINY_MARGIN + Math.random() * (WORLD_H - TINY_MARGIN * 2);
+  for (let h = 0; h < TINY_HAMLET_COUNT; h++) {
+    // --- クラスタ中心の配置 ---
+    let centerX = 0, centerY = 0;
+    let hamletPlaced = false;
 
-      // 首都占有領域チェック
-      if (dist2(wx, wy, bossWx, bossWy) < excl2) continue;
+    for (let attempt = 0; attempt < TINY_HAMLET_MAX_ATTEMPTS && !hamletPlaced; attempt++) {
+      const cx = TINY_MARGIN + Math.random() * (WORLD_W - TINY_MARGIN * 2);
+      const cy = TINY_MARGIN + Math.random() * (WORLD_H - TINY_MARGIN * 2);
 
-      // 既存建物との重なりチェック
-      let tooClose = false;
-      const tinyR = BUILDING_SIZE_PARAMS.tiny.radiusBase;
+      // 首都占有領域チェック（クラスタ中心がボス周辺に入らない）
+      if (dist2(cx, cy, bossWx, bossWy) < excl2) continue;
+
+      // 既存街区（small/medium/large 建物）との間隔チェック
+      // クラスタ半径 + fromTown2 内に既存建物があれば除外
+      let tooCloseToTown = false;
       for (const ob of occupied) {
-        const minD = ob.r + tinyR + TINY_FROM_EXISTING_GAP;
-        if (dist2(wx, wy, ob.x, ob.y) < minD * minD) { tooClose = true; break; }
+        // 既存建物との最小間隔 = その建物 radius + tinyハムレット半径 + gap
+        const minD = ob.r + TINY_HAMLET_RADIUS_MAX + TINY_HAMLET_FROM_TOWN_GAP;
+        if (dist2(cx, cy, ob.x, ob.y) < minD * minD) {
+          tooCloseToTown = true;
+          break;
+        }
       }
-      if (tooClose) continue;
+      if (tooCloseToTown) continue;
 
-      // tiny 同士の重なりチェック
-      for (const t of result) {
-        if (dist2(wx, wy, t.wx, t.wy) < TINY_MIN_SPACING * TINY_MIN_SPACING) { tooClose = true; break; }
+      // 他クラスタ中心との最小間隔チェック
+      let tooCloseToHamlet = false;
+      for (const hc of hamletCenters) {
+        if (dist2(cx, cy, hc.x, hc.y) < hamletSpacing2) {
+          tooCloseToHamlet = true;
+          break;
+        }
       }
-      if (tooClose) continue;
+      if (tooCloseToHamlet) continue;
 
-      // 配置確定
-      const hp    = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
-      const color = randChoice(bSmall.colors);
-      const b     = makeBuilding(wx, wy, "tiny", color, bSmall, hp);
-      // tiny 専用フラグ（ミニマップ・デバッグ等で識別するため）
-      b._tinySettlement = true;
-      // tiny の radius は BUILDING_SIZE_PARAMS.tiny.radiusBase で上書き
-      // （makeBuilding は size から取るが tiny キーを追加したので正しく参照される）
-      b.radius = BUILDING_SIZE_PARAMS.tiny.radiusBase;
-      result.push(b);
-      // 重なりチェックリストに追加
-      occupied.push({ x: wx, y: wy, r: tinyR });
-      placed = true;
+      centerX = cx;
+      centerY = cy;
+      hamletPlaced = true;
+    }
+
+    if (!hamletPlaced) continue; // このクラスタは配置不能 → スキップ
+
+    hamletCenters.push({ x: centerX, y: centerY });
+
+    // --- クラスタ内の棟を配置 ---
+    const buildingCount = randInt(TINY_PER_HAMLET_MIN, TINY_PER_HAMLET_MAX);
+    const hamletR = randRange(TINY_HAMLET_RADIUS_MIN, TINY_HAMLET_RADIUS_MAX);
+    // このクラスタで確定した棟（クラスタ内の重なりチェック用）
+    const hamletBuildings = [];
+
+    for (let k = 0; k < buildingCount; k++) {
+      let placed = false;
+
+      for (let attempt = 0; attempt < TINY_PER_BUILDING_MAX_ATTEMPTS && !placed; attempt++) {
+        // クラスタ中心の周囲 hamletR 以内にランダム配置（一様分布にするため√補正）
+        const angle = Math.random() * Math.PI * 2;
+        const r     = hamletR * Math.sqrt(Math.random());
+        const wx    = centerX + Math.cos(angle) * r;
+        const wy    = centerY + Math.sin(angle) * r;
+
+        // ワールド境界チェック
+        if (wx < TINY_MARGIN || wx > WORLD_W - TINY_MARGIN ||
+            wy < TINY_MARGIN || wy > WORLD_H - TINY_MARGIN) continue;
+
+        // 既存建物（街区・首都）との重なりチェック
+        let tooClose = false;
+        for (const ob of occupied) {
+          const minD = ob.r + tinyR + TINY_FROM_EXISTING_GAP;
+          if (dist2(wx, wy, ob.x, ob.y) < minD * minD) { tooClose = true; break; }
+        }
+        if (tooClose) continue;
+
+        // クラスタ内 tiny 棟同士の重なりチェック
+        for (const hb of hamletBuildings) {
+          if (dist2(wx, wy, hb.x, hb.y) < TINY_MIN_SPACING * TINY_MIN_SPACING) {
+            tooClose = true; break;
+          }
+        }
+        if (tooClose) continue;
+
+        // 他クラスタ（result 全体）との重なりチェック
+        for (const t of result) {
+          if (dist2(wx, wy, t.wx, t.wy) < TINY_MIN_SPACING * TINY_MIN_SPACING) {
+            tooClose = true; break;
+          }
+        }
+        if (tooClose) continue;
+
+        // 配置確定
+        const hp    = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
+        const color = randChoice(bSmall.colors);
+        const b     = makeBuilding(wx, wy, "tiny", color, bSmall, hp);
+        // tiny 専用フラグ（ミニマップ・デバッグ等で識別）
+        b._tinySettlement = true;
+        // tiny の radius は BUILDING_SIZE_PARAMS.tiny.radiusBase で確定
+        b.radius = tinyR;
+        result.push(b);
+        occupied.push({ x: wx, y: wy, r: tinyR });
+        hamletBuildings.push({ x: wx, y: wy });
+        placed = true;
+      }
     }
   }
 
@@ -3059,8 +3145,19 @@ canvas.addEventListener("touchmove", (e) => {
   e.preventDefault();
 }, { passive: false });
 
-canvas.addEventListener("touchend",    (e) => { inputEnd(); e.preventDefault(); }, { passive: false });
-canvas.addEventListener("touchcancel", (e) => { inputEnd(); e.preventDefault(); }, { passive: false });
+canvas.addEventListener("touchend", (e) => {
+  // touches が残っている（マルチタッチの一本が離れただけ）は無視する。
+  // e.touches.length === 0 のときのみ入力終了とする。
+  if (e.touches.length === 0) { inputEnd(); }
+  e.preventDefault();
+}, { passive: false });
+// touchcancel はスクロール防止 preventDefault の失敗時などに誤発火しやすい。
+// isDrawing を切らず、そのまま巡航継続させる。
+// ただし touches が完全に 0 になった場合は終了する（ハードウェア切断など）。
+canvas.addEventListener("touchcancel", (e) => {
+  if (e.touches.length === 0) { inputEnd(); }
+  e.preventDefault();
+}, { passive: false });
 
 canvas.addEventListener("mousedown",  (e) => inputStart(e.clientX, e.clientY, performance.now()));
 canvas.addEventListener("mousemove",  (e) => { if (isDrawing) inputMove(e.clientX, e.clientY, performance.now()); });
@@ -3283,52 +3380,70 @@ function simStep(dt) {
   }
 }
 
+// 巡航操舵: 指に到達したときの「直前進行方向」を保持する。
+// 指が静止している間はこの方向を維持して前進し続ける（停止しない）。
+let _cruiseVx = 0;
+let _cruiseVy = 1; // 初期値: 下向き（正規化済み）
+
+// isDrawing 中にリーダーが「指方向へ舵を切りながら常に leaderSpeed で前進」する閾値。
+// 指までの距離がこの値未満になったら「到達」とみなし進行方向を維持して巡航する。
+const LEADER_ARRIVAL_DIST = 60; // px（パスの先読み半径 24px より大きく取る）
+
 function updateLeader(dt) {
-  if (pathLen > 0) {
-    if (leaderPathConsumeIdx >= pathLen) leaderPathConsumeIdx = pathLen - 1;
+  const speed = BASE_CFG.leaderSpeed;
 
-    let tgt = pathGet(Math.min(leaderPathConsumeIdx, pathLen - 1));
-    let dx = tgt.x - leader.x, dy = tgt.y - leader.y;
-    let d2 = dx * dx + dy * dy;
+  if (isDrawing) {
+    // ---- 巡航操舵モード ----
+    // 押下中は「常に leaderSpeed で前進し続ける」。指は進行方向の舵。
+    // 目標が前方に十分離れているときだけ _cruise を目標方向へなめらかに寄せる。
+    // 指に到達/追い越しても減速や引き返しをせず _cruise 方向へ直進を続ける
+    // （指の点を中心に往復してその場で止まってしまうトラップを防ぐ）。
 
-    while (d2 < 24 * 24 && leaderPathConsumeIdx < pathLen - 1) {
-      leaderPathConsumeIdx++;
-      tgt = pathGet(leaderPathConsumeIdx);
-      dx = tgt.x - leader.x; dy = tgt.y - leader.y;
-      d2 = dx * dx + dy * dy;
+    // 目標点を決める: 描き始めの軌跡が残っていればそのウェイポイント、
+    // 消費しきったら指の現在位置。
+    let tx = pointerWorldX, ty = pointerWorldY;
+    if (pathLen > 0) {
+      if (leaderPathConsumeIdx >= pathLen) leaderPathConsumeIdx = pathLen - 1;
+      let tgt = pathGet(Math.min(leaderPathConsumeIdx, pathLen - 1));
+      let ddx = tgt.x - leader.x, ddy = tgt.y - leader.y;
+      let dd2 = ddx * ddx + ddy * ddy;
+      while (dd2 < 24 * 24 && leaderPathConsumeIdx < pathLen - 1) {
+        leaderPathConsumeIdx++;
+        tgt = pathGet(leaderPathConsumeIdx);
+        ddx = tgt.x - leader.x; ddy = tgt.y - leader.y;
+        dd2 = ddx * ddx + ddy * ddy;
+      }
+      // 末端まで消費したら指位置へ。まだ途中なら軌跡のウェイポイントを追う。
+      if (!(leaderPathConsumeIdx >= pathLen - 1 && dd2 < 24 * 24)) {
+        tx = tgt.x; ty = tgt.y;
+      }
     }
 
-    // 変更3: パスを消費し切った（末端に到達）かつ isDrawing 中の場合は
-    // 指のワールド座標を目標として保持する（アイドルに落ちない）。
-    // パスが残っている間は従来通り次の点へ向かう。
-    if (leaderPathConsumeIdx >= pathLen - 1 && d2 < 24 * 24 && isDrawing) {
-      // 指位置を目標として使う（パスバッファを追加せず「先頭=指位置を更新」する形）
-      dx = pointerWorldX - leader.x;
-      dy = pointerWorldY - leader.y;
-      d2 = dx * dx + dy * dy;
+    const dx = tx - leader.x, dy = ty - leader.y;
+    const d  = Math.sqrt(dx * dx + dy * dy);
+    if (d > LEADER_ARRIVAL_DIST) {
+      // 目標が前方に十分離れている → _cruise をその方向へなめらかに操舵
+      const nx = dx / d, ny = dy / d;
+      _cruiseVx += (nx - _cruiseVx) * Math.min(1, dt * 6);
+      _cruiseVy += (ny - _cruiseVy) * Math.min(1, dt * 6);
+      const cl = Math.sqrt(_cruiseVx * _cruiseVx + _cruiseVy * _cruiseVy) || 1;
+      _cruiseVx /= cl; _cruiseVy /= cl; // 正規化を保つ
     }
-
-    const d = Math.sqrt(d2) || 1;
-    const desiredVx = (dx / d) * BASE_CFG.leaderSpeed;
-    const desiredVy = (dy / d) * BASE_CFG.leaderSpeed;
-    leader.vx += (desiredVx - leader.vx) * Math.min(1, dt * 8);
-    leader.vy += (desiredVy - leader.vy) * Math.min(1, dt * 8);
-  } else if (isDrawing) {
-    // 変更3: パスが空でも isDrawing 中は指位置を目標にしてリーダーを引き寄せる。
-    // これにより inputStart 直後（pathPush が1点しかなく pathLen=0 の瞬間）も対応。
-    const dx = pointerWorldX - leader.x;
-    const dy = pointerWorldY - leader.y;
-    const d2 = dx * dx + dy * dy;
-    const d  = Math.sqrt(d2) || 1;
-    const desiredVx = (dx / d) * BASE_CFG.leaderSpeed;
-    const desiredVy = (dy / d) * BASE_CFG.leaderSpeed;
-    leader.vx += (desiredVx - leader.vx) * Math.min(1, dt * 8);
-    leader.vy += (desiredVy - leader.vy) * Math.min(1, dt * 8);
+    // 到達/追い越し時は _cruise を維持（直進継続）。
+    // 速度は常に leaderSpeed に固定（減速しない＝押している限り進み続ける）。
+    leader.vx = _cruiseVx * speed;
+    leader.vy = _cruiseVy * speed;
   } else {
-    // 従来のアイドル旋回（指を離したとき）
+    // ---- アイドル旋回モード（指を離したとき） ----
     const target = getIdleLeaderTarget(dt);
     leader.vx += ((target.x - leader.x) * 0.8 - leader.vx) * Math.min(1, dt * 2.0);
     leader.vy += ((target.y - leader.y) * 0.8 - leader.vy) * Math.min(1, dt * 2.0);
+    // アイドル中も巡航方向を現在の移動方向に更新しておく（次の押し込み時に自然な向きで発進）
+    const idleSpd = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
+    if (idleSpd > 10) {
+      _cruiseVx = leader.vx / idleSpd;
+      _cruiseVy = leader.vy / idleSpd;
+    }
   }
 
   leader.x += leader.vx * dt;
