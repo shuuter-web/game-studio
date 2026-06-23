@@ -3399,9 +3399,10 @@ function updateLeader(dt) {
     // 指に到達/追い越しても減速や引き返しをせず _cruise 方向へ直進を続ける
     // （指の点を中心に往復してその場で止まってしまうトラップを防ぐ）。
 
-    // 目標点を決める: 描き始めの軌跡が残っていればそのウェイポイント、
-    // 消費しきったら指の現在位置。
+    // 目標点を決める: 描いた軌跡（パス）が残っていればそのウェイポイントを追従、
+    // 消費しきったら指の現在位置。followingPath=軌跡をなぞっている最中。
     let tx = pointerWorldX, ty = pointerWorldY;
+    let followingPath = false;
     if (pathLen > 0) {
       if (leaderPathConsumeIdx >= pathLen) leaderPathConsumeIdx = pathLen - 1;
       let tgt = pathGet(Math.min(leaderPathConsumeIdx, pathLen - 1));
@@ -3415,24 +3416,30 @@ function updateLeader(dt) {
       }
       // 末端まで消費したら指位置へ。まだ途中なら軌跡のウェイポイントを追う。
       if (!(leaderPathConsumeIdx >= pathLen - 1 && dd2 < 24 * 24)) {
-        tx = tgt.x; ty = tgt.y;
+        tx = tgt.x; ty = tgt.y; followingPath = true;
       }
     }
 
     const dx = tx - leader.x, dy = ty - leader.y;
-    const d  = Math.sqrt(dx * dx + dy * dy);
-    if (d > LEADER_ARRIVAL_DIST) {
-      // 目標が前方に十分離れている → _cruise をその方向へなめらかに操舵
+    const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+
+    if (followingPath || d > LEADER_ARRIVAL_DIST) {
+      // 軌跡を追従中、または目標が前方に離れている →
+      // 速度ベクトルを目標方向へ機敏に寄せて、描いた線（弧など）に追従する。
+      // （以前の反応の良さを復元。速度は leaderSpeed 基準）
       const nx = dx / d, ny = dy / d;
-      _cruiseVx += (nx - _cruiseVx) * Math.min(1, dt * 6);
-      _cruiseVy += (ny - _cruiseVy) * Math.min(1, dt * 6);
-      const cl = Math.sqrt(_cruiseVx * _cruiseVx + _cruiseVy * _cruiseVy) || 1;
-      _cruiseVx /= cl; _cruiseVy /= cl; // 正規化を保つ
+      const k  = Math.min(1, dt * 10); // 機敏な操舵
+      leader.vx += (nx * speed - leader.vx) * k;
+      leader.vy += (ny * speed - leader.vy) * k;
+      // 速度がついている間は巡航方向を覚えておく（静止保持への移行を滑らかに）
+      const cs = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
+      if (cs > 1) { _cruiseVx = leader.vx / cs; _cruiseVy = leader.vy / cs; }
+    } else {
+      // パスを消費し切り、指に到達（＝指を静止保持）→ 直前の進行方向へ直進巡航。
+      // 速度は leaderSpeed 固定で減速しない＝押している限り進み続ける。
+      leader.vx = _cruiseVx * speed;
+      leader.vy = _cruiseVy * speed;
     }
-    // 到達/追い越し時は _cruise を維持（直進継続）。
-    // 速度は常に leaderSpeed に固定（減速しない＝押している限り進み続ける）。
-    leader.vx = _cruiseVx * speed;
-    leader.vy = _cruiseVy * speed;
   } else {
     // ---- アイドル旋回モード（指を離したとき） ----
     const target = getIdleLeaderTarget(dt);
