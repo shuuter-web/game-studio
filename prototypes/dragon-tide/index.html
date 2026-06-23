@@ -303,6 +303,30 @@ const BUILDING_SIZE_PARAMS = {
 };
 
 // -----------------------------------------------------------------
+// 首都要塞（capital district）パラメータ
+// ボス周囲を大型建物のリングで取り囲む「城下の要塞都市」を形成する。
+// -----------------------------------------------------------------
+// リング配置半径（ボス中心からの距離）
+const CAPITAL_RING_INNER = 80;   // ドーナツ内縁: ボス半径(46) + 最低間隔(34)
+const CAPITAL_RING_OUTER = 180;  // ドーナツ外縁（外縁を広げて建物が並ぶ余地を確保）
+// リングの建物数。
+// 理論上限: 中間半径 130px の円周 ≈ 817px ÷ 最小間隔60px ≈ 13棟。
+// 14棟を目標に設定（試行4回で多少スキップが出ても 10〜14 棟確保できる）。
+const CAPITAL_RING_COUNT = 14;
+// 首都建物の HP は通常 large より 30% 高い（「首都＝強い」感。ただしボスより明確に弱い）
+const CAPITAL_HP_MULT = 1.30;
+// 首都建物の radius は通常 large と同じ（見た目の一貫性を維持）
+const CAPITAL_RADIUS_BASE = BUILDING_SIZE_PARAMS.large.radiusBase; // 28px
+// 首都建物同士の最小中心間距離（重なり防止）
+// radius*2 + 4px = 60px（ぎりぎり接触しない最小値）
+const CAPITAL_MIN_SPACING = CAPITAL_RADIUS_BASE * 2 + 4; // 60px
+// 小集落クラスタとの分離に使う「ボス＋リング」占有半径
+// リング外縁 + 首都建物の半径 + 余白で安全マージンを確保する
+const CAPITAL_EXCLUSION_RADIUS = CAPITAL_RING_OUTER + CAPITAL_RADIUS_BASE + 60; // 248px
+// ボスをマップ端から確保するマージン（リング外縁 + 余白がマップ外に出ないよう）
+const CAPITAL_BOSS_MARGIN = CAPITAL_RING_OUTER + CAPITAL_RADIUS_BASE + 80; // 268px
+
+// -----------------------------------------------------------------
 // ボス集落パラメータ
 // ボスはステージごとに1体だけ配置される高耐久・高火力の核心目標。
 // HP: 小集落の約15倍を起点に、ステージが進むほど係数を掛けて増やす。
@@ -683,8 +707,19 @@ function dist2(ax, ay, bx, by) {
   return dx * dx + dy * dy;
 }
 
-// 町の中心座標を均等にマップへ配置（グリッドジッター法）
-function placeTownCenters(townCount) {
+/**
+ * 町の中心座標を均等にマップへ配置（グリッドジッター法）。
+ *
+ * bossWx/bossWy が渡されたとき、その周囲 CAPITAL_EXCLUSION_RADIUS 以内の
+ * グリッドセルを除外して小集落クラスタが首都要塞と重ならないようにする。
+ * 除外されたセルは最大3回まで再抽選し、それでも回避できない場合はスキップする
+ * （小集落数がやや減るが、要塞都市の「独立感」を優先）。
+ *
+ * @param {number} townCount  生成したい町の数
+ * @param {number} [bossWx]   ボスのワールドX（オプション）
+ * @param {number} [bossWy]   ボスのワールドY（オプション）
+ */
+function placeTownCenters(townCount, bossWx, bossWy) {
   // 左端250pxは群れスタート地点なので除外
   const MARGIN_LEFT  = 300;
   const MARGIN_RIGHT = 150;
@@ -698,11 +733,30 @@ function placeTownCenters(townCount) {
   const cellW = usableW / cols;
   const cellH = usableH / rows;
 
+  // ボス＋リング占有の排除半径の二乗（距離比較用）
+  const excl2 = CAPITAL_EXCLUSION_RADIUS * CAPITAL_EXCLUSION_RADIUS;
+  const hasExclusion = (bossWx !== undefined && bossWy !== undefined);
+
   const centers = [];
   for (let row = 0; row < rows && centers.length < townCount; row++) {
     for (let col = 0; col < cols && centers.length < townCount; col++) {
-      const cx = MARGIN_LEFT + col * cellW + randRange(cellW * 0.25, cellW * 0.75);
-      const cy = MARGIN_Y    + row * cellH + randRange(cellH * 0.25, cellH * 0.75);
+      let cx, cy;
+      let accepted = false;
+
+      // 最大3回試行して排除ゾーン外の座標を探す
+      for (let attempt = 0; attempt < 3; attempt++) {
+        cx = MARGIN_LEFT + col * cellW + randRange(cellW * 0.25, cellW * 0.75);
+        cy = MARGIN_Y    + row * cellH + randRange(cellH * 0.25, cellH * 0.75);
+        if (!hasExclusion || dist2(cx, cy, bossWx, bossWy) >= excl2) {
+          accepted = true;
+          break;
+        }
+      }
+
+      // 3回試行してもボス周辺だった場合はこのセルをスキップ
+      // （首都と重なる小集落を強制配置しない）
+      if (!accepted) continue;
+
       centers.push({ x: cx, y: cy });
     }
   }
@@ -877,7 +931,14 @@ function makeBossBuilding(wx, wy, stageIndex, bossTheme) {
 
 function generateStageLayout(stageIndex) {
   const config = STAGE_CONFIGS[stageIndex];
-  const townCenters = placeTownCenters(config.townCount);
+
+  // --- (1) ボスを先に配置する ---
+  // ボス＋要塞リングが確実にマップ内に収まる位置を確保してから、
+  // 小集落クラスタをその周囲を避けて配置する（先取り方式）。
+  const boss = placeBossBuilding(stageIndex, config);
+
+  // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
+  const townCenters = placeTownCenters(config.townCount, boss.wx, boss.wy);
 
   const result = [];
   for (let t = 0; t < townCenters.length; t++) {
@@ -893,59 +954,155 @@ function generateStageLayout(stageIndex) {
     for (const b of townBuildings) result.push(b);
   }
 
-  // 変更1: 卵持ちフラグをステージ全体に散らばらせて付与する。
-  // 町ごとに均等に割り当てることでクラスタ偏りを防ぐ。
-  // まず町の先頭インデックスを特定し、各町内でランダムに EGG_BEARER_RATIO 割合を選ぶ。
+  // --- (2b) 首都要塞リング（座標のみ先計算）して小集落建物との衝突除去に使う ---
+  // placeCapitalDistrict は config が必要なため、ここで仮実行して座標を取得する。
+  // 首都建物と重なるクラスタ建物は remove してから result に残す。
+  const capitalBuildings = placeCapitalDistrict(boss, config);
+
+  // 首都建物の占有エリアを「除去対象」として各小集落建物をフィルタリングする。
+  // 重なり判定: 中心距離 < 首都建物 radius + 小集落建物 radius + 最小隙間 6px
+  const CLUSTER_PURGE_GAP = 6;
+  function collidesWithCapital(b) {
+    for (const cap of capitalBuildings) {
+      const d2 = dist2(b.wx, b.wy, cap.wx, cap.wy);
+      const minD = cap.radius + b.radius + CLUSTER_PURGE_GAP;
+      if (d2 < minD * minD) return true;
+    }
+    return false;
+  }
+
+  // _townMeta フラグを保持しながらフィルタ（先頭建物の meta を後続に移す必要はない）
+  const purged = result.filter(b => !collidesWithCapital(b));
+  // result を purged で置き換える（参照を変えず内容を更新）
+  result.length = 0;
+  for (const b of purged) result.push(b);
+
+  // 卵持ちフラグをステージ全体に散らばらせて付与する（町ごとに均等割当）。
   assignEggBearers(result);
 
-  // ボス集落を1体、マップ右寄り中央付近（プレイヤーが小集落を経由して到達する配置）に配置する。
-  // 左端300pxはスタート地点除外のため、ボスはワールド右2/3エリアのランダム位置に置く。
-  // 小集落クラスタと重ならないよう、既存建物から十分離れた座標を探す。
-  const boss = placeBossBuilding(stageIndex, config, result);
+  // --- (3) ボスと首都建物を配列に追加 ---
   result.push(boss);
+  for (const b of capitalBuildings) result.push(b);
 
   return result;
 }
 
 /**
- * ボス集落を小集落クラスタから離れたワールド右寄り位置に配置する。
- * 最大試行でも重複回避できない場合はマップ中央右に強制配置する。
+ * ボス集落を「ボス＋リング全体がマップ内に収まる」ワールド右寄り位置に配置する。
+ * 小集落クラスタはこの後に生成されるため、ここでは既存建物チェックは不要。
+ * マップ端からのマージンに CAPITAL_BOSS_MARGIN（リング外縁＋余白）を使う。
  */
-function placeBossBuilding(stageIndex, config, existingBuildings) {
+function placeBossBuilding(stageIndex, config) {
   const bossTheme = config.boss;
-  // ボスはワールド右2/3エリア（スタート地点と小集落クラスタから遠ざける）
-  const BOSS_MARGIN = 300;
+  // ワールド右2/3エリアかつリング外縁がマップ外に出ない安全内側に配置する。
+  // CAPITAL_BOSS_MARGIN = CAPITAL_RING_OUTER + CAPITAL_RADIUS_BASE + 80px のマージン。
   const minX = WORLD_W * 0.45;
-  const maxX = WORLD_W - BOSS_MARGIN;
-  const minY = BOSS_MARGIN;
-  const maxY = WORLD_H - BOSS_MARGIN;
+  const maxX = WORLD_W - CAPITAL_BOSS_MARGIN;
+  const minY = CAPITAL_BOSS_MARGIN;
+  const maxY = WORLD_H - CAPITAL_BOSS_MARGIN;
 
-  // 最小離隔距離：BOSS_RADIUS + 小集落の最大占有範囲を考慮した余裕
-  const MIN_DIST_FROM_TOWN = 250;
-  const MIN_DIST2 = MIN_DIST_FROM_TOWN * MIN_DIST_FROM_TOWN;
-
-  let bossWx = (minX + maxX) * 0.5;
-  let bossWy = (minY + maxY) * 0.5;
-
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const cx = minX + Math.random() * (maxX - minX);
-    const cy = minY + Math.random() * (maxY - minY);
-
-    // 既存建物との最近距離を確認
-    let tooClose = false;
-    for (const b of existingBuildings) {
-      const dx = b.wx - cx;
-      const dy = b.wy - cy;
-      if (dx * dx + dy * dy < MIN_DIST2) { tooClose = true; break; }
-    }
-    if (!tooClose) {
-      bossWx = cx;
-      bossWy = cy;
-      break;
-    }
-  }
+  // 乱数で配置（マップが狭くて範囲が逆転しないようクランプ）
+  const safeMaxX = Math.max(minX + 1, maxX);
+  const safeMaxY = Math.max(minY + 1, maxY);
+  const bossWx = minX + Math.random() * (safeMaxX - minX);
+  const bossWy = minY + Math.random() * (safeMaxY - minY);
 
   return makeBossBuilding(bossWx, bossWy, stageIndex, bossTheme);
+}
+
+/**
+ * ボス周囲に large サイズ帯の建物を環状（ドーナツ状）に配置して「首都要塞」を形成する。
+ *
+ * アルゴリズム:
+ *   CAPITAL_RING_COUNT 本の候補角度をリング内に均等分割し、
+ *   CAPITAL_RING_INNER〜CAPITAL_RING_OUTER のドーナツ領域に収めた座標を生成する。
+ *   各候補は (1) ボス本体との最小間隔、(2) 先行配置済み首都建物との最小間隔を確認し、
+ *   重なる場合は半径または角度を微調整して再試行する。
+ *
+ * @param {Object} boss  placeBossBuilding で生成したボスオブジェクト
+ * @param {Object} config  STAGE_CONFIGS[stageIndex]
+ * @returns {Array}  配置された首都建物のリスト
+ */
+function placeCapitalDistrict(boss, config) {
+  const result = [];
+  const bossX = boss.wx;
+  const bossY = boss.wy;
+
+  // ボス中心から最低限離れなければならない距離（ボス半径 + 首都建物半径 + 最小隙間）
+  const minBossDist = BOSS_RADIUS + CAPITAL_RADIUS_BASE + 10;
+  const minBossDist2 = minBossDist * minBossDist;
+
+  // 首都建物同士の最小距離（重なり防止）
+  const minCapDist2 = CAPITAL_MIN_SPACING * CAPITAL_MIN_SPACING;
+
+  // 角度スロットを CAPITAL_RING_COUNT 等分割
+  const angleStep = (Math.PI * 2) / CAPITAL_RING_COUNT;
+
+  for (let k = 0; k < CAPITAL_RING_COUNT; k++) {
+    // 各スロットで最大4回試行：境界チェックや重なりで失敗した場合に半径・角度を微変化させて再挑戦
+    const MAX_ATTEMPTS = 4;
+    let placed = false;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS && !placed; attempt++) {
+      // 角度に±15%のランダムオフセット（有機的な配置感）
+      const baseAngle = k * angleStep + (Math.random() * angleStep * 0.30 - angleStep * 0.15);
+
+      // 半径: ドーナツ内縁〜外縁のランダム位置（attempt が増えるほど内縁寄りを試して境界を回避）
+      const radiusRand = Math.max(0, Math.random() - attempt * 0.15);
+      const radius = CAPITAL_RING_INNER + radiusRand * (CAPITAL_RING_OUTER - CAPITAL_RING_INNER);
+
+      const wx = bossX + Math.cos(baseAngle) * radius;
+      const wy = bossY + Math.sin(baseAngle) * radius;
+
+      // ワールド境界チェック（建物半径分の余白を確保）
+      const pad = CAPITAL_RADIUS_BASE + 10;
+      if (wx < pad || wx > WORLD_W - pad || wy < pad || wy > WORLD_H - pad) continue;
+
+      // ボス本体との最小間隔チェック
+      if (dist2(wx, wy, bossX, bossY) < minBossDist2) continue;
+
+      // 先行配置済み首都建物との重なりチェック
+      let tooClose = false;
+      for (const cap of result) {
+        if (dist2(wx, wy, cap.wx, cap.wy) < minCapDist2) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+
+      result.push(makeCapitalBuilding(wx, wy, config));
+      placed = true;
+    }
+    // MAX_ATTEMPTS 試行後も配置できなかった場合はそのスロットをスキップ
+    // （ボスが端に追い込まれた場合の安全網）
+  }
+
+  return result;
+}
+
+/**
+ * 首都要塞建物を生成する。
+ * 通常 large 帯のパラメータを使い、HP のみ CAPITAL_HP_MULT 倍で「首都＝強い」感を出す。
+ * isBoss は false のまま——ボスではなく「ボスを守る要塞の一部」として機能する。
+ *
+ * @param {number} wx  ワールドX座標
+ * @param {number} wy  ワールドY座標
+ * @param {Object} config  STAGE_CONFIGS[stageIndex]
+ * @returns {Object}  建物オブジェクト
+ */
+function makeCapitalBuilding(wx, wy, config) {
+  const bLarge = config.buildings.large;
+  const baseHp = randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax);
+  const hp     = Math.round(baseHp * CAPITAL_HP_MULT);
+  // 首都建物の色は large カラーから選ぶ（ステージテーマに合わせる）
+  const color  = randChoice(bLarge.colors);
+
+  const building = makeBuilding(wx, wy, "large", color, bLarge, hp);
+  // 首都建物は要塞都市の一部であることを示すフラグ
+  // （_townMeta は持たない → assignEggBearers のフォールバックで全体1町として卵割当対象に含まれる）
+  building._isCapital = true;
+  return building;
 }
 
 // 各町の建物リストから EGG_BEARER_RATIO の割合でランダムに卵持ちを選ぶ。
