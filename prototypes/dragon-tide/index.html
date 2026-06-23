@@ -295,12 +295,31 @@ const BASE_CFG = {
 // -----------------------------------------------------------------
 
 const BUILDING_SIZE_PARAMS = {
+  // tiny は小さく散在する極小集落（変更4追加）。すぐ壊れる育成フィーダー。
+  // small の 0.6 倍の radius で地図にまばらに点在する。
+  tiny:   { hpMin: 3, hpMax: 6,  radiusBase: 6  },
   // small は「育成フィーダー」。すぐ壊れて卵が出て群れが育つことが目的。HP低め。
   small:  { hpMin: 6, hpMax: 10, radiusBase: 10 },
   medium: { hpMin: 25, hpMax: 35, radiusBase: 16 },
   large:  { hpMin: 60, hpMax: 85, radiusBase: 28 },
   // boss: 別途 BOSS_PARAMS で管理（サイズ/形状はここと独立）
 };
+
+// -----------------------------------------------------------------
+// 変更4: tiny 集落散布パラメータ
+// マップ全体に均等散布するランダム極小集落。クラスタを作らず単体で配置。
+// 首都占有領域・既存建物との重なりを避け、最小間隔を確保する。
+// -----------------------------------------------------------------
+// 1ステージあたりの tiny 集落数（定数化してデータ駆動）
+const TINY_SETTLEMENT_COUNT = 60;
+// tiny 集落同士の最小中心間距離（重なり防止）
+const TINY_MIN_SPACING = BUILDING_SIZE_PARAMS.tiny.radiusBase * 2 + 30; // 42px
+// 既存建物（small/medium/large）との最小間隔
+const TINY_FROM_EXISTING_GAP = BUILDING_SIZE_PARAMS.tiny.radiusBase + 10; // 16px
+// マップ端からのマージン
+const TINY_MARGIN = 80;
+// 配置試行回数（ランダム候補からの衝突除去）
+const TINY_MAX_ATTEMPTS = 8;
 
 // -----------------------------------------------------------------
 // 首都要塞（capital district）パラメータ
@@ -654,14 +673,17 @@ resize();
 // -----------------------------------------------------------------
 // カメラ（ワールド座標系でのカメラ中心＋ズームスケール）
 // -----------------------------------------------------------------
-// scale: 1.0=寄り（少数）〜 0.6=引き（100体）。群れ数に応じてなめらかに変化する。
-const cam = { x: 400, y: WORLD_H / 2, scale: 1.0 };
+// 変更1: スケールを常に「100匹時の最大ズームアウト値」に固定する。
+// 群れ数に関係なく開始直後（10匹）からこの引き量で遊ぶため、
+// プレイヤーはマップ全体を見渡しながら戦略的に動ける。
+const CAM_FIXED_SCALE = 0.6; // MAX_BOIDS=100 のときの値（元の最大引き量）
+const cam = { x: 400, y: WORLD_H / 2, scale: CAM_FIXED_SCALE };
 
-// 群れ数に応じた目標ズームスケールを計算する
-// 10体 → 1.0（寄り）、100体 → 0.6（引き）の線形補間
-function calcTargetCamScale(aliveCount) {
-  const t = Math.max(0, Math.min(1, (aliveCount - 10) / 90));
-  return 1.0 - t * 0.4;
+// 変更1: 群れ数に依らず常に固定スケールを返す。
+// 位置追従（群れ重心への lerp）は updateCamera で維持するが、
+// ズーム量はこの定数で固定し、動的変化をしない。
+function calcTargetCamScale(_aliveCount) {
+  return CAM_FIXED_SCALE;
 }
 
 function worldToScreen(wx, wy) {
@@ -906,6 +928,74 @@ function makeBuilding(wx, wy, size, color, bConfig, hp) {
 }
 
 /**
+ * 変更4: tiny 集落をマップ全体にランダム散布する。
+ * クラスタを作らず単体で配置。首都占有領域・既存建物を避ける。
+ * 卵持ち割当の対象に含まれるよう _tinySettlement フラグを付ける
+ * （assignEggBearers のフォールバックで全体1町として処理される）。
+ * 空間ハッシュ・ビューポートカリング・攻撃ゲートは既存の settlements 配列への
+ * 追加によって自動的に対象に含まれる。
+ *
+ * @param {Array}  existingBuildings  既存の建物リスト（重なりチェック用）
+ * @param {number} bossWx            ボスのワールドX
+ * @param {number} bossWy            ボスのワールドY
+ * @param {Object} config            STAGE_CONFIGS[stageIndex]
+ * @returns {Array}  配置された tiny 建物のリスト
+ */
+function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
+  const result = [];
+  const bSmall = config.buildings.small; // tiny は small のパラメータを流用（攻撃・色）
+
+  // 既存建物の位置リスト（tiny との重なりチェック用）
+  const occupied = existingBuildings.map(b => ({ x: b.wx, y: b.wy, r: b.radius }));
+
+  // 首都占有領域の二乗（ボス中心からの排除距離）
+  const excl2 = CAPITAL_EXCLUSION_RADIUS * CAPITAL_EXCLUSION_RADIUS;
+
+  for (let k = 0; k < TINY_SETTLEMENT_COUNT; k++) {
+    let placed = false;
+
+    for (let attempt = 0; attempt < TINY_MAX_ATTEMPTS && !placed; attempt++) {
+      const wx = TINY_MARGIN + Math.random() * (WORLD_W - TINY_MARGIN * 2);
+      const wy = TINY_MARGIN + Math.random() * (WORLD_H - TINY_MARGIN * 2);
+
+      // 首都占有領域チェック
+      if (dist2(wx, wy, bossWx, bossWy) < excl2) continue;
+
+      // 既存建物との重なりチェック
+      let tooClose = false;
+      const tinyR = BUILDING_SIZE_PARAMS.tiny.radiusBase;
+      for (const ob of occupied) {
+        const minD = ob.r + tinyR + TINY_FROM_EXISTING_GAP;
+        if (dist2(wx, wy, ob.x, ob.y) < minD * minD) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+
+      // tiny 同士の重なりチェック
+      for (const t of result) {
+        if (dist2(wx, wy, t.wx, t.wy) < TINY_MIN_SPACING * TINY_MIN_SPACING) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+
+      // 配置確定
+      const hp    = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
+      const color = randChoice(bSmall.colors);
+      const b     = makeBuilding(wx, wy, "tiny", color, bSmall, hp);
+      // tiny 専用フラグ（ミニマップ・デバッグ等で識別するため）
+      b._tinySettlement = true;
+      // tiny の radius は BUILDING_SIZE_PARAMS.tiny.radiusBase で上書き
+      // （makeBuilding は size から取るが tiny キーを追加したので正しく参照される）
+      b.radius = BUILDING_SIZE_PARAMS.tiny.radiusBase;
+      result.push(b);
+      // 重なりチェックリストに追加
+      occupied.push({ x: wx, y: wy, r: tinyR });
+      placed = true;
+    }
+  }
+
+  return result;
+}
+
+/**
  * ボス集落を1体生成する。
  * 高HP・高火力・大半径で、小集落の育成なしでは倒せない圧力を作る。
  * isBoss=true を持つことでクリア条件・描画・ミニマップで特別扱いされる。
@@ -995,6 +1085,21 @@ function generateStageLayout(stageIndex) {
   // --- (3) ボスと首都建物を配列に追加 ---
   result.push(boss);
   for (const b of capitalBuildings) result.push(b);
+
+  // --- (4) 変更4: tiny 集落をマップ全体に散布する ---
+  // 首都・既存建物との重なりを避けて配置し、最後に result へ追加する。
+  // assignEggBearers の後に追加するため、tiny はフォールバック（towns=0）で
+  // 全体1町として扱われるが、ここでは全建物確定後に個別に卵持ち割当を補う。
+  const tinyBuildings = generateTinySettlements(result, boss.wx, boss.wy, config);
+  // tiny だけを対象に卵持ちを割当（eggBearerRatio に基づく）
+  const tinyEggCount = Math.max(1, Math.round(tinyBuildings.length * eggBearerRatio()));
+  const tinyIndices  = Array.from({ length: tinyBuildings.length }, (_, i) => i);
+  for (let i = 0; i < tinyEggCount && i < tinyIndices.length; i++) {
+    const j   = i + Math.floor(Math.random() * (tinyIndices.length - i));
+    const tmp = tinyIndices[i]; tinyIndices[i] = tinyIndices[j]; tinyIndices[j] = tmp;
+    tinyBuildings[tinyIndices[i]].isEggBearer = true;
+  }
+  for (const b of tinyBuildings) result.push(b);
 
   return result;
 }
@@ -1505,15 +1610,27 @@ const projTailY     = new Float32Array(MAX_PROJECTILES);
 // 変更3: 飛距離管理用 SoA（発射点を記録して走破距離で消滅判定する）
 const projStartWx   = new Float32Array(MAX_PROJECTILES);
 const projStartWy   = new Float32Array(MAX_PROJECTILES);
+// 変更5: 投射物種別 SoA（0=arrow 通常矢弾、1=catapult カタパルト弾）
+// Uint8Array: 0 or 1 で表現。初期化漏れなし（new Uint8Array はゼロ初期化される）
+const projKind      = new Uint8Array(MAX_PROJECTILES); // 0=arrow, 1=catapult
 
 // 変更3: 投射物パラメータ定数
 // 弾速倍率: ステージ設定の projectileSpeed にこの倍率を掛けて「大型矢」の重厚な速さにする。
 const PROJECTILE_SPEED_MULT  = 3.6;
-// 飛距離上限（px）: この距離を超えた弾は自動消滅する。建物の攻撃射程（最大380px）より
-// 少し広く設定して「大型矢でも遠くまでは届かない」感を作る。
-const PROJECTILE_MAX_RANGE   = 420;
+// 変更5: 種別ごとの飛距離上限（px）
+// カタパルト弾: 広い射程（大型・首都・ボスのみが撃つ威圧感）
+const PROJECTILE_MAX_RANGE   = 420; // catapult 用（従来値を維持）
+// 通常矢弾: 短い射程（small/tiny/medium が撃つ。近づかないと当たらない）
+const ARROW_MAX_RANGE        = 250;
 
-function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, aoe, isTracking) {
+// 変更5: 種別ごとのノックバック速度（px/s）
+// カタパルト弾: 強いノックバック（大型・首都・ボスの圧力感）
+const CATAPULT_KNOCKBACK_SPEED = 220; // 旧120→220へ増強
+// 通常矢弾: 弱いノックバック（ちょっと押される程度）
+const ARROW_KNOCKBACK_SPEED    = 60;
+
+// 変更5: kind=0(arrow) / kind=1(catapult)
+function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, aoe, isTracking, kind) {
   let slot = -1;
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) { slot = i; break; }
@@ -1536,6 +1653,8 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
   projTracking[slot]   = isTracking ? 1 : 0;
   projTargetIdx[slot]  = targetBoidIdx;
   projColor[slot]      = color;
+  // 変更5: 種別を記録（デフォルト 0=arrow）
+  projKind[slot]       = (kind === 1) ? 1 : 0;
 
   if (targetBoidIdx >= 0 && !boidDead[targetBoidIdx]) {
     const dx = px[targetBoidIdx] - fromWx;
@@ -1676,6 +1795,13 @@ function updateSettlementAttacks(dt) {
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
 
+    // 変更5: 集落種別に応じて弾種を決定する。
+    // large・首都（_isCapital）・ボス → カタパルト弾（kind=1: 強ノックバック・大きな矢）
+    // それ以外（small/tiny/medium）→ 通常矢弾（kind=0: 小さく・射程短い・弱ノックバック）
+    const isCatapultShooter = settlement.isBoss || settlement._isCapital ||
+                              settlement.size === "large";
+    const kind = isCatapultShooter ? 1 : 0;
+
     const count = settlement.projectileCount;
     if (count === 1) {
       spawnProjectile(
@@ -1686,6 +1812,7 @@ function updateSettlementAttacks(dt) {
         settlement.projectileColor,
         settlement.projectileAoe,
         settlement.projectileTracking,
+        kind,
       );
     } else if (count === 2) {
       const baseAngle = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
@@ -1696,6 +1823,7 @@ function updateSettlementAttacks(dt) {
           settlement.projectileSpeed,
           settlement.projectileDamage,
           settlement.projectileColor,
+          kind,
         );
       }
     } else if (count === 3) {
@@ -1707,6 +1835,7 @@ function updateSettlementAttacks(dt) {
           settlement.projectileSpeed,
           settlement.projectileDamage,
           settlement.projectileColor,
+          kind,
         );
       }
     } else {
@@ -1719,6 +1848,7 @@ function updateSettlementAttacks(dt) {
           settlement.projectileSpeed,
           settlement.projectileDamage,
           settlement.projectileColor,
+          kind,
         );
       }
     }
@@ -1730,7 +1860,8 @@ function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
   return Math.atan2(py[targetBoidIdx] - fromY, px[targetBoidIdx] - fromX);
 }
 
-function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color) {
+// 変更5: kind=0(arrow) / kind=1(catapult)
+function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind) {
   let slot = -1;
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) { slot = i; break; }
@@ -1753,6 +1884,8 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color) {
   projTracking[slot]   = 0;
   projTargetIdx[slot]  = -1;
   projColor[slot]      = color;
+  // 変更5: 種別を記録（デフォルト 0=arrow）
+  projKind[slot]       = (kind === 1) ? 1 : 0;
 }
 
 function updateProjectiles(dt) {
@@ -1779,10 +1912,13 @@ function updateProjectiles(dt) {
       continue;
     }
 
-    // 変更3: 飛距離上限チェック（発射点からの直線距離で判定）
-    const tdx = projWx[i] - projStartWx[i];
-    const tdy = projWy[i] - projStartWy[i];
-    if (tdx * tdx + tdy * tdy > PROJECTILE_MAX_RANGE * PROJECTILE_MAX_RANGE) {
+    // 変更5: 飛距離上限チェック（種別ごとに異なる最大射程を適用）
+    // catapult(kind=1): PROJECTILE_MAX_RANGE=420px（広い射程）
+    // arrow  (kind=0): ARROW_MAX_RANGE=250px（短い射程、近づかないと当たらない）
+    const tdx      = projWx[i] - projStartWx[i];
+    const tdy      = projWy[i] - projStartWy[i];
+    const maxRange = projKind[i] === 1 ? PROJECTILE_MAX_RANGE : ARROW_MAX_RANGE;
+    if (tdx * tdx + tdy * tdy > maxRange * maxRange) {
       projActive[i] = 0;
       continue;
     }
@@ -1837,13 +1973,18 @@ function checkProjectileHitBoids(projIdx) {
 }
 
 function applyProjectileKnockback(boidIdx, projIdx) {
-  // 変更3: 弾の進行方向と同方向にノックバック（矢が刺さって押し飛ばされる感覚）
-  // 旧実装は -= で逆方向（弾を跳ね返す向き）だったが、+=で弾の方向に押し出す。
-  const pvx = projVx[projIdx];
-  const pvy = projVy[projIdx];
+  // 変更5: 種別ごとにノックバック強度を分岐する
+  // catapult(kind=1): CATAPULT_KNOCKBACK_SPEED=220（強い。体感できる吹き飛び）
+  // arrow  (kind=0): ARROW_KNOCKBACK_SPEED=60（弱い。ちょっと押される程度）
+  const knockbackSpeed = projKind[projIdx] === 1
+    ? CATAPULT_KNOCKBACK_SPEED
+    : ARROW_KNOCKBACK_SPEED;
+
+  const pvx    = projVx[projIdx];
+  const pvy    = projVy[projIdx];
   const pspeed = Math.sqrt(pvx * pvx + pvy * pvy) || 1;
-  vx[boidIdx] += (pvx / pspeed) * PROJECTILE_KNOCKBACK_SPEED;
-  vy[boidIdx] += (pvy / pspeed) * PROJECTILE_KNOCKBACK_SPEED;
+  vx[boidIdx] += (pvx / pspeed) * knockbackSpeed;
+  vy[boidIdx] += (pvy / pspeed) * knockbackSpeed;
   // 速度を maxSpeed でクランプして飛び出しを防ぐ
   const sp = Math.sqrt(vx[boidIdx] * vx[boidIdx] + vy[boidIdx] * vy[boidIdx]);
   if (sp > BASE_CFG.maxSpeed) {
@@ -2254,7 +2395,7 @@ const partVx     = new Float32Array(MAX_PARTICLES);
 const partVy     = new Float32Array(MAX_PARTICLES);
 const partLife   = new Float32Array(MAX_PARTICLES);
 const partActive = new Uint8Array(MAX_PARTICLES);
-// partType: 0=ブレス火花（橙〜赤）、1=出現エフェクト火花（金〜白〜薄橙）
+// partType: 0=ブレス火花（橙〜赤）、1=出現エフェクト火花（金〜白〜薄橙）、2=死亡FX（灰〜暗赤）
 const partType   = new Uint8Array(MAX_PARTICLES);
 
 function spawnHitParticles(wx, wy) {
@@ -2386,6 +2527,118 @@ function spawnBoidAtEgg(wx, wy) {
   const base = idx * TAIL_SEGS;
   for (let s = 0; s < TAIL_SEGS; s++) {
     boidAngleHistory[base + s] = initAngle;
+  }
+}
+
+// -----------------------------------------------------------------
+// 変更2(追加): 竜やられエフェクト — HP0でダウンに入る瞬間に出す死亡FX
+// 出現FX(金色)と明確に色を変え、灰/暗赤の飛散パーティクルで「やられた」を伝える。
+// プール上限付き（MAX_PARTICLES 内で既存スロット流用）。多数同時でも破綻しない。
+// -----------------------------------------------------------------
+
+// 死亡FX: やられリングプール（出現FXプールとは別）
+const MAX_DOWN_FX = 20;
+const downFxWx     = new Float32Array(MAX_DOWN_FX);
+const downFxWy     = new Float32Array(MAX_DOWN_FX);
+const downFxLife   = new Float32Array(MAX_DOWN_FX);
+const downFxActive = new Uint8Array(MAX_DOWN_FX);
+const DOWN_FX_DURATION = 0.40; // やられリング表示時間（出現FXより短め・速く消える）
+const DOWN_FX_RING_MAX = 40;   // やられリングの最大半径（出現FXの半分）
+
+/**
+ * 竜がダウンに入った瞬間に呼ぶ。
+ * 灰/暗赤のパーティクル（partType=2）+ しぼむリングエフェクトをスポーンする。
+ * 出現FX（金色・弾ける）と色と挙動を明確に差別化して「やられた」を伝える。
+ */
+function spawnDragonDownEffect(wx, wy) {
+  // --- しぼむリング ---
+  let slot = -1;
+  for (let i = 0; i < MAX_DOWN_FX; i++) {
+    if (!downFxActive[i]) { slot = i; break; }
+  }
+  // 空きがなければ残り寿命最小を上書き
+  if (slot < 0) {
+    let minLife = Infinity;
+    for (let i = 0; i < MAX_DOWN_FX; i++) {
+      if (downFxLife[i] < minLife) { minLife = downFxLife[i]; slot = i; }
+    }
+  }
+  downFxActive[slot] = 1;
+  downFxWx[slot]     = wx;
+  downFxWy[slot]     = wy;
+  downFxLife[slot]   = DOWN_FX_DURATION;
+
+  // --- 飛散パーティクル（灰/暗赤・5〜7個）---
+  // 出現FXは金色で14個だが、やられFXは灰系で少数に抑えて地味な「やられ感」を出す
+  const DEATH_SPARK_COUNT = 5 + Math.floor(Math.random() * 3); // 5〜7個
+  let spawned = 0;
+  for (let i = 0; i < MAX_PARTICLES && spawned < DEATH_SPARK_COUNT; i++) {
+    if (partActive[i]) continue;
+    partActive[i] = 1;
+    partType[i]   = 2; // 死亡FX（灰〜暗赤）
+    partX[i] = wx + (Math.random() - 0.5) * 10;
+    partY[i] = wy + (Math.random() - 0.5) * 10;
+    const angle = Math.random() * Math.PI * 2;
+    // 出現FXより遅め（しぼむ感・エネルギーが抜ける感）
+    const speed = 40 + Math.random() * 80;
+    partVx[i]   = Math.cos(angle) * speed;
+    partVy[i]   = Math.sin(angle) * speed;
+    // 寿命短め（やられは素早く消える）
+    partLife[i] = 0.25 + Math.random() * 0.15;
+    spawned++;
+  }
+
+  // 短い振動フィードバック（ダウンの衝撃感）
+  hapticPulse(20);
+}
+
+function updateDownEffects(dt) {
+  for (let i = 0; i < MAX_DOWN_FX; i++) {
+    if (!downFxActive[i]) continue;
+    downFxLife[i] -= dt;
+    if (downFxLife[i] <= 0) downFxActive[i] = 0;
+  }
+}
+
+/**
+ * やられリングを描画する。カメラ変換内（ワールド座標系）で呼ぶこと。
+ * 出現FXとは逆に「しぼむ」ように内側に向かって半径が縮まる演出。
+ * 色は暗赤〜灰系で「失った」感を出す。
+ */
+function drawDownEffects() {
+  for (let i = 0; i < MAX_DOWN_FX; i++) {
+    if (!downFxActive[i]) continue;
+    const progress = 1.0 - downFxLife[i] / DOWN_FX_DURATION; // 0→1
+    // しぼむ: 最初は大きく、末期に向けて収縮する（出現FXとは逆）
+    const ringRadius = DOWN_FX_RING_MAX * (1.0 - progress * 0.5);
+    // フェードアウト: 後半で急速に消える
+    const alpha = Math.max(0, 1.0 - progress * progress * 1.8);
+    const wx = downFxWx[i];
+    const wy = downFxWy[i];
+
+    ctx.save();
+
+    // 外リング（暗赤）
+    ctx.globalAlpha = alpha * 0.80;
+    ctx.strokeStyle = "#c03020";
+    ctx.lineWidth   = Math.max(0.5, 2.5 * (1 - progress));
+    ctx.beginPath();
+    ctx.arc(wx, wy, Math.max(0.5, ringRadius), 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 内リング（灰）: わずかに遅れて登場
+    if (progress > 0.1) {
+      const innerP = (progress - 0.1) / 0.9;
+      const innerR = DOWN_FX_RING_MAX * 0.55 * (1.0 - innerP * 0.4);
+      ctx.globalAlpha = alpha * 0.55;
+      ctx.strokeStyle = "#808080";
+      ctx.lineWidth   = Math.max(0.5, 1.5 * (1 - innerP));
+      ctx.beginPath();
+      ctx.arc(wx, wy, Math.max(0.5, innerR), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.restore();
   }
 }
 
@@ -2621,6 +2874,7 @@ function advanceToNextStage() {
   for (let i = 0; i < MAX_PARTICLES; i++)   partActive[i] = 0;
   for (let e = 0; e < MAX_EGGS; e++)        eggActive[e] = 0;
   for (let i = 0; i < MAX_APPEAR_FX; i++)   appearFxActive[i] = 0;
+  for (let i = 0; i < MAX_DOWN_FX; i++)     downFxActive[i] = 0;
 
   activeBreaths.length = 0;
 
@@ -2655,6 +2909,7 @@ function restartGame() {
   for (let i = 0; i < MAX_PROJECTILES; i++)   projActive[i] = 0;
   for (let i = 0; i < MAX_PARTICLES; i++)     partActive[i] = 0;
   for (let i = 0; i < MAX_APPEAR_FX; i++)     appearFxActive[i] = 0;
+  for (let i = 0; i < MAX_DOWN_FX; i++)       downFxActive[i] = 0;
 
   activeBreaths.length = 0;
 
@@ -2740,6 +2995,12 @@ let inputMode = "NONE";
 let isDrawing = false;
 let touchRing = { active: false, x: 0, y: 0 };
 
+// 変更3: 指の現在ワールド座標を保持する。
+// isDrawing 中は静止していてもこの位置をリーダー目標として供給し続けることで、
+// 指を押し続けるだけで群れが誘導され続ける（パスが尽きてアイドルに落ちない）。
+let pointerWorldX = 0;
+let pointerWorldY = 0;
+
 const TRAIL_LIFETIME = 1.2;
 const trailPoints    = [];
 
@@ -2759,6 +3020,9 @@ function inputStart(sx, sy, now) {
   const w = screenToWorld(sx, sy);
   pathPush(w.x, w.y);
   addTrailPoint(w.x, w.y, now);
+  // 変更3: 指のワールド座標を保持（静止保持でも誘導継続するため）
+  pointerWorldX = w.x;
+  pointerWorldY = w.y;
   touchRing.active = true;
   touchRing.x = sx;
   touchRing.y = sy;
@@ -2770,6 +3034,9 @@ function inputMove(sx, sy, now) {
   const w = screenToWorld(sx, sy);
   pathPush(w.x, w.y);
   addTrailPoint(w.x, w.y, now);
+  // 変更3: 指が動いたときも最新ワールド座標を更新する
+  pointerWorldX = w.x;
+  pointerWorldY = w.y;
   touchRing.x = sx;
   touchRing.y = sy;
 }
@@ -2890,6 +3157,9 @@ function applyDamageToBoid(boidIndex, damage) {
     // フェードアウトは boidFadeTimer で表現する
     boidFadeTimer[boidIndex] = FADE_DURATION;
     boidHp[boidIndex]        = 0;
+    // 変更2(追加): やられた瞬間に死亡FX（灰/暗赤）を出す。
+    // 出現FX（金色・弾ける）と色味を明確に変えて「やられた」と認識させる。
+    spawnDragonDownEffect(px[boidIndex], py[boidIndex]);
   }
 }
 
@@ -3028,12 +3298,34 @@ function updateLeader(dt) {
       d2 = dx * dx + dy * dy;
     }
 
+    // 変更3: パスを消費し切った（末端に到達）かつ isDrawing 中の場合は
+    // 指のワールド座標を目標として保持する（アイドルに落ちない）。
+    // パスが残っている間は従来通り次の点へ向かう。
+    if (leaderPathConsumeIdx >= pathLen - 1 && d2 < 24 * 24 && isDrawing) {
+      // 指位置を目標として使う（パスバッファを追加せず「先頭=指位置を更新」する形）
+      dx = pointerWorldX - leader.x;
+      dy = pointerWorldY - leader.y;
+      d2 = dx * dx + dy * dy;
+    }
+
     const d = Math.sqrt(d2) || 1;
     const desiredVx = (dx / d) * BASE_CFG.leaderSpeed;
     const desiredVy = (dy / d) * BASE_CFG.leaderSpeed;
     leader.vx += (desiredVx - leader.vx) * Math.min(1, dt * 8);
     leader.vy += (desiredVy - leader.vy) * Math.min(1, dt * 8);
+  } else if (isDrawing) {
+    // 変更3: パスが空でも isDrawing 中は指位置を目標にしてリーダーを引き寄せる。
+    // これにより inputStart 直後（pathPush が1点しかなく pathLen=0 の瞬間）も対応。
+    const dx = pointerWorldX - leader.x;
+    const dy = pointerWorldY - leader.y;
+    const d2 = dx * dx + dy * dy;
+    const d  = Math.sqrt(d2) || 1;
+    const desiredVx = (dx / d) * BASE_CFG.leaderSpeed;
+    const desiredVy = (dy / d) * BASE_CFG.leaderSpeed;
+    leader.vx += (desiredVx - leader.vx) * Math.min(1, dt * 8);
+    leader.vy += (desiredVy - leader.vy) * Math.min(1, dt * 8);
   } else {
+    // 従来のアイドル旋回（指を離したとき）
     const target = getIdleLeaderTarget(dt);
     leader.vx += ((target.x - leader.x) * 0.8 - leader.vx) * Math.min(1, dt * 2.0);
     leader.vy += ((target.y - leader.y) * 0.8 - leader.vy) * Math.min(1, dt * 2.0);
@@ -3080,6 +3372,7 @@ function render(now) {
   drawProjectiles();
   drawParticles();
   drawAppearEffects();  // 変更2: 竜出現リングエフェクト（ワールド座標系）
+  drawDownEffects();    // 変更2(追加): 竜やられリングエフェクト（ワールド座標系）
 
   // 軌跡はワールド座標で保持しているのでカメラ変換の内側で描く。
   // これでドラゴンが実際に追う経路と一致し、地面に固定されたまま流れる。
@@ -3538,13 +3831,22 @@ function drawBoids() {
  * 色は既存の projColor を流用してステージ別テーマを維持する。
  */
 function drawProjectiles() {
-  // 矢のサイズ定数（論理px。カメラズームはキャンバス変換で自動適用される）
-  const SHAFT_LEN      = 18;  // シャフト（矢柄）の長さ
-  const SHAFT_WIDTH    = 2.8; // シャフトの線幅
-  const HEAD_LEN       = 7;   // 鏃（やじり）の長さ（シャフト前端から先端まで）
-  const HEAD_HALF_W    = 3.5; // 鏃の幅の半分
-  const FLETCH_LEN     = 5;   // 矢羽根の長さ
-  const FLETCH_HALF_W  = 2.8; // 矢羽根の幅の半分
+  // 変更5: 種別ごとのサイズ定数（論理px）
+  // catapult: 従来の大きな矢サイズを維持（存在感のある重厚な矢）
+  const CATAPULT_SHAFT_LEN     = 18;
+  const CATAPULT_SHAFT_WIDTH   = 2.8;
+  const CATAPULT_HEAD_LEN      = 7;
+  const CATAPULT_HEAD_HALF_W   = 3.5;
+  const CATAPULT_FLETCH_LEN    = 5;
+  const CATAPULT_FLETCH_HALF_W = 2.8;
+
+  // arrow: カタパルトより一回り小さい矢（細く短く、多数が飛ぶ印象）
+  const ARROW_SHAFT_LEN     = 12;
+  const ARROW_SHAFT_WIDTH   = 1.6;
+  const ARROW_HEAD_LEN      = 4;
+  const ARROW_HEAD_HALF_W   = 2.2;
+  const ARROW_FLETCH_LEN    = 3;
+  const ARROW_FLETCH_HALF_W = 1.8;
 
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) continue;
@@ -3557,6 +3859,15 @@ function drawProjectiles() {
     // 進行方向（速度ベクトルから算出）
     const angle = Math.atan2(projVy[i], projVx[i]);
     const color = projColor[i];
+
+    // 変更5: 種別ごとにサイズを選択
+    const isCatapult  = projKind[i] === 1;
+    const SHAFT_LEN     = isCatapult ? CATAPULT_SHAFT_LEN     : ARROW_SHAFT_LEN;
+    const SHAFT_WIDTH   = isCatapult ? CATAPULT_SHAFT_WIDTH   : ARROW_SHAFT_WIDTH;
+    const HEAD_LEN      = isCatapult ? CATAPULT_HEAD_LEN      : ARROW_HEAD_LEN;
+    const HEAD_HALF_W   = isCatapult ? CATAPULT_HEAD_HALF_W   : ARROW_HEAD_HALF_W;
+    const FLETCH_LEN    = isCatapult ? CATAPULT_FLETCH_LEN    : ARROW_FLETCH_LEN;
+    const FLETCH_HALF_W = isCatapult ? CATAPULT_FLETCH_HALF_W : ARROW_FLETCH_HALF_W;
 
     ctx.save();
     // 矢の中心（弾頭先端の少し手前）をワールド座標の現在位置に合わせて配置
@@ -3575,15 +3886,15 @@ function drawProjectiles() {
     // --- 鏃（やじり）: 三角形、先端が +HEAD_LEN の位置 ---
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.moveTo(HEAD_LEN, 0);            // 先端
-    ctx.lineTo(0, -HEAD_HALF_W);        // 左後端
-    ctx.lineTo(0,  HEAD_HALF_W);        // 右後端
+    ctx.moveTo(HEAD_LEN, 0);
+    ctx.lineTo(0, -HEAD_HALF_W);
+    ctx.lineTo(0,  HEAD_HALF_W);
     ctx.closePath();
     ctx.fill();
 
     // 鏃に白いハイライト（輝き感）
     ctx.strokeStyle = "rgba(255,255,255,0.55)";
-    ctx.lineWidth   = 0.8;
+    ctx.lineWidth   = isCatapult ? 0.8 : 0.5;
     ctx.beginPath();
     ctx.moveTo(HEAD_LEN, 0);
     ctx.lineTo(0, -HEAD_HALF_W);
@@ -3591,13 +3902,11 @@ function drawProjectiles() {
 
     // --- フレッチング（矢羽根）: 末尾に小さなV字 ---
     ctx.strokeStyle = color;
-    ctx.lineWidth   = 1.4;
+    ctx.lineWidth   = isCatapult ? 1.4 : 1.0;
     ctx.globalAlpha = 0.80;
     ctx.beginPath();
-    // 上羽根
     ctx.moveTo(-SHAFT_LEN + FLETCH_LEN, 0);
     ctx.lineTo(-SHAFT_LEN, -FLETCH_HALF_W);
-    // 下羽根
     ctx.moveTo(-SHAFT_LEN + FLETCH_LEN, 0);
     ctx.lineTo(-SHAFT_LEN, FLETCH_HALF_W);
     ctx.stroke();
@@ -3619,6 +3928,19 @@ function drawParticles() {
       const g = (200 + (55 * lifeRatio)) | 0; // 200→255（白寄り→金）
       const radius = Math.max(0.5, 1.0 + lifeRatio * 3.5); // 最大4.5px
       ctx.fillStyle = `rgba(255, ${g}, ${(80 * (1 - lifeRatio)) | 0}, ${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (partType[i] === 2) {
+      // 死亡FX: 灰〜暗赤。出現FX(金)とは明確に色を分ける
+      const lifeRatio = Math.max(0, partLife[i] / 0.35);
+      const alpha  = Math.max(0, lifeRatio * lifeRatio);
+      // 序盤は暗赤(r=180,g=40,b=40)、末期は灰(r=120,g=120,b=120)へ変化
+      const r = (120 + (60 * lifeRatio)) | 0;
+      const g = (40  + (80 * (1 - lifeRatio))) | 0;
+      const b = (40  + (80 * (1 - lifeRatio))) | 0;
+      const radius = Math.max(0.5, 0.8 + lifeRatio * 2.2); // 小さめ
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
       ctx.beginPath();
       ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
       ctx.fill();
@@ -3738,7 +4060,7 @@ function drawMinimap() {
       }
     } else {
       // 通常建物
-      const dotR = settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : 1.5);
+      const dotR = settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : (settlement.size === "tiny" ? 1.0 : 1.5));
       minimapCtx.fillStyle = settlement.fallen ? "#333" : settlement.color;
       minimapCtx.beginPath();
       minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
@@ -4175,12 +4497,15 @@ function tick() {
     updateDeathTimers(dt);
     updateParticles(dt);
     updateAppearEffects(dt);      // 変更2: 竜出現エフェクト更新
+    updateDownEffects(dt);        // 変更2(追加): 竜やられエフェクト更新
     collectNearbyEggs();
     checkGameConditions();
   } else if (gameState === "stage-clear") {
     simStep(dt);
     updateCamera(dt);
     updateParticles(dt);
+    updateAppearEffects(dt);
+    updateDownEffects(dt);
     updateStageClearSequence(dt);
   } else if (gameState === "defeat") {
     defeatTimer -= dt;
