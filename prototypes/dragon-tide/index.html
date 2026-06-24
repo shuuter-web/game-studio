@@ -138,6 +138,18 @@
   }
   #retry-btn.visible { display: block; }
 
+  /* バージョン表示（左下・スクリーン固定） */
+  #hud-version {
+    position: fixed;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 4px);
+    left: 8px;
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+    font-size: 10px;
+    color: rgba(120, 180, 255, 0.45);
+    pointer-events: none;
+    letter-spacing: 0.05em;
+  }
+
   /* ステージ間演出オーバーレイ */
   #stage-overlay {
     position: fixed;
@@ -196,6 +208,9 @@
   <canvas id="minimap" width="80" height="60"></canvas>
 </div>
 
+<!-- バージョン表示（左下・スクリーン固定） -->
+<div id="hud-version"></div>
+
 <!-- ゲームオーバー/クリアオーバーレイ -->
 <div id="overlay">
   <div id="overlay-title">EPOCH CONQUERED</div>
@@ -212,6 +227,12 @@
 
 <script>
 "use strict";
+
+// -----------------------------------------------------------------
+// バージョン定数（ここだけ更新すれば画面に反映される）
+// -----------------------------------------------------------------
+const GAME_VERSION = "v0.4.1";
+document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
  * 竜潮 / Dragon Tide — Stage Edition v3
@@ -3053,7 +3074,14 @@ function pathPush(wx, wy) {
   pathBuf[pathHead * 2]     = wx;
   pathBuf[pathHead * 2 + 1] = wy;
   pathHead = (pathHead + 1) % PATH_MAX;
-  if (pathLen < PATH_MAX) pathLen++;
+  if (pathLen < PATH_MAX) {
+    pathLen++;
+  } else {
+    // バッファが満杯で最古点を上書きするとき、論理窓が1つ前進する。
+    // leaderPathConsumeIdx が同じ「実点」を指し続けるよう1だけ引く。
+    // ただし 0 未満にはしない（負になると pathGet が誤変換する）。
+    leaderPathConsumeIdx = Math.max(0, leaderPathConsumeIdx - 1);
+  }
 }
 
 const leader = { x: 250, y: WORLD_H * 0.5, vx: 0, vy: 0 };
@@ -3405,28 +3433,46 @@ function updateLeader(dt) {
     let followingPath = false;
     if (pathLen > 0) {
       if (leaderPathConsumeIdx >= pathLen) leaderPathConsumeIdx = pathLen - 1;
-      let tgt = pathGet(Math.min(leaderPathConsumeIdx, pathLen - 1));
-      let ddx = tgt.x - leader.x, ddy = tgt.y - leader.y;
-      let dd2 = ddx * ddx + ddy * ddy;
-      while (dd2 < 24 * 24 && leaderPathConsumeIdx < pathLen - 1) {
-        leaderPathConsumeIdx++;
-        tgt = pathGet(leaderPathConsumeIdx);
-        ddx = tgt.x - leader.x; ddy = tgt.y - leader.y;
-        dd2 = ddx * ddx + ddy * ddy;
+      // 進行はリーダーに「最も近い未消費ウェイポイント」まで進める。
+      // こうするとコーナーを突っ切って各ウェイポイント半径に入らなくても消費が進み、
+      // 「線の最初しか追わずインデックスが止まる」問題を防げる。
+      // 自己交差で遠くへ飛ばないよう前方の探索窓を限定する。
+      const SCAN_AHEAD = 40;
+      const scanEnd = Math.min(pathLen - 1, leaderPathConsumeIdx + SCAN_AHEAD);
+      let bestIdx = leaderPathConsumeIdx, bestD2 = Infinity;
+      for (let k = leaderPathConsumeIdx; k <= scanEnd; k++) {
+        const p = pathGet(k);
+        const ex = p.x - leader.x, ey = p.y - leader.y;
+        const e2 = ex * ex + ey * ey;
+        if (e2 < bestD2) { bestD2 = e2; bestIdx = k; }
       }
-      // 末端まで消費したら指位置へ。まだ途中なら軌跡のウェイポイントを追う。
-      if (!(leaderPathConsumeIdx >= pathLen - 1 && dd2 < 24 * 24)) {
-        tx = tgt.x; ty = tgt.y; followingPath = true;
+      if (bestIdx > leaderPathConsumeIdx) leaderPathConsumeIdx = bestIdx; // 戻らない
+      // 末端に十分近づいたらパス追従終了 → 指位置へフォールオーバー
+      const endp = pathGet(pathLen - 1);
+      const endDx = endp.x - leader.x, endDy = endp.y - leader.y;
+      const endNear = (endDx * endDx + endDy * endDy) < 40 * 40;
+      if (leaderPathConsumeIdx >= pathLen - 1 && endNear) {
+        // 線を最後まで辿り終えた → パスを消去して指追従/巡航へ。
+        // 残すとリーダーが末端ウェイポイントを越えるたびに引き戻され、
+        // 押しっぱなしで失速するトラップになるため（追従終了時に必ずクリア）。
+        pathClear();
+      } else {
+        // 最近傍より少し先（lookahead +2）を目標にして弧へ早めに舵を切る
+        const aimIdx = Math.min(leaderPathConsumeIdx + 2, pathLen - 1);
+        const atgt = pathGet(aimIdx);
+        tx = atgt.x; ty = atgt.y; followingPath = true;
       }
     }
 
     const dx = tx - leader.x, dy = ty - leader.y;
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+    // 目標が進行方向の前方にあるか（後方の固定点へ引き返してUターンするトラップを防ぐ）。
+    // 指を静止保持してリーダーが追い越した場合、目標は後方になり aheadDot < 0 になる。
+    const aheadDot = (dx / d) * _cruiseVx + (dy / d) * _cruiseVy;
 
-    if (followingPath || d > LEADER_ARRIVAL_DIST) {
-      // 軌跡を追従中、または目標が前方に離れている →
+    if (followingPath || (d > LEADER_ARRIVAL_DIST && aheadDot > 0)) {
+      // 軌跡を追従中、または目標が前方に十分離れている →
       // 速度ベクトルを目標方向へ機敏に寄せて、描いた線（弧など）に追従する。
-      // （以前の反応の良さを復元。速度は leaderSpeed 基準）
       const nx = dx / d, ny = dy / d;
       const k  = Math.min(1, dt * 10); // 機敏な操舵
       leader.vx += (nx * speed - leader.vx) * k;
@@ -3435,8 +3481,9 @@ function updateLeader(dt) {
       const cs = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
       if (cs > 1) { _cruiseVx = leader.vx / cs; _cruiseVy = leader.vy / cs; }
     } else {
-      // パスを消費し切り、指に到達（＝指を静止保持）→ 直前の進行方向へ直進巡航。
-      // 速度は leaderSpeed 固定で減速しない＝押している限り進み続ける。
+      // 指に到達／追い越し（目標が近い or 後方）＝指を静止保持 →
+      // 直前の進行方向へ直進巡航。速度は leaderSpeed 固定で減速しない
+      // ＝押している限りまっすぐ進み続ける（その場で旋回・停止しない）。
       leader.vx = _cruiseVx * speed;
       leader.vy = _cruiseVy * speed;
     }
