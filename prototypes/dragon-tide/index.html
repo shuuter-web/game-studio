@@ -231,7 +231,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.4.1";
+const GAME_VERSION = "v0.4.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -3447,16 +3447,11 @@ function updateLeader(dt) {
         if (e2 < bestD2) { bestD2 = e2; bestIdx = k; }
       }
       if (bestIdx > leaderPathConsumeIdx) leaderPathConsumeIdx = bestIdx; // 戻らない
-      // 末端に十分近づいたらパス追従終了 → 指位置へフォールオーバー
-      const endp = pathGet(pathLen - 1);
-      const endDx = endp.x - leader.x, endDy = endp.y - leader.y;
-      const endNear = (endDx * endDx + endDy * endDy) < 40 * 40;
-      if (leaderPathConsumeIdx >= pathLen - 1 && endNear) {
-        // 線を最後まで辿り終えた → パスを消去して指追従/巡航へ。
-        // 残すとリーダーが末端ウェイポイントを越えるたびに引き戻され、
-        // 押しっぱなしで失速するトラップになるため（追従終了時に必ずクリア）。
-        pathClear();
-      } else {
+      // 末尾インデックスに達するまではパスを追従（弧などをなぞる）。
+      // 末尾に達したら（距離に関わらず）パス追従を終え、指位置＋aheadDot 巡航へ移す。
+      // ここで pathClear はしない＝指を離した後のループ追従（円を描いて離すと周回）のため保持。
+      // 押しっぱなしの末端引き戻しトラップは下の aheadDot 判定で防ぐ。
+      if (leaderPathConsumeIdx < pathLen - 1) {
         // 最近傍より少し先（lookahead +2）を目標にして弧へ早めに舵を切る
         const aimIdx = Math.min(leaderPathConsumeIdx + 2, pathLen - 1);
         const atgt = pathGet(aimIdx);
@@ -3487,8 +3482,28 @@ function updateLeader(dt) {
       leader.vx = _cruiseVx * speed;
       leader.vy = _cruiseVy * speed;
     }
+  } else if (pathLen > 2) {
+    // ---- パス・ループ追従モード（指を離した後）----
+    // 記録した軌跡を繰り返しなぞる。円を描いて離すと、その円をずっとぐるぐる回る。
+    // 最近傍ウェイポイントを全走査で求め、数点先（末尾はラップ）を目標に全速で追う。
+    let ni = 0, nd = Infinity;
+    for (let k = 0; k < pathLen; k++) {
+      const p = pathGet(k);
+      const ex = p.x - leader.x, ey = p.y - leader.y;
+      const e2 = ex * ex + ey * ey;
+      if (e2 < nd) { nd = e2; ni = k; }
+    }
+    const aim = pathGet((ni + 3) % pathLen); // 数点先（ラップで周回）
+    const dx = aim.x - leader.x, dy = aim.y - leader.y;
+    const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+    const nx = dx / d, ny = dy / d;
+    const k  = Math.min(1, dt * 6);
+    leader.vx += (nx * speed - leader.vx) * k;
+    leader.vy += (ny * speed - leader.vy) * k;
+    const cs = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
+    if (cs > 1) { _cruiseVx = leader.vx / cs; _cruiseVy = leader.vy / cs; }
   } else {
-    // ---- アイドル旋回モード（指を離したとき） ----
+    // ---- アイドル旋回モード（パスが無い／ごく短いとき）----
     const target = getIdleLeaderTarget(dt);
     leader.vx += ((target.x - leader.x) * 0.8 - leader.vx) * Math.min(1, dt * 2.0);
     leader.vy += ((target.y - leader.y) * 0.8 - leader.vy) * Math.min(1, dt * 2.0);
