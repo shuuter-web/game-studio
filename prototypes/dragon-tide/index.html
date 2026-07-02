@@ -231,7 +231,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.4.2";
+const GAME_VERSION = "v0.5.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -3797,9 +3797,16 @@ function drawBreathAttacks(now) {
     if (boidDead[bIdx]) continue;
 
     // ブレスは体の中心でなく顔の前（口元）から出す。
-    // スプライトはワールド52px・マズルは中心から前方≈19px。進行方向へ口元分オフセット。
+    // 竜の描画原点は画像の質量重心（DRAGON_SPRITE_PIVOTS.fire、中心ではない）なので、
+    // 鼻先までの距離もその重心基準で再計算する。
+    // fire画像: 鼻先(alpha検出上端)は重心cyから元画像px換算で約246.4px前方
+    //   → 40論理px幅換算で 246.4 * (40/1024) ≈ 9.62論理px
+    //   （preview_evalでdragonSprites.fire[12]を実測し、鼻先の到達点が重心から
+    //    約9論理pxであることも確認済み＝理論値とほぼ一致）。
+    // 旧ベクター比率（16/19≈0.84、口先よりわずかに手前から出す意図）を踏襲し
+    // 9.62 * 0.84 ≈ 8 に再計算。
     const headAngle = Math.atan2(vy[bIdx], vx[bIdx]);
-    const MOUTH_OFFSET = 16;
+    const MOUTH_OFFSET = 8;
     const fromX = px[bIdx] + Math.cos(headAngle) * MOUTH_OFFSET;
     const fromY = py[bIdx] + Math.sin(headAngle) * MOUTH_OFFSET;
     const toX   = breath.targetWx;
@@ -3930,9 +3937,17 @@ function drawBoids() {
     ctx.lineCap     = "round";
     ctx.lineJoin    = "round";
 
-    // 尻尾の根元：胴体後端（進行方向の逆、約5px 後ろ）
-    const tailRootOffX = -Math.cos(angle) * 5;
-    const tailRootOffY = -Math.sin(angle) * 5;
+    // 尻尾の根元：胴体後端（進行方向の逆側）。
+    // 描画原点がラスター画像の質量重心（DRAGON_SPRITE_PIVOTS.fire）に変わったため、
+    // 胴体後端（画像内では後脚）までの距離も再計算が必要だった。
+    // 理論値は 656.6px(元画像) * (40/1024) ≈ 25.6論理px だが、後脚の爪先は
+    // 40px幅への大幅縮小描画時にアンチエイリアスでほぼ消え、実際にプリレンダされた
+    // canvasを実測すると不透明ピクセルは重心から約13〜16論理px止まりだった
+    // （preview_evalでdragonSprites.fire[12]のgetImageDataを解析して確認済み）。
+    // 尻尾の根本が実際の見た目上の胴体終端と自然につながるよう、実測に合わせて採用。
+    const TAIL_ROOT_OFFSET = 14;
+    const tailRootOffX = -Math.cos(angle) * TAIL_ROOT_OFFSET;
+    const tailRootOffY = -Math.sin(angle) * TAIL_ROOT_OFFSET;
     let segX = wx + tailRootOffX;
     let segY = wy + tailRootOffY;
 
@@ -4350,9 +4365,12 @@ function tickFps(now) {
 const DRAGON_ELEMENT_COLORS = {
   // 各属性: { body, wing, rimAlpha }
   // bodyは胴体中心色、wingは翼の先端色、rimAlpha は縁の透明度
-  fire:   { body: "rgba(120, 200, 255, 1.0)", wing: "rgba(80, 160, 255, 1.0)",  rim: "rgba(60, 120, 220, 0.0)" },
+  // これらの色は尻尾の動的描画（drawBoids内 palette.body参照）で使われるため、
+  // ラスター画像（assets/dragon_*.png）の配色と視覚的に一致させている。
+  // 修正: 旧値は属性導入前の仮の青三角プレースホルダーの名残でfireが青系になっていたバグ。
+  fire:   { body: "rgba(255, 140, 40, 1.0)",  wing: "rgba(190, 60, 50, 1.0)",   rim: "rgba(140, 30, 20, 0.0)" },
   ice:    { body: "rgba(180, 240, 255, 1.0)", wing: "rgba(140, 220, 255, 1.0)", rim: "rgba(100, 180, 240, 0.0)" },
-  shadow: { body: "rgba(180, 100, 255, 1.0)", wing: "rgba(120, 60, 200, 1.0)",  rim: "rgba(80, 30, 160, 0.0)" },
+  shadow: { body: "rgba(150, 80, 210, 1.0)",  wing: "rgba(90, 40, 150, 1.0)",   rim: "rgba(50, 20, 90, 0.0)" },
 };
 
 // プリレンダ設定
@@ -4363,13 +4381,77 @@ const DRAGON_FLAP_SPEED  = 1.6;   // 羽ばたきサイクル毎秒（breathTime
                                   // 低いほどゆったり滑空する。速いと虫のように見えるため抑えめ。
 
 // スプライト1枚の論理サイズ（翼を広げた最大幅を内包する正方形）
-// 胴体+翼+頭のみ（尻尾は動的描画に変更）
-// 頭先 x=13 ～ 翼後端 x≈-9、翼高さ ±17 → 幅22×高34 → 対角 ceil(sqrt(22²+34²))≈41 → 52px で余裕あり
+// ラスター画像は翼スパン40論理px・最長縦(fire)約35.8論理pxなので52px枠に余裕で収まる。
 const DRAGON_SPRITE_LOGICAL = 52;
 
 // 要素 × フレームのスプライトキャッシュ
 // dragonSprites["fire"][frameIndex] = OffscreenCanvas or HTMLCanvasElement
 const dragonSprites = {};
+
+// -----------------------------------------------------------------
+// 竜ラスター画像（Gemini生成・透過済み・トップビュー1ポーズ）
+// -----------------------------------------------------------------
+// 画像は「鼻先が画像の上方向（-Y）」を向いた状態で1ポーズのみ収録。
+// 尻尾は含まれない（引き続き drawBoids 側で動的描画）。
+// 中心(w/2, h/2)が視覚的重心と一致（誤差1px未満）なので回転ピボットに使える。
+const DRAGON_IMAGE_SOURCES = {
+  fire:   "assets/dragon_fire.png",
+  ice:    "assets/dragon_ice.png",
+  shadow: "assets/dragon_shadow.png",
+};
+
+// 翼スパン（画像の横幅）をこの論理pxに正規化する。縦は元画像のアスペクト比を保つ。
+const DRAGON_TARGET_WINGSPAN = 40;
+
+// -----------------------------------------------------------------
+// 竜ラスター画像の回転ピボット座標
+// -----------------------------------------------------------------
+// 正典データは data/balance/dragon-sprite-pivots.json（このプロトはリポジトリ内の
+// data/ ディレクトリを配信対象に含まないため、値をここに複製している。
+// 補正値を変更する際は必ず両方を更新すること）。
+//
+// 画像中心(w/2, h/2)は視覚的重心と一致しない: fire/iceは翼・頭部に質量の大半が
+// 集中し、下半分（後脚側）はほぼ空白になっている（tech-lead確認済み）。
+// 画像中心をそのままピボットにすると、回転時に頭が進行方向を向かず
+// 後脚側が前に来てしまう破綻が起きるため、各画像のアルファチャンネル質量重心
+// （非透明ピクセルのx/y平均。cx/cyは元画像座標系）を回転ピボットとして採用する。
+const DRAGON_SPRITE_PIVOTS = {
+  fire:   { cx: 511.6, cy: 259.4, w: 1024, h: 917 },
+  ice:    { cx: 504.7, cy: 213.4, w: 1010, h: 791 },
+  shadow: { cx: 490.4, cy: 273.2, w: 982,  h: 532 },
+};
+
+// ロード済みの Image オブジェクト（element名 → HTMLImageElement）
+const dragonImages = {};
+// ロードに成功したかどうか（失敗時はベクター描画へフォールバック）
+let dragonImagesLoaded = false;
+
+/**
+ * 竜のラスター画像を全属性分プリロードする。
+ * @returns {Promise<void>} 全画像のロードが完了（または失敗確定）したら解決
+ */
+function preloadDragonImages() {
+  const elements = Object.keys(DRAGON_IMAGE_SOURCES);
+  const loadOne = (element) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      dragonImages[element] = img;
+      resolve(true);
+    };
+    img.onerror = () => {
+      console.error(`[DragonTide] 竜画像のロードに失敗しました: ${DRAGON_IMAGE_SOURCES[element]}`);
+      resolve(false);
+    };
+    img.src = DRAGON_IMAGE_SOURCES[element];
+  });
+
+  return Promise.all(elements.map(loadOne)).then((results) => {
+    dragonImagesLoaded = results.every(Boolean);
+    if (!dragonImagesLoaded) {
+      console.error("[DragonTide] 一部の竜画像が読み込めなかったため、ベクター描画にフォールバックします。");
+    }
+  });
+}
 
 // 個体ごとの羽ばたき位相オフセット（index で決定的に割り当て）
 // 0〜1 の値 × 2π がラジアン位相
@@ -4408,12 +4490,70 @@ function easeAngle(cur, target, k) {
 
 /**
  * 竜シルエットを1フレーム分オフスクリーンcanvasに描画して返す。
+ * ラスター画像（assets/dragon_*.png）が読み込めている場合はそれを使い、
+ * 失敗している場合のみ旧ベクター描画（renderDragonFrameVector）へフォールバックする。
  * @param {string} element  "fire" | "ice" | "shadow"
  * @param {number} wingAngle  翼の上下角度（ラジアン）。0=水平、+はたたんだ方向
  * @param {number} spritePx  canvas物理解像度（= 論理サイズ × DPR）
  * @returns {HTMLCanvasElement}
  */
 function renderDragonFrame(element, wingAngle, spritePx) {
+  const img = dragonImages[element];
+  if (!dragonImagesLoaded || !img) {
+    return renderDragonFrameVector(element, wingAngle, spritePx);
+  }
+
+  const oc = document.createElement("canvas");
+  oc.width  = spritePx;
+  oc.height = spritePx;
+  const c = oc.getContext("2d");
+
+  const half  = spritePx / 2;
+  // 論理サイズ→物理ピクセルへのスケール
+  const scale = spritePx / DRAGON_SPRITE_LOGICAL;
+
+  // 翼スパン（画像の横幅）を DRAGON_TARGET_WINGSPAN 論理pxに正規化し、
+  // 縦は元画像のアスペクト比を保って算出する（属性ごとに縦が異なる＝仕様）。
+  const drawW = DRAGON_TARGET_WINGSPAN;
+  const drawH = DRAGON_TARGET_WINGSPAN * (img.naturalHeight / img.naturalWidth);
+
+  // wingAngle（0=水平最大展開 〜 π*0.65=最大羽ばたみ）から羽ばたき係数を算出。
+  // 常に正の値（0.13〜1.0）になるため、羽ばたんでも潰れて反転することはない。
+  const flapFactor = 0.4 + 0.6 * Math.cos(wingAngle);
+
+  // 画像中心(w/2,h/2)は視覚的重心と一致しないため、質量重心(DRAGON_SPRITE_PIVOTS)を
+  // 描画原点に使う。drawW/drawHへの縮小スケールと同じ比率で重心座標も換算する。
+  const pivot = DRAGON_SPRITE_PIVOTS[element] ?? DRAGON_SPRITE_PIVOTS.fire;
+  const pivotScaleX = drawW / pivot.w;
+  const pivotScaleY = drawH / pivot.h;
+  const pivotX = pivot.cx * pivotScaleX;
+  const pivotY = pivot.cy * pivotScaleY;
+
+  c.save();
+  c.translate(half, half);
+  c.scale(scale, scale);
+
+  // 画像は「鼻先が画像の上方向（-Y）」を向いているため、
+  // まず+X（ゲーム内の進行方向規約）へ回頭してから、画像自身のX軸（翼スパン方向）を
+  // flapFactorで縮小する。rotateを先に適用することで、scaleは画像本来の軸に対して
+  // 先に効き、その結果全体が回頭される合成順序になる（逆順だと翼スパン軸がずれる）。
+  c.rotate(Math.PI / 2);
+  c.scale(flapFactor, 1);
+  c.drawImage(img, -pivotX, -pivotY, drawW, drawH);
+
+  c.restore();
+  return oc;
+}
+
+/**
+ * 竜シルエットのベクター描画版（旧実装）。
+ * ラスター画像のロードに失敗した場合のフォールバックとして残す。
+ * @param {string} element  "fire" | "ice" | "shadow"
+ * @param {number} wingAngle  翼の上下角度（ラジアン）。0=水平、+はたたんだ方向
+ * @param {number} spritePx  canvas物理解像度（= 論理サイズ × DPR）
+ * @returns {HTMLCanvasElement}
+ */
+function renderDragonFrameVector(element, wingAngle, spritePx) {
   const oc = document.createElement("canvas");
   oc.width  = spritePx;
   oc.height = spritePx;
@@ -4716,9 +4856,15 @@ document.addEventListener("visibilitychange", () => {
 // -----------------------------------------------------------------
 // 起動
 // -----------------------------------------------------------------
-function boot() {
+async function boot() {
   resize();
-  // 竜スプライトを起動時に一度だけプリレンダする（DPR確定後に呼ぶこと）
+  // 竜のラスター画像を先にロードしてから竜スプライトをプリレンダする。
+  // ロードが完了する前に createDragonSprites を呼ぶと画像が未定義のまま焼き込まれる
+  // （renderDragonFrame内でロード未完了と判定されベクター描画にフォールバックしてしまう）ため、
+  // 必ずこの await の後で呼ぶこと。ロード失敗時も preloadDragonImages 内で
+  // dragonImagesLoaded=false が設定され、renderDragonFrame が自動でベクター描画に切り替わる。
+  await preloadDragonImages();
+  // 竜スプライトを起動時に一度だけプリレンダする（DPR確定後・画像ロード完了後に呼ぶこと）
   createDragonSprites();
   createBuildingLayer();
   settlements = generateStageLayout(0);
