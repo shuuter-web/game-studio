@@ -379,7 +379,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.6.0-p2";
+const GAME_VERSION = "v0.6.0-p3";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -1360,6 +1360,14 @@ function generateStageLayout(stageIndex) {
   }
   for (const b of tinyBuildings) result.push(b);
 
+  // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
+  const wallSegments = generateWallRing(boss, stageIndex);
+  for (const w of wallSegments) result.push(w);
+
+  // --- (6) v0.6-p3: 地形障害物（岩山・湖）を空白地帯へ散布 ---
+  // settlements とは別系統（破壊不可）。モジュールスコープの terrainObstacles を更新する。
+  terrainObstacles = generateTerrainObstacles(result, boss);
+
   return result;
 }
 
@@ -1548,6 +1556,171 @@ function makeCapitalSmallBuilding(wx, wy, config) {
   return building;
 }
 
+// =================================================================
+// v0.6-p3: 首都城壁（ドラゴン侵入不可・破壊可能）＋地形障害物（破壊不可）
+// 仕様: docs/gdd/dragon-tide-v0.6-spec.md §8
+// =================================================================
+
+// 城壁リング半径（城下充填の外縁360pxの外側）
+const WALL_RING_RADIUS   = 420;
+// セグメント間隔（弧長px）。半径420の円周≈2639px ÷ 48px ≈ 55セグメント
+const WALL_SEG_SPACING   = 48;
+// セグメントの当たり半径（隣とほぼ接し、隙間から竜が抜けない値）
+const WALL_SEG_RADIUS    = 26;
+// ゲート（開口部）の幅（弧長px）。群れが余裕を持って通れる幅
+const WALL_GATE_WIDTH    = 150;
+// ステージ別城壁設定（stageIndex 0始まり）: STAGE1は城壁なし、進むほどゲートが減る（§8.2）
+const WALL_STAGE_CONFIG = [
+  null,
+  { gates: 3, hp: 40, doubleRing: false },
+  { gates: 2, hp: 46, doubleRing: false },
+  { gates: 1, hp: 52, doubleRing: true },
+];
+// 二重リング（STAGE 4）の外側リング半径
+const WALL_OUTER_RING_RADIUS = 484;
+
+/**
+ * 城壁セグメントを1つ生成する。settlements パイプライン（描画・ダメージ・
+ * 空間ハッシュ・XP）に乗せるため建物オブジェクトとして作る。
+ * _isWall=true: Boids押し出し対象・卵/攻撃なし・XP12（xpValueOf参照）。
+ */
+function makeWallSegment(wx, wy, hp, tangentAngle) {
+  return {
+    wx,
+    wy,
+    size: "wall",
+    color: "#6a7078",
+    shape: "wallSegment",
+    radius: WALL_SEG_RADIUS,
+    maxHp: hp,
+    hp,
+    fallen: false,
+    isEggBearer: false,
+    isBoss: false,
+    _isWall: true,
+    _wallAngle: tangentAngle,   // 描画時にリング接線方向へ回転させる
+    // 城壁は攻撃しない（attackRadius=0 で射程判定に一切かからない）
+    attackTimer: Infinity,
+    attackRadius: 0,
+    projectileInterval: Infinity,
+    projectileSpeed: 0,
+    projectileDamage: 0,
+    projectileColor: "#fff",
+    projectileCount: 0,
+    projectileTracking: false,
+    projectileAoe: 0,
+    reward: { eggMin: 0, eggMax: 0 },
+    _breathParticleTimer: 0,
+  };
+}
+
+/**
+ * ボスを中心とした城壁リングを生成する（STAGE 2以降）。
+ * ゲート角をランダム基準で等間隔に取り、その弧幅内のセグメントを抜いて開口部にする。
+ * STAGE 4 は外側にもう1周（二重リング。ゲート角は共有＝一直線に突破口が並ぶ）。
+ */
+function generateWallRing(boss, stageIndex) {
+  const config = WALL_STAGE_CONFIG[stageIndex];
+  if (!config) return [];
+
+  const result = [];
+  const gateBaseAngle = Math.random() * Math.PI * 2;
+  const gateAngles = [];
+  for (let g = 0; g < config.gates; g++) {
+    gateAngles.push(gateBaseAngle + (g * Math.PI * 2) / config.gates);
+  }
+
+  const rings = config.doubleRing
+    ? [WALL_RING_RADIUS, WALL_OUTER_RING_RADIUS]
+    : [WALL_RING_RADIUS];
+
+  for (const ringRadius of rings) {
+    const segCount      = Math.floor((Math.PI * 2 * ringRadius) / WALL_SEG_SPACING);
+    const angleStep     = (Math.PI * 2) / segCount;
+    const gateHalfAngle = (WALL_GATE_WIDTH * 0.5) / ringRadius;
+
+    for (let k = 0; k < segCount; k++) {
+      const angle = k * angleStep;
+
+      // ゲート開口部チェック（角度差を -π〜π に正規化して比較）
+      let inGate = false;
+      for (const gate of gateAngles) {
+        let diff = angle - gate;
+        while (diff >  Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        if (Math.abs(diff) < gateHalfAngle) { inGate = true; break; }
+      }
+      if (inGate) continue;
+
+      const wx = boss.wx + Math.cos(angle) * ringRadius;
+      const wy = boss.wy + Math.sin(angle) * ringRadius;
+      // マップ外にはみ出るセグメントはスキップ（ボスは端から十分内側だが安全網）
+      if (wx < 20 || wx > WORLD_W - 20 || wy < 20 || wy > WORLD_H - 20) continue;
+
+      result.push(makeWallSegment(wx, wy, config.hp, angle + Math.PI / 2));
+    }
+  }
+  return result;
+}
+
+// -----------------------------------------------------------------
+// 地形障害物（岩山・湖）: 破壊不可・ドラゴン侵入不可。
+// 岩山は投射不透過（氷弾・敵弾を止める）、湖は投射透過。ミサイルは全て飛び越える。
+// -----------------------------------------------------------------
+let terrainObstacles = [];
+
+const TERRAIN_COUNT_MIN   = 5;
+const TERRAIN_COUNT_MAX   = 9;
+const TERRAIN_MARGIN      = 140;   // マップ端からの最小距離
+const TERRAIN_START_CLEAR = 420;   // 群れスタート地点（左端中央）の確保半径
+const TERRAIN_MAX_ATTEMPTS = 30;
+
+/**
+ * 地形障害物をマップの空白地帯へ散布する。
+ * 建物・首都城壁・他の地形と重ならない位置のみ採用（重なったらスキップ）。
+ * 「何もない空間」を「回り込む地形」に置き換えるのが目的（仕様 §9.2）。
+ */
+function generateTerrainObstacles(buildings, boss) {
+  const result = [];
+  const count  = randInt(TERRAIN_COUNT_MIN, TERRAIN_COUNT_MAX);
+  // 城壁リング＋余白の外側にのみ配置（要塞攻略の導線を地形で塞がない）
+  const bossClear = WALL_OUTER_RING_RADIUS + 120;
+
+  for (let k = 0; k < count; k++) {
+    const type   = Math.random() < 0.55 ? "rock" : "lake";
+    const radius = type === "rock" ? randRange(40, 85) : randRange(55, 105);
+
+    for (let attempt = 0; attempt < TERRAIN_MAX_ATTEMPTS; attempt++) {
+      const wx = TERRAIN_MARGIN + Math.random() * (WORLD_W - TERRAIN_MARGIN * 2);
+      const wy = TERRAIN_MARGIN + Math.random() * (WORLD_H - TERRAIN_MARGIN * 2);
+
+      // 群れスタート地点の確保
+      if (dist2(wx, wy, 250, WORLD_H * 0.5) < (TERRAIN_START_CLEAR + radius) ** 2) continue;
+      // ボス要塞圏の確保
+      if (dist2(wx, wy, boss.wx, boss.wy) < (bossClear + radius) ** 2) continue;
+
+      // 既存建物との重なりチェック
+      let collides = false;
+      for (const b of buildings) {
+        const minD = radius + b.radius + 30;
+        if (dist2(wx, wy, b.wx, b.wy) < minD * minD) { collides = true; break; }
+      }
+      if (collides) continue;
+
+      // 他の地形との重なりチェック
+      for (const ob of result) {
+        const minD = radius + ob.radius + 60;
+        if (dist2(wx, wy, ob.wx, ob.wy) < minD * minD) { collides = true; break; }
+      }
+      if (collides) continue;
+
+      result.push({ wx, wy, radius, type });
+      break;
+    }
+  }
+  return result;
+}
+
 // 各町の建物リストから EGG_BEARER_RATIO の割合でランダムに卵持ちを選ぶ。
 // _townMeta を持つ建物が「町の先頭」なので、それを境界として町ごとに分割する。
 // 町ごとに割り当てることで全マップに散らばった配置になる。
@@ -1593,6 +1766,9 @@ function rebuildBuildingLayer() {
 
   // 完全クリア
   bctx.clearRect(0, 0, WORLD_W, WORLD_H);
+
+  // v0.6-p3: 地形（岩山・湖）は最背面に焼く
+  drawTerrainOnLayer(bctx);
 
   // 道路ラインを先に描く（建物の下に来る）
   drawRoadsOnLayer(bctx);
@@ -1659,10 +1835,85 @@ function drawSettlementOnLayer(bctx, settlement) {
     case "bossCircle":
       drawBossOnLayer(bctx, settlement, color);
       break;
+    // v0.6-p3: 城壁セグメント（リング接線方向に回転した石ブロック）
+    case "wallSegment":
+      drawWallSegmentOnCtx(bctx, settlement, color);
+      break;
     default:            drawCircleOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
   }
 
   bctx.restore();
+}
+
+/**
+ * v0.6-p3: 城壁セグメントを描画する。
+ * リング接線方向（_wallAngle）に回転した石ブロック＋胸壁の刻みで「城壁」に見せる。
+ * fallen 時は呼び出し元の alpha=0.22/color="#333" でそのまま瓦礫化する。
+ */
+function drawWallSegmentOnCtx(c, settlement, color) {
+  const halfL = WALL_SEG_SPACING * 0.5 + 3; // 隣セグメントと視覚的につながる長さ
+  const halfW = 9;                          // 壁の厚み（見た目）
+  c.save();
+  c.translate(settlement.wx, settlement.wy);
+  c.rotate(settlement._wallAngle);
+
+  // 壁本体
+  c.fillStyle = color;
+  c.strokeStyle = "rgba(255,255,255,0.35)";
+  c.lineWidth = 1.5;
+  c.fillRect(-halfL, -halfW, halfL * 2, halfW * 2);
+  c.strokeRect(-halfL, -halfW, halfL * 2, halfW * 2);
+
+  // 胸壁の刻み（上辺の凸凹）
+  if (!settlement.fallen) {
+    c.fillStyle = shadeColor("#6a7078", 25);
+    const merlonW = 8;
+    for (let mx = -halfL + 2; mx < halfL - merlonW; mx += merlonW * 2) {
+      c.fillRect(mx, -halfW - 3, merlonW, 3);
+    }
+  }
+  c.restore();
+}
+
+/**
+ * v0.6-p3: 地形障害物（岩山・湖）を静的レイヤーに焼く。
+ * 岩山: 灰色の多角形の山＋ハイライト。湖: 深い青の楕円＋岸のリム。
+ */
+function drawTerrainOnLayer(bctx) {
+  for (const ob of terrainObstacles) {
+    if (ob.type === "rock") {
+      // ごつごつした多角形（座標由来の決定的ジッター）
+      bctx.fillStyle = "#4a4e52";
+      bctx.strokeStyle = "rgba(255,255,255,0.25)";
+      bctx.lineWidth = 2;
+      bctx.beginPath();
+      const sides = 8;
+      for (let k = 0; k < sides; k++) {
+        const angle  = (k * Math.PI * 2) / sides;
+        const jitter = 0.75 + 0.25 * ((Math.sin(k * 7.3 + ob.wx * 0.013) + 1) * 0.5);
+        const rx = ob.wx + Math.cos(angle) * ob.radius * jitter;
+        const ry = ob.wy + Math.sin(angle) * ob.radius * jitter;
+        if (k === 0) bctx.moveTo(rx, ry); else bctx.lineTo(rx, ry);
+      }
+      bctx.closePath();
+      bctx.fill();
+      bctx.stroke();
+      // 山頂ハイライト
+      bctx.fillStyle = "#6a7076";
+      bctx.beginPath();
+      bctx.arc(ob.wx - ob.radius * 0.18, ob.wy - ob.radius * 0.22, ob.radius * 0.38, 0, Math.PI * 2);
+      bctx.fill();
+    } else {
+      // 湖: 深い青＋岸のリム
+      bctx.fillStyle = "rgba(30, 60, 110, 0.85)";
+      bctx.strokeStyle = "rgba(120, 180, 230, 0.45)";
+      bctx.lineWidth = 2.5;
+      bctx.beginPath();
+      bctx.ellipse(ob.wx, ob.wy, ob.radius, ob.radius * 0.78, ob.wx * 0.01, 0, Math.PI * 2);
+      bctx.fill();
+      bctx.stroke();
+    }
+  }
 }
 
 /**
@@ -2193,6 +2444,19 @@ function updateProjectiles(dt) {
     const tdy      = projWy[i] - projStartWy[i];
     const maxRange = projKind[i] === 1 ? PROJECTILE_MAX_RANGE : ARROW_MAX_RANGE;
     if (tdx * tdx + tdy * tdy > maxRange * maxRange) {
+      projActive[i] = 0;
+      continue;
+    }
+
+    // v0.6-p3: 岩山は敵の投射も止める（岩陰に隠れる立ち回りが生まれる）
+    let blockedByRock = false;
+    for (const ob of terrainObstacles) {
+      if (ob.type !== "rock") continue;
+      const rdx = ob.wx - projWx[i];
+      const rdy = ob.wy - projWy[i];
+      if (rdx * rdx + rdy * rdy < ob.radius * ob.radius) { blockedByRock = true; break; }
+    }
+    if (blockedByRock) {
       projActive[i] = 0;
       continue;
     }
@@ -3027,6 +3291,7 @@ const EGG_OVERFLOW_XP       = 10;   // 群れ上限到達後の卵1個ぶんのX
 // 撃破対象のXP基礎値（仕様 §5.1）
 function xpValueOf(settlement) {
   if (settlement.isBoss)     return 300;
+  if (settlement._isWall)    return 12;
   if (settlement._isCapital) return 30;
   switch (settlement.size) {
     case "tiny":   return 1;
@@ -3408,14 +3673,19 @@ function spawnDragonProjectile(fromX, fromY, kind, angle, targetIdx) {
 // 近傍建物クエリ用の作業バッファ（自軍弾専用。既存バッファと分離して干渉を防ぐ）
 const _dprojNeighbourBuf = [];
 
-/** 指定座標から最も近い未陥落の建物を探す（cellRadius セル走査）。 */
-function findNearestBuilding(wx, wy, maxDist, cellRadius) {
+/**
+ * 指定座標から最も近い未陥落の建物を探す（cellRadius セル走査）。
+ * @param {boolean} excludeWalls  true のとき城壁を対象外にする
+ *   （ミサイルは壁を飛び越える＝壁を狙えないため。弾丸は壁を狙える＝攻城槌）
+ */
+function findNearestBuilding(wx, wy, maxDist, cellRadius, excludeWalls) {
   buildingGridQueryRadius(wx, wy, cellRadius, _dprojNeighbourBuf);
   let best = -1;
   let bestD2 = maxDist * maxDist;
   for (const sIdx of _dprojNeighbourBuf) {
     const s = settlements[sIdx];
     if (!s || s.fallen) continue;
+    if (excludeWalls && s._isWall) continue;
     const dx = s.wx - wx;
     const dy = s.wy - wy;
     const d2 = dx * dx + dy * dy;
@@ -3435,7 +3705,7 @@ function updateBulletAttacks(dt) {
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
-    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius);
+    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius, false);
     if (targetIdx < 0) continue; // 射程内に標的なし: タイマーは0のまま待機（見つけ次第撃つ）
 
     boidFireTimer[i] = interval;
@@ -3456,7 +3726,8 @@ function updateMissileAttacks(dt) {
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
-    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius);
+    // v0.6-p3: ミサイルは城壁を狙わない（壁越しに内部の建物をロックする）
+    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius, true);
     if (targetIdx < 0) continue;
 
     boidFireTimer[i] = interval;
@@ -3477,8 +3748,8 @@ function updateDragonProjectiles(dt) {
       let targetIdx = dprojTarget[i];
       let target = (targetIdx >= 0) ? settlements[targetIdx] : null;
       if (!target || target.fallen) {
-        // 対象消失: 現在位置周辺で再ロック（見つからなければ直進して寿命切れ）
-        targetIdx = findNearestBuilding(dprojX[i], dprojY[i], 250, 3);
+        // 対象消失: 現在位置周辺で再ロック（城壁は対象外。見つからなければ直進して寿命切れ）
+        targetIdx = findNearestBuilding(dprojX[i], dprojY[i], 250, 3, true);
         dprojTarget[i] = targetIdx;
         target = (targetIdx >= 0) ? settlements[targetIdx] : null;
       }
@@ -3518,11 +3789,29 @@ function updateDragonProjectiles(dt) {
       continue;
     }
 
+    // ---- v0.6-p3: 岩山チェック（弾丸のみ。ミサイルは地形を飛び越える）----
+    if (dprojKind[i] === 0) {
+      let blockedByRock = false;
+      for (const ob of terrainObstacles) {
+        if (ob.type !== "rock") continue;
+        const rdx = ob.wx - dprojX[i];
+        const rdy = ob.wy - dprojY[i];
+        if (rdx * rdx + rdy * rdy < ob.radius * ob.radius) { blockedByRock = true; break; }
+      }
+      if (blockedByRock) {
+        spawnHitParticles(dprojX[i], dprojY[i]);
+        dprojActive[i] = 0;
+        continue;
+      }
+    }
+
     // ---- 建物ヒット判定 ----
     buildingGridQuery(dprojX[i], dprojY[i], _dprojNeighbourBuf);
     for (const sIdx of _dprojNeighbourBuf) {
       const s = settlements[sIdx];
       if (!s || s.fallen) continue;
+      // v0.6-p3: ミサイルは城壁を飛び越える（唯一の壁越し攻撃。仕様 §6.3）
+      if (dprojKind[i] === 1 && s._isWall) continue;
       if (dprojKind[i] === 0 && sIdx === dprojLastHit[i]) continue; // 同じ建物への多段ヒット防止
       const hitR = s.radius + 3;
       const dx = s.wx - dprojX[i];
@@ -4479,6 +4768,53 @@ function simStep(dt) {
   }
 }
 
+// -----------------------------------------------------------------
+// v0.6-p3: 障害物押し出し（城壁・岩山・湖はドラゴン侵入不可）
+// リーダー（指の軌跡）は壁を無視できるが、個体は物理的に堰き止められる。
+// 押し出し距離は 障害物半径+5px（体当たり判定の半径+6px より内側）に置くことで、
+// 壁面に押し付けられた竜が連続で壁をラミング攻撃できる＝ブリーチの手段になる。
+// -----------------------------------------------------------------
+const _obstacleQueryBuf = [];
+const OBSTACLE_PUSH_GAP = 5;
+
+function applyObstaclePushout() {
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+
+    // 地形（岩山・湖）: 個数が少ないので全走査
+    for (const ob of terrainObstacles) {
+      pushBoidOutOfCircle(i, ob.wx, ob.wy, ob.radius + OBSTACLE_PUSH_GAP);
+    }
+
+    // 城壁セグメント: 建物空間ハッシュから近傍のみ
+    buildingGridQuery(px[i], py[i], _obstacleQueryBuf);
+    for (const sIdx of _obstacleQueryBuf) {
+      const s = settlements[sIdx];
+      if (!s || s.fallen || !s._isWall) continue;
+      pushBoidOutOfCircle(i, s.wx, s.wy, s.radius + OBSTACLE_PUSH_GAP);
+    }
+  }
+}
+
+/** 個体 i を円 (cx,cy,minDist) の外側へ押し出し、内向き速度成分を殺してスライドさせる。 */
+function pushBoidOutOfCircle(i, cx, cy, minDist) {
+  const dx = px[i] - cx;
+  const dy = py[i] - cy;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= minDist * minDist || d2 === 0) return;
+  const d  = Math.sqrt(d2);
+  const nx = dx / d;
+  const ny = dy / d;
+  px[i] = cx + nx * minDist;
+  py[i] = cy + ny * minDist;
+  // 法線方向の内向き速度を除去 → 壁面に沿って滑る（渦を巻く絵になる）
+  const vDotN = vx[i] * nx + vy[i] * ny;
+  if (vDotN < 0) {
+    vx[i] -= vDotN * nx;
+    vy[i] -= vDotN * ny;
+  }
+}
+
 // 巡航操舵: 指に到達したときの「直前進行方向」を保持する。
 // 指が静止している間はこの方向を維持して前進し続ける（停止しない）。
 let _cruiseVx = 0;
@@ -5391,8 +5727,9 @@ function updateHUDBuildings() {
   // 変更3: ボスHPをメインで表示し、小集落の残数を括弧で添える。
   // ボスが陥落済みならクリア状態なので "CLEARED" を表示する。
   const boss = settlements.find(s => s.isBoss);
-  const smallRemaining = settlements.filter(s => !s.isBoss && !s.fallen).length;
-  const smallTotal     = settlements.filter(s => !s.isBoss).length;
+  // v0.6-p3: 城壁は「残建物」に数えない（掃討対象ではなく攻略の障害物のため）
+  const smallRemaining = settlements.filter(s => !s.isBoss && !s._isWall && !s.fallen).length;
+  const smallTotal     = settlements.filter(s => !s.isBoss && !s._isWall).length;
 
   if (!boss) {
     hudBuildings.textContent = smallRemaining + "/" + smallTotal;
@@ -6003,6 +6340,7 @@ function tick() {
 
   if (gameState === "playing") {
     simStep(dt);
+    applyObstaclePushout();       // v0.6-p3: 城壁・地形の侵入不可
     updateCamera(dt);
     updateSettlementAttacks(dt);
     updateProjectiles(dt);
@@ -6024,6 +6362,7 @@ function tick() {
     updateParticles(dt);
   } else if (gameState === "stage-clear") {
     simStep(dt);
+    applyObstaclePushout();
     updateCamera(dt);
     updateParticles(dt);
     updateAppearEffects(dt);
