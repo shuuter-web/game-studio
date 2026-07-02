@@ -319,6 +319,7 @@
   <div class="label">FLOCK</div>
   <span id="h-alive">10</span> / <span id="h-max">100</span>
   <div id="h-level" style="color:#a0ecff;font-size:11px;margin-top:2px;">Lv.1</div>
+  <div id="h-weapon" style="color:#ff8c28;font-size:11px;margin-top:2px;">&#x1F525; 火竜</div>
 </div>
 
 <!-- 右下 HUD: 卵 + ステージ -->
@@ -378,7 +379,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.6.0-p1";
+const GAME_VERSION = "v0.6.0-p2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -2246,6 +2247,8 @@ function checkProjectileHitBoids(projIdx) {
 }
 
 function applyProjectileKnockback(boidIdx, projIdx) {
+  // v0.6-p2: 緋竜（MELEE）はノックバック無効（突っ込み続ける。仕様 §6.4）
+  if (flockWeapon === "melee") return;
   // 変更5: 種別ごとにノックバック強度を分岐する
   // catapult(kind=1): CATAPULT_KNOCKBACK_SPEED=220（強い。体感できる吹き飛び）
   // arrow  (kind=0): ARROW_KNOCKBACK_SPEED=60（弱い。ちょっと押される程度）
@@ -2296,17 +2299,14 @@ const BREATH_MAX_TARGETS = 3;
 // 多重照射の近傍上位選択に使う作業バッファ（毎フレーム使い回し）
 const _breathTargetBuf = [];
 
-function updateBreathAttacks(dt) {
-  if (gameState !== "playing") return;
-
-  breathTime += dt;
-  activeBreaths.length = 0;
-
+// v0.6-p2: BEAM武器の攻撃処理。updateWeaponAttacks から flockWeapon==="beam" のとき呼ばれる
+// （breathTime の加算と activeBreaths のクリアはディスパッチャ側で行う）。
+function updateBeamAttacks(dt) {
   // v0.6: 射程・威力・対象数は強化カードで伸びる
-  const effRange   = BREATH_RANGE * effRangeMult();
+  const effRange   = BREATH_RANGE * effWeaponRangeMult("beam");
   const BREATH_R2  = effRange * effRange;
   const maxTargets = Math.min(BREATH_MAX_TARGETS, effBeamTargets());
-  const damageThisFrame = BREATH_DAMAGE_PER_SEC * effBeamDmgMult() * dt;
+  const damageThisFrame = BREATH_DAMAGE_PER_SEC * effWeaponDmgMult("beam") * dt;
   // 射程延伸で 100px（グリッドセル）を超えたら近傍クエリの走査半径も広げる
   const cellRadius = Math.max(1, Math.ceil(effRange / BUILDING_GRID_CELL));
 
@@ -2406,12 +2406,16 @@ function updateCollisionAttacks(dt) {
       // --- 衝突発生 ---
 
       // 建物にダメージ（ブレスより大きい単発ダメージ）
-      s.hp -= COLLISION_DAMAGE;
+      // v0.6-p2: 緋竜（MELEE）は体当たりが主武装（威力約3倍・クールダウン短縮。仕様 §6.4）
+      const isMelee = flockWeapon === "melee";
+      s.hp -= isMelee
+        ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
+        : COLLISION_DAMAGE;
 
       // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）
       boidHitStopTimer[i]    = HITSTOP_DURATION;
       // クールダウンをセットして同じ建物への連続ヒットを防ぐ
-      boidCollisionCooldown[i] = COLLISION_COOLDOWN;
+      boidCollisionCooldown[i] = isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
 
       // 強めのパーティクル（破片が飛ぶ）
       spawnCollisionParticles(s.wx, s.wy);
@@ -2579,6 +2583,8 @@ function initBoids() {
   boidDowned            = new Uint8Array(MAX_BOIDS);
   boidDownTimer         = new Float32Array(MAX_BOIDS);
   boidReviveTimer       = new Float32Array(MAX_BOIDS);
+  // v0.6-p2: 射撃タイマー（BULLET/MISSILE共用）
+  boidFireTimer         = new Float32Array(MAX_BOIDS);
   // 尻尾角度履歴リングバッファ（TAIL_SEGS個前までの進行角度）
   boidAngleHistory      = new Float32Array(MAX_BOIDS * TAIL_SEGS);
 
@@ -2648,6 +2654,7 @@ function resetBoidsForStageStart() {
     boidDowned[i]            = 0;
     boidDownTimer[i]         = 0;
     boidReviveTimer[i]       = 0;
+    boidFireTimer[i]         = Math.random() * BULLET_INTERVAL; // v0.6-p2: 射撃をばらけさせる
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = 0;
   }
@@ -2855,9 +2862,21 @@ const STRINGS = {
     magnet:    { name: "吸引域",   desc: "XP吸引範囲 +40%" },
     brood:     { name: "大繁殖",   desc: "群れ上限 +25、竜 +5" },
     resonance: { name: "竜鱗共鳴", desc: "被ダメージ -12%" },
-    beamdmg:   { name: "火勢",     desc: "ブレス威力 +15%" },
-    range:     { name: "射程延伸", desc: "ブレス射程 +15%" },
-    multibeam: { name: "多重照射", desc: "同時照射対象 +1" },
+    dmg_beam:      { name: "火勢",     desc: "ブレス威力 +15%" },
+    dmg_bullet:    { name: "氷威",     desc: "氷弾威力 +15%" },
+    dmg_missile:   { name: "影炸",     desc: "ミサイル威力 +15%" },
+    dmg_melee:     { name: "剛爪",     desc: "体当たり威力 +15%" },
+    range_beam:    { name: "射程延伸", desc: "ブレス射程 +15%" },
+    range_bullet:  { name: "射程延伸", desc: "氷弾射程 +15%" },
+    range_missile: { name: "射程延伸", desc: "ロック距離 +15%" },
+    multibeam:     { name: "多重照射", desc: "同時照射対象 +1" },
+    rate_bullet:   { name: "連射機構", desc: "発射間隔 -18%" },
+    rate_missile:  { name: "連射機構", desc: "発射間隔 -18%" },
+    pierce:        { name: "貫通弾",   desc: "貫通数 +1" },
+    blast:         { name: "広域炸裂", desc: "爆発範囲 +30%" },
+    evo_bullet:  { name: "氷竜の血", desc: "全竜が氷竜（弾丸）に進化" },
+    evo_missile: { name: "影竜の血", desc: "全竜が影竜（ミサイル）に進化" },
+    evo_melee:   { name: "緋竜の血", desc: "全竜が緋竜（近接）に進化" },
     orb:       { name: "竜玉",     desc: "XP +50" },
   },
 };
@@ -2882,17 +2901,34 @@ let runMaxFlock   = BOIDS_INITIAL;
 let runTotalXp    = 0;
 
 // ---- 強化カード定義 ----
-// rarity: common(重み10) / rare(重み4)。orb はプール枯渇時の補充専用。
+// rarity: common(重み10) / rare(重み4) / star(重み3・進化)。orb はプール枯渇時の補充専用。
+// weapon: 指定があると「現在の武器タイプが一致するときのみ」出現（仕様 §5.4-B）。
+// targetWeapon: ★進化カード。現在と同タイプは出現せず、minLevel 以上で解禁（§5.4-C）。
 const CARD_DEFS = [
+  // A. 群れ強化
   { id: "scale",     icon: "\u{1F6E1}️", rarity: "common", max: 4 },
   { id: "wind",      icon: "\u{1F4A8}",       rarity: "common", max: 3 },
   { id: "tide",      icon: "\u{1F4A7}",       rarity: "common", max: 3 },
   { id: "magnet",    icon: "✨",           rarity: "common", max: 2 },
   { id: "brood",     icon: "\u{1F95A}",       rarity: "rare",   max: 2 },
   { id: "resonance", icon: "\u{1F52E}",       rarity: "rare",   max: 3 },
-  { id: "beamdmg",   icon: "\u{1F525}",       rarity: "common", max: 4 },
-  { id: "range",     icon: "\u{1F4CF}",       rarity: "common", max: 3 },
-  { id: "multibeam", icon: "\u{1F3AF}",       rarity: "rare",   max: 2 },
+  // B. 武器強化（現在の武器タイプにのみ出現）
+  { id: "dmg_beam",      icon: "\u{1F525}", rarity: "common", max: 4, weapon: "beam" },
+  { id: "dmg_bullet",    icon: "❄️",     rarity: "common", max: 4, weapon: "bullet" },
+  { id: "dmg_missile",   icon: "\u{1F4A5}", rarity: "common", max: 4, weapon: "missile" },
+  { id: "dmg_melee",     icon: "\u{1F43E}", rarity: "common", max: 4, weapon: "melee" },
+  { id: "range_beam",    icon: "\u{1F4CF}", rarity: "common", max: 3, weapon: "beam" },
+  { id: "range_bullet",  icon: "\u{1F4CF}", rarity: "common", max: 3, weapon: "bullet" },
+  { id: "range_missile", icon: "\u{1F4CF}", rarity: "common", max: 3, weapon: "missile" },
+  { id: "multibeam",     icon: "\u{1F3AF}", rarity: "rare",   max: 2, weapon: "beam" },
+  { id: "rate_bullet",   icon: "⚙️",     rarity: "rare",   max: 3, weapon: "bullet" },
+  { id: "rate_missile",  icon: "⚙️",     rarity: "rare",   max: 3, weapon: "missile" },
+  { id: "pierce",        icon: "\u{1F3F9}", rarity: "rare",   max: 3, weapon: "bullet" },
+  { id: "blast",         icon: "\u{1F4A5}", rarity: "rare",   max: 3, weapon: "missile" },
+  // C. 進化（★・群れ100%全転換。何度でも引き直せる）
+  { id: "evo_bullet",  icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "bullet",  minLevel: 3 },
+  { id: "evo_missile", icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "missile", minLevel: 4 },
+  { id: "evo_melee",   icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "melee",   minLevel: 3 },
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
 const CARD_RARITY_WEIGHT = { common: 10, rare: 4, star: 3 };
@@ -2906,10 +2942,15 @@ function effReviveMult()    { return Math.pow(0.85, upCount("tide")); }
 function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * upCount("magnet")); }
 function effFlockCap()      { return Math.min(MAX_BOIDS, BASE_FLOCK_CAP + 25 * upCount("brood")); }
 function effDmgTakenMult()  { return Math.pow(0.88, upCount("resonance")); }
-function effBeamDmgMult()   { return 1 + 0.15 * upCount("beamdmg"); }
-function effRangeMult()     { return 1 + 0.15 * upCount("range"); }
+// 武器別強化はタイプ別に保持される（転換しても消えず、そのタイプに戻れば効く。§5.4-C）
+function effWeaponDmgMult(weapon)   { return 1 + 0.15 * upCount("dmg_" + weapon); }
+function effWeaponRangeMult(weapon) { return 1 + 0.15 * upCount("range_" + weapon); }
+function effFireIntervalMult(weapon){ return Math.pow(0.82, upCount("rate_" + weapon)); }
 function effBeamTargets()   { return 1 + upCount("multibeam"); }
-function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult(); }
+function effBulletPierce()  { return 1 + upCount("pierce"); }
+function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
+// v0.6-p2: 緋竜（MELEE）は個体HP +50%（仕様 §6.4）
+function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1); }
 
 // ---- カード取得時の即時効果（倍率系は eff* で都度参照するため不要）----
 function applyCardImmediate(cardId) {
@@ -2928,6 +2969,12 @@ function applyCardImmediate(cardId) {
       const r     = 30 + Math.random() * 50;
       spawnBoidAtEgg(centroid.x + Math.cos(angle) * r, centroid.y + Math.sin(angle) * r);
     }
+  } else if (cardId === "evo_bullet") {
+    convertFlock("bullet");
+  } else if (cardId === "evo_missile") {
+    convertFlock("missile");
+  } else if (cardId === "evo_melee") {
+    convertFlock("melee");
   } else if (cardId === "orb") {
     addXp(50);
   }
@@ -2951,6 +2998,11 @@ function resetProgression() {
   playerXp     = 0;
   pendingCards = 0;
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
+  // v0.6-p2: 武器も BEAM に戻る（進化はステージ内でのみ有効）
+  flockWeapon = "beam";
+  if (boidFireTimer) boidFireTimer.fill(0);
+  clearDragonProjectiles();
+  updateHUDWeapon();
   updateXpHud();
 }
 
@@ -3110,7 +3162,17 @@ function maybeShowLevelUp() {
 
 /** 取得可能なカードから重み付きで3枚（重複なし）選んでDOMに並べる。 */
 function buildLevelUpCards() {
-  const pool = CARD_DEFS.filter(def => upCount(def.id) < def.max);
+  const pool = CARD_DEFS.filter(def => {
+    if (upCount(def.id) >= def.max) return false;
+    // 武器強化カードは現在の武器タイプにのみ出現
+    if (def.weapon && def.weapon !== flockWeapon) return false;
+    // ★進化: 現在と同タイプは出さない・解禁レベル未満は出さない
+    if (def.targetWeapon) {
+      if (def.targetWeapon === flockWeapon) return false;
+      if (playerLevel < def.minLevel) return false;
+    }
+    return true;
+  });
 
   const picks = [];
   const candidates = pool.slice();
@@ -3123,8 +3185,15 @@ function buildLevelUpCards() {
       roll -= CARD_RARITY_WEIGHT[candidates[i].rarity];
       if (roll <= 0) { chosenIdx = i; break; }
     }
-    picks.push(candidates[chosenIdx]);
+    const chosen = candidates[chosenIdx];
+    picks.push(chosen);
     candidates.splice(chosenIdx, 1);
+    // ★は3枚中1枚まで（仕様 §5.5）: 1枚選ばれたら残りの★を候補から外す
+    if (chosen.rarity === "star") {
+      for (let i = candidates.length - 1; i >= 0; i--) {
+        if (candidates[i].rarity === "star") candidates.splice(i, 1);
+      }
+    }
   }
   // プールが痩せた場合は竜玉（XP+50）で補充（最低1枚は必ず出す）
   if (picks.length < 3) picks.push(CARD_ORB);
@@ -3179,6 +3248,392 @@ function updateXpHud() {
 
 function updateHUDLevel() {
   hudLevelEl.textContent = "Lv." + playerLevel;
+}
+
+// =================================================================
+// v0.6-p2: 武器タイプシステム（BEAM / BULLET / MISSILE / MELEE）
+// 群れは常に単一タイプ（★進化で100%全転換。仕様 §5.4-C / §6）
+// =================================================================
+
+// 群れ全体の現在武器。ステージ開始時は必ず BEAM（resetProgression で戻る）
+let flockWeapon = "beam";
+
+// 武器タイプ → スプライト属性（既存の fire/ice/shadow パレットを充当。
+// 緋竜=crimson は fire 画像の赤強調ティント。仕様 §5.4-C）
+const WEAPON_ELEMENT = { beam: "fire", bullet: "ice", missile: "shadow", melee: "crimson" };
+
+// HUD表示用ラベルと色
+const WEAPON_HUD = {
+  beam:    { label: "\u{1F525} 火竜", color: "#ff8c28" },
+  bullet:  { label: "❄️ 氷竜",    color: "#a0e8ff" },
+  missile: { label: "\u{1F311} 影竜", color: "#c080ff" },
+  melee:   { label: "\u{1F43E} 緋竜", color: "#ff4030" },
+};
+
+// 転換時のフラッシュ色（進化の瞬間を派手に）
+const WEAPON_FLASH_COLOR = {
+  bullet:  "rgba(160,232,255,0.6)",
+  missile: "rgba(192,128,255,0.6)",
+  melee:   "rgba(255,64,48,0.6)",
+};
+
+// ---- BULLET（氷竜・直進弾丸）基礎性能（仕様 §6.2）----
+const BULLET_RANGE      = 220;  // 射出可能距離（px）
+const BULLET_SPEED      = 400;  // 弾速（px/s・直進非追尾）
+const BULLET_DAMAGE     = 6;    // 単発ダメージ
+const BULLET_INTERVAL   = 1.2;  // 発射間隔（秒）
+const BULLET_MAX_TRAVEL = 300;  // 弾の最大飛距離（px）
+
+// ---- MISSILE（影竜・加速ホーミング）基礎性能（仕様 §6.3）----
+const MISSILE_RANGE      = 300;   // ロックオン距離（px）
+const MISSILE_DAMAGE     = 15;    // 直撃ダメージ
+const MISSILE_INTERVAL   = 2.5;   // 発射間隔（秒）
+const MISSILE_INIT_SPEED = 60;    // 初速（px/s）
+const MISSILE_MAX_SPEED  = 500;   // 最高速（px/s）
+const MISSILE_ACCEL      = 600;   // 加速度（px/s²）
+const MISSILE_TURN_RATE  = 3.5;   // 旋回率（rad/s）
+const MISSILE_AOE        = 30;    // 爆発半径（px）
+const MISSILE_AOE_FACTOR = 0.5;   // 爆発範囲ダメージ係数
+const MISSILE_LIFETIME   = 4.0;   // 追尾失敗時の寿命（秒）
+
+// ---- MELEE（緋竜・直接攻撃特化）基礎性能（仕様 §6.4）----
+const MELEE_COLLISION_DAMAGE   = 25;    // 体当たりダメージ（通常8の約3倍強）
+const MELEE_COLLISION_COOLDOWN = 0.35;  // 体当たりクールダウン（通常0.5より短い）
+const MELEE_HP_MULT            = 1.5;   // 個体最大HP倍率
+
+// 各個体の射撃タイマー（BULLET/MISSILE共用。initBoids で確保）
+let boidFireTimer = null;
+
+/**
+ * ★進化: 群れ全体を weapon タイプへ100%転換する。
+ * - HP上限の変化（melee ±50%）は現在HPも比率維持で追従
+ * - 全個体の位置に閃光パーティクル＋画面フラッシュで「一斉に色が変わる」を演出
+ */
+function convertFlock(weapon) {
+  const oldMax = effBoidMaxHp();
+  flockWeapon = weapon;
+  const newMax = effBoidMaxHp();
+  const ratio  = newMax / oldMax;
+
+  for (let i = 0; i < N; i++) {
+    if (!boidDead[i]) boidHp[i] = Math.min(newMax, boidHp[i] * ratio);
+    // 射撃タイマーをばらけさせて一斉射撃の不自然さを防ぐ
+    if (boidFireTimer) boidFireTimer[i] = Math.random() * currentFireInterval();
+  }
+
+  // 進化演出: 群れの一部個体に出現FXリング＋強フラッシュ＋強振動
+  let fxCount = 0;
+  for (let i = 0; i < N && fxCount < 12; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    if (Math.random() < 0.4) { spawnDragonAppearEffect(px[i], py[i]); fxCount++; }
+  }
+  triggerFlash(WEAPON_FLASH_COLOR[weapon] ?? "rgba(255,255,255,0.5)", 0.35);
+  hapticPulse(120);
+  updateHUDWeapon();
+}
+
+function currentFireInterval() {
+  if (flockWeapon === "bullet")  return BULLET_INTERVAL * effFireIntervalMult("bullet");
+  if (flockWeapon === "missile") return MISSILE_INTERVAL * effFireIntervalMult("missile");
+  return 1.0;
+}
+
+const hudWeaponEl = document.getElementById("h-weapon");
+function updateHUDWeapon() {
+  const info = WEAPON_HUD[flockWeapon];
+  hudWeaponEl.textContent   = info.label;
+  hudWeaponEl.style.color   = info.color;
+}
+
+/** 建物へのダメージ適用＋陥落処理の共通ヘルパー（弾丸・ミサイル用） */
+function damageBuilding(settlementIdx, damage) {
+  const settlement = settlements[settlementIdx];
+  if (!settlement || settlement.fallen) return;
+  settlement.hp -= damage;
+  if (settlement.hp <= 0 && !settlement.fallen) {
+    settlementFall(settlementIdx);
+    buildingLayerDirty = true;
+  }
+}
+
+// -----------------------------------------------------------------
+// 自軍投射物プール（BULLET弾・MISSILE弾。敵投射物プールとは独立）
+// -----------------------------------------------------------------
+const MAX_DPROJ = 300;
+const dprojX       = new Float32Array(MAX_DPROJ);
+const dprojY       = new Float32Array(MAX_DPROJ);
+const dprojVx      = new Float32Array(MAX_DPROJ);
+const dprojVy      = new Float32Array(MAX_DPROJ);
+const dprojStartX  = new Float32Array(MAX_DPROJ);
+const dprojStartY  = new Float32Array(MAX_DPROJ);
+const dprojAge     = new Float32Array(MAX_DPROJ);
+const dprojActive  = new Uint8Array(MAX_DPROJ);
+const dprojKind    = new Uint8Array(MAX_DPROJ);   // 0=bullet, 1=missile
+const dprojHits    = new Uint8Array(MAX_DPROJ);   // bullet: 残り貫通ヒット数
+const dprojLastHit = new Int32Array(MAX_DPROJ);   // bullet: 直前ヒット建物（連続多段ヒット防止）
+const dprojTarget  = new Int32Array(MAX_DPROJ);   // missile: 追尾対象の建物インデックス
+
+function clearDragonProjectiles() { dprojActive.fill(0); }
+
+function spawnDragonProjectile(fromX, fromY, kind, angle, targetIdx) {
+  let slot = -1;
+  for (let i = 0; i < MAX_DPROJ; i++) {
+    if (!dprojActive[i]) { slot = i; break; }
+  }
+  if (slot < 0) return;
+
+  dprojActive[slot]  = 1;
+  dprojX[slot]       = fromX;
+  dprojY[slot]       = fromY;
+  dprojStartX[slot]  = fromX;
+  dprojStartY[slot]  = fromY;
+  dprojAge[slot]     = 0;
+  dprojKind[slot]    = kind;
+  dprojLastHit[slot] = -1;
+  dprojTarget[slot]  = targetIdx;
+
+  if (kind === 0) {
+    dprojVx[slot]  = Math.cos(angle) * BULLET_SPEED;
+    dprojVy[slot]  = Math.sin(angle) * BULLET_SPEED;
+    dprojHits[slot] = Math.min(255, effBulletPierce());
+  } else {
+    // ミサイルは初速が遅く、発射方向にゆらぎ（±0.8rad）を持たせてから加速追尾する
+    const wobbled = angle + (Math.random() - 0.5) * 1.6;
+    dprojVx[slot]  = Math.cos(wobbled) * MISSILE_INIT_SPEED;
+    dprojVy[slot]  = Math.sin(wobbled) * MISSILE_INIT_SPEED;
+    dprojHits[slot] = 1;
+  }
+}
+
+// 近傍建物クエリ用の作業バッファ（自軍弾専用。既存バッファと分離して干渉を防ぐ）
+const _dprojNeighbourBuf = [];
+
+/** 指定座標から最も近い未陥落の建物を探す（cellRadius セル走査）。 */
+function findNearestBuilding(wx, wy, maxDist, cellRadius) {
+  buildingGridQueryRadius(wx, wy, cellRadius, _dprojNeighbourBuf);
+  let best = -1;
+  let bestD2 = maxDist * maxDist;
+  for (const sIdx of _dprojNeighbourBuf) {
+    const s = settlements[sIdx];
+    if (!s || s.fallen) continue;
+    const dx = s.wx - wx;
+    const dy = s.wy - wy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) { bestD2 = d2; best = sIdx; }
+  }
+  return best;
+}
+
+/** BULLET: 射程内の最近建物へ直進弾を放つ（各個体、間隔 1.2s×連射機構） */
+function updateBulletAttacks(dt) {
+  const range      = BULLET_RANGE * effWeaponRangeMult("bullet");
+  const interval   = BULLET_INTERVAL * effFireIntervalMult("bullet");
+  const cellRadius = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
+
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    boidFireTimer[i] -= dt;
+    if (boidFireTimer[i] > 0) continue;
+
+    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius);
+    if (targetIdx < 0) continue; // 射程内に標的なし: タイマーは0のまま待機（見つけ次第撃つ）
+
+    boidFireTimer[i] = interval;
+    const target = settlements[targetIdx];
+    const angle  = Math.atan2(target.wy - py[i], target.wx - px[i]);
+    spawnDragonProjectile(px[i], py[i], 0, angle, targetIdx);
+  }
+}
+
+/** MISSILE: ロック距離内の最近建物に向けて加速ホーミング弾を放つ（間隔 2.5s×連射機構） */
+function updateMissileAttacks(dt) {
+  const range      = MISSILE_RANGE * effWeaponRangeMult("missile");
+  const interval   = MISSILE_INTERVAL * effFireIntervalMult("missile");
+  const cellRadius = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
+
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    boidFireTimer[i] -= dt;
+    if (boidFireTimer[i] > 0) continue;
+
+    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius);
+    if (targetIdx < 0) continue;
+
+    boidFireTimer[i] = interval;
+    // 発射方向は現在の進行方向（そこからゆらいで加速する軌道が気持ちよさの本体）
+    const angle = Math.atan2(vy[i], vx[i]);
+    spawnDragonProjectile(px[i], py[i], 1, angle, targetIdx);
+  }
+}
+
+/** 自軍投射物の移動・追尾・建物ヒット処理 */
+function updateDragonProjectiles(dt) {
+  for (let i = 0; i < MAX_DPROJ; i++) {
+    if (!dprojActive[i]) continue;
+    dprojAge[i] += dt;
+
+    if (dprojKind[i] === 1) {
+      // ---- ミサイル: 加速＋旋回追尾 ----
+      let targetIdx = dprojTarget[i];
+      let target = (targetIdx >= 0) ? settlements[targetIdx] : null;
+      if (!target || target.fallen) {
+        // 対象消失: 現在位置周辺で再ロック（見つからなければ直進して寿命切れ）
+        targetIdx = findNearestBuilding(dprojX[i], dprojY[i], 250, 3);
+        dprojTarget[i] = targetIdx;
+        target = (targetIdx >= 0) ? settlements[targetIdx] : null;
+      }
+
+      const speed = Math.min(
+        MISSILE_MAX_SPEED,
+        Math.sqrt(dprojVx[i] * dprojVx[i] + dprojVy[i] * dprojVy[i]) + MISSILE_ACCEL * dt,
+      );
+      let heading = Math.atan2(dprojVy[i], dprojVx[i]);
+      if (target) {
+        const desired = Math.atan2(target.wy - dprojY[i], target.wx - dprojX[i]);
+        let diff = desired - heading;
+        while (diff >  Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        const maxTurn = MISSILE_TURN_RATE * dt;
+        heading += Math.max(-maxTurn, Math.min(maxTurn, diff));
+      }
+      dprojVx[i] = Math.cos(heading) * speed;
+      dprojVy[i] = Math.sin(heading) * speed;
+
+      if (dprojAge[i] > MISSILE_LIFETIME) { dprojActive[i] = 0; continue; }
+    } else {
+      // ---- 弾丸: 直進・飛距離上限 ----
+      const tdx = dprojX[i] - dprojStartX[i];
+      const tdy = dprojY[i] - dprojStartY[i];
+      if (tdx * tdx + tdy * tdy > BULLET_MAX_TRAVEL * BULLET_MAX_TRAVEL) {
+        dprojActive[i] = 0;
+        continue;
+      }
+    }
+
+    dprojX[i] += dprojVx[i] * dt;
+    dprojY[i] += dprojVy[i] * dt;
+
+    if (dprojX[i] < -50 || dprojX[i] > WORLD_W + 50 || dprojY[i] < -50 || dprojY[i] > WORLD_H + 50) {
+      dprojActive[i] = 0;
+      continue;
+    }
+
+    // ---- 建物ヒット判定 ----
+    buildingGridQuery(dprojX[i], dprojY[i], _dprojNeighbourBuf);
+    for (const sIdx of _dprojNeighbourBuf) {
+      const s = settlements[sIdx];
+      if (!s || s.fallen) continue;
+      if (dprojKind[i] === 0 && sIdx === dprojLastHit[i]) continue; // 同じ建物への多段ヒット防止
+      const hitR = s.radius + 3;
+      const dx = s.wx - dprojX[i];
+      const dy = s.wy - dprojY[i];
+      if (dx * dx + dy * dy > hitR * hitR) continue;
+
+      if (dprojKind[i] === 0) {
+        // 弾丸: ダメージ＋貫通消費
+        damageBuilding(sIdx, BULLET_DAMAGE * effWeaponDmgMult("bullet"));
+        spawnHitParticles(dprojX[i], dprojY[i]);
+        dprojLastHit[i] = sIdx;
+        dprojHits[i]--;
+        if (dprojHits[i] <= 0) { dprojActive[i] = 0; }
+        break;
+      } else {
+        // ミサイル: 直撃＋爆発範囲ダメージ
+        const dmg  = MISSILE_DAMAGE * effWeaponDmgMult("missile");
+        const aoeR = MISSILE_AOE * effMissileAoeMult();
+        damageBuilding(sIdx, dmg);
+        // 爆心周辺の他建物に範囲ダメージ
+        buildingGridQueryRadius(dprojX[i], dprojY[i], Math.max(1, Math.ceil(aoeR / BUILDING_GRID_CELL)), _dprojNeighbourBuf);
+        for (const aIdx of _dprojNeighbourBuf) {
+          if (aIdx === sIdx) continue;
+          const a = settlements[aIdx];
+          if (!a || a.fallen) continue;
+          const adx = a.wx - dprojX[i];
+          const ady = a.wy - dprojY[i];
+          if (adx * adx + ady * ady < (aoeR + a.radius) * (aoeR + a.radius)) {
+            damageBuilding(aIdx, dmg * MISSILE_AOE_FACTOR);
+          }
+        }
+        spawnCollisionParticles(dprojX[i], dprojY[i]);
+        hapticPulse(12);
+        dprojActive[i] = 0;
+        break;
+      }
+    }
+  }
+}
+
+/** 自軍投射物の描画。カメラ変換内（ワールド座標系）で呼ぶこと。 */
+function drawDragonProjectiles() {
+  ctx.save();
+  for (let i = 0; i < MAX_DPROJ; i++) {
+    if (!dprojActive[i]) continue;
+
+    // ビューポートカリング
+    const sx = (dprojX[i] - cam.x) * cam.scale + viewW * 0.5;
+    const sy = (dprojY[i] - cam.y) * cam.scale + viewH * 0.5;
+    if (sx < -40 || sx > viewW + 40 || sy < -40 || sy > viewH + 40) continue;
+
+    const speed = Math.sqrt(dprojVx[i] * dprojVx[i] + dprojVy[i] * dprojVy[i]) || 1;
+    const nx = dprojVx[i] / speed;
+    const ny = dprojVy[i] / speed;
+
+    if (dprojKind[i] === 0) {
+      // 弾丸: 氷色の細長い光条（進行方向に伸びる）
+      const len = 9;
+      ctx.strokeStyle = "rgba(160,232,255,0.95)";
+      ctx.lineWidth   = 2.2;
+      ctx.lineCap     = "round";
+      ctx.beginPath();
+      ctx.moveTo(dprojX[i] - nx * len, dprojY[i] - ny * len);
+      ctx.lineTo(dprojX[i], dprojY[i]);
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(dprojX[i], dprojY[i], 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // ミサイル: 影紫の弾頭＋速度に応じて伸びる排気トレイル
+      const trailLen = 6 + (speed / MISSILE_MAX_SPEED) * 16;
+      ctx.strokeStyle = "rgba(192,128,255,0.55)";
+      ctx.lineWidth   = 2.8;
+      ctx.lineCap     = "round";
+      ctx.beginPath();
+      ctx.moveTo(dprojX[i] - nx * trailLen, dprojY[i] - ny * trailLen);
+      ctx.lineTo(dprojX[i], dprojY[i]);
+      ctx.stroke();
+      ctx.fillStyle = "#c080ff";
+      ctx.beginPath();
+      ctx.arc(dprojX[i], dprojY[i], 3.0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.beginPath();
+      ctx.arc(dprojX[i], dprojY[i], 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+/**
+ * 武器攻撃のディスパッチャ。tick の playing 分岐から毎フレーム呼ぶ。
+ * breathTime（羽ばたき・ジェム明滅などの共通アニメ時計）もここで進める。
+ */
+function updateWeaponAttacks(dt) {
+  if (gameState !== "playing") return;
+  breathTime += dt;
+  activeBreaths.length = 0;
+
+  if (flockWeapon === "beam") {
+    updateBeamAttacks(dt);
+  } else if (flockWeapon === "bullet") {
+    updateBulletAttacks(dt);
+  } else if (flockWeapon === "missile") {
+    updateMissileAttacks(dt);
+  }
+  // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
+
+  updateDragonProjectiles(dt);
 }
 
 // -----------------------------------------------------------------
@@ -4168,8 +4623,9 @@ function render(now) {
 
   drawEggBearerMarkers(now);
   drawEggs();
-  drawXpGems();          // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
+  drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
   drawBreathAttacks(now);
+  drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
   drawBoids();
   drawProjectiles();
   drawParticles();
@@ -4488,8 +4944,10 @@ function drawBoids() {
   const spriteDpr     = Math.min(window.devicePixelRatio || 1, 2);
   const spritePx      = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
   const halfLogical   = DRAGON_SPRITE_LOGICAL / 2;
-  const sprites       = dragonSprites["fire"]; // 現在は火属性のみ
-  const palette       = DRAGON_ELEMENT_COLORS.fire;
+  // v0.6-p2: 現在の武器タイプに対応する属性スプライト＋パレット（全転換方式）
+  const element       = WEAPON_ELEMENT[flockWeapon] ?? "fire";
+  const sprites       = dragonSprites[element] ?? dragonSprites["fire"];
+  const palette       = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
   if (!sprites || sprites.length === 0) return;
@@ -4983,6 +5441,8 @@ const DRAGON_ELEMENT_COLORS = {
   fire:   { body: "rgba(255, 140, 40, 1.0)",  wing: "rgba(190, 60, 50, 1.0)",   rim: "rgba(140, 30, 20, 0.0)" },
   ice:    { body: "rgba(180, 240, 255, 1.0)", wing: "rgba(140, 220, 255, 1.0)", rim: "rgba(100, 180, 240, 0.0)" },
   shadow: { body: "rgba(150, 80, 210, 1.0)",  wing: "rgba(90, 40, 150, 1.0)",   rim: "rgba(50, 20, 90, 0.0)" },
+  // v0.6-p2: 緋竜（MELEE）。fire画像を赤強調ティントして使う（renderDragonFrame参照）
+  crimson: { body: "rgba(255, 60, 40, 1.0)",  wing: "rgba(180, 20, 20, 1.0)",   rim: "rgba(100, 10, 10, 0.0)" },
 };
 
 // プリレンダ設定
@@ -5208,7 +5668,9 @@ function drawFireDragonBodyAndWings(flapFactor, half, scale, c) {
  * @returns {HTMLCanvasElement}
  */
 function renderDragonFrame(element, wingAngle, spritePx) {
-  const isFire = element === "fire";
+  // v0.6-p2: crimson（緋竜）は fire の胴体・翼画像を赤強調ティントで流用する
+  const isCrimson = element === "crimson";
+  const isFire = element === "fire" || isCrimson;
   const img = isFire ? dragonFireImages.body : dragonImages[element];
   const wingImgReady = isFire ? dragonFireImages.wing : true;
   if (!dragonImagesLoaded || !img || !wingImgReady) {
@@ -5259,6 +5721,17 @@ function renderDragonFrame(element, wingAngle, spritePx) {
   }
 
   c.restore();
+
+  // v0.6-p2: crimson は描画済みピクセルにのみ赤を重ねて高彩度化する
+  // （source-atop は透明部を汚さないため輪郭はそのまま保たれる）
+  if (isCrimson) {
+    c.save();
+    c.globalCompositeOperation = "source-atop";
+    c.fillStyle = "rgba(255, 30, 20, 0.45)";
+    c.fillRect(0, 0, spritePx, spritePx);
+    c.restore();
+  }
+
   return oc;
 }
 
@@ -5533,8 +6006,8 @@ function tick() {
     updateCamera(dt);
     updateSettlementAttacks(dt);
     updateProjectiles(dt);
-    updateBreathAttacks(dt);      // ブレス攻撃（レーザー照射）
-    updateCollisionAttacks(dt);   // 変更2: 直接衝突ダメージ＋ヒットストップ
+    updateWeaponAttacks(dt);      // v0.6-p2: 武器ディスパッチ（BEAM/BULLET/MISSILE）
+    updateCollisionAttacks(dt);   // 変更2: 直接衝突ダメージ＋ヒットストップ（MELEEは威力増）
     updateDeathTimers(dt);
     updateParticles(dt);
     updateAppearEffects(dt);      // 変更2: 竜出現エフェクト更新
