@@ -59,6 +59,10 @@ GDD化の前段。「お題1つ → 種10件 → 採用2件」のバッチで回
 
 - 採用・保留の種は `ideas/seeds/PS-XXX.md` に保存（テンプレ `ideas/seeds/_template.md`）。
 - **発散した全種（採否前・不採用含む）は `ideas/seeds/_raw-seeds-log.md` に必ず記録**（練習回も含め蓄積し、月次で見返す）。
+- **producer が段落レベルで詳述した案（本命・対抗・次点として個別に論じた案）は、判定未実施でも
+  `ideas/seeds/PS-XXX.md` にフル記入で保存する**（1行ログだけで終わらせない。`status: seed` で保存し、
+  `_raw-seeds-log.md` 側から `→ PS-0XX` でリンクする）。目安：一言要約を超えて複数文で
+  コアループ・フック・ヒキを説明した時点でファイル化対象。
 - `status` で生死を管理：seed → picked → promoted(GDD化) / dropped。
 - **採用後は GDD化より先に「最大の賭け」を最小プロトで潰す**。
 - 月次で `dropped` を見返し、市場が動いて化けた種を拾い直す。
