@@ -121,3 +121,24 @@ Conventional Commits 形式:
 - **エンジン非依存**: コアロジックはエンジンに依存しない層に置く
 - **ローカライズ前提**: 全UIは多言語対応を最初から想定
 - **データ駆動**: バランス調整がコード変更を伴わないようにする
+
+## プロトタイプ検証の既知の落とし穴（preview_* ツール）
+
+`prototypes/` の単一HTMLゲームを Claude Code のプレビューで検証するときの実証済みの罠。
+時間を溶かした実績があるので必ず先に読むこと。
+
+- **`preview_screenshot` は必ずタイムアウトする**。見た目検証は `preview_eval` でのピクセル解析
+  （オフスクリーンcanvasの `getImageData`）や状態検査で代替する
+- **プレビューでは canvas サイズが 0（viewH=0）** になり、画面座標に依存する入力ハンドラ
+  （UIゾーン判定など）が早期returnする。入力テストは `viewW/viewH` を実機相当（390/844）に
+  設定してから行うか、入力フラグ（`isDrawing` 等）を直接立ててロジックだけ検証する
+- **実行時FPSは計測不能**（バックグラウンドスロットリングで `fpsEma` 等が0〜数fpsに張り付く）。
+  性能judgeはコード構造（per-frameの計算量・描画呼び出し数）で行い、実測はユーザーの実機に委ねる
+- **`window.location.reload()` 直後の `preview_eval` はレースで旧コードを掴む**ことがある
+  （"Inspected target navigated or closed" エラー、または古い関数定義）。リロード後は
+  関数ソース（`fn.toString()`）に新コードの目印が含まれるか確認してから検証を始める
+- **構文チェックの正攻法**: `<script>` 内JSを **BOMなしUTF-8** で抽出して `node --check`。
+  PowerShell では `[System.IO.File]::WriteAllText($out, $js, (New-Object System.Text.UTF8Encoding($false)))`
+  を使う（`Out-File` はUTF-16になり文字化けで誤判定する）
+
+関連コマンド: デプロイ一式は `/deploy-dragon-tide`、画像アセット生成は `/gen-game-asset`（`.claude/commands/`）。
