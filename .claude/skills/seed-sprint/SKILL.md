@@ -1,6 +1,6 @@
 ---
 name: seed-sprint
-description: お題からPLAYSEED種を量産するSeed Sprintの一括実行（ブリーフ→idea-scout発散→producer評価→保存→コミット）。使い方: /seed-sprint <お題> [full]。fullを付けるとgreenlight-judgeのトライアングル判定まで回す。お題なしで呼ばれたらまずお題を聞く。
+description: お題からPLAYSEED種を量産するSeed Sprintの一括実行（ブリーフ→idea-scout発散→producer評価→保存→コミット）。ユーザーが「◯◯で案出しして」「◯◯を題材にゲーム案を」「次のお題は◯◯」などゲーム企画のアイディア出しを依頼したら、/seed-sprintと明示されなくても必ずこのスキルを使う。使い方: /seed-sprint <お題> [full]。fullを付けるとgreenlight-judgeのトライアングル判定まで回す。お題なしで呼ばれたらまずお題を聞く。
 ---
 
 # Seed Sprint 一括実行
