@@ -41,6 +41,7 @@
 ## アイディア量産ワークフロー（Seed Sprint）
 
 GDD化の前段。「お題1つ → 種10件 → 採用2件」のバッチで回す。1スプリント＝半日想定。
+**`/seed-sprint <お題> [full]` で一括実行できる**（`.claude/skills/seed-sprint/`。lite=発散〜保存、full=judge判定込み）。
 
 1. **お題設定**（producer）: テーマ・制約を1つ決める（例「親指1本で遊べるWebカジュアル」）。
    お題に**抽象語（可愛い／癒し／ヒキ／怖い 等）が含まれる場合は、発散前にその語を作業定義し直す**
@@ -73,7 +74,8 @@ GDD化の前段。「お題1つ → 種10件 → 採用2件」のバッチで回
 .
 ├── .claude/
 │   ├── agents/          # サブエージェント定義
-│   └── commands/        # カスタムスラッシュコマンド
+│   ├── commands/        # カスタムスラッシュコマンド
+│   └── skills/          # スキル（/seed-sprint 等のワークフロー手順書）
 ├── docs/
 │   ├── gdd/             # Game Design Documents
 │   ├── tdd/             # Technical Design Documents
