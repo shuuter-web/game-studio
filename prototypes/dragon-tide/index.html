@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.6.1";
+const GAME_VERSION = "v0.7.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -551,20 +551,31 @@ const CAPITAL_BOSS_MARGIN = CAPITAL_SMALL_OUTER + CAPITAL_SMALL_RADIUS + 80; // 
 // 火力: 発射間隔=小集落の約1/3、projectileCount 3〜5、弾速・ダメージ高め。
 // 投射ダメージはダウン/復帰モデルのまま（恒久喪失なし）。
 // -----------------------------------------------------------------
-const BOSS_BASE_HP = 150;          // ステージ1のボスHP（小集落8の約18倍≈育成コスト感）
-const BOSS_HP_STAGE_MULT = 1.4;    // ステージごとのHP増加係数（1→210, 2→294, 3→411, 4→576）
+// v0.7: ボスを「序盤は跳ね返される」強さへ大幅増強（Shooterプレイテスト）。
+// 育っていない群れが挑むと、強ノックバック弾＋ノヴァで物理的に押し返される。
+const BOSS_BASE_HP = 600;          // ステージ1のボスHP（旧150。開幕10体では歯が立たない）
+const BOSS_HP_STAGE_MULT = 1.4;    // ステージごとのHP増加係数（1→600, 2→840, 3→1176, 4→1646）
 const BOSS_RADIUS = 46;            // ボスの見た目半径（小集落10の4.6倍、一目でボスと分かる）
 const BOSS_ATTACK_RADIUS = 380;    // ボスの攻撃射程（小集落の2.5倍以上）
 
 // ボスの投射パラメータ（ステージ4 large より強い）
 const BOSS_FIRE_PARAMS = {
-  // projectileInterval = 小集落の約1/3。高い頻度で群れをダウンさせる圧力になる。
-  projectileInterval: 0.6,         // 0.6秒ごと × 後で×4倍ゲートあり → 実質2.4秒
-  projectileSpeed:    260,
-  projectileDamage:   2.0,         // BOID_MAX_HP=30 → 約15発でダウン（ただし×複数本）
-  projectileCount:    4,           // 4方向にファン展開で群れを散らす
+  projectileInterval: 0.6,         // ボスは interval をそのまま使う（高頻度）
+  projectileSpeed:    280,
+  projectileDamage:   3.0,         // BOID_MAX_HP=30 → 10発でダウン ×5本ファン
+  projectileCount:    5,           // 5方向にファン展開で群れを散らす
   projectileTracking: false,
 };
+
+// v0.7: ボス弾（kind=2）の跳ね返し。速度クランプで消えないよう「位置ごと押し戻す」
+const BOSS_SHOT_KNOCKBACK_DIST = 46;   // 被弾時の押し戻し距離（px）
+const BOSS_SHOT_MAX_RANGE      = 460;  // ボス弾の飛距離上限（射程380より広く）
+
+// v0.7: ボスノヴァ（周期的な反発衝撃波）。近づいた群れを面で弾き飛ばす
+const BOSS_NOVA_INTERVAL = 6.0;   // 発動間隔（秒）
+const BOSS_NOVA_RADIUS   = 260;   // 効果半径（px）
+const BOSS_NOVA_DAMAGE   = 2.5;   // ノヴァのダメージ
+const BOSS_NOVA_PUSH_MIN = 40;    // 最低押し戻し距離（px。中心に近いほど大きく飛ぶ）
 
 // ボスのHP計算（stageIndexは0始まり）
 function calcBossHp(stageIndex) {
@@ -1307,6 +1318,17 @@ function generateStageLayout(stageIndex) {
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
   const townCenters = placeTownCenters(config.townCount, boss.wx, boss.wy);
 
+  // v0.7: ボスに近い2〜3町を「要塞都市」に指定する（Shooterプレイテスト:
+  // ボス周辺にもっと強い都市が欲しい・強さが見た目で分かること）。
+  const fortifiedCount = stageIndex >= 2 ? 3 : 2;
+  const fortifiedSet = new Set(
+    townCenters
+      .map((c, idx) => ({ idx, d2: dist2(c.x, c.y, boss.wx, boss.wy) }))
+      .sort((a, b) => a.d2 - b.d2)
+      .slice(0, fortifiedCount)
+      .map(e => e.idx),
+  );
+
   const result = [];
   for (let t = 0; t < townCenters.length; t++) {
     const center = townCenters[t];
@@ -1318,6 +1340,7 @@ function generateStageLayout(stageIndex) {
       config,
       t,
     );
+    if (fortifiedSet.has(t)) applyTownFortification(townBuildings);
     for (const b of townBuildings) result.push(b);
   }
 
@@ -1400,6 +1423,26 @@ const STAGE_DIFFICULTY_BOOST = [
   { hp: 1.15, dmg: 1.10 },
   { hp: 1.30, dmg: 1.20 },
 ];
+
+// v0.7: 要塞都市の強化倍率（ボス近傍2〜3町に適用）
+const FORTIFIED_HP_MULT       = 2.2;
+const FORTIFIED_DMG_MULT      = 1.5;
+const FORTIFIED_INTERVAL_MULT = 0.7;   // 発射間隔短縮（撃ってくる頻度が上がる）
+
+/**
+ * 町の全建物を要塞化する。HP・火力を引き上げ、_fortified フラグで
+ * 描画側が「明らかに強そうな見た目」（黒鉄の輪郭＋深紅の軍旗）に切り替える。
+ */
+function applyTownFortification(townBuildings) {
+  for (const b of townBuildings) {
+    b._fortified = true;
+    b.maxHp = Math.round(b.maxHp * FORTIFIED_HP_MULT);
+    b.hp    = b.maxHp;
+    b.projectileDamage  *= FORTIFIED_DMG_MULT;
+    b.projectileInterval *= FORTIFIED_INTERVAL_MULT;
+    if (b._townMeta) b._townMeta._fortified = true;  // 道路描画で城郭リムを引く
+  }
+}
 
 /**
  * ボス集落を「ボス＋リング全体がマップ内に収まる」ワールド右寄り位置に配置する。
@@ -1697,38 +1740,55 @@ function generateWallRing(boss, stageIndex) {
 // v0.6-p4: 移動敵ユニット（動く要塞）— 遅い・硬い・高報酬（仕様 §7）
 // 追いかけっこにしない: 低速の巡回/行進のみ。騎士方陣だけ反応射程400px内で接近。
 // =================================================================
-const MOVER_STAGE_DEFS = [
-  // 石器: 巨獣の群像（マンモス隊）— 2点間往復、踏鳴らし衝撃波
-  {
-    name: "mammoth", hp: 120, speed: 20, xp: 60, eggDrop: 2, radius: 24,
+// v0.7: 全移動敵が攻撃的に（Shooterプレイテスト「序盤は逃げたくなる感じ」）。
+// 追跡反応距離内では群れの重心へ向かって進撃し、外では各自の経路を巡回する。
+const MOVER_DEFS = {
+  // 石器: 巨獣の群像（マンモス隊）— 踏鳴らし衝撃波（押し飛ばし付き）
+  mammoth: {
+    name: "mammoth", hp: 120, speed: 38, xp: 60, eggDrop: 2, radius: 24,
     color: "#a0703a", glowColor: "#d0a060", moveType: "pingpong",
-    attack: { type: "shockwave", interval: 3.0, radius: 100, damage: 2 },
+    attack: { type: "shockwave", interval: 2.2, radius: 120, damage: 3 },
   },
-  // 古代: 歩く神像（コロッサス）— 巡回、眼光ビーム
-  {
-    name: "colossus", hp: 250, speed: 15, xp: 100, eggDrop: 2, radius: 26,
+  // 古代: 歩く神像（コロッサス）— 眼光ビーム（高DPS持続照射）
+  colossus: {
+    name: "colossus", hp: 250, speed: 26, xp: 100, eggDrop: 2, radius: 26,
     color: "#c8a030", glowColor: "#ffe080", moveType: "patrol",
-    attack: { type: "beam", dps: 2.5, range: 200 },
+    attack: { type: "beam", dps: 4.0, range: 240 },
   },
-  // 中世: 騎士方陣 — 反応射程400px内でのみ低速行進で接近、矢の斉射
-  {
-    name: "knights", hp: 180, speed: 25, xp: 80, eggDrop: 2, radius: 22,
-    color: "#b0b8c8", glowColor: "#e8eef8", moveType: "approach",
-    attack: { type: "fan", interval: 2.5, count: 5, damage: 1, speed: 70, range: 400 },
+  // 中世: 騎士方陣 — 密度の高い矢の斉射
+  knights: {
+    name: "knights", hp: 180, speed: 48, xp: 80, eggDrop: 2, radius: 22,
+    color: "#b0b8c8", glowColor: "#e8eef8", moveType: "pingpong",
+    attack: { type: "fan", interval: 1.8, count: 7, damage: 1.2, speed: 75, range: 400 },
   },
-  // 近世: 陸上甲鉄艦 — 外周航路を周回、舷側砲（直交2方向に3連砲）
-  {
-    name: "ironclad", hp: 400, speed: 18, xp: 150, eggDrop: 3, radius: 30,
+  // 近世: 陸上甲鉄艦 — 舷側砲（高頻度の3連砲×2方向）
+  ironclad: {
+    name: "ironclad", hp: 400, speed: 30, xp: 150, eggDrop: 3, radius: 30,
     color: "#4a5a6a", glowColor: "#90b0d0", moveType: "loop",
-    attack: { type: "broadside", interval: 2.0, count: 3, damage: 2.5, speed: 90 },
+    attack: { type: "broadside", interval: 1.4, count: 3, damage: 2.5, speed: 90 },
   },
+  // v0.7新規（近世）: 爆撃気球 — 空を飛び（地形無視）、AoE爆弾を投下する
+  balloon: {
+    name: "balloon", hp: 150, speed: 24, xp: 120, eggDrop: 2, radius: 20,
+    color: "#907050", glowColor: "#e0b070", moveType: "patrol", flying: true,
+    attack: { type: "bomb", interval: 2.6, damage: 2.5, aoe: 44, speed: 55, range: 420 },
+  },
+};
+
+// ステージ別の出現構成。後半ほど種類と数が増える（Shooterプレイテスト「後半にバリエーション」）
+const MOVER_SPAWNS_BY_STAGE = [
+  [["mammoth", 1]],
+  [["colossus", 2]],
+  [["knights", 2], ["colossus", 1]],
+  [["ironclad", 2], ["knights", 2], ["balloon", 2]],
 ];
-// 出現数はステージ固定: 1 / 2 / 3 / 4 体（仕様 §7.1）
-const MOVER_COUNT_BY_STAGE = [1, 2, 3, 4];
-// 騎士方陣の反応射程（この距離内の群れにのみ行進で近づく）
-const KNIGHTS_REACTION_RANGE = 400;
+
+// 全移動敵共通の追跡反応距離（この距離内の群れへ進撃する）
+const MOVER_PURSUIT_RANGE = 650;
 // 移動敵の攻撃が作動する索敵距離（誰もいない空へ撃たない）
 const MOVER_ENGAGE_RANGE = 450;
+// マンモス踏鳴らしの押し飛ばし距離（px）
+const SHOCKWAVE_PUSH_DIST = 26;
 
 let movers = [];
 
@@ -1738,8 +1798,7 @@ const SHOCKWAVE_FX_DURATION = 0.5;
 
 /** ステージの移動敵を生成する。waypoint はボス要塞圏・スタート地点を避けて取る。 */
 function generateMovers(stageIndex, boss) {
-  const def    = MOVER_STAGE_DEFS[stageIndex];
-  const count  = MOVER_COUNT_BY_STAGE[stageIndex];
+  const spawns = MOVER_SPAWNS_BY_STAGE[stageIndex];
   const result = [];
 
   const bossClear2 = (WALL_OUTER_RING_RADIUS + 150) ** 2;
@@ -1754,7 +1813,18 @@ function generateMovers(stageIndex, boss) {
     return { x: WORLD_W * 0.5, y: WORLD_H * 0.5 };
   }
 
-  for (let k = 0; k < count; k++) {
+  for (const [defKey, count] of spawns) {
+    const def = MOVER_DEFS[defKey];
+    for (let k = 0; k < count; k++) {
+      result.push(makeMover(def, randPoint));
+    }
+  }
+  return result;
+}
+
+/** 移動敵1体を生成する（経路生成込み）。 */
+function makeMover(def, randPoint) {
+  {
     const waypoints = [];
     if (def.moveType === "loop") {
       // 外周航路: マップ縁に沿った6点の周回路
@@ -1770,7 +1840,7 @@ function generateMovers(stageIndex, boss) {
     } else if (def.moveType === "patrol") {
       for (let p = 0; p < 4; p++) waypoints.push(randPoint());
     } else {
-      // pingpong / approach: 2点間往復（600〜1200px 離す）
+      // pingpong: 2点間往復（600〜1200px 離す）
       const a = randPoint();
       let b = randPoint();
       for (let attempt = 0; attempt < 10; attempt++) {
@@ -1782,7 +1852,7 @@ function generateMovers(stageIndex, boss) {
     }
 
     const start = waypoints[Math.floor(Math.random() * waypoints.length)];
-    result.push({
+    return {
       def,
       hp: def.hp,
       maxHp: def.hp,
@@ -1796,9 +1866,8 @@ function generateMovers(stageIndex, boss) {
       attackTimer: Math.random() * 2.0,
       beamTargetIdx: -1,        // colossus の照射対象（描画用）
       alive: true,
-    });
+    };
   }
-  return result;
 }
 
 function updateMovers(dt) {
@@ -1813,24 +1882,23 @@ function updateMovers(dt) {
     const def = m.def;
 
     // ---- 移動 ----
+    // v0.7: 全移動敵が追跡型に。反応距離内に群れがいれば重心へ進撃、
+    // いなければ各自の経路（往復/巡回/外周）を回る。
     let targetX, targetY;
-    let usingApproach = false;
-    if (def.moveType === "approach") {
-      // 騎士方陣: 反応射程内に群れがいるときだけ重心へ行進
-      const centroid = calcFriendlyCentroid();
-      if (dist2(m.wx, m.wy, centroid.x, centroid.y) < KNIGHTS_REACTION_RANGE * KNIGHTS_REACTION_RANGE) {
-        targetX = centroid.x;
-        targetY = centroid.y;
-        usingApproach = true;
-      }
+    let pursuing = false;
+    const centroid = calcFriendlyCentroid();
+    if (dist2(m.wx, m.wy, centroid.x, centroid.y) < MOVER_PURSUIT_RANGE * MOVER_PURSUIT_RANGE) {
+      targetX = centroid.x;
+      targetY = centroid.y;
+      pursuing = true;
     }
-    if (!usingApproach) {
+    if (!pursuing) {
       const wp = m.waypoints[m.wpIdx];
       targetX = wp.x;
       targetY = wp.y;
       if (dist2(m.wx, m.wy, wp.x, wp.y) < 40 * 40) {
         // 到着 → 次のwaypointへ（pingpongは端で折り返し、他は周回）
-        if (def.moveType === "pingpong" || def.moveType === "approach") {
+        if (def.moveType === "pingpong") {
           if (m.wpIdx + m.wpDir < 0 || m.wpIdx + m.wpDir >= m.waypoints.length) m.wpDir *= -1;
           m.wpIdx += m.wpDir;
         } else {
@@ -1847,7 +1915,8 @@ function updateMovers(dt) {
     m.wx += m.headingX * def.speed * dt;
     m.wy += m.headingY * def.speed * dt;
 
-    // 地形（岩山・湖）は移動敵も回り込む（押し出しスライド）
+    // 地形（岩山・湖）は移動敵も回り込む（押し出しスライド）。飛行ユニットは無視
+    if (def.flying) { /* 気球は地形を飛び越える */ } else
     for (const ob of terrainObstacles) {
       const odx = m.wx - ob.wx;
       const ody = m.wy - ob.wy;
@@ -1885,15 +1954,20 @@ function updateMovers(dt) {
     m.attackTimer = atk.interval;
 
     if (atk.type === "shockwave") {
-      // マンモス隊: 踏鳴らし（半径内の全個体にダメージ＋リングFX）
+      // マンモス隊: 踏鳴らし（半径内の全個体にダメージ＋押し飛ばし＋リングFX）
       if (nearestD2 < (atk.radius + 60) * (atk.radius + 60)) {
         shockwaveFxList.push({ x: m.wx, y: m.wy, maxR: atk.radius, life: SHOCKWAVE_FX_DURATION });
         for (let i = 0; i < N; i++) {
           if (boidDead[i] || boidDowned[i]) continue;
           const sdx = px[i] - m.wx;
           const sdy = py[i] - m.wy;
-          if (sdx * sdx + sdy * sdy < atk.radius * atk.radius) {
+          const sd2 = sdx * sdx + sdy * sdy;
+          if (sd2 < atk.radius * atk.radius) {
             applyDamageToBoid(i, atk.damage);
+            // v0.7: 外向きに押し飛ばす（MELEEのノックバック無効は体当たり被弾用なので適用しない）
+            const sd = Math.sqrt(sd2) || 1;
+            px[i] += (sdx / sd) * SHOCKWAVE_PUSH_DIST;
+            py[i] += (sdy / sd) * SHOCKWAVE_PUSH_DIST;
           }
         }
         hapticPulse(25);
@@ -1918,8 +1992,73 @@ function updateMovers(dt) {
           spawnFanProjectileRaw(m.wx, m.wy, heading + side + k * 0.15, atk.speed, atk.damage, "#90b0d0", 1);
         }
       }
+    } else if (atk.type === "bomb") {
+      // v0.7 爆撃気球: 最寄りの竜めがけてAoE爆弾を投下（projectileAoe で着弾時に範囲被害）
+      if (nearestD2 < atk.range * atk.range) {
+        spawnProjectile(m.wx, m.wy, nearestIdx, atk.speed, atk.damage, "#e0b070", atk.aoe, false, 1);
+      } else {
+        m.attackTimer = 0.4;
+      }
     }
   }
+}
+
+// -----------------------------------------------------------------
+// v0.7: ボスノヴァ — ボスが周期的に放つ反発衝撃波。
+// 「序盤は跳ね返される」の本体: 育っていない群れはボスに張り付けない。
+// -----------------------------------------------------------------
+let bossSettlementIdx = -1;   // 現ステージのボス index（generateStageLayout 後に検索）
+let bossNovaTimer = BOSS_NOVA_INTERVAL;
+
+function cacheBossIndex() {
+  bossSettlementIdx = settlements.findIndex(s => s.isBoss);
+  bossNovaTimer = BOSS_NOVA_INTERVAL;
+}
+
+function updateBossNova(dt) {
+  if (bossSettlementIdx < 0) return;
+  const boss = settlements[bossSettlementIdx];
+  if (!boss || boss.fallen) return;
+
+  bossNovaTimer -= dt;
+  if (bossNovaTimer > 0) return;
+
+  // 半径内に有効個体がいるときだけ発動（無人の空に撃たない）
+  const r2 = BOSS_NOVA_RADIUS * BOSS_NOVA_RADIUS;
+  let anyInRange = false;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - boss.wx;
+    const dy = py[i] - boss.wy;
+    if (dx * dx + dy * dy < r2) { anyInRange = true; break; }
+  }
+  if (!anyInRange) { bossNovaTimer = 0.5; return; }  // 短い間隔で再チェック
+
+  bossNovaTimer = BOSS_NOVA_INTERVAL;
+  shockwaveFxList.push({
+    x: boss.wx, y: boss.wy, maxR: BOSS_NOVA_RADIUS,
+    life: SHOCKWAVE_FX_DURATION, color: boss._bossGlowColor ?? "#ff8800",
+  });
+
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - boss.wx;
+    const dy = py[i] - boss.wy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 >= r2) continue;
+    const d  = Math.sqrt(d2) || 1;
+    const nx = dx / d;
+    const ny = dy / d;
+    applyDamageToBoid(i, BOSS_NOVA_DAMAGE);
+    // 中心に近いほど強く弾き飛ばす（位置変位＋外向き速度）
+    const pushDist = BOSS_NOVA_PUSH_MIN + (1 - d / BOSS_NOVA_RADIUS) * 90;
+    px[i] += nx * pushDist;
+    py[i] += ny * pushDist;
+    vx[i] = nx * BASE_CFG.maxSpeed;
+    vy[i] = ny * BASE_CFG.maxSpeed;
+  }
+  triggerFlash("rgba(255,140,40,0.18)", 0.15);
+  hapticPulse(60);
 }
 
 /** 移動敵へのダメージ適用。倒したらXPジェム＋卵＋演出。 */
@@ -2033,6 +2172,32 @@ function drawMovers() {
           ctx.strokeRect(gx * 11 - 4, gy * 11 - 4, 8, 8);
         }
       }
+    } else if (def.name === "balloon") {
+      // 爆撃気球: 丸い気嚢＋吊り索＋ゴンドラ（回転させず常に上向きで描く）
+      ctx.rotate(-angle); // 気球は姿勢を回転させない
+      ctx.fillStyle = def.color;
+      ctx.strokeStyle = "rgba(255,230,180,0.5)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(0, -4, 15, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // 気嚢の縦帯
+      ctx.strokeStyle = "rgba(60,40,20,0.5)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, -16); ctx.lineTo(0, 8);
+      ctx.moveTo(-9, -13); ctx.lineTo(-6, 6);
+      ctx.moveTo(9, -13); ctx.lineTo(6, 6);
+      ctx.stroke();
+      // ゴンドラ
+      ctx.fillStyle = "#4a3520";
+      ctx.fillRect(-5, 10, 10, 6);
+      ctx.beginPath();
+      ctx.moveTo(-6, 8); ctx.lineTo(-9, 2);
+      ctx.moveTo(6, 8); ctx.lineTo(9, 2);
+      ctx.strokeStyle = "rgba(30,20,10,0.8)";
+      ctx.stroke();
     } else {
       // 陸上甲鉄艦: 細長い装甲艦体＋砲塔
       ctx.fillStyle = def.color;
@@ -2082,12 +2247,12 @@ function drawMovers() {
     }
   }
 
-  // 踏鳴らし衝撃波リング
+  // 衝撃波リング（マンモス踏鳴らし・ボスノヴァ共用。色は発生源が指定）
   for (const fx of shockwaveFxList) {
     const progress = 1 - fx.life / SHOCKWAVE_FX_DURATION;
     ctx.save();
     ctx.globalAlpha = Math.max(0, 1 - progress) * 0.7;
-    ctx.strokeStyle = "#d0a060";
+    ctx.strokeStyle = fx.color ?? "#d0a060";
     ctx.lineWidth = Math.max(1, 4 * (1 - progress));
     ctx.beginPath();
     ctx.arc(fx.x, fx.y, fx.maxR * progress, 0, Math.PI * 2);
@@ -2225,6 +2390,20 @@ function drawRoadsOnLayer(bctx) {
 
 function drawTownRoadsOnLayer(bctx, meta) {
   const { startX, startY, townW, townH, gridCols, gridRows, spacing } = meta;
+
+  // v0.7: 要塞都市には町全体を囲う「城郭リム」を敷いて遠目にも強さが分かるようにする
+  if (meta._fortified) {
+    const pad = spacing * 0.9;
+    bctx.save();
+    bctx.strokeStyle = "rgba(224, 32, 48, 0.35)";
+    bctx.lineWidth = 5;
+    bctx.strokeRect(startX - pad, startY - pad, townW + pad * 2, townH + pad * 2);
+    bctx.strokeStyle = "rgba(20, 20, 28, 0.55)";
+    bctx.lineWidth = 2;
+    bctx.strokeRect(startX - pad - 4, startY - pad - 4, townW + pad * 2 + 8, townH + pad * 2 + 8);
+    bctx.restore();
+  }
+
   // 道路は建物間のすき間をうっすら明るく見せる（薄い線）
   bctx.strokeStyle = "rgba(200, 180, 140, 0.08)";
   bctx.lineWidth = spacing * 0.5;
@@ -2273,6 +2452,39 @@ function drawSettlementOnLayer(bctx, settlement) {
       drawWallSegmentOnCtx(bctx, settlement, color);
       break;
     default:            drawCircleOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
+  }
+
+  // v0.7: 要塞都市の建物は「明らかに強そう」な装飾を重ねる
+  // （黒鉄の太い輪郭＋屋上の深紅の軍旗。fallen 後は通常の瓦礫と同じ見た目に落ちる）
+  if (settlement._fortified && !settlement.fallen) {
+    const wx = settlement.wx;
+    const wy = settlement.wy;
+    const r  = settlement.radius;
+    // 黒鉄の輪郭（二重）
+    bctx.strokeStyle = "rgba(20, 20, 28, 0.9)";
+    bctx.lineWidth = 2.5;
+    bctx.beginPath();
+    bctx.arc(wx, wy, r + 2, 0, Math.PI * 2);
+    bctx.stroke();
+    bctx.strokeStyle = "rgba(255, 60, 60, 0.55)";
+    bctx.lineWidth = 1;
+    bctx.beginPath();
+    bctx.arc(wx, wy, r + 4, 0, Math.PI * 2);
+    bctx.stroke();
+    // 深紅の軍旗（ポール＋三角旗）
+    bctx.strokeStyle = "#404048";
+    bctx.lineWidth = 1.2;
+    bctx.beginPath();
+    bctx.moveTo(wx, wy - r);
+    bctx.lineTo(wx, wy - r - 9);
+    bctx.stroke();
+    bctx.fillStyle = "#e02030";
+    bctx.beginPath();
+    bctx.moveTo(wx, wy - r - 9);
+    bctx.lineTo(wx + 7, wy - r - 6.5);
+    bctx.lineTo(wx, wy - r - 4);
+    bctx.closePath();
+    bctx.fill();
   }
 
   bctx.restore();
@@ -2754,11 +2966,11 @@ function updateSettlementAttacks(dt) {
     if (targetIdx < 0) continue;
 
     // 変更5: 集落種別に応じて弾種を決定する。
-    // large・首都（_isCapital）・ボス → カタパルト弾（kind=1: 強ノックバック・大きな矢）
+    // ボス → ボス重弾（kind=2: 位置ごと押し戻す強烈なノックバック。v0.7）
+    // large・首都（_isCapital）→ カタパルト弾（kind=1: 強ノックバック・大きな矢）
     // それ以外（small/tiny/medium）→ 通常矢弾（kind=0: 小さく・射程短い・弱ノックバック）
-    const isCatapultShooter = settlement.isBoss || settlement._isCapital ||
-                              settlement.size === "large";
-    const kind = isCatapultShooter ? 1 : 0;
+    const isCatapultShooter = settlement._isCapital || settlement.size === "large";
+    const kind = settlement.isBoss ? 2 : (isCatapultShooter ? 1 : 0);
 
     const count = settlement.projectileCount;
     if (count === 1) {
@@ -2875,7 +3087,9 @@ function updateProjectiles(dt) {
     // arrow  (kind=0): ARROW_MAX_RANGE=250px（短い射程、近づかないと当たらない）
     const tdx      = projWx[i] - projStartWx[i];
     const tdy      = projWy[i] - projStartWy[i];
-    const maxRange = projKind[i] === 1 ? PROJECTILE_MAX_RANGE : ARROW_MAX_RANGE;
+    const maxRange = projKind[i] === 2 ? BOSS_SHOT_MAX_RANGE
+                   : projKind[i] === 1 ? PROJECTILE_MAX_RANGE
+                   : ARROW_MAX_RANGE;
     if (tdx * tdx + tdy * tdy > maxRange * maxRange) {
       projActive[i] = 0;
       continue;
@@ -2935,6 +3149,12 @@ function checkProjectileHitBoids(projIdx) {
 
     if (hit) {
       applyDamageToBoid(i, PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER);
+      // v0.7: AoE弾（爆撃気球・古代の投石など projectileAoe>0）は着弾点周囲にも被害
+      if (projAoe[projIdx] > 0) {
+        applyAoeProjectileDamage(projWx[projIdx], projWy[projIdx], projAoe[projIdx],
+                                 projDmg[projIdx] * 0.6);
+        spawnCollisionParticles(projWx[projIdx], projWy[projIdx]);
+      }
       spawnHitParticles(projWx[projIdx], projWy[projIdx]);
       if (!boidDowned[i]) applyProjectileKnockback(i, projIdx);
       projActive[projIdx] = 0;
@@ -2946,6 +3166,24 @@ function checkProjectileHitBoids(projIdx) {
 function applyProjectileKnockback(boidIdx, projIdx) {
   // v0.6-p2: 緋竜（MELEE）はノックバック無効（突っ込み続ける。仕様 §6.4）
   if (flockWeapon === "melee") return;
+
+  const pvx    = projVx[projIdx];
+  const pvy    = projVy[projIdx];
+  const pspeed = Math.sqrt(pvx * pvx + pvy * pvy) || 1;
+  const nx = pvx / pspeed;
+  const ny = pvy / pspeed;
+
+  // v0.7: ボス重弾（kind=2）は速度でなく「位置ごと」押し戻す。
+  // simStep が毎フレーム速度を maxSpeed にクランプするため、速度加算だけでは
+  // 1フレームで減衰して「跳ね返された」体感にならない。変位なら確実に飛ぶ。
+  if (projKind[projIdx] === 2) {
+    px[boidIdx] += nx * BOSS_SHOT_KNOCKBACK_DIST;
+    py[boidIdx] += ny * BOSS_SHOT_KNOCKBACK_DIST;
+    vx[boidIdx] = nx * BASE_CFG.maxSpeed;
+    vy[boidIdx] = ny * BASE_CFG.maxSpeed;
+    return;
+  }
+
   // 変更5: 種別ごとにノックバック強度を分岐する
   // catapult(kind=1): CATAPULT_KNOCKBACK_SPEED=220（強い。体感できる吹き飛び）
   // arrow  (kind=0): ARROW_KNOCKBACK_SPEED=60（弱い。ちょっと押される程度）
@@ -2953,11 +3191,8 @@ function applyProjectileKnockback(boidIdx, projIdx) {
     ? CATAPULT_KNOCKBACK_SPEED
     : ARROW_KNOCKBACK_SPEED;
 
-  const pvx    = projVx[projIdx];
-  const pvy    = projVy[projIdx];
-  const pspeed = Math.sqrt(pvx * pvx + pvy * pvy) || 1;
-  vx[boidIdx] += (pvx / pspeed) * knockbackSpeed;
-  vy[boidIdx] += (pvy / pspeed) * knockbackSpeed;
+  vx[boidIdx] += nx * knockbackSpeed;
+  vy[boidIdx] += ny * knockbackSpeed;
   // 速度を maxSpeed でクランプして飛び出しを防ぐ
   const sp = Math.sqrt(vx[boidIdx] * vx[boidIdx] + vy[boidIdx] * vy[boidIdx]);
   if (sp > BASE_CFG.maxSpeed) {
@@ -3195,7 +3430,10 @@ function settlementFall(settlementIndex) {
   if (buildingLayerCtx) {
     const bc = buildingLayerCtx;
     // ボスはグロー外輪が radius * 2.2 まで広がるため、クリア矩形を大きめに取る
-    const padding = settlement.isBoss ? settlement.radius * 2.5 : settlement.radius + 4;
+    // v0.7: 要塞建物は軍旗（radius+9上方）と外輪リングがあるため広めにクリアする
+    const padding = settlement.isBoss ? settlement.radius * 2.5
+                  : settlement._fortified ? settlement.radius + 14
+                  : settlement.radius + 4;
     bc.clearRect(
       settlement.wx - padding,
       settlement.wy - padding,
@@ -3361,8 +3599,10 @@ function resetBoidsForStageStart() {
   // N を BOIDS_INITIAL に戻し、全スロットを dead でリセットしてから有効分を起こす
   N = BOIDS_INITIAL;
 
+  // v0.7: 強化カードが持ち越されるため、HPは実効最大値（硬鱗・種族補正込み）で初期化する
+  const maxHpNow = effBoidMaxHp();
   for (let i = 0; i < MAX_BOIDS; i++) {
-    boidHp[i]                = BOID_MAX_HP;
+    boidHp[i]                = maxHpNow;
     boidDead[i]              = 1;           // 一旦全滅状態に
     boidFadeTimer[i]         = 0;
     boidHitStopTimer[i]      = 0;
@@ -3370,7 +3610,7 @@ function resetBoidsForStageStart() {
     boidDowned[i]            = 0;
     boidDownTimer[i]         = 0;
     boidReviveTimer[i]       = 0;
-    boidFireTimer[i]         = Math.random() * BULLET_INTERVAL; // v0.6-p2: 射撃をばらけさせる
+    boidFireTimer[i]         = Math.random() * currentFireInterval(); // 射撃をばらけさせる
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = 0;
   }
@@ -3593,13 +3833,15 @@ const STRINGS = {
     evo_bullet:  { name: "氷竜の血", desc: "全竜が氷竜（弾丸）に進化" },
     evo_missile: { name: "影竜の血", desc: "全竜が影竜（ミサイル）に進化" },
     evo_melee:   { name: "緋竜の血", desc: "全竜が緋竜（近接）に進化" },
-    orb:       { name: "竜玉",     desc: "XP +50" },
+    orb:       { name: "竜玉",     desc: "XP +150" },
   },
 };
 
-// ---- レベル曲線: 必要XP(Lv n → n+1) = 25 × 1.45^(n-1) ----
-const XP_LEVEL_BASE   = 25;
-const XP_LEVEL_GROWTH = 1.45;
+// ---- レベル曲線: 必要XP(Lv n → n+1) = 110 × 1.35^(n-1) ----
+// v0.7: レベルアップ頻度を約1/5に（Shooterプレイテスト「多すぎる」）。
+// 強化がラン全体持ち越しになったため、1ラン（4ステージ）でLv9〜10到達を想定。
+const XP_LEVEL_BASE   = 110;
+const XP_LEVEL_GROWTH = 1.35;
 function xpForNext(level) {
   return Math.ceil(XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, level - 1));
 }
@@ -3692,7 +3934,7 @@ function applyCardImmediate(cardId) {
   } else if (cardId === "evo_melee") {
     convertFlock("melee");
   } else if (cardId === "orb") {
-    addXp(50);
+    addXp(150);
   }
 }
 
@@ -3708,17 +3950,19 @@ function addXp(value) {
   updateXpHud();
 }
 
-// ---- ステージ独立ラン: 進行の完全リセット（仕様 §3）----
+// ---- ラン開始時の進行完全リセット ----
+// v0.7: ステージ遷移では呼ばない（強化・レベル・竜の種族はラン全体で持ち越し）。
+// タイトルへ戻ったとき（returnToTitle）と起動時（boot）のみ呼ぶ。
 function resetProgression() {
   playerLevel  = 1;
   playerXp     = 0;
   pendingCards = 0;
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
-  // v0.6-p2: 武器も BEAM に戻る（進化はステージ内でのみ有効）
+  // 武器も BEAM に戻る（新しいランはビルドをゼロから組み直す）
   flockWeapon = "beam";
   if (boidFireTimer) boidFireTimer.fill(0);
   clearDragonProjectiles();
-  // v0.6.1: 表示中のカードとスローを畳む（ボス撃破が選択中に起きた場合など）
+  // 表示中のカードとスローを畳む
   dismissLevelUpCards();
   updateHUDWeapon();
   updateXpHud();
@@ -3747,12 +3991,15 @@ function xpValueOf(settlement) {
   if (settlement.isBoss)     return 300;
   if (settlement._isWall)    return 12;
   if (settlement._isCapital) return 30;
+  let base;
   switch (settlement.size) {
-    case "tiny":   return 1;
-    case "medium": return 8;
-    case "large":  return 20;
-    default:       return 2; // small / 城下small
+    case "tiny":   base = 1; break;
+    case "medium": base = 8; break;
+    case "large":  base = 20; break;
+    default:       base = 2; break; // small / 城下small
   }
+  // v0.7: 要塞都市はリスクに見合う2倍報酬
+  return settlement._fortified ? base * 2 : base;
 }
 
 /**
@@ -4824,18 +5071,23 @@ function advanceToNextStage() {
 
   activeBreaths.length = 0;
   clearXpGems();
+  clearDragonProjectiles();
 
   settlements = generateStageLayout(currentStage);
   rebuildBuildingGrid();
   buildingLayerDirty = true;
   minimapBaseDirty = true;
   rebuildBuildingLayer();
+  cacheBossIndex();
 
-  // 変更1: 群れを BOIDS_INITIAL=10 体に完全リセット（HP・ダウン状態・タイマーすべてクリア）
-  // v0.6: レベル・強化カードも完全リセット（各ステージ＝独立ビルドラン。仕様 §3）
+  // 変更1: 群れを BOIDS_INITIAL=10 体にリセット（HP・ダウン状態・タイマーすべてクリア）
+  // v0.7: レベル・強化カード・竜の種族（武器）は**ラン全体で持ち越し**に変更
+  // （Shooterプレイテスト判断）。リセットするのは群れの数だけ。
+  // resetProgression() はラン開始時（returnToTitle/boot）のみ呼ぶ。
   resetBoidsForStageStart();
   resetLeader();
-  resetProgression();
+  // 3択カードが開いたままステージを跨がないよう畳む（pendingCards は持ち越される）
+  dismissLevelUpCards();
 
   updateHUDStage();
   updateHUDBuildings();
@@ -4874,6 +5126,7 @@ function returnToTitle() {
   buildingLayerDirty = true;
   minimapBaseDirty = true;
   rebuildBuildingLayer();
+  cacheBossIndex();
 
   resetBoidsForStageStart();
   resetLeader();
@@ -5968,6 +6221,27 @@ function drawProjectiles() {
     const angle = Math.atan2(projVy[i], projVx[i]);
     const color = projColor[i];
 
+    // v0.7: ボス重弾（kind=2）は矢でなく脈動する光弾として描く（明確な脅威表示）
+    if (projKind[i] === 2) {
+      const pulse = 0.85 + 0.15 * Math.sin(breathTime * 14 + i * 1.3);
+      ctx.save();
+      ctx.globalAlpha = 0.35 * pulse;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.95;
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], 4.5 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], 1.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      continue;
+    }
+
     // 変更5: 種別ごとにサイズを選択
     const isCatapult  = projKind[i] === 1;
     const SHAFT_LEN     = isCatapult ? CATAPULT_SHAFT_LEN     : ARROW_SHAFT_LEN;
@@ -6896,6 +7170,7 @@ function tick() {
     updateCollisionAttacks(wdt);  // 変更2: 直接衝突ダメージ＋ヒットストップ（MELEEは威力増）
     updateMovers(wdt);            // v0.6-p4: 移動敵の巡回・攻撃
     updateMoverRams();            // v0.6-p4: 移動敵への体当たり
+    updateBossNova(wdt);          // v0.7: ボスの反発衝撃波
     updateDeathTimers(wdt);
     updateParticles(wdt);
     updateAppearEffects(wdt);     // 変更2: 竜出現エフェクト更新
@@ -6951,6 +7226,7 @@ async function boot() {
   settlements = generateStageLayout(0);
   rebuildBuildingGrid();
   rebuildBuildingLayer();
+  cacheBossIndex();
   // 変更1: initBoids で配列を確保してから resetBoidsForStageStart で初期状態を作る。
   // initBoids は配列アロケーションのみ担い、resetBoidsForStageStart が
   // boot/restart/advanceToNextStage の共通初期化パスになる。
