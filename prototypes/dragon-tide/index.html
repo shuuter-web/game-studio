@@ -2126,6 +2126,24 @@ function drawMovers() {
     ctx.fill();
     ctx.globalAlpha = 1.0;
 
+    // v0.7: Gemini生成スプライトがあれば画像描画（実測ピボット・前方方向補正つき）。
+    // 読めなかった敵だけ従来のベクター描画にフォールバックする。
+    const enemyImg = enemyImages[def.name];
+    if (enemyImg) {
+      const meta  = ENEMY_SPRITE_META[def.name];
+      const drawW = def.radius * meta.drawScale;
+      const s     = drawW / enemyImg.naturalWidth;
+      const drawH = enemyImg.naturalHeight * s;
+      if (meta.forward === "up")        ctx.rotate(angle + Math.PI / 2);
+      else if (meta.forward === "down") ctx.rotate(angle - Math.PI / 2);
+      ctx.drawImage(
+        enemyImg,
+        -enemyImg.naturalWidth  * s * meta.px,
+        -enemyImg.naturalHeight * s * meta.py,
+        drawW, drawH,
+      );
+      ctx.restore();
+    } else {
     ctx.rotate(angle);
     if (def.name === "mammoth") {
       // 巨獣の群像: 大小の楕円3体の塊
@@ -2221,6 +2239,7 @@ function drawMovers() {
       }
     }
     ctx.restore();
+    } // v0.7: 画像/ベクター分岐の閉じ
 
     // HPバー（ボスバーの縮小版・常時表示）
     const barW = def.radius * 2.4;
@@ -5706,6 +5725,8 @@ function render(now) {
     ctx.drawImage(buildingLayerCanvas, 0, 0);
   }
 
+  drawBossCitadel();   // v0.7: ボス城塞スプライト（静的レイヤーのボス円の上に重ねる）
+
   // 攻撃射程リング（静的レイヤーの上に動的に描く）
   drawSettlementRanges();
 
@@ -5733,6 +5754,39 @@ function render(now) {
   // 指先リングはスクリーン座標（指の現在位置）なのでカメラ変換の外で描く。
   drawTouchRing();
   drawFlash();
+}
+
+/**
+ * v0.7: ボス城塞スプライト。静的レイヤーのボス描画（グロー円）の上に重ね、
+ * ゆっくり脈動させて「攻略目標の威容」を出す。陥落後は描かない（瓦礫円が残る）。
+ */
+function drawBossCitadel() {
+  if (bossSettlementIdx < 0) return;
+  const boss = settlements[bossSettlementIdx];
+  if (!boss || boss.fallen) return;
+  const img = enemyImages.citadel;
+  if (!img) return;
+
+  // ビューポートカリング
+  const meta  = ENEMY_SPRITE_META.citadel;
+  const drawW = boss.radius * meta.drawScale;
+  const bounds = getViewBoundsWorld(drawW);
+  if (boss.wx < bounds.minX || boss.wx > bounds.maxX ||
+      boss.wy < bounds.minY || boss.wy > bounds.maxY) return;
+
+  const s     = drawW / img.naturalWidth;
+  const drawH = img.naturalHeight * s;
+  const pulse = 1 + 0.02 * Math.sin(breathTime * 2);
+  ctx.save();
+  ctx.translate(boss.wx, boss.wy);
+  ctx.scale(pulse, pulse);
+  ctx.drawImage(
+    img,
+    -img.naturalWidth  * s * meta.px,
+    -img.naturalHeight * s * meta.py,
+    drawW, drawH,
+  );
+  ctx.restore();
 }
 
 function drawWorldGrid() {
@@ -6631,6 +6685,34 @@ const DRAGON_FIRE_IMAGE_SOURCES = {
   wing: "assets/dragon_fire_wing.png",
 };
 
+// -----------------------------------------------------------------
+// v0.7: 敵スプライト（Gemini生成・クロマキー透過済み・トップダウン）
+// 個別ロード方式: 読めた画像だけ使い、欠けたものはベクター描画へフォールバック。
+// -----------------------------------------------------------------
+const ENEMY_IMAGE_SOURCES = {
+  mammoth:  "assets/mover_mammoth.png",
+  colossus: "assets/mover_colossus.png",
+  knights:  "assets/mover_knights.png",
+  ironclad: "assets/mover_ironclad.png",
+  balloon:  "assets/mover_balloon.png",
+  citadel:  "assets/boss_citadel.png",
+};
+
+// 回転ピボット（アルファ質量重心の相対座標。chroma_key後にPIL+numpyで実測した値）と
+// 画像内の前方方向。forward: "up"=画像上が前 / "down"=画像下が前 / "none"=回転させない。
+// drawScale は def.radius（当たり判定半径）に掛けて描画幅にする係数。
+const ENEMY_SPRITE_META = {
+  mammoth:  { px: 0.4999, py: 0.5494, forward: "up",   drawScale: 2.6 },
+  colossus: { px: 0.5777, py: 0.4503, forward: "down", drawScale: 2.6 },
+  knights:  { px: 0.5075, py: 0.4779, forward: "up",   drawScale: 2.5 },
+  ironclad: { px: 0.5035, py: 0.5300, forward: "up",   drawScale: 2.8 },
+  balloon:  { px: 0.5140, py: 0.4902, forward: "none", drawScale: 2.6 },
+  citadel:  { px: 0.5003, py: 0.4984, forward: "none", drawScale: 3.4 },
+};
+
+// ロード済み敵画像（name → HTMLImageElement。ロード失敗したキーは入らない）
+const enemyImages = {};
+
 // 翼スパン（画像の横幅）をこの論理pxに正規化する。縦は元画像のアスペクト比を保つ。
 const DRAGON_TARGET_WINGSPAN = 40;
 
@@ -6708,8 +6790,16 @@ function preloadDragonImages() {
       loadOne(DRAGON_FIRE_IMAGE_SOURCES[part], (img) => { dragonFireImages[part] = img; })),
   ];
 
-  return Promise.all(tasks).then((results) => {
-    dragonImagesLoaded = results.every(Boolean);
+  // v0.7: 敵スプライトも並行ロード。失敗しても全体を失敗扱いにしない
+  // （enemyImages に入らなかった敵だけベクター描画へ個別フォールバック）。
+  const enemyTasks = Object.keys(ENEMY_IMAGE_SOURCES).map((name) =>
+    loadOne(ENEMY_IMAGE_SOURCES[name], (img) => { enemyImages[name] = img; }));
+
+  return Promise.all([...tasks, ...enemyTasks]).then(() => {
+    // dragonImagesLoaded は竜画像のみで判定（敵画像の失敗と切り離す）
+    dragonImagesLoaded =
+      Object.keys(DRAGON_IMAGE_SOURCES).every((element) => dragonImages[element]) &&
+      Object.keys(DRAGON_FIRE_IMAGE_SOURCES).every((part) => dragonFireImages[part]);
     if (!dragonImagesLoaded) {
       console.error("[DragonTide] 一部の竜画像が読み込めなかったため、ベクター描画にフォールバックします。");
     }
