@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.9.0";
+const GAME_VERSION = "v0.9.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -707,16 +707,18 @@ const STAGE_CONFIGS = [
   },
 
   // ===== ステージ3: 中世 =====
+  // v0.9.1: 灰色建物×灰緑背景のコントラスト不足を解消。
+  // 背景を暗い苔緑に振り、建物を明るい青灰（スレート）系に変更して分離する。
   {
     name: "MEDIEVAL AGE",
     subtitle: "IRON AND STONE",
-    bgColor: "#0e120e",
-    gridColor: "rgba(50, 70, 50, 0.35)",
-    townBaseHues: ["#707070", "#888888", "#606060", "#787868"],
+    bgColor: "#101a0c",
+    gridColor: "rgba(60, 90, 45, 0.35)",
+    townBaseHues: ["#8a8ea0", "#9a9eb0", "#7a7e90", "#8890a8"],
 
     buildings: {
       small: {
-        colors: ["#707070", "#888888", "#606060"],
+        colors: ["#8a8ea0", "#9a9eb0", "#7a7e90"],
         shapes: ["square"],
         attackRadius: 200,
         projectileInterval: 2.2,
@@ -728,7 +730,7 @@ const STAGE_CONFIGS = [
         reward: { eggMin: 2, eggMax: 4 },
       },
       medium: {
-        colors: ["#909090", "#a0a0a0", "#808080"],
+        colors: ["#a8acc0", "#b8bcd0", "#989cb0"],
         shapes: ["squareTower"],
         attackRadius: 230,
         projectileInterval: 1.8,
@@ -740,7 +742,7 @@ const STAGE_CONFIGS = [
         reward: { eggMin: 4, eggMax: 6 },
       },
       large: {
-        colors: ["#c0c0c0", "#e0e0e0"],
+        colors: ["#d0d4e8", "#e8ecf8"],
         shapes: ["squareTower"],
         attackRadius: 260,
         projectileInterval: 1.5,
@@ -1554,6 +1556,9 @@ function generateStageLayout(stageIndex) {
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
   const townCenters = placeTownCenters(config.townCount, boss.wx, boss.wy);
 
+  // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
+  townRoadEdges = buildTownRoadNetwork(townCenters, boss);
+
   // v0.7: ボスに近い2〜3町を「要塞都市」に指定する（Shooterプレイテスト:
   // ボス周辺にもっと強い都市が欲しい・強さが見た目で分かること）。
   const fortifiedCount = stageIndex >= 2 ? 3 : 2;
@@ -1665,6 +1670,34 @@ const STAGE_DIFFICULTY_BOOST = [
   { hp: 2.10, dmg: 1.55 },
   { hp: 2.50, dmg: 1.70 },
 ];
+
+// -----------------------------------------------------------------
+// v0.9.1: 街道網 — 町の中心とボス首都を最小全域木（Prim法）でつなぐ。
+// 「街と街をつなぐ道」として建物レイヤーの最背面近くに描かれる。
+// -----------------------------------------------------------------
+let townRoadEdges = [];
+
+function buildTownRoadNetwork(townCenters, boss) {
+  const nodes = townCenters.map(c => ({ x: c.x, y: c.y }));
+  nodes.push({ x: boss.wx, y: boss.wy });   // 首都へも街道が伸びる（攻略導線を兼ねる）
+  const edges = [];
+  if (nodes.length < 2) return edges;
+
+  const inTree = new Set([0]);
+  while (inTree.size < nodes.length) {
+    let best = null;
+    for (const i of inTree) {
+      for (let j = 0; j < nodes.length; j++) {
+        if (inTree.has(j)) continue;
+        const d = dist2(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y);
+        if (!best || d < best.d) best = { i, j, d };
+      }
+    }
+    edges.push([nodes[best.i], nodes[best.j]]);
+    inTree.add(best.j);
+  }
+  return edges;
+}
 
 // v0.7: 要塞都市の強化倍率（ボス近傍2〜3町に適用）
 const FORTIFIED_HP_MULT       = 2.2;
@@ -2785,8 +2818,14 @@ function rebuildBuildingLayer() {
   // v0.8: 地面のディテール（土のパッチ＋スペックル）を最背面に焼く
   drawGroundDetailOnLayer(bctx);
 
+  // v0.9.1: 街と街をつなぐ街道（地形より下＝湖にかかる部分は湖が上書きして途切れる）
+  drawInterTownRoadsOnLayer(bctx);
+
   // v0.6-p3: 地形（岩山・湖）は最背面に焼く
   drawTerrainOnLayer(bctx);
+
+  // v0.9.1: 街区の下地（石畳ベース＋集落の土地面）。道路より先に敷く
+  drawTownBasesOnLayer(bctx);
 
   // 道路ラインを先に描く（建物の下に来る）
   drawRoadsOnLayer(bctx);
@@ -2857,6 +2896,99 @@ function drawRoadsOnLayer(bctx) {
   }
 }
 
+/**
+ * v0.9.1: 街と街をつなぐ街道を描く。
+ * 中点を法線方向に決定的にたわませた二次曲線＝手で踏み固めた道の有機感。
+ * 二層描き（広い土の道＋中央の轍）で「使い込まれた街道」に見せる。
+ */
+function drawInterTownRoadsOnLayer(bctx) {
+  if (townRoadEdges.length === 0) return;
+  const config = STAGE_CONFIGS[currentStage];
+  const roadBase = shadeColor(config.bgColor, 20);
+  const roadWorn = shadeColor(config.bgColor, 34);
+
+  bctx.save();
+  bctx.lineCap = "round";
+  for (const [a, b] of townRoadEdges) {
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    // 法線方向の決定的なたわみ（±80px。座標由来なので再構築しても同じ形）
+    const bulge = (Math.sin(a.x * 0.013 + b.y * 0.017) * 80);
+    const cx = midX + (-dy / len) * bulge;
+    const cy = midY + (dx / len) * bulge;
+
+    // 広い土の道
+    bctx.globalAlpha = 0.50;
+    bctx.strokeStyle = roadBase;
+    bctx.lineWidth = 26;
+    bctx.beginPath();
+    bctx.moveTo(a.x, a.y);
+    bctx.quadraticCurveTo(cx, cy, b.x, b.y);
+    bctx.stroke();
+
+    // 中央の轍（明るい擦れ）
+    bctx.globalAlpha = 0.30;
+    bctx.strokeStyle = roadWorn;
+    bctx.lineWidth = 9;
+    bctx.beginPath();
+    bctx.moveTo(a.x, a.y);
+    bctx.quadraticCurveTo(cx, cy, b.x, b.y);
+    bctx.stroke();
+  }
+  bctx.restore();
+}
+
+/**
+ * v0.9.1: 街区の下地。町全体に石畳ベース（角丸矩形）を敷いて
+ * 「格子模様の上に建物が浮いている」感を消す。tiny集落には小さな土の広場。
+ */
+function drawTownBasesOnLayer(bctx) {
+  const config = STAGE_CONFIGS[currentStage];
+  const paveColor = shadeColor(config.bgColor, 16);
+  const edgeColor = shadeColor(config.bgColor, -10);
+
+  bctx.save();
+  for (let s = 0; s < settlements.length; s++) {
+    const meta = settlements[s]._townMeta;
+    if (!meta) continue;
+    const pad = meta.spacing * 1.1;
+    const x = meta.startX - pad;
+    const y = meta.startY - pad;
+    const w = meta.townW + pad * 2;
+    const h = meta.townH + pad * 2;
+
+    // 石畳ベース（roundRect 非対応の古いブラウザは角丸なしにフォールバック）
+    const hasRoundRect = typeof bctx.roundRect === "function";
+    bctx.globalAlpha = 0.55;
+    bctx.fillStyle = paveColor;
+    bctx.beginPath();
+    if (hasRoundRect) bctx.roundRect(x, y, w, h, 30); else bctx.rect(x, y, w, h);
+    bctx.fill();
+    // 外周の縁取り（街区の境界）
+    bctx.globalAlpha = 0.45;
+    bctx.strokeStyle = edgeColor;
+    bctx.lineWidth = 3;
+    bctx.beginPath();
+    if (hasRoundRect) bctx.roundRect(x, y, w, h, 30); else bctx.rect(x, y, w, h);
+    bctx.stroke();
+  }
+
+  // tiny集落: 各棟の足元に踏み固めた土の広場
+  bctx.globalAlpha = 0.30;
+  bctx.fillStyle = paveColor;
+  for (let s = 0; s < settlements.length; s++) {
+    const st = settlements[s];
+    if (!st._tinySettlement) continue;
+    bctx.beginPath();
+    bctx.ellipse(st.wx, st.wy, st.radius * 2.6, st.radius * 2.1, 0, 0, Math.PI * 2);
+    bctx.fill();
+  }
+  bctx.restore();
+  bctx.globalAlpha = 1.0;
+}
+
 function drawTownRoadsOnLayer(bctx, meta) {
   const { startX, startY, townW, townH, gridCols, gridRows, spacing } = meta;
 
@@ -2873,8 +3005,8 @@ function drawTownRoadsOnLayer(bctx, meta) {
     bctx.restore();
   }
 
-  // 道路は建物間のすき間をうっすら明るく見せる（薄い線）
-  bctx.strokeStyle = "rgba(200, 180, 140, 0.08)";
+  // 道路は建物間のすき間を明るく見せる（v0.9.1: 石畳ベースが敷かれたので少し強調）
+  bctx.strokeStyle = "rgba(210, 195, 160, 0.15)";
   bctx.lineWidth = spacing * 0.5;
   bctx.lineCap = "butt";
 
@@ -2980,12 +3112,26 @@ function drawSettlementOnLayer(bctx, settlement) {
     bctx.globalAlpha = alpha;
   }
 
-  // v0.9: 建物スプライトが使えるならティントして描画（瓦礫はベクター描画のまま）
+  // v0.9: 建物スプライトが使えるならティントして描画
   const spriteKey  = settlement.fallen ? null : buildingSpriteKeyFor(settlement);
   const tinted     = spriteKey ? getTintedBuildingSprite(spriteKey, color) : null;
-  const usedSprite = !!tinted;
+  // v0.9.1: 陥落建物は廃墟スプライト（城壁セグメントだけは従来の瓦礫ベクター）
+  const ruinImg    = (settlement.fallen && !settlement._isWall) ? buildingImages.ruin : null;
+  const usedSprite = !!tinted || !!ruinImg;
 
-  if (tinted) {
+  if (ruinImg) {
+    const drawW = settlement.radius * 2.15;
+    const drawH = drawW * (ruinImg.naturalHeight / ruinImg.naturalWidth);
+    // 座標由来の決定的な90度回転＋反転で同じ廃墟の並びに見えないようにする
+    const seed = Math.floor(settlement.wx * 7 + settlement.wy * 13);
+    bctx.save();
+    bctx.globalAlpha = 0.78;   // 生きた建物より沈ませて「終わった場所」感を出す
+    bctx.translate(settlement.wx, settlement.wy);
+    bctx.rotate((seed % 4) * Math.PI / 2);
+    bctx.scale(seed % 2 === 0 ? 1 : -1, 1);
+    bctx.drawImage(ruinImg, -drawW / 2, -drawH / 2, drawW, drawH);
+    bctx.restore();
+  } else if (tinted) {
     const drawW = settlement.radius * 2.3;
     const drawH = drawW * (tinted.height / tinted.width);
     // 座標由来の決定的な左右反転でタイル感を減らす
@@ -7384,6 +7530,7 @@ const BUILDING_IMAGE_SOURCES = {
   small:  "assets/building_small.png",
   medium: "assets/building_medium.png",
   large:  "assets/building_large.png",
+  ruin:   "assets/building_ruin.png",   // v0.9.1: 陥落後の廃墟（全サイズ共通・スケール描画）
 };
 const buildingImages = {};
 
