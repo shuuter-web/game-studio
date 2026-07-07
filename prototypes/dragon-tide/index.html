@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.9.1";
+const GAME_VERSION = "v0.10.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -1238,102 +1238,145 @@ function placeTownCenters(townCount, bossWx, bossWy) {
   return centers;
 }
 
-// 1つの町を格子状街区として生成
-// - 小建物を格子に沿って配置（±jitter）
-// - 中型・大型は町の中心・角に配置
+// -----------------------------------------------------------------
+// v0.10: 有機的な町生成 — 「広場＋ランドマークを中心に、放射状の通りと
+// 環状路に沿って建物が通りに面して並ぶ」現実の集落の育ち方を模す。
+// 建物総数・サイズ構成・HPは旧格子方式と同一（バランス不変条件）。
+// -----------------------------------------------------------------
 function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCount, config, townIndex) {
   const result = [];
-
-  // 町の色ヒント（同じ町は同系色。townBaseHues からシフト）
   const baseHue = config.townBaseHues[townIndex % config.townBaseHues.length];
-
-  // 変更1: 建物間隔を広げて「広い都市」感を出す（26→52、2倍に）
-  // 縦横2倍の間隔 → 1町あたりの占有面積が約4倍になる
-  const SMALL_SPACING = 52;   // 建物間隔 (旧26px → 52px)
-  const GRID_JITTER   = 8;    // ±px のランダムオフセット（やや広め）
-
-  // 格子サイズ推算: 小建物をほぼ正方形に詰める
-  const gridCols = Math.ceil(Math.sqrt(smallCount * 1.1));
-  const gridRows = Math.ceil(smallCount / gridCols);
-  const townW = gridCols * SMALL_SPACING;
-  const townH = gridRows * SMALL_SPACING;
-
-  const startX = townCenterX - townW * 0.5;
-  const startY = townCenterY - townH * 0.5;
-
-  // 道路の描画のためにレーン情報を保存（描画フェーズで使う）
-  // 道路幅（px）= SMALL_SPACING * 0.6 程度のすき間として視覚的に見える
-
-  // 小建物を格子配置
-  const bSmall = config.buildings.small;
-  let placed = 0;
-  const positions = [];
-  for (let row = 0; row < gridRows && placed < smallCount; row++) {
-    for (let col = 0; col < gridCols && placed < smallCount; col++) {
-      const wx = startX + col * SMALL_SPACING + randRange(-GRID_JITTER, GRID_JITTER);
-      const wy = startY + row * SMALL_SPACING + randRange(-GRID_JITTER, GRID_JITTER);
-
-      // ワールド境界チェック
-      if (wx < 10 || wx > WORLD_W - 10 || wy < 10 || wy > WORLD_H - 10) continue;
-
-      const hp = randInt(BUILDING_SIZE_PARAMS.small.hpMin, BUILDING_SIZE_PARAMS.small.hpMax);
-      // 同じ町の建物は基本色に近いが微妙にバリエーション
-      const colorVariant = shadeColor(baseHue, randInt(-15, 15));
-      result.push(makeBuilding(wx, wy, "small", colorVariant, bSmall, hp));
-      positions.push({ x: wx, y: wy });
-      placed++;
-    }
-  }
-
-  // 中型建物: 格子の「交差点」相当に配置
+  const bSmall  = config.buildings.small;
   const bMedium = config.buildings.medium;
-  const blockSize = SMALL_SPACING * 4; // ブロックサイズ目安
-  for (let m = 0; m < mediumCount; m++) {
-    // 格子内のランダムな「ブロック角」に配置
-    const col = randInt(0, gridCols - 1);
-    const row = randInt(0, gridRows - 1);
-    const wx = startX + col * SMALL_SPACING + SMALL_SPACING * 0.5 + randRange(-8, 8);
-    const wy = startY + row * SMALL_SPACING + SMALL_SPACING * 0.5 + randRange(-8, 8);
-    if (wx < 10 || wx > WORLD_W - 10 || wy < 10 || wy > WORLD_H - 10) continue;
+  const bLarge  = config.buildings.large;
 
-    // 小建物との重複チェック
-    let tooClose = false;
-    for (const p of positions) {
-      if (dist2(wx, wy, p.x, p.y) < 20 * 20) { tooClose = true; break; }
+  const totalCount = smallCount + mediumCount + largeCount;
+  const PLAZA_R = 36;                                          // 中央広場の半径
+  const townR   = Math.max(170, Math.min(320, 15 * Math.sqrt(totalCount))); // 町の外縁半径
+  const RING_R  = PLAZA_R + 58;                                // 環状路の半径
+
+  // 放射状の通り（3〜5本、角度ジッター付き）
+  const streetCount = 3 + (townIndex % 3);
+  const streets = [];
+  const streetBase = randRange(0, Math.PI * 2);
+  for (let k = 0; k < streetCount; k++) {
+    streets.push({
+      angle: streetBase + (k * Math.PI * 2) / streetCount + randRange(-0.25, 0.25),
+      len: townR * randRange(0.85, 1.0),
+    });
+  }
+
+  const placedPos = [];   // {x, y, r} 重なりチェック用
+  function tryPlace(wx, wy, radius, minGap) {
+    if (wx < 30 || wx > WORLD_W - 30 || wy < 30 || wy > WORLD_H - 30) return false;
+    for (const p of placedPos) {
+      const minD = p.r + radius + minGap;
+      if (dist2(wx, wy, p.x, p.y) < minD * minD) return false;
     }
-    if (tooClose) continue;
-
-    const hp = randInt(BUILDING_SIZE_PARAMS.medium.hpMin, BUILDING_SIZE_PARAMS.medium.hpMax);
-    const colorVariant = shadeColor(baseHue, randInt(-10, 20));
-    result.push(makeBuilding(wx, wy, "medium", colorVariant, bMedium, hp));
-    positions.push({ x: wx, y: wy });
+    placedPos.push({ x: wx, y: wy, r: radius });
+    return true;
   }
 
-  // 大型建物: 町の中心・角に配置（教会・領主の館・城など）
-  const bLarge = config.buildings.large;
-  const largePositionOffsets = [
-    { x: 0, y: 0 },                   // 中心
-    { x: -townW * 0.35, y: -townH * 0.35 },  // 左上
-    { x:  townW * 0.35, y: -townH * 0.35 },  // 右上
-    { x: -townW * 0.35, y:  townH * 0.35 },  // 左下
-    { x:  townW * 0.35, y:  townH * 0.35 },  // 右下
-  ];
-  for (let k = 0; k < largeCount; k++) {
-    const offset = largePositionOffsets[k % largePositionOffsets.length];
-    const wx = Math.max(30, Math.min(WORLD_W - 30, townCenterX + offset.x + randRange(-20, 20)));
-    const wy = Math.max(30, Math.min(WORLD_H - 30, townCenterY + offset.y + randRange(-20, 20)));
+  // --- (1) ランドマーク（広場中央）: 神殿/風車を町ごとに交互。large級のHP×1.3 ---
+  const landmarkKind = townIndex % 2 === 0 ? "temple" : "windmill";
+  const lmHp = Math.round(randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax) * 1.3);
+  const landmark = makeBuilding(townCenterX, townCenterY, "large", bLarge.colors[0], bLarge, lmHp);
+  landmark._landmark  = landmarkKind;
+  landmark._faceAngle = randRange(-0.2, 0.2);
+  placedPos.push({ x: townCenterX, y: townCenterY, r: landmark.radius });
+  result.push(landmark);
+
+  // --- (2) 大型建物: 環状路上の通りと通りの間（にらみを利かせる領主館・聖堂） ---
+  let placedLarge = 0;
+  for (let k = 0; k < largeCount * 4 && placedLarge < largeCount; k++) {
+    const angle = randRange(0, Math.PI * 2);
+    const r     = RING_R + randRange(10, 40);
+    const wx = townCenterX + Math.cos(angle) * r;
+    const wy = townCenterY + Math.sin(angle) * r;
+    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS.large.radiusBase, 8)) continue;
     const hp = randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax);
-    const largeColor = bLarge.colors[k % bLarge.colors.length];
-    result.push(makeBuilding(wx, wy, "large", largeColor, bLarge, hp));
+    const b  = makeBuilding(wx, wy, "large", bLarge.colors[placedLarge % bLarge.colors.length], bLarge, hp);
+    b._faceAngle = angle + Math.PI / 2;   // 広場（中心）に正面を向ける
+    result.push(b);
+    placedLarge++;
   }
 
-  // 道路情報を埋め込む（描画用メタデータ。最初の建物に付属させる）
-  if (result.length > 0) {
-    result[0]._townMeta = {
-      startX, startY, townW, townH,
-      gridCols, gridRows, spacing: SMALL_SPACING,
-    };
+  // --- (3) 中型建物: 放射状の通り沿いの内側区間（商家・工房の並び） ---
+  let placedMedium = 0;
+  for (let k = 0; k < mediumCount * 5 && placedMedium < mediumCount; k++) {
+    const st   = streets[k % streets.length];
+    const t    = randRange(PLAZA_R + 22, townR * 0.55);
+    const side = k % 2 === 0 ? 1 : -1;
+    const off  = side * (16 + randRange(0, 8) + BUILDING_SIZE_PARAMS.medium.radiusBase);
+    const wx = townCenterX + Math.cos(st.angle) * t + Math.cos(st.angle + Math.PI / 2) * off;
+    const wy = townCenterY + Math.sin(st.angle) * t + Math.sin(st.angle + Math.PI / 2) * off;
+    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS.medium.radiusBase, 6)) continue;
+    const hp = randInt(BUILDING_SIZE_PARAMS.medium.hpMin, BUILDING_SIZE_PARAMS.medium.hpMax);
+    const b  = makeBuilding(wx, wy, "medium", shadeColor(baseHue, randInt(-10, 20)), bMedium, hp);
+    b._faceAngle = st.angle + Math.PI / 2;   // 通りに面する
+    result.push(b);
+    placedMedium++;
   }
+
+  // --- (4) 小型建物: まず通り沿い、埋まらない分は町の中の路地に有機的に充填 ---
+  let placedSmall = 0;
+  // (4a) 通り沿い（両側にぎっしり並ぶ長屋）
+  for (let k = 0; k < smallCount * 3 && placedSmall < smallCount; k++) {
+    const st   = streets[k % streets.length];
+    const t    = randRange(PLAZA_R + 16, st.len);
+    const side = (k >> 1) % 2 === 0 ? 1 : -1;
+    const off  = side * (13 + randRange(0, 6) + BUILDING_SIZE_PARAMS.small.radiusBase);
+    const wx = townCenterX + Math.cos(st.angle) * t + Math.cos(st.angle + Math.PI / 2) * off;
+    const wy = townCenterY + Math.sin(st.angle) * t + Math.sin(st.angle + Math.PI / 2) * off;
+    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS.small.radiusBase, 4)) continue;
+    const hp = randInt(BUILDING_SIZE_PARAMS.small.hpMin, BUILDING_SIZE_PARAMS.small.hpMax);
+    const b  = makeBuilding(wx, wy, "small", shadeColor(baseHue, randInt(-15, 15)), bSmall, hp);
+    b._faceAngle = st.angle + Math.PI / 2;
+    result.push(b);
+    placedSmall++;
+  }
+  // (4b) 路地充填（中心に密・外縁に疎。√分布で中心へ寄せる）
+  for (let k = 0; k < smallCount * 8 && placedSmall < smallCount; k++) {
+    const angle = randRange(0, Math.PI * 2);
+    const r     = PLAZA_R + 14 + Math.sqrt(Math.random()) * (townR - PLAZA_R - 14);
+    const wx = townCenterX + Math.cos(angle) * r;
+    const wy = townCenterY + Math.sin(angle) * r;
+    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS.small.radiusBase, 4)) continue;
+    const hp = randInt(BUILDING_SIZE_PARAMS.small.hpMin, BUILDING_SIZE_PARAMS.small.hpMax);
+    const b  = makeBuilding(wx, wy, "small", shadeColor(baseHue, randInt(-15, 15)), bSmall, hp);
+    b._faceAngle = angle + Math.PI / 2 + randRange(-0.3, 0.3);   // おおよそ中心を向く
+    result.push(b);
+    placedSmall++;
+  }
+
+  // --- (5) 畑: 町の外縁に沿って3〜6枚（通りの延長方向に整列＝街道沿いの耕作地） ---
+  const fields = [];
+  const fieldCount = randInt(3, 6);
+  for (let k = 0; k < fieldCount; k++) {
+    const st = streets[k % streets.length];
+    const angle = st.angle + randRange(-0.5, 0.5);
+    const dist  = townR + randRange(50, 150);
+    fields.push({
+      x: townCenterX + Math.cos(angle) * dist,
+      y: townCenterY + Math.sin(angle) * dist,
+      w: randRange(70, 130),
+      h: randRange(45, 80),
+      angle: st.angle + randRange(-0.15, 0.15),
+    });
+  }
+
+  // 描画用メタデータ（先頭のランドマークに付属）
+  landmark._townMeta = {
+    cx: townCenterX,
+    cy: townCenterY,
+    plazaR: PLAZA_R,
+    ringR: RING_R,
+    townR,
+    streets,
+    fields,
+    // v0.9.1以前の互換フィールド（fortified リム等が参照）
+    spacing: 52,
+  };
 
   return result;
 }
@@ -1559,6 +1602,10 @@ function generateStageLayout(stageIndex) {
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
   townRoadEdges = buildTownRoadNetwork(townCenters, boss);
 
+  // v0.10: 川を1本引き、街道との交点に橋を架ける（背景の地理と攻略導線）
+  riverPolyline    = generateRiver(stageIndex);
+  bridgePlacements = computeBridges(townRoadEdges, riverPolyline);
+
   // v0.7: ボスに近い2〜3町を「要塞都市」に指定する（Shooterプレイテスト:
   // ボス周辺にもっと強い都市が欲しい・強さが見た目で分かること）。
   const fortifiedCount = stageIndex >= 2 ? 3 : 2;
@@ -1697,6 +1744,64 @@ function buildTownRoadNetwork(townCenters, boss) {
     inTree.add(best.j);
   }
   return edges;
+}
+
+// -----------------------------------------------------------------
+// v0.10: 川と橋 — 「川と街道が土地を形づくり、その結節点に街がある」の演出。
+// 川は蛇行しながらマップを縦断する視覚要素（通行判定なし＝飛竜は川を越えて飛べる）。
+// 橋は川と街道が交わる点に架け、地理の説得力と攻略導線の両方を担う。
+// -----------------------------------------------------------------
+let riverPolyline    = [];   // [{x,y}, ...] 川の中心線
+let riverWidth       = 56;
+let bridgePlacements = [];    // [{x, y, angle}] 街道×川の交点
+
+// 川の中心線を生成する（縦断／横断を交互に、sin蛇行）。
+function generateRiver(stageIndex) {
+  const vertical = stageIndex % 2 === 0;   // 偶数ステージは縦断、奇数は横断
+  const pts = [];
+  const amp  = randRange(240, 420);
+  const freq = randRange(1.4, 2.4);
+  const phase = randRange(0, Math.PI * 2);
+  const baseAlong = vertical
+    ? randRange(WORLD_W * 0.32, WORLD_W * 0.68)
+    : randRange(WORLD_H * 0.32, WORLD_H * 0.68);
+  const STEPS = 24;
+  for (let i = 0; i <= STEPS; i++) {
+    const t = i / STEPS;                 // 0→1
+    const along = t * Math.PI * freq + phase;
+    const cross = baseAlong + Math.sin(along) * amp;
+    if (vertical) pts.push({ x: cross, y: t * WORLD_H });
+    else          pts.push({ x: t * WORLD_W, y: cross });
+  }
+  riverWidth = randRange(48, 70);
+  return pts;
+}
+
+// 2線分の交点（なければ null）。
+function segmentIntersection(p1, p2, p3, p4) {
+  const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
+  if (Math.abs(d) < 1e-9) return null;
+  const t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / d;
+  const u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / d;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return { x: p1.x + t * (p2.x - p1.x), y: p1.y + t * (p2.y - p1.y) };
+}
+
+// 街道（直線近似）と川の交点に橋を架ける。
+function computeBridges(roadEdges, river) {
+  const bridges = [];
+  for (const [a, b] of roadEdges) {
+    for (let i = 0; i < river.length - 1; i++) {
+      const hit = segmentIntersection(a, b, river[i], river[i + 1]);
+      if (hit) {
+        // 橋は街道の進行方向を向く
+        const angle = Math.atan2(b.y - a.y, b.x - a.x);
+        bridges.push({ x: hit.x, y: hit.y, angle });
+        break;  // 1街道につき最初の交点のみ（多重橋を避ける）
+      }
+    }
+  }
+  return bridges;
 }
 
 // v0.7: 要塞都市の強化倍率（ボス近傍2〜3町に適用）
@@ -2818,8 +2923,14 @@ function rebuildBuildingLayer() {
   // v0.8: 地面のディテール（土のパッチ＋スペックル）を最背面に焼く
   drawGroundDetailOnLayer(bctx);
 
+  // v0.10: 川（街道より下に敷き、橋は街道の後で川の上に架ける）
+  drawRiverOnLayer(bctx);
+
   // v0.9.1: 街と街をつなぐ街道（地形より下＝湖にかかる部分は湖が上書きして途切れる）
   drawInterTownRoadsOnLayer(bctx);
+
+  // v0.10: 橋（川×街道の交点。川と街道の両方の上に乗る）
+  drawBridgesOnLayer(bctx);
 
   // v0.6-p3: 地形（岩山・湖）は最背面に焼く
   drawTerrainOnLayer(bctx);
@@ -2897,6 +3008,62 @@ function drawRoadsOnLayer(bctx) {
 }
 
 /**
+ * v0.10: 川を建物レイヤーに焼く。ポリラインを太線で二層描き（濃い水＋明るい流れ）。
+ * 通行判定は持たない＝飛竜は川を越えられる。あくまで土地を形づくる背景。
+ */
+function drawRiverOnLayer(bctx) {
+  if (riverPolyline.length < 2) return;
+  bctx.save();
+  bctx.lineJoin = "round";
+  bctx.lineCap = "round";
+
+  const stroke = (width, style, alpha) => {
+    bctx.globalAlpha = alpha;
+    bctx.strokeStyle = style;
+    bctx.lineWidth = width;
+    bctx.beginPath();
+    bctx.moveTo(riverPolyline[0].x, riverPolyline[0].y);
+    for (let i = 1; i < riverPolyline.length; i++) bctx.lineTo(riverPolyline[i].x, riverPolyline[i].y);
+    bctx.stroke();
+  };
+
+  // 岸（濃い土の縁）→ 水面（深い青）→ 流れのハイライト
+  stroke(riverWidth + 12, "rgba(40, 45, 40, 0.55)", 1);
+  stroke(riverWidth,      "rgba(34, 62, 104, 0.92)", 1);
+  stroke(riverWidth * 0.45, "rgba(90, 140, 200, 0.5)", 1);
+  bctx.restore();
+  bctx.globalAlpha = 1.0;
+}
+
+/**
+ * v0.10: 橋を川×街道の交点に描く。橋スプライト（bridge.png）があれば街道角度で回転配置、
+ * なければ石畳の矩形でフォールバック。
+ */
+function drawBridgesOnLayer(bctx) {
+  if (bridgePlacements.length === 0) return;
+  const img = buildingImages.bridge;
+  for (const br of bridgePlacements) {
+    bctx.save();
+    bctx.translate(br.x, br.y);
+    bctx.rotate(br.angle);
+    // 石の土台を必ず先に敷く（川の青が透けず橋がはっきり見える。両岸に乗る長さ）
+    const baseW = riverWidth + 56;
+    const baseH = 34;
+    bctx.fillStyle = "#8a8478";
+    bctx.fillRect(-baseW / 2, -baseH / 2, baseW, baseH);
+    bctx.strokeStyle = "rgba(30,28,24,0.8)";
+    bctx.lineWidth = 2.5;
+    bctx.strokeRect(-baseW / 2, -baseH / 2, baseW, baseH);
+    if (img) {
+      const drawW = riverWidth + 56;
+      const drawH = drawW * (img.naturalHeight / img.naturalWidth);
+      bctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+    }
+    bctx.restore();
+  }
+}
+
+/**
  * v0.9.1: 街と街をつなぐ街道を描く。
  * 中点を法線方向に決定的にたわませた二次曲線＝手で踏み固めた道の有機感。
  * 二層描き（広い土の道＋中央の轍）で「使い込まれた街道」に見せる。
@@ -2953,26 +3120,67 @@ function drawTownBasesOnLayer(bctx) {
   for (let s = 0; s < settlements.length; s++) {
     const meta = settlements[s]._townMeta;
     if (!meta) continue;
-    const pad = meta.spacing * 1.1;
-    const x = meta.startX - pad;
-    const y = meta.startY - pad;
-    const w = meta.townW + pad * 2;
-    const h = meta.townH + pad * 2;
+    const { cx, cy, plazaR, ringR, streets, townR, fields } = meta;
 
-    // 石畳ベース（roundRect 非対応の古いブラウザは角丸なしにフォールバック）
-    const hasRoundRect = typeof bctx.roundRect === "function";
+    // v0.10: 町の敷地＝広場円＋通りに沿った太い踏み固め帯＋環状路の有機的ブロブ
+    bctx.globalAlpha = 0.50;
+    bctx.fillStyle = paveColor;
+    // 町全体の淡い土台（外縁に向けて消える放射グラデーション）
+    const grad = bctx.createRadialGradient(cx, cy, plazaR, cx, cy, townR + 30);
+    grad.addColorStop(0, paveColor);
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    bctx.fillStyle = grad;
+    bctx.beginPath();
+    bctx.arc(cx, cy, townR + 30, 0, Math.PI * 2);
+    bctx.fill();
+    // 広場（濃いめの石畳）
     bctx.globalAlpha = 0.55;
     bctx.fillStyle = paveColor;
     bctx.beginPath();
-    if (hasRoundRect) bctx.roundRect(x, y, w, h, 30); else bctx.rect(x, y, w, h);
+    bctx.arc(cx, cy, plazaR + 12, 0, Math.PI * 2);
     bctx.fill();
-    // 外周の縁取り（街区の境界）
-    bctx.globalAlpha = 0.45;
-    bctx.strokeStyle = edgeColor;
-    bctx.lineWidth = 3;
+    // 通りの踏み固め帯
+    bctx.strokeStyle = paveColor;
+    bctx.lineCap = "round";
+    bctx.globalAlpha = 0.40;
+    bctx.lineWidth = 44;
+    for (const st of streets) {
+      bctx.beginPath();
+      bctx.moveTo(cx, cy);
+      bctx.lineTo(cx + Math.cos(st.angle) * st.len, cy + Math.sin(st.angle) * st.len);
+      bctx.stroke();
+    }
+    bctx.lineWidth = 38;
     bctx.beginPath();
-    if (hasRoundRect) bctx.roundRect(x, y, w, h, 30); else bctx.rect(x, y, w, h);
+    bctx.arc(cx, cy, ringR, 0, Math.PI * 2);
     bctx.stroke();
+
+    // v0.10: 畑 — 縞模様の耕作地＋柵。「人が住み、耕している土地」の記号
+    for (const f of fields) {
+      bctx.save();
+      bctx.translate(f.x, f.y);
+      bctx.rotate(f.angle);
+      // 土のベース
+      bctx.globalAlpha = 0.42;
+      bctx.fillStyle = "rgba(150, 128, 74, 0.9)";
+      bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
+      // 畝（うね）の縞
+      bctx.globalAlpha = 0.35;
+      bctx.strokeStyle = "rgba(96, 78, 44, 0.9)";
+      bctx.lineWidth = 2.5;
+      for (let fx = -f.w / 2 + 6; fx < f.w / 2 - 3; fx += 9) {
+        bctx.beginPath();
+        bctx.moveTo(fx, -f.h / 2 + 4);
+        bctx.lineTo(fx, f.h / 2 - 4);
+        bctx.stroke();
+      }
+      // 柵（外周）
+      bctx.globalAlpha = 0.55;
+      bctx.strokeStyle = "rgba(70, 52, 30, 0.9)";
+      bctx.lineWidth = 2;
+      bctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
+      bctx.restore();
+    }
   }
 
   // tiny集落: 各棟の足元に踏み固めた土の広場
@@ -2990,42 +3198,46 @@ function drawTownBasesOnLayer(bctx) {
 }
 
 function drawTownRoadsOnLayer(bctx, meta) {
-  const { startX, startY, townW, townH, gridCols, gridRows, spacing } = meta;
+  const { cx, cy, plazaR, ringR, streets, townR } = meta;
 
-  // v0.7: 要塞都市には町全体を囲う「城郭リム」を敷いて遠目にも強さが分かるようにする
+  // v0.7: 要塞都市には町全体を囲う「城郭リム」（v0.10: 円形に変更）
   if (meta._fortified) {
-    const pad = spacing * 0.9;
     bctx.save();
     bctx.strokeStyle = "rgba(224, 32, 48, 0.35)";
     bctx.lineWidth = 5;
-    bctx.strokeRect(startX - pad, startY - pad, townW + pad * 2, townH + pad * 2);
+    bctx.beginPath();
+    bctx.arc(cx, cy, townR + 22, 0, Math.PI * 2);
+    bctx.stroke();
     bctx.strokeStyle = "rgba(20, 20, 28, 0.55)";
     bctx.lineWidth = 2;
-    bctx.strokeRect(startX - pad - 4, startY - pad - 4, townW + pad * 2 + 8, townH + pad * 2 + 8);
+    bctx.beginPath();
+    bctx.arc(cx, cy, townR + 27, 0, Math.PI * 2);
+    bctx.stroke();
     bctx.restore();
   }
 
-  // 道路は建物間のすき間を明るく見せる（v0.9.1: 石畳ベースが敷かれたので少し強調）
-  bctx.strokeStyle = "rgba(210, 195, 160, 0.15)";
-  bctx.lineWidth = spacing * 0.5;
-  bctx.lineCap = "butt";
-
-  // 横方向の道路（各行の中央）
-  for (let row = 0; row <= gridRows; row++) {
-    const y = startY + row * spacing;
+  // v0.10: 通りの中心線（放射状＋環状路＋広場の縁）を明るく見せる
+  bctx.save();
+  bctx.strokeStyle = "rgba(210, 195, 160, 0.18)";
+  bctx.lineCap = "round";
+  bctx.lineWidth = 9;
+  for (const st of streets) {
     bctx.beginPath();
-    bctx.moveTo(startX - spacing * 0.5, y);
-    bctx.lineTo(startX + townW + spacing * 0.5, y);
+    bctx.moveTo(cx + Math.cos(st.angle) * plazaR * 0.6, cy + Math.sin(st.angle) * plazaR * 0.6);
+    bctx.lineTo(cx + Math.cos(st.angle) * st.len, cy + Math.sin(st.angle) * st.len);
     bctx.stroke();
   }
-  // 縦方向の道路（各列の中央）
-  for (let col = 0; col <= gridCols; col++) {
-    const x = startX + col * spacing;
-    bctx.beginPath();
-    bctx.moveTo(x, startY - spacing * 0.5);
-    bctx.lineTo(x, startY + townH + spacing * 0.5);
-    bctx.stroke();
-  }
+  bctx.lineWidth = 7;
+  bctx.beginPath();
+  bctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+  bctx.stroke();
+  // 広場の縁取り
+  bctx.strokeStyle = "rgba(210, 195, 160, 0.22)";
+  bctx.lineWidth = 2.5;
+  bctx.beginPath();
+  bctx.arc(cx, cy, plazaR - 4, 0, Math.PI * 2);
+  bctx.stroke();
+  bctx.restore();
 }
 
 // -----------------------------------------------------------------
@@ -3082,6 +3294,7 @@ function getTintedBuildingSprite(sizeKey, rawColor) {
 /** 建物に使うスプライトのサイズキーを返す（対象外の建物は null）。 */
 function buildingSpriteKeyFor(settlement) {
   if (settlement._isWall || settlement.isBoss) return null;
+  if (settlement._landmark) return settlement._landmark;  // v0.10: temple / windmill
   switch (settlement.size) {
     case "tiny":
     case "small":  return "small";
@@ -3132,12 +3345,14 @@ function drawSettlementOnLayer(bctx, settlement) {
     bctx.drawImage(ruinImg, -drawW / 2, -drawH / 2, drawW, drawH);
     bctx.restore();
   } else if (tinted) {
-    const drawW = settlement.radius * 2.3;
+    const drawW = settlement.radius * (settlement._landmark ? 2.6 : 2.3);
     const drawH = drawW * (tinted.height / tinted.width);
     // 座標由来の決定的な左右反転でタイル感を減らす
     const flip = (Math.floor(settlement.wx * 7 + settlement.wy * 13) % 2 === 0) ? 1 : -1;
     bctx.save();
     bctx.translate(settlement.wx, settlement.wy);
+    // v0.10: 通りに面する向きで建物を回転（有機的な街並みの核）
+    bctx.rotate(settlement._faceAngle ?? 0);
     bctx.scale(flip, 1);
     bctx.drawImage(tinted, -drawW / 2, -drawH / 2, drawW, drawH);
     bctx.restore();
@@ -4155,6 +4370,9 @@ function settlementFall(settlementIndex) {
   spawnXpGems(settlement.wx, settlement.wy, xpValueOf(settlement));
   runKills++;
 
+  // v0.10: 石造りの城壁以外は炎上させる（燃える街の演出）
+  if (!settlement._isWall) spawnFire(settlement.wx, settlement.wy, settlement.radius);
+
   // 変更1: 卵持ち建物だけが卵を EGG_DROP_COUNT 個落とす。
   // 残りの建物は壊しても卵を落とさない（破壊演出はそのまま）。
   if (settlement.isEggBearer) {
@@ -4423,6 +4641,122 @@ function updateParticles(dt) {
     partLife[i] -= dt;
     if (partLife[i] <= 0) partActive[i] = 0;
   }
+}
+
+// -----------------------------------------------------------------
+// v0.10: 炎上システム — 破壊した建物が数秒燃え、火の粉と煙柱を上げる。
+// 「人間社会が燃えている」画を作る。専用プールで既存FXと枠を奪い合わない。
+// -----------------------------------------------------------------
+const MAX_FIRES = 48;
+const fireX      = new Float32Array(MAX_FIRES);
+const fireY      = new Float32Array(MAX_FIRES);
+const fireLife   = new Float32Array(MAX_FIRES);
+const fireEmit   = new Float32Array(MAX_FIRES);
+const fireScale  = new Float32Array(MAX_FIRES);   // 建物サイズに応じた炎の規模
+const fireActive = new Uint8Array(MAX_FIRES);
+const FIRE_DURATION = 2.4;
+
+const MAX_EMBERS = 200;
+const emberX       = new Float32Array(MAX_EMBERS);
+const emberY       = new Float32Array(MAX_EMBERS);
+const emberVx      = new Float32Array(MAX_EMBERS);
+const emberVy      = new Float32Array(MAX_EMBERS);
+const emberLife    = new Float32Array(MAX_EMBERS);
+const emberMaxLife = new Float32Array(MAX_EMBERS);
+const emberType    = new Uint8Array(MAX_EMBERS);   // 0=火の粉, 1=煙
+const emberActive  = new Uint8Array(MAX_EMBERS);
+
+function resetFires() {
+  fireActive.fill(0);
+  emberActive.fill(0);
+}
+
+// 建物破壊時に炎上を開始する。radius で炎の規模を決める。
+function spawnFire(wx, wy, radius) {
+  let slot = -1;
+  for (let i = 0; i < MAX_FIRES; i++) { if (!fireActive[i]) { slot = i; break; } }
+  if (slot < 0) {
+    // 満杯なら残り寿命最小を上書き（新しい破壊を優先）
+    let minL = Infinity;
+    for (let i = 0; i < MAX_FIRES; i++) if (fireLife[i] < minL) { minL = fireLife[i]; slot = i; }
+  }
+  fireActive[slot]  = 1;
+  fireX[slot]       = wx;
+  fireY[slot]       = wy;
+  fireLife[slot]    = FIRE_DURATION * (0.7 + Math.random() * 0.6);
+  fireEmit[slot]    = 0;
+  fireScale[slot]   = Math.max(0.7, radius / 12);
+}
+
+function _spawnEmber(wx, wy, type, scale) {
+  let slot = -1;
+  for (let i = 0; i < MAX_EMBERS; i++) { if (!emberActive[i]) { slot = i; break; } }
+  if (slot < 0) return;
+  emberActive[slot] = 1;
+  emberX[slot] = wx + (Math.random() - 0.5) * 8 * scale;
+  emberY[slot] = wy + (Math.random() - 0.5) * 6 * scale;
+  if (type === 0) {
+    emberVx[slot]   = (Math.random() - 0.5) * 30;
+    emberVy[slot]   = -40 - Math.random() * 50;      // 火の粉は上へ舞う
+    emberLife[slot] = 0.4 + Math.random() * 0.35;
+  } else {
+    emberVx[slot]   = (Math.random() - 0.5) * 18 - 6; // 煙はわずかに一方向へ流れる
+    emberVy[slot]   = -22 - Math.random() * 16;
+    emberLife[slot] = 1.1 + Math.random() * 0.8;
+  }
+  emberMaxLife[slot] = emberLife[slot];
+  emberType[slot]    = type;
+}
+
+function updateFires(dt) {
+  for (let i = 0; i < MAX_FIRES; i++) {
+    if (!fireActive[i]) continue;
+    fireLife[i] -= dt;
+    if (fireLife[i] <= 0) { fireActive[i] = 0; continue; }
+    fireEmit[i] -= dt;
+    if (fireEmit[i] <= 0) {
+      fireEmit[i] = 0.05 + Math.random() * 0.05;
+      const sc = fireScale[i];
+      _spawnEmber(fireX[i], fireY[i], 0, sc);                       // 火の粉
+      if (Math.random() < 0.7) _spawnEmber(fireX[i], fireY[i], 1, sc); // 煙
+    }
+  }
+  for (let i = 0; i < MAX_EMBERS; i++) {
+    if (!emberActive[i]) continue;
+    emberX[i] += emberVx[i] * dt;
+    emberY[i] += emberVy[i] * dt;
+    if (emberType[i] === 1) { emberVy[i] *= 0.98; emberVx[i] *= 0.99; } // 煙は上昇が緩む
+    else                    { emberVy[i] += 8 * dt; }                    // 火の粉はやや重力
+    emberLife[i] -= dt;
+    if (emberLife[i] <= 0) emberActive[i] = 0;
+  }
+}
+
+// ember描画（カメラ変換内・ワールド座標）。竜より下の地上レイヤーで呼ぶ。
+function drawEmbers() {
+  for (let i = 0; i < MAX_EMBERS; i++) {
+    if (!emberActive[i]) continue;
+    const t = emberLife[i] / emberMaxLife[i];   // 1→0
+    if (emberType[i] === 1) {
+      // 煙: 灰、寿命で膨張＆フェード（アルファ抑えめでユニット視認性を守る）
+      const r = 4 + (1 - t) * 14;
+      ctx.globalAlpha = t * 0.26;
+      ctx.fillStyle = "#4a4a4a";
+      ctx.beginPath();
+      ctx.arc(emberX[i], emberY[i], r, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // 火の粉: 橙〜黄、小さく明るい
+      const r = 1 + t * 2.2;
+      const g = (120 + 120 * t) | 0;
+      ctx.globalAlpha = Math.min(1, t * 1.4);
+      ctx.fillStyle = `rgb(255,${g},40)`;
+      ctx.beginPath();
+      ctx.arc(emberX[i], emberY[i], r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1.0;
 }
 
 // -----------------------------------------------------------------
@@ -5896,6 +6230,7 @@ function advanceToNextStage() {
   activeBreaths.length = 0;
   clearXpGems();
   clearDragonProjectiles();
+  resetFires();                 // v0.10: 前ステージの炎を消す
 
   settlements = generateStageLayout(currentStage);
   rebuildBuildingGrid();
@@ -5944,6 +6279,7 @@ function returnToTitle() {
 
   activeBreaths.length = 0;
   clearXpGems();
+  resetFires();                 // v0.10: タイトルへ戻る際も炎を消す
 
   settlements = generateStageLayout(0);
   rebuildBuildingGrid();
@@ -6545,6 +6881,7 @@ function render(now) {
 
   drawEggBearerMarkers(now);
   drawEggs();
+  drawEmbers();             // v0.10: 燃える建物の火の粉・煙（建物の上・ユニットの下）
   drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
   drawBreathAttacks(now);
@@ -7527,10 +7864,13 @@ const ENEMY_IMAGE_SOURCES = {
 // v0.9: 建物スプライト（Gemini生成・無彩色→ステージ色でティントして使う）
 // tiny/small→small、medium→medium、large/首都→large を充当。城壁・ボスは対象外。
 const BUILDING_IMAGE_SOURCES = {
-  small:  "assets/building_small.png",
-  medium: "assets/building_medium.png",
-  large:  "assets/building_large.png",
-  ruin:   "assets/building_ruin.png",   // v0.9.1: 陥落後の廃墟（全サイズ共通・スケール描画）
+  small:    "assets/building_small.png",
+  medium:   "assets/building_medium.png",
+  large:    "assets/building_large.png",
+  ruin:     "assets/building_ruin.png",     // v0.9.1: 陥落後の廃墟（全サイズ共通・スケール描画）
+  temple:   "assets/building_temple.png",   // v0.10: 町の中心広場のランドマーク
+  windmill: "assets/building_windmill.png", // v0.10: 村のランドマーク（偶数町で交互）
+  bridge:   "assets/bridge.png",            // v0.10: 川と街道の交差点に架かる橋
 };
 const buildingImages = {};
 
@@ -8116,6 +8456,7 @@ function tick() {
     collectNearbyEggs();
     updateXpGems(wdt);            // v0.6: XPジェムの飛散・吸引・回収
     updateSlashFx(wdt);           // v0.8: 緋竜の斬閃FX
+    updateFires(wdt);             // v0.10: 燃える建物の火の粉・煙柱
     maybeShowLevelUp();           // v0.6: レベルアップが積まれていれば3択を出す（非モーダル）
   } else if (gameState === "title") {
     // v0.6: タイトル画面ではアイドル旋回する群れを背景として見せる
@@ -8130,6 +8471,7 @@ function tick() {
     updateAppearEffects(dt);
     updateDownEffects(dt);
     updateXpGems(dt);             // v0.6: ボスのXPジェムをクリア演出中に吸収させる
+    updateFires(dt);              // v0.10: クリア演出中も街は燃え続ける
     updateStageClearSequence(dt);
   } else if (gameState === "all-clear") {
     simStep(dt);
