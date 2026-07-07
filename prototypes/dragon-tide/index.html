@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.8.0";
+const GAME_VERSION = "v0.9.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -2134,6 +2134,7 @@ function makeMover(def, randPoint) {
       wpDir: 1,                 // pingpong 用の進行方向（1/-1）
       attackTimer: Math.random() * 2.0,
       beamTargetIdx: -1,        // colossus の照射対象（描画用）
+      swayPhase: Math.random() * Math.PI * 2,  // v0.9: 生気づけアニメの個体位相
       alive: true,
     };
   }
@@ -2481,8 +2482,36 @@ function drawMovers() {
       const drawW = def.radius * meta.drawScale;
       const s     = drawW / enemyImg.naturalWidth;
       const drawH = enemyImg.naturalHeight * s;
+      const phase = m.swayPhase ?? 0;
+
+      // v0.9: 浮遊ユニット（守護像・気球）は地面に落ち影を描いて高度感を出す
+      if (meta.hover || def.flying) {
+        ctx.globalAlpha = 0.22;
+        ctx.fillStyle = "#000000";
+        ctx.beginPath();
+        ctx.ellipse(5, 8, def.radius * 0.85, def.radius * 0.55, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+      }
+
       if (meta.forward === "up")        ctx.rotate(angle + Math.PI / 2);
       else if (meta.forward === "down") ctx.rotate(angle - Math.PI / 2);
+
+      // v0.9: 生気づけアニメーション。静止画のまま滑るのを防ぐ
+      if (meta.hover) {
+        // 浮遊: 呼吸のような脈動＋ゆっくり漂う傾き（守護像＝歩行アニメ不要のデザイン）
+        const bob = Math.sin(breathTime * 2.2 + phase);
+        ctx.rotate(bob * 0.06);
+        const sc = 1 + bob * 0.045;
+        ctx.scale(sc, sc);
+      } else if (def.name === "balloon") {
+        ctx.rotate(Math.sin(breathTime * 0.9 + phase) * 0.07);
+      } else {
+        // 地上ユニット: 歩行スイング（車両の甲鉄艦はごく控えめに）
+        const swayAmp = def.name === "ironclad" ? 0.02 : 0.05;
+        ctx.rotate(Math.sin(breathTime * 5.0 + phase) * swayAmp);
+      }
+
       ctx.drawImage(
         enemyImg,
         -enemyImg.naturalWidth  * s * meta.px,
@@ -2781,8 +2810,21 @@ function drawGroundDetailOnLayer(bctx) {
   const lighter = shadeColor(config.bgColor, 14);
   const darker  = shadeColor(config.bgColor, -8);
 
+  // v0.9: Gemini生成の低コントラスト地表タイルを薄く敷く。
+  // alpha を抑えてステージ背景色を透かす＝時代ごとの色味を保ちつつ質感だけ足す。
+  // ユニット視認性を優先し、これ以上濃くしないこと。
+  if (groundTileImage) {
+    const pattern = bctx.createPattern(groundTileImage, "repeat");
+    if (pattern) {
+      bctx.globalAlpha = 0.30;
+      bctx.fillStyle = pattern;
+      bctx.fillRect(0, 0, WORLD_W, WORLD_H);
+      bctx.globalAlpha = 1.0;
+    }
+  }
+
   // 大きな柔らかいパッチ（地表のむら）
-  for (let k = 0; k < 90; k++) {
+  for (let k = 0; k < 60; k++) {
     const x = Math.random() * WORLD_W;
     const y = Math.random() * WORLD_H;
     const rx = 90 + Math.random() * 240;
@@ -2794,9 +2836,9 @@ function drawGroundDetailOnLayer(bctx) {
     bctx.fill();
   }
 
-  // 細かいスペックル（砂利・草むら）
+  // 細かいスペックル（砂利・草むら。v0.9: タイルが質感を担うため減量）
   bctx.globalAlpha = 0.22;
-  for (let k = 0; k < 1400; k++) {
+  for (let k = 0; k < 700; k++) {
     const x = Math.random() * WORLD_W;
     const y = Math.random() * WORLD_H;
     const size = 1 + Math.random() * 2.5;
@@ -2854,6 +2896,69 @@ function drawTownRoadsOnLayer(bctx, meta) {
   }
 }
 
+// -----------------------------------------------------------------
+// v0.9: 建物スプライトのティント（無彩色スプライト × 建物色 = 時代ごとの街並み）
+// multiply で着色 → destination-in で元の透明度を復元する定番レシピ。
+// キャッシュは (サイズ, 色) 単位。1ステージで使う色は十数種なので小さく収まる。
+// -----------------------------------------------------------------
+const _tintedBuildingCache = new Map();
+
+// 建物色はshadeColorの±15ゆらぎで建物ごとに微妙に違う。そのままキャッシュキーに
+// すると数百枚のティントcanvas（数十MB）になるため、RGB各24刻みに量子化して
+// 色数を数十種に抑える（見た目の差はほぼ分からない）。
+function quantizeTintColor(color) {
+  let r = 128, g = 128, b = 128;
+  if (color.startsWith("#") && color.length >= 7) {
+    r = parseInt(color.slice(1, 3), 16);
+    g = parseInt(color.slice(3, 5), 16);
+    b = parseInt(color.slice(5, 7), 16);
+  } else {
+    const m = color.match(/rgb\((\d+),(\d+),(\d+)\)/);
+    if (m) { r = +m[1]; g = +m[2]; b = +m[3]; }
+  }
+  const q = (v) => Math.min(255, Math.round(v / 24) * 24);
+  return `rgb(${q(r)},${q(g)},${q(b)})`;
+}
+
+function getTintedBuildingSprite(sizeKey, rawColor) {
+  const color = quantizeTintColor(rawColor);
+  const cacheKey = sizeKey + "_" + color;
+  const cached = _tintedBuildingCache.get(cacheKey);
+  if (cached) return cached;
+  const img = buildingImages[sizeKey];
+  if (!img) return null;
+
+  // ティントcanvasは128pxに縮小して保持する。建物の描画サイズは最大でも
+  // 64ワールドpx程度なので画質は落ちず、キャッシュのメモリを1/4に抑えられる。
+  const TINT_CANVAS_SIZE = 128;
+  const scale = TINT_CANVAS_SIZE / Math.max(img.naturalWidth, img.naturalHeight);
+  const tc = document.createElement("canvas");
+  tc.width  = Math.max(1, Math.round(img.naturalWidth * scale));
+  tc.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const c = tc.getContext("2d");
+  c.drawImage(img, 0, 0, tc.width, tc.height);
+  c.globalCompositeOperation = "multiply";
+  c.fillStyle = color;
+  c.fillRect(0, 0, tc.width, tc.height);
+  c.globalCompositeOperation = "destination-in";
+  c.drawImage(img, 0, 0, tc.width, tc.height);
+
+  _tintedBuildingCache.set(cacheKey, tc);
+  return tc;
+}
+
+/** 建物に使うスプライトのサイズキーを返す（対象外の建物は null）。 */
+function buildingSpriteKeyFor(settlement) {
+  if (settlement._isWall || settlement.isBoss) return null;
+  switch (settlement.size) {
+    case "tiny":
+    case "small":  return "small";
+    case "medium": return "medium";
+    case "large":  return "large";
+    default:       return null;
+  }
+}
+
 function drawSettlementOnLayer(bctx, settlement) {
   const alpha = settlement.fallen ? 0.22 : 1.0;
   const color = settlement.fallen ? "#333" : settlement.color;
@@ -2875,6 +2980,22 @@ function drawSettlementOnLayer(bctx, settlement) {
     bctx.globalAlpha = alpha;
   }
 
+  // v0.9: 建物スプライトが使えるならティントして描画（瓦礫はベクター描画のまま）
+  const spriteKey  = settlement.fallen ? null : buildingSpriteKeyFor(settlement);
+  const tinted     = spriteKey ? getTintedBuildingSprite(spriteKey, color) : null;
+  const usedSprite = !!tinted;
+
+  if (tinted) {
+    const drawW = settlement.radius * 2.3;
+    const drawH = drawW * (tinted.height / tinted.width);
+    // 座標由来の決定的な左右反転でタイル感を減らす
+    const flip = (Math.floor(settlement.wx * 7 + settlement.wy * 13) % 2 === 0) ? 1 : -1;
+    bctx.save();
+    bctx.translate(settlement.wx, settlement.wy);
+    bctx.scale(flip, 1);
+    bctx.drawImage(tinted, -drawW / 2, -drawH / 2, drawW, drawH);
+    bctx.restore();
+  } else {
   switch (settlement.shape) {
     case "circle":      drawCircleOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
     case "square":      drawSquareOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
@@ -2894,9 +3015,11 @@ function drawSettlementOnLayer(bctx, settlement) {
       break;
     default:            drawCircleOnCtx(bctx, settlement.wx, settlement.wy, settlement.radius, color); break;
   }
+  }
 
   // v0.8: 屋根のシェーディング（左上のシーン＋窓明かり）で建物のクオリティを上げる
-  if (!settlement.fallen && !settlement._isWall && !settlement.isBoss) {
+  // v0.9: スプライト描画時はスプライト自体に陰影があるためスキップ
+  if (!usedSprite && !settlement.fallen && !settlement._isWall && !settlement.isBoss) {
     const swx = settlement.wx;
     const swy = settlement.wy;
     const sr  = settlement.radius;
@@ -7255,12 +7378,27 @@ const ENEMY_IMAGE_SOURCES = {
   citadel:  "assets/boss_citadel.png",
 };
 
+// v0.9: 建物スプライト（Gemini生成・無彩色→ステージ色でティントして使う）
+// tiny/small→small、medium→medium、large/首都→large を充当。城壁・ボスは対象外。
+const BUILDING_IMAGE_SOURCES = {
+  small:  "assets/building_small.png",
+  medium: "assets/building_medium.png",
+  large:  "assets/building_large.png",
+};
+const buildingImages = {};
+
+// v0.9: 地面テクスチャタイル（低コントラスト。ユニット視認性を損なわないよう薄く敷く）
+const GROUND_TILE_SOURCE = "assets/ground_tile.jpg";
+let groundTileImage = null;
+
 // 回転ピボット（アルファ質量重心の相対座標。chroma_key後にPIL+numpyで実測した値）と
 // 画像内の前方方向。forward: "up"=画像上が前 / "down"=画像下が前 / "none"=回転させない。
 // drawScale は def.radius（当たり判定半径）に掛けて描画幅にする係数。
 const ENEMY_SPRITE_META = {
   mammoth:  { px: 0.4999, py: 0.5494, forward: "up",   drawScale: 2.6 },
-  colossus: { px: 0.5777, py: 0.4503, forward: "down", drawScale: 2.6 },
+  // v0.9: コロッサスを「浮遊する守護像」に差し替え（歩行アニメ不要のデザインへ変更。
+  // 質量重心は周回破片で左に寄るため、視覚中心寄りに手動補正した値を使う）
+  colossus: { px: 0.47,   py: 0.42,   forward: "up",   drawScale: 2.9, hover: true },
   knights:  { px: 0.5075, py: 0.4779, forward: "up",   drawScale: 2.5 },
   ironclad: { px: 0.5035, py: 0.5300, forward: "up",   drawScale: 2.8 },
   balloon:  { px: 0.5140, py: 0.4902, forward: "none", drawScale: 2.6 },
@@ -7352,7 +7490,12 @@ function preloadDragonImages() {
   const enemyTasks = Object.keys(ENEMY_IMAGE_SOURCES).map((name) =>
     loadOne(ENEMY_IMAGE_SOURCES[name], (img) => { enemyImages[name] = img; }));
 
-  return Promise.all([...tasks, ...enemyTasks]).then(() => {
+  // v0.9: 建物スプライト＋地面タイル（失敗した分だけベクター/単色にフォールバック）
+  const buildingTasks = Object.keys(BUILDING_IMAGE_SOURCES).map((size) =>
+    loadOne(BUILDING_IMAGE_SOURCES[size], (img) => { buildingImages[size] = img; }));
+  const groundTask = loadOne(GROUND_TILE_SOURCE, (img) => { groundTileImage = img; });
+
+  return Promise.all([...tasks, ...enemyTasks, ...buildingTasks, groundTask]).then(() => {
     // dragonImagesLoaded は竜画像のみで判定（敵画像の失敗と切り離す）
     dragonImagesLoaded =
       Object.keys(DRAGON_IMAGE_SOURCES).every((element) => dragonImages[element]) &&
