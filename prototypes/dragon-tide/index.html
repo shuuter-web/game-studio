@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.10.0";
+const GAME_VERSION = "v0.11.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -1252,7 +1252,9 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
 
   const totalCount = smallCount + mediumCount + largeCount;
   const PLAZA_R = 36;                                          // 中央広場の半径
-  const townR   = Math.max(170, Math.min(320, 15 * Math.sqrt(totalCount))); // 町の外縁半径
+  // v0.11: 大都市（scale 1.7 → 建物約400棟）が収まるよう上限を430へ拡大。
+  // 係数も 15→16.5 に上げて敷地に余裕を持たせ、配置成功率（実建物数）を上げる。
+  const townR   = Math.max(170, Math.min(430, 16.5 * Math.sqrt(totalCount))); // 町の外縁半径
   const RING_R  = PLAZA_R + 58;                                // 環状路の半径
 
   // 放射状の通り（3〜5本、角度ジッター付き）
@@ -1288,7 +1290,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
 
   // --- (2) 大型建物: 環状路上の通りと通りの間（にらみを利かせる領主館・聖堂） ---
   let placedLarge = 0;
-  for (let k = 0; k < largeCount * 4 && placedLarge < largeCount; k++) {
+  for (let k = 0; k < largeCount * 8 && placedLarge < largeCount; k++) {
     const angle = randRange(0, Math.PI * 2);
     const r     = RING_R + randRange(10, 40);
     const wx = townCenterX + Math.cos(angle) * r;
@@ -1303,7 +1305,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
 
   // --- (3) 中型建物: 放射状の通り沿いの内側区間（商家・工房の並び） ---
   let placedMedium = 0;
-  for (let k = 0; k < mediumCount * 5 && placedMedium < mediumCount; k++) {
+  for (let k = 0; k < mediumCount * 8 && placedMedium < mediumCount; k++) {
     const st   = streets[k % streets.length];
     const t    = randRange(PLAZA_R + 22, townR * 0.55);
     const side = k % 2 === 0 ? 1 : -1;
@@ -1321,7 +1323,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   // --- (4) 小型建物: まず通り沿い、埋まらない分は町の中の路地に有機的に充填 ---
   let placedSmall = 0;
   // (4a) 通り沿い（両側にぎっしり並ぶ長屋）
-  for (let k = 0; k < smallCount * 3 && placedSmall < smallCount; k++) {
+  for (let k = 0; k < smallCount * 4 && placedSmall < smallCount; k++) {
     const st   = streets[k % streets.length];
     const t    = randRange(PLAZA_R + 16, st.len);
     const side = (k >> 1) % 2 === 0 ? 1 : -1;
@@ -1336,7 +1338,8 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     placedSmall++;
   }
   // (4b) 路地充填（中心に密・外縁に疎。√分布で中心へ寄せる）
-  for (let k = 0; k < smallCount * 8 && placedSmall < smallCount; k++) {
+  // v0.11: 試行回数を倍増（×8→×16）して充填率を上げる＝実建物数を目標値に近づける
+  for (let k = 0; k < smallCount * 16 && placedSmall < smallCount; k++) {
     const angle = randRange(0, Math.PI * 2);
     const r     = PLAZA_R + 14 + Math.sqrt(Math.random()) * (townR - PLAZA_R - 14);
     const wx = townCenterX + Math.cos(angle) * r;
@@ -1553,6 +1556,78 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
 }
 
 /**
+ * v0.11: 道沿いの集落を生成する。
+ * 各街道エッジの途中（等分点＋横オフセット）に3〜6棟の民家群を置く。
+ * 町・首都・川の上は避け、建物は道に面する向きで並べる。
+ *
+ * @param {Array} existingBuildings  既存の全建物（重なり回避用）
+ * @param {Array} roadEdges          townRoadEdges（[{x,y},{x,y}] の配列）
+ * @param {Object} boss              ボス建物
+ * @param {Object} config            STAGE_CONFIGS[stageIndex]
+ * @returns {Array} 配置された tiny 建物のリスト
+ */
+function generateRoadsideHamlets(existingBuildings, roadEdges, boss, config) {
+  const result = [];
+  const bSmall = config.buildings.small;
+  const tinyR  = BUILDING_SIZE_PARAMS.tiny.radiusBase;
+  const occupied = existingBuildings.map(b => ({ x: b.wx, y: b.wy, r: b.radius }));
+  const bossClear2 = (WALL_OUTER_RING_RADIUS + 80) ** 2;
+
+  for (const [a, b] of roadEdges) {
+    const hamletCount = randInt(2, 4);
+    for (let h = 0; h < hamletCount; h++) {
+      const t   = (h + 1) / (hamletCount + 1) + randRange(-0.08, 0.08);
+      const dx  = b.x - a.x, dy = b.y - a.y;
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      const side = Math.random() < 0.5 ? 1 : -1;
+      const off  = side * (34 + randRange(0, 26));   // 道の脇（街道帯の外側すぐ）
+      const cx = a.x + dx * t + (-dy / len) * off;
+      const cy = a.y + dy * t + (dx / len) * off;
+
+      if (cx < 60 || cx > WORLD_W - 60 || cy < 60 || cy > WORLD_H - 60) continue;
+      if (dist2(cx, cy, boss.wx, boss.wy) < bossClear2) continue;
+
+      // 川の上を避ける（中心線の頂点との距離で近似）
+      let onRiver = false;
+      for (const rp of riverPolyline) {
+        if (dist2(cx, cy, rp.x, rp.y) < riverWidth * riverWidth) { onRiver = true; break; }
+      }
+      if (onRiver) continue;
+
+      // 町の中・既存建物のそばはスキップ（道中の「ぽつんとした集落」感を守る）
+      // v0.11: 大都市化で町が広がったため間隔を 90→60 に緩めて出現数を確保
+      let nearExisting = false;
+      for (const ob of occupied) {
+        const minD = ob.r + 60;
+        if (dist2(cx, cy, ob.x, ob.y) < minD * minD) { nearExisting = true; break; }
+      }
+      if (nearExisting) continue;
+
+      // 3〜6棟の民家を道に沿って置く
+      const count = randInt(3, 6);
+      const faceAngle = Math.atan2(dy, dx) + Math.PI / 2;   // 道に面する向き
+      for (let k = 0; k < count; k++) {
+        const wx = cx + randRange(-36, 36);
+        const wy = cy + randRange(-30, 30);
+        let clash = false;
+        for (const r of result) {
+          if (dist2(wx, wy, r.wx, r.wy) < (tinyR * 2 + 6) ** 2) { clash = true; break; }
+        }
+        if (clash) continue;
+        const hp  = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
+        const bld = makeBuilding(wx, wy, "tiny", randChoice(bSmall.colors), bSmall, hp);
+        bld._tinySettlement = true;   // 足元の土広場・ミニマップ描画を tiny 集落と共通化
+        bld.radius = tinyR;
+        bld._faceAngle = faceAngle + randRange(-0.15, 0.15);
+        result.push(bld);
+        occupied.push({ x: wx, y: wy, r: tinyR });
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * ボス集落を1体生成する。
  * 高HP・高火力・大半径で、小集落の育成なしでは倒せない圧力を作る。
  * isBoss=true を持つことでクリア条件・描画・ミニマップで特別扱いされる。
@@ -1617,14 +1692,29 @@ function generateStageLayout(stageIndex) {
       .map(e => e.idx),
   );
 
+  // v0.11: 都市の規模に変化をつける（大都市1・中都市1・残りは標準±ゆらぎ）。
+  // 建物数は scale^2 で増やす＝「建物を壊す」メイン体験の総量を底上げする。
+  const cityScaleByIdx = new Map();
+  {
+    const order = townCenters.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    cityScaleByIdx.set(order[0], 1.7);                       // 大都市（首府級）
+    if (order.length > 1) cityScaleByIdx.set(order[1], 1.35); // 中核都市
+  }
+
   const result = [];
   for (let t = 0; t < townCenters.length; t++) {
     const center = townCenters[t];
+    const cityScale = cityScaleByIdx.get(t) ?? randRange(0.9, 1.1);
+    const s2 = cityScale * cityScale;
     const townBuildings = generateTown(
       center.x, center.y,
-      Math.round(config.smallPerTown  * BUILDING_DENSITY_MULT),
-      Math.round(config.mediumPerTown * BUILDING_DENSITY_MULT),
-      Math.round(config.largePerTown  * BUILDING_DENSITY_MULT),
+      Math.round(config.smallPerTown  * BUILDING_DENSITY_MULT * s2),
+      Math.round(config.mediumPerTown * BUILDING_DENSITY_MULT * s2),
+      Math.max(1, Math.round(config.largePerTown * BUILDING_DENSITY_MULT * s2)),
       config,
       t,
     );
@@ -1676,6 +1766,18 @@ function generateStageLayout(stageIndex) {
     tinyBuildings[tinyIndices[i]].isEggBearer = true;
   }
   for (const b of tinyBuildings) result.push(b);
+
+  // --- (4b) v0.11: 道沿いの集落 — 街道のところどころに小さな民家群を置く。
+  // 「道があるから人が住む」の地理感＋壊す対象の追加供給。卵割当は tiny と同率。
+  const roadsideBuildings = generateRoadsideHamlets(result, townRoadEdges, boss, config);
+  const rsEggCount  = Math.max(1, Math.round(roadsideBuildings.length * eggBearerRatio()));
+  const rsIndices   = Array.from({ length: roadsideBuildings.length }, (_, i) => i);
+  for (let i = 0; i < rsEggCount && i < rsIndices.length; i++) {
+    const j   = i + Math.floor(Math.random() * (rsIndices.length - i));
+    const tmp = rsIndices[i]; rsIndices[i] = rsIndices[j]; rsIndices[j] = tmp;
+    roadsideBuildings[rsIndices[i]].isEggBearer = true;
+  }
+  for (const b of roadsideBuildings) result.push(b);
 
   // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
   const wallSegments = generateWallRing(boss, stageIndex);
@@ -3333,12 +3435,14 @@ function drawSettlementOnLayer(bctx, settlement) {
   const usedSprite = !!tinted || !!ruinImg;
 
   if (ruinImg) {
-    const drawW = settlement.radius * 2.15;
+    // v0.11: 廃墟は元建物（radius*2.3）を完全に覆うサイズに拡大し、
+    // ほぼ不透明で描いて下の元建物や地面が透けないようにする（陥落跡の見た目修正）。
+    const drawW = settlement.radius * 2.6;
     const drawH = drawW * (ruinImg.naturalHeight / ruinImg.naturalWidth);
     // 座標由来の決定的な90度回転＋反転で同じ廃墟の並びに見えないようにする
     const seed = Math.floor(settlement.wx * 7 + settlement.wy * 13);
     bctx.save();
-    bctx.globalAlpha = 0.78;   // 生きた建物より沈ませて「終わった場所」感を出す
+    bctx.globalAlpha = 0.95;
     bctx.translate(settlement.wx, settlement.wy);
     bctx.rotate((seed % 4) * Math.PI / 2);
     bctx.scale(seed % 2 === 0 ? 1 : -1, 1);
@@ -4389,9 +4493,10 @@ function settlementFall(settlementIndex) {
     const bc = buildingLayerCtx;
     // ボスはグロー外輪が radius * 2.2 まで広がるため、クリア矩形を大きめに取る
     // v0.7: 要塞建物は軍旗（radius+9上方）と外輪リングがあるため広めにクリアする
+    // v0.11: 廃墟スプライト（radius*2.6・90度回転あり）を完全に包む範囲をクリアして
+    // 元建物の縁が残らないようにする。ボスは城塞グロー、要塞は軍旗ぶんの余白も確保。
     const padding = settlement.isBoss ? settlement.radius * 2.5
-                  : settlement._fortified ? settlement.radius + 14
-                  : settlement.radius + 4;
+                  : Math.max(settlement.radius * 1.55, settlement.radius + 14);
     bc.clearRect(
       settlement.wx - padding,
       settlement.wy - padding,
@@ -4911,10 +5016,17 @@ const STRINGS = {
   },
 };
 
-// ---- レベル曲線: 必要XP(Lv n → n+1) = 110 × 1.35^(n-1) ----
-// v0.7: レベルアップ頻度を約1/5に（Shooterプレイテスト「多すぎる」）。
-// 強化がラン全体持ち越しになったため、1ラン（4ステージ）でLv9〜10到達を想定。
-const XP_LEVEL_BASE   = 110;
+// ============================================================
+// ★レベルアップ調整パラメータ（ここだけ変えればレベルの上がり方を調整できる）
+//   必要XP(Lv n → n+1) = XP_LEVEL_BASE × XP_LEVEL_GROWTH^(n-1)
+//   - XP_LEVEL_BASE  : 最初のレベルアップに必要なXP。大きいほど全体的に上がりにくい
+//   - XP_LEVEL_GROWTH: レベルごとの必要XP倍率。大きいほど後半が急に上がりにくくなる
+//   例) もっと速く上げたい → XP_LEVEL_BASE を 120 などに下げる
+//       もっとゆっくりにしたい → XP_LEVEL_BASE を 220 などに上げる
+//   v0.11: 建物数が約1.8倍に増えXP総量が増えたため 110→160 に引き上げ
+//   （建物増ぶんを相殺しつつ前バージョンよりわずかに速い上がり方に調整）
+// ============================================================
+const XP_LEVEL_BASE   = 160;
 const XP_LEVEL_GROWTH = 1.35;
 function xpForNext(level) {
   return Math.ceil(XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, level - 1));
