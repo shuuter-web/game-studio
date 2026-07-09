@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.11.1";
+const GAME_VERSION = "v0.11.3";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -1080,12 +1080,28 @@ let buildingLayerCanvas = null;
 let buildingLayerCtx    = null;
 let buildingLayerDirty  = true;
 
+// v0.11.3: 地面レイヤー（地表・川・街道・橋・地形・町の下地）を建物とは
+// 完全に別のキャンバスに分離する。
+// 経緯: 建物が破壊されるたびに buildingLayerCanvas を部分クリアしていたが、
+// 従来はこのキャンバス1枚に地面・道路・畑・川も同居していたため、
+// クリア矩形が周囲の道路や畑、密集した隣の建物まで巻き込んで消してしまい、
+// 「壊した場所の周りの街や道が消える」不具合になっていた（Shooter報告で発覚）。
+// 地面をこの別キャンバスに焼いておけば、建物側をいくらクリアしても
+// 地面・道路・畑・川は一切影響を受けない。
+let groundLayerCanvas = null;
+let groundLayerCtx    = null;
+
 function createBuildingLayer() {
   buildingLayerCanvas = document.createElement("canvas");
   buildingLayerCanvas.width  = WORLD_W;
   buildingLayerCanvas.height = WORLD_H;
   buildingLayerCtx = buildingLayerCanvas.getContext("2d");
   buildingLayerDirty = true;
+
+  groundLayerCanvas = document.createElement("canvas");
+  groundLayerCanvas.width  = WORLD_W;
+  groundLayerCanvas.height = WORLD_H;
+  groundLayerCtx = groundLayerCanvas.getContext("2d");
 }
 
 let viewW = 0, viewH = 0, dpr = 1;
@@ -3015,9 +3031,14 @@ function assignEggBearers(buildings) {
 // オフスクリーンCanvas: 建物の静的描画レイヤー
 // 建物が壊れたときだけ部分再描画する
 // -----------------------------------------------------------------
-function rebuildBuildingLayer() {
-  if (!buildingLayerCtx) return;
-  const bctx = buildingLayerCtx;
+/**
+ * v0.11.3: 地面レイヤー（地表・川・街道・橋・地形・町の下地）を一度だけ焼く。
+ * ステージ生成のたびに1回だけ呼ばれ、以降は建物が壊れても二度と書き換わらない
+ * （buildingLayerCanvas 側の部分クリアが道路・畑・川を消す不具合の根本対策）。
+ */
+function rebuildGroundLayer() {
+  if (!groundLayerCtx) return;
+  const bctx = groundLayerCtx;
 
   // 完全クリア
   bctx.clearRect(0, 0, WORLD_W, WORLD_H);
@@ -3042,6 +3063,20 @@ function rebuildBuildingLayer() {
 
   // 道路ラインを先に描く（建物の下に来る）
   drawRoadsOnLayer(bctx);
+}
+
+/**
+ * v0.11.3: 建物レイヤー（建物・城壁・ボスのみ）を焼く。
+ * このキャンバスは透過背景のまま groundLayerCanvas の上に重ねて描画される。
+ * 建物破壊時の部分クリアはこちらのキャンバスにしか影響しないため、
+ * 地面・道路・畑・川が巻き込まれて消えることがない。
+ */
+function rebuildBuildingLayer() {
+  if (!buildingLayerCtx) return;
+  const bctx = buildingLayerCtx;
+
+  // 完全クリア（透過に戻す。地面は別キャンバスなので影響しない）
+  bctx.clearRect(0, 0, WORLD_W, WORLD_H);
 
   // 全建物を描画
   for (let s = 0; s < settlements.length; s++) {
@@ -3951,6 +3986,13 @@ function rebuildBuildingGrid() {
 // 建物Spatial Hashの近傍クエリ用バッファ
 const _buildingNeighbourBuf = [];
 
+// v0.11.3: settlementFall 専用の近傍再描画バッファ。
+// _buildingNeighbourBuf は呼び出し側（updateCollisionAttacks 等）が
+// for-of で反復している最中に settlementFall() を呼ぶことがあるため、
+// 同じ配列を settlementFall 内で使い回すと反復中の配列を書き換えてしまう。
+// 必ず専用の配列を使うこと。
+const _ruinNeighbourRepairBuf = [];
+
 // 攻撃判定ゲート用: フレーム内で「射程内にドラゴンがいる」とマークされた建物インデックスの集合。
 // ドラゴン側から建物ハッシュをたどる逆引き方式で、群れから遠い建物の全ドラゴン走査を省く。
 // Set は毎フレームクリアして使い回す。
@@ -4488,38 +4530,34 @@ function settlementFall(settlementIndex) {
   }
 
   hapticPulse(80);
+
+  // 建物グリッドを先に更新する（この settlement を fallen 扱いで除外した状態にする）。
+  // v0.11.3: 直後の近傍再描画クエリが「今も生きている隣接建物だけ」を正しく
+  // 拾えるよう、描画より前に呼ぶ順序へ変更した（結果自体は従来と同じ）。
+  rebuildBuildingGrid();
+  minimapBaseDirty = true;  // v0.6-p4: ミニマップの建物ドットキャッシュも更新
+
   // 建物レイヤーを部分的に再描画（fallen状態に更新）
   if (buildingLayerCtx) {
     const bc = buildingLayerCtx;
     // ボスはグロー外輪が radius * 2.2 まで広がるため、クリア矩形を大きめに取る
     // v0.7: 要塞建物は軍旗（radius+9上方）と外輪リングがあるため広めにクリアする
-    // v0.11: 廃墟スプライト（radius*2.6・90度回転あり）を完全に包む範囲をクリアして
+    // v0.11: 廃墟スプライト（radius*2.2）と焦土を完全に包む範囲をクリアして
     // 元建物の縁が残らないようにする。ボスは城塞グロー、要塞は軍旗ぶんの余白も確保。
     const padding = settlement.isBoss ? settlement.radius * 2.5
                   : Math.max(settlement.radius * 1.55, settlement.radius + 14);
+
+    // v0.11.3: このキャンバスは建物専用レイヤー（地面・道路・畑・川は別キャンバス
+    // groundLayerCanvas 側）なので、ここでクリアしても地面側は一切影響を受けない。
     bc.clearRect(
       settlement.wx - padding,
       settlement.wy - padding,
       padding * 2,
       padding * 2,
     );
-    // v0.11.1: クリアで地面テクスチャ・町の石畳ごと消えて「四角い暗い穴」が
-    // 見えていた問題の修正。まず地面タイルをクリア範囲に再充填（パターン原点が
-    // drawGroundDetailOnLayer と同じ(0,0)なので継ぎ目なく揃う）、その上に
-    // 焦土（円形グラデーション）を敷いてから廃墟を描く。
-    if (groundTileImage) {
-      const groundPattern = bc.createPattern(groundTileImage, "repeat");
-      if (groundPattern) {
-        bc.save();
-        bc.globalAlpha = 0.30;   // drawGroundDetailOnLayer と同じ濃さ
-        bc.fillStyle = groundPattern;
-        bc.fillRect(settlement.wx - padding, settlement.wy - padding, padding * 2, padding * 2);
-        bc.restore();
-      }
-    }
-    // 焦土はクリア矩形にクリップして描く: 矩形の角まで薄い焦げで覆い
-    // （石畳が消えた角の「素の地面」を隠す）、矩形の外の建物・石畳には
-    // 一切かからない＝多数の建物が壊れても周囲が累積的に黒ずまない。
+
+    // 焦土（クリア矩形にクリップした円形グラデーション）→ 廃墟の順で描く。
+    // クリップにより矩形の外へは一切かからない＝多数破壊しても周囲が黒ずみ続けない。
     bc.save();
     bc.beginPath();
     bc.rect(settlement.wx - padding, settlement.wy - padding, padding * 2, padding * 2);
@@ -4534,11 +4572,21 @@ function settlementFall(settlementIndex) {
     bc.fillStyle = scorch;
     bc.fillRect(settlement.wx - padding, settlement.wy - padding, padding * 2, padding * 2);
     bc.restore();
+
     drawSettlementOnLayer(bc, settlement);
+
+    // v0.11.3: 密集した市街地では隣の建物がこのクリア矩形に食い込んでいることが
+    // あり、その場合クリアで隣の建物スプライトまで消えてしまう。近傍の生存建物を
+    // 拾い直して上から再描画し、消えた分を復元する（builtGrid は上で既に
+    // 更新済みなので、自分自身と他の陥落済み建物は結果に含まれない）。
+    buildingGridQuery(settlement.wx, settlement.wy, _ruinNeighbourRepairBuf);
+    for (const nIdx of _ruinNeighbourRepairBuf) {
+      const neighbour = settlements[nIdx];
+      if (!neighbour || neighbour.fallen) continue;
+      drawSettlementOnLayer(bc, neighbour);
+    }
   }
-  // 建物グリッドも更新
-  rebuildBuildingGrid();
-  minimapBaseDirty = true;  // v0.6-p4: ミニマップの建物ドットキャッシュも更新
+
   updateHUDBuildings();
 
   // 変更3: クリア条件を「ボス集落の陥落」に変更。
@@ -6379,6 +6427,7 @@ function advanceToNextStage() {
   rebuildBuildingGrid();
   buildingLayerDirty = true;
   minimapBaseDirty = true;
+  rebuildGroundLayer();   // v0.11.3: 地面（道路・畑・川など）を新ステージ分焼き直す
   rebuildBuildingLayer();
   cacheBossIndex();
 
@@ -6428,6 +6477,7 @@ function returnToTitle() {
   rebuildBuildingGrid();
   buildingLayerDirty = true;
   minimapBaseDirty = true;
+  rebuildGroundLayer();   // v0.11.3: 地面をSTAGE1分に焼き直す
   rebuildBuildingLayer();
   cacheBossIndex();
 
@@ -7007,6 +7057,11 @@ function render(now) {
   ctx.translate(-cam.x, -cam.y);
 
   drawWorldGrid();
+
+  // v0.11.3: 地面レイヤー（地表・道路・川・畑など）。建物破壊では一切書き換わらない
+  if (groundLayerCanvas) {
+    ctx.drawImage(groundLayerCanvas, 0, 0);
+  }
 
   // 建物静的レイヤーをオフスクリーンCanvasからコピー（カメラオフセット適用済み）
   if (buildingLayerCanvas) {
@@ -8010,7 +8065,9 @@ const BUILDING_IMAGE_SOURCES = {
   small:    "assets/building_small.png",
   medium:   "assets/building_medium.png",
   large:    "assets/building_large.png",
-  ruin:     "assets/building_ruin.png",     // v0.9.1: 陥落後の廃墟（全サイズ共通・スケール描画）
+  // v0.11.2: ?v=2 はキャッシュバスター。旧PNG（半透明のもや入り）が端末キャッシュに
+  // 残ったまま新コードで表示される事故を防ぐ（アセットを差し替えたらこの番号を上げる）
+  ruin:     "assets/building_ruin.png?v=2", // v0.9.1: 陥落後の廃墟（全サイズ共通・スケール描画）
   temple:   "assets/building_temple.png",   // v0.10: 町の中心広場のランドマーク
   windmill: "assets/building_windmill.png", // v0.10: 村のランドマーク（偶数町で交互）
   bridge:   "assets/bridge.png",            // v0.10: 川と街道の交差点に架かる橋
@@ -8650,6 +8707,7 @@ async function boot() {
   createBuildingLayer();
   settlements = generateStageLayout(0);
   rebuildBuildingGrid();
+  rebuildGroundLayer();   // v0.11.3: 地面レイヤーの初回生成
   rebuildBuildingLayer();
   cacheBossIndex();
   // 変更1: initBoids で配列を確保してから resetBoidsForStageStart で初期状態を作る。
