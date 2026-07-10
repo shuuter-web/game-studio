@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.11.3";
+const GAME_VERSION = "v0.11.5";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -3976,22 +3976,23 @@ function buildingGridQueryRadius(wx, wy, cellRadius, out) {
 
 function rebuildBuildingGrid() {
   buildingGridClear();
+  // v0.11.4: 陥落済み（廃墟）の建物も含めて全件を登録する。
+  // 理由: settlementFall() の近傍再描画（廃墟同士が互いを巻き込んで消す問題の修正）は
+  // 廃墟も検出できる必要がある。攻撃判定・障害物判定など他の全消費箇所は
+  // クエリ結果を受け取った後で必ず自前の `if (!s || s.fallen) continue;` を
+  // 行っているため、fallen を含めて登録しても既存の挙動に影響しない。
   for (let s = 0; s < settlements.length; s++) {
-    if (!settlements[s].fallen) {
-      buildingGridInsert(s, settlements[s].wx, settlements[s].wy);
-    }
+    buildingGridInsert(s, settlements[s].wx, settlements[s].wy);
   }
 }
 
 // 建物Spatial Hashの近傍クエリ用バッファ
 const _buildingNeighbourBuf = [];
-
-// v0.11.3: settlementFall 専用の近傍再描画バッファ。
+// settlementFall 専用の近傍探索バッファ（_clusterQueryBuf 等）は
+// collectOverlappingCluster の定義側にまとめてある。
 // _buildingNeighbourBuf は呼び出し側（updateCollisionAttacks 等）が
 // for-of で反復している最中に settlementFall() を呼ぶことがあるため、
-// 同じ配列を settlementFall 内で使い回すと反復中の配列を書き換えてしまう。
-// 必ず専用の配列を使うこと。
-const _ruinNeighbourRepairBuf = [];
+// settlementFall 系の処理でこの配列を使い回してはいけない（専用配列を使うこと）。
 
 // 攻撃判定ゲート用: フレーム内で「射程内にドラゴンがいる」とマークされた建物インデックスの集合。
 // ドラゴン側から建物ハッシュをたどる逆引き方式で、群れから遠い建物の全ドラゴン走査を省く。
@@ -4507,6 +4508,142 @@ function spawnCollisionParticles(wx, wy) {
   }
 }
 
+/**
+ * settlement 1棟ぶんのクリア矩形半径（建物レイヤー上でこの建物が占めうる最大範囲）。
+ *
+ * v0.11.4: 通常建物の式を大幅に絞った。旧式 max(radius*1.55, radius+14) は
+ * 「+14」の定数項が小さい建物（tiny/small: radius 6〜10）で支配的になり、
+ * 実際の建物間最小配置間隔（tinyで20px）に対して倍以上の半幅（20〜24px）を
+ * 取ってしまっていた。密集市街ではクリア矩形どうしが数珠つなぎに重なり合い、
+ * settlementFall() の巻き込み修復（collectOverlappingCluster）が
+ * 連結成分112棟・処理29〜63msという致命的な性能劣化を起こすことを実測で確認した。
+ * 廃墟スプライト自体は radius*2.2（半幅 radius*1.1）なので、焦土の薄い縁取り
+ * ぶんの余白（+4px）だけ足せば見た目上は十分。
+ * ボスと要塞建物（軍旗の描画が radius+9 上方まで伸びる）だけは従来の余裕ある式を残す。
+ */
+function settlementLayerPadding(settlement) {
+  if (settlement.isBoss) return settlement.radius * 2.5;
+  if (settlement._fortified) return Math.max(settlement.radius * 1.55, settlement.radius + 14);
+  return settlement.radius * 1.3 + 4;
+}
+
+/**
+ * v0.11.4: settlement 1棟ぶんのクリア矩形だけを消す（描画はしない）。
+ *
+ * 複数棟が互いのクリア矩形を巻き込む密集地では、「1棟ずつクリア→描画」を
+ * 順番に繰り返すと、後から処理した棟のクリアが直前に描いたばかりの棟の
+ * スプライトを再び消してしまう（3棟以上の連鎖で発覚。B死亡時にA→Cの順で
+ * 処理すると、Cのクリアが直前に復元したAを再度巻き込む）。
+ * そのため settlementFall() では「影響範囲の全棟を先にクリアし終えてから、
+ * 全棟をまとめて描画する」の二段階に分離する。クリア同士は結果が可換
+ * （どの順でクリアしても合成後の消去範囲は同じ）なので、これで安全になる。
+ */
+function clearSettlementLayerBox(bc, settlement) {
+  const padding = settlementLayerPadding(settlement);
+  // v0.11.3: このキャンバスは建物専用レイヤー（地面・道路・畑・川は別キャンバス
+  // groundLayerCanvas 側）なので、ここでクリアしても地面側は一切影響を受けない。
+  bc.clearRect(
+    settlement.wx - padding,
+    settlement.wy - padding,
+    padding * 2,
+    padding * 2,
+  );
+}
+
+/**
+ * v0.11.4: settlement を「今の状態」に合わせて描く（クリアは行わない）。
+ * 陥落済みなら焦土＋廃墟、生存中なら通常の建物スプライトを描く。
+ * clearSettlementLayerBox() とセットで、必ず「対象全棟のクリアを終えてから
+ * 全棟を描く」の後半フェーズとして呼ぶこと。
+ */
+function paintSettlementScorchAndSprite(bc, settlement) {
+  const padding = settlementLayerPadding(settlement);
+
+  if (settlement.fallen) {
+    // 焦土（自分の矩形にクリップした円形グラデーション）→ 廃墟の順で描く。
+    // クリップにより矩形の外へは一切かからない＝多数破壊しても周囲が黒ずみ続けない。
+    bc.save();
+    bc.beginPath();
+    bc.rect(settlement.wx - padding, settlement.wy - padding, padding * 2, padding * 2);
+    bc.clip();
+    const scorch = bc.createRadialGradient(
+      settlement.wx, settlement.wy, 2,
+      settlement.wx, settlement.wy, padding * 1.45,
+    );
+    scorch.addColorStop(0.0, "rgba(26, 20, 14, 0.85)");
+    scorch.addColorStop(0.6, "rgba(26, 20, 14, 0.45)");
+    scorch.addColorStop(1.0, "rgba(26, 20, 14, 0.10)");
+    bc.fillStyle = scorch;
+    bc.fillRect(settlement.wx - padding, settlement.wy - padding, padding * 2, padding * 2);
+    bc.restore();
+  }
+
+  drawSettlementOnLayer(bc, settlement);
+}
+
+// v0.11.4: settlementFall 専用のBFS作業キュー・訪問集合（毎回使い回す）。
+// 呼び出し中に他コードから割り込みで参照されることはない（同期実行のため）。
+const _clusterQueue = [];
+const _clusterQueryBuf = [];
+
+// v0.11.5: 連結成分の探索上限（純粋な安全弁。通常は絶対に発動しない値にしてある）。
+//
+// 密集した町の中心部ではクリア矩形が数珠つなぎに重なり続け、連結成分が
+// 90〜110棟に達することを実測で確認した。上限を「実測される最大規模ぎりぎり」
+// （例:48）に絞ると、連結成分の一部だけを毎回バラバラに塗り直すことになり、
+// 巻き込み漏れ（廃墟の消失）がむしろ増えることも実測で確認済み
+// （キャップ不足の中途半端な打ち切りは、キャップなしより悪化しうる）。
+// 1棟あたりの実描画コストは実測で約0.15〜0.3ms程度と軽いため、
+// 実測上限90〜110棟を大きく超える150を安全弁として設定し、
+// 通常のゲームプレイでは常に連結成分全体をカバーして廃墟の消失を防ぐ。
+// この上限はあくまで「万一さらに稠密なマップが将来追加された場合」の
+// 処理コスト暴走を防ぐ保険であり、実測される密度では発動しない。
+const CLUSTER_REPAINT_CAP = 150;
+
+/**
+ * originIdx の建物から出発し、クリア矩形が連鎖的に重なり合う建物を
+ * 幅優先探索（FIFO）で近い順に集める（A⊃B, B⊃C なら A,B,C 全部）。
+ * CLUSTER_REPAINT_CAP 件に達したら打ち切る（起点から遠い分だけが漏れる）。
+ *
+ * 経緯: 1ホップ隣接（自分と直接重なる相手だけ）を復元する方式では、密集地で
+ * 3棟以上が数珠つなぎに重なっている場合に対応できなかった
+ * （A死亡→A,B,Cを直す→次にB'死亡→BとC'は直るがCから見て初めて重なるDは
+ * 直らない、という取りこぼしが実測で確認された）。
+ * 円距離での重なり判定は正方形どうしの重なりを見落とす場合があるため
+ * （対角方向のオフセットでは実際は重なっているのに距離判定だと重ならないと
+ * 誤判定しうる）、軸並行の矩形同士の重なり判定（AABB）に修正している。
+ */
+function collectOverlappingCluster(originIdx) {
+  const visited = new Set([originIdx]);
+  _clusterQueue.length = 0;
+  _clusterQueue.push(originIdx);
+  let head = 0; // FIFO: shift()のO(n)コストを避けるためインデックスで進める
+
+  while (head < _clusterQueue.length && visited.size < CLUSTER_REPAINT_CAP) {
+    const curIdx = _clusterQueue[head++];
+    const cur = settlements[curIdx];
+    const curPad = settlementLayerPadding(cur);
+
+    buildingGridQuery(cur.wx, cur.wy, _clusterQueryBuf);
+    for (const nIdx of _clusterQueryBuf) {
+      if (visited.size >= CLUSTER_REPAINT_CAP) break;
+      if (visited.has(nIdx)) continue;
+      const n = settlements[nIdx];
+      if (!n) continue;
+      const nPad = settlementLayerPadding(n);
+      // AABB重なり判定（軸ごとに独立。円距離判定より正確）
+      if (Math.abs(n.wx - cur.wx) > curPad + nPad) continue;
+      if (Math.abs(n.wy - cur.wy) > curPad + nPad) continue;
+      visited.add(nIdx);
+      _clusterQueue.push(nIdx);
+    }
+  }
+
+  const result = [];
+  for (const idx of visited) result.push(settlements[idx]);
+  return result;
+}
+
 function settlementFall(settlementIndex) {
   const settlement = settlements[settlementIndex];
   settlement.fallen = true;
@@ -4531,60 +4668,20 @@ function settlementFall(settlementIndex) {
 
   hapticPulse(80);
 
-  // 建物グリッドを先に更新する（この settlement を fallen 扱いで除外した状態にする）。
-  // v0.11.3: 直後の近傍再描画クエリが「今も生きている隣接建物だけ」を正しく
-  // 拾えるよう、描画より前に呼ぶ順序へ変更した（結果自体は従来と同じ）。
   rebuildBuildingGrid();
   minimapBaseDirty = true;  // v0.6-p4: ミニマップの建物ドットキャッシュも更新
 
   // 建物レイヤーを部分的に再描画（fallen状態に更新）
   if (buildingLayerCtx) {
     const bc = buildingLayerCtx;
-    // ボスはグロー外輪が radius * 2.2 まで広がるため、クリア矩形を大きめに取る
-    // v0.7: 要塞建物は軍旗（radius+9上方）と外輪リングがあるため広めにクリアする
-    // v0.11: 廃墟スプライト（radius*2.2）と焦土を完全に包む範囲をクリアして
-    // 元建物の縁が残らないようにする。ボスは城塞グロー、要塞は軍旗ぶんの余白も確保。
-    const padding = settlement.isBoss ? settlement.radius * 2.5
-                  : Math.max(settlement.radius * 1.55, settlement.radius + 14);
 
-    // v0.11.3: このキャンバスは建物専用レイヤー（地面・道路・畑・川は別キャンバス
-    // groundLayerCanvas 側）なので、ここでクリアしても地面側は一切影響を受けない。
-    bc.clearRect(
-      settlement.wx - padding,
-      settlement.wy - padding,
-      padding * 2,
-      padding * 2,
-    );
-
-    // 焦土（クリア矩形にクリップした円形グラデーション）→ 廃墟の順で描く。
-    // クリップにより矩形の外へは一切かからない＝多数破壊しても周囲が黒ずみ続けない。
-    bc.save();
-    bc.beginPath();
-    bc.rect(settlement.wx - padding, settlement.wy - padding, padding * 2, padding * 2);
-    bc.clip();
-    const scorch = bc.createRadialGradient(
-      settlement.wx, settlement.wy, 2,
-      settlement.wx, settlement.wy, padding * 1.45,
-    );
-    scorch.addColorStop(0.0, "rgba(26, 20, 14, 0.85)");
-    scorch.addColorStop(0.6, "rgba(26, 20, 14, 0.45)");
-    scorch.addColorStop(1.0, "rgba(26, 20, 14, 0.10)");
-    bc.fillStyle = scorch;
-    bc.fillRect(settlement.wx - padding, settlement.wy - padding, padding * 2, padding * 2);
-    bc.restore();
-
-    drawSettlementOnLayer(bc, settlement);
-
-    // v0.11.3: 密集した市街地では隣の建物がこのクリア矩形に食い込んでいることが
-    // あり、その場合クリアで隣の建物スプライトまで消えてしまう。近傍の生存建物を
-    // 拾い直して上から再描画し、消えた分を復元する（builtGrid は上で既に
-    // 更新済みなので、自分自身と他の陥落済み建物は結果に含まれない）。
-    buildingGridQuery(settlement.wx, settlement.wy, _ruinNeighbourRepairBuf);
-    for (const nIdx of _ruinNeighbourRepairBuf) {
-      const neighbour = settlements[nIdx];
-      if (!neighbour || neighbour.fallen) continue;
-      drawSettlementOnLayer(bc, neighbour);
-    }
+    // v0.11.4: 密集した市街地ではクリア矩形が連鎖的に重なり合う（A⊃B⊃C…）ため、
+    // 自分と直接重なる相手だけ直しても、3棟以上の巻き込みは取りこぼす。
+    // 重なりが連鎖する範囲全体（連結成分）をBFSで集め、
+    // 「全棟クリア→全棟描画」の二段階でまとめて処理する。
+    const affected = collectOverlappingCluster(settlementIndex);
+    for (const s of affected) clearSettlementLayerBox(bc, s);
+    for (const s of affected) paintSettlementScorchAndSprite(bc, s);
   }
 
   updateHUDBuildings();
