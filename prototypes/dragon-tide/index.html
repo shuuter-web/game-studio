@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.11.6";
+const GAME_VERSION = "v0.12.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -2712,6 +2712,38 @@ function updateMoverRams() {
   }
 }
 
+/**
+ * v0.12: 群像ユニットの隊列描画。ctx は既に敵の中心へ translate 済みの前提で呼ぶ。
+ * -y を進行方向に取ったローカル座標へ回転し、slots の各単体を
+ * 個体位相つきの歩行アニメ（前後の踏み込み＋左右の揺れ）で描く。
+ * HPが減ると order の大きい個体から欠けていき、編隊の損耗が見た目で分かる。
+ */
+function drawMoverFormation(m, def, formationDef, unitImg, angle) {
+  // 画像の上方向(-y)が進行方向を向くよう回転（forward:"up" と同じ規約）
+  ctx.rotate(angle + Math.PI / 2);
+
+  const uW = def.radius * formationDef.unitWidth;
+  const s  = uW / unitImg.naturalWidth;
+  const uH = unitImg.naturalHeight * s;
+  const phase = m.swayPhase ?? 0;
+  const gait  = formationDef.gait;
+  const slots = formationDef.slots;
+  const visibleCount = Math.max(1, Math.ceil(slots.length * Math.max(0, m.hp / m.maxHp)));
+
+  for (let i = 0; i < slots.length; i++) {
+    if (formationDef.order[i] >= visibleCount) continue; // 損耗で脱落した個体
+    const slot = slots[i];
+    // 黄金角(≈137.5°)で個体位相を散らし、全員が同時に踏み込むのを避ける
+    const unitPhase = phase + i * 2.399963;
+    const step = Math.sin(breathTime * gait.speed + unitPhase);
+    ctx.save();
+    ctx.translate(slot.x * def.radius, slot.y * def.radius + step * gait.bob);
+    ctx.rotate(Math.cos(breathTime * gait.speed + unitPhase) * gait.amp);
+    ctx.drawImage(unitImg, -uW * formationDef.px, -uH * formationDef.py, uW, uH);
+    ctx.restore();
+  }
+}
+
 /** 移動敵の描画（本体＋HPバー＋コロッサスの眼光ビーム＋衝撃波リング）。ワールド座標系で呼ぶ。 */
 function drawMovers() {
   for (const m of movers) {
@@ -2730,10 +2762,16 @@ function drawMovers() {
     ctx.fill();
     ctx.globalAlpha = 1.0;
 
-    // v0.7: Gemini生成スプライトがあれば画像描画（実測ピボット・前方方向補正つき）。
-    // 読めなかった敵だけ従来のベクター描画にフォールバックする。
+    // v0.12: 隊列定義のある敵（マンモス隊・騎士方陣）は単体スプライトを
+    // 隊列配置し、個体ごとに歩行位相をずらして描画する。
+    // 単体画像が読めなかった場合は下の一枚絵/ベクター描画へ落ちる。
+    const formationDef = MOVER_FORMATIONS[def.name];
+    const unitImg = formationDef ? enemyImages[formationDef.unitKey] : null;
     const enemyImg = enemyImages[def.name];
-    if (enemyImg) {
+    if (unitImg) {
+      drawMoverFormation(m, def, formationDef, unitImg, angle);
+      ctx.restore();
+    } else if (enemyImg) {
       const meta  = ENEMY_SPRITE_META[def.name];
       const drawW = def.radius * meta.drawScale;
       const s     = drawW / enemyImg.naturalWidth;
@@ -7184,9 +7222,101 @@ function render(now) {
   drawFlash();
 }
 
+// -----------------------------------------------------------------
+// v0.12: ボス城塞の同心円リング分解
+// -----------------------------------------------------------------
+// 城塞スプライトは「中央コア＋複数の城壁リング」の一枚絵。リング間の
+// 透明な隙間をアルファの半径プロファイルから検出し、各層を別カンバスに
+// 切り出して互い違いにゆっくり回転させる（「動く要塞機構」の演出）。
+// 分解に失敗した場合（隙間が見つからない・canvasがtaintedなど）は
+// null のまま従来の一枚絵描画にフォールバックする。
+let bossRingLayers = null;
+
+// 平均アルファがこれ未満の半径帯を「リング間の隙間」とみなす。
+// 実測プロファイル（512px画像）: 隙間の平均アルファは 46〜117（渡り廊下などの
+// 接続構造が乗るため0にならない）、壁・コアの実体は 195〜255。その間の130で切る。
+const BOSS_RING_GAP_ALPHA  = 130;
+const BOSS_RING_MIN_GAP_PX = 3;    // 隙間と認定する最小連続幅（輪郭線のノイズを拾わない）
+const BOSS_RING_CORE_MIN_R = 8;    // これ未満の半径は探索しない（コア中心の空洞を隙間と誤認しない）
+// 外側の層から順に適用する回転速度(rad/s)。交互に逆回転させ、最内層（コア）は回さない
+const BOSS_RING_SPEEDS = [0.05, -0.07, 0.10, -0.13];
+
+function buildBossRingLayers() {
+  const img = enemyImages.citadel;
+  if (!img) return;
+  const meta = ENEMY_SPRITE_META.citadel;
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const cx = w * meta.px;
+  const cy = h * meta.py;
+
+  // 半径ごとの平均アルファを実測（file://直開き等でcanvasがtaintedなら諦める）
+  let data;
+  try {
+    const probe = document.createElement("canvas");
+    probe.width = w; probe.height = h;
+    const pctx = probe.getContext("2d", { willReadFrequently: true });
+    pctx.drawImage(img, 0, 0);
+    data = pctx.getImageData(0, 0, w, h).data;
+  } catch (err) {
+    console.warn("[DragonTide] ボス城塞のリング分解を中止（一枚絵描画のまま）:", err);
+    return;
+  }
+  const maxR = Math.ceil(Math.min(w, h) * 0.55);
+  const alphaSum = new Float64Array(maxR);
+  const alphaCnt = new Uint32Array(maxR);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const r = Math.round(Math.hypot(x - cx, y - cy));
+      if (r < maxR) {
+        alphaSum[r] += data[(y * w + x) * 4 + 3];
+        alphaCnt[r]++;
+      }
+    }
+  }
+
+  // 低アルファの連続帯の中心を層の切れ目に採用
+  const cuts = [];
+  let runStart = -1;
+  for (let r = BOSS_RING_CORE_MIN_R; r < maxR; r++) {
+    const mean = alphaCnt[r] > 0 ? alphaSum[r] / alphaCnt[r] : 0;
+    if (mean < BOSS_RING_GAP_ALPHA) {
+      if (runStart < 0) runStart = r;
+    } else if (runStart >= 0) {
+      if (r - runStart >= BOSS_RING_MIN_GAP_PX) cuts.push((runStart + r) * 0.5);
+      runStart = -1;
+    }
+  }
+  // 末尾の run は最外リングの外側の余白なので層の切れ目にしない
+  if (cuts.length < 1) return;
+
+  // 切れ目半径で内側→外側の層に分割し、各層を別カンバスへ切り出す
+  const outerBound = Math.hypot(Math.max(cx, w - cx), Math.max(cy, h - cy)) + 2;
+  const bounds = [0, ...cuts, outerBound];
+  const layers = [];
+  for (let k = 0; k < bounds.length - 1; k++) {
+    const layerCanvas = document.createElement("canvas");
+    layerCanvas.width = w; layerCanvas.height = h;
+    const lctx = layerCanvas.getContext("2d");
+    lctx.beginPath();
+    lctx.arc(cx, cy, bounds[k + 1], 0, Math.PI * 2);
+    if (bounds[k] > 0) lctx.arc(cx, cy, bounds[k], 0, Math.PI * 2, true);
+    lctx.clip("evenodd");
+    lctx.drawImage(img, 0, 0);
+    layers.push(layerCanvas);
+  }
+  layers.reverse(); // 外側→内側の順に並べ替え（速度テーブルと対応させる）
+  bossRingLayers = layers.map((canvas, i) => ({
+    canvas,
+    // 最内層はコア（玉座/魔力炉）なので回さない
+    speed: i < layers.length - 1 ? BOSS_RING_SPEEDS[i % BOSS_RING_SPEEDS.length] : 0,
+  }));
+}
+
 /**
  * v0.7: ボス城塞スプライト。静的レイヤーのボス描画（グロー円）の上に重ね、
  * ゆっくり脈動させて「攻略目標の威容」を出す。陥落後は描かない（瓦礫円が残る）。
+ * v0.12: リング分解済みなら各層を互い違いに微回転させて機構感を出す。
  */
 function drawBossCitadel() {
   if (bossSettlementIdx < 0) return;
@@ -7204,16 +7334,27 @@ function drawBossCitadel() {
 
   const s     = drawW / img.naturalWidth;
   const drawH = img.naturalHeight * s;
+  const offX  = -img.naturalWidth  * s * meta.px;
+  const offY  = -img.naturalHeight * s * meta.py;
   const pulse = 1 + 0.02 * Math.sin(breathTime * 2);
   ctx.save();
   ctx.translate(boss.wx, boss.wy);
   ctx.scale(pulse, pulse);
-  ctx.drawImage(
-    img,
-    -img.naturalWidth  * s * meta.px,
-    -img.naturalHeight * s * meta.py,
-    drawW, drawH,
-  );
+  if (bossRingLayers) {
+    // 各層をピボット（原点）まわりに微回転。offX/offY でピボットが原点に重なる
+    for (const layer of bossRingLayers) {
+      if (layer.speed === 0) {
+        ctx.drawImage(layer.canvas, offX, offY, drawW, drawH);
+      } else {
+        ctx.save();
+        ctx.rotate(breathTime * layer.speed);
+        ctx.drawImage(layer.canvas, offX, offY, drawW, drawH);
+        ctx.restore();
+      }
+    }
+  } else {
+    ctx.drawImage(img, offX, offY, drawW, drawH);
+  }
   ctx.restore();
 }
 
@@ -8139,6 +8280,11 @@ const ENEMY_IMAGE_SOURCES = {
   ironclad: "assets/mover_ironclad.png",
   balloon:  "assets/mover_balloon.png",
   citadel:  "assets/boss_citadel.png",
+  // v0.12: 群像ユニットの単体スプライト。旧一枚絵（3頭/25兵の焼き込み）は
+  // 剛体のまま揺れて不自然だったため、単体を隊列配置して個別に動かす。
+  // 単体画像が読めなかった場合は従来の一枚絵描画へ自動フォールバックする。
+  mammoth_unit: "assets/mover_mammoth_single.png",
+  knight_unit:  "assets/mover_knight_single.png",
 };
 
 // v0.9: 建物スプライト（Gemini生成・無彩色→ステージ色でティントして使う）
@@ -8172,6 +8318,54 @@ const ENEMY_SPRITE_META = {
   ironclad: { px: 0.5035, py: 0.5300, forward: "up",   drawScale: 2.8 },
   balloon:  { px: 0.5140, py: 0.4902, forward: "none", drawScale: 2.6 },
   citadel:  { px: 0.5003, py: 0.4984, forward: "none", drawScale: 3.4 },
+};
+
+// -----------------------------------------------------------------
+// v0.12: 群像ユニットの隊列定義
+// -----------------------------------------------------------------
+// 旧一枚絵は「3頭のマンモス」「5×5の騎士」を1枚に焼き込んでいたため、
+// 群れ全体が剛体のまま揺れて不自然だった。単体スプライトを slots の
+// 相対座標（def.radius 倍率、-y が進行方向のローカル座標）に並べ、
+// 個体ごとに歩行位相をずらして描画する。
+//
+// - px/py: 単体画像の回転ピボット（アルファ質量重心の実測値）
+// - unitWidth: 単体の描画幅 = def.radius × この係数
+// - gait: speed=歩行サイクル(rad/s係数), bob=前後の踏み込み(px), amp=左右の揺れ(rad)
+// - slots: 隊列内の配置。配列順 = 描画順（後方を先に描き、前列を上に重ねる）
+// - order: 各slotの生存順位。HP減少で order >= 残存数 のslotから欠けていく
+//   （0が最後まで残る。編隊が損耗で「まばらに欠ける」視覚フィードバック）
+const MOVER_FORMATIONS = {
+  mammoth: {
+    unitKey: "mammoth_unit", unitWidth: 1.35,
+    px: 0.499, py: 0.557,
+    gait: { speed: 4.2, bob: 2.4, amp: 0.07 },
+    // 後衛2頭を先に描き、先頭を最後に重ねる（旧一枚絵と同じ前後関係）
+    slots: [
+      { x: -0.52, y:  0.38 },  // 左後衛
+      { x:  0.52, y:  0.38 },  // 右後衛
+      { x:  0,    y: -0.50 },  // 先頭
+    ],
+    order: [2, 1, 0],
+  },
+  knights: (() => {
+    // 4×4方陣。後列（+y）から前列（-y）の順に描画して前列を上に重ねる。
+    // 前後間隔(0.85)は横間隔(0.58)より広い: 単体スプライトは盾が縦長で、
+    // 間隔が狭いと後列の兜・槍先が前列の盾に隠れて「レンガの壁」に見えるため。
+    const slots = [];
+    for (let row = 3; row >= 0; row--) {
+      for (let col = 0; col < 4; col++) {
+        slots.push({ x: (col - 1.5) * 0.58, y: (row - 1.5) * 0.85 });
+      }
+    }
+    return {
+      unitKey: "knight_unit", unitWidth: 0.52,
+      px: 0.497, py: 0.575,
+      gait: { speed: 5.2, bob: 1.8, amp: 0.04 },
+      slots,
+      // 損耗時に散り散りに欠ける決定的順序（固まって消えると「削れた」感が出ないため）
+      order: [5, 12, 3, 9, 0, 14, 7, 2, 11, 4, 15, 8, 1, 13, 6, 10],
+    };
+  })(),
 };
 
 // ロード済み敵画像（name → HTMLImageElement。ロード失敗したキーは入らない）
@@ -8784,6 +8978,8 @@ async function boot() {
   // 必ずこの await の後で呼ぶこと。ロード失敗時も preloadDragonImages 内で
   // dragonImagesLoaded=false が設定され、renderDragonFrame が自動でベクター描画に切り替わる。
   await preloadDragonImages();
+  // v0.12: ボス城塞をリング層に分解（画像ロード完了後に一度だけ。失敗時は一枚絵のまま）
+  buildBossRingLayers();
   // 竜スプライトを起動時に一度だけプリレンダする（DPR確定後・画像ロード完了後に呼ぶこと）
   createDragonSprites();
   createBuildingLayer();
