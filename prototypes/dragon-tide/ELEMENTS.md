@@ -1,4 +1,4 @@
-# Dragon Tide — 要素名リファレンス（v0.12.0時点）
+# Dragon Tide — 要素名リファレンス（v0.13.0時点）
 
 `prototypes/dragon-tide/index.html` の現在の実装から拾った要素名の一覧。
 今後「◯◯を追加/調整して」と指示する際に、コード上の識別子を指し示すための資料。
@@ -30,9 +30,9 @@
 
 | 内部名 | 時代 | 呼称 | hp | speed | xp | attack | 特徴 |
 |---|---|---|---|---|---|---|---|
-| `mammoth` | 石器 | マンモス隊 | 120 | 38 | 100 | `shockwave`（押し飛ばし） | pingpong移動 |
+| `mammoth` | 石器 | マンモス | 45×3体 | 38 | 35×3 | `shockwave`（押し飛ばし、範囲90） | **packCount:3**（3頭の群れで湧く）、pingpong移動 |
 | `colossus` | 古代 | コロッサス | 250 | 26 | 160 | `beam`（dps5.0） | patrol移動、`hover:true` |
-| `knights` | 中世 | 騎士方陣 | 180 | 48 | 130 | `fan`（矢7本斉射） | pingpong移動 |
+| `knights` | 中世 | 騎士 | 24×8体 | 48 | 17×8 | `fan`（単発矢、間隔1.6s） | **packCount:8**（8体の隊で湧く）、pingpong移動 |
 | `ironclad` | 近世 | 陸上甲鉄艦 | 400 | 30 | 240 | `broadside`（3連砲×2方向） | loop移動、最硬 |
 | `balloon` | 近世 | 爆撃気球 | 150 | 24 | 200 | `bomb`（AoE、範囲44） | `flying:true`（地形無視） |
 | `raider` | — | レイダー | 25 | 82 | 15 | `fan`（単発） | ボス城塞湧きの小型追撃兵、eggChance 0.2 |
@@ -42,12 +42,15 @@
 - 索敵/交戦距離: `MOVER_PURSUIT_RANGE`=650 / `MOVER_ENGAGE_RANGE`=450
 - 画像: `ENEMY_IMAGE_SOURCES`（8135） / 描画メタ: `ENEMY_SPRITE_META`（8166）
 
-**v0.12 隊列描画（`MOVER_FORMATIONS` / `drawMoverFormation`）:**
-- `mammoth` と `knights` は単体スプライト（`mover_mammoth_single.png` / `mover_knight_single.png`）を
-  隊列配置して描く。マンモス=3頭の三角隊形、騎士=4×4方陣
-- 個体ごとに歩行位相（黄金角散らし）で前後の踏み込み＋左右の揺れが入る
-- **HPが減ると隊列から個体が欠けていく**（`order` 配列の生存順位。マンモス3→2→1頭、騎士16→…→1兵）
-- 単体画像が読めない場合は従来の一枚絵→ベクター描画に自動フォールバック
+**v0.13 pack（群れ）システム:**
+- `packCount` 持ちの敵（mammoth=3 / knights=8）は**個別の敵エンティティ**として頭数分湧く
+  （v0.12の「1体を隊列描画」は剛体回転で外周が滑る違和感があったため廃止）
+- 同一packは経路（`waypoints`）を共有し、`speedMult`（±8%の歩調ゆらぎ）で追い越し・遅れが出る
+- はぐれ個体は群れ重心へ引き戻し（`PACK_COHESION_DIST`=160）、
+  重なりは相互押し出しで防止（`PACK_SEPARATION_GAP`=6）— いずれも updateMovers 内
+- pack個体のHPバーは**被弾時のみ表示**（常時表示だとバーだらけになるため）
+- pack採番: `nextPackId` / hp・xp・卵は1体あたりに分割済み（合計は旧値とほぼ同等）
+- 単体スプライト: `mover_mammoth_single.png` / `mover_knight_single.png`（旧一枚絵は不使用）
 
 ---
 

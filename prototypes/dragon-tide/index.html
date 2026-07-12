@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.12.0";
+const GAME_VERSION = "v0.13.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -2247,11 +2247,15 @@ function generateWallRing(boss, stageIndex) {
 // 追跡反応距離内では群れの重心へ向かって進撃し、外では各自の経路を巡回する。
 // v0.8: 射撃頻度をさらに強化し、その分XPを増額（Shooter「もっと撃ってきていい」）
 const MOVER_DEFS = {
-  // 石器: 巨獣の群像（マンモス隊）— 踏鳴らし衝撃波（押し飛ばし付き）
+  // 石器: マンモス（v0.13で個体分割）— 踏鳴らし衝撃波（押し飛ばし付き）。
+  // packCount: 1スポーン枠あたりの頭数。同じ経路を共有する別々の敵として湧き、
+  // 群れで移動する（旧: 3頭を1枚絵で描く剛体ユニット→回転時に外周が滑る違和感があった）。
+  // hp/xp/卵は1体あたりに分割（3体合計で旧値とほぼ同等: hp135/xp105/卵約2個）
   mammoth: {
-    name: "mammoth", hp: 120, speed: 38, xp: 100, eggDrop: 2, radius: 24,
+    name: "mammoth", hp: 45, speed: 38, xp: 35, eggDrop: 0, eggChance: 0.67, radius: 14,
+    packCount: 3,
     color: "#a0703a", glowColor: "#d0a060", moveType: "pingpong",
-    attack: { type: "shockwave", interval: 1.8, radius: 120, damage: 3 },
+    attack: { type: "shockwave", interval: 2.4, radius: 90, damage: 3 },
   },
   // 古代: 歩く神像（コロッサス）— 眼光ビーム（高DPS持続照射）
   colossus: {
@@ -2259,11 +2263,13 @@ const MOVER_DEFS = {
     color: "#c8a030", glowColor: "#ffe080", moveType: "patrol",
     attack: { type: "beam", dps: 5.0, range: 240 },
   },
-  // 中世: 騎士方陣 — 密度の高い矢の斉射
+  // 中世: 騎士（v0.13で個体分割）— 単発の矢。8体の隊で湧き、斉射に相当する密度になる
+  // （8体合計で旧方陣とほぼ同等: hp192/xp136/卵約2個/矢5本毎秒）
   knights: {
-    name: "knights", hp: 180, speed: 48, xp: 130, eggDrop: 2, radius: 22,
+    name: "knights", hp: 24, speed: 48, xp: 17, eggDrop: 0, eggChance: 0.25, radius: 10,
+    packCount: 8,
     color: "#b0b8c8", glowColor: "#e8eef8", moveType: "pingpong",
-    attack: { type: "fan", interval: 1.3, count: 7, damage: 1.2, speed: 75, range: 400 },
+    attack: { type: "fan", interval: 1.6, count: 1, damage: 1.2, speed: 75, range: 400 },
   },
   // 近世: 陸上甲鉄艦 — 舷側砲（高頻度の3連砲×2方向）
   ironclad: {
@@ -2336,16 +2342,43 @@ function generateMovers(stageIndex, boss) {
   for (const [defKey, count] of spawns) {
     const def = MOVER_DEFS[defKey];
     for (let k = 0; k < count; k++) {
-      const mover = makeMover(def, randPoint);
-      // v0.8: ステージが進むほど硬く・XPは美味しく
-      mover.maxHp   = Math.round(def.hp * moverStageHpMult(stageIndex));
-      mover.hp      = mover.maxHp;
-      mover.xpValue = Math.round(def.xp * moverStageXpMult(stageIndex));
-      result.push(mover);
+      // v0.13: packCount 持ちの敵は「同じ経路を共有する別々の個体」を頭数分湧かせる。
+      // 先頭個体の経路・出現位置を仲間へ複製し、位置は散らして群れの初期配置にする。
+      const leader = makeMover(def, randPoint);
+      const pack = [leader];
+      for (let p = 1; p < (def.packCount ?? 1); p++) {
+        const member = makeMover(def, randPoint);
+        member.waypoints = leader.waypoints;   // 経路を共有（配列参照ごと）
+        member.wpIdx     = leader.wpIdx;
+        member.wpDir     = leader.wpDir;
+        member.wx = leader.wx + randRange(-70, 70);
+        member.wy = leader.wy + randRange(-70, 70);
+        pack.push(member);
+      }
+      for (const mover of pack) {
+        if (def.packCount) {
+          mover.packId    = nextPackId;
+          // 歩調のゆらぎ（全員同速だと隊列が凍って見える。±8%で追い越し・遅れが出る）
+          mover.speedMult = randRange(0.92, 1.08);
+        }
+        // v0.8: ステージが進むほど硬く・XPは美味しく
+        mover.maxHp   = Math.round(def.hp * moverStageHpMult(stageIndex));
+        mover.hp      = mover.maxHp;
+        mover.xpValue = Math.round(def.xp * moverStageXpMult(stageIndex));
+        result.push(mover);
+      }
+      if (def.packCount) nextPackId++;
     }
   }
   return result;
 }
+
+// v0.13: 群れ（pack）識別子の採番。ステージを跨いで一意なら十分
+let nextPackId = 1;
+
+// 群れの結束・分離パラメータ
+const PACK_COHESION_DIST   = 160;  // 群れ重心からこれ以上離れた個体は重心へ寄せる
+const PACK_SEPARATION_GAP  = 6;    // 同一pack個体間に確保する隙間（半径の和に加算）
 
 /** 移動敵1体を生成する（経路生成込み）。 */
 function makeMover(def, randPoint) {
@@ -2403,6 +2436,15 @@ function updateMovers(dt) {
     if (shockwaveFxList[i].life <= 0) shockwaveFxList.splice(i, 1);
   }
 
+  // v0.13: 群れ（pack）ごとの重心を先に集計（はぐれ個体の引き戻しに使う）
+  const packCentroids = new Map();
+  for (const m of movers) {
+    if (!m.alive || m.packId === undefined) continue;
+    let c = packCentroids.get(m.packId);
+    if (!c) { c = { x: 0, y: 0, n: 0 }; packCentroids.set(m.packId, c); }
+    c.x += m.wx; c.y += m.wy; c.n++;
+  }
+
   for (const m of movers) {
     if (!m.alive) continue;
     const def = m.def;
@@ -2433,13 +2475,27 @@ function updateMovers(dt) {
       }
     }
 
+    // v0.13: はぐれ個体は群れの重心方向へ目標をブレンド（経路共有＋これで群れが保たれる）
+    if (m.packId !== undefined) {
+      const c = packCentroids.get(m.packId);
+      if (c && c.n > 1) {
+        const cx = c.x / c.n;
+        const cy = c.y / c.n;
+        if (dist2(m.wx, m.wy, cx, cy) > PACK_COHESION_DIST * PACK_COHESION_DIST) {
+          targetX = (targetX + cx * 2) / 3;
+          targetY = (targetY + cy * 2) / 3;
+        }
+      }
+    }
+
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
     m.headingX = dx / d;
     m.headingY = dy / d;
-    m.wx += m.headingX * def.speed * dt;
-    m.wy += m.headingY * def.speed * dt;
+    const moveSpeed = def.speed * (m.speedMult ?? 1);
+    m.wx += m.headingX * moveSpeed * dt;
+    m.wy += m.headingY * moveSpeed * dt;
 
     // 地形（岩山・湖）は移動敵も回り込む（押し出しスライド）。飛行ユニットは無視
     if (def.flying) { /* 気球は地形を飛び越える */ } else
@@ -2524,6 +2580,29 @@ function updateMovers(dt) {
         spawnProjectile(m.wx, m.wy, nearestIdx, atk.speed, atk.damage, "#e0b070", atk.aoe, false, 1);
       } else {
         m.attackTimer = 0.4;
+      }
+    }
+  }
+
+  // v0.13: 同一pack内の分離（重なり防止の相互押し出し）。
+  // pack人数は最大8・mover総数も少ないためO(n^2)で十分
+  for (let i = 0; i < movers.length; i++) {
+    const a = movers[i];
+    if (!a.alive || a.packId === undefined) continue;
+    for (let j = i + 1; j < movers.length; j++) {
+      const b = movers[j];
+      if (!b.alive || b.packId !== a.packId) continue;
+      const sdx = b.wx - a.wx;
+      const sdy = b.wy - a.wy;
+      const minD = a.def.radius + b.def.radius + PACK_SEPARATION_GAP;
+      const sd2 = sdx * sdx + sdy * sdy;
+      if (sd2 < minD * minD && sd2 > 0.01) {
+        const sd = Math.sqrt(sd2);
+        const push = (minD - sd) * 0.5;
+        const nx = sdx / sd;
+        const ny = sdy / sd;
+        a.wx -= nx * push; a.wy -= ny * push;
+        b.wx += nx * push; b.wy += ny * push;
       }
     }
   }
@@ -2712,38 +2791,6 @@ function updateMoverRams() {
   }
 }
 
-/**
- * v0.12: 群像ユニットの隊列描画。ctx は既に敵の中心へ translate 済みの前提で呼ぶ。
- * -y を進行方向に取ったローカル座標へ回転し、slots の各単体を
- * 個体位相つきの歩行アニメ（前後の踏み込み＋左右の揺れ）で描く。
- * HPが減ると order の大きい個体から欠けていき、編隊の損耗が見た目で分かる。
- */
-function drawMoverFormation(m, def, formationDef, unitImg, angle) {
-  // 画像の上方向(-y)が進行方向を向くよう回転（forward:"up" と同じ規約）
-  ctx.rotate(angle + Math.PI / 2);
-
-  const uW = def.radius * formationDef.unitWidth;
-  const s  = uW / unitImg.naturalWidth;
-  const uH = unitImg.naturalHeight * s;
-  const phase = m.swayPhase ?? 0;
-  const gait  = formationDef.gait;
-  const slots = formationDef.slots;
-  const visibleCount = Math.max(1, Math.ceil(slots.length * Math.max(0, m.hp / m.maxHp)));
-
-  for (let i = 0; i < slots.length; i++) {
-    if (formationDef.order[i] >= visibleCount) continue; // 損耗で脱落した個体
-    const slot = slots[i];
-    // 黄金角(≈137.5°)で個体位相を散らし、全員が同時に踏み込むのを避ける
-    const unitPhase = phase + i * 2.399963;
-    const step = Math.sin(breathTime * gait.speed + unitPhase);
-    ctx.save();
-    ctx.translate(slot.x * def.radius, slot.y * def.radius + step * gait.bob);
-    ctx.rotate(Math.cos(breathTime * gait.speed + unitPhase) * gait.amp);
-    ctx.drawImage(unitImg, -uW * formationDef.px, -uH * formationDef.py, uW, uH);
-    ctx.restore();
-  }
-}
-
 /** 移動敵の描画（本体＋HPバー＋コロッサスの眼光ビーム＋衝撃波リング）。ワールド座標系で呼ぶ。 */
 function drawMovers() {
   for (const m of movers) {
@@ -2762,16 +2809,11 @@ function drawMovers() {
     ctx.fill();
     ctx.globalAlpha = 1.0;
 
-    // v0.12: 隊列定義のある敵（マンモス隊・騎士方陣）は単体スプライトを
-    // 隊列配置し、個体ごとに歩行位相をずらして描画する。
-    // 単体画像が読めなかった場合は下の一枚絵/ベクター描画へ落ちる。
-    const formationDef = MOVER_FORMATIONS[def.name];
-    const unitImg = formationDef ? enemyImages[formationDef.unitKey] : null;
+    // v0.7: Gemini生成スプライトがあれば画像描画（実測ピボット・前方方向補正つき）。
+    // 読めなかった敵だけ従来のベクター描画にフォールバックする。
+    // v0.13: マンモス・騎士は個体分割され、単体スプライトがこの通常パスで描かれる
     const enemyImg = enemyImages[def.name];
-    if (unitImg) {
-      drawMoverFormation(m, def, formationDef, unitImg, angle);
-      ctx.restore();
-    } else if (enemyImg) {
+    if (enemyImg) {
       const meta  = ENEMY_SPRITE_META[def.name];
       const drawW = def.radius * meta.drawScale;
       const s     = drawW / enemyImg.naturalWidth;
@@ -2816,22 +2858,20 @@ function drawMovers() {
     } else {
     ctx.rotate(angle);
     if (def.name === "mammoth") {
-      // 巨獣の群像: 大小の楕円3体の塊
+      // v0.13: 単体マンモス（楕円1体＋牙）。個体分割によりフォールバックも1頭分
       ctx.fillStyle = def.color;
       ctx.strokeStyle = "rgba(255,255,255,0.4)";
       ctx.lineWidth = 1.5;
-      for (const [ox, oy, r] of [[6, 0, 13], [-8, 9, 9], [-8, -10, 10]]) {
-        ctx.beginPath();
-        ctx.ellipse(ox, oy, r * 1.25, r, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      }
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 16, 11, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
       // 牙
       ctx.strokeStyle = "#f0e0c0";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(16, -5); ctx.lineTo(24, -9);
-      ctx.moveTo(16,  5); ctx.lineTo(24,  9);
+      ctx.moveTo(12, -4); ctx.lineTo(20, -8);
+      ctx.moveTo(12,  4); ctx.lineTo(20,  8);
       ctx.stroke();
     } else if (def.name === "colossus") {
       // 歩く神像: 胴体の縦長矩形＋頭部円＋肩
@@ -2850,16 +2890,18 @@ function drawMovers() {
       ctx.arc(19, 0, 2.5, 0, Math.PI * 2);
       ctx.fill();
     } else if (def.name === "knights") {
-      // 騎士方陣: 4×4 の小さな盾の格子
+      // v0.13: 単体騎士（盾1枚＋槍先）。個体分割によりフォールバックも1兵分
       ctx.fillStyle = def.color;
       ctx.strokeStyle = "rgba(60,70,90,0.8)";
-      ctx.lineWidth = 0.8;
-      for (let gy = -1.5; gy <= 1.5; gy++) {
-        for (let gx = -1.5; gx <= 1.5; gx++) {
-          ctx.fillRect(gx * 11 - 4, gy * 11 - 4, 8, 8);
-          ctx.strokeRect(gx * 11 - 4, gy * 11 - 4, 8, 8);
-        }
-      }
+      ctx.lineWidth = 1;
+      ctx.fillRect(-7, -6, 14, 12);
+      ctx.strokeRect(-7, -6, 14, 12);
+      // 槍先（進行方向）
+      ctx.strokeStyle = "#d0d8e8";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(7, 0); ctx.lineTo(13, 0);
+      ctx.stroke();
     } else if (def.name === "raider") {
       // v0.8 レイダー: 小型の赤い牙獣（シェブロン型）。画像なしのベクター専用
       ctx.fillStyle = def.color;
@@ -2933,17 +2975,21 @@ function drawMovers() {
     ctx.restore();
     } // v0.7: 画像/ベクター分岐の閉じ
 
-    // HPバー（ボスバーの縮小版・常時表示）
-    const barW = def.radius * 2.4;
-    const barX = m.wx - barW * 0.5;
-    const barY = m.wy - def.radius - 14;
+    // HPバー（ボスバーの縮小版）。
+    // v0.13: pack個体（マンモス・騎士）は頭数が多くバーが常時出ると視覚ノイズに
+    // なるため、被弾している個体だけ表示する。単独の大物は従来どおり常時表示
     const hpRatio = Math.max(0, m.hp / m.maxHp);
-    ctx.globalAlpha = 0.9;
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(barX - 1, barY - 1, barW + 2, 7);
-    ctx.fillStyle = hpRatio > 0.5 ? def.glowColor : (hpRatio > 0.25 ? "#e0c040" : "#e04040");
-    ctx.fillRect(barX, barY, barW * hpRatio, 5);
-    ctx.globalAlpha = 1.0;
+    if (m.packId === undefined || hpRatio < 1) {
+      const barW = def.radius * 2.4;
+      const barX = m.wx - barW * 0.5;
+      const barY = m.wy - def.radius - 14;
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(barX - 1, barY - 1, barW + 2, 7);
+      ctx.fillStyle = hpRatio > 0.5 ? def.glowColor : (hpRatio > 0.25 ? "#e0c040" : "#e04040");
+      ctx.fillRect(barX, barY, barW * hpRatio, 5);
+      ctx.globalAlpha = 1.0;
+    }
 
     // コロッサスの眼光ビーム
     if (def.attack.type === "beam" && m.beamTargetIdx >= 0 && !boidDead[m.beamTargetIdx]) {
@@ -8274,17 +8320,14 @@ const DRAGON_FIRE_IMAGE_SOURCES = {
 // 個別ロード方式: 読めた画像だけ使い、欠けたものはベクター描画へフォールバック。
 // -----------------------------------------------------------------
 const ENEMY_IMAGE_SOURCES = {
-  mammoth:  "assets/mover_mammoth.png",
+  // v0.13: マンモス・騎士は個体分割された（packCount）ため単体スプライトを使う。
+  // 旧一枚絵（mover_mammoth.png / mover_knights.png = 3頭/25兵の焼き込み）は不使用
+  mammoth:  "assets/mover_mammoth_single.png",
   colossus: "assets/mover_colossus.png",
-  knights:  "assets/mover_knights.png",
+  knights:  "assets/mover_knight_single.png",
   ironclad: "assets/mover_ironclad.png",
   balloon:  "assets/mover_balloon.png",
   citadel:  "assets/boss_citadel.png",
-  // v0.12: 群像ユニットの単体スプライト。旧一枚絵（3頭/25兵の焼き込み）は
-  // 剛体のまま揺れて不自然だったため、単体を隊列配置して個別に動かす。
-  // 単体画像が読めなかった場合は従来の一枚絵描画へ自動フォールバックする。
-  mammoth_unit: "assets/mover_mammoth_single.png",
-  knight_unit:  "assets/mover_knight_single.png",
 };
 
 // v0.9: 建物スプライト（Gemini生成・無彩色→ステージ色でティントして使う）
@@ -8310,62 +8353,17 @@ let groundTileImage = null;
 // 画像内の前方方向。forward: "up"=画像上が前 / "down"=画像下が前 / "none"=回転させない。
 // drawScale は def.radius（当たり判定半径）に掛けて描画幅にする係数。
 const ENEMY_SPRITE_META = {
-  mammoth:  { px: 0.4999, py: 0.5494, forward: "up",   drawScale: 2.6 },
+  // v0.13: 単体マンモス（mover_mammoth_single.png 239x512）。ピボットはアルファ質量重心の実測値。
+  // radius14 × 2.0 = 描画幅28px（縦は約60px。旧一枚絵の1頭分とほぼ同じ見た目サイズ）
+  mammoth:  { px: 0.499,  py: 0.557,  forward: "up",   drawScale: 2.0 },
   // v0.9: コロッサスを「浮遊する守護像」に差し替え（歩行アニメ不要のデザインへ変更。
   // 質量重心は周回破片で左に寄るため、視覚中心寄りに手動補正した値を使う）
   colossus: { px: 0.47,   py: 0.42,   forward: "up",   drawScale: 2.9, hover: true },
-  knights:  { px: 0.5075, py: 0.4779, forward: "up",   drawScale: 2.5 },
+  // v0.13: 単体騎士（mover_knight_single.png 278x512）。radius10 × 1.6 = 描画幅16px
+  knights:  { px: 0.497,  py: 0.575,  forward: "up",   drawScale: 1.6 },
   ironclad: { px: 0.5035, py: 0.5300, forward: "up",   drawScale: 2.8 },
   balloon:  { px: 0.5140, py: 0.4902, forward: "none", drawScale: 2.6 },
   citadel:  { px: 0.5003, py: 0.4984, forward: "none", drawScale: 3.4 },
-};
-
-// -----------------------------------------------------------------
-// v0.12: 群像ユニットの隊列定義
-// -----------------------------------------------------------------
-// 旧一枚絵は「3頭のマンモス」「5×5の騎士」を1枚に焼き込んでいたため、
-// 群れ全体が剛体のまま揺れて不自然だった。単体スプライトを slots の
-// 相対座標（def.radius 倍率、-y が進行方向のローカル座標）に並べ、
-// 個体ごとに歩行位相をずらして描画する。
-//
-// - px/py: 単体画像の回転ピボット（アルファ質量重心の実測値）
-// - unitWidth: 単体の描画幅 = def.radius × この係数
-// - gait: speed=歩行サイクル(rad/s係数), bob=前後の踏み込み(px), amp=左右の揺れ(rad)
-// - slots: 隊列内の配置。配列順 = 描画順（後方を先に描き、前列を上に重ねる）
-// - order: 各slotの生存順位。HP減少で order >= 残存数 のslotから欠けていく
-//   （0が最後まで残る。編隊が損耗で「まばらに欠ける」視覚フィードバック）
-const MOVER_FORMATIONS = {
-  mammoth: {
-    unitKey: "mammoth_unit", unitWidth: 1.35,
-    px: 0.499, py: 0.557,
-    gait: { speed: 4.2, bob: 2.4, amp: 0.07 },
-    // 後衛2頭を先に描き、先頭を最後に重ねる（旧一枚絵と同じ前後関係）
-    slots: [
-      { x: -0.52, y:  0.38 },  // 左後衛
-      { x:  0.52, y:  0.38 },  // 右後衛
-      { x:  0,    y: -0.50 },  // 先頭
-    ],
-    order: [2, 1, 0],
-  },
-  knights: (() => {
-    // 4×4方陣。後列（+y）から前列（-y）の順に描画して前列を上に重ねる。
-    // 前後間隔(0.85)は横間隔(0.58)より広い: 単体スプライトは盾が縦長で、
-    // 間隔が狭いと後列の兜・槍先が前列の盾に隠れて「レンガの壁」に見えるため。
-    const slots = [];
-    for (let row = 3; row >= 0; row--) {
-      for (let col = 0; col < 4; col++) {
-        slots.push({ x: (col - 1.5) * 0.58, y: (row - 1.5) * 0.85 });
-      }
-    }
-    return {
-      unitKey: "knight_unit", unitWidth: 0.52,
-      px: 0.497, py: 0.575,
-      gait: { speed: 5.2, bob: 1.8, amp: 0.04 },
-      slots,
-      // 損耗時に散り散りに欠ける決定的順序（固まって消えると「削れた」感が出ないため）
-      order: [5, 12, 3, 9, 0, 14, 7, 2, 11, 4, 15, 8, 1, 13, 6, 10],
-    };
-  })(),
 };
 
 // ロード済み敵画像（name → HTMLImageElement。ロード失敗したキーは入らない）
