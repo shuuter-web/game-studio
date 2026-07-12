@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.13.0";
+const GAME_VERSION = "v0.14.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -2305,9 +2305,10 @@ const MOVER_SPAWNS_BY_STAGE = [
   [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3]],
 ];
 
-// v0.8: 移動敵のステージスケーリング。HPは硬く、XPは美味しくなる
+// v0.8: 移動敵のステージスケーリング（HPのみ硬くなる）。
+// v0.14: XPのステージスケール（moverStageXpMult）は廃止。敵のXPは種類による
+// 固定値とし、レベル進行は必要XP曲線（xpForNext）だけでコントロールする
 function moverStageHpMult(stageIndex) { return 1 + 0.30 * stageIndex; }
-function moverStageXpMult(stageIndex) { return 1 + 0.25 * stageIndex; }
 
 // 全移動敵共通の追跡反応距離（この距離内の群れへ進撃する）
 const MOVER_PURSUIT_RANGE = 650;
@@ -2361,10 +2362,10 @@ function generateMovers(stageIndex, boss) {
           // 歩調のゆらぎ（全員同速だと隊列が凍って見える。±8%で追い越し・遅れが出る）
           mover.speedMult = randRange(0.92, 1.08);
         }
-        // v0.8: ステージが進むほど硬く・XPは美味しく
+        // v0.8: ステージが進むほど硬く（v0.14: XPはスケールせず種類固定）
         mover.maxHp   = Math.round(def.hp * moverStageHpMult(stageIndex));
         mover.hp      = mover.maxHp;
-        mover.xpValue = Math.round(def.xp * moverStageXpMult(stageIndex));
+        mover.xpValue = def.xp;
         result.push(mover);
       }
       if (def.packCount) nextPackId++;
@@ -2728,7 +2729,7 @@ function updateRaiderSpawns(dt) {
     }));
     raider.wx = boss.wx + Math.cos(angle) * (boss.radius + 34);
     raider.wy = boss.wy + Math.sin(angle) * (boss.radius + 34);
-    raider.xpValue = Math.round(MOVER_DEFS.raider.xp * moverStageXpMult(currentStage));
+    raider.xpValue = MOVER_DEFS.raider.xp;   // v0.14: XPのステージスケール廃止
     movers.push(raider);
     spawnCollisionParticles(raider.wx, raider.wy);
   }
@@ -5263,18 +5264,22 @@ const STRINGS = {
 
 // ============================================================
 // ★レベルアップ調整パラメータ（ここだけ変えればレベルの上がり方を調整できる）
-//   必要XP(Lv n → n+1) = XP_LEVEL_BASE × XP_LEVEL_GROWTH^(n-1)
+//   必要XP(Lv n → n+1) = XP_LEVEL_BASE × XP_LEVEL_GROWTH^(min(n, XP_LEVEL_CAP)-1)
 //   - XP_LEVEL_BASE  : 最初のレベルアップに必要なXP。大きいほど全体的に上がりにくい
-//   - XP_LEVEL_GROWTH: レベルごとの必要XP倍率。大きいほど後半が急に上がりにくくなる
+//   - XP_LEVEL_GROWTH: レベルごとの必要XP倍率。大きいほど序盤〜中盤の伸びが急になる
+//   - XP_LEVEL_CAP   : このレベル以降は必要XPが一定（曲線の頭打ち）
 //   例) もっと速く上げたい → XP_LEVEL_BASE を 120 などに下げる
 //       もっとゆっくりにしたい → XP_LEVEL_BASE を 220 などに上げる
 //   v0.11: 建物数が約1.8倍に増えXP総量が増えたため 110→160 に引き上げ
-//   （建物増ぶんを相殺しつつ前バージョンよりわずかに速い上がり方に調整）
+//   v0.14: 「後半レベルが上がらなすぎる」対策で Lv10 以降の必要XPを頭打ちに。
+//   同時に敵XPのステージスケール（moverStageXpMult）を廃止し、
+//   レベル進行はこの曲線だけでコントロールする（Shooter指示）
 // ============================================================
 const XP_LEVEL_BASE   = 160;
 const XP_LEVEL_GROWTH = 1.35;
+const XP_LEVEL_CAP    = 10;
 function xpForNext(level) {
-  return Math.ceil(XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, level - 1));
+  return Math.ceil(XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, Math.min(level, XP_LEVEL_CAP) - 1));
 }
 
 // ---- 進行状態（ステージ開始ごとに resetProgression で全消去）----
@@ -5282,6 +5287,9 @@ let playerLevel  = 1;
 let playerXp     = 0;
 let pendingCards = 0;          // 未消化のレベルアップ回数（3択を積み残さない）
 const upgradeCounts = {};      // cardId -> 取得回数
+// v0.14: ランの最初のレベルアップで竜の進化（変身）を選んだか。
+// false の間は最初のカード提示が進化3択固定になり、選択後は進化カードが二度と出ない
+let evolutionChosen = false;
 
 // ---- リザルト用ラン統計（ラン開始ごとにリセット）----
 let runStartTime  = 0;
@@ -5314,10 +5322,12 @@ const CARD_DEFS = [
   { id: "rate_missile",  icon: "⚙️",     rarity: "rare",   max: 3, weapon: "missile" },
   { id: "pierce",        icon: "\u{1F3F9}", rarity: "rare",   max: 3, weapon: "bullet" },
   { id: "blast",         icon: "\u{1F4A5}", rarity: "rare",   max: 3, weapon: "missile" },
-  // C. 進化（★・群れ100%全転換。何度でも引き直せる）
-  { id: "evo_bullet",  icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "bullet",  minLevel: 3 },
-  { id: "evo_missile", icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "missile", minLevel: 4 },
-  { id: "evo_melee",   icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "melee",   minLevel: 3 },
+  // C. 進化（★・群れ100%全転換）
+  // v0.14: ランの最初のレベルアップでのみ提示される（3枚とも進化・他の強化は出ない）。
+  // 以降のレベルアップには一切出現しない＝ラン開始直後に「この竜で行く」を決める設計
+  { id: "evo_bullet",  icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "bullet"  },
+  { id: "evo_missile", icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "missile" },
+  { id: "evo_melee",   icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "melee"   },
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
 const CARD_RARITY_WEIGHT = { common: 10, rare: 4, star: 3 };
@@ -5388,6 +5398,7 @@ function resetProgression() {
   playerLevel  = 1;
   playerXp     = 0;
   pendingCards = 0;
+  evolutionChosen = false;   // v0.14: 新しいランでは再び最初のレベルアップで竜種を選ぶ
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
   // 武器も BEAM に戻る（新しいランはビルドをゼロから組み直す）
   flockWeapon = "beam";
@@ -5571,15 +5582,19 @@ function maybeShowLevelUp() {
 
 /** 取得可能なカードから重み付きで3枚（重複なし）選んでDOMに並べる。 */
 function buildLevelUpCards() {
+  // v0.14: ランの最初のレベルアップは「どの竜に進化するか」の3択固定。
+  // 他の強化カードは混ぜない（このランの竜種をここで決める儀式にする）
+  if (!evolutionChosen) {
+    renderLevelUpCards(CARD_DEFS.filter(def => def.targetWeapon));
+    return;
+  }
+
   const pool = CARD_DEFS.filter(def => {
     if (upCount(def.id) >= def.max) return false;
     // 武器強化カードは現在の武器タイプにのみ出現
     if (def.weapon && def.weapon !== flockWeapon) return false;
-    // ★進化: 現在と同タイプは出さない・解禁レベル未満は出さない
-    if (def.targetWeapon) {
-      if (def.targetWeapon === flockWeapon) return false;
-      if (playerLevel < def.minLevel) return false;
-    }
+    // ★進化は最初のレベルアップ専用（上の分岐でのみ出る）
+    if (def.targetWeapon) return false;
     return true;
   });
 
@@ -5597,16 +5612,15 @@ function buildLevelUpCards() {
     const chosen = candidates[chosenIdx];
     picks.push(chosen);
     candidates.splice(chosenIdx, 1);
-    // ★は3枚中1枚まで（仕様 §5.5）: 1枚選ばれたら残りの★を候補から外す
-    if (chosen.rarity === "star") {
-      for (let i = candidates.length - 1; i >= 0; i--) {
-        if (candidates[i].rarity === "star") candidates.splice(i, 1);
-      }
-    }
   }
   // プールが痩せた場合は竜玉（XP+50）で補充（最低1枚は必ず出す）
   if (picks.length < 3) picks.push(CARD_ORB);
 
+  renderLevelUpCards(picks);
+}
+
+/** カード定義の配列をそのまま3択UIとしてDOMに並べる。 */
+function renderLevelUpCards(picks) {
   cardListEl.innerHTML = "";
   for (const def of picks) {
     const text = STRINGS.cards[def.id];
@@ -5629,6 +5643,8 @@ function buildLevelUpCards() {
 
 function chooseCard(def) {
   if (!upgradeCardsVisible) return;
+  // v0.14: 進化カードを選んだ（＝最初のレベルアップを消化した）ら以降は通常プールのみ
+  if (def.targetWeapon) evolutionChosen = true;
   upgradeCounts[def.id] = upCount(def.id) + 1;
   applyCardImmediate(def.id);
   pendingCards--;
@@ -7237,8 +7253,7 @@ function render(now) {
 
   drawBossCitadel();   // v0.7: ボス城塞スプライト（静的レイヤーのボス円の上に重ねる）
 
-  // 攻撃射程リング（静的レイヤーの上に動的に描く）
-  drawSettlementRanges();
+  // v0.14: 建物の攻撃射程リング（薄い円の大量表示）は視覚ノイズだったため廃止
 
   // HP バーは動的なので毎フレーム描画
   drawSettlementHPBars();
@@ -7452,29 +7467,7 @@ function getViewBoundsWorld(margin) {
   };
 }
 
-function drawSettlementRanges() {
-  // ビューポートカリング: 攻撃射程（attackRadius）を余白として使う。
-  // 射程リングの一部が画面内にかかる建物だけを描画する。
-  // ボスの BOSS_ATTACK_RADIUS=380 が最大値なので余白を 400px に拡大する。
-  const RANGE_MARGIN = 400;
-  const bounds = getViewBoundsWorld(RANGE_MARGIN);
-
-  ctx.strokeStyle = "rgba(180, 60, 60, 0.08)";
-  ctx.lineWidth = 1;
-
-  for (let s = 0; s < settlements.length; s++) {
-    const settlement = settlements[s];
-    if (settlement.fallen) continue;
-
-    // ビューポート外の建物はスキップ（余白は射程半径分を含んでいる）
-    if (settlement.wx < bounds.minX || settlement.wx > bounds.maxX ||
-        settlement.wy < bounds.minY || settlement.wy > bounds.maxY) continue;
-
-    ctx.beginPath();
-    ctx.arc(settlement.wx, settlement.wy, settlement.attackRadius, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-}
+// （v0.14: drawSettlementRanges＝建物の攻撃射程リング描画は視覚ノイズのため削除）
 
 // HP バーのみ動的に描画（建物形状はオフスクリーンに焼き付け済み）
 function drawSettlementHPBars() {

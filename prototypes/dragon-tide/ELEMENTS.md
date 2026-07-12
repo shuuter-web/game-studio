@@ -1,4 +1,4 @@
-# Dragon Tide — 要素名リファレンス（v0.13.0時点）
+# Dragon Tide — 要素名リファレンス（v0.14.0時点）
 
 `prototypes/dragon-tide/index.html` の現在の実装から拾った要素名の一覧。
 今後「◯◯を追加/調整して」と指示する際に、コード上の識別子を指し示すための資料。
@@ -19,7 +19,9 @@
 
 - 配色定義: `DRAGON_ELEMENT_COLORS`（index.html:8084）
 - 武器→属性: `WEAPON_ELEMENT`（index.html:5597） / HUD表示: `WEAPON_HUD`（5600）
-- ★進化カード: `evo_bullet`(Lv3〜) / `evo_missile`(Lv4〜) / `evo_melee`(Lv3〜)（5234-5236）
+- ★進化カード: `evo_bullet` / `evo_missile` / `evo_melee` —
+  **v0.14: ランの最初のレベルアップでのみ提示（3枚とも進化・他の強化は混ざらない）。
+  選択後は二度と出ない**（フラグ `evolutionChosen`、resetProgressionでリセット）
 - 画像: `DRAGON_IMAGE_SOURCES`（ice/shadow, 8120） / `DRAGON_FIRE_IMAGE_SOURCES`（fireのみbody/wing分離, 8126）
 
 ---
@@ -114,7 +116,8 @@
 | 変数名 | 用途 |
 |---|---|
 | `playerLevel` / `playerXp` | プレイヤーレベル・経験値（5197） |
-| `xpForNext(level)` | 次Lv必要XP = `160 × 1.35^(level-1)` |
+| `xpForNext(level)` | 次Lv必要XP = `160 × 1.35^(min(level,10)-1)`。**v0.14: Lv10以降は2383で頭打ち**（`XP_LEVEL_CAP`） |
+| （廃止）`moverStageXpMult` | v0.14で廃止。敵XPは種類固定（HPスケール `moverStageHpMult` は存続） |
 | `pendingCards` / `upgradeCounts` | 未消化カード数 / カードid→取得回数 |
 | `runKills` / `runMaxFlock` / `runTotalXp` / `runStartTime` | リザルト統計（5203） |
 | `N`（現群れ数） | 初期`BOIDS_INITIAL`=10、上限`BASE_FLOCK_CAP`=100、配列上限`MAX_BOIDS`=150 |
