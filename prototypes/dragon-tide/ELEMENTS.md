@@ -19,9 +19,10 @@
 
 - 配色定義: `DRAGON_ELEMENT_COLORS`（index.html:8084）
 - 武器→属性: `WEAPON_ELEMENT`（index.html:5597） / HUD表示: `WEAPON_HUD`（5600）
-- ★進化カード: `evo_bullet` / `evo_missile` / `evo_melee` —
-  **v0.14: ランの最初のレベルアップでのみ提示（3枚とも進化・他の強化は混ざらない）。
-  選択後は二度と出ない**（フラグ `evolutionChosen`、resetProgressionでリセット）
+- ★進化カード: `evo_bullet` / `evo_missile` / `evo_melee` ＋ `stay_fire`（`CARD_STAY_FIRE`） —
+  **v0.14: ランの最初のレベルアップでのみ「火竜を続ける＋進化3種」の4択を提示
+  （他の強化は混ざらない）。選択後は二度と出ない**
+  （フラグ `evolutionChosen`、resetProgressionでリセット）
 - 画像: `DRAGON_IMAGE_SOURCES`（ice/shadow, 8120） / `DRAGON_FIRE_IMAGE_SOURCES`（fireのみbody/wing分離, 8126）
 
 ---
