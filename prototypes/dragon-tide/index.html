@@ -146,7 +146,9 @@
     font-family: -apple-system, BlinkMacSystemFont, monospace;
     font-size: 10px;
     color: rgba(120, 180, 255, 0.45);
-    pointer-events: none;
+    /* v0.16.1: デバッグ用に3連タップを受ける（ステージ送り）。タップ域も少し広げる */
+    pointer-events: auto;
+    padding: 10px 14px 6px 6px;
     letter-spacing: 0.05em;
   }
 
@@ -383,8 +385,36 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.16.0";
+const GAME_VERSION = "v0.16.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
+
+// -----------------------------------------------------------------
+// v0.16.1: デバッグ用ステージ送り（テスト用・Shooter依頼）
+// 左下のバージョン表示を800ms以内に3回タップ、またはNキーで次ステージへ。
+// 最終ステージからは1へループする。プレイ中のみ有効
+// -----------------------------------------------------------------
+function debugAdvanceStage() {
+  if (typeof gameState === "undefined" || gameState !== "playing") return;
+  if (currentStage >= STAGE_CONFIGS.length - 1) currentStage = -1;  // 8→1へループ
+  advanceToNextStage();
+}
+{
+  let tapCount = 0;
+  let lastTapTime = 0;
+  document.getElementById("hud-version").addEventListener("pointerdown", (e) => {
+    e.stopPropagation();   // タップが線描画（canvas入力）へ抜けないように
+    const now = performance.now();
+    if (now - lastTapTime > 800) tapCount = 0;
+    lastTapTime = now;
+    if (++tapCount >= 3) {
+      tapCount = 0;
+      debugAdvanceStage();
+    }
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "n" || e.key === "N") debugAdvanceStage();
+  });
+}
 
 /* ============================================================
  * 竜潮 / Dragon Tide — Stage Edition v3
@@ -1290,6 +1320,39 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   const townR   = Math.max(170, Math.min(430, 16.5 * Math.sqrt(totalCount))); // 町の外縁半径
   const RING_R  = PLAZA_R + 58;                                // 環状路の半径
 
+  // --- v0.16.1: 町の外形（シルエット）。全部が円だとレイアウトを変えても
+  // 同じ町に見えるため、輪郭そのものをレイアウトで変える（Shooter指摘）。
+  //   scattered: 輪郭なし（塊の群れ） / rings: 真円（環状都市の意匠）
+  //   radial   : 有機ブロブ（低周波の凹凸でいびつに広がる城下町）
+  //   grid     : 回転矩形（区画整理された市域）
+  let shapeType = layout === "radial" ? "blob" : (layout === "grid" ? "rect" : "circle");
+  const blobA1 = randRange(0.10, 0.17), blobF1 = 2 + (townIndex % 2), blobP1 = randRange(0, Math.PI * 2);
+  const blobA2 = randRange(0.05, 0.10), blobF2 = 5,                   blobP2 = randRange(0, Math.PI * 2);
+  const rectTheta = randRange(0, Math.PI / 2);
+  const rectAspect = randRange(0.68, 0.88);
+  const rectHalfW = townR * 1.12;
+  const rectHalfH = townR * 1.12 * rectAspect;
+
+  function townRadiusAt(theta) {
+    if (shapeType !== "blob") return townR;
+    return townR * (1 + blobA1 * Math.sin(theta * blobF1 + blobP1)
+                      + blobA2 * Math.sin(theta * blobF2 + blobP2));
+  }
+  function insideTownShape(wx, wy, margin) {
+    const dx = wx - townCenterX, dy = wy - townCenterY;
+    if (shapeType === "rect") {
+      const ca = Math.cos(-rectTheta), sa = Math.sin(-rectTheta);
+      const lx = dx * ca - dy * sa;
+      const ly = dx * sa + dy * ca;
+      return Math.abs(lx) <= rectHalfW - margin && Math.abs(ly) <= rectHalfH - margin;
+    }
+    return Math.hypot(dx, dy) <= townRadiusAt(Math.atan2(dy, dx)) - margin;
+  }
+  // 町の最大到達半径（畑・装飾を輪郭の外へ置くための基準）
+  const maxExtent = shapeType === "rect" ? Math.hypot(rectHalfW, rectHalfH)
+    : shapeType === "blob" ? townR * (1 + blobA1 + blobA2)
+    : townR;
+
   // --- レイアウト別の道路骨格 ---
   const streets   = [];   // 放射状の通り {angle, len}（scattered/rings では本数を絞る）
   const ringRadii = [];   // 環状路の半径（rings は多重、radial は1本、他はなし）
@@ -1298,9 +1361,10 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     const streetCount = 3 + (townIndex % 3);
     const streetBase = randRange(0, Math.PI * 2);
     for (let k = 0; k < streetCount; k++) {
+      const angle = streetBase + (k * Math.PI * 2) / streetCount + randRange(-0.25, 0.25);
       streets.push({
-        angle: streetBase + (k * Math.PI * 2) / streetCount + randRange(-0.25, 0.25),
-        len: townR * randRange(0.85, 1.0),
+        angle,
+        len: townRadiusAt(angle) * randRange(0.85, 1.0),   // ブロブ輪郭まで伸ばす
       });
     }
     ringRadii.push(RING_R);
@@ -1327,18 +1391,18 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
       });
     }
   } else if (layout === "grid") {
-    // 基準角に沿った直交道路網（町の円でクリップした線分の束）
-    const theta = randRange(0, Math.PI / 2);
+    // 基準角に沿った直交道路網（市域の矩形いっぱいに通す）
     const ROAD_SPACING = 68;
-    const maxK = Math.floor((townR - 24) / ROAD_SPACING);
     for (let axis = 0; axis < 2; axis++) {
-      const a  = theta + axis * Math.PI / 2;          // 道路の方向
+      const a = rectTheta + axis * Math.PI / 2;             // 道路の方向
+      const alongHalf = axis === 0 ? rectHalfW : rectHalfH; // 道の長さ（半分）
+      const perpHalf  = axis === 0 ? rectHalfH : rectHalfW; // 道を並べる幅（半分）
       const nx = Math.cos(a + Math.PI / 2);
-      const ny = Math.sin(a + Math.PI / 2);           // 直交オフセット方向
+      const ny = Math.sin(a + Math.PI / 2);
+      const maxK = Math.floor((perpHalf - 22) / ROAD_SPACING);
       for (let k = -maxK; k <= maxK; k++) {
         const off = k * ROAD_SPACING;
-        const halfLen = Math.sqrt(Math.max(0, townR * townR - off * off));
-        if (halfLen < 46) continue;
+        const halfLen = alongHalf - 10;
         const mx = townCenterX + nx * off;
         const my = townCenterY + ny * off;
         gridRoads.push({
@@ -1407,7 +1471,9 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
       const off  = side * (20 + BUILDING_SIZE_PARAMS.large.radiusBase);
       wx = road.mx + Math.cos(road.angle) * t + Math.cos(road.angle + Math.PI / 2) * off;
       wy = road.my + Math.sin(road.angle) * t + Math.sin(road.angle + Math.PI / 2) * off;
-      if (dist2(wx, wy, townCenterX, townCenterY) > (townR * 0.5) ** 2) continue;
+      // 市域内かつ中心街区（官庁は郊外に建たない）
+      if (!insideTownShape(wx, wy, 16) ||
+          dist2(wx, wy, townCenterX, townCenterY) > (Math.min(rectHalfW, rectHalfH) * 0.6) ** 2) continue;
       face = road.angle + Math.PI / 2;
     } else if (layout === "scattered") {
       // 集落の中心近くに散在（長の住居・祭場）
@@ -1440,7 +1506,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
       const off  = side * (16 + randRange(0, 8) + BUILDING_SIZE_PARAMS.medium.radiusBase);
       wx = road.mx + Math.cos(road.angle) * t + Math.cos(road.angle + Math.PI / 2) * off;
       wy = road.my + Math.sin(road.angle) * t + Math.sin(road.angle + Math.PI / 2) * off;
-      if (dist2(wx, wy, townCenterX, townCenterY) > (townR * 0.72) ** 2) continue;
+      if (!insideTownShape(wx, wy, 12)) continue;
       face = road.angle + Math.PI / 2;
     } else if (layout === "rings") {
       // 中間の環状路沿い（商家の環）
@@ -1482,6 +1548,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
       const off  = side * (13 + randRange(0, 6) + BUILDING_SIZE_PARAMS.small.radiusBase);
       wx = road.mx + Math.cos(road.angle) * t + Math.cos(road.angle + Math.PI / 2) * off;
       wy = road.my + Math.sin(road.angle) * t + Math.sin(road.angle + Math.PI / 2) * off;
+      if (!insideTownShape(wx, wy, 8)) continue;
       face = road.angle + Math.PI / 2;
     } else if (layout === "rings") {
       // 各環状路の両側（環に沿った家並み）
@@ -1506,6 +1573,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
       const off  = side * (13 + randRange(0, 6) + BUILDING_SIZE_PARAMS.small.radiusBase);
       wx = townCenterX + Math.cos(st.angle) * t + Math.cos(st.angle + Math.PI / 2) * off;
       wy = townCenterY + Math.sin(st.angle) * t + Math.sin(st.angle + Math.PI / 2) * off;
+      if (!insideTownShape(wx, wy, 6)) continue;   // ブロブ輪郭の外へはみ出さない
       face = st.angle + Math.PI / 2;
     }
     if (tryPlaceBuilding("small", wx, wy, face)) placedSmall++;
@@ -1521,10 +1589,19 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
       wx = hub.x + randRange(-spread, spread);
       wy = hub.y + randRange(-spread, spread);
       face = randRange(0, Math.PI * 2);
+    } else if (shapeType === "rect") {
+      // 矩形市域: ローカル座標で一様に埋める（街区の向きに沿って建てる）
+      const lx = randRange(-rectHalfW + 18, rectHalfW - 18);
+      const ly = randRange(-rectHalfH + 18, rectHalfH - 18);
+      const ca = Math.cos(rectTheta), sa = Math.sin(rectTheta);
+      wx = townCenterX + lx * ca - ly * sa;
+      wy = townCenterY + lx * sa + ly * ca;
+      face = rectTheta + (Math.random() < 0.5 ? 0 : Math.PI / 2) + Math.PI / 2;
     } else {
-      // 中心に密・外縁に疎（√分布で中心へ寄せる）
+      // 円/ブロブ: 中心に密・外縁に疎（√分布で中心へ寄せ、輪郭半径で打ち切る）
       const angle = randRange(0, Math.PI * 2);
-      const r     = PLAZA_R + 14 + Math.sqrt(Math.random()) * (townR - PLAZA_R - 14);
+      const rMax  = townRadiusAt(angle);
+      const r     = PLAZA_R + 14 + Math.sqrt(Math.random()) * (rMax - PLAZA_R - 14);
       wx = townCenterX + Math.cos(angle) * r;
       wy = townCenterY + Math.sin(angle) * r;
       face = angle + Math.PI / 2 + randRange(-0.3, 0.3);
@@ -1551,7 +1628,8 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     const gap  = 7;
     const clusterW = cols * pw + (cols - 1) * gap;
     const clusterH = rows * ph + (rows - 1) * gap;
-    const dist = townR + 60 + Math.max(clusterW, clusterH) * 0.5 + randRange(0, 60);
+    // v0.16.1: 矩形・ブロブ輪郭でも外へ出るよう maxExtent 基準に
+    const dist = maxExtent + 46 + Math.max(clusterW, clusterH) * 0.5 + randRange(0, 60);
     const ccx  = townCenterX + Math.cos(dirAngle) * dist;
     const ccy  = townCenterY + Math.sin(dirAngle) * dist;
     if (ccx < 80 || ccx > WORLD_W - 80 || ccy < 80 || ccy > WORLD_H - 80) continue;
@@ -1597,6 +1675,27 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     });
   }
 
+  // v0.16.1: 輪郭ポリゴン（町の土台・城郭リムの描画用。circle は null で従来の円描画）
+  let outline = null;
+  if (shapeType === "blob") {
+    outline = [];
+    const OUTLINE_STEPS = 28;
+    for (let i = 0; i < OUTLINE_STEPS; i++) {
+      const a = (i / OUTLINE_STEPS) * Math.PI * 2;
+      const r = townRadiusAt(a);
+      outline.push({ x: townCenterX + Math.cos(a) * r, y: townCenterY + Math.sin(a) * r });
+    }
+  } else if (shapeType === "rect") {
+    const ca = Math.cos(rectTheta), sa = Math.sin(rectTheta);
+    outline = [
+      { lx: -rectHalfW, ly: -rectHalfH }, { lx: rectHalfW, ly: -rectHalfH },
+      { lx: rectHalfW, ly: rectHalfH },   { lx: -rectHalfW, ly: rectHalfH },
+    ].map(p => ({
+      x: townCenterX + p.lx * ca - p.ly * sa,
+      y: townCenterY + p.lx * sa + p.ly * ca,
+    }));
+  }
+
   // 描画用メタデータ（先頭のランドマークに付属）
   landmark._townMeta = {
     cx: townCenterX,
@@ -1605,6 +1704,9 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     ringR: RING_R,
     townR,
     layout,       // v0.16: 町の骨格タイプ
+    shapeType,    // v0.16.1: 外形（circle/blob/rect）
+    outline,      // v0.16.1: 外形ポリゴン（circleはnull）
+    maxExtent,    // v0.16.1: 中心からの最大到達半径
     streets,
     ringRadii,    // v0.16: 環状路の半径（radial=1本 / rings=多重 / 他=空）
     gridRoads,    // v0.16: 碁盤目の道路セグメント
@@ -3609,15 +3711,28 @@ function drawTownBasesOnLayer(bctx) {
     const decor     = meta.decor ?? [];
 
     // v0.10: 町の敷地＝広場円＋道路骨格に沿った太い踏み固め帯
+    // v0.16.1: 土台の形は町の外形（円/ブロブ/矩形）に合わせる。
+    // 輪郭が全部円だとレイアウトを変えても同じ町に見えるため
     bctx.globalAlpha = 0.50;
-    bctx.fillStyle = paveColor;
-    // 町全体の淡い土台（外縁に向けて消える放射グラデーション）
-    const grad = bctx.createRadialGradient(cx, cy, plazaR, cx, cy, townR + 30);
+    const gradEnd = (meta.maxExtent ?? townR) + 30;
+    const grad = bctx.createRadialGradient(cx, cy, plazaR, cx, cy, gradEnd);
     grad.addColorStop(0, paveColor);
     grad.addColorStop(1, "rgba(0,0,0,0)");
     bctx.fillStyle = grad;
     bctx.beginPath();
-    bctx.arc(cx, cy, townR + 30, 0, Math.PI * 2);
+    if (meta.outline) {
+      // 輪郭ポリゴンを中心から+26px 膨らませて土台にする
+      for (let i = 0; i < meta.outline.length; i++) {
+        const p = meta.outline[i];
+        const d = Math.hypot(p.x - cx, p.y - cy) || 1;
+        const ex = cx + (p.x - cx) * (1 + 26 / d);
+        const ey = cy + (p.y - cy) * (1 + 26 / d);
+        if (i === 0) bctx.moveTo(ex, ey); else bctx.lineTo(ex, ey);
+      }
+      bctx.closePath();
+    } else {
+      bctx.arc(cx, cy, townR + 30, 0, Math.PI * 2);
+    }
     bctx.fill();
     // 広場（濃いめの石畳）
     bctx.globalAlpha = 0.55;
@@ -3736,18 +3851,32 @@ function drawTownRoadsOnLayer(bctx, meta) {
   const ringRadii = meta.ringRadii ?? [meta.ringR];
   const gridRoads = meta.gridRoads ?? [];
 
-  // v0.7: 要塞都市には町全体を囲う「城郭リム」（v0.10: 円形に変更）
+  // v0.7: 要塞都市には町全体を囲う「城郭リム」
+  // v0.16.1: 町の外形（円/ブロブ/矩形）に沿って引く
   if (meta._fortified) {
+    const rimPath = (expand) => {
+      bctx.beginPath();
+      if (meta.outline) {
+        for (let i = 0; i < meta.outline.length; i++) {
+          const p = meta.outline[i];
+          const d = Math.hypot(p.x - cx, p.y - cy) || 1;
+          const ex = cx + (p.x - cx) * (1 + expand / d);
+          const ey = cy + (p.y - cy) * (1 + expand / d);
+          if (i === 0) bctx.moveTo(ex, ey); else bctx.lineTo(ex, ey);
+        }
+        bctx.closePath();
+      } else {
+        bctx.arc(cx, cy, townR + expand, 0, Math.PI * 2);
+      }
+    };
     bctx.save();
     bctx.strokeStyle = "rgba(224, 32, 48, 0.35)";
     bctx.lineWidth = 5;
-    bctx.beginPath();
-    bctx.arc(cx, cy, townR + 22, 0, Math.PI * 2);
+    rimPath(22);
     bctx.stroke();
     bctx.strokeStyle = "rgba(20, 20, 28, 0.55)";
     bctx.lineWidth = 2;
-    bctx.beginPath();
-    bctx.arc(cx, cy, townR + 27, 0, Math.PI * 2);
+    rimPath(27);
     bctx.stroke();
     bctx.restore();
   }

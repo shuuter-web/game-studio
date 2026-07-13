@@ -1,4 +1,7 @@
-# Dragon Tide — 要素名リファレンス（v0.16.0時点）
+# Dragon Tide — 要素名リファレンス（v0.16.1時点）
+
+> **デバッグ**: 左下のバージョン表示を800ms以内に3回タップ（またはNキー）で次ステージへ
+> （最終ステージからは1へループ。プレイ中のみ。`debugAdvanceStage()`）
 
 > **世界観**: 竜たちは「たくさんの卵を奪って町に持ち帰った人間」に怒って襲撃している。
 > 町が卵を落とす＝奪われた卵の奪還（v0.15設定、Shooter指示）。
@@ -112,6 +115,7 @@
 | `bridgePlacements` / `computeBridges()` | 街道×川の交点に架橋（1909）、画像 `assets/bridge.png` |
 | `townRoadEdges` | 町間の道路網（`buildTownRoadNetwork()` 1845） |
 | `STAGE_TOWN_LAYOUTS` | **v0.16: 文明ごとの町骨格**。scattered(石器)/rings(古代・終末)/radial(中世・近世)/grid(産業以降) |
+| `_townMeta.shapeType` / `outline` / `maxExtent` | **v0.16.1: 町の外形**。radial=blob（いびつな有機輪郭）/ grid=rect（回転矩形の市域）/ 他=circle。土台・城郭リムも外形に追従 |
 | `streets`（`_townMeta.streets`） | 町内の放射状の通り（radial/rings/scatteredの獣道） |
 | `_townMeta.ringRadii` | 環状路の半径リスト（rings=多重、radial=1本、他=空） |
 | `_townMeta.gridRoads` | 碁盤目の道路セグメント（grid のみ） |
