@@ -1,4 +1,9 @@
-# Dragon Tide — 要素名リファレンス（v0.14.0時点）
+# Dragon Tide — 要素名リファレンス（v0.15.0時点）
+
+> **世界観**: 竜たちは「たくさんの卵を奪って町に持ち帰った人間」に怒って襲撃している。
+> 町が卵を落とす＝奪われた卵の奪還（v0.15設定、Shooter指示）。
+> **デザイン3本柱**: アクアリウム（見て楽しい・世界と竜の関係）× 塊魂（成長して攻略）×
+> Balatro（竜種でプレイ感が変わる）。敗北要素なし・音は当面後回し。
 
 `prototypes/dragon-tide/index.html` の現在の実装から拾った要素名の一覧。
 今後「◯◯を追加/調整して」と指示する際に、コード上の識別子を指し示すための資料。
@@ -41,7 +46,9 @@
 | `raider` | — | レイダー | 25 | 82 | 15 | `fan`（単発） | ボス城塞湧きの小型追撃兵、eggChance 0.2 |
 
 - ステージ別出現構成: `MOVER_SPAWNS_BY_STAGE`（2291）
-- HP/XPスケール: `moverStageHpMult()`=1+0.30×stage / `moverStageXpMult()`=1+0.25×stage
+- **v0.15: HP/XPのステージスケールは全廃**（種類固定値）。代わりに攻撃の苛烈さ
+  `moverStageFerocity()`=1+0.20×stage が攻撃間隔の短縮とビームDPSに乗る
+  （目に見える脅威で強化を表現。ボスHPのみ `calcBossHp` のスケール存続）
 - 索敵/交戦距離: `MOVER_PURSUIT_RANGE`=650 / `MOVER_ENGAGE_RANGE`=450
 - 画像: `ENEMY_IMAGE_SOURCES`（8135） / 描画メタ: `ENEMY_SPRITE_META`（8166）
 
@@ -124,6 +131,7 @@
 | `N`（現群れ数） | 初期`BOIDS_INITIAL`=10、上限`BASE_FLOCK_CAP`=100、配列上限`MAX_BOIDS`=150 |
 | `boidHp[i]` / `BOID_MAX_HP`=30 | 個体HP（7発で撃破目安） |
 | `boidDead[i]` / `boidDowned[i]` | 死亡/ダウンフラグ |
+| `flockLeaderIdx` / `leaderBodyScale()` | v0.15: リーダー竜1匹だけレベルで体格成長（+7%/Lv、最大+70%。死亡時は生存個体へ引き継ぎ） |
 | `settlement.hp` / `maxHp` | 建物HP |
 | `flockWeapon` | 群れ全体の現在武器タイプ |
 | `EGG_DROP_COUNT`=1 | 陥落建物の卵ドロップ数 |

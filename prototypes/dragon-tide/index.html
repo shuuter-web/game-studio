@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.14.1";
+const GAME_VERSION = "v0.15.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -2305,10 +2305,12 @@ const MOVER_SPAWNS_BY_STAGE = [
   [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3]],
 ];
 
-// v0.8: 移動敵のステージスケーリング（HPのみ硬くなる）。
-// v0.14: XPのステージスケール（moverStageXpMult）は廃止。敵のXPは種類による
-// 固定値とし、レベル進行は必要XP曲線（xpForNext）だけでコントロールする
-function moverStageHpMult(stageIndex) { return 1 + 0.30 * stageIndex; }
+// v0.15: 移動敵のステージスケーリングは「攻撃の苛烈さ」のみ。
+// HPスケール（moverStageHpMult）は廃止 — HPの増加は目に見えず「群れが育ったのに
+// 手応えが変わらない」という塊魂と逆行する体感を生むため（Shooter指示）。
+// 苛烈さは攻撃間隔の短縮とビームDPSに乗る＝画面上の弾・照射が明確に増えて見える。
+// XPスケールも廃止済み（v0.14。敵XPは種類固定、レベル進行はxpForNext曲線で制御）
+function moverStageFerocity(stageIndex) { return 1 + 0.20 * stageIndex; }
 
 // 全移動敵共通の追跡反応距離（この距離内の群れへ進撃する）
 const MOVER_PURSUIT_RANGE = 650;
@@ -2362,9 +2364,10 @@ function generateMovers(stageIndex, boss) {
           // 歩調のゆらぎ（全員同速だと隊列が凍って見える。±8%で追い越し・遅れが出る）
           mover.speedMult = randRange(0.92, 1.08);
         }
-        // v0.8: ステージが進むほど硬く（v0.14: XPはスケールせず種類固定）
-        mover.maxHp   = Math.round(def.hp * moverStageHpMult(stageIndex));
-        mover.hp      = mover.maxHp;
+        // v0.15: HP・XPともステージスケールなし（種類による固定値）。
+        // ステージ進行の脅威は攻撃の苛烈さ（moverStageFerocity）と数で表現する
+        mover.maxHp   = def.hp;
+        mover.hp      = def.hp;
         mover.xpValue = def.xp;
         result.push(mover);
       }
@@ -2520,11 +2523,13 @@ function updateMovers(dt) {
     const nearestD2 = ndx * ndx + ndy * ndy;
 
     const atk = def.attack;
+    // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
+    const ferocity = moverStageFerocity(currentStage);
     if (atk.type === "beam") {
       // コロッサス: 眼光ビーム（持続照射）
       if (nearestD2 < atk.range * atk.range) {
         m.beamTargetIdx = nearestIdx;
-        applyDamageToBoid(nearestIdx, atk.dps * dt);
+        applyDamageToBoid(nearestIdx, atk.dps * ferocity * dt);
       } else {
         m.beamTargetIdx = -1;
       }
@@ -2534,7 +2539,7 @@ function updateMovers(dt) {
     if (nearestD2 > MOVER_ENGAGE_RANGE * MOVER_ENGAGE_RANGE) continue;
     m.attackTimer -= dt;
     if (m.attackTimer > 0) continue;
-    m.attackTimer = atk.interval;
+    m.attackTimer = atk.interval / ferocity;
 
     if (atk.type === "shockwave") {
       // マンモス隊: 踏鳴らし（半径内の全個体にダメージ＋押し飛ばし＋リングFX）
@@ -7703,7 +7708,31 @@ function drawBreathAttacks(now) {
   ctx.restore();
 }
 
+// -----------------------------------------------------------------
+// v0.15: 群れのリーダー竜（塊魂の「大きくなる」体感担当）
+// -----------------------------------------------------------------
+// レベルが上がるとリーダー1匹だけ体格が育つ。全員を大きくすると相対比が
+// 変わらず成長が見えないため、基準となる1匹に成長を集約する（Shooter指示）。
+// リーダーはインデックスで永続化し、死亡/ダウンしたら生存個体へ引き継ぐ。
+let flockLeaderIdx = 0;
+
+const LEADER_GROWTH_PER_LEVEL = 0.07;  // レベルごとの体格増分
+const LEADER_GROWTH_MAX       = 0.70;  // 最大 +70%（Lv11で到達）
+
+function leaderBodyScale() {
+  return 1 + Math.min(LEADER_GROWTH_PER_LEVEL * (playerLevel - 1), LEADER_GROWTH_MAX);
+}
+
+/** リーダーが無効（死亡・ダウン・範囲外）なら生存個体へ引き継ぐ。 */
+function refreshFlockLeader() {
+  if (flockLeaderIdx < N && !boidDead[flockLeaderIdx] && !boidDowned[flockLeaderIdx]) return;
+  for (let i = 0; i < N; i++) {
+    if (!boidDead[i] && !boidDowned[i]) { flockLeaderIdx = i; return; }
+  }
+}
+
 function drawBoids() {
+  refreshFlockLeader();
   // プリレンダスプライトのDPR（createDragonSprites で使ったものと一致させる）
   const spriteDpr     = Math.min(window.devicePixelRatio || 1, 2);
   const spritePx      = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
@@ -7752,6 +7781,8 @@ function drawBoids() {
 
     const wx    = px[i], wy = py[i];
     const angle = Math.atan2(vy[i], vx[i]);
+    // v0.15: リーダー竜だけレベルに応じて体格が育つ（尻尾・本体の描画に一律適用）
+    const unitScale = (i === flockLeaderIdx) ? leaderBodyScale() : 1;
 
     // ---- 羽ばたきフレーム選択 ----
     // breathTime（毎フレーム dt 加算済み）に個体ごとの位相オフセットを加算
@@ -7778,7 +7809,7 @@ function drawBoids() {
     // 解析すると、不透明ピクセルは重心から約10論理px止まりだった
     // （preview_evalでdragonSprites.fire[12]を実測して確認済み）。
     // 尻尾の根本が実際の見た目上の胴体終端と自然につながるよう、実測に合わせて採用。
-    const TAIL_ROOT_OFFSET = 10;
+    const TAIL_ROOT_OFFSET = 10 * unitScale;
     const tailRootOffX = -Math.cos(angle) * TAIL_ROOT_OFFSET;
     const tailRootOffY = -Math.sin(angle) * TAIL_ROOT_OFFSET;
     let segX = wx + tailRootOffX;
@@ -7805,12 +7836,12 @@ function drawBoids() {
       const curl       = angleDiff * (1 - speedRatio * 0.6) + wobble * (1 - s / TAIL_SEGS);
       // セグメント方向：進行方向の逆 + 旋回差による横ずれ
       const segAngle   = angle + Math.PI + curl;
-      const nextX      = segX + Math.cos(segAngle) * TAIL_SEG_LEN;
-      const nextY      = segY + Math.sin(segAngle) * TAIL_SEG_LEN;
+      const nextX      = segX + Math.cos(segAngle) * TAIL_SEG_LEN * unitScale;
+      const nextY      = segY + Math.sin(segAngle) * TAIL_SEG_LEN * unitScale;
 
       // テーパリング：根元太く先細り
       const taper      = (1 - (s + 1) / (TAIL_SEGS + 1));
-      const lineW      = Math.max(0.4, TAIL_WIDTH0 * taper);
+      const lineW      = Math.max(0.4, TAIL_WIDTH0 * taper * unitScale);
       // 先端に向けて少し透明に
       const tailAlpha  = alpha * (0.75 + 0.25 * taper);
 
@@ -7834,6 +7865,7 @@ function drawBoids() {
     ctx.globalAlpha = alpha;
     ctx.translate(wx, wy);
     ctx.rotate(angle);
+    if (unitScale !== 1) ctx.scale(unitScale, unitScale);  // v0.15: リーダーの体格成長
     // スプライト中心が竜の重心に来るよう -halfLogical オフセット
     ctx.drawImage(
       sprite,
