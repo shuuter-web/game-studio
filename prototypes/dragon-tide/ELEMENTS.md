@@ -1,4 +1,4 @@
-# Dragon Tide — 要素名リファレンス（v0.15.0時点）
+# Dragon Tide — 要素名リファレンス（v0.16.0時点）
 
 > **世界観**: 竜たちは「たくさんの卵を奪って町に持ち帰った人間」に怒って襲撃している。
 > 町が卵を落とす＝奪われた卵の奪還（v0.15設定、Shooter指示）。
@@ -111,8 +111,12 @@
 | `riverPolyline` / `riverWidth` | 川（`generateRiver()` 1877）。幅48〜70のランダム |
 | `bridgePlacements` / `computeBridges()` | 街道×川の交点に架橋（1909）、画像 `assets/bridge.png` |
 | `townRoadEdges` | 町間の道路網（`buildTownRoadNetwork()` 1845） |
-| `streets`（`_townMeta.streets`） | 町内の放射状の通り（1277） |
-| `fields`（`_townMeta.fields`） | 農地。街道沿いに3〜6件配置（1372） |
+| `STAGE_TOWN_LAYOUTS` | **v0.16: 文明ごとの町骨格**。scattered(石器)/rings(古代・終末)/radial(中世・近世)/grid(産業以降) |
+| `streets`（`_townMeta.streets`） | 町内の放射状の通り（radial/rings/scatteredの獣道） |
+| `_townMeta.ringRadii` | 環状路の半径リスト（rings=多重、radial=1本、他=空） |
+| `_townMeta.gridRoads` | 碁盤目の道路セグメント（grid のみ） |
+| `fields`（`_townMeta.fields`） | **v0.16: 農地「クラスタ」**。同じ向きの区画が隣接して並ぶまとまりを町外縁に1〜3箇所。作付けトーン3種（耕地/青作物/実り）。川・地形・民家との重なり回避あり |
+| `_townMeta.decor` | **v0.16: 静的装飾**。well（井戸、広場の縁に1つ）/ hay（干し草、畑の隅） |
 | `GROUND_TILE_SOURCE` | 地面テクスチャ `assets/ground_tile.jpg`（低コントラストで敷く） |
 | `WORLD_W` / `WORLD_H` | ワールド全体サイズ |
 | `PLAZA_R` / `RING_R` / `townR` | 町の広場半径・環状路半径・町全体半径 |

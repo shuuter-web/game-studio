@@ -383,7 +383,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.15.0";
+const GAME_VERSION = "v0.16.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 /* ============================================================
@@ -1255,16 +1255,33 @@ function placeTownCenters(townCount, bossWx, bossWy) {
 }
 
 // -----------------------------------------------------------------
-// v0.10: 有機的な町生成 — 「広場＋ランドマークを中心に、放射状の通りと
-// 環状路に沿って建物が通りに面して並ぶ」現実の集落の育ち方を模す。
+// v0.10: 有機的な町生成 — 「広場＋ランドマークを中心に、通りに沿って
+// 建物が並ぶ」現実の集落の育ち方を模す。
 // 建物総数・サイズ構成・HPは旧格子方式と同一（バランス不変条件）。
+// v0.16: 文明（ステージ）ごとに町の骨格を変える（アクアリウム施策）。
+//   scattered: 骨格なしの自然発生集落（石器）
+//   rings    : 同心円の環状都市（古代・終末）
+//   radial   : 広場＋放射状の通り＋環状路（中世・近世 — v0.10からの現行形）
+//   grid     : 直交する碁盤目の街路（産業革命以降）
 // -----------------------------------------------------------------
-function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCount, config, townIndex) {
+const STAGE_TOWN_LAYOUTS = [
+  "scattered",  // 1 STONE AGE     — 獣道と焚き火の集落
+  "rings",      // 2 ANCIENT ERA   — 同心円の神殿都市
+  "radial",     // 3 MEDIEVAL AGE  — 広場を核にした城下町
+  "radial",     // 4 MODERN FORTRESS
+  "grid",       // 5 INDUSTRIAL AGE — 計画された碁盤目
+  "grid",       // 6 ELECTRIC AGE
+  "grid",       // 7 GREAT WAR
+  "rings",      // 8 FINAL DOMINION — ボス城塞と同じ同心円意匠
+];
+
+function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCount, config, townIndex, stageIndex) {
   const result = [];
   const baseHue = config.townBaseHues[townIndex % config.townBaseHues.length];
   const bSmall  = config.buildings.small;
   const bMedium = config.buildings.medium;
   const bLarge  = config.buildings.large;
+  const layout  = STAGE_TOWN_LAYOUTS[stageIndex] ?? "radial";
 
   const totalCount = smallCount + mediumCount + largeCount;
   const PLAZA_R = 36;                                          // 中央広場の半径
@@ -1273,15 +1290,64 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   const townR   = Math.max(170, Math.min(430, 16.5 * Math.sqrt(totalCount))); // 町の外縁半径
   const RING_R  = PLAZA_R + 58;                                // 環状路の半径
 
-  // 放射状の通り（3〜5本、角度ジッター付き）
-  const streetCount = 3 + (townIndex % 3);
-  const streets = [];
-  const streetBase = randRange(0, Math.PI * 2);
-  for (let k = 0; k < streetCount; k++) {
-    streets.push({
-      angle: streetBase + (k * Math.PI * 2) / streetCount + randRange(-0.25, 0.25),
-      len: townR * randRange(0.85, 1.0),
-    });
+  // --- レイアウト別の道路骨格 ---
+  const streets   = [];   // 放射状の通り {angle, len}（scattered/rings では本数を絞る）
+  const ringRadii = [];   // 環状路の半径（rings は多重、radial は1本、他はなし）
+  const gridRoads = [];   // 碁盤目の道路セグメント {x1,y1,x2,y2,angle}
+  if (layout === "radial") {
+    const streetCount = 3 + (townIndex % 3);
+    const streetBase = randRange(0, Math.PI * 2);
+    for (let k = 0; k < streetCount; k++) {
+      streets.push({
+        angle: streetBase + (k * Math.PI * 2) / streetCount + randRange(-0.25, 0.25),
+        len: townR * randRange(0.85, 1.0),
+      });
+    }
+    ringRadii.push(RING_R);
+  } else if (layout === "scattered") {
+    // 獣道が1〜2本だけ通る。環状路はない
+    const trailCount = 1 + (townIndex % 2);
+    const trailBase = randRange(0, Math.PI * 2);
+    for (let k = 0; k < trailCount; k++) {
+      streets.push({
+        angle: trailBase + k * Math.PI + randRange(-0.5, 0.5),
+        len: townR * randRange(0.7, 0.95),
+      });
+    }
+  } else if (layout === "rings") {
+    // 同心円2〜3重＋放射の連絡路2〜3本
+    for (let r = RING_R; r < townR - 24; r += 64) ringRadii.push(r);
+    if (ringRadii.length === 0) ringRadii.push(RING_R);
+    const spokeCount = 2 + (townIndex % 2);
+    const spokeBase = randRange(0, Math.PI * 2);
+    for (let k = 0; k < spokeCount; k++) {
+      streets.push({
+        angle: spokeBase + (k * Math.PI * 2) / spokeCount + randRange(-0.2, 0.2),
+        len: townR * randRange(0.9, 1.0),
+      });
+    }
+  } else if (layout === "grid") {
+    // 基準角に沿った直交道路網（町の円でクリップした線分の束）
+    const theta = randRange(0, Math.PI / 2);
+    const ROAD_SPACING = 68;
+    const maxK = Math.floor((townR - 24) / ROAD_SPACING);
+    for (let axis = 0; axis < 2; axis++) {
+      const a  = theta + axis * Math.PI / 2;          // 道路の方向
+      const nx = Math.cos(a + Math.PI / 2);
+      const ny = Math.sin(a + Math.PI / 2);           // 直交オフセット方向
+      for (let k = -maxK; k <= maxK; k++) {
+        const off = k * ROAD_SPACING;
+        const halfLen = Math.sqrt(Math.max(0, townR * townR - off * off));
+        if (halfLen < 46) continue;
+        const mx = townCenterX + nx * off;
+        const my = townCenterY + ny * off;
+        gridRoads.push({
+          x1: mx - Math.cos(a) * halfLen, y1: my - Math.sin(a) * halfLen,
+          x2: mx + Math.cos(a) * halfLen, y2: my + Math.sin(a) * halfLen,
+          angle: a, halfLen, mx, my,
+        });
+      }
+    }
   }
 
   const placedPos = [];   // {x, y, r} 重なりチェック用
@@ -1304,83 +1370,230 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   placedPos.push({ x: townCenterX, y: townCenterY, r: landmark.radius });
   result.push(landmark);
 
-  // --- (2) 大型建物: 環状路上の通りと通りの間（にらみを利かせる領主館・聖堂） ---
+  // 建物1棟の配置試行ヘルパー（成功時に result へ積む）
+  const sizeGap = { large: 8, medium: 6, small: 4 };
+  const sizeConfig = { large: bLarge, medium: bMedium, small: bSmall };
+  function tryPlaceBuilding(size, wx, wy, faceAngle, colorOverride) {
+    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS[size].radiusBase, sizeGap[size])) return false;
+    const hp = randInt(BUILDING_SIZE_PARAMS[size].hpMin, BUILDING_SIZE_PARAMS[size].hpMax);
+    const color = colorOverride ??
+      shadeColor(baseHue, size === "medium" ? randInt(-10, 20) : randInt(-15, 15));
+    const b = makeBuilding(wx, wy, size, color, sizeConfig[size], hp);
+    b._faceAngle = faceAngle;
+    result.push(b);
+    return true;
+  }
+
+  // scattered 用: 集落の塊（ブロブ）の中心を先に決めておく
+  const scatterHubs = [];
+  if (layout === "scattered") {
+    const hubCount = 4 + (townIndex % 3);
+    for (let k = 0; k < hubCount; k++) {
+      const a = randRange(0, Math.PI * 2);
+      const r = randRange(PLAZA_R + 24, townR * 0.85);
+      scatterHubs.push({ x: townCenterX + Math.cos(a) * r, y: townCenterY + Math.sin(a) * r });
+    }
+  }
+
+  // --- (2) 大型建物: レイアウトごとの「権威が立つ場所」に置く ---
   let placedLarge = 0;
-  for (let k = 0; k < largeCount * 8 && placedLarge < largeCount; k++) {
-    const angle = randRange(0, Math.PI * 2);
-    const r     = RING_R + randRange(10, 40);
-    const wx = townCenterX + Math.cos(angle) * r;
-    const wy = townCenterY + Math.sin(angle) * r;
-    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS.large.radiusBase, 8)) continue;
-    const hp = randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax);
-    const b  = makeBuilding(wx, wy, "large", bLarge.colors[placedLarge % bLarge.colors.length], bLarge, hp);
-    b._faceAngle = angle + Math.PI / 2;   // 広場（中心）に正面を向ける
-    result.push(b);
-    placedLarge++;
+  for (let k = 0; k < largeCount * 10 && placedLarge < largeCount; k++) {
+    let wx, wy, face;
+    if (layout === "grid" && gridRoads.length > 0) {
+      // 中心街区の大通り沿い（官庁・大工場）
+      const road = gridRoads[Math.floor(Math.random() * gridRoads.length)];
+      const t    = randRange(-road.halfLen * 0.5, road.halfLen * 0.5);
+      const side = Math.random() < 0.5 ? 1 : -1;
+      const off  = side * (20 + BUILDING_SIZE_PARAMS.large.radiusBase);
+      wx = road.mx + Math.cos(road.angle) * t + Math.cos(road.angle + Math.PI / 2) * off;
+      wy = road.my + Math.sin(road.angle) * t + Math.sin(road.angle + Math.PI / 2) * off;
+      if (dist2(wx, wy, townCenterX, townCenterY) > (townR * 0.5) ** 2) continue;
+      face = road.angle + Math.PI / 2;
+    } else if (layout === "scattered") {
+      // 集落の中心近くに散在（長の住居・祭場）
+      const angle = randRange(0, Math.PI * 2);
+      const r     = randRange(PLAZA_R + 16, townR * 0.45);
+      wx = townCenterX + Math.cos(angle) * r;
+      wy = townCenterY + Math.sin(angle) * r;
+      face = angle + Math.PI / 2;
+    } else {
+      // radial / rings: 最内の環状路上（にらみを利かせる領主館・聖堂）
+      const angle = randRange(0, Math.PI * 2);
+      const r     = (ringRadii[0] ?? RING_R) + randRange(10, 40);
+      wx = townCenterX + Math.cos(angle) * r;
+      wy = townCenterY + Math.sin(angle) * r;
+      face = angle + Math.PI / 2;   // 広場（中心）に正面を向ける
+    }
+    if (tryPlaceBuilding("large", wx, wy, face, bLarge.colors[placedLarge % bLarge.colors.length])) {
+      placedLarge++;
+    }
   }
 
-  // --- (3) 中型建物: 放射状の通り沿いの内側区間（商家・工房の並び） ---
+  // --- (3) 中型建物: 骨格の内側区間（商家・工房の並び） ---
   let placedMedium = 0;
-  for (let k = 0; k < mediumCount * 8 && placedMedium < mediumCount; k++) {
-    const st   = streets[k % streets.length];
-    const t    = randRange(PLAZA_R + 22, townR * 0.55);
-    const side = k % 2 === 0 ? 1 : -1;
-    const off  = side * (16 + randRange(0, 8) + BUILDING_SIZE_PARAMS.medium.radiusBase);
-    const wx = townCenterX + Math.cos(st.angle) * t + Math.cos(st.angle + Math.PI / 2) * off;
-    const wy = townCenterY + Math.sin(st.angle) * t + Math.sin(st.angle + Math.PI / 2) * off;
-    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS.medium.radiusBase, 6)) continue;
-    const hp = randInt(BUILDING_SIZE_PARAMS.medium.hpMin, BUILDING_SIZE_PARAMS.medium.hpMax);
-    const b  = makeBuilding(wx, wy, "medium", shadeColor(baseHue, randInt(-10, 20)), bMedium, hp);
-    b._faceAngle = st.angle + Math.PI / 2;   // 通りに面する
-    result.push(b);
-    placedMedium++;
+  for (let k = 0; k < mediumCount * 10 && placedMedium < mediumCount; k++) {
+    let wx, wy, face;
+    if (layout === "grid" && gridRoads.length > 0) {
+      const road = gridRoads[Math.floor(Math.random() * gridRoads.length)];
+      const t    = randRange(-road.halfLen * 0.8, road.halfLen * 0.8);
+      const side = k % 2 === 0 ? 1 : -1;
+      const off  = side * (16 + randRange(0, 8) + BUILDING_SIZE_PARAMS.medium.radiusBase);
+      wx = road.mx + Math.cos(road.angle) * t + Math.cos(road.angle + Math.PI / 2) * off;
+      wy = road.my + Math.sin(road.angle) * t + Math.sin(road.angle + Math.PI / 2) * off;
+      if (dist2(wx, wy, townCenterX, townCenterY) > (townR * 0.72) ** 2) continue;
+      face = road.angle + Math.PI / 2;
+    } else if (layout === "rings") {
+      // 中間の環状路沿い（商家の環）
+      const ring  = ringRadii[Math.min(1, ringRadii.length - 1)];
+      const angle = randRange(0, Math.PI * 2);
+      const side  = k % 2 === 0 ? 1 : -1;
+      const r     = ring + side * (14 + BUILDING_SIZE_PARAMS.medium.radiusBase);
+      wx = townCenterX + Math.cos(angle) * r;
+      wy = townCenterY + Math.sin(angle) * r;
+      face = angle + Math.PI / 2;
+    } else if (layout === "scattered") {
+      const angle = randRange(0, Math.PI * 2);
+      const r     = randRange(PLAZA_R + 20, townR * 0.7);
+      wx = townCenterX + Math.cos(angle) * r;
+      wy = townCenterY + Math.sin(angle) * r;
+      face = angle + Math.PI / 2 + randRange(-0.4, 0.4);
+    } else {
+      // radial: 放射状の通り沿いの内側区間
+      const st   = streets[k % streets.length];
+      const t    = randRange(PLAZA_R + 22, townR * 0.55);
+      const side = k % 2 === 0 ? 1 : -1;
+      const off  = side * (16 + randRange(0, 8) + BUILDING_SIZE_PARAMS.medium.radiusBase);
+      wx = townCenterX + Math.cos(st.angle) * t + Math.cos(st.angle + Math.PI / 2) * off;
+      wy = townCenterY + Math.sin(st.angle) * t + Math.sin(st.angle + Math.PI / 2) * off;
+      face = st.angle + Math.PI / 2;   // 通りに面する
+    }
+    if (tryPlaceBuilding("medium", wx, wy, face)) placedMedium++;
   }
 
-  // --- (4) 小型建物: まず通り沿い、埋まらない分は町の中の路地に有機的に充填 ---
+  // --- (4) 小型建物: まず骨格沿い、埋まらない分は路地に有機的に充填 ---
   let placedSmall = 0;
-  // (4a) 通り沿い（両側にぎっしり並ぶ長屋）
-  for (let k = 0; k < smallCount * 4 && placedSmall < smallCount; k++) {
-    const st   = streets[k % streets.length];
-    const t    = randRange(PLAZA_R + 16, st.len);
-    const side = (k >> 1) % 2 === 0 ? 1 : -1;
-    const off  = side * (13 + randRange(0, 6) + BUILDING_SIZE_PARAMS.small.radiusBase);
-    const wx = townCenterX + Math.cos(st.angle) * t + Math.cos(st.angle + Math.PI / 2) * off;
-    const wy = townCenterY + Math.sin(st.angle) * t + Math.sin(st.angle + Math.PI / 2) * off;
-    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS.small.radiusBase, 4)) continue;
-    const hp = randInt(BUILDING_SIZE_PARAMS.small.hpMin, BUILDING_SIZE_PARAMS.small.hpMax);
-    const b  = makeBuilding(wx, wy, "small", shadeColor(baseHue, randInt(-15, 15)), bSmall, hp);
-    b._faceAngle = st.angle + Math.PI / 2;
-    result.push(b);
-    placedSmall++;
+  // (4a) 骨格沿い（道路・環状路の両側にぎっしり並ぶ長屋／集落の塊）
+  for (let k = 0; k < smallCount * 6 && placedSmall < smallCount; k++) {
+    let wx, wy, face;
+    if (layout === "grid" && gridRoads.length > 0) {
+      const road = gridRoads[k % gridRoads.length];
+      const t    = randRange(-road.halfLen + 10, road.halfLen - 10);
+      const side = (k >> 1) % 2 === 0 ? 1 : -1;
+      const off  = side * (13 + randRange(0, 6) + BUILDING_SIZE_PARAMS.small.radiusBase);
+      wx = road.mx + Math.cos(road.angle) * t + Math.cos(road.angle + Math.PI / 2) * off;
+      wy = road.my + Math.sin(road.angle) * t + Math.sin(road.angle + Math.PI / 2) * off;
+      face = road.angle + Math.PI / 2;
+    } else if (layout === "rings") {
+      // 各環状路の両側（環に沿った家並み）
+      const ring  = ringRadii[k % ringRadii.length];
+      const angle = randRange(0, Math.PI * 2);
+      const side  = (k >> 1) % 2 === 0 ? 1 : -1;
+      const r     = ring + side * (12 + randRange(0, 5) + BUILDING_SIZE_PARAMS.small.radiusBase);
+      wx = townCenterX + Math.cos(angle) * r;
+      wy = townCenterY + Math.sin(angle) * r;
+      face = angle + Math.PI / 2;
+    } else if (layout === "scattered") {
+      // 集落の塊に寄せて置く（塊と塊の間は空く＝自然発生の疎密）
+      const hub = scatterHubs[k % scatterHubs.length];
+      wx = hub.x + randRange(-46, 46);
+      wy = hub.y + randRange(-46, 46);
+      face = randRange(0, Math.PI * 2);
+    } else {
+      // radial: 通り沿い
+      const st   = streets[k % streets.length];
+      const t    = randRange(PLAZA_R + 16, st.len);
+      const side = (k >> 1) % 2 === 0 ? 1 : -1;
+      const off  = side * (13 + randRange(0, 6) + BUILDING_SIZE_PARAMS.small.radiusBase);
+      wx = townCenterX + Math.cos(st.angle) * t + Math.cos(st.angle + Math.PI / 2) * off;
+      wy = townCenterY + Math.sin(st.angle) * t + Math.sin(st.angle + Math.PI / 2) * off;
+      face = st.angle + Math.PI / 2;
+    }
+    if (tryPlaceBuilding("small", wx, wy, face)) placedSmall++;
   }
-  // (4b) 路地充填（中心に密・外縁に疎。√分布で中心へ寄せる）
-  // v0.11: 試行回数を倍増（×8→×16）して充填率を上げる＝実建物数を目標値に近づける
+  // (4b) 路地充填。v0.11: 試行回数×16で充填率を上げる＝実建物数を目標値に近づける
+  // v0.16: scattered は充填も塊（ハブ）に寄せる。一様に埋めると塊と塊の間の
+  // 空白が消えて「自然発生集落の疎密」が死ぬため。埋まるほど広がりを緩める
   for (let k = 0; k < smallCount * 16 && placedSmall < smallCount; k++) {
-    const angle = randRange(0, Math.PI * 2);
-    const r     = PLAZA_R + 14 + Math.sqrt(Math.random()) * (townR - PLAZA_R - 14);
-    const wx = townCenterX + Math.cos(angle) * r;
-    const wy = townCenterY + Math.sin(angle) * r;
-    if (!tryPlace(wx, wy, BUILDING_SIZE_PARAMS.small.radiusBase, 4)) continue;
-    const hp = randInt(BUILDING_SIZE_PARAMS.small.hpMin, BUILDING_SIZE_PARAMS.small.hpMax);
-    const b  = makeBuilding(wx, wy, "small", shadeColor(baseHue, randInt(-15, 15)), bSmall, hp);
-    b._faceAngle = angle + Math.PI / 2 + randRange(-0.3, 0.3);   // おおよそ中心を向く
-    result.push(b);
-    placedSmall++;
+    let wx, wy, face;
+    if (layout === "scattered" && scatterHubs.length > 0) {
+      const hub = scatterHubs[Math.floor(Math.random() * scatterHubs.length)];
+      const spread = 50 + (k / (smallCount * 16)) * 50;   // 混んできたら少しずつ外へ
+      wx = hub.x + randRange(-spread, spread);
+      wy = hub.y + randRange(-spread, spread);
+      face = randRange(0, Math.PI * 2);
+    } else {
+      // 中心に密・外縁に疎（√分布で中心へ寄せる）
+      const angle = randRange(0, Math.PI * 2);
+      const r     = PLAZA_R + 14 + Math.sqrt(Math.random()) * (townR - PLAZA_R - 14);
+      wx = townCenterX + Math.cos(angle) * r;
+      wy = townCenterY + Math.sin(angle) * r;
+      face = angle + Math.PI / 2 + randRange(-0.3, 0.3);
+    }
+    if (tryPlaceBuilding("small", wx, wy, face)) placedSmall++;
   }
 
-  // --- (5) 畑: 町の外縁に沿って3〜6枚（通りの延長方向に整列＝街道沿いの耕作地） ---
+  // --- (5) 畑: 農地「区画」として町の外縁にまとめて置く ---
+  // v0.16: 旧実装はバラバラの向き・位置で1枚ずつ置いていたため互いに重なり
+  // 「人の営み」に見えなかった。実際の農村のように、同じ向きの区画が
+  // 隣り合って並ぶまとまり（クラスタ）を1〜3箇所作る。川の上は避ける。
   const fields = [];
-  const fieldCount = randInt(3, 6);
-  for (let k = 0; k < fieldCount; k++) {
-    const st = streets[k % streets.length];
-    const angle = st.angle + randRange(-0.5, 0.5);
-    const dist  = townR + randRange(50, 150);
-    fields.push({
-      x: townCenterX + Math.cos(angle) * dist,
-      y: townCenterY + Math.sin(angle) * dist,
-      w: randRange(70, 130),
-      h: randRange(45, 80),
-      angle: st.angle + randRange(-0.15, 0.15),
+  const decor  = [];
+  const clusterCount = randInt(1, 3);
+  const clusterBase  = randRange(0, Math.PI * 2);
+  for (let c = 0; c < clusterCount; c++) {
+    // クラスタ方向は等分＋ジッター（クラスタ同士が重ならないように離す）
+    const dirAngle   = clusterBase + c * (Math.PI * 2 / clusterCount) + randRange(-0.35, 0.35);
+    const fieldAngle = dirAngle + Math.PI / 2 + randRange(-0.12, 0.12);
+    const cols = randInt(2, 4);
+    const rows = Math.random() < 0.4 ? 2 : 1;
+    const pw   = randRange(52, 78);
+    const ph   = randRange(36, 54);
+    const gap  = 7;
+    const clusterW = cols * pw + (cols - 1) * gap;
+    const clusterH = rows * ph + (rows - 1) * gap;
+    const dist = townR + 60 + Math.max(clusterW, clusterH) * 0.5 + randRange(0, 60);
+    const ccx  = townCenterX + Math.cos(dirAngle) * dist;
+    const ccy  = townCenterY + Math.sin(dirAngle) * dist;
+    if (ccx < 80 || ccx > WORLD_W - 80 || ccy < 80 || ccy > WORLD_H - 80) continue;
+    // 川の上に畑を敷かない（クラスタ中心で判定。多少の際は水辺の畑として許容）
+    if (riverPolyline.length > 1 &&
+        distPointToPolylineSq(ccx, ccy, riverPolyline) < (riverWidth * 0.5 + 30) ** 2) continue;
+
+    const ux = Math.cos(fieldAngle), uy = Math.sin(fieldAngle);   // 列方向の単位ベクトル
+    const vxL = -uy, vyL = ux;                                    // 行方向の単位ベクトル
+    // 作付けの違い（耕地・青作物・実り）を区画ごとに混ぜる
+    const FIELD_TONES = ["#96804a", "#7a8a4a", "#a08c56"];
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const offCol = (col - (cols - 1) / 2) * (pw + gap);
+        const offRow = (row - (rows - 1) / 2) * (ph + gap);
+        fields.push({
+          x: ccx + ux * offCol + vxL * offRow,
+          y: ccy + uy * offCol + vyL * offRow,
+          w: pw, h: ph, angle: fieldAngle,
+          tone: FIELD_TONES[(c + col + row) % FIELD_TONES.length],
+        });
+      }
+    }
+    // 干し草の山: 区画の隅に1〜2個（収穫の気配）
+    const hayCount = randInt(1, 2);
+    for (let hIdx = 0; hIdx < hayCount; hIdx++) {
+      const hSide = hIdx % 2 === 0 ? 1 : -1;
+      decor.push({
+        type: "hay",
+        x: ccx + ux * hSide * (clusterW * 0.5 + 16) + vxL * randRange(-clusterH * 0.4, clusterH * 0.4),
+        y: ccy + uy * hSide * (clusterW * 0.5 + 16) + vyL * randRange(-clusterH * 0.4, clusterH * 0.4),
+        r: randRange(6, 9),
+      });
+    }
+  }
+  // 井戸: 広場の縁に1つ（共同の水場＝集落の生活の中心）
+  {
+    const wellAngle = randRange(0, Math.PI * 2);
+    decor.push({
+      type: "well",
+      x: townCenterX + Math.cos(wellAngle) * (PLAZA_R - 6),
+      y: townCenterY + Math.sin(wellAngle) * (PLAZA_R - 6),
     });
   }
 
@@ -1391,13 +1604,31 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     plazaR: PLAZA_R,
     ringR: RING_R,
     townR,
+    layout,       // v0.16: 町の骨格タイプ
     streets,
+    ringRadii,    // v0.16: 環状路の半径（radial=1本 / rings=多重 / 他=空）
+    gridRoads,    // v0.16: 碁盤目の道路セグメント
+    decor,        // v0.16: 井戸・干し草などの静的装飾
     fields,
     // v0.9.1以前の互換フィールド（fortified リム等が参照）
     spacing: 52,
   };
 
   return result;
+}
+
+// 点からポリラインへの最短距離の2乗（畑の川回避などの粗い判定用）
+function distPointToPolylineSq(x, y, poly) {
+  let best = Infinity;
+  for (let i = 0; i < poly.length - 1; i++) {
+    const ax = poly[i].x, ay = poly[i].y;
+    const abx = poly[i + 1].x - ax, aby = poly[i + 1].y - ay;
+    const t = Math.max(0, Math.min(1, ((x - ax) * abx + (y - ay) * aby) / (abx * abx + aby * aby || 1)));
+    const dx = x - (ax + abx * t), dy = y - (ay + aby * t);
+    const d2 = dx * dx + dy * dy;
+    if (d2 < best) best = d2;
+  }
+  return best;
 }
 
 function makeBuilding(wx, wy, size, color, bConfig, hp) {
@@ -1587,6 +1818,13 @@ function generateRoadsideHamlets(existingBuildings, roadEdges, boss, config) {
   const bSmall = config.buildings.small;
   const tinyR  = BUILDING_SIZE_PARAMS.tiny.radiusBase;
   const occupied = existingBuildings.map(b => ({ x: b.wx, y: b.wy, r: b.radius }));
+  // v0.16: 畑クラスタも占有領域に含める（民家が畑の上に建つのを防ぐ）
+  for (const b of existingBuildings) {
+    if (!b._townMeta) continue;
+    for (const f of b._townMeta.fields ?? []) {
+      occupied.push({ x: f.x, y: f.y, r: Math.hypot(f.w, f.h) * 0.5 });
+    }
+  }
   const bossClear2 = (WALL_OUTER_RING_RADIUS + 80) ** 2;
 
   for (const [a, b] of roadEdges) {
@@ -1733,6 +1971,7 @@ function generateStageLayout(stageIndex) {
       Math.max(1, Math.round(config.largePerTown * BUILDING_DENSITY_MULT * s2)),
       config,
       t,
+      stageIndex,   // v0.16: 文明ごとの町レイアウト選択に使う
     );
     if (fortifiedSet.has(t)) applyTownFortification(townBuildings);
     for (const b of townBuildings) result.push(b);
@@ -3047,6 +3286,16 @@ function generateTerrainObstacles(buildings, boss) {
   // 城壁リング＋余白の外側にのみ配置（要塞攻略の導線を地形で塞がない）
   const bossClear = WALL_OUTER_RING_RADIUS + 120;
 
+  // v0.16: 畑クラスタの位置を集めておく（岩山・湖が畑の上に落ちるのを防ぐ）
+  const fieldSpots = [];
+  for (const b of buildings) {
+    if (!b._townMeta) continue;
+    for (const f of b._townMeta.fields ?? []) {
+      // 畑の外接円半径（回転を考慮した対角の半分）
+      fieldSpots.push({ x: f.x, y: f.y, r: Math.hypot(f.w, f.h) * 0.5 });
+    }
+  }
+
   for (let k = 0; k < count; k++) {
     const type   = Math.random() < 0.55 ? "rock" : "lake";
     const radius = type === "rock" ? randRange(40, 85) : randRange(55, 105);
@@ -3065,6 +3314,13 @@ function generateTerrainObstacles(buildings, boss) {
       for (const b of buildings) {
         const minD = radius + b.radius + 30;
         if (dist2(wx, wy, b.wx, b.wy) < minD * minD) { collides = true; break; }
+      }
+      if (collides) continue;
+
+      // v0.16: 畑クラスタとの重なりチェック
+      for (const f of fieldSpots) {
+        const minD = radius + f.r + 12;
+        if (dist2(wx, wy, f.x, f.y) < minD * minD) { collides = true; break; }
       }
       if (collides) continue;
 
@@ -3347,9 +3603,12 @@ function drawTownBasesOnLayer(bctx) {
   for (let s = 0; s < settlements.length; s++) {
     const meta = settlements[s]._townMeta;
     if (!meta) continue;
-    const { cx, cy, plazaR, ringR, streets, townR, fields } = meta;
+    const { cx, cy, plazaR, streets, townR, fields } = meta;
+    const ringRadii = meta.ringRadii ?? [meta.ringR];
+    const gridRoads = meta.gridRoads ?? [];
+    const decor     = meta.decor ?? [];
 
-    // v0.10: 町の敷地＝広場円＋通りに沿った太い踏み固め帯＋環状路の有機的ブロブ
+    // v0.10: 町の敷地＝広場円＋道路骨格に沿った太い踏み固め帯
     bctx.globalAlpha = 0.50;
     bctx.fillStyle = paveColor;
     // 町全体の淡い土台（外縁に向けて消える放射グラデーション）
@@ -3366,7 +3625,7 @@ function drawTownBasesOnLayer(bctx) {
     bctx.beginPath();
     bctx.arc(cx, cy, plazaR + 12, 0, Math.PI * 2);
     bctx.fill();
-    // 通りの踏み固め帯
+    // 道路骨格の踏み固め帯（v0.16: レイアウトごとに 放射通り／環状路／碁盤目 を描く）
     bctx.strokeStyle = paveColor;
     bctx.lineCap = "round";
     bctx.globalAlpha = 0.40;
@@ -3377,23 +3636,33 @@ function drawTownBasesOnLayer(bctx) {
       bctx.lineTo(cx + Math.cos(st.angle) * st.len, cy + Math.sin(st.angle) * st.len);
       bctx.stroke();
     }
+    bctx.lineWidth = 40;
+    for (const road of gridRoads) {
+      bctx.beginPath();
+      bctx.moveTo(road.x1, road.y1);
+      bctx.lineTo(road.x2, road.y2);
+      bctx.stroke();
+    }
     bctx.lineWidth = 38;
-    bctx.beginPath();
-    bctx.arc(cx, cy, ringR, 0, Math.PI * 2);
-    bctx.stroke();
+    for (const rr of ringRadii) {
+      bctx.beginPath();
+      bctx.arc(cx, cy, rr, 0, Math.PI * 2);
+      bctx.stroke();
+    }
 
     // v0.10: 畑 — 縞模様の耕作地＋柵。「人が住み、耕している土地」の記号
+    // v0.16: 区画ごとの作付けトーン（tone）で耕地・青作物・実りを混ぜる
     for (const f of fields) {
       bctx.save();
       bctx.translate(f.x, f.y);
       bctx.rotate(f.angle);
       // 土のベース
-      bctx.globalAlpha = 0.42;
-      bctx.fillStyle = "rgba(150, 128, 74, 0.9)";
+      bctx.globalAlpha = 0.46;
+      bctx.fillStyle = f.tone ?? "#96804a";
       bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
       // 畝（うね）の縞
       bctx.globalAlpha = 0.35;
-      bctx.strokeStyle = "rgba(96, 78, 44, 0.9)";
+      bctx.strokeStyle = shadeColor(f.tone ?? "#96804a", -46);
       bctx.lineWidth = 2.5;
       for (let fx = -f.w / 2 + 6; fx < f.w / 2 - 3; fx += 9) {
         bctx.beginPath();
@@ -3407,6 +3676,44 @@ function drawTownBasesOnLayer(bctx) {
       bctx.lineWidth = 2;
       bctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
       bctx.restore();
+    }
+
+    // v0.16: 静的装飾 — 井戸・干し草（人の営みの記号）
+    for (const d of decor) {
+      if (d.type === "well") {
+        // 石組みの輪＋暗い水面＋井桁の梁
+        bctx.globalAlpha = 0.9;
+        bctx.strokeStyle = "#8a8578";
+        bctx.lineWidth = 3;
+        bctx.beginPath();
+        bctx.arc(d.x, d.y, 6.5, 0, Math.PI * 2);
+        bctx.stroke();
+        bctx.fillStyle = "#20242c";
+        bctx.beginPath();
+        bctx.arc(d.x, d.y, 4.5, 0, Math.PI * 2);
+        bctx.fill();
+        bctx.strokeStyle = "#6a5236";
+        bctx.lineWidth = 1.6;
+        bctx.beginPath();
+        bctx.moveTo(d.x - 8, d.y - 2);
+        bctx.lineTo(d.x + 8, d.y - 2);
+        bctx.stroke();
+      } else if (d.type === "hay") {
+        // 干し草の山: 藁色の円＋束ねの弧
+        bctx.globalAlpha = 0.85;
+        bctx.fillStyle = "#c2a75e";
+        bctx.beginPath();
+        bctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+        bctx.fill();
+        bctx.strokeStyle = "#8f7940";
+        bctx.lineWidth = 1.4;
+        bctx.beginPath();
+        bctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+        bctx.stroke();
+        bctx.beginPath();
+        bctx.arc(d.x, d.y - d.r * 0.25, d.r * 0.55, Math.PI * 0.15, Math.PI * 0.85);
+        bctx.stroke();
+      }
     }
   }
 
@@ -3425,7 +3732,9 @@ function drawTownBasesOnLayer(bctx) {
 }
 
 function drawTownRoadsOnLayer(bctx, meta) {
-  const { cx, cy, plazaR, ringR, streets, townR } = meta;
+  const { cx, cy, plazaR, streets, townR } = meta;
+  const ringRadii = meta.ringRadii ?? [meta.ringR];
+  const gridRoads = meta.gridRoads ?? [];
 
   // v0.7: 要塞都市には町全体を囲う「城郭リム」（v0.10: 円形に変更）
   if (meta._fortified) {
@@ -3443,7 +3752,7 @@ function drawTownRoadsOnLayer(bctx, meta) {
     bctx.restore();
   }
 
-  // v0.10: 通りの中心線（放射状＋環状路＋広場の縁）を明るく見せる
+  // v0.10: 通りの中心線を明るく見せる（v0.16: 放射／環状／碁盤目をレイアウト通りに）
   bctx.save();
   bctx.strokeStyle = "rgba(210, 195, 160, 0.18)";
   bctx.lineCap = "round";
@@ -3454,10 +3763,19 @@ function drawTownRoadsOnLayer(bctx, meta) {
     bctx.lineTo(cx + Math.cos(st.angle) * st.len, cy + Math.sin(st.angle) * st.len);
     bctx.stroke();
   }
+  bctx.lineWidth = 8;
+  for (const road of gridRoads) {
+    bctx.beginPath();
+    bctx.moveTo(road.x1, road.y1);
+    bctx.lineTo(road.x2, road.y2);
+    bctx.stroke();
+  }
   bctx.lineWidth = 7;
-  bctx.beginPath();
-  bctx.arc(cx, cy, ringR, 0, Math.PI * 2);
-  bctx.stroke();
+  for (const rr of ringRadii) {
+    bctx.beginPath();
+    bctx.arc(cx, cy, rr, 0, Math.PI * 2);
+    bctx.stroke();
+  }
   // 広場の縁取り
   bctx.strokeStyle = "rgba(210, 195, 160, 0.22)";
   bctx.lineWidth = 2.5;
