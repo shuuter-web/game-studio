@@ -1,4 +1,4 @@
-# Dragon Tide — 要素名リファレンス（v0.16.1時点）
+# Dragon Tide — 要素名リファレンス（v0.17.0時点）
 
 > **デバッグ**: 左下のバージョン表示を800ms以内に3回タップ（またはNキー）で次ステージへ
 > （最終ステージからは1へループ。プレイ中のみ。`debugAdvanceStage()`）
@@ -111,7 +111,10 @@
 
 | 内部名 | 説明 |
 |---|---|
-| `riverPolyline` / `riverWidth` | 川（`generateRiver()` 1877）。幅48〜70のランダム |
+| `terrainObstacles`（`type:"rock"/"lake"`） | 破壊不可のブロッキング地形（岩山・湖）。**v0.17: セル調スプライト化**（`terrain_rock.png`/`terrain_lake.png`、ベクターfallback）。`generateTerrainObstacles` |
+| `forestClusters` | **v0.17新規: 森**（非ブロッキング＝竜も敵も上を飛ぶ純装飾）。空白地帯に8〜16個散布。`generateForests`/`drawForestsOnLayer`、画像 `terrain_forest.png` |
+| `TERRAIN_IMAGE_SOURCES` / `terrainImages` | **v0.17: 地形・自然物スプライト**（rock/lake/field/forest、自然色でティントしない）。preloadDragonImages で並行ロード |
+| `riverPolyline` / `riverWidth` | 川（`generateRiver()` 1877）。幅48〜70。**ポリライン（経路依存）のためベクターのまま**（湖の青と近い色で統一） |
 | `bridgePlacements` / `computeBridges()` | 街道×川の交点に架橋（1909）、画像 `assets/bridge.png` |
 | `townRoadEdges` | 町間の道路網（`buildTownRoadNetwork()` 1845） |
 | `STAGE_TOWN_LAYOUTS` | **v0.16: 文明ごとの町骨格**。scattered(石器)/rings(古代・終末)/radial(中世・近世)/grid(産業以降) |
@@ -119,7 +122,7 @@
 | `streets`（`_townMeta.streets`） | 町内の放射状の通り（radial/rings/scatteredの獣道） |
 | `_townMeta.ringRadii` | 環状路の半径リスト（rings=多重、radial=1本、他=空） |
 | `_townMeta.gridRoads` | 碁盤目の道路セグメント（grid のみ） |
-| `fields`（`_townMeta.fields`） | **v0.16: 農地「クラスタ」**。同じ向きの区画が隣接して並ぶまとまりを町外縁に1〜3箇所。作付けトーン3種（耕地/青作物/実り）。川・地形・民家との重なり回避あり |
+| `fields`（`_townMeta.fields`） | **v0.16: 農地「クラスタ」**。同じ向きの区画が隣接して並ぶまとまりを町外縁に1〜3箇所。**v0.17: セル調スプライト化**（`terrain_field.png`、区画をgap分大きく描き柵を連ねて耕作地に。toneは薄い乗算で作付け差を残す） |
 | `_townMeta.decor` | **v0.16: 静的装飾**。well（井戸、広場の縁に1つ）/ hay（干し草、畑の隅） |
 | `GROUND_TILE_SOURCE` | 地面テクスチャ `assets/ground_tile.jpg`（低コントラストで敷く） |
 | `WORLD_W` / `WORLD_H` | ワールド全体サイズ |

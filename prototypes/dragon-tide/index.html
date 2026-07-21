@@ -385,7 +385,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.16.1";
+const GAME_VERSION = "v0.17.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2144,6 +2144,9 @@ function generateStageLayout(stageIndex) {
   // settlements とは別系統（破壊不可）。モジュールスコープの terrainObstacles を更新する。
   terrainObstacles = generateTerrainObstacles(result, boss);
 
+  // v0.17: 森（非ブロッキングの自然装飾。竜は上を飛ぶ）を空白地帯へ散布
+  forestClusters = generateForests(result, boss);
+
   // --- (7) v0.6-p4: 移動敵ユニット（文明別・ステージ数に応じた混成編成） ---
   movers = generateMovers(stageIndex, boss);
   shockwaveFxList.length = 0;
@@ -3377,6 +3380,91 @@ const TERRAIN_MARGIN      = 140;   // マップ端からの最小距離
 const TERRAIN_START_CLEAR = 420;   // 群れスタート地点（左端中央）の確保半径
 const TERRAIN_MAX_ATTEMPTS = 30;
 
+// v0.17: 森クラスタ（非ブロッキングの自然装飾。竜も敵も上を飛び越える＝当たり判定なし）。
+// 「文明の外側に広がる自然」を描いてアクアリウム感（世界の生命感）を足す。
+let forestClusters = [];
+const FOREST_COUNT_MIN = 8;
+const FOREST_COUNT_MAX = 16;
+const FOREST_MARGIN    = 90;
+
+/**
+ * 森を空白地帯へ散布する（非ブロッキング＝当たり判定なし・純粋な背景装飾）。
+ * 建物・地形・川・スタート地点・ボス圏を避けて置く。数個ずつ寄せて「林」の塊にする。
+ */
+function generateForests(buildings, boss) {
+  const result = [];
+  const count  = randInt(FOREST_COUNT_MIN, FOREST_COUNT_MAX);
+  const bossClear = WALL_OUTER_RING_RADIUS + 100;
+  // 畑クラスタの位置（森が畑に被らないように）
+  const fieldSpots = [];
+  for (const b of buildings) {
+    if (!b._townMeta) continue;
+    for (const f of b._townMeta.fields ?? []) fieldSpots.push({ x: f.x, y: f.y, r: Math.hypot(f.w, f.h) * 0.5 });
+  }
+
+  for (let k = 0; k < count; k++) {
+    const radius = randRange(45, 95);
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const wx = FOREST_MARGIN + Math.random() * (WORLD_W - FOREST_MARGIN * 2);
+      const wy = FOREST_MARGIN + Math.random() * (WORLD_H - FOREST_MARGIN * 2);
+
+      if (dist2(wx, wy, 250, WORLD_H * 0.5) < (TERRAIN_START_CLEAR + radius) ** 2) continue;
+      if (dist2(wx, wy, boss.wx, boss.wy) < (bossClear + radius) ** 2) continue;
+
+      let collides = false;
+      // 建物（町の敷地）を避ける
+      for (const b of buildings) {
+        const minD = radius + b.radius + 24;
+        if (dist2(wx, wy, b.wx, b.wy) < minD * minD) { collides = true; break; }
+      }
+      if (collides) continue;
+      // 岩山・湖を避ける
+      for (const ob of terrainObstacles) {
+        const minD = radius + ob.radius + 20;
+        if (dist2(wx, wy, ob.wx, ob.wy) < minD * minD) { collides = true; break; }
+      }
+      if (collides) continue;
+      // 畑を避ける
+      for (const f of fieldSpots) {
+        const minD = radius + f.r + 12;
+        if (dist2(wx, wy, f.x, f.y) < minD * minD) { collides = true; break; }
+      }
+      if (collides) continue;
+      // 川の上を避ける
+      if (riverPolyline.length > 1 &&
+          distPointToPolylineSq(wx, wy, riverPolyline) < (riverWidth * 0.5 + radius * 0.6) ** 2) continue;
+      // 既存の森と近すぎない（少しは寄せてよいので緩め）
+      for (const fo of result) {
+        const minD = radius + fo.radius - 20;
+        if (dist2(wx, wy, fo.wx, fo.wy) < minD * minD) { collides = true; break; }
+      }
+      if (collides) continue;
+
+      result.push({ wx, wy, radius });
+      break;
+    }
+  }
+  return result;
+}
+
+/** v0.17: 森スプライトを地面レイヤーに焼く（当たり判定なし・純装飾）。 */
+function drawForestsOnLayer(bctx) {
+  const img = terrainImages.forest;
+  if (!img) return;   // 画像が読めないときは森を描かない（ベクター林は用意しない）
+  for (const fo of forestClusters) {
+    const drawW = fo.radius * 2.3;
+    const drawH = drawW * (img.naturalHeight / img.naturalWidth);
+    const rot   = Math.sin(fo.wx * 0.011 + fo.wy * 0.019) * 0.6;
+    const flip  = (Math.floor(fo.wy * 0.05) % 2 === 0) ? 1 : -1;
+    bctx.save();
+    bctx.translate(fo.wx, fo.wy);
+    bctx.rotate(rot);
+    bctx.scale(flip, 1);
+    bctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+    bctx.restore();
+  }
+}
+
 /**
  * 地形障害物をマップの空白地帯へ散布する。
  * 建物・首都城壁・他の地形と重ならない位置のみ採用（重なったらスキップ）。
@@ -3505,6 +3593,9 @@ function rebuildGroundLayer() {
 
   // v0.6-p3: 地形（岩山・湖）は最背面に焼く
   drawTerrainOnLayer(bctx);
+
+  // v0.17: 森（非ブロッキングの自然装飾。文明の外側に広がる林）
+  drawForestsOnLayer(bctx);
 
   // v0.9.1: 街区の下地（石畳ベース＋集落の土地面）。道路より先に敷く
   drawTownBasesOnLayer(bctx);
@@ -3767,29 +3858,44 @@ function drawTownBasesOnLayer(bctx) {
 
     // v0.10: 畑 — 縞模様の耕作地＋柵。「人が住み、耕している土地」の記号
     // v0.16: 区画ごとの作付けトーン（tone）で耕地・青作物・実りを混ぜる
+    const fieldImg = terrainImages.field;
     for (const f of fields) {
       bctx.save();
       bctx.translate(f.x, f.y);
       bctx.rotate(f.angle);
-      // 土のベース
-      bctx.globalAlpha = 0.46;
-      bctx.fillStyle = f.tone ?? "#96804a";
-      bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
-      // 畝（うね）の縞
-      bctx.globalAlpha = 0.35;
-      bctx.strokeStyle = shadeColor(f.tone ?? "#96804a", -46);
-      bctx.lineWidth = 2.5;
-      for (let fx = -f.w / 2 + 6; fx < f.w / 2 - 3; fx += 9) {
-        bctx.beginPath();
-        bctx.moveTo(fx, -f.h / 2 + 4);
-        bctx.lineTo(fx, f.h / 2 - 4);
-        bctx.stroke();
+      if (fieldImg) {
+        // v0.17: セル調の畑スプライト。区画は gap(7px) 分だけ大きく描き、
+        // 隣接区画の柵が連なって「区切られた耕作地」に見えるようにする。
+        // tone を薄い乗算で重ね、耕地/青作物/実りの作付け差を残す。
+        const dw = f.w + 7, dh = f.h + 7;
+        bctx.drawImage(fieldImg, -dw / 2, -dh / 2, dw, dh);
+        if (f.tone) {
+          bctx.globalAlpha = 0.22;
+          bctx.globalCompositeOperation = "multiply";
+          bctx.fillStyle = f.tone;
+          bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
+          bctx.globalCompositeOperation = "source-over";
+          bctx.globalAlpha = 1.0;
+        }
+      } else {
+        // --- ベクターフォールバック ---
+        bctx.globalAlpha = 0.46;
+        bctx.fillStyle = f.tone ?? "#96804a";
+        bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
+        bctx.globalAlpha = 0.35;
+        bctx.strokeStyle = shadeColor(f.tone ?? "#96804a", -46);
+        bctx.lineWidth = 2.5;
+        for (let fx = -f.w / 2 + 6; fx < f.w / 2 - 3; fx += 9) {
+          bctx.beginPath();
+          bctx.moveTo(fx, -f.h / 2 + 4);
+          bctx.lineTo(fx, f.h / 2 - 4);
+          bctx.stroke();
+        }
+        bctx.globalAlpha = 0.55;
+        bctx.strokeStyle = "rgba(70, 52, 30, 0.9)";
+        bctx.lineWidth = 2;
+        bctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
       }
-      // 柵（外周）
-      bctx.globalAlpha = 0.55;
-      bctx.strokeStyle = "rgba(70, 52, 30, 0.9)";
-      bctx.lineWidth = 2;
-      bctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
       bctx.restore();
     }
 
@@ -4152,6 +4258,25 @@ function drawWallSegmentOnCtx(c, settlement, color) {
  */
 function drawTerrainOnLayer(bctx) {
   for (const ob of terrainObstacles) {
+    const img = terrainImages[ob.type];
+    if (img) {
+      // v0.17: セル調スプライト（建物と画風を統一）。当たり判定円(radius)を
+      // 少し超える大きさで描き、岩肌・水面が判定縁まで満ちるようにする。
+      // 個体ごとに座標由来の決定的な回転・左右反転で「同じ画像の並び」感を消す。
+      const scale = ob.type === "rock" ? 2.3 : 2.15;   // 直径 = radius × scale
+      const drawW = ob.radius * scale;
+      const drawH = drawW * (img.naturalHeight / img.naturalWidth);
+      const rot   = Math.sin(ob.wx * 0.017 + ob.wy * 0.013) * 0.5;   // ±0.5rad
+      const flip  = (Math.floor(ob.wx * 0.05) % 2 === 0) ? 1 : -1;
+      bctx.save();
+      bctx.translate(ob.wx, ob.wy);
+      bctx.rotate(rot);
+      bctx.scale(flip, 1);
+      bctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+      bctx.restore();
+      continue;
+    }
+    // --- 画像が読めなかったときのベクターフォールバック ---
     if (ob.type === "rock") {
       // ごつごつした多角形（座標由来の決定的ジッター）
       bctx.fillStyle = "#4a4e52";
@@ -8822,6 +8947,16 @@ const BUILDING_IMAGE_SOURCES = {
 };
 const buildingImages = {};
 
+// v0.17: 地形・自然物スプライト（Gemini生成・セル調・自然色でティントしない）。
+// 岩山・湖・畑・森を建物と同じ画風に揃える。読めなかったものはベクター描画へフォールバック。
+const TERRAIN_IMAGE_SOURCES = {
+  rock:   "assets/terrain_rock.png",
+  lake:   "assets/terrain_lake.png",
+  field:  "assets/terrain_field.png",
+  forest: "assets/terrain_forest.png",
+};
+const terrainImages = {};
+
 // v0.9: 地面テクスチャタイル（低コントラスト。ユニット視認性を損なわないよう薄く敷く）
 const GROUND_TILE_SOURCE = "assets/ground_tile.jpg";
 let groundTileImage = null;
@@ -8933,7 +9068,11 @@ function preloadDragonImages() {
     loadOne(BUILDING_IMAGE_SOURCES[size], (img) => { buildingImages[size] = img; }));
   const groundTask = loadOne(GROUND_TILE_SOURCE, (img) => { groundTileImage = img; });
 
-  return Promise.all([...tasks, ...enemyTasks, ...buildingTasks, groundTask]).then(() => {
+  // v0.17: 地形・自然物スプライト（岩・湖・畑・森）
+  const terrainTasks = Object.keys(TERRAIN_IMAGE_SOURCES).map((name) =>
+    loadOne(TERRAIN_IMAGE_SOURCES[name], (img) => { terrainImages[name] = img; }));
+
+  return Promise.all([...tasks, ...enemyTasks, ...buildingTasks, groundTask, ...terrainTasks]).then(() => {
     // dragonImagesLoaded は竜画像のみで判定（敵画像の失敗と切り離す）
     dragonImagesLoaded =
       Object.keys(DRAGON_IMAGE_SOURCES).every((element) => dragonImages[element]) &&
