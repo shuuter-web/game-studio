@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dragon Tide — ドラゴン操作と群れの挙動（v0.17.1 スナップショット）</title>
+<style>
+  :root {
+    --bg: #12161d; --panel: #1b212c; --panel2: #232b38;
+    --ink: #e8eef6; --muted: #9fb0c3; --line: #33404f;
+    --fire: #ff7a3c; --ice: #57c7ff; --shadow: #b98cff; --green: #7bd88f;
+    --warn-bg: #3a2410; --warn-line: #b06a1f; --warn-ink: #ffd9a8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+    line-height: 1.75; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 20px 80px; }
+  h1 { font-size: 1.7rem; margin: 8px 0 2px; letter-spacing: .02em; }
+  h1 .jp { color: var(--fire); }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  h2 {
+    font-size: 1.25rem; margin: 40px 0 14px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--line);
+  }
+  h2 .n {
+    display: inline-block; min-width: 1.7em; margin-right: .5em; text-align: center;
+    color: var(--bg); background: var(--fire); border-radius: 6px; font-size: .9rem;
+    padding: 0 .1em; font-weight: 700;
+  }
+  h3 { font-size: 1.05rem; margin: 24px 0 8px; color: var(--ice); }
+  p { margin: 10px 0; }
+  code {
+    background: #0e1218; color: #cfe6ff; padding: .1em .45em; border-radius: 5px;
+    font-family: "SF Mono", Consolas, "Courier New", monospace; font-size: .88em;
+    border: 1px solid #26313f;
+  }
+  .banner {
+    background: var(--warn-bg); border: 1px solid var(--warn-line);
+    color: var(--warn-ink); border-radius: 12px; padding: 16px 18px; margin: 0 0 28px;
+  }
+  .banner b { color: #ffe9c8; }
+  .banner .tag {
+    display: inline-block; background: var(--warn-line); color: #1a1207; font-weight: 700;
+    border-radius: 999px; padding: 2px 12px; font-size: .8rem; margin-bottom: 8px;
+  }
+  .banner ul { margin: 8px 0 0; padding-left: 1.2em; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 4px 20px 16px; margin: 16px 0;
+  }
+  .flow {
+    display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; margin: 18px 0;
+  }
+  .flow .box {
+    flex: 1 1 140px; background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; text-align: center;
+  }
+  .flow .box .t { font-weight: 700; display: block; margin-bottom: 4px; }
+  .flow .box .d { color: var(--muted); font-size: .82rem; }
+  .flow .arrow { align-self: center; color: var(--fire); font-size: 1.4rem; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: .92rem; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; background: #0f141b; }
+  td code { white-space: nowrap; }
+  .tableScroll { overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); }
+  .tableScroll table { margin: 0; }
+  .tableScroll th:first-child, .tableScroll td:first-child { white-space: nowrap; }
+  .mode {
+    border-left: 4px solid var(--ice); background: var(--panel); border-radius: 0 10px 10px 0;
+    padding: 2px 18px 14px; margin: 14px 0;
+  }
+  .mode.m1 { border-color: var(--fire); }
+  .mode.m2 { border-color: var(--shadow); }
+  .mode.m3 { border-color: var(--green); }
+  .mode h3 { color: var(--ink); margin-top: 14px; }
+  .pill {
+    display: inline-block; font-size: .74rem; font-weight: 700; border-radius: 999px;
+    padding: 2px 10px; margin-left: 8px; vertical-align: middle;
+  }
+  .pill.hold { background: #4a2410; color: var(--fire); }
+  .pill.release { background: #2e1f4a; color: var(--shadow); }
+  .pill.idle { background: #17331f; color: var(--green); }
+  .kbd { color: var(--muted); font-size: .85rem; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 620px) { .two { grid-template-columns: 1fr; } }
+  .note { color: var(--muted); font-size: .88rem; }
+  .foot { margin-top: 50px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
+  em.k { color: var(--fire); font-style: normal; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="banner">
+    <span class="tag">⚠ 使い捨てスナップショット文書</span>
+    <div>
+      これは <b>2026-07-14 / バージョン v0.17.1 時点</b> のドラゴン操作・群れ挙動を切り取った記録です。
+      <b>仕様変更に追随して更新しません。</b>
+      <ul>
+        <li>ファイル名の版・日付が「いつ時点の内容か」を表します。それ以降の変更は反映されていません。</li>
+        <li>最新の正確な仕様はコード <code>prototypes/dragon-tide/index.html</code> を参照してください。</li>
+        <li>置き場所の方針は <code>snapshots/README.md</code> に記載。この文書は更新不要です。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h1>Dragon Tide — <span class="jp">ドラゴンの操作</span>と<span class="jp">群れの挙動</span></h1>
+  <p class="sub">プレイヤー入力 → 群れの動きが、どういう仕組みでつながっているかの説明</p>
+
+  <!-- ============ 全体像 ============ -->
+  <h2><span class="n">0</span>全体像：2段構えのしくみ</h2>
+  <p>
+    ドラゴンの群れは、プレイヤーが1匹ずつ操作するのではありません。
+    画面をなぞると <em class="k">見えない「仮想リーダー点」</em> が動き、
+    群れの各竜はその点を <em class="k">Boids（ボイド）アルゴリズム</em> で追いかけます。
+    「指でリーダーを引っぱり、竜たちが群れとしてついてくる」という2段構えです。
+  </p>
+  <div class="flow">
+    <div class="box"><span class="t">① 指でなぞる</span><span class="d">タッチ／マウスで軌跡を描く</span></div>
+    <div class="arrow">→</div>
+    <div class="box"><span class="t">② 仮想リーダー点</span><span class="d">不可視。軌跡や指を追って移動</span></div>
+    <div class="arrow">→</div>
+    <div class="box"><span class="t">③ 群れ（Boids）</span><span class="d">各竜がリーダー点＋仲間に反応して追従</span></div>
+  </div>
+  <p class="note">
+    ※「仮想リーダー点」は画面に描かれません。指の位置に出る輪（タッチリング）と、なぞった軌跡の残光は別物で、操作の手がかりとして表示されるだけです。
+  </p>
+
+  <!-- ============ 操作 ============ -->
+  <h2><span class="n">1</span>ドラゴンの操作（入力）</h2>
+  <p>
+    操作は「画面をなぞって群れを誘導する」だけです。プレイ中とステージクリア演出中のみ受け付けます
+    （画面下部のUI帯をタッチした場合は操作ではなくUIとして扱われます）。
+    指の動かし方に応じて、リーダー点は次の <b>3つのモード</b> で動きます。
+  </p>
+
+  <div class="mode m1">
+    <h3>モード1：巡航操舵 <span class="pill hold">押している間</span></h3>
+    <p>
+      指を押している間、リーダーは <b>常に一定速度で前進し続けます</b>（止まりません）。
+      指は「進む方向を決める舵」の役割です。
+    </p>
+    <ul>
+      <li>なぞって描いた軌跡が残っていれば、そのカーブ（弧など）を順になぞって進みます。</li>
+      <li>指に追いついた後は、直前の進行方向へ <b>まっすぐ巡航</b> し続けます。
+        指の点で往復したりUターンして止まったりしません。</li>
+      <li>指を止めたまま押し続けても、その場で停止せず直進を続けます。</li>
+    </ul>
+  </div>
+
+  <div class="mode m2">
+    <h3>モード2：軌跡ループ追従 <span class="pill release">指を離した後</span></h3>
+    <p>
+      ある程度の長さの軌跡を描いて <b>指を離すと</b>、リーダーはその軌跡を <b>繰り返しなぞり続けます</b>。
+    </p>
+    <ul>
+      <li><b>円を描いて離すと、その円をずっとぐるぐる周回します</b>（放置時に「その場で旋回」させたいときはこれ）。</li>
+      <li>次に画面をなぞると、新しい軌跡に切り替わります。</li>
+    </ul>
+  </div>
+
+  <div class="mode m3">
+    <h3>モード3：アイドル徘徊 <span class="pill idle">入力なし／軌跡が短い</span></h3>
+    <p>
+      操作していない（または軌跡がごく短い）ときは、リーダーが群れの重心のまわりを
+      <b>ゆっくり楕円を描いて徘徊</b>します。群れが完全停止せず「生きている」感を保つための待機動作です。
+    </p>
+    <p class="note">
+      徘徊は重心中心の楕円（横に広く縦にやや潰れた形）を一定の角速度で回ります。
+    </p>
+  </div>
+
+  <h3>入力まわりの細かい仕様</h3>
+  <div class="tableScroll">
+    <table>
+      <tr><th>項目</th><th>内容</th></tr>
+      <tr><td>受付状態</td><td>プレイ中・ステージクリア演出中のみ。タイトル／リザルトは画面のボタンが操作を担う</td></tr>
+      <tr><td>UI帯</td><td>画面下部のUI帯をタッチした入力は「操作」ではなく「UI操作」扱い（線を引かない）</td></tr>
+      <tr><td>押しっぱなし保持</td><td>指を止めていても指のワールド座標を供給し続け、群れは誘導され続ける（アイドルに落ちない）</td></tr>
+      <tr><td>マルチタッチ</td><td>指が1本離れても他の指が残っていれば操作継続。全部離れて終了</td></tr>
+      <tr><td>残光（トレイル）</td><td>なぞった軌跡は約1.2秒残って消える（手がかり表示）</td></tr>
+      <tr><td>対応入力</td><td>タッチ（<code>touchstart/move/end</code>）とマウス（<code>mousedown/move/up</code>）の両対応</td></tr>
+    </table>
+  </div>
+
+  <!-- ============ 群れ ============ -->
+  <h2><span class="n">2</span>群れの挙動（Boids）</h2>
+  <p>
+    各ドラゴンは「ボイド」と呼ばれる粒で、毎フレーム周囲の仲間とリーダー点を見て
+    <b>4つの力</b>を合成し、加速・移動します。近所の仲間だけを見る仕組み（空間ハッシュ）で、数百体でも軽く動きます。
+  </p>
+
+  <div class="tableScroll">
+    <table>
+      <tr><th>力</th><th>意味</th><th>重み</th><th>効く範囲</th></tr>
+      <tr><td><b>分離</b>（Separation）</td><td>近づきすぎた仲間から離れて重なりを防ぐ。群れの「生命感」の根幹</td><td><code>2.5</code></td><td>半径 <code>28px</code> 以内</td></tr>
+      <tr><td><b>整列</b>（Alignment）</td><td>近所の仲間と <b>進む向き</b> をそろえる</td><td><code>1.0</code></td><td>知覚半径 <code>55px</code> 以内</td></tr>
+      <tr><td><b>結束</b>（Cohesion）</td><td>近所の仲間の <b>中心</b> へ寄る。弱めでまとまりすぎを防ぐ</td><td><code>0.4</code></td><td>知覚半径 <code>55px</code> 以内</td></tr>
+      <tr><td><b>リーダー追従</b></td><td>仮想リーダー点の方向へ引かれる。プレイヤーの誘導が伝わる経路</td><td><code>1.6</code></td><td>常時（方向のみ）</td></tr>
+    </table>
+  </div>
+  <p class="note">
+    分離が最も強く（重なりを最優先で防ぐ）、結束は弱め（個々の動きが消えないように）。この配分で「バラけず・固まりすぎず、うねる群れ」になります。
+  </p>
+
+  <h3>速度・力の制限</h3>
+  <div class="two">
+    <div class="card">
+      <h3 style="color:var(--green)">速度</h3>
+      <table>
+        <tr><td>最高速</td><td><code>160 px/s</code></td></tr>
+        <tr><td>最低速</td><td><code>60 px/s</code></td></tr>
+      </table>
+      <p class="note">下限があるので、止まらず常に「ふわっと漂う」。上限で暴走を防ぐ。</p>
+    </div>
+    <div class="card">
+      <h3 style="color:var(--green)">力・時間</h3>
+      <table>
+        <tr><td>最大操舵力</td><td><code>320 px/s²</code></td></tr>
+        <tr><td>更新刻み</td><td><code>16ms</code> 固定</td></tr>
+        <tr><td>dt上限</td><td><code>64ms</code>（重い時の飛びを防ぐ）</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h3>そのほかの挙動ルール</h3>
+  <ul>
+    <li><b>ダウン／死亡した竜は計算から除外</b>：群れの分離・整列・結束・重心の対象外になり、復帰すると再び群れに加わる。</li>
+    <li><b>地形の回り込み</b>：岩山はドラゴンを押し出す障害物（回り込む）。<b>湖・森は素通りできる背景</b>で当たり判定なし。</li>
+    <li><b>「疾風」カード</b>：取得すると群れとリーダーの上限・下限速度がまとめて伸びる（体感を揃える）。</li>
+  </ul>
+
+  <!-- ============ リーダー2種 ============ -->
+  <h2><span class="n">3</span>紛らわしい「リーダー」2つの違い</h2>
+  <p>コード上「リーダー」は <b>別物が2つ</b> あります。役割が違うので整理します。</p>
+  <div class="tableScroll">
+    <table>
+      <tr><th></th><th>仮想リーダー点</th><th>リーダー竜（見た目）</th></tr>
+      <tr><td>正体</td><td>画面に描かれない <b>操舵の目標点</b></td><td>群れの中の <b>実在する1匹</b> の竜</td></tr>
+      <tr><td>役割</td><td>プレイヤー入力を受けて動き、群れ全体がこれを追う</td><td>塊魂的な「大きくなる」体感の担当（見た目だけ）</td></tr>
+      <tr><td>成長</td><td>なし（サイズの概念なし）</td><td>レベルで体格が育つ：1レベルごと +7%、最大 +70%（Lv11で到達）</td></tr>
+      <tr><td>消えたら</td><td>常に存在</td><td>死亡・ダウンすると生存中の1匹へ引き継ぐ</td></tr>
+    </table>
+  </div>
+  <p class="note">
+    「リーダー1匹だけ大きくする」のは、全員を大きくすると相対比が変わらず成長が見えないため。基準の1匹に成長を集約して「群れが育っている」感を出しています。
+  </p>
+
+  <!-- ============ 主要定数 ============ -->
+  <h2><span class="n">4</span>主要な数値（早見表）</h2>
+  <div class="tableScroll">
+    <table>
+      <tr><th>区分</th><th>値</th><th>意味</th></tr>
+      <tr><td>知覚半径</td><td><code>55px</code></td><td>整列・結束で「近所」とみなす範囲</td></tr>
+      <tr><td>分離半径</td><td><code>28px</code></td><td>これ以内の仲間から離れる</td></tr>
+      <tr><td>速度</td><td><code>60〜160 px/s</code></td><td>各竜の最低〜最高速</td></tr>
+      <tr><td>最大操舵力</td><td><code>320 px/s²</code></td><td>1フレームで変えられる速度の上限</td></tr>
+      <tr><td>重み（分離／整列／結束／追従）</td><td><code>2.5 / 1.0 / 0.4 / 1.6</code></td><td>4つの力の強さの配分</td></tr>
+      <tr><td>リーダー巡航速度</td><td><code>220 px/s</code></td><td>押している間、リーダー点が前進する速さ</td></tr>
+      <tr><td>アイドル徘徊半径</td><td><code>120px</code></td><td>待機時に重心まわりを回る楕円の大きさ</td></tr>
+      <tr><td>リーダー竜の成長</td><td><code>+7%/Lv・最大+70%</code></td><td>見た目リーダーの体格増加</td></tr>
+    </table>
+  </div>
+
+  <div class="foot">
+    Dragon Tide プロトタイプ ／ ドラゴン操作・群れ挙動スナップショット<br>
+    対象バージョン <b>v0.17.1</b>・作成日 <b>2026-07-14</b>／
+    この文書は使い捨てで、以後の仕様変更には追随しません。
+  </div>
+
+</div>
+</body>
+</html>
