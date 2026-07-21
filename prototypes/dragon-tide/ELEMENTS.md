@@ -1,4 +1,4 @@
-# Dragon Tide — 要素名リファレンス（v0.17.0時点）
+# Dragon Tide — 要素名リファレンス（v0.18.0時点）
 
 > **デバッグ**: 左下のバージョン表示を800ms以内に3回タップ（またはNキー）で次ステージへ
 > （最終ステージからは1へループ。プレイ中のみ。`debugAdvanceStage()`）
@@ -142,7 +142,7 @@
 | `N`（現群れ数） | 初期`BOIDS_INITIAL`=10、上限`BASE_FLOCK_CAP`=100、配列上限`MAX_BOIDS`=150 |
 | `boidHp[i]` / `BOID_MAX_HP`=30 | 個体HP（7発で撃破目安） |
 | `boidDead[i]` / `boidDowned[i]` | 死亡/ダウンフラグ |
-| `flockLeaderIdx` / `leaderBodyScale()` | v0.15: リーダー竜1匹だけレベルで体格成長（+7%/Lv、最大+70%。死亡時は生存個体へ引き継ぎ） |
+| **母竜**（`MOTHER_DRAGON_IDX`=0 / `MOTHER_DRAGON` / `isMotherDragon(i)` / `isMotherActive()` / `motherBodyScale()`） | **v0.18: 群れの族長にあたる特別な1匹。常にインデックス0で固定（受け継ぎなし）。レベルで体格成長（+7%/Lv、最大+70%）。ダウン中は「母竜ナシ」＝同じ個体が復活するまで成長・母竜専用効果はかからない。母竜専用パラメータは `MOTHER_DRAGON` に集約し、今後の母竜限定スキルはここに追加** |
 | `settlement.hp` / `maxHp` | 建物HP |
 | `flockWeapon` | 群れ全体の現在武器タイプ |
 | `EGG_DROP_COUNT`=1 | 陥落建物の卵ドロップ数 |

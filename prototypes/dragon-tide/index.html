@@ -385,7 +385,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.17.1";
+const GAME_VERSION = "v0.18.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3384,7 +3384,7 @@ const TERRAIN_MAX_ATTEMPTS = 30;
 
 // v0.17.1: 地形・森スプライトの不透明度（背景要素なのでトーンを落として主張を抑える）。
 // 低いほど暗い地面が透けて背景に馴染む。ここだけ変えれば見え方を調整できる。
-const TERRAIN_SPRITE_ALPHA = { rock: 0.66, lake: 0.55, forest: 0.66 };
+const TERRAIN_SPRITE_ALPHA = { rock: 0.55, lake: 0.55, forest: 0.40 };
 
 // v0.17: 森クラスタ（非ブロッキングの自然装飾。竜も敵も上を飛び越える＝当たり判定なし）。
 // 「文明の外側に広がる自然」を描いてアクアリウム感（世界の生命感）を足す。
@@ -8293,30 +8293,46 @@ function drawBreathAttacks(now) {
 }
 
 // -----------------------------------------------------------------
-// v0.15: 群れのリーダー竜（塊魂の「大きくなる」体感担当）
+// v0.18: 母竜（Mother Dragon）— 群れの族長にあたる特別な1匹
 // -----------------------------------------------------------------
-// レベルが上がるとリーダー1匹だけ体格が育つ。全員を大きくすると相対比が
+// レベルが上がると母竜1匹だけ体格が育つ。全員を大きくすると相対比が
 // 変わらず成長が見えないため、基準となる1匹に成長を集約する（Shooter指示）。
-// リーダーはインデックスで永続化し、死亡/ダウンしたら生存個体へ引き継ぐ。
-let flockLeaderIdx = 0;
+//
+// v0.18 変更点（Shooter指示）:
+//   - 母竜は常にインデックス0の個体で「固定」。死亡/ダウンしても他個体へ
+//     引き継がない（旧: 生存個体へリーダーを移す挙動は廃止）。
+//   - 母竜がダウン中は「母竜ナシ」。同じ個体がその場に復活するまで、
+//     体格成長も母竜専用効果も一切かからない。
+//   - パラメータは母竜専用（MOTHER_DRAGON）と通常竜（BASE_CFG 等）で分離。
+//     今後の「母竜のみに効く」スキルは MOTHER_DRAGON にパラメータを足し、
+//     isMotherDragon(i) で分岐して適用する（HP・威力・オーラ等）。
+const MOTHER_DRAGON_IDX = 0;   // 母竜は常にこのスロットの個体（固定・受け継ぎなし）
 
-const LEADER_GROWTH_PER_LEVEL = 0.07;  // レベルごとの体格増分
-const LEADER_GROWTH_MAX       = 0.70;  // 最大 +70%（Lv11で到達）
+// 母竜専用パラメータ（通常竜とは別系統。母竜限定スキルはここに追加していく）
+const MOTHER_DRAGON = {
+  growthPerLevel: 0.07,   // レベルごとの体格増分（母竜のみ育つ）
+  growthMax:      0.70,   // 体格の最大 +70%（Lv11で到達）
+  // 今後の母竜限定パラメータ（未使用の枠。適用時は isMotherDragon(i) で分岐）:
+  //   hpMult:     母竜のHP倍率（effBoidMaxHp 系にフック）
+  //   dmgMult:    母竜のブレス/攻撃威力倍率
+  //   auraRadius: 周囲の通常竜を強化するオーラの半径 など
+};
 
-function leaderBodyScale() {
-  return 1 + Math.min(LEADER_GROWTH_PER_LEVEL * (playerLevel - 1), LEADER_GROWTH_MAX);
+/** 指定インデックスが母竜スロットか。 */
+function isMotherDragon(i) { return i === MOTHER_DRAGON_IDX; }
+
+/** 母竜が「今この瞬間に存在するか」。ダウン中・未生成中は false（＝母竜ナシ）。 */
+function isMotherActive() {
+  return N > MOTHER_DRAGON_IDX &&
+         !boidDead[MOTHER_DRAGON_IDX] && !boidDowned[MOTHER_DRAGON_IDX];
 }
 
-/** リーダーが無効（死亡・ダウン・範囲外）なら生存個体へ引き継ぐ。 */
-function refreshFlockLeader() {
-  if (flockLeaderIdx < N && !boidDead[flockLeaderIdx] && !boidDowned[flockLeaderIdx]) return;
-  for (let i = 0; i < N; i++) {
-    if (!boidDead[i] && !boidDowned[i]) { flockLeaderIdx = i; return; }
-  }
+/** 母竜の体格倍率。健在なときのみ育つ（ダウン中＝母竜ナシは呼び出し側で1に落とす）。 */
+function motherBodyScale() {
+  return 1 + Math.min(MOTHER_DRAGON.growthPerLevel * (playerLevel - 1), MOTHER_DRAGON.growthMax);
 }
 
 function drawBoids() {
-  refreshFlockLeader();
   // プリレンダスプライトのDPR（createDragonSprites で使ったものと一致させる）
   const spriteDpr     = Math.min(window.devicePixelRatio || 1, 2);
   const spritePx      = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
@@ -8365,8 +8381,9 @@ function drawBoids() {
 
     const wx    = px[i], wy = py[i];
     const angle = Math.atan2(vy[i], vx[i]);
-    // v0.15: リーダー竜だけレベルに応じて体格が育つ（尻尾・本体の描画に一律適用）
-    const unitScale = (i === flockLeaderIdx) ? leaderBodyScale() : 1;
+    // v0.18: 母竜だけレベルに応じて体格が育つ（尻尾・本体の描画に一律適用）。
+    // 母竜がダウン中（＝母竜ナシ）は成長を適用せず通常サイズで描く。
+    const unitScale = (isMotherDragon(i) && isMotherActive()) ? motherBodyScale() : 1;
 
     // ---- 羽ばたきフレーム選択 ----
     // breathTime（毎フレーム dt 加算済み）に個体ごとの位相オフセットを加算
