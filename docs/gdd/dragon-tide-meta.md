@@ -65,6 +65,15 @@
 - v0.21 で追加した permaBuff フィールド：`reviveMult`（→`effReviveMult`）／`dmgTakenMult`（→`effDmgTakenMult`）／`weaponRange`（→`effWeaponRangeMult`）／`xpGain`（→`addXp` 入口で乗算）。いずれも既存 eff* ハブに合流。
 - v0.22 母竜（Phase 5）：`motherHp`（→`effBoidMaxHpFor(0)`、reset/revive/HPバーに反映）／`motherDmg`／`motherBreath`（解禁フラグ・加算）。**母竜ブレス** `updateMotherBreath()` は `updateWeaponAttacks` 末尾で `isMotherActive()`＋解禁ガードのもと、**7.0秒ごと**（v0.22.1 で頻度を半分に）に周囲最大6対象へバースト（基礎60 × motherDmg × ラン中カード `effMotherBreathDmg`）。ラン中強化カード **母竜の吐息**（`mbreath_dmg`, +30%/枚, 解禁時のみ出現）が主軸。ブレスの系統・進化（枝分かれ）や"虹色演出"名物ノードは後続スライス。
 
+## チャレンジ／コンプ（Phase 6・v0.25）
+- `CHALLENGE_DEFS`（7種初版）：`done()` で判定、達成で竜晶付与＋達成トースト。`profile.challenges[id]={done}` で記録。
+  - run系：三時代の覇者(STAGE3到達/30)・大群の主(群れ60/50)・全文明制覇(全クリア/100)・不滅の群れ(ノーダウン全クリア/120)。
+  - 累計系：エリート狩り(エリート3体/80)・花火師(花火10棟/60)・歴戦の母竜(全クリア5回/150)。
+- 追跡カウンタ：`profile.eliteKills`（`damageMover` の `def.elite`）／`profile.fireworksDestroyed`（`detonateFirework`）／`runDowns`（`applyDamageToBoid`、ノーダウン判定）。
+- 判定フック：`advanceToNextStage`（到達・群れ・累計）／`triggerAllClear`（全クリア・ノーダウン、`lastRunNoDown = runDowns===0`）で `evaluateChallenges()`。
+- UI：タイトルの「チャレンジ N/M」ボタン→ `openChallenges()` の全画面一覧（達成✓／進捗 x/goal／報酬）。達成トースト `#challenge-toast`。
+- 次：報酬に**特別解放ノード**（`unlockBy: challengeId`）を加える二層経済、コンプ全達成の大型報酬。
+
 ## 攻略対象（Phase 3・v0.23〜）
 - **花火要塞**（`isFirework`）：`generateStageLayout` で通常建物から抽選（後半ほど棟数増：stage1-3=1/4-6=2/7-8=3）。回転ピンクのスパークで目印表示（`drawEggBearerMarkers` 内）。撃破＝`settlementFall`→`detonateFirework`：放射スパーク＋炎＋フラッシュ＋**竜晶+15・XP+60**の"うまみ"。単独で面白い当たり枠。
 - **エリート「warlord」**（`MOVER_DEFS.warlord`, v0.24）：後半3ステージ限定（`MOVER_SPAWNS_BY_STAGE` の index5/6/7 に 1/1/2 体）の歯ごたえ枠。既存 ironclad スプライトを流用（`def.sprite`）、大型(radius42)・超高HP(1400)・高頻度舷側砲＝弾幕でダウン圧を作る"壁"。撃破報酬も大（XP400・卵5）。`drawMovers` でエリートは大きく明るい赤オーラ表示。「後半が快適すぎる」への対処。

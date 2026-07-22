@@ -395,6 +395,37 @@
   #tree-overlay .tree-node.off { border-color: #886; opacity: 0.7; }
   #tree-overlay .tree-node.off .tn-badge { color: #cc9; }
 
+  /* v0.25: チャレンジ一覧（ツリーと同じ全画面オーバーレイの見た目を流用） */
+  #challenge-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    display: none; flex-direction: column;
+    padding: 16px 14px 24px; background: rgba(4,6,14,0.96);
+    z-index: 55; pointer-events: auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  #challenge-overlay.visible { display: flex; }
+  #challenge-overlay .tree-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+  #challenge-overlay .tree-title { font-family: -apple-system, BlinkMacSystemFont, serif; font-size: 20px; font-weight: bold; color: #ffe0b0; letter-spacing: 0.12em; text-shadow: 0 0 20px rgba(255,140,40,0.6); }
+  #challenge-overlay .tree-crystals { font-family: monospace; font-size: 16px; color: #8cd8ff; margin-left: auto; }
+  #challenge-overlay .tree-close { font-size: 20px; color: #ff8888; background: none; border: none; cursor: pointer; padding: 0 6px; }
+  #challenge-overlay .tree-hint { font-family: monospace; font-size: 11px; color: #8aa; margin-bottom: 14px; }
+  .ch-list { display: flex; flex-direction: column; gap: 8px; }
+  .ch-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: rgba(16,22,36,0.92); border: 1px solid #3a4a66; border-radius: 10px; }
+  .ch-row.done { border-color: #58c878; box-shadow: 0 0 10px rgba(88,200,120,0.3); }
+  .ch-badge { font-family: monospace; font-size: 12px; font-weight: bold; color: #9cf; min-width: 46px; text-align: center; }
+  .ch-row.done .ch-badge { color: #7fe89a; font-size: 16px; }
+  .ch-name { font-size: 14px; font-weight: bold; color: #dce8f6; }
+  .ch-desc { font-size: 11px; color: #9fbad6; margin-top: 1px; }
+
+  /* v0.25: チャレンジ達成トースト */
+  #challenge-toast {
+    position: fixed; left: 50%; top: 70px; transform: translateX(-50%) translateY(-12px);
+    padding: 10px 18px; background: rgba(20,40,20,0.92); border: 1px solid #58c878;
+    border-radius: 10px; color: #d8ffe0; font-family: monospace; font-size: 13px;
+    z-index: 70; opacity: 0; pointer-events: none;
+    transition: opacity 0.3s, transform 0.3s; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  }
+  #challenge-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
   /* v0.19.2: デバッグパネル（左下バージョンを800ms以内に3回タップでトグル） */
   #debug-panel {
     position: fixed;
@@ -515,6 +546,12 @@
 <!-- v0.20: 恒常強化ツリー画面（タイトルから開く） -->
 <div id="tree-overlay"></div>
 
+<!-- v0.25: チャレンジ一覧画面（タイトルから開く） -->
+<div id="challenge-overlay"></div>
+
+<!-- v0.25: チャレンジ達成トースト -->
+<div id="challenge-toast"></div>
+
 <!-- v0.19.2: デバッグパネル（バージョン3タップでトグル） -->
 <div id="debug-panel"></div>
 
@@ -524,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.24.1";
+const GAME_VERSION = "v0.25.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3354,6 +3391,8 @@ function damageMover(m, damage) {
     m.alive = false;
     m.hp = 0;
     runKills++;
+    // v0.25: エリート撃破の累計（チャレンジ用）
+    if (m.def.elite) { profile.eliteKills = (profile.eliteKills || 0) + 1; saveProfile(); }
     // v0.8: ステージスケール済みXP（xpValue）。未設定の個体は基礎値
     spawnXpGems(m.wx, m.wy, m.xpValue ?? m.def.xp);
     let eggs = m.def.eggDrop;
@@ -5568,6 +5607,7 @@ const FIREWORK_XP_BONUS      = 60;   // 追加XP
 // 花火要塞が陥落した瞬間の演出＋ご褒美。放射状に散る派手なスパーク＋炎＋フラッシュ。
 function detonateFirework(settlement) {
   awardCrystals(FIREWORK_CRYSTAL_BONUS);
+  profile.fireworksDestroyed = (profile.fireworksDestroyed || 0) + 1;   // v0.25: チャレンジ用
   spawnXpGems(settlement.wx, settlement.wy, FIREWORK_XP_BONUS);
   const cx = settlement.wx, cy = settlement.wy;
   for (let k = 0; k < 20; k++) {
@@ -6115,6 +6155,8 @@ const STRINGS = {
   startRun: "はじめる",
   backToTitle: "← もどる",
   openTree: (crystals) => `強化ツリー　🔷${crystals}`,
+  openChallenges: (done, total) => `チャレンジ　${done}/${total}`,
+  challengeDone: (name, reward) => `チャレンジ達成: ${name}  +${reward}🔷`,
   continueRun: (stageNum) => `つづきから　STAGE ${stageNum}`,
   cards: {
     scale:     { name: "硬鱗",     desc: "竜のHP +20%" },
@@ -6182,6 +6224,7 @@ let runStartTime  = 0;
 let runKills      = 0;
 let runMaxFlock   = BOIDS_INITIAL;
 let runTotalXp    = 0;
+let runDowns      = 0;   // v0.25: このランで竜がダウンした回数（ノーダウン系チャレンジ用）
 
 // ---- 強化カード定義 ----
 // rarity: common(重み10) / rare(重み4) / star(重み3・進化)。orb はプール枯渇時の補充専用。
@@ -7493,9 +7536,12 @@ function defaultProfile() {
     runsStarted: 0,   // 開始したランの累計（初回=火竜即開始 かの判定に使う）
     clears: 0,        // 全クリア回数
     crystals: 0,      // メタ通貨「竜晶」残高
-    challenges: {},   // id -> { progress, done, claimed }
+    challenges: {},   // id -> { done }（v0.25 チャレンジ達成記録）
     tree: {},         // nodeId -> { unlocked, enabled }
     best: { timeMs: 0, kills: 0 },
+    // v0.25: チャレンジ用の累計カウンタ
+    eliteKills: 0,        // エリート敵の累計撃破数
+    fireworksDestroyed: 0, // 花火要塞の累計破壊数
   };
 }
 
@@ -7757,6 +7803,94 @@ function renderTree() {
   });
 }
 
+// =================================================================
+// v0.25: チャレンジ／コンプ（メタ進行の"やり込み"）
+// 達成で竜晶を付与し profile.challenges[id]={done:true} に記録。
+// 判定はステージクリア/全クリアのフックで evaluateChallenges() が回す。
+// 対処関係で縛らず「達成したくなる目標」を並べる（プラン方針）。
+// =================================================================
+let lastRunNoDown = false;   // 直近ランをノーダウンで全クリアしたか（all-clear 時に確定）
+
+const CHALLENGE_DEFS = [
+  { id: "reach3",   name: "三時代の覇者", desc: "STAGE 3 に到達する",       reward: 30,
+    done: () => currentStage >= 2 || (profile.clears || 0) > 0 },
+  { id: "flock60",  name: "大群の主",     desc: "1ランで群れ 60 体に到達",  reward: 50,
+    done: () => runMaxFlock >= 60, cur: () => Math.min(runMaxFlock, 60), goal: 60 },
+  { id: "allclear", name: "全文明制覇",   desc: "全ステージをクリアする",    reward: 100,
+    done: () => (profile.clears || 0) >= 1 },
+  { id: "nodown",   name: "不滅の群れ",   desc: "一度もダウンせず全クリア",  reward: 120,
+    done: () => lastRunNoDown === true },
+  { id: "elite3",   name: "エリート狩り", desc: "エリートを累計 3 体撃破",   reward: 80,
+    done: () => (profile.eliteKills || 0) >= 3, cur: () => Math.min(profile.eliteKills || 0, 3), goal: 3 },
+  { id: "fw10",     name: "花火師",       desc: "花火要塞を累計 10 棟破壊",  reward: 60,
+    done: () => (profile.fireworksDestroyed || 0) >= 10, cur: () => Math.min(profile.fireworksDestroyed || 0, 10), goal: 10 },
+  { id: "clears5",  name: "歴戦の母竜",   desc: "全クリアを累計 5 回",       reward: 150,
+    done: () => (profile.clears || 0) >= 5, cur: () => Math.min(profile.clears || 0, 5), goal: 5 },
+];
+
+function challengeDone(id) { return !!(profile.challenges[id] && profile.challenges[id].done); }
+function challengeCompletion() {
+  return { done: CHALLENGE_DEFS.filter(c => challengeDone(c.id)).length, total: CHALLENGE_DEFS.length };
+}
+
+// 未達成のチャレンジを判定し、達成に報酬（竜晶）を付与＋トースト表示。
+function evaluateChallenges() {
+  let changed = false;
+  for (const ch of CHALLENGE_DEFS) {
+    if (challengeDone(ch.id)) continue;
+    if (ch.done()) {
+      profile.challenges[ch.id] = { done: true };
+      profile.crystals += ch.reward;
+      changed = true;
+      showChallengeToast(ch);
+    }
+  }
+  if (changed) { saveProfile(); refreshTitleMenu(); }
+}
+
+// ---- 達成トースト ----
+const challengeToastEl = document.getElementById("challenge-toast");
+let challengeToastTimer = null;
+function showChallengeToast(ch) {
+  if (!challengeToastEl) return;
+  challengeToastEl.textContent = STRINGS.challengeDone(ch.name, ch.reward);
+  challengeToastEl.classList.add("show");
+  if (challengeToastTimer) clearTimeout(challengeToastTimer);
+  challengeToastTimer = setTimeout(() => challengeToastEl.classList.remove("show"), 2800);
+}
+
+// ---- チャレンジ一覧画面（タイトルから開く）----
+const challengeOverlayEl = document.getElementById("challenge-overlay");
+function openChallenges() { renderChallenges(); challengeOverlayEl.classList.add("visible"); }
+function closeChallenges() { challengeOverlayEl.classList.remove("visible"); refreshTitleMenu(); }
+function renderChallenges() {
+  const rate = challengeCompletion();
+  let html =
+    `<div class="tree-head">` +
+      `<div class="tree-title">チャレンジ</div>` +
+      `<div class="tree-crystals">${rate.done}/${rate.total}</div>` +
+      `<button class="tree-close">✕</button>` +
+    `</div>` +
+    `<div class="tree-hint">達成で竜晶を獲得。累計系はランをまたいで進む。</div>` +
+    `<div class="ch-list">`;
+  for (const ch of CHALLENGE_DEFS) {
+    const done = challengeDone(ch.id);
+    const prog = (!done && ch.cur) ? ` (${ch.cur()}/${ch.goal})` : "";
+    html +=
+      `<div class="ch-row ${done ? "done" : ""}">` +
+        `<div class="ch-badge">${done ? "✓" : "🔷" + ch.reward}</div>` +
+        `<div><div class="ch-name">${ch.name}${prog}</div>` +
+        `<div class="ch-desc">${ch.desc}</div></div>` +
+      `</div>`;
+  }
+  html += `</div>`;
+  challengeOverlayEl.innerHTML = html;
+  challengeOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    closeChallenges();
+  });
+}
+
 const titleHintEl = document.getElementById("title-hint");
 const titleMenuEl = document.getElementById("title-menu");
 
@@ -7790,6 +7924,14 @@ function refreshTitleMenu() {
   treeBtn.textContent = STRINGS.openTree(profile.crystals);
   treeBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openTree(); });
   titleMenuEl.appendChild(treeBtn);
+
+  // v0.25: チャレンジ一覧（達成数を表示）
+  const chRate = challengeCompletion();
+  const chBtn = document.createElement("button");
+  chBtn.className = "title-btn";
+  chBtn.textContent = STRINGS.openChallenges(chRate.done, chRate.total);
+  chBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openChallenges(); });
+  titleMenuEl.appendChild(chBtn);
 }
 
 // ---- ラン開始（タイトル → STAGE 1）----
@@ -7900,6 +8042,7 @@ function beginRun(weapon) {
   runKills     = 0;
   runMaxFlock  = countAliveBoids();
   runTotalXp   = 0;
+  runDowns     = 0;
 
   dismissSpeciesSelect();
   titleOverlayEl.classList.remove("visible");
@@ -7946,6 +8089,7 @@ function resumeRun() {
   runKills     = save.runKills || 0;
   runMaxFlock  = save.runMaxFlock || 0;
   runTotalXp   = save.runTotalXp || 0;
+  runDowns     = 0;   // 再開ランのノーダウン判定は再開時点からリセット
   runStartTime = performance.now() - (save.elapsedMs || 0);
 
   // 保存ステージを組み立てて再開（ステージ間リセット相当の体数）
@@ -7982,6 +8126,8 @@ function triggerAllClear() {
   profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
   // v0.20: 最終ステージぶん＋全クリアボーナスの竜晶（awardCrystals が saveProfile 済み）
   awardCrystals(crystalsForStageClear(currentStage) + CRYSTAL_ALLCLEAR_BONUS);
+  lastRunNoDown = (runDowns === 0);   // v0.25: ノーダウン全クリア判定
+  evaluateChallenges();               // v0.25: 全クリア・ノーダウン・累計系を判定
   saveProfile();
   clearRunSave();            // 全クリア＝再開データは不要
 
@@ -8068,6 +8214,7 @@ function advanceToNextStage() {
 
   // v0.20: 直前にクリアしたステージ（currentStage-1）ぶんの竜晶を付与
   awardCrystals(crystalsForStageClear(currentStage - 1));
+  evaluateChallenges();   // v0.25: 到達・群れ数・累計系チャレンジを判定
   snapshotRunSave();   // v0.19: このステージ開始状態をオートセーブ（続きから用）
 }
 
@@ -8393,6 +8540,7 @@ function applyDamageToBoid(boidIndex, damage) {
     // 変更2: 消滅ではなくダウン状態へ移行（恒久喪失なし）
     // v0.6: 「再生の潮」カードで復帰時間短縮
     boidDowned[boidIndex]    = 1;
+    runDowns++;   // v0.25: ノーダウン系チャレンジ用のラン内ダウン数
     boidDownTimer[boidIndex] = BOID_DOWN_DURATION * effReviveMult();
     boidReviveTimer[boidIndex] = 0;
     // boidDead は立てない（dead=生存スロット外を意味するため）
