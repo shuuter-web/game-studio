@@ -524,7 +524,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.22.0";
+const GAME_VERSION = "v0.23.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2394,6 +2394,23 @@ function generateStageLayout(stageIndex) {
       b.maxHp = Math.round(b.maxHp * boost.hp);
       b.hp    = b.maxHp;
       b.projectileDamage *= boost.dmg;
+    }
+  }
+
+  // --- (9) v0.23: 花火要塞 — 倒すと連鎖的に散る"うまみ"建物を各ステージに数棟仕込む ---
+  // ボス・城壁・首都・卵持ち以外の通常建物から抽選（後半ほど棟数が増える）。
+  {
+    const fwCandidates = [];
+    for (let i = 0; i < result.length; i++) {
+      const b = result[i];
+      if (b.isBoss || b._isWall || b._isCapital || b.isEggBearer) continue;
+      fwCandidates.push(i);
+    }
+    const fwCount = 1 + Math.floor(stageIndex / 3);   // stage1-3=1, 4-6=2, 7-8=3
+    for (let k = 0; k < fwCount && fwCandidates.length > 0; k++) {
+      const pick = Math.floor(Math.random() * fwCandidates.length);
+      const idx  = fwCandidates.splice(pick, 1)[0];
+      result[idx].isFirework = true;
     }
   }
 
@@ -5534,6 +5551,25 @@ function collectOverlappingCluster(originIdx) {
   return result;
 }
 
+// v0.23: 花火要塞の撃破ボーナス
+const FIREWORK_CRYSTAL_BONUS = 15;   // 追加の竜晶
+const FIREWORK_XP_BONUS      = 60;   // 追加XP
+
+// 花火要塞が陥落した瞬間の演出＋ご褒美。放射状に散る派手なスパーク＋炎＋フラッシュ。
+function detonateFirework(settlement) {
+  awardCrystals(FIREWORK_CRYSTAL_BONUS);
+  spawnXpGems(settlement.wx, settlement.wy, FIREWORK_XP_BONUS);
+  const cx = settlement.wx, cy = settlement.wy;
+  for (let k = 0; k < 20; k++) {
+    const a = (k / 20) * Math.PI * 2 + Math.random() * 0.4;
+    const r = 20 + Math.random() * 80;
+    spawnHitParticles(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+  }
+  spawnFire(cx, cy, settlement.radius * 2.2);
+  triggerFlash("rgba(255,215,120,0.42)", 0.30);
+  hapticPulse(200);
+}
+
 function settlementFall(settlementIndex) {
   const settlement = settlements[settlementIndex];
   settlement.fallen = true;
@@ -5542,6 +5578,9 @@ function settlementFall(settlementIndex) {
   // v0.6: XPジェムを撒く＋撃破数を記録（仕様 §5.1）
   spawnXpGems(settlement.wx, settlement.wy, xpValueOf(settlement));
   runKills++;
+
+  // v0.23: 花火要塞は派手な演出＋竜晶/XPボーナス
+  if (settlement.isFirework) detonateFirework(settlement);
 
   // v0.10: 石造りの城壁以外は炎上させる（燃える街の演出）
   if (!settlement._isWall) spawnFire(settlement.wx, settlement.wy, settlement.radius);
@@ -6970,7 +7009,7 @@ function drawDragonProjectiles() {
 // 通常の群れブレス（母竜も1個体として撃つ）に上乗せされる"必殺"。
 // 威力 = 基礎 × permaBuff.motherDmg（ツリー下限強化）× effMotherBreathDmg()（ラン中カード）。
 // -----------------------------------------------------------------
-const MOTHER_BREATH_INTERVAL = 3.5;   // 発動間隔（秒）
+const MOTHER_BREATH_INTERVAL = 7.0;   // 発動間隔（秒。v0.22.1: デフォルト頻度を半分に）
 const MOTHER_BREATH_RANGE    = 220;   // 効果半径（通常ブレスより広い）
 const MOTHER_BREATH_TARGETS  = 6;     // 同時に薙ぐ対象数
 const MOTHER_BREATH_DAMAGE   = 60;    // 1発の基礎バーストダメージ
@@ -8999,6 +9038,42 @@ function drawEggBearerMarkers(now) {
     ctx.arc(ox, oy, worldR * 0.35, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  // v0.23: 花火要塞の目印（卵オーブとは色・形を変える＝回転するピンクのスパーク）
+  for (let s = 0; s < settlements.length; s++) {
+    const st = settlements[s];
+    if (st.fallen || !st.isFirework) continue;
+    if (st.wx < bounds.minX || st.wx > bounds.maxX ||
+        st.wy < bounds.minY || st.wy > bounds.maxY) continue;
+    const ox = st.wx;
+    const oy = st.wy - st.radius - 12;
+    const worldR = Math.max(6 / cam.scale, 6);
+    // 外グロー（ピンク）
+    ctx.globalAlpha = pulse * 0.40;
+    ctx.fillStyle = "#ff70c0";
+    ctx.beginPath();
+    ctx.arc(ox, oy, worldR * 2.4, 0, Math.PI * 2);
+    ctx.fill();
+    // 放射スパーク（回転する8本の線）
+    ctx.globalAlpha = pulse;
+    ctx.strokeStyle = "#ffd0f0";
+    ctx.lineWidth = Math.max(0.6, 1.6 / cam.scale);
+    const rot = now * 0.001;
+    ctx.beginPath();
+    for (let k = 0; k < 8; k++) {
+      const a = rot + (k / 8) * Math.PI * 2;
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(ox + Math.cos(a) * worldR * 1.7, oy + Math.sin(a) * worldR * 1.7);
+    }
+    ctx.stroke();
+    // 中心コア（白）
+    ctx.globalAlpha = pulse * 0.95;
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(ox, oy, worldR * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   ctx.globalAlpha = 1.0;
   ctx.restore();
 }

@@ -63,7 +63,11 @@
 | eco_gain | 恵み | 竜晶の嗅覚 | 竜晶獲得 +25% | 70 | — |
 
 - v0.21 で追加した permaBuff フィールド：`reviveMult`（→`effReviveMult`）／`dmgTakenMult`（→`effDmgTakenMult`）／`weaponRange`（→`effWeaponRangeMult`）／`xpGain`（→`addXp` 入口で乗算）。いずれも既存 eff* ハブに合流。
-- v0.22 母竜（Phase 5）：`motherHp`（→`effBoidMaxHpFor(0)`、reset/revive/HPバーに反映）／`motherDmg`／`motherBreath`（解禁フラグ・加算）。**母竜ブレス** `updateMotherBreath()` は `updateWeaponAttacks` 末尾で `isMotherActive()`＋解禁ガードのもと、3.5秒ごとに周囲最大6対象へバースト（基礎60 × motherDmg × ラン中カード `effMotherBreathDmg`）。ラン中強化カード **母竜の吐息**（`mbreath_dmg`, +30%/枚, 解禁時のみ出現）が主軸。ブレスの系統・進化（枝分かれ）や"虹色演出"名物ノードは後続スライス。
+- v0.22 母竜（Phase 5）：`motherHp`（→`effBoidMaxHpFor(0)`、reset/revive/HPバーに反映）／`motherDmg`／`motherBreath`（解禁フラグ・加算）。**母竜ブレス** `updateMotherBreath()` は `updateWeaponAttacks` 末尾で `isMotherActive()`＋解禁ガードのもと、**7.0秒ごと**（v0.22.1 で頻度を半分に）に周囲最大6対象へバースト（基礎60 × motherDmg × ラン中カード `effMotherBreathDmg`）。ラン中強化カード **母竜の吐息**（`mbreath_dmg`, +30%/枚, 解禁時のみ出現）が主軸。ブレスの系統・進化（枝分かれ）や"虹色演出"名物ノードは後続スライス。
+
+## 攻略対象（Phase 3・v0.23〜）
+- **花火要塞**（`isFirework`）：`generateStageLayout` で通常建物から抽選（後半ほど棟数増：stage1-3=1/4-6=2/7-8=3）。回転ピンクのスパークで目印表示（`drawEggBearerMarkers` 内）。撃破＝`settlementFall`→`detonateFirework`：放射スパーク＋炎＋フラッシュ＋**竜晶+15・XP+60**の"うまみ"。単独で面白い当たり枠。
+- 次：財宝馬車（逃げるボーナス運搬体）、巨獣、および後半の歯ごたえ枠（衝撃兵/治癒塔/召喚門/エリート）。
 - 各ラインの「単独で面白い"名物ノード"」（母竜=虹色特大ブレス、大群=黄金化、統率=彗星の尾、恵み=竜晶花火）と、母竜ライン・特別解放ノード（`unlockBy: challengeId`）は後続スライスで追加予定。
 - 数値・ノード構成は暫定。プレイテストで調整する前提。将来ノードは `TREE_DEFS` に追記し、必要なら `permaBuff` にフィールドと `recomputePermaBuff` の分岐を足す。
 
