@@ -328,6 +328,73 @@
     box-shadow: 0 0 24px rgba(255,140,40,0.35);
   }
 
+  /* v0.20: 恒常強化ツリー画面 */
+  #tree-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: none;
+    flex-direction: column;
+    padding: 16px 14px 24px;
+    background: rgba(4,6,14,0.96);
+    z-index: 55;
+    pointer-events: auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #tree-overlay.visible { display: flex; }
+  #tree-overlay .tree-head {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 4px;
+  }
+  #tree-overlay .tree-title {
+    font-family: -apple-system, BlinkMacSystemFont, serif;
+    font-size: 20px; font-weight: bold; color: #ffe0b0; letter-spacing: 0.12em;
+    text-shadow: 0 0 20px rgba(255,140,40,0.6);
+  }
+  #tree-overlay .tree-crystals {
+    font-family: monospace; font-size: 16px; color: #8cd8ff; margin-left: auto;
+    text-shadow: 0 0 12px rgba(100,200,255,0.7);
+  }
+  #tree-overlay .tree-close {
+    font-size: 20px; color: #ff8888; background: none; border: none;
+    cursor: pointer; padding: 0 6px;
+  }
+  #tree-overlay .tree-hint {
+    font-family: monospace; font-size: 11px; color: #8aa; margin-bottom: 14px;
+  }
+  #tree-overlay .tree-cols {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start;
+  }
+  #tree-overlay .tree-col {
+    flex: 1 1 200px; min-width: 160px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #tree-overlay .tree-col-label {
+    font-family: monospace; font-size: 12px; color: #ffd070; letter-spacing: 0.2em;
+    border-bottom: 1px solid #4a5a3a; padding-bottom: 4px; margin-bottom: 2px;
+  }
+  #tree-overlay .tree-node {
+    position: relative; text-align: left;
+    padding: 9px 12px 9px 46px;
+    background: rgba(16,22,36,0.92); border: 1px solid #3a4a66; border-radius: 10px;
+    color: #dce8f6; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  #tree-overlay .tree-node:active { transform: scale(0.98); }
+  #tree-overlay .tree-node .tn-badge {
+    position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+    font-family: monospace; font-size: 11px; font-weight: bold;
+    width: 30px; text-align: center; color: #9cf;
+  }
+  #tree-overlay .tree-node .tn-name { font-size: 14px; font-weight: bold; }
+  #tree-overlay .tree-node .tn-desc { font-size: 11px; color: #9fbad6; margin-top: 1px; }
+  #tree-overlay .tree-node .tn-req  { font-size: 10px; color: #c88; margin-top: 3px; }
+  /* 状態別スタイル */
+  #tree-overlay .tree-node.st-available { border-color: #6a8ac8; box-shadow: 0 0 10px rgba(90,130,220,0.25); }
+  #tree-overlay .tree-node.st-locked    { opacity: 0.45; }
+  #tree-overlay .tree-node.on  { border-color: #58c878; box-shadow: 0 0 12px rgba(88,200,120,0.4); }
+  #tree-overlay .tree-node.on  .tn-badge { color: #7fe89a; }
+  #tree-overlay .tree-node.off { border-color: #886; opacity: 0.7; }
+  #tree-overlay .tree-node.off .tn-badge { color: #cc9; }
+
   /* v0.19.2: デバッグパネル（左下バージョンを800ms以内に3回タップでトグル） */
   #debug-panel {
     position: fixed;
@@ -445,6 +512,9 @@
   <div id="title-menu"></div>
 </div>
 
+<!-- v0.20: 恒常強化ツリー画面（タイトルから開く） -->
+<div id="tree-overlay"></div>
+
 <!-- v0.19.2: デバッグパネル（バージョン3タップでトグル） -->
 <div id="debug-panel"></div>
 
@@ -454,7 +524,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.19.3";
+const GAME_VERSION = "v0.20.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -499,6 +569,7 @@ function debugResetProfile() {
     localStorage.removeItem(RUN_SAVE_KEY);
   } catch (_) {}
   profile = loadProfile();
+  recomputePermaBuff();
   if (gameState === "playing") returnToTitle();
   else { refreshTitleBest(); refreshTitleMenu(); }
 }
@@ -5991,6 +6062,7 @@ const STRINGS = {
   chooseDragon: "竜を選ぶ",
   startRun: "はじめる",
   backToTitle: "← もどる",
+  openTree: (crystals) => `強化ツリー　🔷${crystals}`,
   continueRun: (stageNum) => `つづきから　STAGE ${stageNum}`,
   cards: {
     scale:     { name: "硬鱗",     desc: "竜のHP +20%" },
@@ -6098,15 +6170,28 @@ const CARD_RARITY_WEIGHT = { common: 10, rare: 4, star: 3 };
 
 function upCount(id) { return upgradeCounts[id] || 0; }
 
+// -----------------------------------------------------------------
+// v0.20: 恒常強化ツリー（永続バフ）の適用ハブ。
+// profile.tree の「unlocked かつ enabled」なノード効果を集計した permaBuff を
+// eff* 系の戻り値に乗算/加算で合流させる（ラン内の upgradeCounts とは独立で、
+// ステージリセットでは消えない）。permaBuff はツリー編集時と起動時に
+// recomputePermaBuff() で作り直す（定義は下部のツリーモジュール）。
+// -----------------------------------------------------------------
+function defaultPermaBuff() {
+  return { startFlock: 0, flockHp: 1, flockSpeed: 1, flockCap: 0, weaponDmg: 1, crystalGain: 1, magnet: 1 };
+}
+let permaBuff = defaultPermaBuff();
+
 // ---- 効果の集計（取得回数から都度計算。ステージリセットで自然に戻る）----
-function effHpMult()        { return 1 + 0.20 * upCount("scale"); }
-function effSpeedMult()     { return 1 + 0.08 * upCount("wind"); }
+// v0.20: 末尾に permaBuff（恒常ツリー）を合流。
+function effHpMult()        { return (1 + 0.20 * upCount("scale")) * permaBuff.flockHp; }
+function effSpeedMult()     { return (1 + 0.08 * upCount("wind")) * permaBuff.flockSpeed; }
 function effReviveMult()    { return Math.pow(0.85, upCount("tide")); }
-function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * upCount("magnet")); }
-function effFlockCap()      { return Math.min(MAX_BOIDS, BASE_FLOCK_CAP + 25 * upCount("brood")); }
+function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * upCount("magnet")) * permaBuff.magnet; }
+function effFlockCap()      { return Math.min(MAX_BOIDS, BASE_FLOCK_CAP + 25 * upCount("brood") + permaBuff.flockCap); }
 function effDmgTakenMult()  { return Math.pow(0.88, upCount("resonance")); }
 // 武器別強化はタイプ別に保持される（転換しても消えず、そのタイプに戻れば効く。§5.4-C）
-function effWeaponDmgMult(weapon)   { return 1 + 0.15 * upCount("dmg_" + weapon); }
+function effWeaponDmgMult(weapon)   { return (1 + 0.15 * upCount("dmg_" + weapon)) * permaBuff.weaponDmg; }
 function effWeaponRangeMult(weapon) { return 1 + 0.15 * upCount("range_" + weapon); }
 function effFireIntervalMult(weapon){ return Math.pow(0.82, upCount("rate_" + weapon)); }
 function effBeamTargets()   { return 1 + upCount("multibeam"); }
@@ -7358,6 +7443,161 @@ function refreshTitleBest() {
     : STRINGS.noRecord;
 }
 
+// =================================================================
+// v0.20: 恒常強化ツリー（メタ進行）
+// 竜晶（crystals）で購入し、各ノードは個別に ON/OFF できる（縛り/実験用）。
+// 効果は permaBuff に集計され、eff*／stageStartFlockCount へ合流する。
+// =================================================================
+
+// ---- 竜晶の獲得 ----
+// ステージをクリアするたびに付与（進むほど増える）。全クリアで追加ボーナス。
+const CRYSTAL_STAGE_BASE     = 6;    // ステージクリア1回の基本量
+const CRYSTAL_STAGE_STEP     = 3;    // ステージ番号が進むほどの増分（stageIdx × step）
+const CRYSTAL_ALLCLEAR_BONUS = 40;   // 全クリアの追加ボーナス
+
+// stageIdx（0始まり）を1つクリアしたときの基本獲得量。
+function crystalsForStageClear(stageIdx) {
+  return CRYSTAL_STAGE_BASE + CRYSTAL_STAGE_STEP * stageIdx;
+}
+
+// 竜晶を付与（恒常ツリーの獲得倍率 permaBuff.crystalGain を掛ける）。付与量を返す。
+function awardCrystals(n) {
+  const gain = Math.max(0, Math.round(n * permaBuff.crystalGain));
+  if (gain <= 0) return 0;
+  profile.crystals += gain;
+  saveProfile();
+  return gain;
+}
+
+// ---- ツリー定義 ----
+// effect.type は permaBuff のフィールドに対応（recomputePermaBuff 参照）。
+//   startFlock / flockCap = 加算、それ以外 = 乗算。
+const TREE_DEFS = [
+  // 群れ（生存・規模）
+  { id: "flock_start1", cat: "flock", name: "始祖の群れ",   desc: "各ステージ開始の竜 +1", cost: 40,  prereq: [],               effect: { type: "startFlock", value: 1 } },
+  { id: "flock_start2", cat: "flock", name: "殖える始まり", desc: "各ステージ開始の竜 +1", cost: 120, prereq: ["flock_start1"], effect: { type: "startFlock", value: 1 } },
+  { id: "flock_hp",     cat: "flock", name: "硬鱗の血脈",   desc: "竜のHP +15%",           cost: 50,  prereq: [],               effect: { type: "flockHp",    value: 1.15 } },
+  { id: "flock_cap",    cat: "flock", name: "大群の器",     desc: "群れ上限 +20",          cost: 100, prereq: ["flock_hp"],     effect: { type: "flockCap",   value: 20 } },
+  // 火力
+  { id: "pow_dmg1",     cat: "power", name: "猛る吐息",     desc: "武器威力 +12%",         cost: 50,  prereq: [],               effect: { type: "weaponDmg",  value: 1.12 } },
+  { id: "pow_dmg2",     cat: "power", name: "業火の系譜",   desc: "武器威力 +15%",         cost: 140, prereq: ["pow_dmg1"],     effect: { type: "weaponDmg",  value: 1.15 } },
+  { id: "pow_speed",    cat: "power", name: "疾風の翼",     desc: "群れの速度 +10%",       cost: 45,  prereq: [],               effect: { type: "flockSpeed", value: 1.10 } },
+  // 探索・経済
+  { id: "eco_magnet",   cat: "eco",   name: "宝玉の磁力",   desc: "XP吸引範囲 +30%",        cost: 40,  prereq: [],               effect: { type: "magnet",     value: 1.30 } },
+  { id: "eco_gain",     cat: "eco",   name: "竜晶の嗅覚",   desc: "竜晶獲得 +25%",          cost: 70,  prereq: [],               effect: { type: "crystalGain",value: 1.25 } },
+];
+const TREE_CATEGORIES = [
+  { id: "flock", label: "群れ" },
+  { id: "power", label: "火力" },
+  { id: "eco",   label: "探索・経済" },
+];
+
+// ノードの状態: "owned"（購入済み）/ "available"（購入可）/ "locked"（前提未達）
+function treeNodeState(id) {
+  const st = profile.tree[id];
+  if (st && st.unlocked) return "owned";
+  const node = TREE_DEFS.find(n => n.id === id);
+  const ok = node.prereq.every(p => profile.tree[p] && profile.tree[p].unlocked);
+  return ok ? "available" : "locked";
+}
+
+// enabled かつ unlocked なノードの効果を集計して permaBuff を作り直す。
+function recomputePermaBuff() {
+  const b = defaultPermaBuff();
+  for (const node of TREE_DEFS) {
+    const st = profile.tree[node.id];
+    if (!st || !st.unlocked || !st.enabled) continue;
+    const e = node.effect;
+    if (e.type === "startFlock" || e.type === "flockCap") b[e.type] += e.value;
+    else b[e.type] *= e.value;
+  }
+  permaBuff = b;
+}
+
+function purchaseTreeNode(node) {
+  if (treeNodeState(node.id) !== "available") return;
+  if (profile.crystals < node.cost) return;
+  profile.crystals -= node.cost;
+  profile.tree[node.id] = { unlocked: true, enabled: true };
+  recomputePermaBuff();
+  saveProfile();
+  renderTree();
+}
+
+function toggleTreeNode(node) {
+  const st = profile.tree[node.id];
+  if (!st || !st.unlocked) return;
+  st.enabled = !st.enabled;
+  recomputePermaBuff();
+  saveProfile();
+  renderTree();
+}
+
+// ---- ツリー画面（タイトルから開く全画面オーバーレイ）----
+const treeOverlayEl = document.getElementById("tree-overlay");
+
+function openTree() {
+  renderTree();
+  treeOverlayEl.classList.add("visible");
+}
+
+function closeTree() {
+  treeOverlayEl.classList.remove("visible");
+  refreshTitleMenu();   // 竜晶残高のボタン表示を更新
+}
+
+function renderTree() {
+  let html =
+    `<div class="tree-head">` +
+      `<div class="tree-title">恒常強化ツリー</div>` +
+      `<div class="tree-crystals">🔷 ${profile.crystals}</div>` +
+      `<button class="tree-close">✕</button>` +
+    `</div>` +
+    `<div class="tree-hint">タップで購入／購入済みはタップで ON・OFF 切替</div>` +
+    `<div class="tree-cols">`;
+  for (const cat of TREE_CATEGORIES) {
+    html += `<div class="tree-col"><div class="tree-col-label">${cat.label}</div>`;
+    for (const node of TREE_DEFS.filter(n => n.cat === cat.id)) {
+      const state = treeNodeState(node.id);
+      const st = profile.tree[node.id];
+      const on = !!(st && st.enabled);
+      const cls = ["tree-node", "st-" + state];
+      if (state === "owned") cls.push(on ? "on" : "off");
+      const badge = state === "owned" ? (on ? "ON" : "OFF")
+                  : state === "available" ? `🔷${node.cost}`
+                  : "🔒";
+      const req = node.prereq.length
+        ? `<div class="tn-req">要: ${node.prereq.map(p => TREE_DEFS.find(n => n.id === p).name).join("・")}</div>`
+        : "";
+      html +=
+        `<button class="${cls.join(" ")}" data-id="${node.id}">` +
+          `<div class="tn-badge">${badge}</div>` +
+          `<div class="tn-name">${node.name}</div>` +
+          `<div class="tn-desc">${node.desc}</div>` +
+          req +
+        `</button>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div>`;
+  treeOverlayEl.innerHTML = html;
+
+  treeOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    closeTree();
+  });
+  treeOverlayEl.querySelectorAll(".tree-node").forEach((btn) => {
+    btn.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      const node = TREE_DEFS.find(n => n.id === btn.dataset.id);
+      const state = treeNodeState(node.id);
+      if (state === "owned") toggleTreeNode(node);
+      else if (state === "available") purchaseTreeNode(node);
+      // locked は何もしない
+    });
+  });
+}
+
 const titleHintEl = document.getElementById("title-hint");
 const titleMenuEl = document.getElementById("title-menu");
 
@@ -7384,6 +7624,13 @@ function refreshTitleMenu() {
   startBtn.textContent = STRINGS.startRun;
   startBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); onTitleStart(); });
   titleMenuEl.appendChild(startBtn);
+
+  // v0.20: 恒常強化ツリー（竜晶を持っていなくても開けて、何が伸ばせるか見せる）
+  const treeBtn = document.createElement("button");
+  treeBtn.className = "title-btn";
+  treeBtn.textContent = STRINGS.openTree(profile.crystals);
+  treeBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openTree(); });
+  titleMenuEl.appendChild(treeBtn);
 }
 
 // ---- ラン開始（タイトル → STAGE 1）----
@@ -7404,7 +7651,8 @@ let speciesSelecting = false;
 const FLOCK_START_BASE      = 1;    // 通常ランのステージ開始数（将来ツリーで加算）
 const FLOCK_START_FIRST_RUN = 10;   // 一番最初のランだけの特別値
 function stageStartFlockCount() {
-  return currentRunIsFirst ? FLOCK_START_FIRST_RUN : FLOCK_START_BASE;
+  const base = currentRunIsFirst ? FLOCK_START_FIRST_RUN : FLOCK_START_BASE;
+  return base + permaBuff.startFlock;   // v0.20: 恒常ツリーで初期数を底上げ
 }
 
 // タイトルのタップ／「はじめる」の入口。
@@ -7573,6 +7821,8 @@ function triggerAllClear() {
   const runTimeMs = performance.now() - runStartTime;
   saveBestRecord(runTimeMs, runKills);
   profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
+  // v0.20: 最終ステージぶん＋全クリアボーナスの竜晶（awardCrystals が saveProfile 済み）
+  awardCrystals(crystalsForStageClear(currentStage) + CRYSTAL_ALLCLEAR_BONUS);
   saveProfile();
   clearRunSave();            // 全クリア＝再開データは不要
 
@@ -7656,6 +7906,8 @@ function advanceToNextStage() {
   updateHUDStage();
   updateHUDBuildings();
 
+  // v0.20: 直前にクリアしたステージ（currentStage-1）ぶんの竜晶を付与
+  awardCrystals(crystalsForStageClear(currentStage - 1));
   snapshotRunSave();   // v0.19: このステージ開始状態をオートセーブ（続きから用）
 }
 
@@ -10096,6 +10348,7 @@ async function boot() {
   updateHUDStage();
   updateHUDBuildings();
   // v0.6: タイトル画面から開始（背景でアイドル旋回する群れが見える）
+  recomputePermaBuff();   // v0.20: 保存済みツリーから永続バフを反映
   refreshTitleBest();
   refreshTitleMenu();
   titleOverlayEl.classList.add("visible");
