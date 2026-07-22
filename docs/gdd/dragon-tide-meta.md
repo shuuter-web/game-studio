@@ -38,24 +38,30 @@
 - `permaBuff` は `eff*` 各関数と `stageStartFlockCount()` の戻り値に**乗算/加算で合流**（ラン内 `upgradeCounts` とは独立、ステージリセットで消えない）。
 - 再計算タイミング: 起動時（`boot`）、ツリー編集時（購入・トグル）、プロファイル初期化時。
 
-### ノード一覧（v0.20.0 初版・9ノード）
-`effect.type` は `permaBuff` のフィールド。startFlock/flockCap=加算、他=乗算。
+### ノード一覧（v0.21.0・4ライン15ノード）
+`effect.type` は `permaBuff` のフィールド。startFlock/flockCap=加算、他=乗算。ライン＝大群(swarm)/不屈(resil)/統率(command)/恵み(bounty)。母竜(mother)ラインは Phase 5 で追加。
 
-| id | カテゴリ | 名前 | 効果 | cost | 前提 |
+| id | ライン | 名前 | 効果 | cost | 前提 |
 |---|---|---|---|---|---|
-| flock_start1 | 群れ | 始祖の群れ | 各ステージ開始の竜 +1 | 40 | — |
-| flock_start2 | 群れ | 殖える始まり | 各ステージ開始の竜 +1 | 120 | flock_start1 |
-| flock_hp | 群れ | 硬鱗の血脈 | 竜HP +15% | 50 | — |
-| flock_cap | 群れ | 大群の器 | 群れ上限 +20 | 100 | flock_hp |
-| pow_dmg1 | 火力 | 猛る吐息 | 武器威力 +12% | 50 | — |
-| pow_dmg2 | 火力 | 業火の系譜 | 武器威力 +15% | 140 | pow_dmg1 |
-| pow_speed | 火力 | 疾風の翼 | 群れ速度 +10% | 45 | — |
-| eco_magnet | 探索・経済 | 宝玉の磁力 | XP吸引 +30% | 40 | — |
-| eco_gain | 探索・経済 | 竜晶の嗅覚 | 竜晶獲得 +25% | 70 | — |
+| flock_start1 | 大群 | 始祖の群れ | 各ステージ開始の竜 +1 | 40 | — |
+| flock_start2 | 大群 | 殖える始まり | 各ステージ開始の竜 +1 | 120 | flock_start1 |
+| flock_cap | 大群 | 大群の器 | 群れ上限 +20 | 100 | flock_start1 |
+| swarm_revive | 大群 | 早鳴きの潮 | ダウン復帰 -20% | 60 | — |
+| pow_dmg1 | 大群 | 猛る吐息 | 武器威力 +12% | 50 | — |
+| pow_dmg2 | 大群 | 業火の系譜 | 武器威力 +15% | 140 | pow_dmg1 |
+| flock_hp | 不屈 | 硬鱗の血脈 | 竜HP +15% | 50 | — |
+| resil_hp2 | 不屈 | 鋼鱗の覚醒 | 竜HP +15% | 130 | flock_hp |
+| resil_tough | 不屈 | 竜鱗の共鳴 | 被ダメージ -12% | 90 | — |
+| pow_speed | 統率 | 疾風の翼 | 群れ速度 +10% | 45 | — |
+| cmd_speed2 | 統率 | 颶風の統率 | 群れ速度 +8% | 110 | pow_speed |
+| cmd_reach | 統率 | 見晴らす眼 | 武器射程 +15% | 70 | — |
+| eco_magnet | 恵み | 宝玉の磁力 | XP吸引 +30% | 40 | — |
+| bounty_xp | 恵み | 成長の律動 | 獲得XP +20% | 80 | — |
+| eco_gain | 恵み | 竜晶の嗅覚 | 竜晶獲得 +25% | 70 | — |
 
-- 数値・ノード構成は初版。プレイテストで `system-designer` が調整する前提。将来ノードは
-  `TREE_DEFS` に追記し、必要なら `permaBuff` にフィールドと `recomputePermaBuff` の分岐を足す。
-- 一部ノードを `unlockBy: challengeId`（購入不可・特別解放）にする枠は Phase 4 で追加予定。
+- v0.21 で追加した permaBuff フィールド：`reviveMult`（→`effReviveMult`）／`dmgTakenMult`（→`effDmgTakenMult`）／`weaponRange`（→`effWeaponRangeMult`）／`xpGain`（→`addXp` 入口で乗算）。いずれも既存 eff* ハブに合流。
+- 各ラインの「単独で面白い"名物ノード"」（母竜=虹色特大ブレス、大群=黄金化、統率=彗星の尾、恵み=竜晶花火）と、母竜ライン・特別解放ノード（`unlockBy: challengeId`）は後続スライスで追加予定。
+- 数値・ノード構成は暫定。プレイテストで調整する前提。将来ノードは `TREE_DEFS` に追記し、必要なら `permaBuff` にフィールドと `recomputePermaBuff` の分岐を足す。
 
 ### UI
 - タイトルメニューの「強化ツリー 🔷N」から `openTree()`。全画面オーバーレイ（z-index 55、タイトル z50 の上）。
