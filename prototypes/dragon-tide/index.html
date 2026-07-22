@@ -298,6 +298,36 @@
   }
   @keyframes hintBlink { 0%,100% { opacity: 1.0; } 50% { opacity: 0.25; } }
 
+  /* v0.19: タイトルメニュー（2回目以降のラン。はじめる／つづきから） */
+  #title-menu {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    margin-top: 34px;
+  }
+  .title-btn {
+    font-family: monospace;
+    font-size: 17px;
+    color: #fff;
+    letter-spacing: 0.12em;
+    padding: 13px 40px;
+    min-width: 240px;
+    border: 1px solid rgba(255,176,96,0.5);
+    border-radius: 10px;
+    background: rgba(20,12,4,0.55);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .title-btn:hover { background: rgba(60,36,12,0.7); border-color: rgba(255,176,96,0.9); }
+  .title-btn:active { transform: translateY(1px); }
+  .title-btn-primary {
+    color: #ffe0b0;
+    border-color: rgba(255,176,96,0.95);
+    background: rgba(80,44,12,0.7);
+    box-shadow: 0 0 24px rgba(255,140,40,0.35);
+  }
+
   /* v0.6: リザルト統計 */
   #result-stats {
     font-family: monospace;
@@ -377,6 +407,7 @@
   </div>
   <div id="title-best"></div>
   <div id="title-hint">TAP TO START</div>
+  <div id="title-menu"></div>
 </div>
 
 <script>
@@ -385,7 +416,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.18.0";
+const GAME_VERSION = "v0.19.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5488,12 +5519,14 @@ function initBoids() {
  * 前ステージの群れ数・HP・ダウン状態は一切持ち越さない。
  * これにより「ステージ開始は寄り、育つと引き」という弧が毎ステージ生まれる。
  */
-function resetBoidsForStageStart() {
+function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
 
-  // N を BOIDS_INITIAL に戻し、全スロットを dead でリセットしてから有効分を起こす
-  N = BOIDS_INITIAL;
+  // N を初期数に戻し、全スロットを dead でリセットしてから有効分を起こす。
+  // v0.19: 2回目以降のラン開始は初期1体（塊魂的にゼロから積み上げる）。
+  // ステージ間リセットは既定の BOIDS_INITIAL。範囲は 1..MAX_BOIDS にクランプ。
+  N = Math.max(1, Math.min(MAX_BOIDS, initialCount | 0));
 
   // v0.7: 強化カードが持ち越されるため、HPは実効最大値（硬鱗・種族補正込み）で初期化する
   const maxHpNow = effBoidMaxHp();
@@ -5823,6 +5856,10 @@ const STRINGS = {
   statLevel: "最終レベル",
   statXp: "総XP",
   toTitle: "タイトルへ",
+  levelUp: "LEVEL UP",
+  chooseDragon: "竜を選ぶ",
+  startRun: "はじめる",
+  continueRun: (stageNum) => `つづきから　STAGE ${stageNum}`,
   cards: {
     scale:     { name: "硬鱗",     desc: "竜のHP +20%" },
     wind:      { name: "疾風",     desc: "群れの速度 +8%" },
@@ -5878,6 +5915,10 @@ const upgradeCounts = {};      // cardId -> 取得回数
 // v0.14: ランの最初のレベルアップで竜の進化（変身）を選んだか。
 // false の間は最初のカード提示が進化3択固定になり、選択後は進化カードが二度と出ない
 let evolutionChosen = false;
+// v0.19: このラン（進行中）が「一番最初のラン」か。startRun で runsStarted を
+// 増やす前の isFirstEverRun() を固定する。初回=火竜即開始・初期10体、
+// 2回目以降=竜種選択メニュー・初期1体、の分岐に使う。
+let currentRunIsFirst = true;
 
 // ---- リザルト用ラン統計（ラン開始ごとにリセット）----
 let runStartTime  = 0;
@@ -6147,6 +6188,7 @@ function drawXpGems() {
 // ゲームオーバーが存在しないため、選択中の被弾リスクはほぼ無い。
 // -----------------------------------------------------------------
 const levelupOverlayEl = document.getElementById("levelup-overlay");
+const levelupTitleEl   = document.getElementById("levelup-title");
 const cardListEl       = document.getElementById("card-list");
 
 const SLOWMO_SCALE    = 0.25;  // カード表示中のワールド速度倍率
@@ -6165,6 +6207,7 @@ function maybeShowLevelUp() {
   if (gameState !== "playing" || pendingCards <= 0 || upgradeCardsVisible) return;
   upgradeCardsVisible = true;
   slowmoTimer = SLOWMO_DURATION;
+  levelupTitleEl.textContent = STRINGS.levelUp;  // 竜種選択で書き換わったタイトルを戻す
   buildLevelUpCards();
   levelupOverlayEl.classList.add("visible");
   triggerFlash("rgba(160,236,255,0.35)", 0.15);
@@ -6173,13 +6216,8 @@ function maybeShowLevelUp() {
 
 /** 取得可能なカードから重み付きで3枚（重複なし）選んでDOMに並べる。 */
 function buildLevelUpCards() {
-  // v0.14: ランの最初のレベルアップは「どの竜で行くか」の4択固定
-  // （火竜を続ける＋進化3種）。他の強化カードは混ぜない
-  if (!evolutionChosen) {
-    renderLevelUpCards([CARD_STAY_FIRE, ...CARD_DEFS.filter(def => def.targetWeapon)]);
-    return;
-  }
-
+  // v0.19: 竜種はラン開始メニューで確定済み（evolutionChosen=true）。
+  // ラン中の初回4択は廃止し、レベルアップは純粋な強化のみ。
   const pool = CARD_DEFS.filter(def => {
     if (upCount(def.id) >= def.max) return false;
     // 武器強化カードは現在の武器タイプにのみ出現
@@ -7075,27 +7113,105 @@ const stageSubEl     = document.getElementById("stage-sub");
 const titleOverlayEl = document.getElementById("title-overlay");
 const titleBestEl    = document.getElementById("title-best");
 
-// ---- ベスト記録（localStorage。ラン中断セーブは仕様スコープ外）----
-const BEST_TIME_KEY  = "dragonTide_bestTimeMs";
-const BEST_KILLS_KEY = "dragonTide_bestKills";
+// -----------------------------------------------------------------
+// v0.19: 永続化基盤（メタ進行）
+// localStorage を「ベスト2キー」から2つの JSON blob に再編：
+//   dragonTide_profile … 永続メタ（竜晶・チャレンジ・ツリー・ベスト・累計）
+//   dragonTide_run     … 進行中ランの再開チェックポイント（ステージ開始位置）
+// 旧 dragonTide_bestTimeMs / _bestKills は初回読込で profile.best へ移行する。
+// -----------------------------------------------------------------
+const BEST_TIME_KEY  = "dragonTide_bestTimeMs";   // 旧キー（移行元としてのみ参照）
+const BEST_KILLS_KEY = "dragonTide_bestKills";    // 旧キー（移行元としてのみ参照）
+const PROFILE_KEY     = "dragonTide_profile";
+const RUN_SAVE_KEY    = "dragonTide_run";
+const PROFILE_VERSION = 1;
+const RUN_SAVE_VERSION = 1;
 
-function loadBestRecord() {
+function defaultProfile() {
+  return {
+    version: PROFILE_VERSION,
+    runsStarted: 0,   // 開始したランの累計（初回=火竜即開始 かの判定に使う）
+    clears: 0,        // 全クリア回数
+    crystals: 0,      // メタ通貨「竜晶」残高
+    challenges: {},   // id -> { progress, done, claimed }
+    tree: {},         // nodeId -> { unlocked, enabled }
+    best: { timeMs: 0, kills: 0 },
+  };
+}
+
+// 旧ベスト2キーを profile.best へ吸収（存在すれば）。破壊はせず読むだけ。
+function migrateLegacyBest(p) {
   try {
-    return {
-      timeMs: Number(localStorage.getItem(BEST_TIME_KEY)) || 0,
-      kills:  Number(localStorage.getItem(BEST_KILLS_KEY)) || 0,
-    };
-  } catch (_) {
-    return { timeMs: 0, kills: 0 };
+    const t = Number(localStorage.getItem(BEST_TIME_KEY)) || 0;
+    const k = Number(localStorage.getItem(BEST_KILLS_KEY)) || 0;
+    if (t > 0 && (!p.best.timeMs || t < p.best.timeMs)) p.best.timeMs = t;
+    if (k > p.best.kills) p.best.kills = k;
+  } catch (_) {}
+  return p;
+}
+
+function loadProfile() {
+  let p = null;
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    p = raw ? JSON.parse(raw) : null;
+  } catch (_) { p = null; }
+  if (!p || typeof p !== "object") {
+    // 初回起動 or 破損 → 既定＋旧ベスト移行
+    p = migrateLegacyBest(defaultProfile());
+  } else {
+    // 欠損フィールドを既定で補完（前方互換）
+    p = Object.assign(defaultProfile(), p);
+    p.best = Object.assign({ timeMs: 0, kills: 0 }, p.best || {});
+    p.challenges = p.challenges || {};
+    p.tree = p.tree || {};
   }
+  p.version = PROFILE_VERSION;
+  return p;
+}
+
+// 起動時に確定する単一のプロファイル。以降 saveProfile() で都度永続化。
+let profile = loadProfile();
+
+function saveProfile() {
+  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); } catch (_) {}
+}
+
+// 今から始める（or 進行中の）ランが「一番最初のラン」かどうか。
+// startRun 時点で runsStarted を増やす前の値で判定し currentRunIsFirst に固定する。
+function isFirstEverRun() {
+  return !profile || profile.runsStarted <= 0;
+}
+
+// ---- ラン再開チェックポイント（枠のみ。書き込み/再開の結線は Phase 1）----
+function loadRunSave() {
+  try {
+    const raw = localStorage.getItem(RUN_SAVE_KEY);
+    const r = raw ? JSON.parse(raw) : null;
+    if (!r || r.version !== RUN_SAVE_VERSION) return null;
+    return r;
+  } catch (_) { return null; }
+}
+
+function saveRunSave(data) {
+  try {
+    localStorage.setItem(RUN_SAVE_KEY, JSON.stringify(Object.assign({ version: RUN_SAVE_VERSION }, data)));
+  } catch (_) {}
+}
+
+function clearRunSave() {
+  try { localStorage.removeItem(RUN_SAVE_KEY); } catch (_) {}
+}
+
+// ---- ベスト記録（profile.best を単一の真実として読み書き）----
+function loadBestRecord() {
+  return { timeMs: profile.best.timeMs || 0, kills: profile.best.kills || 0 };
 }
 
 function saveBestRecord(timeMs, kills) {
-  try {
-    const best = loadBestRecord();
-    if (!best.timeMs || timeMs < best.timeMs) localStorage.setItem(BEST_TIME_KEY, String(Math.round(timeMs)));
-    if (kills > best.kills) localStorage.setItem(BEST_KILLS_KEY, String(kills));
-  } catch (_) {}
+  if (!profile.best.timeMs || timeMs < profile.best.timeMs) profile.best.timeMs = Math.round(timeMs);
+  if (kills > profile.best.kills) profile.best.kills = kills;
+  saveProfile();
 }
 
 function formatRunTime(ms) {
@@ -7110,13 +7226,169 @@ function refreshTitleBest() {
     : STRINGS.noRecord;
 }
 
+const titleHintEl = document.getElementById("title-hint");
+const titleMenuEl = document.getElementById("title-menu");
+
+// タイトルのメニュー内容を状況に合わせて組み直す。
+// 初回ラン：ヒント「TAP TO START」＋背景タップで即開始。
+// 2回目以降：メニューボタン（つづきから／はじめる）。背景タップは無効。
+function refreshTitleMenu() {
+  const first = isFirstEverRun();
+  titleHintEl.style.display = first ? "" : "none";
+  titleMenuEl.innerHTML = "";
+  if (first) { titleMenuEl.style.display = "none"; return; }
+  titleMenuEl.style.display = "flex";
+
+  const save = loadRunSave();
+  if (save) {
+    const cont = document.createElement("button");
+    cont.className = "title-btn title-btn-primary";
+    cont.textContent = STRINGS.continueRun((save.stage | 0) + 1);
+    cont.addEventListener("pointerdown", (e) => { e.stopPropagation(); resumeRun(); });
+    titleMenuEl.appendChild(cont);
+  }
+  const startBtn = document.createElement("button");
+  startBtn.className = "title-btn";
+  startBtn.textContent = STRINGS.startRun;
+  startBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); onTitleStart(); });
+  titleMenuEl.appendChild(startBtn);
+}
+
 // ---- ラン開始（タイトル → STAGE 1）----
-function startRun() {
+// v0.19: 初回=火竜固定で即開始・初期10体、2回目以降=竜種選択メニュー・初期1体。
+
+// 竜種選択メニューの選択肢（stay_fire は火竜として提示）。
+const SPECIES_CHOICES = [
+  { weapon: "beam",    id: "stay_fire",   icon: "\u{1F525}" },
+  { weapon: "bullet",  id: "evo_bullet",  icon: "❄️" },
+  { weapon: "missile", id: "evo_missile", icon: "\u{1F311}" },
+  { weapon: "melee",   id: "evo_melee",   icon: "\u{1F43E}" },
+];
+let speciesSelecting = false;
+
+// 初期群れ数：一番最初のランだけ 10 体、以降は 1 体から積み上げる。
+function initialFlockForRunStart() {
+  return currentRunIsFirst ? BOIDS_INITIAL : 1;
+}
+
+// タイトルのタップ／「はじめる」の入口。
+function onTitleStart() {
   if (gameState !== "title") return;
+  if (isFirstEverRun()) {
+    beginRun("beam");        // 初回は火竜固定で即開始
+  } else {
+    showSpeciesSelect();     // 2回目以降は竜種を選んでから
+  }
+}
+
+// 竜種選択メニュー（レベルアップ用オーバーレイを流用）。
+function showSpeciesSelect() {
+  if (gameState !== "title") return;
+  speciesSelecting = true;
+  levelupTitleEl.textContent = STRINGS.chooseDragon;
+  cardListEl.innerHTML = "";
+  for (const ch of SPECIES_CHOICES) {
+    const text = STRINGS.cards[ch.id];
+    const info = WEAPON_HUD[ch.weapon];
+    const btn  = document.createElement("button");
+    btn.className = "upgrade-card rarity-star";
+    btn.innerHTML =
+      `<span class="card-icon">${ch.icon}</span>` +
+      `<span><div class="card-name" style="color:${info.color}">${info.label}</div>` +
+      `<div class="card-desc">${text.desc}</div></span>`;
+    btn.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      beginRun(ch.weapon);
+    });
+    cardListEl.appendChild(btn);
+  }
+  levelupOverlayEl.classList.add("visible");
+}
+
+function dismissSpeciesSelect() {
+  if (!speciesSelecting) return;
+  speciesSelecting = false;
+  levelupTitleEl.textContent = STRINGS.levelUp;
+  levelupOverlayEl.classList.remove("visible");
+}
+
+// 新規ランを開始する（竜種 weapon 確定済み）。
+function beginRun(weapon) {
+  if (gameState !== "title") return;
+  currentRunIsFirst = isFirstEverRun();   // runsStarted を増やす前に固定
+  profile.runsStarted++;
+  saveProfile();
+  clearRunSave();                          // 新規ランは既存の再開データを破棄
+
+  currentStage    = 0;
+  flockWeapon     = weapon || "beam";
+  evolutionChosen = true;                  // 竜種は開始前に確定（ラン中4択は廃止）
+  updateHUDWeapon();
+
+  // 初期群れ（初回=10 / 以降=1）で組み直す。HP は effBoidMaxHp（種族補正込み）。
+  resetBoidsForStageStart(initialFlockForRunStart());
+  resetLeader();
+
   runStartTime = performance.now();
   runKills     = 0;
-  runMaxFlock  = BOIDS_INITIAL;
+  runMaxFlock  = countAliveBoids();
   runTotalXp   = 0;
+
+  dismissSpeciesSelect();
+  titleOverlayEl.classList.remove("visible");
+  gameState = "playing";
+  hapticPulse(30);
+}
+
+// ---- ラン再開チェックポイント（ステージクリアごとのオートセーブ）----
+// 「次ステージ開始状態」を保存し、途中でアプリを閉じても続きから遊べる。
+function snapshotRunSave() {
+  saveRunSave({
+    stage:         currentStage,
+    isFirstRun:    currentRunIsFirst,
+    playerLevel,
+    playerXp,
+    pendingCards,
+    flockWeapon,
+    upgradeCounts: Object.assign({}, upgradeCounts),
+    runKills,
+    runMaxFlock,
+    runTotalXp,
+    elapsedMs:     performance.now() - runStartTime,
+  });
+}
+
+// タイトルの「つづきから」。保存済みステージ開始状態を復元して再開する。
+function resumeRun() {
+  if (gameState !== "title") return;
+  const save = loadRunSave();
+  if (!save) { refreshTitleMenu(); return; }
+
+  // 進行の復元
+  currentRunIsFirst = !!save.isFirstRun;
+  currentStage      = save.stage | 0;
+  playerLevel       = (save.playerLevel | 0) || 1;
+  playerXp          = save.playerXp || 0;
+  pendingCards      = save.pendingCards | 0;
+  flockWeapon       = save.flockWeapon || "beam";
+  evolutionChosen   = true;
+  for (const k of Object.keys(upgradeCounts)) delete upgradeCounts[k];
+  if (save.upgradeCounts) Object.assign(upgradeCounts, save.upgradeCounts);
+
+  // ラン統計の復元（経過時間を継続させる）
+  runKills     = save.runKills || 0;
+  runMaxFlock  = save.runMaxFlock || 0;
+  runTotalXp   = save.runTotalXp || 0;
+  runStartTime = performance.now() - (save.elapsedMs || 0);
+
+  // 保存ステージを組み立てて再開（ステージ間リセット相当の体数）
+  dismissSpeciesSelect();
+  dismissLevelUpCards();
+  setupStageForResume(currentStage);
+
+  updateHUDWeapon();
+  updateXpHud();
   titleOverlayEl.classList.remove("visible");
   gameState = "playing";
   hapticPulse(30);
@@ -7141,6 +7413,9 @@ function triggerAllClear() {
   gameState = "all-clear";
   const runTimeMs = performance.now() - runStartTime;
   saveBestRecord(runTimeMs, runKills);
+  profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
+  saveProfile();
+  clearRunSave();            // 全クリア＝再開データは不要
 
   overlayEl.classList.add("visible");
   overlayTitle.textContent = STRINGS.resultTitle;
@@ -7181,11 +7456,9 @@ function updateStageClearSequence(dt) {
   }
 }
 
-function advanceToNextStage() {
-  currentStage++;
-  gameState = "playing";
-  stageClearPhase = "none";
-
+// ステージ stageIdx のワールド（街・地形・レイヤー）を生成し直す共通処理。
+// advanceToNextStage（次ステージへ）と setupStageForResume（続きから）で共用。
+function loadStageWorld(stageIdx) {
   for (let i = 0; i < MAX_PROJECTILES; i++) projActive[i] = 0;
   for (let i = 0; i < MAX_PARTICLES; i++)   partActive[i] = 0;
   for (let e = 0; e < MAX_EGGS; e++)        eggActive[e] = 0;
@@ -7197,13 +7470,21 @@ function advanceToNextStage() {
   clearDragonProjectiles();
   resetFires();                 // v0.10: 前ステージの炎を消す
 
-  settlements = generateStageLayout(currentStage);
+  settlements = generateStageLayout(stageIdx);
   rebuildBuildingGrid();
   buildingLayerDirty = true;
   minimapBaseDirty = true;
   rebuildGroundLayer();   // v0.11.3: 地面（道路・畑・川など）を新ステージ分焼き直す
   rebuildBuildingLayer();
   cacheBossIndex();
+}
+
+function advanceToNextStage() {
+  currentStage++;
+  gameState = "playing";
+  stageClearPhase = "none";
+
+  loadStageWorld(currentStage);
 
   // 変更1: 群れを BOIDS_INITIAL=10 体にリセット（HP・ダウン状態・タイマーすべてクリア）
   // v0.7: レベル・強化カード・竜の種族（武器）は**ラン全体で持ち越し**に変更
@@ -7216,6 +7497,20 @@ function advanceToNextStage() {
 
   updateHUDStage();
   updateHUDBuildings();
+
+  snapshotRunSave();   // v0.19: このステージ開始状態をオートセーブ（続きから用）
+}
+
+// 「つづきから」で保存ステージを組み立てて再開する（進行は resumeRun が復元済み）。
+function setupStageForResume(stageIdx) {
+  stageClearPhase = "none";
+  totalEggCount   = 0;
+  loadStageWorld(stageIdx);
+  resetBoidsForStageStart();   // 再開はステージ間リセット相当（既定 BOIDS_INITIAL 体）
+  resetLeader();
+  updateHUDStage();
+  updateHUDBuildings();
+  updateHUDEggs();
 }
 
 /**
@@ -7263,6 +7558,7 @@ function returnToTitle() {
   updateHUDBuildings();
 
   refreshTitleBest();
+  refreshTitleMenu();
   titleOverlayEl.classList.add("visible");
 }
 
@@ -7271,16 +7567,17 @@ retryBtn.addEventListener("pointerdown", (e) => {
   returnToTitle();
 });
 
+// タイトル背景タップ：初回ランのみ即開始（2回目以降はメニューボタンで操作）。
 titleOverlayEl.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
-  startRun();
+  if (gameState === "title" && isFirstEverRun()) onTitleStart();
 });
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "r" || e.key === "R") {
     if (gameState === "all-clear") returnToTitle();
   } else if (e.key === " " || e.key === "Enter") {
-    if (gameState === "title") startRun();
+    if (gameState === "title" && !speciesSelecting) onTitleStart();
   }
 });
 
@@ -9642,6 +9939,7 @@ async function boot() {
   updateHUDBuildings();
   // v0.6: タイトル画面から開始（背景でアイドル旋回する群れが見える）
   refreshTitleBest();
+  refreshTitleMenu();
   titleOverlayEl.classList.add("visible");
   setInterval(tick, BASE_CFG.fixedStepMs);
 }
