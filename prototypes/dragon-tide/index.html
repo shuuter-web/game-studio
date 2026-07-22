@@ -524,7 +524,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.24.0";
+const GAME_VERSION = "v0.24.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7026,6 +7026,17 @@ const MOTHER_BREATH_DAMAGE   = 60;    // 1発の基礎バーストダメージ
 let motherBreathTimer = 0;
 const _motherBreathBuf = [];
 
+// v0.24.1: 母竜ブレスの残像FX。発射線をしばらく残し、ネオン虹色をゆっくりフェードアウトさせる。
+const MBREATH_FX_LIFE = 0.7;   // フェードアウトにかける秒数
+const MAX_MBREATH_FX  = 64;
+const motherBreathFx  = [];    // {x0,y0,x1,y1,hue,born}
+function pushMotherBreathFx(x0, y0, x1, y1, hue) {
+  motherBreathFx.push({ x0, y0, x1, y1, hue, born: performance.now() });
+  if (motherBreathFx.length > MAX_MBREATH_FX) {
+    motherBreathFx.splice(0, motherBreathFx.length - MAX_MBREATH_FX);
+  }
+}
+
 // ラン中強化カード「母竜の吐息」による威力倍率（都度計算）
 function effMotherBreathDmg() { return 1 + 0.30 * upCount("mbreath_dmg"); }
 
@@ -7059,7 +7070,7 @@ function updateMotherBreath(dt) {
     if (s.fallen) continue;
     s.hp -= dmg;
     spawnHitParticles(s.wx, s.wy);
-    activeBreaths.push({ boidIdx: MOTHER_DRAGON_IDX, targetWx: s.wx, targetWy: s.wy });
+    pushMotherBreathFx(mx, my, s.wx, s.wy, (hits * 60) % 360);   // 虹色に色相をずらす
     if (s.hp <= 0 && !s.fallen) { settlementFall(tg.sIdx); buildingLayerDirty = true; }
     hits++;
   }
@@ -7071,7 +7082,7 @@ function updateMotherBreath(dt) {
       const mdx = m.wx - mx, mdy = m.wy - my;
       if (mdx * mdx + mdy * mdy >= R2) continue;
       damageMover(m, dmg);
-      activeBreaths.push({ boidIdx: MOTHER_DRAGON_IDX, targetWx: m.wx, targetWy: m.wy });
+      pushMotherBreathFx(mx, my, m.wx, m.wy, (hits * 60) % 360);   // 虹色に色相をずらす
       hits++;
     }
   }
@@ -8023,6 +8034,7 @@ function loadStageWorld(stageIdx) {
   for (let i = 0; i < MAX_DOWN_FX; i++)     downFxActive[i] = 0;
 
   activeBreaths.length = 0;
+  motherBreathFx.length = 0;
   clearXpGems();
   clearDragonProjectiles();
   resetFires();                 // v0.10: 前ステージの炎を消す
@@ -8097,6 +8109,7 @@ function returnToTitle() {
   for (let i = 0; i < MAX_DOWN_FX; i++)       downFxActive[i] = 0;
 
   activeBreaths.length = 0;
+  motherBreathFx.length = 0;
   clearXpGems();
   resetFires();                 // v0.10: タイトルへ戻る際も炎を消す
 
@@ -8712,6 +8725,7 @@ function render(now) {
   drawEmbers();             // v0.10: 燃える建物の火の粉・煙（建物の上・ユニットの下）
   drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
+  drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
   drawBreathAttacks(now);
   drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
   drawSlashFx();             // v0.8: 緋竜の斬閃
@@ -9092,6 +9106,32 @@ function drawEggBearerMarkers(now) {
 // ブレス（レーザー）描画
 // 口元から建物まで: 根元太く → 先端細く、sin波揺らぎ、橙〜赤グラデーション
 // -----------------------------------------------------------------
+// v0.24.1: 母竜ブレスの残像。発射線を MBREATH_FX_LIFE 秒かけてネオン虹色でフェードアウト。
+function drawMotherBreathFx() {
+  if (motherBreathFx.length === 0) return;
+  const now = performance.now();
+  ctx.save();
+  ctx.lineCap = "round";
+  for (let i = motherBreathFx.length - 1; i >= 0; i--) {
+    const fx  = motherBreathFx[i];
+    const age = (now - fx.born) / 1000;
+    if (age >= MBREATH_FX_LIFE) { motherBreathFx.splice(i, 1); continue; }
+    const t = 1 - age / MBREATH_FX_LIFE;   // 1→0（線形フェード）
+    // 外側グロー（ネオン・太い・薄い）
+    ctx.globalAlpha = t * 0.35;
+    ctx.strokeStyle = `hsl(${fx.hue}, 100%, 60%)`;
+    ctx.lineWidth = 3 + 14 * t;
+    ctx.beginPath(); ctx.moveTo(fx.x0, fx.y0); ctx.lineTo(fx.x1, fx.y1); ctx.stroke();
+    // 内側コア（白く光る芯）
+    ctx.globalAlpha = t * 0.9;
+    ctx.strokeStyle = `hsl(${fx.hue}, 100%, 88%)`;
+    ctx.lineWidth = 1 + 4 * t;
+    ctx.beginPath(); ctx.moveTo(fx.x0, fx.y0); ctx.lineTo(fx.x1, fx.y1); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 function drawBreathAttacks(now) {
   if (activeBreaths.length === 0) return;
 
