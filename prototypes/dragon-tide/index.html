@@ -524,7 +524,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.21.0";
+const GAME_VERSION = "v0.22.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5759,6 +5759,9 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = ang;
   }
+
+  // v0.22: 母竜だけ恒常ツリーの motherHp 倍率ぶん最大HPを引き上げる
+  if (N > MOTHER_DRAGON_IDX) boidHp[MOTHER_DRAGON_IDX] = effBoidMaxHpFor(MOTHER_DRAGON_IDX);
 }
 
 function countAliveBoids() {
@@ -6088,6 +6091,7 @@ const STRINGS = {
     evo_melee:   { name: "緋竜の血", desc: "全竜が緋竜（近接）に進化" },
     stay_fire:   { name: "火竜を続ける", desc: "進化せず火竜（ブレス）のまま戦う" },
     orb:       { name: "竜玉",     desc: "XP +150" },
+    mbreath_dmg: { name: "母竜の吐息", desc: "母竜ブレスの威力 +30%" },
   },
 };
 
@@ -6161,6 +6165,8 @@ const CARD_DEFS = [
   { id: "evo_bullet",  icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "bullet"  },
   { id: "evo_missile", icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "missile" },
   { id: "evo_melee",   icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "melee"   },
+  // D. 母竜ブレス強化（v0.22。恒常ツリー「母なる吐息」解禁後のみプールに出る）
+  { id: "mbreath_dmg", icon: "\u{1F432}", rarity: "rare", max: 5, mother: true },
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
@@ -6182,6 +6188,8 @@ function defaultPermaBuff() {
     startFlock: 0, flockHp: 1, flockSpeed: 1, flockCap: 0, weaponDmg: 1, crystalGain: 1, magnet: 1,
     // v0.21: 強化ライン拡張ぶん（すべて乗算。既存 eff*/addXp に合流）
     reviveMult: 1, dmgTakenMult: 1, weaponRange: 1, xpGain: 1,
+    // v0.22: 母竜ライン。motherBreath は加算（解禁フラグ・0で未解禁）、他は乗算
+    motherHp: 1, motherDmg: 1, motherBreath: 0,
   };
 }
 let permaBuff = defaultPermaBuff();
@@ -6203,6 +6211,8 @@ function effBulletPierce()  { return 1 + upCount("pierce"); }
 function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
 // v0.6-p2: 緋竜（MELEE）は個体HP +50%（仕様 §6.4）
 function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1); }
+// v0.22: 個体別の最大HP。母竜だけ恒常ツリーの motherHp 倍率が乗る。
+function effBoidMaxHpFor(i) { return effBoidMaxHp() * (isMotherDragon(i) ? permaBuff.motherHp : 1); }
 
 // ---- カード取得時の即時効果（倍率系は eff* で都度参照するため不要）----
 function applyCardImmediate(cardId) {
@@ -6442,6 +6452,8 @@ function buildLevelUpCards() {
   // ラン中の初回4択は廃止し、レベルアップは純粋な強化のみ。
   const pool = CARD_DEFS.filter(def => {
     if (upCount(def.id) >= def.max) return false;
+    // v0.22: 母竜ブレス強化は恒常ツリーで「母なる吐息」を解禁している時のみ出す
+    if (def.mother && permaBuff.motherBreath <= 0) return false;
     // 武器強化カードは現在の武器タイプにのみ出現
     if (def.weapon && def.weapon !== flockWeapon) return false;
     // ★進化は最初のレベルアップ専用（上の分岐でのみ出る）
@@ -6952,6 +6964,71 @@ function drawDragonProjectiles() {
  * 武器攻撃のディスパッチャ。tick の playing 分岐から毎フレーム呼ぶ。
  * breathTime（羽ばたき・ジェム明滅などの共通アニメ時計）もここで進める。
  */
+// -----------------------------------------------------------------
+// v0.22: 母竜の署名ブレス（恒常ツリー「母なる吐息」で解禁）
+// 母竜(スロット0)が周期的に、周囲の建物/移動敵を最大 N 体まとめて薙ぐ特大バースト。
+// 通常の群れブレス（母竜も1個体として撃つ）に上乗せされる"必殺"。
+// 威力 = 基礎 × permaBuff.motherDmg（ツリー下限強化）× effMotherBreathDmg()（ラン中カード）。
+// -----------------------------------------------------------------
+const MOTHER_BREATH_INTERVAL = 3.5;   // 発動間隔（秒）
+const MOTHER_BREATH_RANGE    = 220;   // 効果半径（通常ブレスより広い）
+const MOTHER_BREATH_TARGETS  = 6;     // 同時に薙ぐ対象数
+const MOTHER_BREATH_DAMAGE   = 60;    // 1発の基礎バーストダメージ
+let motherBreathTimer = 0;
+const _motherBreathBuf = [];
+
+// ラン中強化カード「母竜の吐息」による威力倍率（都度計算）
+function effMotherBreathDmg() { return 1 + 0.30 * upCount("mbreath_dmg"); }
+
+function updateMotherBreath(dt) {
+  if (permaBuff.motherBreath <= 0 || !isMotherActive()) { motherBreathTimer = 0; return; }
+  motherBreathTimer -= dt;
+  if (motherBreathTimer > 0) return;
+  motherBreathTimer = MOTHER_BREATH_INTERVAL;
+
+  const mx = px[MOTHER_DRAGON_IDX], my = py[MOTHER_DRAGON_IDX];
+  const R2  = MOTHER_BREATH_RANGE * MOTHER_BREATH_RANGE;
+  const dmg = MOTHER_BREATH_DAMAGE * permaBuff.motherDmg * effMotherBreathDmg();
+  const cellRadius = Math.max(1, Math.ceil(MOTHER_BREATH_RANGE / BUILDING_GRID_CELL));
+
+  // 近傍の建物を距離順に最大 MOTHER_BREATH_TARGETS 件薙ぐ
+  buildingGridQueryRadius(mx, my, cellRadius, _motherBreathBuf);
+  const targets = [];
+  for (const sIdx of _motherBreathBuf) {
+    const s = settlements[sIdx];
+    if (!s || s.fallen) continue;
+    const dx = s.wx - mx, dy = s.wy - my;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < R2) targets.push({ sIdx, d2 });
+  }
+  targets.sort((a, b) => a.d2 - b.d2);
+
+  let hits = 0;
+  for (const tg of targets) {
+    if (hits >= MOTHER_BREATH_TARGETS) break;
+    const s = settlements[tg.sIdx];
+    if (s.fallen) continue;
+    s.hp -= dmg;
+    spawnHitParticles(s.wx, s.wy);
+    activeBreaths.push({ boidIdx: MOTHER_DRAGON_IDX, targetWx: s.wx, targetWy: s.wy });
+    if (s.hp <= 0 && !s.fallen) { settlementFall(tg.sIdx); buildingLayerDirty = true; }
+    hits++;
+  }
+  // 建物が足りなければ移動敵も薙ぐ
+  if (hits < MOTHER_BREATH_TARGETS) {
+    for (const m of movers) {
+      if (hits >= MOTHER_BREATH_TARGETS) break;
+      if (!m.alive) continue;
+      const mdx = m.wx - mx, mdy = m.wy - my;
+      if (mdx * mdx + mdy * mdy >= R2) continue;
+      damageMover(m, dmg);
+      activeBreaths.push({ boidIdx: MOTHER_DRAGON_IDX, targetWx: m.wx, targetWy: m.wy });
+      hits++;
+    }
+  }
+  if (hits > 0) { triggerFlash("rgba(255,180,60,0.22)", 0.14); hapticPulse(40); }
+}
+
 function updateWeaponAttacks(dt) {
   if (gameState !== "playing") return;
   breathTime += dt;
@@ -6966,6 +7043,7 @@ function updateWeaponAttacks(dt) {
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
 
+  updateMotherBreath(dt);   // v0.22: 母竜の署名ブレス（解禁時のみ発動）
   updateDragonProjectiles(dt);
 }
 
@@ -7481,6 +7559,10 @@ function awardCrystals(n) {
 // フラット火力(weaponDmg)は属性を作らず大群ラインに散らす（属性相性は導入しない）。
 // 母竜(mother)ラインは Phase 5 で追加予定。
 const TREE_DEFS = [
+  // ── 母竜（味方側の"ボス"を育てる）──
+  { id: "m_breath", cat: "mother", name: "母なる吐息", desc: "母竜が周期的に特大ブレスを放つ", cost: 150, prereq: [],            effect: { type: "motherBreath", value: 1 } },
+  { id: "m_dmg",    cat: "mother", name: "灼熱の母",   desc: "母竜ブレスの威力 +30%",        cost: 120, prereq: ["m_breath"], effect: { type: "motherDmg",    value: 1.30 } },
+  { id: "m_hp",     cat: "mother", name: "不朽の母",   desc: "母竜のHP +50%",                cost: 100, prereq: [],            effect: { type: "motherHp",     value: 1.50 } },
   // ── 大群（数と物量で押す）──
   { id: "flock_start1", cat: "swarm", name: "始祖の群れ",   desc: "各ステージ開始の竜 +1", cost: 40,  prereq: [],               effect: { type: "startFlock", value: 1 } },
   { id: "flock_start2", cat: "swarm", name: "殖える始まり", desc: "各ステージ開始の竜 +1", cost: 120, prereq: ["flock_start1"], effect: { type: "startFlock", value: 1 } },
@@ -7502,6 +7584,7 @@ const TREE_DEFS = [
   { id: "eco_gain",     cat: "bounty", name: "竜晶の嗅覚",  desc: "竜晶獲得 +25%",          cost: 70,  prereq: [],               effect: { type: "crystalGain", value: 1.25 } },
 ];
 const TREE_CATEGORIES = [
+  { id: "mother",  label: "母竜" },
   { id: "swarm",   label: "大群" },
   { id: "resil",   label: "不屈" },
   { id: "command", label: "統率" },
@@ -7524,7 +7607,7 @@ function recomputePermaBuff() {
     const st = profile.tree[node.id];
     if (!st || !st.unlocked || !st.enabled) continue;
     const e = node.effect;
-    if (e.type === "startFlock" || e.type === "flockCap") b[e.type] += e.value;
+    if (e.type === "startFlock" || e.type === "flockCap" || e.type === "motherBreath") b[e.type] += e.value;
     else b[e.type] *= e.value;
   }
   permaBuff = b;
@@ -8221,8 +8304,8 @@ function updateDeathTimers(dt) {
         else { avgVx = BASE_CFG.minSpeed; avgVy = 0; }
         vx[i] = avgVx + (Math.random() - 0.5) * 30;
         vy[i] = avgVy + (Math.random() - 0.5) * 30;
-        // HP全回復・フラグリセット（v0.6: 硬鱗カード分も含めた実効最大HP）
-        boidHp[i]          = effBoidMaxHp();
+        // HP全回復・フラグリセット（v0.6: 硬鱗カード分も含めた実効最大HP。v0.22: 母竜は motherHp 込み）
+        boidHp[i]          = effBoidMaxHpFor(i);
         boidDowned[i]      = 0;
         boidDead[i]        = 0;
         boidFadeTimer[i]   = 0;
@@ -9200,8 +9283,8 @@ function drawBoids() {
     ctx.globalAlpha = 1.0;
     ctx.restore();
 
-    // ---- HPバー（既存ロジックを維持。v0.6: 硬鱗カード分を含む実効最大HP基準） ----
-    const boidMaxHpNow = effBoidMaxHp();
+    // ---- HPバー（既存ロジックを維持。v0.6: 硬鱗カード分を含む実効最大HP基準。v0.22: 母竜は motherHp 込み） ----
+    const boidMaxHpNow = effBoidMaxHpFor(i);
     if (!boidDead[i] && boidHp[i] < boidMaxHpNow) {
       const hpRatio = Math.max(0, boidHp[i] / boidMaxHpNow);
       const barW = 14;

@@ -38,11 +38,14 @@
 - `permaBuff` は `eff*` 各関数と `stageStartFlockCount()` の戻り値に**乗算/加算で合流**（ラン内 `upgradeCounts` とは独立、ステージリセットで消えない）。
 - 再計算タイミング: 起動時（`boot`）、ツリー編集時（購入・トグル）、プロファイル初期化時。
 
-### ノード一覧（v0.21.0・4ライン15ノード）
-`effect.type` は `permaBuff` のフィールド。startFlock/flockCap=加算、他=乗算。ライン＝大群(swarm)/不屈(resil)/統率(command)/恵み(bounty)。母竜(mother)ラインは Phase 5 で追加。
+### ノード一覧（v0.22.0・5ライン18ノード）
+`effect.type` は `permaBuff` のフィールド。startFlock/flockCap/motherBreath=加算、他=乗算。ライン＝母竜(mother)/大群(swarm)/不屈(resil)/統率(command)/恵み(bounty)。
 
 | id | ライン | 名前 | 効果 | cost | 前提 |
 |---|---|---|---|---|---|
+| m_breath | 母竜 | 母なる吐息 | 母竜が周期的に特大ブレス（解禁） | 150 | — |
+| m_dmg | 母竜 | 灼熱の母 | 母竜ブレス威力 +30% | 120 | m_breath |
+| m_hp | 母竜 | 不朽の母 | 母竜のHP +50% | 100 | — |
 | flock_start1 | 大群 | 始祖の群れ | 各ステージ開始の竜 +1 | 40 | — |
 | flock_start2 | 大群 | 殖える始まり | 各ステージ開始の竜 +1 | 120 | flock_start1 |
 | flock_cap | 大群 | 大群の器 | 群れ上限 +20 | 100 | flock_start1 |
@@ -60,6 +63,7 @@
 | eco_gain | 恵み | 竜晶の嗅覚 | 竜晶獲得 +25% | 70 | — |
 
 - v0.21 で追加した permaBuff フィールド：`reviveMult`（→`effReviveMult`）／`dmgTakenMult`（→`effDmgTakenMult`）／`weaponRange`（→`effWeaponRangeMult`）／`xpGain`（→`addXp` 入口で乗算）。いずれも既存 eff* ハブに合流。
+- v0.22 母竜（Phase 5）：`motherHp`（→`effBoidMaxHpFor(0)`、reset/revive/HPバーに反映）／`motherDmg`／`motherBreath`（解禁フラグ・加算）。**母竜ブレス** `updateMotherBreath()` は `updateWeaponAttacks` 末尾で `isMotherActive()`＋解禁ガードのもと、3.5秒ごとに周囲最大6対象へバースト（基礎60 × motherDmg × ラン中カード `effMotherBreathDmg`）。ラン中強化カード **母竜の吐息**（`mbreath_dmg`, +30%/枚, 解禁時のみ出現）が主軸。ブレスの系統・進化（枝分かれ）や"虹色演出"名物ノードは後続スライス。
 - 各ラインの「単独で面白い"名物ノード"」（母竜=虹色特大ブレス、大群=黄金化、統率=彗星の尾、恵み=竜晶花火）と、母竜ライン・特別解放ノード（`unlockBy: challengeId`）は後続スライスで追加予定。
 - 数値・ノード構成は暫定。プレイテストで調整する前提。将来ノードは `TREE_DEFS` に追記し、必要なら `permaBuff` にフィールドと `recomputePermaBuff` の分岐を足す。
 
