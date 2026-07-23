@@ -79,7 +79,11 @@
 - **花火要塞**（`isFirework`）：`generateStageLayout` で通常建物から抽選（後半ほど棟数増：stage1-3=1/4-6=2/7-8=3）。回転ピンクのスパークで目印表示（`drawEggBearerMarkers` 内）。撃破＝`settlementFall`→`detonateFirework`：放射スパーク＋炎＋フラッシュ＋**竜晶+15・XP+60**の"うまみ"。単独で面白い当たり枠。
 - **エリート「warlord」**（`MOVER_DEFS.warlord`, v0.24）：後半3ステージ限定（`MOVER_SPAWNS_BY_STAGE` の index5/6/7 に 1/1/2 体）の歯ごたえ枠。既存 ironclad スプライトを流用（`def.sprite`）、大型(radius42)・超高HP(1400)・高頻度舷側砲＝弾幕でダウン圧を作る"壁"。撃破報酬も大（XP400・卵5）。`drawMovers` でエリートは大きく明るい赤オーラ表示。「後半が快適すぎる」への対処。
 - **財宝馬車「treasure」**（`MOVER_DEFS.treasure`, v0.25.1）：各ステージに1体の"当たり枠"。竜ではない運搬体（`fleer`＝群れから逃げる／`flying`＝地形無視）。攻撃なし（`updateMovers` は `!atk` でスキップ）。撃破で**竜晶+40・XP200・卵2**＋金色スパーク。balloon スプライトを金オーラで流用（`drawMovers` の `def.treasure`）。追いかける楽しさ（Balatro の当たり枠）。
-- 次：巨獣、衝撃兵/治癒塔/召喚門（さらなる歯ごたえ枠）。
+- **巨獣（多パーツボス）**（`behemoth_core`＋`behemoth_arm`×2, v0.26）：後半2ステージ（STAGE6/8）に1体の set-piece。**専用スプライト**（俯瞰コア＋浮遊腕、Gemini生成→クロマキー）。各パーツを個別 mover として持ち、`generateMovers` で核＋腕2本を結線（`arm.parent=core` / `core.armL/armR`）。
+  - 腕：`updateBehemothArm` でコアの左右を浮遊（`BEHEMOTH_ARM_ORBIT`）、最寄りの竜へ拳を向け**叩きつけ衝撃波**（`emitShockwave`＝範囲ダメージ＋強ノックバック70）。個別HP500で先に壊せる（壊すと攻撃停止）。
+  - コア：HP2200・ゆっくり接近・**扇状の遠隔弾**（fan）。撃破で**腕も道連れ**＋竜晶60・XP600・卵8＋派手演出（段階的解体の塊魂感）。
+  - 付随修正：`drawMovers` の `def.attack.type` を `def.attack &&` でガード（財宝馬車/腕など無攻撃 mover の描画時例外を修正。v0.25.1 から潜在）。
+- 次：衝撃兵/治癒塔/召喚門（さらなる歯ごたえ枠）。
 - 各ラインの「単独で面白い"名物ノード"」（母竜=虹色特大ブレス、大群=黄金化、統率=彗星の尾、恵み=竜晶花火）と、母竜ライン・特別解放ノード（`unlockBy: challengeId`）は後続スライスで追加予定。
 - 数値・ノード構成は暫定。プレイテストで調整する前提。将来ノードは `TREE_DEFS` に追記し、必要なら `permaBuff` にフィールドと `recomputePermaBuff` の分岐を足す。
 

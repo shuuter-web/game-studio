@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.25.1";
+const GAME_VERSION = "v0.26.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2930,6 +2930,21 @@ const MOVER_DEFS = {
     color: "#5a2a2a", glowColor: "#ff5030", moveType: "loop",
     attack: { type: "broadside", interval: 0.75, count: 4, damage: 4, speed: 95 },
   },
+  // v0.26 巨獣（多パーツボス）: 後半のみ。コア＋浮遊腕2本。腕を壊すと攻撃が止まり、
+  // 最後にコアを崩すと巨獣撃破＋大報酬（段階的解体の塊魂感）。既存 mover のダメージ/描画を流用。
+  behemoth_core: {
+    name: "behemoth_core", sprite: "behemoth_core", part: "core", elite: true, showHpBar: true,
+    hp: 2200, speed: 18, xp: 600, eggDrop: 8, radius: 60,
+    color: "#3a2a2a", glowColor: "#ff6020", moveType: "loop",
+    attack: { type: "fan", interval: 2.2, count: 5, damage: 3, speed: 90, range: 520 },
+    behemothReward: 60,   // コア撃破の竜晶ボーナス
+  },
+  behemoth_arm: {
+    name: "behemoth_arm", sprite: "behemoth_arm", part: "arm", showHpBar: true,
+    hp: 500, speed: 0, xp: 140, eggDrop: 2, radius: 26,
+    color: "#3a2a2a", glowColor: "#ff8040",
+    // 攻撃は updateBehemothArm 内の叩きつけ衝撃波（ここには置かない）
+  },
   // v0.25.1 財宝馬車: 竜ではない運搬体。群れから逃げ回り、倒すと竜晶/XPが大量に弾ける当たり枠。
   // 攻撃はせず（fleer）、空を漂って地形も無視。既存 balloon スプライトを金色オーラで流用。
   treasure: {
@@ -3032,6 +3047,26 @@ function generateMovers(stageIndex, boss) {
     result.push(t);
   }
 
+  // v0.26: 巨獣（多パーツボス）を後半の一部ステージ（STAGE6・STAGE8）に1体。
+  if (stageIndex === 5 || stageIndex === 7) {
+    const core = makeMover(MOVER_DEFS.behemoth_core, randPoint);
+    core.maxHp   = MOVER_DEFS.behemoth_core.hp;
+    core.hp      = MOVER_DEFS.behemoth_core.hp;
+    core.xpValue = MOVER_DEFS.behemoth_core.xp;
+    result.push(core);
+    for (const side of [-1, 1]) {
+      const arm = makeMover(MOVER_DEFS.behemoth_arm, randPoint);
+      arm.maxHp       = MOVER_DEFS.behemoth_arm.hp;
+      arm.hp          = MOVER_DEFS.behemoth_arm.hp;
+      arm.xpValue     = MOVER_DEFS.behemoth_arm.xp;
+      arm.parent      = core;
+      arm.armBaseAngle = side < 0 ? Math.PI : 0;   // 左 / 右
+      arm.attackTimer = Math.random() * 2;
+      core[side < 0 ? "armL" : "armR"] = arm;
+      result.push(arm);
+    }
+  }
+
   return result;
 }
 
@@ -3091,6 +3126,60 @@ function makeMover(def, randPoint) {
   }
 }
 
+// v0.26: 巨獣の腕の挙動パラメータ
+const BEHEMOTH_ARM_ORBIT         = 100;  // コア中心からの浮遊半径
+const BEHEMOTH_ARM_SLAM_INTERVAL = 2.4;  // 叩きつけ間隔（秒）
+const BEHEMOTH_ARM_SLAM_RANGE    = 280;  // 叩きつけを始める距離
+const BEHEMOTH_ARM_SLAM_RADIUS   = 120;  // 衝撃波半径
+const BEHEMOTH_ARM_SLAM_DMG      = 6;    // 衝撃波ダメージ
+const BEHEMOTH_ARM_SLAM_PUSH     = 70;   // ノックバック距離（通常の踏鳴らし26より強い）
+
+// 指定座標に衝撃波を発生（範囲内の竜へダメージ＋外向き押し飛ばし＋リングFX）。
+function emitShockwave(wx, wy, radius, damage, pushDist) {
+  shockwaveFxList.push({ x: wx, y: wy, maxR: radius, life: SHOCKWAVE_FX_DURATION });
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const sdx = px[i] - wx, sdy = py[i] - wy;
+    const sd2 = sdx * sdx + sdy * sdy;
+    if (sd2 < radius * radius) {
+      applyDamageToBoid(i, damage);
+      const sd = Math.sqrt(sd2) || 1;
+      px[i] += (sdx / sd) * pushDist;
+      py[i] += (sdy / sd) * pushDist;
+    }
+  }
+  hapticPulse(25);
+}
+
+// 巨獣の腕: コアの左右に浮遊（ゆっくり漂う）し、最寄りの竜へ拳を向けて叩きつける。
+// コアが倒れると腕も落ちる（道連れ）。腕自身は個別HPで先に壊せる。
+function updateBehemothArm(m, dt) {
+  const core = m.parent;
+  if (!core || !core.alive) { m.alive = false; return; }
+  const t = performance.now() * 0.001;
+  const ang   = m.armBaseAngle + Math.sin(t * 0.6 + m.swayPhase) * 0.25;
+  const orbit = BEHEMOTH_ARM_ORBIT + Math.sin(t * 0.9 + m.swayPhase) * 12;
+  m.wx = core.wx + Math.cos(ang) * orbit;
+  m.wy = core.wy + Math.sin(ang) * orbit * 0.85;
+
+  const nearestIdx = findNearestAliveBoid(m.wx, m.wy);
+  if (nearestIdx < 0) { m.headingX = Math.cos(ang); m.headingY = Math.sin(ang); return; }
+  // 拳を最寄りの竜へ向ける
+  let hx = px[nearestIdx] - m.wx, hy = py[nearestIdx] - m.wy;
+  const hl = Math.sqrt(hx * hx + hy * hy) || 1;
+  m.headingX = hx / hl; m.headingY = hy / hl;
+
+  m.attackTimer -= dt;
+  if (m.attackTimer > 0) return;
+  if (hl < BEHEMOTH_ARM_SLAM_RANGE) {
+    m.attackTimer = BEHEMOTH_ARM_SLAM_INTERVAL / moverStageFerocity(currentStage);
+    emitShockwave(m.wx, m.wy, BEHEMOTH_ARM_SLAM_RADIUS, BEHEMOTH_ARM_SLAM_DMG, BEHEMOTH_ARM_SLAM_PUSH);
+    triggerFlash("rgba(255,120,40,0.16)", 0.12);
+  } else {
+    m.attackTimer = 0.4;   // 射程外は短い再チェック
+  }
+}
+
 function updateMovers(dt) {
   // 衝撃波FXの寿命更新
   for (let i = shockwaveFxList.length - 1; i >= 0; i--) {
@@ -3110,6 +3199,9 @@ function updateMovers(dt) {
   for (const m of movers) {
     if (!m.alive) continue;
     const def = m.def;
+
+    // v0.26: 巨獣の腕はコアに追従して浮遊し、独自ロジックで叩きつける
+    if (def.part === "arm") { updateBehemothArm(m, dt); continue; }
 
     // ---- 移動 ----
     // v0.7: 全移動敵が追跡型に。反応距離内に群れがいれば重心へ進撃、
@@ -3446,6 +3538,19 @@ function damageMover(m, damage) {
       triggerFlash("rgba(255,255,255,0.18)", 0.12);
       hapticPulse(90);
     }
+    // v0.26: 巨獣コア撃破 → 腕も道連れ＋大報酬＋派手演出
+    if (m.def.part === "core") {
+      if (m.armL && m.armL.alive) m.armL.alive = false;
+      if (m.armR && m.armR.alive) m.armR.alive = false;
+      if (m.def.behemothReward) awardCrystals(m.def.behemothReward);
+      for (let k = 0; k < 30; k++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 20 + Math.random() * 90;
+        spawnHitParticles(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
+      }
+      triggerFlash("rgba(255,150,60,0.50)", 0.40);
+      hapticPulse(300);
+    }
   }
 }
 
@@ -3682,8 +3787,8 @@ function drawMovers() {
       ctx.globalAlpha = 1.0;
     }
 
-    // コロッサスの眼光ビーム
-    if (def.attack.type === "beam" && m.beamTargetIdx >= 0 && !boidDead[m.beamTargetIdx]) {
+    // コロッサスの眼光ビーム（v0.26: 無攻撃ユニット=財宝馬車/巨獣の腕でも例外にならないようガード）
+    if (def.attack && def.attack.type === "beam" && m.beamTargetIdx >= 0 && !boidDead[m.beamTargetIdx]) {
       ctx.save();
       ctx.strokeStyle = "rgba(255,64,64,0.65)";
       ctx.lineWidth = 2;
@@ -10069,6 +10174,9 @@ const ENEMY_IMAGE_SOURCES = {
   ironclad: "assets/mover_ironclad.png",
   balloon:  "assets/mover_balloon.png",
   citadel:  "assets/boss_citadel.png",
+  // v0.26: 巨獣（多パーツボス）— 俯瞰のコア＋浮遊腕
+  behemoth_core: "assets/mover_behemoth_core.png",
+  behemoth_arm:  "assets/mover_behemoth_arm.png",
 };
 
 // v0.9: 建物スプライト（Gemini生成・無彩色→ステージ色でティントして使う）
@@ -10115,6 +10223,9 @@ const ENEMY_SPRITE_META = {
   ironclad: { px: 0.5035, py: 0.5300, forward: "up",   drawScale: 2.8 },
   balloon:  { px: 0.5140, py: 0.4902, forward: "none", drawScale: 2.6 },
   citadel:  { px: 0.5003, py: 0.4984, forward: "none", drawScale: 3.4 },
+  // v0.26: 巨獣。コアは俯瞰・回転させない（none）。腕は拳が画像上＝forward:"up" で狙いを向ける。
+  behemoth_core: { px: 0.5044, py: 0.4336, forward: "none", drawScale: 4.6 },
+  behemoth_arm:  { px: 0.4940, py: 0.4833, forward: "up",   drawScale: 2.6 },
 };
 
 // ロード済み敵画像（name → HTMLImageElement。ロード失敗したキーは入らない）
