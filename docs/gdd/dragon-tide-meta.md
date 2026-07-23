@@ -83,7 +83,11 @@
   - 腕：`updateBehemothArm` でコアの左右を浮遊（`BEHEMOTH_ARM_ORBIT`）、最寄りの竜へ拳を向け**叩きつけ衝撃波**（`emitShockwave`＝範囲ダメージ＋強ノックバック70）。個別HP500で先に壊せる（壊すと攻撃停止）。
   - コア：HP2200・ゆっくり接近・**扇状の遠隔弾**（fan）。撃破で**腕も道連れ**＋竜晶60・XP600・卵8＋派手演出（段階的解体の塊魂感）。
   - 付随修正：`drawMovers` の `def.attack.type` を `def.attack &&` でガード（財宝馬車/腕など無攻撃 mover の描画時例外を修正。v0.25.1 から潜在）。
-- 次：衝撃兵/治癒塔/召喚門（さらなる歯ごたえ枠）。
+- **歯ごたえ枠3種（v0.27・後半集中・挙動ベース・既存スプライト流用）**：
+  - **衝撃兵**（`shockman`, sprite mammoth・赤）：単体大型獣。周期的に強ノックバック(push60)の踏鳴らし。shockwave攻撃を `emitShockwave(atk.push)` に集約。stage5/7。
+  - **治癒塔**（`healer`, sprite colossus・緑）：停止。近接非依存で周囲の建物/敵HPを回復(radius340/heal14)。放置で長引く優先目標。stage6。
+  - **召喚門**（`summoner`, sprite balloon・紫）：停止。レイダーを能動湧き(interval3/cap8)。反復中は `_pendingMovers` に積み末尾でflush。門を壊すと止まる。stage7/8。
+- 対処：衝撃兵→不屈/母竜、治癒塔/召喚門→統率で急襲。attack type "heal"/"summon" を updateMovers に追加（近接ゲート前）。
 - 各ラインの「単独で面白い"名物ノード"」（母竜=虹色特大ブレス、大群=黄金化、統率=彗星の尾、恵み=竜晶花火）と、母竜ライン・特別解放ノード（`unlockBy: challengeId`）は後続スライスで追加予定。
 - 数値・ノード構成は暫定。プレイテストで調整する前提。将来ノードは `TREE_DEFS` に追記し、必要なら `permaBuff` にフィールドと `recomputePermaBuff` の分岐を足す。
 

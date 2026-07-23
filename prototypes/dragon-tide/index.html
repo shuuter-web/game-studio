@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.26.1";
+const GAME_VERSION = "v0.27.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2930,6 +2930,28 @@ const MOVER_DEFS = {
     color: "#5a2a2a", glowColor: "#ff5030", moveType: "loop",
     attack: { type: "broadside", interval: 0.75, count: 4, damage: 4, speed: 95 },
   },
+  // v0.27 歯ごたえ枠（後半集中・挙動ベース。既存スプライトを glow色で差別化）
+  // 衝撃兵: 単体の大型獣。周期的に強ノックバックの踏鳴らしで群れを吹き飛ばす（不屈/母竜で耐える）
+  shockman: {
+    name: "shockman", sprite: "mammoth", elite: true, showHpBar: true,
+    hp: 700, speed: 30, xp: 200, eggDrop: 3, radius: 30,
+    color: "#5a2a2a", glowColor: "#ff5030", moveType: "patrol",
+    attack: { type: "shockwave", interval: 2.6, radius: 130, damage: 5, push: 60 },
+  },
+  // 治癒塔: 停止した尖塔。周囲の建物/敵を回復し攻略を長引かせる（統率で急襲し最優先撃破）
+  healer: {
+    name: "healer", sprite: "colossus", showHpBar: true,
+    hp: 320, speed: 0, xp: 150, eggDrop: 2, radius: 22,
+    color: "#2a5a3a", glowColor: "#50ff90", moveType: "patrol",
+    attack: { type: "heal", interval: 1.6, radius: 340, heal: 14 },
+  },
+  // 召喚門: 停止した門。レイダーを能動的に湧かせ群れを分散させる（門を壊すと止まる）
+  summoner: {
+    name: "summoner", sprite: "balloon", flying: true, showHpBar: true,
+    hp: 420, speed: 0, xp: 180, eggDrop: 2, radius: 24,
+    color: "#4a2a5a", glowColor: "#c060ff", moveType: "patrol",
+    attack: { type: "summon", interval: 3.0, cap: 8 },
+  },
   // v0.26 巨獣（多パーツボス）: 後半のみ。コア＋浮遊腕2本。腕を壊すと攻撃が止まり、
   // 最後にコアを崩すと巨獣撃破＋大報酬（段階的解体の塊魂感）。既存 mover のダメージ/描画を流用。
   behemoth_core: {
@@ -2962,10 +2984,10 @@ const MOVER_SPAWNS_BY_STAGE = [
   [["colossus", 2]],
   [["knights", 2], ["colossus", 1]],
   [["ironclad", 2], ["knights", 2], ["balloon", 2]],
-  [["ironclad", 2], ["balloon", 2], ["knights", 1]],
-  [["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1]],
-  [["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1]],
-  [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2]],
+  [["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1]],
+  [["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1]],
+  [["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1]],
+  [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1]],
 ];
 
 // v0.15: 移動敵のステージスケーリングは「攻撃の苛烈さ」のみ。
@@ -3125,6 +3147,9 @@ function makeMover(def, randPoint) {
     };
   }
 }
+
+// v0.27: 召喚門が湧かせたレイダーの一時置き場（updateMovers 反復後にまとめて movers へ）
+const _pendingMovers = [];
 
 // v0.26: 巨獣の腕の挙動パラメータ
 const BEHEMOTH_ARM_ORBIT         = 100;  // コア中心からの浮遊半径
@@ -3299,29 +3324,56 @@ function updateMovers(dt) {
       continue;
     }
 
+    // v0.27: 治癒塔 — 周囲の建物/移動敵を回復（群れの近接に依存せず常時作動＝放置で長引く優先目標）
+    if (atk.type === "heal") {
+      m.attackTimer -= dt;
+      if (m.attackTimer <= 0) {
+        m.attackTimer = atk.interval;
+        const r2 = atk.radius * atk.radius;
+        for (const s of settlements) {
+          if (!s || s.fallen || s.isBoss || !s.maxHp) continue;
+          const dx = s.wx - m.wx, dy = s.wy - m.wy;
+          if (dx * dx + dy * dy < r2 && s.hp < s.maxHp) s.hp = Math.min(s.maxHp, s.hp + atk.heal);
+        }
+        for (const o of movers) {
+          if (!o.alive || o === m || o.def.part) continue;   // 巨獣パーツは回復対象外
+          const dx = o.wx - m.wx, dy = o.wy - m.wy;
+          if (dx * dx + dy * dy < r2 && o.hp < o.maxHp) o.hp = Math.min(o.maxHp, o.hp + atk.heal);
+        }
+        shockwaveFxList.push({ x: m.wx, y: m.wy, maxR: atk.radius * 0.4, life: SHOCKWAVE_FX_DURATION });
+      }
+      continue;
+    }
+
+    // v0.27: 召喚門 — レイダーを能動的に湧かせて群れを分散させる（門を壊すと湧きが止まる）
+    if (atk.type === "summon") {
+      m.attackTimer -= dt;
+      if (m.attackTimer <= 0) {
+        m.attackTimer = atk.interval;
+        let raiders = 0;
+        for (const o of movers) if (o.alive && o.def.name === "raider") raiders++;
+        if (raiders < (atk.cap ?? 8)) {
+          const ra = makeMover(MOVER_DEFS.raider, () => ({ x: m.wx, y: m.wy }));
+          ra.wx = m.wx + (Math.random() - 0.5) * 40;
+          ra.wy = m.wy + (Math.random() - 0.5) * 40;
+          ra.xpValue = MOVER_DEFS.raider.xp;
+          _pendingMovers.push(ra);   // 反復中は直接 push せず末尾でまとめて追加
+          spawnCollisionParticles(m.wx, m.wy);
+        }
+      }
+      continue;
+    }
+
     if (nearestD2 > MOVER_ENGAGE_RANGE * MOVER_ENGAGE_RANGE) continue;
     m.attackTimer -= dt;
     if (m.attackTimer > 0) continue;
     m.attackTimer = atk.interval / ferocity;
 
     if (atk.type === "shockwave") {
-      // マンモス隊: 踏鳴らし（半径内の全個体にダメージ＋押し飛ばし＋リングFX）
+      // 踏鳴らし/叩きつけ: 半径内の全個体にダメージ＋押し飛ばし＋リングFX（emitShockwave に集約）
+      // atk.push を持つ敵（衝撃兵など）は通常より強く吹き飛ばす。
       if (nearestD2 < (atk.radius + 60) * (atk.radius + 60)) {
-        shockwaveFxList.push({ x: m.wx, y: m.wy, maxR: atk.radius, life: SHOCKWAVE_FX_DURATION });
-        for (let i = 0; i < N; i++) {
-          if (boidDead[i] || boidDowned[i]) continue;
-          const sdx = px[i] - m.wx;
-          const sdy = py[i] - m.wy;
-          const sd2 = sdx * sdx + sdy * sdy;
-          if (sd2 < atk.radius * atk.radius) {
-            applyDamageToBoid(i, atk.damage);
-            // v0.7: 外向きに押し飛ばす（MELEEのノックバック無効は体当たり被弾用なので適用しない）
-            const sd = Math.sqrt(sd2) || 1;
-            px[i] += (sdx / sd) * SHOCKWAVE_PUSH_DIST;
-            py[i] += (sdy / sd) * SHOCKWAVE_PUSH_DIST;
-          }
-        }
-        hapticPulse(25);
+        emitShockwave(m.wx, m.wy, atk.radius, atk.damage, atk.push ?? SHOCKWAVE_PUSH_DIST);
       } else {
         m.attackTimer = 0.4; // 射程外: 短い再チェック間隔で待機
       }
@@ -3374,6 +3426,12 @@ function updateMovers(dt) {
         b.wx += nx * push; b.wy += ny * push;
       }
     }
+  }
+
+  // v0.27: 反復中に召喚門が積んだレイダーを、ここでまとめて movers へ追加する（反復中の破壊的変更を避ける）
+  if (_pendingMovers.length) {
+    for (const nm of _pendingMovers) movers.push(nm);
+    _pendingMovers.length = 0;
   }
 }
 
