@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.25.0";
+const GAME_VERSION = "v0.25.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2930,6 +2930,14 @@ const MOVER_DEFS = {
     color: "#5a2a2a", glowColor: "#ff5030", moveType: "loop",
     attack: { type: "broadside", interval: 0.75, count: 4, damage: 4, speed: 95 },
   },
+  // v0.25.1 財宝馬車: 竜ではない運搬体。群れから逃げ回り、倒すと竜晶/XPが大量に弾ける当たり枠。
+  // 攻撃はせず（fleer）、空を漂って地形も無視。既存 balloon スプライトを金色オーラで流用。
+  treasure: {
+    name: "treasure", sprite: "balloon", treasure: true, fleer: true, flying: true,
+    hp: 140, speed: 80, xp: 200, eggDrop: 2, radius: 20,
+    color: "#b08020", glowColor: "#ffd040", moveType: "patrol",
+    treasureReward: 40,   // 撃破時の竜晶ボーナス
+  },
 };
 
 // ステージ別の出現構成。後半ほど種類と数が増える（Shooterプレイテスト「後半にバリエーション」）
@@ -3014,6 +3022,16 @@ function generateMovers(stageIndex, boss) {
       if (def.packCount) nextPackId++;
     }
   }
+
+  // v0.25.1: 財宝馬車を1体（逃げるボーナス）。どのステージにも1つの"当たり枠"。
+  {
+    const t = makeMover(MOVER_DEFS.treasure, randPoint);
+    t.maxHp   = MOVER_DEFS.treasure.hp;
+    t.hp      = MOVER_DEFS.treasure.hp;
+    t.xpValue = MOVER_DEFS.treasure.xp;
+    result.push(t);
+  }
+
   return result;
 }
 
@@ -3100,8 +3118,16 @@ function updateMovers(dt) {
     let pursuing = false;
     const centroid = calcFriendlyCentroid();
     if (dist2(m.wx, m.wy, centroid.x, centroid.y) < MOVER_PURSUIT_RANGE * MOVER_PURSUIT_RANGE) {
-      targetX = centroid.x;
-      targetY = centroid.y;
+      if (def.fleer) {
+        // v0.25.1: 財宝馬車は群れから離れる方向へ逃げる（追いかける楽しさ）
+        const fx = m.wx - centroid.x, fy = m.wy - centroid.y;
+        const fd = Math.sqrt(fx * fx + fy * fy) || 1;
+        targetX = m.wx + (fx / fd) * 300;
+        targetY = m.wy + (fy / fd) * 300;
+      } else {
+        targetX = centroid.x;
+        targetY = centroid.y;
+      }
       pursuing = true;
     }
     if (!pursuing) {
@@ -3165,6 +3191,7 @@ function updateMovers(dt) {
     const nearestD2 = ndx * ndx + ndy * ndy;
 
     const atk = def.attack;
+    if (!atk) { m.beamTargetIdx = -1; continue; }   // v0.25.1: 財宝馬車など無攻撃ユニット
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
     const ferocity = moverStageFerocity(currentStage);
     if (atk.type === "beam") {
@@ -3403,10 +3430,22 @@ function damageMover(m, damage) {
       const r = m.def.radius + 12 + Math.random() * 30;
       spawnEgg(m.wx + Math.cos(angle) * r, m.wy + Math.sin(angle) * r);
     }
-    spawnCollisionParticles(m.wx, m.wy);
-    spawnCollisionParticles(m.wx + 8, m.wy - 8);
-    triggerFlash("rgba(255,255,255,0.18)", 0.12);
-    hapticPulse(90);
+    // v0.25.1: 財宝馬車は金色の大量スパーク＋竜晶ボーナス（当たり枠）
+    if (m.def.treasureReward) {
+      awardCrystals(m.def.treasureReward);
+      for (let k = 0; k < 24; k++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 10 + Math.random() * 60;
+        spawnHitParticles(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
+      }
+      triggerFlash("rgba(255,210,80,0.40)", 0.30);
+      hapticPulse(180);
+    } else {
+      spawnCollisionParticles(m.wx, m.wy);
+      spawnCollisionParticles(m.wx + 8, m.wy - 8);
+      triggerFlash("rgba(255,255,255,0.18)", 0.12);
+      hapticPulse(90);
+    }
   }
 }
 
@@ -3451,11 +3490,12 @@ function drawMovers() {
     ctx.save();
     ctx.translate(m.wx, m.wy);
 
-    // 外周グロー（存在感。v0.24: エリートは大きく明るい赤オーラで危険を伝える）
-    ctx.globalAlpha = def.elite ? 0.35 : 0.20;
+    // 外周グロー（存在感。v0.24: エリートは赤／財宝馬車は金の、大きく明るいオーラで際立たせる）
+    const bigGlow = def.elite || def.treasure;
+    ctx.globalAlpha = bigGlow ? 0.35 : 0.20;
     ctx.fillStyle = def.glowColor;
     ctx.beginPath();
-    ctx.arc(0, 0, def.radius * (def.elite ? 1.9 : 1.5), 0, Math.PI * 2);
+    ctx.arc(0, 0, def.radius * (bigGlow ? 1.9 : 1.5), 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1.0;
 
@@ -6224,7 +6264,6 @@ let runStartTime  = 0;
 let runKills      = 0;
 let runMaxFlock   = BOIDS_INITIAL;
 let runTotalXp    = 0;
-let runDowns      = 0;   // v0.25: このランで竜がダウンした回数（ノーダウン系チャレンジ用）
 
 // ---- 強化カード定義 ----
 // rarity: common(重み10) / rare(重み4) / star(重み3・進化)。orb はプール枯渇時の補充専用。
@@ -7809,8 +7848,6 @@ function renderTree() {
 // 判定はステージクリア/全クリアのフックで evaluateChallenges() が回す。
 // 対処関係で縛らず「達成したくなる目標」を並べる（プラン方針）。
 // =================================================================
-let lastRunNoDown = false;   // 直近ランをノーダウンで全クリアしたか（all-clear 時に確定）
-
 const CHALLENGE_DEFS = [
   { id: "reach3",   name: "三時代の覇者", desc: "STAGE 3 に到達する",       reward: 30,
     done: () => currentStage >= 2 || (profile.clears || 0) > 0 },
@@ -7818,8 +7855,6 @@ const CHALLENGE_DEFS = [
     done: () => runMaxFlock >= 60, cur: () => Math.min(runMaxFlock, 60), goal: 60 },
   { id: "allclear", name: "全文明制覇",   desc: "全ステージをクリアする",    reward: 100,
     done: () => (profile.clears || 0) >= 1 },
-  { id: "nodown",   name: "不滅の群れ",   desc: "一度もダウンせず全クリア",  reward: 120,
-    done: () => lastRunNoDown === true },
   { id: "elite3",   name: "エリート狩り", desc: "エリートを累計 3 体撃破",   reward: 80,
     done: () => (profile.eliteKills || 0) >= 3, cur: () => Math.min(profile.eliteKills || 0, 3), goal: 3 },
   { id: "fw10",     name: "花火師",       desc: "花火要塞を累計 10 棟破壊",  reward: 60,
@@ -8042,7 +8077,6 @@ function beginRun(weapon) {
   runKills     = 0;
   runMaxFlock  = countAliveBoids();
   runTotalXp   = 0;
-  runDowns     = 0;
 
   dismissSpeciesSelect();
   titleOverlayEl.classList.remove("visible");
@@ -8089,7 +8123,6 @@ function resumeRun() {
   runKills     = save.runKills || 0;
   runMaxFlock  = save.runMaxFlock || 0;
   runTotalXp   = save.runTotalXp || 0;
-  runDowns     = 0;   // 再開ランのノーダウン判定は再開時点からリセット
   runStartTime = performance.now() - (save.elapsedMs || 0);
 
   // 保存ステージを組み立てて再開（ステージ間リセット相当の体数）
@@ -8126,8 +8159,7 @@ function triggerAllClear() {
   profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
   // v0.20: 最終ステージぶん＋全クリアボーナスの竜晶（awardCrystals が saveProfile 済み）
   awardCrystals(crystalsForStageClear(currentStage) + CRYSTAL_ALLCLEAR_BONUS);
-  lastRunNoDown = (runDowns === 0);   // v0.25: ノーダウン全クリア判定
-  evaluateChallenges();               // v0.25: 全クリア・ノーダウン・累計系を判定
+  evaluateChallenges();               // v0.25: 全クリア・累計系チャレンジを判定
   saveProfile();
   clearRunSave();            // 全クリア＝再開データは不要
 
@@ -8540,7 +8572,6 @@ function applyDamageToBoid(boidIndex, damage) {
     // 変更2: 消滅ではなくダウン状態へ移行（恒久喪失なし）
     // v0.6: 「再生の潮」カードで復帰時間短縮
     boidDowned[boidIndex]    = 1;
-    runDowns++;   // v0.25: ノーダウン系チャレンジ用のラン内ダウン数
     boidDownTimer[boidIndex] = BOID_DOWN_DURATION * effReviveMult();
     boidReviveTimer[boidIndex] = 0;
     // boidDead は立てない（dead=生存スロット外を意味するため）
