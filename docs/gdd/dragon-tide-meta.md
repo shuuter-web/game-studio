@@ -63,6 +63,8 @@
 | eco_gain | 恵み | 竜晶の嗅覚 | 竜晶獲得 +25% | 70 | — |
 
 - v0.21 で追加した permaBuff フィールド：`reviveMult`（→`effReviveMult`）／`dmgTakenMult`（→`effDmgTakenMult`）／`weaponRange`（→`effWeaponRangeMult`）／`xpGain`（→`addXp` 入口で乗算）。いずれも既存 eff* ハブに合流。
+- v0.28 初回ラン短縮：`runStageCount()`＝初回ランのみ `FIRST_RUN_STAGES=4`、以降は `TOTAL_STAGES`（8）。`triggerStageClear` の全クリア判定とHUD表示に使用。
+- v0.28 母竜ブレス頻度：ラン中カード **母竜の鼓動**（`mbreath_rate`, `effMotherBreathRate()=0.82^n`, 解禁時のみ）で発動間隔を短縮（`updateMotherBreath` の `MOTHER_BREATH_INTERVAL * effMotherBreathRate()`）。
 - v0.22 母竜（Phase 5）：`motherHp`（→`effBoidMaxHpFor(0)`、reset/revive/HPバーに反映）／`motherDmg`／`motherBreath`（解禁フラグ・加算）。**母竜ブレス** `updateMotherBreath()` は `updateWeaponAttacks` 末尾で `isMotherActive()`＋解禁ガードのもと、**7.0秒ごと**（v0.22.1 で頻度を半分に）に周囲最大6対象へバースト（基礎60 × motherDmg × ラン中カード `effMotherBreathDmg`）。ラン中強化カード **母竜の吐息**（`mbreath_dmg`, +30%/枚, 解禁時のみ出現）が主軸。ブレスの系統・進化（枝分かれ）や"虹色演出"名物ノードは後続スライス。
 
 ## チャレンジ／コンプ（Phase 6・v0.25）
