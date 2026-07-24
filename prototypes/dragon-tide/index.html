@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.29.0";
+const GAME_VERSION = "v0.29.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3609,16 +3609,31 @@ let raiderSpawnTimer = 0;
 let raiderCheckTimer = 0;
 let raiderModeActive = false;
 
-// v0.29: 群れが大きくなると定期的に敵ラッシュ（ヴァンサバ的な波状攻撃）。
-// 群れ生存数が閾値以上のとき、一定間隔で群れの外周からレイダーの波を送り込む。
+// v0.29 / v0.29.1: 群れが大きくなると"たまに"大きな敵ラッシュ（ヴァンサバ的な波状攻撃）。
+// 頻度を落とし（2分間隔）、1波を苛烈に（多数のレイダー＋衝撃兵を数体）。
+// 前の波が残っている間は次を発生させない＝敵が溜まって処理落ちするのを防ぐ。
 const RUSH_FLOCK_THRESHOLD = 30;    // この生存数以上でラッシュ発生
-const RUSH_INTERVAL        = 12;    // 波の間隔（秒）
-const RUSH_BASE_COUNT      = 4;     // 1波の基本数
-const RUSH_PER_10          = 2;     // 群れ10体ごとに +2体
-const RUSH_MAX_COUNT       = 20;    // 1波の上限
-const RUSH_SPAWN_RADIUS    = 620;   // 群れ重心からこの距離の外周に湧く（外から迫る）
-const RUSH_RAIDER_HARD_CAP = 50;    // 生存レイダーがこれを超えたら波を見送る（暴走防止）
+const RUSH_INTERVAL        = 120;   // 波の間隔（秒 ≒ 2分）
+const RUSH_RECHECK         = 12;    // 前の波が残っている時の再チェック間隔（秒）
+const RUSH_BASE_RAIDERS    = 10;    // 1波の基本レイダー数
+const RUSH_PER_10          = 3;     // 群れ10体ごとに +3体
+const RUSH_MAX_RAIDERS     = 30;    // 1波のレイダー上限
+const RUSH_HEAVY_COUNT     = 2;     // 1波に混ぜる衝撃兵の数（苛烈さ）
+const RUSH_SPAWN_RADIUS    = 640;   // 群れ重心からこの距離の外周に湧く（外から迫る）
 let rushTimer = RUSH_INTERVAL;
+
+// 群れ重心の外周にラッシュ用の敵を1体湧かせる（_rushWave タグ付き）。
+function spawnRushMover(def, centroid) {
+  const a  = Math.random() * Math.PI * 2;
+  const r  = RUSH_SPAWN_RADIUS + randRange(-50, 110);
+  const wx = Math.max(60, Math.min(WORLD_W - 60, centroid.x + Math.cos(a) * r));
+  const wy = Math.max(60, Math.min(WORLD_H - 60, centroid.y + Math.sin(a) * r));
+  const m = makeMover(def, () => ({ x: wx, y: wy }));
+  m.wx = wx; m.wy = wy;
+  m.maxHp = def.hp; m.hp = def.hp; m.xpValue = def.xp;
+  m._rushWave = true;   // この波の生き残り判定用
+  movers.push(m);
+}
 
 function updateEnemyRush(dt) {
   if (gameState !== "playing") return;
@@ -3626,26 +3641,18 @@ function updateEnemyRush(dt) {
   if (alive < RUSH_FLOCK_THRESHOLD) { rushTimer = RUSH_INTERVAL; return; }
   rushTimer -= dt;
   if (rushTimer > 0) return;
+
+  // 前の波の敵がまだ生きていれば発生させない（溜まり＝処理落ち防止）。少し後に再チェック。
+  if (movers.some(m => m.alive && m._rushWave)) { rushTimer = RUSH_RECHECK; return; }
   rushTimer = RUSH_INTERVAL;
 
-  let liveRaiders = 0;
-  for (const m of movers) if (m.alive && m.def.name === "raider") liveRaiders++;
-  if (liveRaiders > RUSH_RAIDER_HARD_CAP) return;
-
   const c = calcFriendlyCentroid();
-  const count = Math.min(RUSH_MAX_COUNT, RUSH_BASE_COUNT + Math.floor(alive / 10) * RUSH_PER_10);
-  for (let k = 0; k < count; k++) {
-    const a  = Math.random() * Math.PI * 2;
-    const r  = RUSH_SPAWN_RADIUS + randRange(-40, 90);
-    const wx = Math.max(60, Math.min(WORLD_W - 60, c.x + Math.cos(a) * r));
-    const wy = Math.max(60, Math.min(WORLD_H - 60, c.y + Math.sin(a) * r));
-    const raider = makeMover(MOVER_DEFS.raider, () => ({ x: wx, y: wy }));
-    raider.wx = wx; raider.wy = wy;
-    raider.xpValue = MOVER_DEFS.raider.xp;
-    movers.push(raider);
-  }
-  triggerFlash("rgba(200,50,50,0.12)", 0.22);
-  hapticPulse(60);
+  const raiders = Math.min(RUSH_MAX_RAIDERS, RUSH_BASE_RAIDERS + Math.floor(alive / 10) * RUSH_PER_10);
+  for (let k = 0; k < raiders; k++) spawnRushMover(MOVER_DEFS.raider, c);
+  for (let k = 0; k < RUSH_HEAVY_COUNT; k++) spawnRushMover(MOVER_DEFS.shockman, c);   // 苛烈さ
+
+  triggerFlash("rgba(210,40,40,0.16)", 0.28);
+  hapticPulse(120);
 }
 
 function resetRaiderState() {
