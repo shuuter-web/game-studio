@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.30.0";
+const GAME_VERSION = "v0.31.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -6523,6 +6523,7 @@ const STRINGS = {
     evo_melee:   { name: "緋竜の血", desc: "全竜が緋竜（近接）に進化" },
     stay_fire:   { name: "火竜を続ける", desc: "進化せず火竜（ブレス）のまま戦う" },
     orb:       { name: "竜玉",     desc: "XP +150" },
+    mbreath_unlock: { name: "母なる吐息", desc: "母竜が周期的に特大ブレスを放つ" },
     mbreath_dmg: { name: "母竜の吐息", desc: "母竜ブレスの威力 +30%" },
     mbreath_rate: { name: "母竜の鼓動", desc: "母竜ブレスの発動が速くなる（-18%間隔）" },
   },
@@ -6598,7 +6599,9 @@ const CARD_DEFS = [
   { id: "evo_bullet",  icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "bullet"  },
   { id: "evo_missile", icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "missile" },
   { id: "evo_melee",   icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "melee"   },
-  // D. 母竜ブレス強化（v0.22。v0.30 でツリーの解禁ゲートを撤去し、初回ランから抽選対象）
+  // D. 母竜ブレス（v0.22。v0.31: 恒常ツリーでの解禁をやめ、ラン中に引いて手に入れる★カードに変更）
+  // motherUnlock がラン内の解禁スイッチ。mother:true の強化2枚はこれを取った後のみプールに乗る。
+  { id: "mbreath_unlock", icon: "\u{1F308}", rarity: "star", max: 1, motherUnlock: true },
   { id: "mbreath_dmg",  icon: "\u{1F432}", rarity: "rare", max: 5, mother: true },
   { id: "mbreath_rate", icon: "\u{1F493}", rarity: "rare", max: 4, mother: true },
 ];
@@ -6887,6 +6890,8 @@ function buildLevelUpCards() {
   // ラン中の初回4択は廃止し、レベルアップは純粋な強化のみ。
   const pool = CARD_DEFS.filter(def => {
     if (upCount(def.id) >= def.max) return false;
+    // v0.31: 母竜ブレスの強化はラン中に「母なる吐息」を引いた後だけ出す（空振りカードを作らない）
+    if (def.mother && !isMotherBreathUnlocked()) return false;
     // 武器強化カードは現在の武器タイプにのみ出現
     if (def.weapon && def.weapon !== flockWeapon) return false;
     // ★進化は最初のレベルアップ専用（上の分岐でのみ出る）
@@ -7398,7 +7403,9 @@ function drawDragonProjectiles() {
  * breathTime（羽ばたき・ジェム明滅などの共通アニメ時計）もここで進める。
  */
 // -----------------------------------------------------------------
-// v0.22: 母竜の署名ブレス。v0.30 でラン開始時から常時発動（解禁ノードを廃止）。
+// v0.22: 母竜の署名ブレス。v0.31: 恒常ツリーでの解禁をやめ、
+// **ラン中の★カード「母なる吐息」を引いた時点でそのランだけ発動**するようになった
+// （＝毎ランの引き次第。恒常ツリーは引けた時の底上げに徹する）。
 // 母竜(スロット0)が周期的に、周囲の建物/移動敵を最大 N 体まとめて薙ぐ特大バースト。
 // 通常の群れブレス（母竜も1個体として撃つ）に上乗せされる"必殺"。
 // 威力 = 基礎 × permaBuff.motherDmg（ツリー下限強化）× effMotherBreathDmg()（ラン中カード）。
@@ -7422,13 +7429,16 @@ function pushMotherBreathFx(x0, y0, x1, y1, hue) {
   }
 }
 
+// v0.31: このランで母竜ブレスを解禁済みか（★カード「母なる吐息」の取得有無）
+function isMotherBreathUnlocked() { return upCount("mbreath_unlock") > 0; }
+
 // ラン中強化カード「母竜の吐息」による威力倍率（都度計算）
 function effMotherBreathDmg()  { return 1 + 0.30 * upCount("mbreath_dmg"); }
 // v0.28: 母竜ブレスの発動間隔倍率（<1で高頻度化）。ラン中カード「母竜の鼓動」で1枚ごとに短縮。
 function effMotherBreathRate() { return Math.pow(0.82, upCount("mbreath_rate")); }
 
 function updateMotherBreath(dt) {
-  if (!isMotherActive()) { motherBreathTimer = 0; return; }
+  if (!isMotherBreathUnlocked() || !isMotherActive()) { motherBreathTimer = 0; return; }
   motherBreathTimer -= dt;
   if (motherBreathTimer > 0) return;
   // v0.28: ラン中強化で高頻度化／v0.30: ツリー「轟く吐息」の底上げも合流
@@ -7491,7 +7501,7 @@ function updateWeaponAttacks(dt) {
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
 
-  updateMotherBreath(dt);   // v0.22: 母竜の署名ブレス（v0.30: 母竜が健在なら常時発動）
+  updateMotherBreath(dt);   // v0.22: 母竜の署名ブレス（v0.31: ラン中に「母なる吐息」を引いた時のみ）
   updateDragonProjectiles(dt);
 }
 
@@ -8011,7 +8021,8 @@ function awardCrystals(n) {
 // 母竜(mother)ラインは Phase 5 で追加予定。
 const TREE_DEFS = [
   // ── 母竜（味方側の"ボス"を育てる）──
-  // v0.30: 母竜ブレスは最初から発動するようになったため、このノードは「解禁」ではなく発動間隔の底上げに役割変更。
+  // v0.31: 母竜ブレスの解禁はラン中★カード「母なる吐息」に移したため、このノードは
+  // 「解禁」ではなく**引けた時の発動間隔の底上げ**に役割変更。
   // 既存プロファイルの購入済みフラグを活かすため id は据え置き（cost は解禁料金 150 → 底上げ相応の 80 に）。
   { id: "m_breath", cat: "mother", name: "轟く吐息", desc: "母竜ブレスの間隔 -15%",          cost: 80,  prereq: [],            effect: { type: "motherRate",   value: 0.85 } },
   { id: "m_dmg",    cat: "mother", name: "灼熱の母",   desc: "母竜ブレスの威力 +30%",        cost: 120, prereq: ["m_breath"], effect: { type: "motherDmg",    value: 1.30 } },

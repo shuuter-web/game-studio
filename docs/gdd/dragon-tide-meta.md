@@ -45,7 +45,7 @@
 
 | id | ライン | 名前 | 効果 | cost | 前提 |
 |---|---|---|---|---|---|
-| m_breath | 母竜 | 轟く吐息 | 母竜ブレスの間隔 -15%（v0.30で解禁→底上げに変更） | 80 | — |
+| m_breath | 母竜 | 轟く吐息 | 母竜ブレスの間隔 -15%（v0.31で解禁→底上げに変更） | 80 | — |
 | m_dmg | 母竜 | 灼熱の母 | 母竜ブレス威力 +30% | 120 | m_breath |
 | m_hp | 母竜 | 不朽の母 | 母竜のHP +50% | 100 | — |
 | flock_start1 | 大群 | 始祖の群れ | 各ステージ開始の竜 +1 | 40 | — |
@@ -66,7 +66,7 @@
 
 - v0.21 で追加した permaBuff フィールド：`reviveMult`（→`effReviveMult`）／`dmgTakenMult`（→`effDmgTakenMult`）／`weaponRange`（→`effWeaponRangeMult`）／`xpGain`（→`addXp` 入口で乗算）。いずれも既存 eff* ハブに合流。
 - v0.28 初回ラン短縮：`runStageCount()`＝初回ランのみ `FIRST_RUN_STAGES=4`、以降は `TOTAL_STAGES`（8）。`triggerStageClear` の全クリア判定とHUD表示に使用。
-- **v0.30 母竜ブレスの常時解放**：解禁フラグ `permaBuff.motherBreath` を廃止し、母竜が健在（`isMotherActive()`）なら**ラン開始時から発動**。`buildLevelUpCards` の `def.mother` ゲートも撤去したため、**母竜の吐息／母竜の鼓動は初回ランから抽選対象**。ツリー `m_breath` は「解禁」から**間隔の底上げ**（`motherRate=0.85`, cost 150→80）に役割変更（id 据え置きで既存プロファイルの購入済みを継承）。間隔＝`MOTHER_BREATH_INTERVAL * permaBuff.motherRate * effMotherBreathRate()`。
+- **v0.31 母竜ブレスをラン中取得に**：恒常ツリーでの解禁（`permaBuff.motherBreath`）を廃止し、**ラン中の★カード「母なる吐息」（`mbreath_unlock`, star, max1）を引いた時点でそのランだけ発動**する形へ。判定は `isMotherBreathUnlocked()`＝`upCount("mbreath_unlock") > 0` で、`updateMotherBreath` の発動ガードと `buildLevelUpCards` の `def.mother` ゲート（強化2枚は解禁後のみ出す＝空振りカードを作らない）の両方が参照する。取得した瞬間 `motherBreathTimer` が0なので**即発動**して報酬感を出す。ツリー `m_breath` は「解禁」から**引けた時の間隔の底上げ**（`motherRate=0.85`, cost 150→80）に役割変更（id 据え置きで既存プロファイルの購入済みを継承）。間隔＝`MOTHER_BREATH_INTERVAL * permaBuff.motherRate * effMotherBreathRate()`。
 - v0.28 母竜ブレス頻度：ラン中カード **母竜の鼓動**（`mbreath_rate`, `effMotherBreathRate()=0.82^n`）で発動間隔を短縮。
 - v0.22 母竜（Phase 5）：`motherHp`（→`effBoidMaxHpFor(0)`、reset/revive/HPバーに反映）／`motherDmg`。**母竜ブレス** `updateMotherBreath()` は `updateWeaponAttacks` 末尾で **7.0秒ごと**（v0.22.1 で頻度を半分に）に周囲最大6対象へバースト（基礎60 × motherDmg × ラン中カード `effMotherBreathDmg`）。ラン中強化カード **母竜の吐息**（`mbreath_dmg`, +30%/枚）が主軸。ブレスの系統・進化（枝分かれ）や"虹色演出"名物ノードは後続スライス。
 
