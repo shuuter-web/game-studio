@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.29.2";
+const GAME_VERSION = "v0.30.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -6598,7 +6598,7 @@ const CARD_DEFS = [
   { id: "evo_bullet",  icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "bullet"  },
   { id: "evo_missile", icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "missile" },
   { id: "evo_melee",   icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "melee"   },
-  // D. 母竜ブレス強化（v0.22。恒常ツリー「母なる吐息」解禁後のみプールに出る）
+  // D. 母竜ブレス強化（v0.22。v0.30 でツリーの解禁ゲートを撤去し、初回ランから抽選対象）
   { id: "mbreath_dmg",  icon: "\u{1F432}", rarity: "rare", max: 5, mother: true },
   { id: "mbreath_rate", icon: "\u{1F493}", rarity: "rare", max: 4, mother: true },
 ];
@@ -6622,8 +6622,9 @@ function defaultPermaBuff() {
     startFlock: 0, flockHp: 1, flockSpeed: 1, flockCap: 0, weaponDmg: 1, crystalGain: 1, magnet: 1,
     // v0.21: 強化ライン拡張ぶん（すべて乗算。既存 eff*/addXp に合流）
     reviveMult: 1, dmgTakenMult: 1, weaponRange: 1, xpGain: 1,
-    // v0.22: 母竜ライン。motherBreath は加算（解禁フラグ・0で未解禁）、他は乗算
-    motherHp: 1, motherDmg: 1, motherBreath: 0,
+    // v0.30: 母竜ライン。母竜ブレスは常時発動（解禁フラグ廃止）なので、ツリーは全て乗算の底上げ。
+    // motherRate は発動間隔の倍率（<1 で高頻度化）。
+    motherHp: 1, motherDmg: 1, motherRate: 1,
   };
 }
 let permaBuff = defaultPermaBuff();
@@ -6886,8 +6887,6 @@ function buildLevelUpCards() {
   // ラン中の初回4択は廃止し、レベルアップは純粋な強化のみ。
   const pool = CARD_DEFS.filter(def => {
     if (upCount(def.id) >= def.max) return false;
-    // v0.22: 母竜ブレス強化は恒常ツリーで「母なる吐息」を解禁している時のみ出す
-    if (def.mother && permaBuff.motherBreath <= 0) return false;
     // 武器強化カードは現在の武器タイプにのみ出現
     if (def.weapon && def.weapon !== flockWeapon) return false;
     // ★進化は最初のレベルアップ専用（上の分岐でのみ出る）
@@ -7399,10 +7398,11 @@ function drawDragonProjectiles() {
  * breathTime（羽ばたき・ジェム明滅などの共通アニメ時計）もここで進める。
  */
 // -----------------------------------------------------------------
-// v0.22: 母竜の署名ブレス（恒常ツリー「母なる吐息」で解禁）
+// v0.22: 母竜の署名ブレス。v0.30 でラン開始時から常時発動（解禁ノードを廃止）。
 // 母竜(スロット0)が周期的に、周囲の建物/移動敵を最大 N 体まとめて薙ぐ特大バースト。
 // 通常の群れブレス（母竜も1個体として撃つ）に上乗せされる"必殺"。
 // 威力 = 基礎 × permaBuff.motherDmg（ツリー下限強化）× effMotherBreathDmg()（ラン中カード）。
+// 間隔 = 基礎 × permaBuff.motherRate（ツリー下限強化）× effMotherBreathRate()（ラン中カード）。
 // -----------------------------------------------------------------
 const MOTHER_BREATH_INTERVAL = 7.0;   // 発動間隔（秒。v0.22.1: デフォルト頻度を半分に）
 const MOTHER_BREATH_RANGE    = 220;   // 効果半径（通常ブレスより広い）
@@ -7428,10 +7428,11 @@ function effMotherBreathDmg()  { return 1 + 0.30 * upCount("mbreath_dmg"); }
 function effMotherBreathRate() { return Math.pow(0.82, upCount("mbreath_rate")); }
 
 function updateMotherBreath(dt) {
-  if (permaBuff.motherBreath <= 0 || !isMotherActive()) { motherBreathTimer = 0; return; }
+  if (!isMotherActive()) { motherBreathTimer = 0; return; }
   motherBreathTimer -= dt;
   if (motherBreathTimer > 0) return;
-  motherBreathTimer = MOTHER_BREATH_INTERVAL * effMotherBreathRate();   // v0.28: ラン中強化で高頻度化
+  // v0.28: ラン中強化で高頻度化／v0.30: ツリー「轟く吐息」の底上げも合流
+  motherBreathTimer = MOTHER_BREATH_INTERVAL * permaBuff.motherRate * effMotherBreathRate();
 
   const mx = px[MOTHER_DRAGON_IDX], my = py[MOTHER_DRAGON_IDX];
   const R2  = MOTHER_BREATH_RANGE * MOTHER_BREATH_RANGE;
@@ -7490,7 +7491,7 @@ function updateWeaponAttacks(dt) {
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
 
-  updateMotherBreath(dt);   // v0.22: 母竜の署名ブレス（解禁時のみ発動）
+  updateMotherBreath(dt);   // v0.22: 母竜の署名ブレス（v0.30: 母竜が健在なら常時発動）
   updateDragonProjectiles(dt);
 }
 
@@ -8010,7 +8011,9 @@ function awardCrystals(n) {
 // 母竜(mother)ラインは Phase 5 で追加予定。
 const TREE_DEFS = [
   // ── 母竜（味方側の"ボス"を育てる）──
-  { id: "m_breath", cat: "mother", name: "母なる吐息", desc: "母竜が周期的に特大ブレスを放つ", cost: 150, prereq: [],            effect: { type: "motherBreath", value: 1 } },
+  // v0.30: 母竜ブレスは最初から発動するようになったため、このノードは「解禁」ではなく発動間隔の底上げに役割変更。
+  // 既存プロファイルの購入済みフラグを活かすため id は据え置き（cost は解禁料金 150 → 底上げ相応の 80 に）。
+  { id: "m_breath", cat: "mother", name: "轟く吐息", desc: "母竜ブレスの間隔 -15%",          cost: 80,  prereq: [],            effect: { type: "motherRate",   value: 0.85 } },
   { id: "m_dmg",    cat: "mother", name: "灼熱の母",   desc: "母竜ブレスの威力 +30%",        cost: 120, prereq: ["m_breath"], effect: { type: "motherDmg",    value: 1.30 } },
   { id: "m_hp",     cat: "mother", name: "不朽の母",   desc: "母竜のHP +50%",                cost: 100, prereq: [],            effect: { type: "motherHp",     value: 1.50 } },
   // ── 大群（数と物量で押す）──
@@ -8057,7 +8060,7 @@ function recomputePermaBuff() {
     const st = profile.tree[node.id];
     if (!st || !st.unlocked || !st.enabled) continue;
     const e = node.effect;
-    if (e.type === "startFlock" || e.type === "flockCap" || e.type === "motherBreath") b[e.type] += e.value;
+    if (e.type === "startFlock" || e.type === "flockCap") b[e.type] += e.value;
     else b[e.type] *= e.value;
   }
   permaBuff = b;
