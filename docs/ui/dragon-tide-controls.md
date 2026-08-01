@@ -1,0 +1,268 @@
+# Dragon Tide — 操作の仕様と実装（現状の詳細）
+
+- 作成: 2026-08-01 ／ 対象コード: `prototypes/dragon-tide/index.html`（**v0.31.0** 時点）
+- 目的：**竜種ごとに操作感を変える前に、土台の操作を直す**ための現状把握。
+- 行番号は変動するため**識別子（関数名・定数名）で参照**する。最新の実像はコードを正とする。
+- §7 の問題はすべて**プレビュー上で実測して数値を取った**もの（推測ではない）。
+
+---
+
+## 1. 設計意図（コードのコメントとGDDから）
+
+- **画面全体が線描画エリア**。専用の移動スティックやボタンは無い（`bottomUIHeight = 0`）。
+- 指で線を引く → **不可視の「リーダー」がその線をなぞる** → 群れ（Boids）がリーダーを追う。
+  つまりプレイヤーは竜を直接動かさず、**群れを引っぱる点を操縦している**。
+- **指を止めても群れは止まらない**（巡航を続ける）。「その場で旋回・停止するトラップ」を避ける意図が
+  `updateLeader` のコメントに明記されている。
+- 円を描いて離すと**その円を周回し続ける**（放置して眺められる＝アクアリウム柱）。
+
+---
+
+## 2. 入力レイヤ
+
+### 2-1. イベント登録（すべて `canvas` に直付け）
+
+| イベント | ハンドラ | 備考 |
+|---|---|---|
+| `touchstart` / `touchmove` | `inputStart` / `inputMove` | `{passive:false}` ＋ `preventDefault()`（スクロール抑止） |
+| `touchend` | `inputEnd` | **`e.touches.length === 0` のときだけ**終了 |
+| `touchcancel` | `inputEnd` | 同上。誤発火で巡航が切れないようにする意図 |
+| `mousedown` / `mousemove` / `mouseup` / `mouseleave` | 同上 | `mousemove` は `isDrawing` 中のみ |
+
+- **`pointerdown` 系は canvas では使っていない**（touch と mouse の二系統）。
+  DOM オーバーレイ側（タイトル・ツリー・カード）は `pointerdown` を使う。
+- **マルチタッチ非対応**：常に `e.touches[0]` のみを見る。
+
+### 2-2. 入力ステート
+
+```
+inputMode : "NONE" | "UI" | "DRAW"
+isDrawing : bool          … DRAW 中か
+pointerWorldX / Y         … 指の現在位置（ワールド座標）。静止保持でも供給し続ける
+touchRing { active,x,y }  … 指先リング表示用（スクリーン座標）
+```
+
+### 2-3. `inputStart` のゲート
+
+```js
+if (gameState !== "playing" && gameState !== "stage-clear") { inputMode = "NONE"; return; }
+if (sy >= viewH - bottomUIHeight) { inputMode = "UI"; return; }   // ← bottomUIHeight は常に 0
+inputMode = "DRAW"; isDrawing = true; pathClear(); …
+```
+
+- 線が引けるのは **`playing` と `stage-clear`** のときだけ。
+- **カード選択中も線は引ける**（`upgrade-card` の実体だけが `pointer-events: auto`、
+  親オーバーレイは `none`）。スローモー（`SLOWMO_SCALE = 0.25` / `SLOWMO_DURATION = 7.0秒`）で
+  プレイを止めない設計。
+- 座標変換は `screenToWorld(sx, sy)` = `(s - view*0.5) / cam.scale + cam`。**ズーム倍率が操作ゲインに直結する**（§6）。
+
+### 2-4. キーボード（デバッグ／タイトル用のみ）
+
+`N` = 次ステージ（`debugAdvanceStage`）／`R` = 全クリア後にタイトルへ／`Space`・`Enter` = タイトルで開始。
+**ゲームプレイ用のキー操作は無い。**
+
+---
+
+## 3. パス（ウェイポイント列）
+
+`PATH_MAX = 240` の **Float32Array リングバッファ**。`pathPush` / `pathGet` / `pathClear`。
+
+- **間引き**：直前の点から `Math.max(BASE_CFG.pathMinSegment, 30)` = **30（ワールドpx）**未満の点は捨てる。
+  → `BASE_CFG.pathMinSegment` の設定値 **8 は `Math.max` に負けて死んでいる**。
+- `leaderPathConsumeIdx`：消費済みインデックス。**単調増加（戻らない）**。
+  バッファ満杯で最古点を上書きするときだけ 1 減らして同じ実点を指し続ける。
+- `pathClear()` は **`inputStart` の時だけ**呼ぶ。指を離してもパスは残る（→ ループ追従に使う）。
+
+---
+
+## 4. リーダー（`updateLeader`）— 3モード
+
+速度は常に `BASE_CFG.leaderSpeed (220) × _simSpeedMult`（`_simSpeedMult` = `effSpeedMult()`＝疾風カード）。
+最後に `leader.x/y` をワールド境界にクランプ。
+
+### モードA：巡航操舵（`isDrawing === true`）
+
+1. **目標点を決める**
+   - パスが残っていれば、`leaderPathConsumeIdx` から前方 `SCAN_AHEAD = 40` 点の窓で
+     **リーダーに最も近い未消費点**を探し、そこまで消費を進める（コーナーを突っ切っても消費が進む）。
+   - 末尾に達していなければ **さらに +2 点先**を目標にする（弧へ早めに舵を切る）。
+   - 末尾に達したら**指の現在位置**（`pointerWorldX/Y`）を目標にする。
+2. **前方判定**：`aheadDot`（目標方向と巡航方向の内積）。
+   `followingPath || (距離 > LEADER_ARRIVAL_DIST(60) && aheadDot > 0)` のときだけ舵を切る（追従係数 `dt * 10`）。
+3. **それ以外**（＝指に到達・追い越した／目標が後方）は
+   **直前の進行方向 `_cruiseV` へ `leaderSpeed` 固定で直進し続ける**。減速も引き返しもしない。
+
+### モードB：パス・ループ追従（指を離した／`pathLen > 2`）
+
+- 全 `pathLen` 点を走査して最近傍を求め、**3点先（`% pathLen` でラップ）**を目標に全速で追う（追従係数 `dt * 6`）。
+- **閉じた線（円）なら周回し続ける**。実測：半径200で描いた円 → 半径170を **215px/s・約72°/s で安定周回**（意図通り）。
+
+### モードC：アイドル旋回（`pathLen <= 2`）
+
+- 群れ重心の周りを **半径 `idleWanderRadius = 120`・角速度 `IDLE_ANGULAR_SPEED = 0.35 rad/s`** で
+  楕円（y方向×0.6）を描く目標点へ緩く追従。**完全停止はしない。**
+
+---
+
+## 5. 群れ（Boids）とリーダーの結合 — `simStep`
+
+分離・整列・結合に加えて、リーダーへの引力：
+
+```js
+const ldx = leader.x - xi, ldy = leader.y - yi;
+const ld  = Math.hypot(ldx, ldy) || 1;
+ax += (ldx / ld) * BASE_CFG.wLeader * 120;   // = 1.6 × 120 = 192
+ay += (ldy / ld) * BASE_CFG.wLeader * 120;
+```
+
+- **方向のみを使い、距離による減衰がない**（常に同じ大きさ 192 で引っぱる）。
+- **`BASE_CFG.leaderSeekDist (80)` はコード中で一度も使われていない**（実測確認済み）。
+  到達半径＝減速がないので、群れはリーダー点で落ち着かず**通り過ぎて回り込む**。
+- 最終的に `maxForce = 320` でクランプ、速度は `minSpeed 60` 〜 `maxSpeed 160`（×`_simSpeedMult`）。
+
+---
+
+## 6. カメラと「操作ゲイン」
+
+| 項目 | 実装 |
+|---|---|
+| 追従 | `cam.x += (centroid.x - cam.x) * 0.08` … **`dt` が掛かっていない＝フレームレート依存** |
+| ズーム | 群れ 10体で `scale 1.15` → 群れ上限で `scale 0.6` に線形補間（`calcTargetCamScale`）、追従は `dt * 1.5` |
+| 中心 | **群れ重心**（`calcFriendlyCentroid`。ダウン中の個体は除外）。**リーダーは中心ではない** |
+| クランプ | ワールド境界 |
+
+**帰結**：`screenToWorld` が `cam.scale` で割るため、
+**群れが育つほど（scale 1.15 → 0.6）同じ指の移動距離が約1.9倍のワールド距離になる**。
+塊魂的な「大きくなった感」には効くが、**育つほど操作が大味になる**。
+
+---
+
+## 7. 実測した現状の問題（★＝操作の「難」の主因と見ているもの）
+
+### ★7-1. 指を止めるとリーダーが指から離れて飛んでいく
+
+モードAの「到達したら `_cruise` 方向へ直進し続ける」がそのまま出る。
+**指を1点で押したまま5秒**の実測：
+
+| 経過 | 指とリーダーの距離 | リーダーと群れの距離 |
+|---|---|---|
+| 1秒 | 93 | 114 |
+| 2秒 | 127 | 184 |
+| 3秒 | 347 | 244 |
+| 4秒 | 567 | 304 |
+| 5秒 | **787** | **364** |
+
+指を押さえているのに、操縦点が**毎秒220pxずつ指から離れていく**。
+「押しっぱなしで止まらない」意図は達成しているが、**指＝舵という対応関係が壊れる**。
+
+### ★7-2. リーダー速度(220) > 竜の最大速度(160)
+
+比が常に 1.375 なので、**群れは構造的に追いつけない**。上表の「リーダーと群れの距離」が
+毎秒60px（＝220−160）ずつ開き続けるのがそれ。
+`wLeader` に距離減衰が無い（§5）ため、離れた竜も近い竜も同じ力で引かれる＝**隊列が伸びきって千切れる**。
+カメラは**群れ重心**を追うので、**操縦しているリーダーは画面外に出る**（縦持ち390px幅・scale1.15で
+可視半幅は約170ワールドpx。364px離れれば確実に画面外）。
+
+### ★7-3. 開いた線を描いて離すと、リーダーが線の途中で停止する
+
+モードBは `(最近傍 + 3) % pathLen` でラップする。**閉じた円なら周回**するが、
+**開いた線では終端付近で「前へ進む」と「先頭へ戻る」が拮抗してデッドロックする**。
+
+実測（`x0+60`〜`x0+600` の直線を描いて離す）：
+リーダーは **`x0+451` で静止**（速さ 4px/s ≒ 停止）。`pathLen > 2` なのでアイドル旋回にも落ちず、
+**プレイヤーが引き直すまでその場に固まる**。
+
+### 7-4. 細かい操作が捨てられる
+
+`pathPush` の間引きが実効 **30ワールドpx**。スクリーン換算では
+**ズームイン時(scale 1.15) 約34.5px、ズームアウト時(0.6) 18px** 指を動かさないと点が記録されない。
+小さく速い曲線（グレイズ、細い路地の走破）は**そもそもパスにならない**。
+`BASE_CFG.pathMinSegment = 8` は死に設定。
+
+### 7-5. カード選択中、画面下部中央が押せない
+
+親オーバーレイは `pointer-events: none` で線は通るが、**カード本体3枚は `auto`**。
+実測でカード1枚 **61px**、3枚＝**183px**、幅 `min(86vw, 340px)` が画面下部中央に居座る。
+スローモー中こそ操作したい場面で、**下部中央が描画不能領域**になる。
+
+### 7-6. マルチタッチで指が飛ぶ
+
+常に `e.touches[0]` を見るので、
+- 2本目を置いてから1本目を離す → `touches.length !== 0` なので入力は継続、
+  かつ `touches[0]` が2本目に切り替わり **操縦点が瞬間移動**する。
+
+### 7-7. 細かい死にコード・フレームレート依存
+
+- `inputMode = "UI"` は `bottomUIHeight === 0` のため**到達不能**（`sy >= viewH` は成立しない）。
+- `BASE_CFG.leaderSeekDist` 未使用、`BASE_CFG.pathMinSegment` 実質未使用。
+- カメラ追従 `* 0.08` に `dt` が掛かっていない（低fps端末で追従が遅れる）。
+- モードBの最近傍探索は毎フレーム全 `pathLen`（最大240）走査。
+
+---
+
+## 8. 定数一覧（チューニングの入口）
+
+| 定数 | 値 | 意味 |
+|---|---|---|
+| `BASE_CFG.leaderSpeed` | 220 | リーダー速度 |
+| `BASE_CFG.maxSpeed` / `minSpeed` | 160 / 60 | 竜の速度 |
+| `BASE_CFG.wLeader` | 1.6 | リーダー引力の重み（実効 ×120） |
+| `BASE_CFG.maxForce` | 320 | 加速度クランプ |
+| `BASE_CFG.leaderSeekDist` | 80 | **未使用** |
+| `BASE_CFG.pathMinSegment` | 8 | **未使用**（実効30） |
+| `BASE_CFG.perception` / `separationRadius` | 55 / 28 | 近傍・分離半径 |
+| `BASE_CFG.wSeparation` / `wAlignment` / `wCohesion` | 2.5 / 1.0 / 0.4 | Boids重み |
+| `BASE_CFG.idleWanderRadius` | 120 | アイドル旋回半径 |
+| `IDLE_ANGULAR_SPEED` | 0.35 | アイドル角速度(rad/s) |
+| `PATH_MAX` | 240 | パス点数上限 |
+| `SCAN_AHEAD` | 40 | 前方探索窓 |
+| `LEADER_ARRIVAL_DIST` | 60 | 到達とみなす距離 |
+| `CAM_SCALE_MIN_COUNT` / `MAX_COUNT` | 1.15 / 0.6 | ズーム範囲 |
+| `TRAIL_LIFETIME` | 1.2 | 軌跡の残り時間(秒) |
+| `SLOWMO_SCALE` / `SLOWMO_DURATION` | 0.25 / 7.0 | カード表示中のスロー |
+
+---
+
+## 9. フィードバック（今プレイヤーに見えているもの）
+
+| 要素 | 実装 | 座標系 |
+|---|---|---|
+| 軌跡 | `trailPoints`（最大400点・1.2秒フェード・`rgba(140,200,255,α≤0.35)`・幅2.5） | **ワールド**（カメラ変換の内側で描画。地面に固定される） |
+| 指先リング | `touchRing`（半径20・`rgba(200,230,255,0.30)`） | **スクリーン**（カメラ変換の外側で描画） |
+| 触覚 | `hapticPulse(10)` を `inputStart` で | — |
+
+- **リーダーそのものは描画されていない**。プレイヤーは「自分が何を操縦しているか」を
+  直接は見られず、軌跡と群れの動きから推測している。§7-1/7-2 で
+  リーダーが指からも群れからも離れると、**画面上に手がかりが何も無い**状態になる。
+
+---
+
+## 10. 直すときの差し込み口
+
+| 目的 | 差し込み口 |
+|---|---|
+| 入力の受け口 | `inputStart` / `inputMove` / `inputEnd`、canvas の touch*/mouse* リスナ |
+| 座標変換 | `screenToWorld` / `worldToScreen`（`cam.scale` 依存） |
+| パス | `pathPush`（間引き）／`pathGet`／`pathClear`／`PATH_MAX` |
+| 操縦ロジック | **`updateLeader`**（モードA/B/Cの分岐がすべてここ） |
+| 群れとの結合 | `simStep` 内のリーダー引力ブロック（`wLeader`）、`BASE_CFG` |
+| カメラ | `updateCamera` / `calcTargetCamScale` / `calcFriendlyCentroid` |
+| 表示 | `drawTrail`（ワールド系）／`drawTouchRing`（スクリーン系） |
+| カードUIの占有 | CSS `#levelup-overlay` / `#card-list` / `.upgrade-card` |
+
+---
+
+## 11. 恒久ルール（操作まわりで守るもの）
+
+- **モーダルでプレイを止めない**（カードはスローモーで非モーダル。現状もこの方針）。
+- **敗北なし**。操作ミスがペナルティにならない設計を保つ。
+- **トップビュー厳守**。
+- 全ユーザー向け文字列は `STRINGS` 経由、数値は定数に集約。
+
+### プレビュー検証の注意（この文書の実測でも踏んだ）
+
+- プレビューでは **`viewH = 0`** なので `inputStart` の UI ゾーン判定に引っかかる形になり、
+  タッチハンドラ経由の検証はできない。**`isDrawing` / `pointerWorldX/Y` / `pathPush` を直接立てて
+  `simStep(dt)` を回す**のが確実（本文の実測はこの方法）。
+- 群れの1フレーム更新は `simStep(dt)`（`updateLeader` を内包）。`updateBoids` という関数は存在しない。
+- `preview_screenshot` はタイムアウトする。見た目は実機に委ねる。
