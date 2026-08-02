@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.31.0";
+const GAME_VERSION = "v0.32.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9065,13 +9065,8 @@ function pushBoidOutOfCircle(i, cx, cy, minDist) {
   }
 }
 
-// 巡航操舵: 指に到達したときの「直前進行方向」を保持する。
-// 指が静止している間はこの方向を維持して前進し続ける（停止しない）。
-let _cruiseVx = 0;
-let _cruiseVy = 1; // 初期値: 下向き（正規化済み）
-
-// isDrawing 中にリーダーが「指方向へ舵を切りながら常に leaderSpeed で前進」する閾値。
-// 指までの距離がこの値未満になったら「到達」とみなし進行方向を維持して巡航する。
+// v0.32: 到達減速の半径。目標までの距離がこの値を下回ると距離に比例して減速し、
+// 目標の上でなめらかに停止する（等速のまま突っ込むと通り過ぎ→引き返しの往復になる）。
 const LEADER_ARRIVAL_DIST = 60; // px（パスの先読み半径 24px より大きく取る）
 
 function updateLeader(dt) {
@@ -9079,16 +9074,22 @@ function updateLeader(dt) {
   const speed = BASE_CFG.leaderSpeed * _simSpeedMult;
 
   if (isDrawing) {
-    // ---- 巡航操舵モード ----
-    // 押下中は「常に leaderSpeed で前進し続ける」。指は進行方向の舵。
-    // 目標が前方に十分離れているときだけ _cruise を目標方向へなめらかに寄せる。
-    // 指に到達/追い越しても減速や引き返しをせず _cruise 方向へ直進を続ける
-    // （指の点を中心に往復してその場で止まってしまうトラップを防ぐ）。
+    // ---- 追従モード（v0.32: 巡航操舵を廃止して「指へ向かう、着いたら止まる」に単純化）----
+    // 旧実装は指に到達すると指を見るのをやめて直進し続けたため、
+    // 押さえっぱなしで操縦点が画面外まで逃げていた。指を常に操縦点にする。
+
+    // v0.32: 指のワールド座標を毎フレーム解決し直す。
+    // カメラは群れを追って動くので、押した瞬間の値のままだと
+    // 「画面のここを押さえている」が指すワールド点がずれていく。
+    if (touchRing.active) {
+      const pw = screenToWorld(touchRing.x, touchRing.y);
+      pointerWorldX = pw.x;
+      pointerWorldY = pw.y;
+    }
 
     // 目標点を決める: 描いた軌跡（パス）が残っていればそのウェイポイントを追従、
-    // 消費しきったら指の現在位置。followingPath=軌跡をなぞっている最中。
+    // 消費しきったら指の現在位置。
     let tx = pointerWorldX, ty = pointerWorldY;
-    let followingPath = false;
     if (pathLen > 0) {
       if (leaderPathConsumeIdx >= pathLen) leaderPathConsumeIdx = pathLen - 1;
       // 進行はリーダーに「最も近い未消費ウェイポイント」まで進める。
@@ -9106,40 +9107,25 @@ function updateLeader(dt) {
       }
       if (bestIdx > leaderPathConsumeIdx) leaderPathConsumeIdx = bestIdx; // 戻らない
       // 末尾インデックスに達するまではパスを追従（弧などをなぞる）。
-      // 末尾に達したら（距離に関わらず）パス追従を終え、指位置＋aheadDot 巡航へ移す。
+      // 末尾に達したらパス追従を終え、指の現在位置へ向かう。
       // ここで pathClear はしない＝指を離した後のループ追従（円を描いて離すと周回）のため保持。
-      // 押しっぱなしの末端引き戻しトラップは下の aheadDot 判定で防ぐ。
       if (leaderPathConsumeIdx < pathLen - 1) {
         // 最近傍より少し先（lookahead +2）を目標にして弧へ早めに舵を切る
         const aimIdx = Math.min(leaderPathConsumeIdx + 2, pathLen - 1);
         const atgt = pathGet(aimIdx);
-        tx = atgt.x; ty = atgt.y; followingPath = true;
+        tx = atgt.x; ty = atgt.y;
       }
     }
 
+    // 目標へ向かうだけ。LEADER_ARRIVAL_DIST の内側では距離に比例して減速し、
+    // 目標の上で停止する（指を止めれば止まる＝指が常に操縦点）。
     const dx = tx - leader.x, dy = ty - leader.y;
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
-    // 目標が進行方向の前方にあるか（後方の固定点へ引き返してUターンするトラップを防ぐ）。
-    // 指を静止保持してリーダーが追い越した場合、目標は後方になり aheadDot < 0 になる。
-    const aheadDot = (dx / d) * _cruiseVx + (dy / d) * _cruiseVy;
-
-    if (followingPath || (d > LEADER_ARRIVAL_DIST && aheadDot > 0)) {
-      // 軌跡を追従中、または目標が前方に十分離れている →
-      // 速度ベクトルを目標方向へ機敏に寄せて、描いた線（弧など）に追従する。
-      const nx = dx / d, ny = dy / d;
-      const k  = Math.min(1, dt * 10); // 機敏な操舵
-      leader.vx += (nx * speed - leader.vx) * k;
-      leader.vy += (ny * speed - leader.vy) * k;
-      // 速度がついている間は巡航方向を覚えておく（静止保持への移行を滑らかに）
-      const cs = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
-      if (cs > 1) { _cruiseVx = leader.vx / cs; _cruiseVy = leader.vy / cs; }
-    } else {
-      // 指に到達／追い越し（目標が近い or 後方）＝指を静止保持 →
-      // 直前の進行方向へ直進巡航。速度は leaderSpeed 固定で減速しない
-      // ＝押している限りまっすぐ進み続ける（その場で旋回・停止しない）。
-      leader.vx = _cruiseVx * speed;
-      leader.vy = _cruiseVy * speed;
-    }
+    const desired = speed * Math.min(1, d / LEADER_ARRIVAL_DIST);
+    const nx = dx / d, ny = dy / d;
+    const k  = Math.min(1, dt * 10); // 機敏な操舵
+    leader.vx += (nx * desired - leader.vx) * k;
+    leader.vy += (ny * desired - leader.vy) * k;
   } else if (pathLen > 2) {
     // ---- パス・ループ追従モード（指を離した後）----
     // 記録した軌跡を繰り返しなぞる。円を描いて離すと、その円をずっとぐるぐる回る。
@@ -9158,19 +9144,11 @@ function updateLeader(dt) {
     const k  = Math.min(1, dt * 6);
     leader.vx += (nx * speed - leader.vx) * k;
     leader.vy += (ny * speed - leader.vy) * k;
-    const cs = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
-    if (cs > 1) { _cruiseVx = leader.vx / cs; _cruiseVy = leader.vy / cs; }
   } else {
     // ---- アイドル旋回モード（パスが無い／ごく短いとき）----
     const target = getIdleLeaderTarget(dt);
     leader.vx += ((target.x - leader.x) * 0.8 - leader.vx) * Math.min(1, dt * 2.0);
     leader.vy += ((target.y - leader.y) * 0.8 - leader.vy) * Math.min(1, dt * 2.0);
-    // アイドル中も巡航方向を現在の移動方向に更新しておく（次の押し込み時に自然な向きで発進）
-    const idleSpd = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
-    if (idleSpd > 10) {
-      _cruiseVx = leader.vx / idleSpd;
-      _cruiseVy = leader.vy / idleSpd;
-    }
   }
 
   leader.x += leader.vx * dt;
