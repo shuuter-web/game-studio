@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.32.0";
+const GAME_VERSION = "v0.33.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -611,8 +611,17 @@ function debugResetProfile() {
   else { refreshTitleBest(); refreshTitleMenu(); }
 }
 
+// v0.33: 動きプロファイルの切り替え（実機で手触りを比べるため）。
+// null = 竜種本来の動き → ufo → ground → null … と巡回する。
+function debugCycleMoveProfile() {
+  const order = [null, ...Object.keys(MOVE_PROFILE_PRESETS)];
+  const idx = order.indexOf(moveProfileOverride);
+  moveProfileOverride = order[(idx + 1) % order.length];
+}
+
 // パネルのボタン定義。run 実行後にパネルは自動で再描画/クローズされる。
 const DEBUG_ACTIONS = [
+  { label: "🛸 動き切替",            run: () => debugCycleMoveProfile() },
   { label: "▶ 次ステージ",          run: () => debugAdvanceStage() },
   { label: "★ このステージをクリア", run: () => { if (gameState === "playing") triggerStageClear(); } },
   { label: "🏁 全クリア（即）",       run: () => { if (gameState === "playing") triggerAllClear(); } },
@@ -632,8 +641,11 @@ function debugStatusLine() {
   const lv   = (typeof playerLevel !== "undefined") ? playerLevel : "-";
   const flock = (typeof N !== "undefined") ? countAliveBoids() : "-";
   const stg  = (typeof currentStage !== "undefined") ? currentStage + 1 : "-";
+  // v0.33: 有効な動きプロファイル（デバッグ上書き中はその名前）を出す
+  const move = moveProfileOverride ? moveProfileOverride : `種:${flockWeapon}`;
   return `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
-         `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears}`;
+         `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
+         `動き:${move}`;
 }
 
 function renderDebugPanel() {
@@ -743,25 +755,127 @@ const PROJECTILE_HIT_DAMAGE = 4.3;
 // -----------------------------------------------------------------
 // バランスデータ（Phase2から流用）
 // -----------------------------------------------------------------
-// Boids パラメータ（散開相当の値を恒久固定値として採用）
+// Boids パラメータ（散開相当の値を恒久固定値として採用）。
+// v0.33: 速度・加速・旋回・リーダー関連は竜種ごとに変えるため MOVE_PROFILE_* へ移動した。
+// ここに残すのは「竜種を問わず群れの隊列を決める値」だけ。
 const BASE_CFG = {
-  perception:       55,   // spread 値
-  separationRadius: 28,   // spread 値
-  maxSpeed:         160,
-  minSpeed:         60,
-  maxForce:         320,
-  wSeparation:      2.5,  // spread 値
+  perception:       55,   // 近傍とみなす半径（整列・結合の参照範囲）
+  separationRadius: 28,   // この距離より近い個体からは離れる
+  wSeparation:      2.5,
   wAlignment:       1.0,
-  wCohesion:        0.4,  // spread 値
-  wLeader:          1.6,
-  leaderSeekDist:   80,
-  pathMaxPoints:    240,
-  pathMinSegment:   8,
-  leaderSpeed:      220,
-  idleWanderRadius: 120,
+  wCohesion:        0.4,
+  idleWanderRadius: 120,  // アイドル旋回の半径
   fixedStepMs:      16,
   maxDtMs:          64,
 };
+
+// パスに点を記録する最小移動距離（ワールドpx）。
+// 小さくすると細かい線が拾えるが点が増える。旧 BASE_CFG.pathMinSegment は
+// Math.max(値, 30) に負けて死んでいたので、実効値をそのまま定数にした。
+const PATH_MIN_SEGMENT = 30;
+
+// 個体がリーダーへ「到達した」とみなし始める距離。この内側では望む速さを
+// 距離に比例して落とす（minSpeed=0 の竜種はその場に留まれる）。
+const BOID_ARRIVE_DIST = 70;
+
+// -----------------------------------------------------------------
+// v0.33: 竜種ごとの「動きの手触り」プロファイル
+// -----------------------------------------------------------------
+// 移動の性格をこの1か所に集約する。simStep（群れの積分）と updateLeader（操縦点）が参照。
+//
+// 速度を「向き」と「速さ」に分解して積分するので、次の2つが独立に効く：
+//   turnRate … 旋回角速度の上限(rad/s)。小さいほど大回りになる
+//   accel    … 速さの変化率の上限(px/s^2)。小さいほど出足が鈍い
+// どちらも INSTANT を入れると制限なし＝UFO 的な即時方向転換になる。
+//
+// v0.32 までは力ベース積分だったため、実効の旋回角速度は
+// maxForce / maxSpeed = 320 / 160 ≈ 2.0 rad/s だった。
+// MOVE_PROFILE_DEFAULT はこの手触りを再現する値にしてある（既存竜種の互換）。
+const INSTANT = Infinity;
+
+const MOVE_PROFILE_DEFAULT = {
+  maxSpeed:    160,    // 最高速度 px/s
+  minSpeed:    60,     // 最低速度 px/s（0 にすると止まれる）
+  accel:       320,    // 加速度の上限 px/s^2（INSTANT で即時）
+  turnRate:    2.0,    // 旋回角速度の上限 rad/s（INSTANT で即時方向転換）
+  leaderSpeed: 220,    // 操縦点（リーダー）の移動速度 px/s
+  leaderPull:  1.6,    // リーダーへの引力の重み
+  recoil:      0,      // 発射時に発射方向の逆へ加わる速度 px/s（反動）
+  fireStun:    0,      // 発射後に動きが止まる時間 秒（硬直）
+  pathEndMode: "loop", // パス末端に達した後の挙動（下記）
+};
+
+// pathEndMode: 指を離してパスの終端まで行った後どうするか。
+//   "loop"     … 記録した軌跡を繰り返しなぞる（閉じた円を描くと周回する。従来の挙動）
+//   "wander"   … その場でウロウロする（群れ重心のまわりを旋回）
+//   "straight" … そのままの向きへ直進し続ける
+//   "stop"     … 減速してその場に留まる
+// ※閉じた線（始点と終点が近い）は竜種に関わらず常に周回する。
+//   周回は「円を描いて放置して眺める」アクアリウム柱の要なので潰さない。
+const PATH_END_MODES = ["loop", "wander", "straight", "stop"];
+
+// 竜種（flockWeapon）別の上書き。MOVE_PROFILE_DEFAULT に足りない項目だけ書く。
+//
+// ★調整の指針：**旋回半径 = maxSpeed / turnRate** が群れの散らばり（画面に収まるか）を決める。
+// 実測で「群れの重心からの平均距離 ≒ 旋回半径の約2倍」になる。
+// 縦持ち390px幅では散らばり180px程度が上限の目安なので、旋回半径は概ね60〜110pxに収める。
+const SPECIES_MOVEMENT = {
+  // 火竜（beam）: 基準。近距離で建物を舐めるので素直な旋回と扱いやすい速度。旋回半径80px。
+  beam: {},
+  // 氷竜（bullet）: 射撃機。小回りが利いて速い（旋回半径63px）。
+  // 撃つたび軽い反動で押し戻され、群れが小刻みに揺れる。
+  bullet: {
+    maxSpeed: 175, accel: 360, turnRate: 2.8,
+    recoil: 18, fireStun: 0.04,
+    pathEndMode: "straight",
+  },
+  // 影竜（missile）: 滑空型。出足が鈍く大回り（旋回半径100px）だが最高速は伸びる。反動なし。
+  missile: {
+    maxSpeed: 180, minSpeed: 80, accel: 190, turnRate: 1.8, leaderSpeed: 240,
+    pathEndMode: "straight",
+  },
+  // 緋竜（melee）: 突撃型。加速は鋭いが旋回は重い（旋回半径109px）。
+  // ぶつかると硬直が長く「重い一撃」になる。
+  melee: {
+    maxSpeed: 185, accel: 520, turnRate: 1.7,
+    fireStun: 0.14,
+    pathEndMode: "wander",
+  },
+};
+
+// 将来の竜種用プリセット。まだ竜種には割り当てていないので、
+// 実機の手触り確認はデバッグパネルの「🛸 動き」から切り替えて行う。
+const MOVE_PROFILE_PRESETS = {
+  // UFO型: 加速も旋回も制限なし＝指に対して向きと速さが即時に変わる。止まれる。
+  ufo: {
+    maxSpeed: 170, minSpeed: 0, accel: INSTANT, turnRate: INSTANT,
+    leaderSpeed: 200, pathEndMode: "stop",
+  },
+  // 鈍重な陸上型: 大回り・遅い出足・止まれない。地を這う重量感。
+  // リーダー速度を落として群れが置いていかれないようにし、引力を強めて隊列を締める。
+  // 旋回半径105px。accel は「出足の鈍さ」を残しつつ隊列を維持できる下限として130。
+  ground: {
+    maxSpeed: 105, minSpeed: 45, accel: 130, turnRate: 1.0,
+    leaderSpeed: 130, leaderPull: 2.2,
+    pathEndMode: "straight",
+  },
+};
+
+// 有効プロファイルの解決（竜種 or デバッグ上書き）。
+// キーが変わったときだけ合成しキャッシュするので毎フレーム呼んでも割り当てが起きない。
+let moveProfileOverride = null;   // MOVE_PROFILE_PRESETS のキー or null
+let _mvCache = null, _mvKey = "";
+function mv() {
+  const key = (moveProfileOverride || "-") + "|" + flockWeapon;
+  if (key !== _mvKey) {
+    _mvKey = key;
+    const ov = moveProfileOverride
+      ? MOVE_PROFILE_PRESETS[moveProfileOverride]
+      : SPECIES_MOVEMENT[flockWeapon];
+    _mvCache = Object.assign({}, MOVE_PROFILE_DEFAULT, ov || {});
+  }
+  return _mvCache;
+}
 
 // -----------------------------------------------------------------
 // ステージ定義
@@ -3588,8 +3702,8 @@ function updateBossNova(dt) {
     const pushDist = BOSS_NOVA_PUSH_MIN + (1 - d / BOSS_NOVA_RADIUS) * 90;
     px[i] += nx * pushDist;
     py[i] += ny * pushDist;
-    vx[i] = nx * BASE_CFG.maxSpeed;
-    vy[i] = ny * BASE_CFG.maxSpeed;
+    vx[i] = nx * mv().maxSpeed;
+    vy[i] = ny * mv().maxSpeed;
   }
   triggerFlash("rgba(255,140,40,0.18)", 0.15);
   triggerShake(5, 0.3);   // v0.8: ノヴァの衝撃を画面でも伝える
@@ -5587,8 +5701,8 @@ function applyProjectileKnockback(boidIdx, projIdx) {
   if (projKind[projIdx] === 2) {
     px[boidIdx] += nx * BOSS_SHOT_KNOCKBACK_DIST;
     py[boidIdx] += ny * BOSS_SHOT_KNOCKBACK_DIST;
-    vx[boidIdx] = nx * BASE_CFG.maxSpeed;
-    vy[boidIdx] = ny * BASE_CFG.maxSpeed;
+    vx[boidIdx] = nx * mv().maxSpeed;
+    vy[boidIdx] = ny * mv().maxSpeed;
     return;
   }
 
@@ -5603,9 +5717,9 @@ function applyProjectileKnockback(boidIdx, projIdx) {
   vy[boidIdx] += ny * knockbackSpeed;
   // 速度を maxSpeed でクランプして飛び出しを防ぐ
   const sp = Math.sqrt(vx[boidIdx] * vx[boidIdx] + vy[boidIdx] * vy[boidIdx]);
-  if (sp > BASE_CFG.maxSpeed) {
-    vx[boidIdx] = (vx[boidIdx] / sp) * BASE_CFG.maxSpeed;
-    vy[boidIdx] = (vy[boidIdx] / sp) * BASE_CFG.maxSpeed;
+  if (sp > mv().maxSpeed) {
+    vx[boidIdx] = (vx[boidIdx] / sp) * mv().maxSpeed;
+    vy[boidIdx] = (vy[boidIdx] / sp) * mv().maxSpeed;
   }
 }
 
@@ -5726,6 +5840,19 @@ function updateBeamAttacks(dt) {
       });
     }
   }
+
+  // v0.33: BEAM は単発ではなく持続照射なので、反動は「照射している間ずっと押し戻される」
+  // 連続的な力として与える（recoil は px/s の目安なので dt を掛ける）。
+  // 既存の火竜は recoil=0 なので挙動は変わらない。
+  const recoil = mv().recoil;
+  if (recoil > 0) {
+    for (const b of activeBreaths) {
+      const i = b.boidIdx;
+      const ang = Math.atan2(b.targetWy - py[i], b.targetWx - px[i]);
+      vx[i] -= Math.cos(ang) * recoil * dt;
+      vy[i] -= Math.sin(ang) * recoil * dt;
+    }
+  }
 }
 
 // -----------------------------------------------------------------
@@ -5770,8 +5897,10 @@ function updateCollisionAttacks(dt) {
         ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
         : COLLISION_DAMAGE;
 
-      // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）
-      boidHitStopTimer[i]    = HITSTOP_DURATION;
+      // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）。
+      // v0.33: 竜種プロファイルの fireStun（硬直）が長ければそちらを使う
+      // ＝突撃型（緋竜）は当たった後にぐっと重く止まる。
+      boidHitStopTimer[i]    = Math.max(HITSTOP_DURATION, mv().fireStun);
       // クールダウンをセットして同じ建物への連続ヒットを防ぐ
       boidCollisionCooldown[i] = isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
 
@@ -6127,8 +6256,8 @@ function initBoids() {
     px[i] = startWx + Math.cos(a) * r;
     py[i] = startWy + Math.sin(a) * r;
     const ang = Math.random() * Math.PI * 2;
-    vx[i] = Math.cos(ang) * BASE_CFG.minSpeed;
-    vy[i] = Math.sin(ang) * BASE_CFG.minSpeed;
+    vx[i] = Math.cos(ang) * mv().minSpeed;
+    vy[i] = Math.sin(ang) * mv().minSpeed;
     boidHp[i]        = BOID_MAX_HP;
     boidDead[i]      = 0;
     boidFadeTimer[i] = 0;
@@ -6183,8 +6312,8 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     px[i]     = startWx + Math.cos(a) * r;
     py[i]     = startWy + Math.sin(a) * r;
     const ang = Math.random() * Math.PI * 2;
-    vx[i]     = Math.cos(ang) * BASE_CFG.minSpeed;
-    vy[i]     = Math.sin(ang) * BASE_CFG.minSpeed;
+    vx[i]     = Math.cos(ang) * mv().minSpeed;
+    vy[i]     = Math.sin(ang) * mv().minSpeed;
     boidDead[i] = 0;
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = ang;
@@ -6429,18 +6558,18 @@ function spawnBoidAtEgg(wx, wy) {
     avgVy /= aliveCount;
   } else {
     // 群れが全滅していたら右方向に発射
-    avgVx = BASE_CFG.minSpeed;
+    avgVx = mv().minSpeed;
     avgVy = 0;
   }
   // 群れ平均速度にランダム成分を少し加える（単純コピーで整列しすぎないよう）
   const randAngle = Math.random() * Math.PI * 2;
-  const randStrength = BASE_CFG.minSpeed * 0.3;
+  const randStrength = mv().minSpeed * 0.3;
   const initVx = avgVx + Math.cos(randAngle) * randStrength;
   const initVy = avgVy + Math.sin(randAngle) * randStrength;
 
   // 速度の大きさを minSpeed 以上に保証
-  const speed = Math.sqrt(initVx * initVx + initVy * initVy) || BASE_CFG.minSpeed;
-  const scale = speed < BASE_CFG.minSpeed ? BASE_CFG.minSpeed / speed : 1;
+  const speed = Math.sqrt(initVx * initVx + initVy * initVy) || mv().minSpeed;
+  const scale = speed < mv().minSpeed ? mv().minSpeed / speed : 1;
   const finalVx = initVx * scale;
   const finalVy = initVy * scale;
 
@@ -7111,6 +7240,23 @@ const dprojTarget  = new Int32Array(MAX_DPROJ);   // missile: 追尾対象の建
 
 function clearDragonProjectiles() { dprojActive.fill(0); }
 
+/**
+ * v0.33: 発射の反動と硬直を1個体に適用する。
+ * 反動 = 発射方向の逆に速度を足す（撃つと押し戻される手触り）。
+ * 硬直 = boidHitStopTimer を使って物理更新を止める（体当たりのヒットストップと同じ機構。
+ *        「この個体の物理を N 秒止める」という意味がまさに硬直なので流用する）。
+ */
+function applyFireKick(boidIdx, angle) {
+  const prof = mv();
+  if (prof.recoil > 0) {
+    vx[boidIdx] -= Math.cos(angle) * prof.recoil;
+    vy[boidIdx] -= Math.sin(angle) * prof.recoil;
+  }
+  if (prof.fireStun > 0) {
+    boidHitStopTimer[boidIdx] = Math.max(boidHitStopTimer[boidIdx], prof.fireStun);
+  }
+}
+
 function spawnDragonProjectile(fromX, fromY, kind, angle, targetIdx) {
   let slot = -1;
   for (let i = 0; i < MAX_DPROJ; i++) {
@@ -7183,6 +7329,7 @@ function updateBulletAttacks(dt) {
     const target = settlements[targetIdx];
     const angle  = Math.atan2(target.wy - py[i], target.wx - px[i]);
     spawnDragonProjectile(px[i], py[i], 0, angle, targetIdx);
+    applyFireKick(i, angle);   // v0.33: 竜種プロファイルの反動・硬直
   }
 }
 
@@ -7205,6 +7352,7 @@ function updateMissileAttacks(dt) {
     // 発射方向は現在の進行方向（そこからゆらいで加速する軌道が気持ちよさの本体）
     const angle = Math.atan2(vy[i], vx[i]);
     spawnDragonProjectile(px[i], py[i], 1, angle, targetIdx);
+    applyFireKick(i, angle);   // v0.33: 竜種プロファイルの反動・硬直
   }
 }
 
@@ -8658,23 +8806,39 @@ const pathBuf = new Float32Array(PATH_MAX * 2);
 let pathHead = 0;
 let pathLen  = 0;
 let leaderPathConsumeIdx = 0;
+// v0.33: 開いた線の終端に到達したか。到達後は竜種の pathEndMode に従う（updateLeader）。
+let pathEndReached = false;
+
+// 始点と終点がこの距離以内なら「閉じた線」とみなして周回させる（円を描いて放置＝周回）
+const PATH_CLOSED_DIST    = 120;
+// 開いた線の終端に「着いた」と判定する距離
+const PATH_END_REACH_DIST = 50;
 
 function pathGet(logicalIdx) {
   const ring = (pathHead - pathLen + logicalIdx + PATH_MAX) % PATH_MAX;
   return { x: pathBuf[ring * 2], y: pathBuf[ring * 2 + 1] };
 }
 
+/** 描いた線が閉じている（始点と終点が近い）か。閉じていれば竜種に関わらず周回させる。 */
+function isPathClosed() {
+  if (pathLen < 6) return false;
+  const a = pathGet(0), b = pathGet(pathLen - 1);
+  const dx = a.x - b.x, dy = a.y - b.y;
+  return dx * dx + dy * dy < PATH_CLOSED_DIST * PATH_CLOSED_DIST;
+}
+
 function pathClear() {
   pathLen  = 0;
   pathHead = 0;
   leaderPathConsumeIdx = 0;
+  pathEndReached = false;
 }
 
 function pathPush(wx, wy) {
   if (pathLen > 0) {
     const last = pathGet(pathLen - 1);
     const dx = wx - last.x, dy = wy - last.y;
-    const minSeg = Math.max(BASE_CFG.pathMinSegment, 30);
+    const minSeg = PATH_MIN_SEGMENT;
     if (dx * dx + dy * dy < minSeg * minSeg) return;
   }
   pathBuf[pathHead * 2]     = wx;
@@ -8861,7 +9025,7 @@ function updateDeathTimers(dt) {
           if (!boidDead[j] && !boidDowned[j]) { avgVx += vx[j]; avgVy += vy[j]; cnt++; }
         }
         if (cnt > 0) { avgVx /= cnt; avgVy /= cnt; }
-        else { avgVx = BASE_CFG.minSpeed; avgVy = 0; }
+        else { avgVx = mv().minSpeed; avgVy = 0; }
         vx[i] = avgVx + (Math.random() - 0.5) * 30;
         vy[i] = avgVy + (Math.random() - 0.5) * 30;
         // HP全回復・フラグリセット（v0.6: 硬鱗カード分も含めた実効最大HP。v0.22: 母竜は motherHp 込み）
@@ -8922,12 +9086,20 @@ function simStep(dt) {
   // （速度ベクトルは維持することで停止後にスムーズに動き出す）
   const boidHitStopped = boidHitStopTimer; // 参照を短縮
 
-  // 隊形廃止により BASE_CFG の固定値を直接参照
+  // 隊列を決める値は竜種共通（BASE_CFG）
   const perc = BASE_CFG.perception;
   const sepR = BASE_CFG.separationRadius;
   const wSep = BASE_CFG.wSeparation;
   const wAli = BASE_CFG.wAlignment;
   const wCoh = BASE_CFG.wCohesion;
+
+  // v0.33: 動きの性格は竜種プロファイルから。ループ外で1回だけ引く。
+  const prof     = mv();
+  const maxSp    = prof.maxSpeed * _simSpeedMult;
+  const minSp    = prof.minSpeed * _simSpeedMult;
+  const wLead    = prof.leaderPull;
+  const accelLim = prof.accel === INSTANT ? Infinity : prof.accel * _simSpeedMult;
+  const turnLim  = prof.turnRate === INSTANT ? Infinity : prof.turnRate;
 
   gridClear();
   for (let i = 0; i < N; i++) {
@@ -8988,22 +9160,46 @@ function simStep(dt) {
       const ldx = leader.x - xi, ldy = leader.y - yi;
       const ld  = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
       // 隊形廃止により ring 配置は常にスキップ — 通常リーダー追従のみ
-      ax += (ldx / ld) * BASE_CFG.wLeader * 120;
-      ay += (ldy / ld) * BASE_CFG.wLeader * 120;
+      ax += (ldx / ld) * wLead * 120;
+      ay += (ldy / ld) * wLead * 120;
     }
 
+    // ---- v0.33: 「向き」と「速さ」を分けて積分する ----
+    // 行きたい向き = 操舵の合力（分離・整列・結合・リーダー引力）の向き。
+    // 力の大きさは向きの決定には使わない。こうしないと dt が小さいぶん
+    // 「現在の速度」に引っぱられて、turnRate=INSTANT でも即時に向きが変わらない。
+    // 向きは turnRate、速さは accel で別々に制限するので、
+    // 「小回りは利くが加速は鈍い」「即時方向転換（UFO）」を独立に表現できる。
     const am = Math.sqrt(ax * ax + ay * ay);
-    if (am > BASE_CFG.maxForce) { const s = BASE_CFG.maxForce / am; ax *= s; ay *= s; }
+    const curSpeed = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+    const curAngle = curSpeed > 0.0001 ? Math.atan2(vy[i], vx[i]) : 0;
+    const desiredAngle = am > 0.0001 ? Math.atan2(ay, ax) : curAngle;
 
-    let nvx = vx[i] + ax * dt;
-    let nvy = vy[i] + ay * dt;
-    const sp = Math.sqrt(nvx * nvx + nvy * nvy);
-    // v0.6: 「疾風」カードで上限・下限速度が伸びる
-    const maxSp = BASE_CFG.maxSpeed * _simSpeedMult;
-    const minSp = BASE_CFG.minSpeed * _simSpeedMult;
-    if      (sp > maxSp) { const s = maxSp / sp; nvx *= s; nvy *= s; }
-    else if (sp < minSp && sp > 0.0001) { const s = minSp / sp; nvx *= s; nvy *= s; }
-    else if (sp <= 0.0001) { nvx = minSp; nvy = 0; }
+    // 望む速さ: 基本は最高速。リーダーに近いほど落として最低速に寄せる
+    // ＝ minSpeed が 0 の竜種は操縦点の上でその場に留まれる。
+    const adx = leader.x - xi, ady = leader.y - yi;
+    const aDist = Math.sqrt(adx * adx + ady * ady);
+    let desiredSpeed = maxSp * Math.min(1, aDist / BOID_ARRIVE_DIST);
+    if (desiredSpeed < minSp) desiredSpeed = minSp;
+
+    // 旋回制限: 1ステップで turnLim*dt ラジアンまでしか向きを変えられない
+    let dAng = desiredAngle - curAngle;
+    while (dAng >  Math.PI) dAng -= Math.PI * 2;
+    while (dAng < -Math.PI) dAng += Math.PI * 2;
+    const turnMax = turnLim * dt;
+    if      (dAng >  turnMax) dAng =  turnMax;
+    else if (dAng < -turnMax) dAng = -turnMax;
+    const newAngle = curAngle + dAng;
+
+    // 加速制限: 速さの変化も accelLim*dt までに抑える
+    let dSpd = desiredSpeed - curSpeed;
+    const spdMax = accelLim * dt;
+    if      (dSpd >  spdMax) dSpd =  spdMax;
+    else if (dSpd < -spdMax) dSpd = -spdMax;
+    const newSpeed = curSpeed + dSpd;
+
+    const nvx = Math.cos(newAngle) * newSpeed;
+    const nvy = Math.sin(newAngle) * newSpeed;
     vx[i] = nvx; vy[i] = nvy;
 
     let nx = xi + nvx * dt;
@@ -9071,7 +9267,8 @@ const LEADER_ARRIVAL_DIST = 60; // px（パスの先読み半径 24px より大�
 
 function updateLeader(dt) {
   // v0.6: 「疾風」カードでリーダー速度も伸びる（群れと感覚を揃える）
-  const speed = BASE_CFG.leaderSpeed * _simSpeedMult;
+  // v0.33: 竜種プロファイルの leaderSpeed を使う（鈍重な竜は操縦点も遅い）
+  const speed = mv().leaderSpeed * _simSpeedMult;
 
   if (isDrawing) {
     // ---- 追従モード（v0.32: 巡航操舵を廃止して「指へ向かう、着いたら止まる」に単純化）----
@@ -9126,10 +9323,9 @@ function updateLeader(dt) {
     const k  = Math.min(1, dt * 10); // 機敏な操舵
     leader.vx += (nx * desired - leader.vx) * k;
     leader.vy += (ny * desired - leader.vy) * k;
-  } else if (pathLen > 2) {
-    // ---- パス・ループ追従モード（指を離した後）----
-    // 記録した軌跡を繰り返しなぞる。円を描いて離すと、その円をずっとぐるぐる回る。
-    // 最近傍ウェイポイントを全走査で求め、数点先（末尾はラップ）を目標に全速で追う。
+  } else if (pathLen > 2 && !pathEndReached) {
+    // ---- パス追従モード（指を離した後）----
+    // 最近傍ウェイポイントを全走査で求め、数点先を目標に全速で追う。
     let ni = 0, nd = Infinity;
     for (let k = 0; k < pathLen; k++) {
       const p = pathGet(k);
@@ -9137,7 +9333,25 @@ function updateLeader(dt) {
       const e2 = ex * ex + ey * ey;
       if (e2 < nd) { nd = e2; ni = k; }
     }
-    const aim = pathGet((ni + 3) % pathLen); // 数点先（ラップで周回）
+
+    // v0.33: 閉じた線（円など）は従来どおり周回し続ける＝放置して眺められる。
+    // 開いた線は末尾で折り返さず、終端に着いたら竜種の pathEndMode へ移す
+    // （旧実装は開いた線でも (ni+3)%pathLen で先頭へ飛び、終端付近で
+    //   「前へ進む／先頭へ戻る」が拮抗してリーダーが停止していた）。
+    let aimIdx;
+    if (isPathClosed()) {
+      aimIdx = (ni + 3) % pathLen;
+    } else {
+      aimIdx = ni + 3;
+      if (aimIdx >= pathLen) {
+        aimIdx = pathLen - 1;
+        const last = pathGet(pathLen - 1);
+        const ex = last.x - leader.x, ey = last.y - leader.y;
+        if (ex * ex + ey * ey < PATH_END_REACH_DIST * PATH_END_REACH_DIST) pathEndReached = true;
+      }
+    }
+
+    const aim = pathGet(aimIdx);
     const dx = aim.x - leader.x, dy = aim.y - leader.y;
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
     const nx = dx / d, ny = dy / d;
@@ -9145,10 +9359,32 @@ function updateLeader(dt) {
     leader.vx += (nx * speed - leader.vx) * k;
     leader.vy += (ny * speed - leader.vy) * k;
   } else {
-    // ---- アイドル旋回モード（パスが無い／ごく短いとき）----
-    const target = getIdleLeaderTarget(dt);
-    leader.vx += ((target.x - leader.x) * 0.8 - leader.vx) * Math.min(1, dt * 2.0);
-    leader.vy += ((target.y - leader.y) * 0.8 - leader.vy) * Math.min(1, dt * 2.0);
+    // ---- パス末端に到達した後、またはパスが無いとき ----
+    // v0.33: 竜種の pathEndMode で挙動を変える。パスが無い（ステージ開始直後など）は常にウロウロ。
+    // "loop" の竜種が開いた線を引いた場合もここに来る＝ウロウロに落ち着く。
+    const mode = (pathLen > 2 && pathEndReached) ? mv().pathEndMode : "wander";
+
+    if (mode === "straight") {
+      // 今の向きへ直進し続ける。速さは leaderSpeed に寄せる。
+      const sp = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
+      if (sp > 1) {
+        const k = Math.min(1, dt * 3);
+        leader.vx += ((leader.vx / sp) * speed - leader.vx) * k;
+        leader.vy += ((leader.vy / sp) * speed - leader.vy) * k;
+      } else {
+        pathEndReached = false;   // 向きが決まらない（停止状態）ならパス追従へ戻す
+      }
+    } else if (mode === "stop") {
+      // 減速してその場に留まる（群れは最低速度で周囲を漂う）
+      const k = Math.min(1, dt * 4);
+      leader.vx += (0 - leader.vx) * k;
+      leader.vy += (0 - leader.vy) * k;
+    } else {
+      // "wander"（と開いた線の "loop"）: 群れ重心のまわりをウロウロ
+      const target = getIdleLeaderTarget(dt);
+      leader.vx += ((target.x - leader.x) * 0.8 - leader.vx) * Math.min(1, dt * 2.0);
+      leader.vy += ((target.y - leader.y) * 0.8 - leader.vy) * Math.min(1, dt * 2.0);
+    }
   }
 
   leader.x += leader.vx * dt;
@@ -9826,7 +10062,7 @@ function drawBoids() {
     const base = i * TAIL_SEGS;
     // 速度の大きさで「尻尾のまっすぐ度」を調整（速いと旋回が少なくまっすぐ）
     const speed    = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
-    const maxSpeed = BASE_CFG.maxSpeed || 120;
+    const maxSpeed = mv().maxSpeed || 120;
     // speedRatio: 0（低速）〜1（最高速）。低速ほどしなりを強調
     const speedRatio = Math.min(1, speed / maxSpeed);
     // 時間ベースの微小揺れ（個体ごとに位相をずらす）

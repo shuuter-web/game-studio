@@ -1,6 +1,7 @@
 # Dragon Tide — 操作の仕様と実装（現状の詳細）
 
-- 作成: 2026-08-01 ／ 更新: 2026-08-02 ／ 対象コード: `prototypes/dragon-tide/index.html`（**v0.32.0** 時点）
+- 作成: 2026-08-01 ／ 更新: 2026-08-02 ／ 対象コード: `prototypes/dragon-tide/index.html`（**v0.33.0** 時点）
+- **竜種ごとの動きのパラメータは §12** にまとめてある（v0.33 で新設）。
 - 目的：**竜種ごとに操作感を変える前に、土台の操作を直す**ための現状把握。
 - 行番号は変動するため**識別子（関数名・定数名）で参照**する。最新の実像はコードを正とする。
 - §7 の問題はすべて**プレビュー上で実測して数値を取った**もの（推測ではない）。
@@ -120,14 +121,14 @@ inputMode = "DRAW"; isDrawing = true; pathClear(); …
 ```js
 const ldx = leader.x - xi, ldy = leader.y - yi;
 const ld  = Math.hypot(ldx, ldy) || 1;
-ax += (ldx / ld) * BASE_CFG.wLeader * 120;   // = 1.6 × 120 = 192
-ay += (ldy / ld) * BASE_CFG.wLeader * 120;
+ax += (ldx / ld) * wLead * 120;   // wLead = プロファイルの leaderPull（既定1.6 → 192）
+ay += (ldy / ld) * wLead * 120;
 ```
 
-- **方向のみを使い、距離による減衰がない**（常に同じ大きさ 192 で引っぱる）。
-- **`BASE_CFG.leaderSeekDist (80)` はコード中で一度も使われていない**（実測確認済み）。
-  到達半径＝減速がないので、群れはリーダー点で落ち着かず**通り過ぎて回り込む**。
-- 最終的に `maxForce = 320` でクランプ、速度は `minSpeed 60` 〜 `maxSpeed 160`（×`_simSpeedMult`）。
+- **方向のみを使い、距離による減衰がない**（常に同じ大きさで引っぱる）。
+- v0.33 で**到達減速が入った**：望む速さが `maxSpeed × min(1, リーダーまでの距離 / BOID_ARRIVE_DIST)`
+  になり、リーダーに近づくと `minSpeed` まで落ちる（旧 `leaderSeekDist` が意図していたものを実装した形）。
+- 速度・加速・旋回の制限は §12 のプロファイル方式へ移行（`maxForce` クランプは撤去）。
 
 ---
 
@@ -175,11 +176,14 @@ Bは `updateLeader` 冒頭で `screenToWorld(touchRing.x, touchRing.y)` を毎�
 指とのズレは **700px → 41px で安定**。描いた線の追従も維持（弧を描いて線から6px、
 ウェイポイント10/11消費）。
 
-### ★7-2. リーダー速度(220) > 竜の最大速度(160) — **未対応（7-1修正後に再測定が必要）**
+### 7-2. リーダー速度(220) > 竜の最大速度(160) — **v0.33 で大きく改善（残りは実機判断）**
 
-> 7-1 の修正でリーダーが指に留まるようになったため、下表の「際限なく開き続ける」状況は
-> 押しっぱなし時には起きなくなった（指が群れの前方なら群れ速度と釣り合う）。
-> ただし `wLeader` の距離減衰なし・`leaderSeekDist` 未使用はそのままなので、**別途評価する**。
+> - 7-1 の修正でリーダーが指に留まるようになり、押しっぱなしでの無限乖離は解消。
+> - v0.33 で**到達減速**（`BOID_ARRIVE_DIST`）が入り、群れがリーダー点で落ち着くようになった。
+> - `leaderSpeed` は**竜種プロファイル側**になったので、鈍重な竜は操縦点も遅くできる
+>   （`ground` プリセットは 130）。
+> - 残る「群れが伸びきる」感覚は**旋回半径 = maxSpeed / turnRate**で決まる（§12-3）。
+>   引力の距離減衰は依然入っていないので、実機の手触りで必要性を判断する。
 
 比が常に 1.375 なので、**群れは構造的に追いつけない**。上表の「リーダーと群れの距離」が
 毎秒60px（＝220−160）ずつ開き続けるのがそれ。
@@ -187,7 +191,7 @@ Bは `updateLeader` 冒頭で `screenToWorld(touchRing.x, touchRing.y)` を毎�
 カメラは**群れ重心**を追うので、**操縦しているリーダーは画面外に出る**（縦持ち390px幅・scale1.15で
 可視半幅は約170ワールドpx。364px離れれば確実に画面外）。
 
-### ★7-3. 開いた線を描いて離すと、リーダーが線の途中で停止する
+### 7-3. 開いた線を描いて離すと、リーダーが線の途中で停止する — ✅ **v0.33.0 で解消**（§12-4 の副産物）
 
 モードBは `(最近傍 + 3) % pathLen` でラップする。**閉じた円なら周回**するが、
 **開いた線では終端付近で「前へ進む」と「先頭へ戻る」が拮抗してデッドロックする**。
@@ -218,7 +222,8 @@ Bは `updateLeader` 冒頭で `screenToWorld(touchRing.x, touchRing.y)` を毎�
 ### 7-7. 細かい死にコード・フレームレート依存
 
 - `inputMode = "UI"` は `bottomUIHeight === 0` のため**到達不能**（`sy >= viewH` は成立しない）。
-- `BASE_CFG.leaderSeekDist` 未使用、`BASE_CFG.pathMinSegment` 実質未使用。
+- ~~`BASE_CFG.leaderSeekDist` 未使用、`BASE_CFG.pathMinSegment` 実質未使用~~
+  → **v0.33 で撤去**（`PATH_MIN_SEGMENT` に一本化、到達減速は `BOID_ARRIVE_DIST` として実装）。
 - カメラ追従 `* 0.08` に `dt` が掛かっていない（低fps端末で追従が遅れる）。
 - モードBの最近傍探索は毎フレーム全 `pathLen`（最大240）走査。
 
@@ -228,12 +233,11 @@ Bは `updateLeader` 冒頭で `screenToWorld(touchRing.x, touchRing.y)` を毎�
 
 | 定数 | 値 | 意味 |
 |---|---|---|
-| `BASE_CFG.leaderSpeed` | 220 | リーダー速度 |
-| `BASE_CFG.maxSpeed` / `minSpeed` | 160 / 60 | 竜の速度 |
-| `BASE_CFG.wLeader` | 1.6 | リーダー引力の重み（実効 ×120） |
-| `BASE_CFG.maxForce` | 320 | 加速度クランプ |
-| `BASE_CFG.leaderSeekDist` | 80 | **未使用** |
-| `BASE_CFG.pathMinSegment` | 8 | **未使用**（実効30） |
+| 速度・加速・旋回・リーダー関連 | — | **v0.33 で竜種プロファイルへ移動（§12）**。`BASE_CFG` からは撤去 |
+| `PATH_MIN_SEGMENT` | 30 | パスに点を記録する最小移動距離（旧 `BASE_CFG.pathMinSegment` の実効値） |
+| `BOID_ARRIVE_DIST` | 70 | この内側で望む速さを距離比例に落とす（`minSpeed` が効く範囲） |
+| `PATH_CLOSED_DIST` | 120 | 始点と終点がこの距離以内なら「閉じた線」＝周回 |
+| `PATH_END_REACH_DIST` | 50 | 開いた線の終端に到達したと判定する距離 |
 | `BASE_CFG.perception` / `separationRadius` | 55 / 28 | 近傍・分離半径 |
 | `BASE_CFG.wSeparation` / `wAlignment` / `wCohesion` | 2.5 / 1.0 / 0.4 | Boids重み |
 | `BASE_CFG.idleWanderRadius` | 120 | アイドル旋回半径 |
@@ -290,3 +294,120 @@ Bは `updateLeader` 冒頭で `screenToWorld(touchRing.x, touchRing.y)` を毎�
   `simStep(dt)` を回す**のが確実（本文の実測はこの方法）。
 - 群れの1フレーム更新は `simStep(dt)`（`updateLeader` を内包）。`updateBoids` という関数は存在しない。
 - `preview_screenshot` はタイムアウトする。見た目は実機に委ねる。
+- **`beginRun(weapon)` は `gameState !== "title"` で即 return する**。竜種を切り替えて比較したいときは
+  `beginRun` を繰り返し呼ぶのではなく **`flockWeapon` を直接代入して `resetBoidsForStageStart(n)`** する
+  （繰り返し呼んで「全竜種が同じ値」という誤測定をした実績あり）。
+
+---
+
+## 12. 竜種ごとの動きのパラメータ（v0.33 新設）
+
+### 12-1. なぜ極座標に変えたか
+
+v0.32 までは力ベース積分（`v += a*dt` → 速度クランプ）だった。この形だと
+**旋回性能と加速性が分離できない**（どちらも `maxForce` に埋まる）ため、
+「小回りは利くが出足は鈍い」「加速度なしで即時方向転換（UFO）」を表現できない。
+
+v0.33 で速度を**「向き」と「速さ」に分解**して別々に制限する形にした。
+
+```
+行きたい向き = 操舵の合力（分離・整列・結合・リーダー引力）の向き
+              ※力の大きさは向きの決定に使わない
+望む速さ     = maxSpeed × min(1, リーダーまでの距離 / BOID_ARRIVE_DIST)  （下限 minSpeed）
+向きの変化   = turnRate × dt までに制限
+速さの変化   = accel × dt までに制限
+```
+
+**落とし穴**：最初は「望む向き＝`v + a*dt` の向き」で実装したが、dt が小さいぶん
+現在の速度に引っぱられて **`turnRate = INSTANT` でも反転に0.9秒かかった**。
+向きは*力の向き*から取らないと即時方向転換にならない。
+
+### 12-2. パラメータ一覧（`MOVE_PROFILE_DEFAULT`）
+
+| 項目 | 既定 | 意味 |
+|---|---|---|
+| `maxSpeed` | 160 | 最高速度 px/s |
+| `minSpeed` | 60 | 最低速度 px/s。**0 にすると操縦点の上で留まれる** |
+| `accel` | 320 | 速さの変化率の上限 px/s²。`INSTANT` で即時 |
+| `turnRate` | 2.0 | 旋回角速度の上限 rad/s。`INSTANT` で即時方向転換 |
+| `leaderSpeed` | 220 | 操縦点（リーダー）の速度 px/s |
+| `leaderPull` | 1.6 | リーダーへの引力の重み |
+| `recoil` | 0 | 発射時に発射方向の逆へ加わる速度 px/s（**反動**） |
+| `fireStun` | 0 | 発射後に物理が止まる秒数（**硬直**） |
+| `pathEndMode` | "loop" | パス末端に達した後の挙動（§12-4） |
+
+- 既定値は v0.32 の手触りを再現する値（当時の実効旋回角速度 = `maxForce/maxSpeed` = 320/160 ≈ 2.0）。
+- 反動・硬直は `applyFireKick(boidIdx, angle)` に集約。硬直は既存の `boidHitStopTimer`
+  （「この個体の物理を N 秒止める」）を流用する。**BEAM は持続照射なので反動は連続的な力**として
+  `updateBeamAttacks` の末尾で毎フレーム与える。
+- 速度・加速・旋回関連は **`BASE_CFG` から撤去**して全部プロファイル側に移した。
+  `BASE_CFG` に残るのは竜種共通の隊列パラメータ（`perception` / `separationRadius` / 各重み）だけ。
+  死に設定だった `leaderSeekDist` / `pathMaxPoints` / `pathMinSegment` も撤去し、
+  実効値をそのまま `PATH_MIN_SEGMENT = 30` にした。
+
+### 12-3. ★調整の指針：旋回半径
+
+**旋回半径 = `maxSpeed / turnRate`** が群れの散らばり（＝画面に収まるか）を決める。
+実測で **群れの重心からの平均距離 ≒ 旋回半径の約2倍**。
+縦持ち390px幅では平均散らばり180pxあたりが上限の目安なので、**旋回半径は概ね60〜110px**に収める。
+
+現行プロファイルの実測（群れ20体・リーダーを重心に固定して4秒後）：
+
+| 竜種 | turnRate | maxSpeed | 旋回半径 | 加速秒(0→9割) | 平均散らばり |
+|---|---|---|---|---|---|
+| 火竜 beam（基準） | 2.0 | 160 | 80 | 0.45 | 94 |
+| 氷竜 bullet | 2.8 | 175 | 63 | 0.45 | 137 |
+| 影竜 missile | 1.8 | 180 | 100 | 0.87 | 70 |
+| 緋竜 melee | 1.7 | 185 | 109 | 0.33 | 149 |
+| **ufo**（プリセット） | INSTANT | 170 | — | 0.02 | 33 |
+| **ground**（プリセット） | 1.0 | 105 | 105 | 0.73 | 206 |
+
+180度反転にかかる時間の実測：氷竜1.08秒 / 火竜2.2秒 / 影竜2.3秒 / 緋竜2.7秒 /
+**ufo 0.03秒（1〜2フレーム）** / **ground 3.75秒**。
+
+※散らばりは群れの旋回位相で±40程度ぶれる単発サンプル。最終的な数値は実機の手触りで詰める。
+
+### 12-4. `pathEndMode` — パス末端の挙動
+
+指を離してパスの終端まで行った後どうするか。竜種ごとに選べる。
+
+| 値 | 挙動 | 実測（開いた直線を引いて離し、末端到達後4秒） |
+|---|---|---|
+| `"loop"` | 記録した軌跡を繰り返しなぞる | 開いた線ではウロウロに落ちる（移動249px・速さ61） |
+| `"wander"` | その場でウロウロ（群れ重心のまわりを旋回） | 移動258px・速さ110 |
+| `"straight"` | そのままの向きへ直進し続ける | 移動880〜960px・速さ = `leaderSpeed` |
+| `"stop"` | 減速してその場に留まる | 移動1px・速さ0 |
+
+- **閉じた線（始点と終点が `PATH_CLOSED_DIST = 120` 以内）は竜種に関わらず常に周回する**。
+  「円を描いて放置して眺める」はアクアリウム柱の要なので潰さない（実測：どの竜種でも
+  半径170を速さ215で連続周回）。
+- 終端到達の判定は `PATH_END_REACH_DIST = 50`、状態は `pathEndReached`（`pathClear` でリセット）。
+
+**副作用として §7-3（開いた線を離すとリーダーが線の途中で停止する）が解消した。**
+旧実装は開いた線でも `(最近傍+3) % pathLen` で先頭へ折り返し、終端付近で
+「前へ進む／先頭へ戻る」が拮抗してデッドロックしていた。
+v0.33 は開いた線では折り返さず、終端に着いたら `pathEndMode` へ移す。
+
+### 12-5. 未割り当てのプリセット（UFO型・鈍重な陸上型）
+
+`MOVE_PROFILE_PRESETS` に `ufo` / `ground` を定義済み。**まだ竜種には割り当てていない**ので、
+実機の手触り確認は**デバッグパネルの「🛸 動き切替」**で行う
+（左下バージョンを3タップ → パネル。`種:beam` → `ufo` → `ground` を巡回。現在値はステータス行に出る）。
+
+- `ufo`: `accel`/`turnRate` ともに `INSTANT`、`minSpeed: 0`、`pathEndMode: "stop"`。
+  指に対して向きと速さが即時に変わり、止まれる。
+- `ground`: 大回り（旋回半径105）・遅い出足（`accel: 130`）・止まれない（`minSpeed: 45`）。
+  `leaderSpeed` を130に落として操縦点が群れを置いていかないようにし、`leaderPull` を2.2に上げて隊列を締めた。
+  ※「陸上」の名にある**地形との当たり判定（岩山・湖を迂回する）は未実装**。
+  現状は飛行と同じく地形を素通りする（`applyObstaclePushout` は全竜種共通で岩山のみ押し出す）。
+
+### 12-6. 差し込み口
+
+| 目的 | 差し込み口 |
+|---|---|
+| プロファイル定義 | `MOVE_PROFILE_DEFAULT` / `SPECIES_MOVEMENT`（竜種別）/ `MOVE_PROFILE_PRESETS`（未割り当て） |
+| 有効プロファイルの取得 | **`mv()`**（`flockWeapon` と `moveProfileOverride` でキャッシュ） |
+| 積分（向き・速さの制限） | `simStep` の「v0.33: 『向き』と『速さ』を分けて積分する」ブロック |
+| 反動・硬直 | `applyFireKick`（bullet/missile の発射時）／`updateCollisionAttacks`（緋竜の体当たり）／`updateBeamAttacks` 末尾（持続照射の連続反動） |
+| パス末端 | `updateLeader` の `pathEndReached` 分岐、`isPathClosed`、`PATH_CLOSED_DIST`、`PATH_END_REACH_DIST` |
+| 実機での切替 | `debugCycleMoveProfile`（DEBUG_ACTIONS「🛸 動き切替」） |
