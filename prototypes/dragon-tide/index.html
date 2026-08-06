@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.33.0";
+const GAME_VERSION = "v0.33.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -778,6 +778,21 @@ const PATH_MIN_SEGMENT = 30;
 // 距離に比例して落とす（minSpeed=0 の竜種はその場に留まれる）。
 const BOID_ARRIVE_DIST = 70;
 
+// リーダー方向へのコース修正のゲイン（1/s）。角度誤差×これ＝指示角速度で、turnRate で上限を掛ける。
+// 大きい誤差（大きく向きを変える場面）では turnRate に張り付き、
+// 小さい誤差（仲間との押し合い程度）では静かになる、という効き方にするための係数。
+const TURN_GAIN = 3.0;
+
+// コース修正の不感帯（rad）。この範囲のズレでは操作項を効かせず物理項だけに任せる。
+// 群れの中で少し横にいる個体は「リーダーへの方位」がわずかにズレるが、
+// そこへ律儀に舵を当てると隊列の中で細かく蛇行して見える（v0.32 には無かった揺れ）。
+// 約5.7度。大きなコース変更には影響しないので旋回性能の効きは損なわない。
+const TURN_DEADZONE = 0.10;
+
+// 近すぎる仲間がいるときに確保する最低速度（maxSpeed に対する割合）。
+// minSpeed=0 の竜種が操縦点で完全停止して重なるのを防ぐ。
+const SEP_MIN_SPEED_FRAC = 0.25;
+
 // -----------------------------------------------------------------
 // v0.33: 竜種ごとの「動きの手触り」プロファイル
 // -----------------------------------------------------------------
@@ -797,7 +812,7 @@ const MOVE_PROFILE_DEFAULT = {
   maxSpeed:    160,    // 最高速度 px/s
   minSpeed:    60,     // 最低速度 px/s（0 にすると止まれる）
   accel:       320,    // 加速度の上限 px/s^2（INSTANT で即時）
-  turnRate:    2.0,    // 旋回角速度の上限 rad/s（INSTANT で即時方向転換）
+  turnRate:    2.0,    // 旋回角速度の上限 rad/s（INSTANT で即時方向転換＝UFO型）
   leaderSpeed: 220,    // 操縦点（リーダー）の移動速度 px/s
   leaderPull:  1.6,    // リーダーへの引力の重み
   recoil:      0,      // 発射時に発射方向の逆へ加わる速度 px/s（反動）
@@ -9123,7 +9138,7 @@ function simStep(dt) {
     let sepX = 0, sepY = 0;
     let aliX = 0, aliY = 0;
     let cohX = 0, cohY = 0;
-    let nAli = 0, nCoh = 0;
+    let nAli = 0, nCoh = 0, nSep = 0;
 
     gridQuery(xi, yi, perc, neighbours);
     for (let k = 0; k < neighbours.length; k++) {
@@ -9131,11 +9146,22 @@ function simStep(dt) {
       if (j === i || boidDead[j]) continue;
       const dx = xi - px[j], dy = yi - py[j];
       const d2 = dx * dx + dy * dy;
-      if (d2 > perc2 || d2 === 0) continue;
+      if (d2 > perc2) continue;
+      if (d2 === 0) {
+        // v0.33.1: 完全に重なった場合。0除算を避けつつ**決定的な向き**へ押し分ける。
+        // 従来は continue でスキップしていたため、重なると分離が一切効かず
+        // 二度と離れられなかった（minSpeed=0 の竜種で20体が1点に団子になる原因）。
+        const a = i * 2.399963 + j * 0.5;   // 黄金角ベースで方向を散らす
+        sepX += Math.cos(a);
+        sepY += Math.sin(a);
+        nSep++;
+        continue;
+      }
       if (d2 < sep2) {
         const invD = 1 / Math.sqrt(d2);
         sepX += dx * invD;
         sepY += dy * invD;
+        nSep++;
       }
       aliX += vx[j]; aliY += vy[j]; nAli++;
       cohX += px[j]; cohY += py[j]; nCoh++;
@@ -9156,31 +9182,71 @@ function simStep(dt) {
       ay += (cohY * inv - yi) * wCoh;
     }
 
-    {
-      const ldx = leader.x - xi, ldy = leader.y - yi;
-      const ld  = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
-      // 隊形廃止により ring 配置は常にスキップ — 通常リーダー追従のみ
-      ax += (ldx / ld) * wLead * 120;
-      ay += (ldy / ld) * wLead * 120;
-    }
+    // リーダーへの引力（方向のみ。距離減衰はなし）。単位ベクトルと距離は下でも使う。
+    const ldx = leader.x - xi, ldy = leader.y - yi;
+    const aDist = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
+    const leadNx = ldx / aDist, leadNy = ldy / aDist;
+    ax += leadNx * wLead * 120;
+    ay += leadNy * wLead * 120;
 
     // ---- v0.33: 「向き」と「速さ」を分けて積分する ----
-    // 行きたい向き = 操舵の合力（分離・整列・結合・リーダー引力）の向き。
-    // 力の大きさは向きの決定には使わない。こうしないと dt が小さいぶん
-    // 「現在の速度」に引っぱられて、turnRate=INSTANT でも即時に向きが変わらない。
     // 向きは turnRate、速さは accel で別々に制限するので、
     // 「小回りは利くが加速は鈍い」「即時方向転換（UFO）」を独立に表現できる。
-    const am = Math.sqrt(ax * ax + ay * ay);
     const curSpeed = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
     const curAngle = curSpeed > 0.0001 ? Math.atan2(vy[i], vx[i]) : 0;
-    const desiredAngle = am > 0.0001 ? Math.atan2(ay, ax) : curAngle;
+
+    // 行きたい向きの決定（v0.33.1 で作り直し）。2段構えにする。
+    //
+    // ① 物理項：現在の速度に操舵力を積んだ向き。分離・整列・結合はここで効く。
+    //    **力の大きさがそのまま効く**ので、隣の竜との弱い押し合いでは向きがわずかしか動かない。
+    //    （v0.33.0 は力の"向き"だけを見ていたため、弱い横力でも毎フレーム目標角が
+    //      振れ、外周の個体が 5〜9Hz で左右に揺れる不具合になっていた）
+    const tvx = vx[i] + ax * dt;
+    const tvy = vy[i] + ay * dt;
+    const naturalAngle = (tvx * tvx + tvy * tvy) > 0.0001 ? Math.atan2(tvy, tvx) : curAngle;
+
+    // ② 操作項：リーダー（＝指）方向へのコース修正。
+    //    誤差に比例した角速度（ゲイン TURN_GAIN）を作り turnRate で上限を掛ける。
+    //    こうすると「大きく向きを変えるときだけ turnRate が効いて、
+    //    仲間との小さなズレでは静か」になる＝旋回性能が実際に効くパラメータになる。
+    //    リーダー方向を基準にするのが要点：操舵の合力を使うと分離・整列の弱い横力にも
+    //    即応してしまい群れが高周波で震える（実測 45回/秒/体）。
+    let err = Math.atan2(leadNy, leadNx) - naturalAngle;
+    while (err >  Math.PI) err -= Math.PI * 2;
+    while (err < -Math.PI) err += Math.PI * 2;
+
+    let desiredAngle;
+    if (turnLim === Infinity) {
+      // 即時方向転換（UFO型）: リーダー方向へ即座に向く。
+      // ただし**分離だけは合成する**。これを入れないと全個体が操縦点へ直行して
+      // 1点に重なる（実測: 最近接距離 0.1px の団子になった）。
+      // 整列・結合は入れない＝弱い横力に即応して高周波で震えるのを避ける。
+      const gx = leadNx * wLead * 120 + sepX * wSep * 80;
+      const gy = leadNy * wLead * 120 + sepY * wSep * 80;
+      desiredAngle = (gx * gx + gy * gy) > 0.0001 ? Math.atan2(gy, gx) : naturalAngle;
+    } else {
+      // 不感帯を差し引いた誤差に比例させる（小さなズレでは舵を当てない）
+      let eMag = Math.abs(err) - TURN_DEADZONE;
+      if (eMag < 0) eMag = 0;
+      let rate = TURN_GAIN * eMag * Math.sign(err);
+      if      (rate >  turnLim) rate =  turnLim;
+      else if (rate < -turnLim) rate = -turnLim;
+      let turnDelta = rate * dt;
+      // 目標を追い越さない（追い越すと行き過ぎ→引き返しの振動になる）
+      if (Math.abs(turnDelta) > Math.abs(err)) turnDelta = err;
+      desiredAngle = naturalAngle + turnDelta;
+    }
 
     // 望む速さ: 基本は最高速。リーダーに近いほど落として最低速に寄せる
     // ＝ minSpeed が 0 の竜種は操縦点の上でその場に留まれる。
-    const adx = leader.x - xi, ady = leader.y - yi;
-    const aDist = Math.sqrt(adx * adx + ady * ady);
     let desiredSpeed = maxSp * Math.min(1, aDist / BOID_ARRIVE_DIST);
     if (desiredSpeed < minSp) desiredSpeed = minSp;
+    // v0.33.1: 近すぎる仲間がいるときは、操縦点の上でも最低限の速さを残して押し分ける。
+    // これがないと minSpeed=0 の竜種（UFO型）が操縦点で完全停止し、全個体が1点に重なる。
+    if (nSep > 0) {
+      const sepFloor = maxSp * SEP_MIN_SPEED_FRAC;
+      if (desiredSpeed < sepFloor) desiredSpeed = sepFloor;
+    }
 
     // 旋回制限: 1ステップで turnLim*dt ラジアンまでしか向きを変えられない
     let dAng = desiredAngle - curAngle;
