@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.33.1";
+const GAME_VERSION = "v0.34.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -642,7 +642,7 @@ function debugStatusLine() {
   const flock = (typeof N !== "undefined") ? countAliveBoids() : "-";
   const stg  = (typeof currentStage !== "undefined") ? currentStage + 1 : "-";
   // v0.33: 有効な動きプロファイル（デバッグ上書き中はその名前）を出す
-  const move = moveProfileOverride ? moveProfileOverride : `種:${flockWeapon}`;
+  const move = moveProfileOverride ? moveProfileOverride : `種:${flockSpecies}`;
   return `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
          `動き:${move}`;
@@ -808,6 +808,8 @@ const SEP_MIN_SPEED_FRAC = 0.25;
 // MOVE_PROFILE_DEFAULT はこの手触りを再現する値にしてある（既存竜種の互換）。
 const INSTANT = Infinity;
 
+// v0.34: 反動(recoil)・硬直(fireStun) は**攻撃に付随する**ものなのでここには置かない
+// （体当たりの硬直は操作性ではなく攻撃手段の性質。→ ATTACK_DEFS）。
 const MOVE_PROFILE_DEFAULT = {
   maxSpeed:    160,    // 最高速度 px/s
   minSpeed:    60,     // 最低速度 px/s（0 にすると止まれる）
@@ -815,8 +817,6 @@ const MOVE_PROFILE_DEFAULT = {
   turnRate:    2.0,    // 旋回角速度の上限 rad/s（INSTANT で即時方向転換＝UFO型）
   leaderSpeed: 220,    // 操縦点（リーダー）の移動速度 px/s
   leaderPull:  1.6,    // リーダーへの引力の重み
-  recoil:      0,      // 発射時に発射方向の逆へ加わる速度 px/s（反動）
-  fireStun:    0,      // 発射後に動きが止まる時間 秒（硬直）
   pathEndMode: "loop", // パス末端に達した後の挙動（下記）
 };
 
@@ -829,34 +829,46 @@ const MOVE_PROFILE_DEFAULT = {
 //   周回は「円を描いて放置して眺める」アクアリウム柱の要なので潰さない。
 const PATH_END_MODES = ["loop", "wander", "straight", "stop"];
 
-// 竜種（flockWeapon）別の上書き。MOVE_PROFILE_DEFAULT に足りない項目だけ書く。
+// -----------------------------------------------------------------
+// v0.34: 攻撃定義（竜種から独立）
+// -----------------------------------------------------------------
+// kind = 攻撃処理の分岐キー。updateWeaponAttacks が見る（旧 flockWeapon の値そのもの）。
+// recoil / fireStun は**攻撃に付随する**性質としてここに置く
+// （移動プロファイルではない。体当たりの硬直は操作性ではなく攻撃手段の性質だから）。
+// 竜種と分離してあるので、同じ攻撃を別の動きの竜に載せられる。
+const ATTACK_DEFS = {
+  flamebreath: { ja: "炎息", en: "Flamebreath", kind: "beam",    recoil: 0,  fireStun: 0    },
+  icelance:    { ja: "氷槍", en: "Ice Lance",   kind: "bullet",  recoil: 18, fireStun: 0    },
+  shadowbolt:  { ja: "影弾", en: "Shadow Bolt", kind: "missile", recoil: 0,  fireStun: 0    },
+  rend:        { ja: "爪撃", en: "Rend",        kind: "melee",   recoil: 0,  fireStun: 0.14 },
+};
+
+// -----------------------------------------------------------------
+// v0.34: 竜種定義＝攻撃 × 動き × 見た目
+// -----------------------------------------------------------------
+// `move` は MOVE_PROFILE_DEFAULT に対する上書き。**どの項目でも自由に組み合わせられる**
+// （`move:"standard"` のような名前付きプリセットは意図的に作らない。移動パラメータを
+//  分離した目的がバリエーションを増やすことなので、プリセットに畳むと目的を潰す）。
 //
 // ★調整の指針：**旋回半径 = maxSpeed / turnRate** が群れの散らばり（画面に収まるか）を決める。
 // 実測で「群れの重心からの平均距離 ≒ 旋回半径の約2倍」になる。
 // 縦持ち390px幅では散らばり180px程度が上限の目安なので、旋回半径は概ね60〜110pxに収める。
-const SPECIES_MOVEMENT = {
-  // 火竜（beam）: 基準。近距離で建物を舐めるので素直な旋回と扱いやすい速度。旋回半径80px。
-  beam: {},
-  // 氷竜（bullet）: 射撃機。小回りが利いて速い（旋回半径63px）。
-  // 撃つたび軽い反動で押し戻され、群れが小刻みに揺れる。
-  bullet: {
-    maxSpeed: 175, accel: 360, turnRate: 2.8,
-    recoil: 18, fireStun: 0.04,
-    pathEndMode: "straight",
-  },
-  // 影竜（missile）: 滑空型。出足が鈍く大回り（旋回半径100px）だが最高速は伸びる。反動なし。
-  missile: {
-    maxSpeed: 180, minSpeed: 80, accel: 190, turnRate: 1.8, leaderSpeed: 240,
-    pathEndMode: "straight",
-  },
-  // 緋竜（melee）: 突撃型。加速は鋭いが旋回は重い（旋回半径109px）。
-  // ぶつかると硬直が長く「重い一撃」になる。
-  melee: {
-    maxSpeed: 185, accel: 520, turnRate: 1.7,
-    fireStun: 0.14,
-    pathEndMode: "wander",
-  },
+//
+// 既存4種は**名前は属性のまま・動きは4種すべてスタンダードで統一**する（`move: {}`）。
+// 属性名が攻撃を表しており、動きに差が無いので操作感の違いに説明が要らない状態にする。
+// 詳細は docs/gdd/dragon-tide-species.md。
+const SPECIES_DEFS = {
+  fire:    { ja: "火竜", en: "Fire Dragon",    icon: "\u{1F525}", color: "#ff8c28", element: "fire",    attack: "flamebreath", move: {} },
+  ice:     { ja: "氷竜", en: "Ice Dragon",     icon: "❄️",       color: "#a0e8ff", element: "ice",     attack: "icelance",    move: {} },
+  shadow:  { ja: "影竜", en: "Shadow Dragon",  icon: "\u{1F311}", color: "#c080ff", element: "shadow",  attack: "shadowbolt",  move: {} },
+  crimson: { ja: "緋竜", en: "Crimson Dragon", icon: "\u{1F43E}", color: "#ff4030", element: "crimson", attack: "rend",        move: {} },
 };
+
+// 攻撃の kind から竜種IDを引く（進化カード・旧セーブの互換用）
+const SPECIES_BY_ATTACK_KIND = {};
+for (const [sid, sdef] of Object.entries(SPECIES_DEFS)) {
+  SPECIES_BY_ATTACK_KIND[ATTACK_DEFS[sdef.attack].kind] = sid;
+}
 
 // 将来の竜種用プリセット。まだ竜種には割り当てていないので、
 // 実機の手触り確認はデバッグパネルの「🛸 動き」から切り替えて行う。
@@ -881,16 +893,21 @@ const MOVE_PROFILE_PRESETS = {
 let moveProfileOverride = null;   // MOVE_PROFILE_PRESETS のキー or null
 let _mvCache = null, _mvKey = "";
 function mv() {
-  const key = (moveProfileOverride || "-") + "|" + flockWeapon;
+  const key = (moveProfileOverride || "-") + "|" + flockSpecies;
   if (key !== _mvKey) {
     _mvKey = key;
     const ov = moveProfileOverride
       ? MOVE_PROFILE_PRESETS[moveProfileOverride]
-      : SPECIES_MOVEMENT[flockWeapon];
+      : (SPECIES_DEFS[flockSpecies] && SPECIES_DEFS[flockSpecies].move);
     _mvCache = Object.assign({}, MOVE_PROFILE_DEFAULT, ov || {});
   }
   return _mvCache;
 }
+
+/** 現在の竜種定義。 */
+function sp() { return SPECIES_DEFS[flockSpecies] || SPECIES_DEFS.fire; }
+/** 現在の攻撃定義（反動・硬直はここから引く）。 */
+function atk() { return ATTACK_DEFS[sp().attack] || ATTACK_DEFS.flamebreath; }
 
 // -----------------------------------------------------------------
 // ステージ定義
@@ -5859,7 +5876,7 @@ function updateBeamAttacks(dt) {
   // v0.33: BEAM は単発ではなく持続照射なので、反動は「照射している間ずっと押し戻される」
   // 連続的な力として与える（recoil は px/s の目安なので dt を掛ける）。
   // 既存の火竜は recoil=0 なので挙動は変わらない。
-  const recoil = mv().recoil;
+  const recoil = atk().recoil;
   if (recoil > 0) {
     for (const b of activeBreaths) {
       const i = b.boidIdx;
@@ -5913,9 +5930,9 @@ function updateCollisionAttacks(dt) {
         : COLLISION_DAMAGE;
 
       // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）。
-      // v0.33: 竜種プロファイルの fireStun（硬直）が長ければそちらを使う
-      // ＝突撃型（緋竜）は当たった後にぐっと重く止まる。
-      boidHitStopTimer[i]    = Math.max(HITSTOP_DURATION, mv().fireStun);
+      // v0.33: 攻撃の fireStun（硬直）が長ければそちらを使う
+      // ＝爪撃（緋竜）は当たった後にぐっと重く止まる。v0.34: 攻撃側から引く。
+      boidHitStopTimer[i]    = Math.max(HITSTOP_DURATION, atk().fireStun);
       // クールダウンをセットして同じ建物への連続ヒットを防ぐ
       boidCollisionCooldown[i] = isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
 
@@ -6814,11 +6831,11 @@ function applyCardImmediate(cardId) {
       spawnBoidAtEgg(centroid.x + Math.cos(angle) * r, centroid.y + Math.sin(angle) * r);
     }
   } else if (cardId === "evo_bullet") {
-    convertFlock("bullet");
+    convertFlock("ice");
   } else if (cardId === "evo_missile") {
-    convertFlock("missile");
+    convertFlock("shadow");
   } else if (cardId === "evo_melee") {
-    convertFlock("melee");
+    convertFlock("crimson");
   } else if (cardId === "orb") {
     addXp(150);
   }
@@ -6846,8 +6863,8 @@ function resetProgression() {
   pendingCards = 0;
   evolutionChosen = false;   // v0.14: 新しいランでは再び最初のレベルアップで竜種を選ぶ
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
-  // 武器も BEAM に戻る（新しいランはビルドをゼロから組み直す）
-  flockWeapon = "beam";
+  // 竜種も火竜に戻る（新しいランはビルドをゼロから組み直す）
+  setFlockSpecies("fire");
   if (boidFireTimer) boidFireTimer.fill(0);
   clearDragonProjectiles();
   // 表示中のカードとスローを畳む
@@ -7135,26 +7152,30 @@ function updateHUDLevel() {
 // 群れは常に単一タイプ（★進化で100%全転換。仕様 §5.4-C / §6）
 // =================================================================
 
-// 群れ全体の現在武器。ステージ開始時は必ず BEAM（resetProgression で戻る）
+// v0.34: 竜種が正（SPECIES_DEFS のキー）。ステージ開始時は必ず火竜（resetProgression で戻る）。
+let flockSpecies = "fire";
+// flockWeapon は「現在の攻撃の kind」＝竜種から導出される値。
+// 攻撃処理の分岐（updateWeaponAttacks 等）は従来どおりこれを見る。
+// 直接代入せず setFlockSpecies() 経由で更新する。
 let flockWeapon = "beam";
 
-// 武器タイプ → スプライト属性（既存の fire/ice/shadow パレットを充当。
-// 緋竜=crimson は fire 画像の赤強調ティント。仕様 §5.4-C）
-const WEAPON_ELEMENT = { beam: "fire", bullet: "ice", missile: "shadow", melee: "crimson" };
+/**
+ * v0.34: 竜種を切り替える唯一の入口。flockWeapon（攻撃の kind）を導出し直す。
+ * 未知のIDが来たら火竜へフォールバックする（旧セーブ・想定外値の保険）。
+ */
+function setFlockSpecies(speciesId) {
+  flockSpecies = SPECIES_DEFS[speciesId] ? speciesId : "fire";
+  flockWeapon  = ATTACK_DEFS[SPECIES_DEFS[flockSpecies].attack].kind;
+  // HUD をここで必ず追従させる（呼び出し側の更新漏れで表示がズレるのを防ぐ）
+  updateHUDWeapon();
+}
 
-// HUD表示用ラベルと色
-const WEAPON_HUD = {
-  beam:    { label: "\u{1F525} 火竜", color: "#ff8c28" },
-  bullet:  { label: "❄️ 氷竜",    color: "#a0e8ff" },
-  missile: { label: "\u{1F311} 影竜", color: "#c080ff" },
-  melee:   { label: "\u{1F43E} 緋竜", color: "#ff4030" },
-};
-
-// 転換時のフラッシュ色（進化の瞬間を派手に）
-const WEAPON_FLASH_COLOR = {
-  bullet:  "rgba(160,232,255,0.6)",
-  missile: "rgba(192,128,255,0.6)",
-  melee:   "rgba(255,64,48,0.6)",
+// 転換時のフラッシュ色（進化の瞬間を派手に）。v0.34: 竜種IDキーに変更。
+const SPECIES_FLASH_COLOR = {
+  fire:    "rgba(255,140,40,0.6)",
+  ice:     "rgba(160,232,255,0.6)",
+  shadow:  "rgba(192,128,255,0.6)",
+  crimson: "rgba(255,64,48,0.6)",
 };
 
 // ---- BULLET（氷竜・直進弾丸）基礎性能（仕様 §6.2）----
@@ -7189,9 +7210,9 @@ let boidFireTimer = null;
  * - HP上限の変化（melee ±50%）は現在HPも比率維持で追従
  * - 全個体の位置に閃光パーティクル＋画面フラッシュで「一斉に色が変わる」を演出
  */
-function convertFlock(weapon) {
+function convertFlock(speciesId) {
   const oldMax = effBoidMaxHp();
-  flockWeapon = weapon;
+  setFlockSpecies(speciesId);
   const newMax = effBoidMaxHp();
   const ratio  = newMax / oldMax;
 
@@ -7207,7 +7228,7 @@ function convertFlock(weapon) {
     if (boidDead[i] || boidDowned[i]) continue;
     if (Math.random() < 0.4) { spawnDragonAppearEffect(px[i], py[i]); fxCount++; }
   }
-  triggerFlash(WEAPON_FLASH_COLOR[weapon] ?? "rgba(255,255,255,0.5)", 0.35);
+  triggerFlash(SPECIES_FLASH_COLOR[speciesId] ?? "rgba(255,255,255,0.5)", 0.35);
   hapticPulse(120);
   updateHUDWeapon();
 }
@@ -7220,9 +7241,9 @@ function currentFireInterval() {
 
 const hudWeaponEl = document.getElementById("h-weapon");
 function updateHUDWeapon() {
-  const info = WEAPON_HUD[flockWeapon];
-  hudWeaponEl.textContent   = info.label;
-  hudWeaponEl.style.color   = info.color;
+  const s = sp();
+  hudWeaponEl.textContent = `${s.icon} ${s.ja}`;
+  hudWeaponEl.style.color = s.color;
 }
 
 /** 建物へのダメージ適用＋陥落処理の共通ヘルパー（弾丸・ミサイル用） */
@@ -7262,13 +7283,13 @@ function clearDragonProjectiles() { dprojActive.fill(0); }
  *        「この個体の物理を N 秒止める」という意味がまさに硬直なので流用する）。
  */
 function applyFireKick(boidIdx, angle) {
-  const prof = mv();
-  if (prof.recoil > 0) {
-    vx[boidIdx] -= Math.cos(angle) * prof.recoil;
-    vy[boidIdx] -= Math.sin(angle) * prof.recoil;
+  const a = atk();   // v0.34: 反動・硬直は攻撃側の性質
+  if (a.recoil > 0) {
+    vx[boidIdx] -= Math.cos(angle) * a.recoil;
+    vy[boidIdx] -= Math.sin(angle) * a.recoil;
   }
-  if (prof.fireStun > 0) {
-    boidHitStopTimer[boidIdx] = Math.max(boidHitStopTimer[boidIdx], prof.fireStun);
+  if (a.fireStun > 0) {
+    boidHitStopTimer[boidIdx] = Math.max(boidHitStopTimer[boidIdx], a.fireStun);
   }
 }
 
@@ -8455,11 +8476,13 @@ function refreshTitleMenu() {
 // v0.19: 初回=火竜固定で即開始・初期10体、2回目以降=竜種選択メニュー・初期1体。
 
 // 竜種選択メニューの選択肢（stay_fire は火竜として提示）。
+// v0.34: 竜種IDで持つ（アイコン・名前・色は SPECIES_DEFS 側にあるので重複させない）。
+// 竜種が増えたらここに足す。将来アンロック制にするならこの配列を絞り込む。
 const SPECIES_CHOICES = [
-  { weapon: "beam",    id: "stay_fire",   icon: "\u{1F525}" },
-  { weapon: "bullet",  id: "evo_bullet",  icon: "❄️" },
-  { weapon: "missile", id: "evo_missile", icon: "\u{1F311}" },
-  { weapon: "melee",   id: "evo_melee",   icon: "\u{1F43E}" },
+  { species: "fire",    cardId: "stay_fire"   },
+  { species: "ice",     cardId: "evo_bullet"  },
+  { species: "shadow",  cardId: "evo_missile" },
+  { species: "crimson", cardId: "evo_melee"   },
 ];
 let speciesSelecting = false;
 
@@ -8477,7 +8500,7 @@ function stageStartFlockCount() {
 function onTitleStart() {
   if (gameState !== "title") return;
   if (isFirstEverRun()) {
-    beginRun("beam");        // 初回は火竜固定で即開始
+    beginRun("fire");        // 初回は火竜固定で即開始
   } else {
     showSpeciesSelect();     // 2回目以降は竜種を選んでから
   }
@@ -8490,18 +8513,18 @@ function showSpeciesSelect() {
   levelupTitleEl.textContent = STRINGS.chooseDragon;
   cardListEl.innerHTML = "";
   for (const ch of SPECIES_CHOICES) {
-    const text = STRINGS.cards[ch.id];
-    const info = WEAPON_HUD[ch.weapon];
+    const s    = SPECIES_DEFS[ch.species];
+    const text = STRINGS.cards[ch.cardId];
     const btn  = document.createElement("button");
     btn.className = "upgrade-card rarity-star";
     btn.innerHTML =
-      `<span class="card-icon">${ch.icon}</span>` +
-      `<span><div class="card-name" style="color:${info.color}">${info.label}</div>` +
+      `<span class="card-icon">${s.icon}</span>` +
+      `<span><div class="card-name" style="color:${s.color}">${s.icon} ${s.ja}</div>` +
       `<div class="card-desc">${text.desc}</div></span>`;
     btn.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       e.preventDefault();
-      beginRun(ch.weapon);
+      beginRun(ch.species);
     });
     cardListEl.appendChild(btn);
   }
@@ -8539,7 +8562,7 @@ function cancelSpeciesSelect() {
 }
 
 // 新規ランを開始する（竜種 weapon 確定済み）。
-function beginRun(weapon) {
+function beginRun(speciesId) {
   if (gameState !== "title") return;
   currentRunIsFirst = isFirstEverRun();   // runsStarted を増やす前に固定
   profile.runsStarted++;
@@ -8547,7 +8570,7 @@ function beginRun(weapon) {
   clearRunSave();                          // 新規ランは既存の再開データを破棄
 
   currentStage    = 0;
-  flockWeapon     = weapon || "beam";
+  setFlockSpecies(speciesId || "fire");
   evolutionChosen = true;                  // 竜種は開始前に確定（ラン中4択は廃止）
   updateHUDWeapon();
 
@@ -8575,7 +8598,8 @@ function snapshotRunSave() {
     playerLevel,
     playerXp,
     pendingCards,
-    flockWeapon,
+    flockSpecies,                 // v0.34: 竜種が正
+    flockWeapon,                  // 旧版で読めるように攻撃の kind も残す
     upgradeCounts: Object.assign({}, upgradeCounts),
     runKills,
     runMaxFlock,
@@ -8596,7 +8620,8 @@ function resumeRun() {
   playerLevel       = (save.playerLevel | 0) || 1;
   playerXp          = save.playerXp || 0;
   pendingCards      = save.pendingCards | 0;
-  flockWeapon       = save.flockWeapon || "beam";
+  // v0.34: 竜種があればそれを使う。無い旧セーブは攻撃の kind から竜種を逆引きする。
+  setFlockSpecies(save.flockSpecies || SPECIES_BY_ATTACK_KIND[save.flockWeapon] || "fire");
   evolutionChosen   = true;
   for (const k of Object.keys(upgradeCounts)) delete upgradeCounts[k];
   if (save.upgradeCounts) Object.assign(upgradeCounts, save.upgradeCounts);
@@ -10046,9 +10071,11 @@ function drawBoids() {
   const spriteDpr     = Math.min(window.devicePixelRatio || 1, 2);
   const spritePx      = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
   const halfLogical   = DRAGON_SPRITE_LOGICAL / 2;
-  // v0.6-p2: 現在の武器タイプに対応する属性スプライト＋パレット（全転換方式）
-  const element       = WEAPON_ELEMENT[flockWeapon] ?? "fire";
-  const sprites       = dragonSprites[element] ?? dragonSprites["fire"];
+  // v0.34: 竜種のスプライト＋パレット。群れは今は単一種なのでループ外で1回引く。
+  // ★混成群れ（個体ごとに種が違う）にするときは、この2行を個体ループの内側へ移し、
+  //   getSpeciesSprites(boidSpecies[i]) を引く形にすればよい（キャッシュは複数種対応済み）。
+  const element       = sp().element ?? "fire";
+  const sprites       = getSpeciesSprites(flockSpecies);
   const palette       = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
@@ -10117,7 +10144,8 @@ function drawBoids() {
     // 胴体後端（画像内ではごく短い尻尾スタブ）までの距離を実測で再計算した。
     // 実際にプリレンダされたcanvas（spritePx=52、flapFactor=1.0）をgetImageDataで
     // 解析すると、不透明ピクセルは重心から約10論理px止まりだった
-    // （preview_evalでdragonSprites.fire[12]を実測して確認済み）。
+    // （preview_eval で火竜の12コマ目を実測して確認済み。v0.34以降は
+    //   getSpeciesSprites("fire")[12] で同じものが取れる）。
     // 尻尾の根本が実際の見た目上の胴体終端と自然につながるよう、実測に合わせて採用。
     const TAIL_ROOT_OFFSET = 10 * unitScale;
     const tailRootOffX = -Math.cos(angle) * TAIL_ROOT_OFFSET;
@@ -10633,8 +10661,8 @@ const DRAGON_FLAP_SPEED  = 1.6;   // 羽ばたきサイクル毎秒（breathTime
 const DRAGON_SPRITE_LOGICAL = 52;
 
 // 要素 × フレームのスプライトキャッシュ
-// dragonSprites["fire"][frameIndex] = OffscreenCanvas or HTMLCanvasElement
-const dragonSprites = {};
+// v0.34: プリレンダの保持は spriteCache（種IDキーの簡易LRU）へ移した。
+// 実体は getSpeciesSprites() が返すフレーム配列。
 
 // -----------------------------------------------------------------
 // 竜ラスター画像（Gemini生成・透過済み・トップビュー1ポーズ）
@@ -11216,24 +11244,51 @@ function drawWing(c, bx, _by, wingTipY, palette) {
   c.globalAlpha = 1.0;
 }
 
-/**
- * 起動時に全属性・全フレームのスプライトをプリレンダして dragonSprites に格納する。
- * 呼び出し後は毎フレームの drawBoids で drawImage するだけでよい。
- */
-function createDragonSprites() {
-  const spriteDpr  = Math.min(window.devicePixelRatio || 1, 2);
-  const spritePx   = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
-
-  for (const element of Object.keys(DRAGON_ELEMENT_COLORS)) {
-    dragonSprites[element] = [];
-    for (let f = 0; f < DRAGON_FLAP_FRAMES; f++) {
-      // 羽ばたきの位相: 0〜2π を FLAP_FRAMES 分割
-      // wingAngle: 0=水平（最大展開）→ π*0.65 = 約37度折りたたみ
-      const phase     = (f / DRAGON_FLAP_FRAMES) * Math.PI * 2;
-      const wingAngle = (Math.sin(phase) * 0.5 + 0.5) * (Math.PI * 0.65);
-      dragonSprites[element].push(renderDragonFrame(element, wingAngle, spritePx));
-    }
+/** 1属性ぶんの羽ばたき全コマをプリレンダして返す。 */
+function buildElementSprites(element) {
+  const spriteDpr = Math.min(window.devicePixelRatio || 1, 2);
+  const spritePx  = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
+  const frames    = [];
+  for (let f = 0; f < DRAGON_FLAP_FRAMES; f++) {
+    // 羽ばたきの位相: 0〜2π を FLAP_FRAMES 分割
+    // wingAngle: 0=水平（最大展開）→ π*0.65 = 約37度折りたたみ
+    const phase     = (f / DRAGON_FLAP_FRAMES) * Math.PI * 2;
+    const wingAngle = (Math.sin(phase) * 0.5 + 0.5) * (Math.PI * 0.65);
+    frames.push(renderDragonFrame(element, wingAngle, spritePx));
   }
+  return frames;
+}
+
+// -----------------------------------------------------------------
+// v0.34: スプライトは「要求時に生成し、複数種を保持できる」キャッシュにする。
+// -----------------------------------------------------------------
+// 1種あたり 羽ばたき16コマ ≒ 672KB なので、竜種が15種に増えると全種常駐は厳しい。
+// かといって「常に1種だけ」を前提にすると、ラン途中で竜種が増えるケース
+// （将来の混成群れ・味方の増援など）に対応できない。
+// そこで **種IDキーの簡易LRU** にして、上限を超えたら古いものから捨てる。
+const spriteCache = new Map();      // speciesId -> フレーム配列
+const SPRITE_CACHE_MAX = 3;         // 同時保持数。1固定にはしない（暫定値・実機で調整）
+
+function getSpeciesSprites(speciesId) {
+  let frames = spriteCache.get(speciesId);
+  if (frames) {
+    // 参照されたら最新に回す（Map は挿入順を保つので削除→再挿入でLRUになる）
+    spriteCache.delete(speciesId);
+    spriteCache.set(speciesId, frames);
+    return frames;
+  }
+  const def = SPECIES_DEFS[speciesId] || SPECIES_DEFS.fire;
+  frames = buildElementSprites(def.element);
+  spriteCache.set(speciesId, frames);
+  while (spriteCache.size > SPRITE_CACHE_MAX) {
+    spriteCache.delete(spriteCache.keys().next().value);   // 最古から破棄
+  }
+  return frames;
+}
+
+/** 起動時は現在の竜種だけ用意する（残りは必要になった時点で生成される）。 */
+function createDragonSprites() {
+  getSpeciesSprites(flockSpecies);
 }
 
 // -----------------------------------------------------------------

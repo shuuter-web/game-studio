@@ -369,6 +369,9 @@ v0.33 で速度を**「向き」と「速さ」に分解**して別々に制限�
 
 ### 12-2b. パラメータ一覧（`MOVE_PROFILE_DEFAULT`）
 
+**v0.34 で `recoil` / `fireStun` は移動プロファイルから外し、`ATTACK_DEFS`（攻撃側）へ移した。**
+体当たりの硬直は操作性ではなく攻撃手段に付随する性質だから。動きは以下の7項目のみ。
+
 | 項目 | 既定 | 意味 |
 |---|---|---|
 | `maxSpeed` | 160 | 最高速度 px/s |
@@ -377,9 +380,16 @@ v0.33 で速度を**「向き」と「速さ」に分解**して別々に制限�
 | `turnRate` | 2.0 | 旋回角速度の上限 rad/s。`INSTANT` で即時方向転換 |
 | `leaderSpeed` | 220 | 操縦点（リーダー）の速度 px/s |
 | `leaderPull` | 1.6 | リーダーへの引力の重み |
-| `recoil` | 0 | 発射時に発射方向の逆へ加わる速度 px/s（**反動**） |
-| `fireStun` | 0 | 発射後に物理が止まる秒数（**硬直**） |
 | `pathEndMode` | "loop" | パス末端に達した後の挙動（§12-4） |
+
+攻撃側（`ATTACK_DEFS`）が持つもの：`kind`（攻撃処理の分岐キー）／`recoil`（反動 px/s）／
+`fireStun`（硬直 秒）。取得は **`atk()`**。
+
+**v0.34: 竜種は `SPECIES_DEFS`（攻撃 × 動き × 見た目）**。`flockSpecies` が正で、
+`flockWeapon`（攻撃の kind）は `setFlockSpecies()` が導出する。
+`move` は**プリセット名ではなく毎種の上書きオブジェクト**で持つ
+（`move:"standard"` のような enum は意図的に作らない＝どの項目でも自由に組み合わせられる）。
+**既存4種（火竜/氷竜/影竜/緋竜）は `move: {}` で動きが完全に同一**、攻撃だけが違う。
 
 竜種共通のチューニング定数（プロファイルではなくグローバル）：
 
@@ -469,8 +479,10 @@ v0.33 は開いた線では折り返さず、終端に着いたら `pathEndMode`
 
 | 目的 | 差し込み口 |
 |---|---|
-| プロファイル定義 | `MOVE_PROFILE_DEFAULT` / `SPECIES_MOVEMENT`（竜種別）/ `MOVE_PROFILE_PRESETS`（未割り当て） |
-| 有効プロファイルの取得 | **`mv()`**（`flockWeapon` と `moveProfileOverride` でキャッシュ） |
+| 竜種・攻撃の定義 | **`SPECIES_DEFS`**（攻撃×動き×見た目）／**`ATTACK_DEFS`**（kind・反動・硬直）／`MOVE_PROFILE_DEFAULT`／`MOVE_PROFILE_PRESETS`（デバッグ用） |
+| 竜種の切り替え | **`setFlockSpecies(id)`**（`flockWeapon` を導出＋HUD更新）。`flockSpecies` が正 |
+| 有効プロファイルの取得 | **`mv()`**（`flockSpecies` と `moveProfileOverride` でキャッシュ）／攻撃は **`atk()`**／竜種は **`sp()`** |
+| スプライト | **`getSpeciesSprites(id)`**（種IDキーの簡易LRU・`SPRITE_CACHE_MAX=3`）。要求時生成で複数種を同時保持できる |
 | 積分（向き・速さの制限） | `simStep` の「v0.33: 『向き』と『速さ』を分けて積分する」ブロック。共通定数 `TURN_GAIN` / `TURN_DEADZONE` / `BOID_ARRIVE_DIST` / `SEP_MIN_SPEED_FRAC` |
 | 反動・硬直 | `applyFireKick`（bullet/missile の発射時）／`updateCollisionAttacks`（緋竜の体当たり）／`updateBeamAttacks` 末尾（持続照射の連続反動） |
 | パス末端 | `updateLeader` の `pathEndReached` 分岐、`isPathClosed`、`PATH_CLOSED_DIST`、`PATH_END_REACH_DIST` |
