@@ -382,8 +382,43 @@ v0.33 で速度を**「向き」と「速さ」に分解**して別々に制限�
 | `leaderPull` | 1.6 | リーダーへの引力の重み |
 | `pathEndMode` | "loop" | パス末端に達した後の挙動（§12-4） |
 
-攻撃側（`ATTACK_DEFS`）が持つもの：`kind`（攻撃処理の分岐キー）／`recoil`（反動 px/s）／
+攻撃側（`ATTACK_DEFS`）が持つもの：`kind`（攻撃処理の分岐キー）／`recoilDist`（反動）／
 `fireStun`（硬直 秒）。取得は **`atk()`**。
+
+### 12-2c. 外力チャネル（反動・ノックバック）— v0.34.1
+
+**極座標積分は毎フレーム vx/vy の向きと速さを操舵から作り直すので、vx/vy に足した衝撃は消える。**
+実測：反動18px/s を足しても速度差は 2.8〜9.4px/s しか残らず（横に撃つと0、後方に撃つと逆に加速）、
+`accel 320` により3フレームで復帰していた＝**反動は事実上効いていなかった**。
+かといって px/py を直接動かすと**ワープして見える**（v0.34 までのノックバックがこれ）。
+
+そこで**操舵とは独立した「減衰する速度」**を持たせ、位置更新のときだけ加算する。
+
+```
+boidKickX/Y[i]              … 外力の速度(px/s)。vx/vy には混ぜない
+位置更新: p += (操舵速度 + kick) * dt
+毎フレーム: kick *= exp(-KICK_DECAY_PER_SEC * dt)
+総変位 = kick初速 / KICK_DECAY_PER_SEC  → applyKickDist(i,nx,ny,dist) で距離指定できる
+```
+
+| 定数/関数 | 値・役割 |
+|---|---|
+| `KICK_DECAY_PER_SEC` | 6.0（半減 0.12秒・ほぼ収まるまで約0.3秒） |
+| `KICK_MAX_SPEED` | 1200（多重ヒットで暴れない上限） |
+| `applyKick(i,nx,ny,speed)` | 速度指定 |
+| `applyKickDist(i,nx,ny,dist)` | **距離指定**（既存の push 距離チューニング値をそのまま渡せる） |
+
+**これに統一した箇所**：発射反動（`applyFireKick`）／持続照射の連続反動（`updateBeamAttacks` 末尾）／
+衝撃波（`emitShockwave`）／ボスノヴァ／投射物ノックバック（`applyProjectileKnockback` の全 kind）。
+実測：衝撃波26px指定で外力156（=26×6）が全個体に乗り、**1フレームの最大移動が26px→3.7px**になった
+（＝ワープしない）。
+
+※`pushBoidOutOfCircle`（岩山・城壁のめり込み解消）は**位置直接操作のまま**。
+　あれは力ではなく「侵入不可の拘束」なので外力チャネルに載せない。
+
+**デバッグ**：パネルの「💥 反動切替」で `既定 → 0 → 40 → 100 → 240px` を巡回
+（`debugRecoilOverride` / `DEBUG_RECOIL_STEPS`）。現在値はステータス行に出る。
+反動がどのくらいで気持ちよいかは実機で探る前提。
 
 **v0.34: 竜種は `SPECIES_DEFS`（攻撃 × 動き × 見た目）**。`flockSpecies` が正で、
 `flockWeapon`（攻撃の kind）は `setFlockSpecies()` が導出する。

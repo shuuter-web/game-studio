@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.34.0";
+const GAME_VERSION = "v0.34.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -619,9 +619,17 @@ function debugCycleMoveProfile() {
   moveProfileOverride = order[(idx + 1) % order.length];
 }
 
+// v0.34.1: 反動の強さを巡回する（定義値 → 0 → 40 → 100 → 240px）。
+// 反動は現状ほぼ体感できないので、どのくらいの値が気持ちいいかを実機で探るため。
+function debugCycleRecoil() {
+  const i = DEBUG_RECOIL_STEPS.indexOf(debugRecoilOverride);
+  debugRecoilOverride = DEBUG_RECOIL_STEPS[(i + 1) % DEBUG_RECOIL_STEPS.length];
+}
+
 // パネルのボタン定義。run 実行後にパネルは自動で再描画/クローズされる。
 const DEBUG_ACTIONS = [
   { label: "🛸 動き切替",            run: () => debugCycleMoveProfile() },
+  { label: "💥 反動切替",            run: () => debugCycleRecoil() },
   { label: "▶ 次ステージ",          run: () => debugAdvanceStage() },
   { label: "★ このステージをクリア", run: () => { if (gameState === "playing") triggerStageClear(); } },
   { label: "🏁 全クリア（即）",       run: () => { if (gameState === "playing") triggerAllClear(); } },
@@ -643,9 +651,11 @@ function debugStatusLine() {
   const stg  = (typeof currentStage !== "undefined") ? currentStage + 1 : "-";
   // v0.33: 有効な動きプロファイル（デバッグ上書き中はその名前）を出す
   const move = moveProfileOverride ? moveProfileOverride : `種:${flockSpecies}`;
+  // v0.34.1: 反動は「定義値」か上書き値かを出す（実機で今どの設定か分かるように）
+  const rec = debugRecoilOverride === null ? `既定(${atk().recoilDist})` : `${debugRecoilOverride}`;
   return `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
-         `動き:${move}`;
+         `動き:${move} / 反動:${rec}`;
 }
 
 function renderDebugPanel() {
@@ -794,6 +804,41 @@ const TURN_DEADZONE = 0.10;
 const SEP_MIN_SPEED_FRAC = 0.25;
 
 // -----------------------------------------------------------------
+// v0.34.1: 外力（反動・ノックバック）＝操舵とは独立した速度チャネル
+// -----------------------------------------------------------------
+// なぜ別チャネルが必要か：
+//   simStep の極座標積分は毎フレーム vx/vy の**向きと速さを操舵から作り直す**ので、
+//   vx/vy へ足した衝撃は次のフレームで消える（実測：反動18を足しても3フレームで復帰）。
+//   だからといって px/py を直接動かすと**ワープして見えて不自然**（v0.34まではこれ）。
+// 解決：
+//   外力を「減衰する速度」として別に持ち、位置更新のときだけ加算する。
+//   操舵に消されず、かつ連続的に動くので「押されて、じわっと収まる」反動になる。
+//
+// 総変位 = kick速度 / KICK_DECAY_PER_SEC なので、
+// 「何px押したいか」から必要な速度は kickSpeedForDistance() で求められる。
+const KICK_DECAY_PER_SEC = 6.0;   // 減衰の速さ（大きいほど早く収まる）
+const KICK_MAX_SPEED     = 1200;  // 多重ヒットで暴れないための上限 px/s
+
+/** 押し戻したい距離(px) → 必要な初速(px/s)。既存の距離チューニング値をそのまま使えるように。 */
+function kickSpeedForDistance(dist) { return dist * KICK_DECAY_PER_SEC; }
+
+/** 個体 i に外力を加える。nx,ny は正規化済みの向き、speed は px/s。 */
+function applyKick(i, nx, ny, speed) {
+  boidKickX[i] += nx * speed;
+  boidKickY[i] += ny * speed;
+  const m = Math.sqrt(boidKickX[i] * boidKickX[i] + boidKickY[i] * boidKickY[i]);
+  if (m > KICK_MAX_SPEED) {
+    const s = KICK_MAX_SPEED / m;
+    boidKickX[i] *= s; boidKickY[i] *= s;
+  }
+}
+
+/** 距離指定版（push距離のチューニング値をそのまま渡せる）。 */
+function applyKickDist(i, nx, ny, dist) {
+  applyKick(i, nx, ny, kickSpeedForDistance(dist));
+}
+
+// -----------------------------------------------------------------
 // v0.33: 竜種ごとの「動きの手触り」プロファイル
 // -----------------------------------------------------------------
 // 移動の性格をこの1か所に集約する。simStep（群れの積分）と updateLeader（操縦点）が参照。
@@ -836,12 +881,25 @@ const PATH_END_MODES = ["loop", "wander", "straight", "stop"];
 // recoil / fireStun は**攻撃に付随する**性質としてここに置く
 // （移動プロファイルではない。体当たりの硬直は操作性ではなく攻撃手段の性質だから）。
 // 竜種と分離してあるので、同じ攻撃を別の動きの竜に載せられる。
+// recoilDist の単位（v0.34.1で px/s → px に変更）：
+//   単発攻撃（bullet/missile）… 1発ごとに**発射方向の逆へ押し戻す距離(px)**
+//   持続攻撃（beam）          … 照射している間の**押し戻し速度(px/s)**
+// 実際の押し出しは applyKickDist（減衰する外力）で行う＝ワープに見えない。
 const ATTACK_DEFS = {
-  flamebreath: { ja: "炎息", en: "Flamebreath", kind: "beam",    recoil: 0,  fireStun: 0    },
-  icelance:    { ja: "氷槍", en: "Ice Lance",   kind: "bullet",  recoil: 18, fireStun: 0    },
-  shadowbolt:  { ja: "影弾", en: "Shadow Bolt", kind: "missile", recoil: 0,  fireStun: 0    },
-  rend:        { ja: "爪撃", en: "Rend",        kind: "melee",   recoil: 0,  fireStun: 0.14 },
+  flamebreath: { ja: "炎息", en: "Flamebreath", kind: "beam",    recoilDist: 0,  fireStun: 0    },
+  icelance:    { ja: "氷槍", en: "Ice Lance",   kind: "bullet",  recoilDist: 18, fireStun: 0    },
+  shadowbolt:  { ja: "影弾", en: "Shadow Bolt", kind: "missile", recoilDist: 0,  fireStun: 0    },
+  rend:        { ja: "爪撃", en: "Rend",        kind: "melee",   recoilDist: 0,  fireStun: 0.14 },
 };
+
+// v0.34.1: 反動の効きを実機で確かめるためのデバッグ上書き（null=攻撃の定義値）。
+// デバッグパネルの「💥 反動」で巡回する。
+let debugRecoilOverride = null;
+const DEBUG_RECOIL_STEPS = [null, 0, 40, 100, 240];
+/** 有効な反動量。デバッグ上書きがあればそれを使う。 */
+function effRecoilDist() {
+  return debugRecoilOverride === null ? atk().recoilDist : debugRecoilOverride;
+}
 
 // -----------------------------------------------------------------
 // v0.34: 竜種定義＝攻撃 × 動き × 見た目
@@ -3417,8 +3475,8 @@ function emitShockwave(wx, wy, radius, damage, pushDist) {
     if (sd2 < radius * radius) {
       applyDamageToBoid(i, damage);
       const sd = Math.sqrt(sd2) || 1;
-      px[i] += (sdx / sd) * pushDist;
-      py[i] += (sdy / sd) * pushDist;
+      // v0.34.1: 位置を直接ずらすとワープに見えるので、減衰する外力で押す
+      applyKickDist(i, sdx / sd, sdy / sd, pushDist);
     }
   }
   hapticPulse(25);
@@ -3730,12 +3788,10 @@ function updateBossNova(dt) {
     const nx = dx / d;
     const ny = dy / d;
     applyDamageToBoid(i, BOSS_NOVA_DAMAGE);
-    // 中心に近いほど強く弾き飛ばす（位置変位＋外向き速度）
+    // 中心に近いほど強く弾き飛ばす。v0.34.1: 位置変位＋速度上書きをやめ、
+    // 減衰する外力に一本化（ワープに見えず、押し出されて戻ってくる動きになる）。
     const pushDist = BOSS_NOVA_PUSH_MIN + (1 - d / BOSS_NOVA_RADIUS) * 90;
-    px[i] += nx * pushDist;
-    py[i] += ny * pushDist;
-    vx[i] = nx * mv().maxSpeed;
-    vy[i] = ny * mv().maxSpeed;
+    applyKickDist(i, nx, ny, pushDist);
   }
   triggerFlash("rgba(255,140,40,0.18)", 0.15);
   triggerShake(5, 0.3);   // v0.8: ノヴァの衝撃を画面でも伝える
@@ -5727,14 +5783,12 @@ function applyProjectileKnockback(boidIdx, projIdx) {
   const nx = pvx / pspeed;
   const ny = pvy / pspeed;
 
-  // v0.7: ボス重弾（kind=2）は速度でなく「位置ごと」押し戻す。
-  // simStep が毎フレーム速度を maxSpeed にクランプするため、速度加算だけでは
-  // 1フレームで減衰して「跳ね返された」体感にならない。変位なら確実に飛ぶ。
+  // v0.34.1: ノックバックはすべて「減衰する外力」に統一した。
+  // 旧実装は kind=2 だけ px/py を直接ずらしていたが（速度加算が操舵に
+  // 打ち消されるため）、ワープして見えて不自然だった。
+  // 外力チャネルなら操舵に消されず、かつ連続的に動くので両方の問題が解ける。
   if (projKind[projIdx] === 2) {
-    px[boidIdx] += nx * BOSS_SHOT_KNOCKBACK_DIST;
-    py[boidIdx] += ny * BOSS_SHOT_KNOCKBACK_DIST;
-    vx[boidIdx] = nx * mv().maxSpeed;
-    vy[boidIdx] = ny * mv().maxSpeed;
+    applyKickDist(boidIdx, nx, ny, BOSS_SHOT_KNOCKBACK_DIST);
     return;
   }
 
@@ -5744,15 +5798,7 @@ function applyProjectileKnockback(boidIdx, projIdx) {
   const knockbackSpeed = projKind[projIdx] === 1
     ? CATAPULT_KNOCKBACK_SPEED
     : ARROW_KNOCKBACK_SPEED;
-
-  vx[boidIdx] += nx * knockbackSpeed;
-  vy[boidIdx] += ny * knockbackSpeed;
-  // 速度を maxSpeed でクランプして飛び出しを防ぐ
-  const sp = Math.sqrt(vx[boidIdx] * vx[boidIdx] + vy[boidIdx] * vy[boidIdx]);
-  if (sp > mv().maxSpeed) {
-    vx[boidIdx] = (vx[boidIdx] / sp) * mv().maxSpeed;
-    vy[boidIdx] = (vy[boidIdx] / sp) * mv().maxSpeed;
-  }
+  applyKick(boidIdx, nx, ny, knockbackSpeed);
 }
 
 function applyAoeProjectileDamage(wx, wy, aoeR, damage) {
@@ -5874,15 +5920,17 @@ function updateBeamAttacks(dt) {
   }
 
   // v0.33: BEAM は単発ではなく持続照射なので、反動は「照射している間ずっと押し戻される」
-  // 連続的な力として与える（recoil は px/s の目安なので dt を掛ける）。
-  // 既存の火竜は recoil=0 なので挙動は変わらない。
-  const recoil = atk().recoil;
+  // 連続的な力として与える。v0.34.1: 外力チャネルへ移した。
+  // 減衰率 λ に対して毎フレーム λ*R*dt を注ぎ足すと外力の定常値が R に落ち着く
+  // ＝「撃っている間 R px/s で押し戻され続ける」になる。
+  // 既存の火竜は recoilDist=0 なので挙動は変わらない（デバッグ上書き時のみ効く）。
+  const recoil = effRecoilDist();
   if (recoil > 0) {
+    const inject = KICK_DECAY_PER_SEC * recoil * dt;
     for (const b of activeBreaths) {
       const i = b.boidIdx;
       const ang = Math.atan2(b.targetWy - py[i], b.targetWx - px[i]);
-      vx[i] -= Math.cos(ang) * recoil * dt;
-      vy[i] -= Math.sin(ang) * recoil * dt;
+      applyKick(i, -Math.cos(ang), -Math.sin(ang), inject);
     }
   }
 }
@@ -6215,6 +6263,8 @@ let boidDead;
 let boidFadeTimer;
 // 衝突ヒットストップタイマー（>0の間、その個体を停止させる）
 let boidHitStopTimer;
+// v0.34.1: 外力（反動・ノックバック）の速度チャネル。操舵とは別に持つ（下の applyKick 参照）
+let boidKickX, boidKickY;
 // 変更2: 衝突クールダウン（建物インデックスごとに記録）
 // boidCollisionCooldown[i] は「最後に衝突した時刻からの残り秒数」
 let boidCollisionCooldown;
@@ -6251,6 +6301,8 @@ function initBoids() {
   boidDead              = new Uint8Array(MAX_BOIDS);
   boidFadeTimer         = new Float32Array(MAX_BOIDS);
   boidHitStopTimer      = new Float32Array(MAX_BOIDS);
+  boidKickX             = new Float32Array(MAX_BOIDS);
+  boidKickY             = new Float32Array(MAX_BOIDS);
   boidCollisionCooldown = new Float32Array(MAX_BOIDS);
   // 変更2: ダウン/復帰モデル配列
   boidDowned            = new Uint8Array(MAX_BOIDS);
@@ -6271,6 +6323,8 @@ function initBoids() {
     boidDead[i]      = 1; // 一旦全部 dead にしてから N 体だけ有効化
     boidFadeTimer[i] = 0;
     boidHitStopTimer[i]      = 0;
+    boidKickX[i]             = 0;
+    boidKickY[i]             = 0;
     boidCollisionCooldown[i] = 0;
     boidDowned[i]            = 0;
     boidDownTimer[i]         = 0;
@@ -6328,6 +6382,8 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     boidDead[i]              = 1;           // 一旦全滅状態に
     boidFadeTimer[i]         = 0;
     boidHitStopTimer[i]      = 0;
+    boidKickX[i]             = 0;
+    boidKickY[i]             = 0;
     boidCollisionCooldown[i] = 0;
     boidDowned[i]            = 0;
     boidDownTimer[i]         = 0;
@@ -6617,6 +6673,8 @@ function spawnBoidAtEgg(wx, wy) {
   boidDead[idx]             = 0;
   boidFadeTimer[idx]        = 0;
   boidHitStopTimer[idx]     = 0;
+  boidKickX[idx]            = 0;
+  boidKickY[idx]            = 0;
   boidCollisionCooldown[idx] = 0;
   // 変更2: ダウン/復帰モデル配列の初期化（NaN/未定義防止）
   boidDowned[idx]      = 0;
@@ -7284,10 +7342,12 @@ function clearDragonProjectiles() { dprojActive.fill(0); }
  */
 function applyFireKick(boidIdx, angle) {
   const a = atk();   // v0.34: 反動・硬直は攻撃側の性質
-  if (a.recoil > 0) {
-    vx[boidIdx] -= Math.cos(angle) * a.recoil;
-    vy[boidIdx] -= Math.sin(angle) * a.recoil;
-  }
+  // v0.34.1: 反動は vx/vy を直接いじらず外力チャネルへ。
+  // 旧実装（vx/vy への加算）は操舵の極座標積分に3フレームで打ち消されて
+  // ほぼ体感できていなかった（実測：18px/s の反動が速度差 2.8〜9.4px/s しか残らず、
+  // 横方向へ撃つと0、後方へ撃つと逆に加速していた）。
+  const recoil = effRecoilDist();
+  if (recoil > 0) applyKickDist(boidIdx, -Math.cos(angle), -Math.sin(angle), recoil);
   if (a.fireStun > 0) {
     boidHitStopTimer[boidIdx] = Math.max(boidHitStopTimer[boidIdx], a.fireStun);
   }
@@ -9293,12 +9353,18 @@ function simStep(dt) {
     const nvy = Math.sin(newAngle) * newSpeed;
     vx[i] = nvx; vy[i] = nvy;
 
-    let nx = xi + nvx * dt;
-    let ny = yi + nvy * dt;
-    if (nx < 10)         { nx = 10;         vx[i] = Math.abs(vx[i]) * 0.5; }
-    else if (nx > WORLD_W - 10) { nx = WORLD_W - 10; vx[i] = -Math.abs(vx[i]) * 0.5; }
-    if (ny < 10)         { ny = 10;         vy[i] = Math.abs(vy[i]) * 0.5; }
-    else if (ny > WORLD_H - 10) { ny = WORLD_H - 10; vy[i] = -Math.abs(vy[i]) * 0.5; }
+    // v0.34.1: 外力（反動・ノックバック）は操舵で作った速度に**足して位置に効かせる**。
+    // vx/vy 自体には混ぜない＝次フレームの操舵計算を汚さないため。
+    // 加算したあと指数減衰させるので「押されて、じわっと収まる」動きになる。
+    let nx = xi + (nvx + boidKickX[i]) * dt;
+    let ny = yi + (nvy + boidKickY[i]) * dt;
+    const kickDecay = Math.exp(-KICK_DECAY_PER_SEC * dt);
+    boidKickX[i] *= kickDecay;
+    boidKickY[i] *= kickDecay;
+    if (nx < 10)         { nx = 10;         vx[i] = Math.abs(vx[i]) * 0.5; boidKickX[i] = 0; }
+    else if (nx > WORLD_W - 10) { nx = WORLD_W - 10; vx[i] = -Math.abs(vx[i]) * 0.5; boidKickX[i] = 0; }
+    if (ny < 10)         { ny = 10;         vy[i] = Math.abs(vy[i]) * 0.5; boidKickY[i] = 0; }
+    else if (ny > WORLD_H - 10) { ny = WORLD_H - 10; vy[i] = -Math.abs(vy[i]) * 0.5; boidKickY[i] = 0; }
     px[i] = nx; py[i] = ny;
   }
 }
