@@ -1,6 +1,6 @@
 # Dragon Tide — スプライト生成方針とパーツ分割カテゴリ
 
-- 作成: 2026-08-10 ／ 更新: 2026-08-12 ／ 対象コード: `prototypes/dragon-tide/index.html`（**v0.36.1** 時点）
+- 作成: 2026-08-10 ／ 更新: 2026-08-12 ／ 対象コード: `prototypes/dragon-tide/index.html`（**v0.36.2** 時点）
 - 目的：**竜種ごとに専用アセットを1つ持つ**（[dragon-tide-species.md](../gdd/dragon-tide-species.md) §4）方針のもと、
   「どのキャラをどう分割して作るか」を決める。
 - 生成の共通手順は `/gen-game-asset`（`.claude/commands/`）と `C:\forge\ClaudeCodeForge` が正。
@@ -15,7 +15,7 @@
 | 火竜 | `dragon_fire_body.png` (613×1138) ＋ `dragon_fire_wing.png` (1376×768) | **胴体・翼 分離** | ✅ お手本 |
 | 氷竜 | `dragon_ice_body.png` (430×928) ＋ `dragon_ice_wing.png` (1320×671) | **胴体・翼 分離** | ✅ v0.36.0 で移行（描き直し） |
 | 影竜 | `dragon_shadow_body.png` (464×903) ＋ `dragon_shadow_wing.png` (1249×617) | **胴体・翼 分離** | ✅ v0.36.1 で移行（描き直し） |
-| 緋竜 | なし（火竜画像の赤ティント流用） | 分離（`DRAGON_PARTS_ALIAS`） | ⚠️ 専用画像を作る |
+| 緋竜 | `dragon_crimson_body.png` (370×882) ＋ `dragon_crimson_wing.png` (1327×707) | **胴体・翼 分離** | ✅ v0.36.2 で専用画像を作成 |
 | 隼竜・燕竜・蜂竜・ガーゴイル | なし | ベクター描画＋専用パレット | ⚠️ 専用画像を作る |
 | 敵（mover）全般 | 各1枚 | 一体画像＋`ENEMY_SPRITE_META` | 現状維持（§4-G） |
 
@@ -148,6 +148,10 @@ and a scalloped trailing edge along the bottom.
 アスペクトは翼が `16:9`、胴体が `1:1`。
 
 - **除外指定は1回で通らないことがある**（尻尾・翼が勝手に付く）。結果を見て言い換えて再生成する。
+- **体格を盛る指定は控える。** 緋竜で「heavily muscled / thick forelimbs / claws spread outward」と
+  書いたら**人型のボディビルダー**が出てきて他3種と画風が揃わなかった。
+  「compact reptilian silhouette」「NOT humanoid and NOT bodybuilder muscular」を明示して作り直した。
+  前脚を大きく横へ張り出させると**翼の付け根と干渉**するので構図としても不利。
   氷竜の翼は**3回目で通った**（1回目=二枚翼、2回目=右端が切れる、3回目=OK）。
   影竜はこの版で**1回で通った**。
 - 生成後は必ず**市松合成での縁チェック**と**アルファ検証**（`/gen-game-asset` §4）。
@@ -222,8 +226,8 @@ prototypes/dragon-tide/assets/
 
 1. ~~**氷竜・影竜を分離方式へ移行**~~ → ✅ **v0.36.0 / v0.36.1 で完了**（どちらも描き直し）。
    A方式の型と計測手順（§2-0）はここで確立した。
-2. **緋竜の専用画像**（今は火竜の赤ティント）。A方式。 ← **次はここ**
-3. **隼竜・燕竜**（A方式）→ **蜂竜**（B）→ **ガーゴイル**（C）。v0.35 で挙動は入っているので絵だけ差し替わる。
+2. ~~**緋竜の専用画像**~~ → ✅ **v0.36.2 で完了**（赤ティント合成と `DRAGON_PARTS_ALIAS` を撤去）
+3. **隼竜・燕竜**（A方式）→ **蜂竜**（B）→ **ガーゴイル**（C）。v0.35 で挙動は入っているので絵だけ差し替わる。 ← **次はここ**
 4. UFO・鬼火（D）は挙動の実装と同時。
 5. E・F は該当竜種を作るときに。
 
