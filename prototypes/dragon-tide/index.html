@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.35.1";
+const GAME_VERSION = "v0.35.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -887,7 +887,8 @@ const PATH_END_MODES = ["loop", "wander", "straight", "stop"];
 // 実際の押し出しは applyKickDist（減衰する外力）で行う＝ワープに見えない。
 const ATTACK_DEFS = {
   flamebreath:    { ja: "炎息",       en: "Flamebreath",       kind: "beam",      recoilDist: 0,  fireStun: 0    },
-  icelance:       { ja: "氷槍",       en: "Ice Lance",         kind: "bullet",    recoilDist: 18, fireStun: 0    },
+  // recoilDist 28: 実機で 0/40/100/240 を比べたユーザー判断（v0.35.2）
+  icelance:       { ja: "氷槍",       en: "Ice Lance",         kind: "bullet",    recoilDist: 28, fireStun: 0    },
   shadowbolt:     { ja: "影弾",       en: "Shadow Bolt",       kind: "missile",   recoilDist: 0,  fireStun: 0    },
   rend:           { ja: "爪撃",       en: "Rend",              kind: "melee",     recoilDist: 0,  fireStun: 0.14 },
   // v0.35: Ⅱ群＋ガーゴイルぶん
@@ -10254,11 +10255,11 @@ function drawBreathAttacks(now) {
     if (boidDead[bIdx]) continue;
 
     // ブレスは体の中心でなく顔の前（口元）から出す。
-    // 竜の描画原点は画像の質量重心（DRAGON_FIRE_BODY_PIVOT、中心ではない）なので、
+    // 竜の描画原点は画像の質量重心（DRAGON_PART_SPRITES[el].bodyPivot、中心ではない）なので、
     // 鼻先までの距離もその重心基準で再計算する。
     // fire胴体画像（613x1138）: 鼻先(alpha検出上端、y=16)は重心cy=545.3から
     //   元画像px換算で 545.3-16 = 529.3px前方
-    //   → DRAGON_FIRE_BODY_DRAW_H=27論理px換算で 529.3 * (27/1138) ≈ 12.56論理px
+    //   → bodyDrawH=27論理px換算で 529.3 * (27/1138) ≈ 12.56論理px
     //   （胴体・翼分離に伴い胴体画像が変わったため再計算。preview_evalで実測確認済み）。
     // 旧ベクター比率（8 / 9.62 ≈ 0.832、口先よりわずかに手前から出す意図）を踏襲し
     // 12.56 * 0.832 ≈ 10.4 → 10 に再計算。
@@ -10447,7 +10448,7 @@ function drawBoids() {
     ctx.lineJoin    = "round";
 
     // 尻尾の根元：胴体後端（進行方向の逆側）。
-    // fireは胴体・翼分離後の DRAGON_FIRE_BODY_PIVOT（重心）が描画原点。
+    // 分離方式の竜種は DRAGON_PART_SPRITES[el].bodyPivot（重心）が描画原点。
     // 胴体後端（画像内ではごく短い尻尾スタブ）までの距離を実測で再計算した。
     // 実際にプリレンダされたcanvas（spritePx=52、flapFactor=1.0）をgetImageDataで
     // 解析すると、不透明ピクセルは重心から約10論理px止まりだった
@@ -10988,17 +10989,14 @@ const DRAGON_SPRITE_LOGICAL = 52;
 // 尻尾は含まれない（引き続き drawBoids 側で動的描画）。
 // ice/shadow は中心(w/2, h/2)が視覚的重心と一致（誤差1px未満）なので回転ピボットに使える。
 // fire のみ胴体・翼を別画像に分離済み（羽ばたきで胴体まで伸縮するのを防ぐため。
-// 詳細は DRAGON_FIRE_BODY_PIVOT / DRAGON_FIRE_WING_ANCHOR のコメント参照）。
+// 詳細は DRAGON_PART_SPRITES のコメント参照）。
 const DRAGON_IMAGE_SOURCES = {
   ice:    "assets/dragon_ice.png",
   shadow: "assets/dragon_shadow.png",
 };
 
-// fire専用: 胴体・翼を別画像として読み込む（ice/shadowは従来通り単一画像）。
-const DRAGON_FIRE_IMAGE_SOURCES = {
-  body: "assets/dragon_fire_body.png",
-  wing: "assets/dragon_fire_wing.png",
-};
+// v0.35.2: 分離方式（body/wing）の画像パスは DRAGON_PART_SPRITES が持つ。
+// この一体画像テーブルには「まだ分離していない竜種」だけを残す。
 
 // -----------------------------------------------------------------
 // v0.7: 敵スプライト（Gemini生成・クロマキー透過済み・トップダウン）
@@ -11097,34 +11095,46 @@ const DRAGON_SPRITE_PIVOTS = {
 };
 
 // -----------------------------------------------------------------
-// fire専用: 胴体・翼 分離スプライトの座標定義
+// v0.35.2: 胴体・翼 分離スプライト（カテゴリA。docs/tdd/dragon-tide-sprites.md）
 // -----------------------------------------------------------------
-// 胴体（dragon_fire_body.png, 613x1138）: 質量重心をピボットに採用（preview_evalで実測、
-// アルファ閾値128で算出。ice/shadowと同じ考え方）。
-const DRAGON_FIRE_BODY_PIVOT = { cx: 164.6, cy: 545.3, w: 613, h: 1138 };
-
-// 肩（翼付け根）の胴体側アンカー（元画像座標系）。左右対称中心は cx=164.6。
-// y=420行で胴体シルエットが最も張り出す位置＝翼の付け根の痕跡（小さな爪）がある行。
-// preview_evalで目視微調整済み。
-const DRAGON_FIRE_SHOULDER = {
-  left:  { x: 30,  y: 420 },
-  right: { x: 298, y: 420 },
+// ここに登録された属性は「胴体固定＋翼だけ羽ばたき」で描かれる。
+// 未登録の属性は一体画像（DRAGON_IMAGE_SOURCES）→無ければベクター描画にフォールバックする。
+//
+// 一体画像に羽ばたきをかけると scale(flapFactor,1) が画像全体に効いて**胴体まで伸縮する**
+// ので、竜は原則こちらへ移行する。値の意味と測り方は上記TDDの §2 を参照。
+//   bodyPivot  : 胴体画像のアルファ質量重心（画像中心ではない。中心だと回転が破綻する）
+//   shoulder   : 翼の付け根の胴体側アンカー（胴体画像座標。左右対称中心は bodyPivot.cx）
+//   wingAnchor : 翼画像側の付け根（骨が収束するフック部分）
+//   bodyDrawH  : 胴体の描画高さ（論理px、鼻〜脚方向）
+//   wingDrawW  : 翼の描画幅（論理px、スパン方向）
+const DRAGON_PART_SPRITES = {
+  fire: {
+    body: "assets/dragon_fire_body.png",
+    wing: "assets/dragon_fire_wing.png",
+    bodyPivot:  { cx: 164.6, cy: 545.3, w: 613, h: 1138 },
+    shoulder:   { left: { x: 30, y: 420 }, right: { x: 298, y: 420 } },
+    wingAnchor: { x: 855, y: 130 },
+    bodyDrawH: 27,
+    wingDrawW: 26,
+  },
 };
 
-// 翼（dragon_fire_wing.png, 1376x768）: 骨が収束する付け根（フック状の部分）を
-// アンカーに採用。左右対称の1枚絵で、右翼は水平反転して使う。
-const DRAGON_FIRE_WING_ANCHOR = { x: 855, y: 130 };
+// 分離方式の属性を別の属性の画像で描く場合の対応（緋竜は火竜の絵を赤ティントして使う）。
+const DRAGON_PARTS_ALIAS = { crimson: "fire" };
+/** 属性 element を描くのに使うパーツ定義のキー（無ければ null）。 */
+function dragonPartsKey(element) {
+  const key = DRAGON_PARTS_ALIAS[element] ?? element;
+  return DRAGON_PART_SPRITES[key] ? key : null;
+}
 
-// 胴体の描画サイズ（論理px、鼻〜脚方向の高さ）。翼の描画サイズ（論理px、翼幅方向の横幅）。
-// 全体（両翼+胴体）を広げたときの見た目が旧一体画像版（DRAGON_TARGET_WINGSPAN=40相当）と
-// 大きく違わないよう、preview_evalで実測しながら調整した値（tech-lead承認不要の微調整）。
-const DRAGON_FIRE_BODY_DRAW_H = 27;
-const DRAGON_FIRE_WING_DRAW_W = 26;
+// 胴体・翼の描画サイズの決め方（火竜で実測した基準値。他の竜種も概ねこの範囲に収める）:
+// 両翼を広げた全体の見た目が旧一体画像版（DRAGON_TARGET_WINGSPAN=40相当）と
+// 大きく違わないよう、胴体高さ27・翼幅26に調整してある。
 
-// ロード済みの Image オブジェクト（element名 → HTMLImageElement）。ice/shadow用。
+// ロード済みの Image オブジェクト（element名 → HTMLImageElement）。一体画像方式用。
 const dragonImages = {};
-// fire専用ロード済み Image オブジェクト（"body" / "wing" → HTMLImageElement）
-const dragonFireImages = {};
+// 分離方式のロード済み画像（element名 → { body, wing }）
+const dragonPartImages = {};
 // ロードに成功したかどうか（失敗時はベクター描画へフォールバック）
 let dragonImagesLoaded = false;
 
@@ -11149,8 +11159,12 @@ function preloadDragonImages() {
   const tasks = [
     ...Object.keys(DRAGON_IMAGE_SOURCES).map((element) =>
       loadOne(DRAGON_IMAGE_SOURCES[element], (img) => { dragonImages[element] = img; })),
-    ...Object.keys(DRAGON_FIRE_IMAGE_SOURCES).map((part) =>
-      loadOne(DRAGON_FIRE_IMAGE_SOURCES[part], (img) => { dragonFireImages[part] = img; })),
+    // 分離方式の竜種ぶん（body/wing の2枚ずつ）
+    ...Object.keys(DRAGON_PART_SPRITES).flatMap((el) => {
+      dragonPartImages[el] = dragonPartImages[el] || {};
+      return ["body", "wing"].map((part) =>
+        loadOne(DRAGON_PART_SPRITES[el][part], (img) => { dragonPartImages[el][part] = img; }));
+    }),
   ];
 
   // v0.7: 敵スプライトも並行ロード。失敗しても全体を失敗扱いにしない
@@ -11169,9 +11183,13 @@ function preloadDragonImages() {
 
   return Promise.all([...tasks, ...enemyTasks, ...buildingTasks, groundTask, ...terrainTasks]).then(() => {
     // dragonImagesLoaded は竜画像のみで判定（敵画像の失敗と切り離す）
+    // v0.35.2: 竜画像が「1枚も欠けていない」かの目安。実際の描画方式は
+    // renderDragonFrame が属性ごとに判定するので、ここが false でも
+    // 揃っている竜種はラスターで描かれる（欠けた竜種だけベクターに落ちる）。
     dragonImagesLoaded =
       Object.keys(DRAGON_IMAGE_SOURCES).every((element) => dragonImages[element]) &&
-      Object.keys(DRAGON_FIRE_IMAGE_SOURCES).every((part) => dragonFireImages[part]);
+      Object.keys(DRAGON_PART_SPRITES).every((el) =>
+        dragonPartImages[el] && dragonPartImages[el].body && dragonPartImages[el].wing);
     if (!dragonImagesLoaded) {
       console.error("[DragonTide] 一部の竜画像が読み込めなかったため、ベクター描画にフォールバックします。");
     }
@@ -11214,20 +11232,22 @@ function easeAngle(cur, target, k) {
 }
 
 /**
- * fire属性専用: 胴体（固定サイズ）+ 翼（左右、flapFactorで羽ばたき）を合成描画する。
+ * 胴体（固定サイズ）+ 翼（左右、flapFactorで羽ばたき）を合成描画する（カテゴリA）。
  * 胴体まで一緒に伸縮すると「蝶々がペラペラ開閉している」ように見えてしまうため、
  * 胴体は常に固定サイズで描き、羽ばたきのscaleは翼にのみ適用する。
+ * v0.35.2: fire専用から DRAGON_PART_SPRITES 駆動へ一般化（竜種を増やしても共通で使える）。
+ * @param {string} partsKey  DRAGON_PART_SPRITES のキー
  * @param {number} flapFactor  翼スパン軸の縮小係数（常に正、0.13〜1.0）
- * @param {number} half  オフスクリーンcanvas半分のサイズ（物理px）
- * @param {number} scale  論理px→物理pxのスケール
  * @param {CanvasRenderingContext2D} c
  */
-function drawFireDragonBodyAndWings(flapFactor, half, scale, c) {
-  const bodyImg = dragonFireImages.body;
-  const wingImg = dragonFireImages.wing;
+function drawPartSeparatedDragon(partsKey, flapFactor, c) {
+  const spec    = DRAGON_PART_SPRITES[partsKey];
+  const imgs    = dragonPartImages[partsKey];
+  const bodyImg = imgs.body;
+  const wingImg = imgs.wing;
 
-  const bodyPivot = DRAGON_FIRE_BODY_PIVOT;
-  const bodyDrawH = DRAGON_FIRE_BODY_DRAW_H;
+  const bodyPivot = spec.bodyPivot;
+  const bodyDrawH = spec.bodyDrawH;
   const bodyDrawW = bodyDrawH * (bodyImg.naturalWidth / bodyImg.naturalHeight);
   // 胴体の論理スケール（元画像px → 描画px）。肩オフセットの換算にも使う。
   const kxBody = bodyDrawW / bodyPivot.w;
@@ -11235,9 +11255,9 @@ function drawFireDragonBodyAndWings(flapFactor, half, scale, c) {
   const bodyPivotX = bodyPivot.cx * kxBody;
   const bodyPivotY = bodyPivot.cy * kyBody;
 
-  const wingDrawW = DRAGON_FIRE_WING_DRAW_W;
+  const wingDrawW = spec.wingDrawW;
   const wingDrawH = wingDrawW * (wingImg.naturalHeight / wingImg.naturalWidth);
-  const wingAnchor = DRAGON_FIRE_WING_ANCHOR;
+  const wingAnchor = spec.wingAnchor;
   const wingRootX = wingAnchor.x * (wingDrawW / wingImg.naturalWidth);
   const wingRootY = wingAnchor.y * (wingDrawH / wingImg.naturalHeight);
 
@@ -11249,8 +11269,8 @@ function drawFireDragonBodyAndWings(flapFactor, half, scale, c) {
     const localX = -kyBody * (rawY - bodyPivot.cy);
     return { localX, localY };
   }
-  const leftShoulder  = shoulderLocal(DRAGON_FIRE_SHOULDER.left.x,  DRAGON_FIRE_SHOULDER.left.y);
-  const rightShoulder = shoulderLocal(DRAGON_FIRE_SHOULDER.right.x, DRAGON_FIRE_SHOULDER.right.y);
+  const leftShoulder  = shoulderLocal(spec.shoulder.left.x,  spec.shoulder.left.y);
+  const rightShoulder = shoulderLocal(spec.shoulder.right.x, spec.shoulder.right.y);
 
   // ---- 胴体（固定サイズ・flapFactorのscaleを適用しない）----
   c.drawImage(bodyImg, -bodyPivotX, -bodyPivotY, bodyDrawW, bodyDrawH);
@@ -11274,7 +11294,7 @@ function drawFireDragonBodyAndWings(flapFactor, half, scale, c) {
  * 竜シルエットを1フレーム分オフスクリーンcanvasに描画して返す。
  * ラスター画像（assets/dragon_*.png）が読み込めている場合はそれを使い、
  * 失敗している場合のみ旧ベクター描画（renderDragonFrameVector）へフォールバックする。
- * fireのみ胴体・翼分離方式（drawFireDragonBodyAndWings）、ice/shadowは従来の
+ * 分離方式（drawPartSeparatedDragon）が使えるのは DRAGON_PART_SPRITES 登録済みの竜種。それ以外は従来の
  * 一体画像＋whole-image scale方式のまま変更しない。
  * @param {string} element  "fire" | "ice" | "shadow"
  * @param {number} wingAngle  翼の上下角度（ラジアン）。0=水平、+はたたんだ方向
@@ -11284,10 +11304,17 @@ function drawFireDragonBodyAndWings(flapFactor, half, scale, c) {
 function renderDragonFrame(element, wingAngle, spritePx) {
   // v0.6-p2: crimson（緋竜）は fire の胴体・翼画像を赤強調ティントで流用する
   const isCrimson = element === "crimson";
-  const isFire = element === "fire" || isCrimson;
-  const img = isFire ? dragonFireImages.body : dragonImages[element];
-  const wingImgReady = isFire ? dragonFireImages.wing : true;
-  if (!dragonImagesLoaded || !img || !wingImgReady) {
+
+  // v0.35.2: 描画方式は**属性ごとに**決める（従来はグローバルな dragonImagesLoaded で
+  // 全属性まとめて判定していたため、1枚欠けると全竜種がベクターに落ちていた）。
+  //   1) 分離方式（DRAGON_PART_SPRITES に登録があり画像も揃っている）
+  //   2) 一体画像方式（dragonImages に画像がある）
+  //   3) ベクター描画（どちらも無い＝新竜種の暫定表示）
+  const partsKey  = dragonPartsKey(element);
+  const partImgs  = partsKey ? dragonPartImages[partsKey] : null;
+  const usesParts = !!(partImgs && partImgs.body && partImgs.wing);
+  const wholeImg  = dragonImages[element];
+  if (!usesParts && !wholeImg) {
     return renderDragonFrameVector(element, wingAngle, spritePx);
   }
 
@@ -11310,13 +11337,15 @@ function renderDragonFrame(element, wingAngle, spritePx) {
   // 画像は「鼻先が画像の上方向（-Y）」を向いているため、まず+X（ゲーム内の進行方向規約）へ回頭する。
   c.rotate(Math.PI / 2);
 
-  if (isFire) {
-    // fire: 胴体固定 + 翼のみ羽ばたき（胴体まで伸縮する「蝶々開閉」を防ぐため）
-    drawFireDragonBodyAndWings(flapFactor, half, scale, c);
+  if (usesParts) {
+    // 分離方式: 胴体固定 + 翼のみ羽ばたき（胴体まで伸縮する「蝶々開閉」を防ぐため）
+    drawPartSeparatedDragon(partsKey, flapFactor, c);
   } else {
-    // ice/shadow: 従来通り、全身画像に flapFactor の scale をまとめて適用（変更しない）
+    // 一体画像方式（旧）: 全身画像に flapFactor の scale をまとめて適用する。
+    // **胴体まで横に伸縮する**ので、分離方式へ移行できた竜種は上の分岐に載せる。
     // 翼スパン（画像の横幅）を DRAGON_TARGET_WINGSPAN 論理pxに正規化し、
     // 縦は元画像のアスペクト比を保って算出する（属性ごとに縦が異なる＝仕様）。
+    const img   = wholeImg;
     const drawW = DRAGON_TARGET_WINGSPAN;
     const drawH = DRAGON_TARGET_WINGSPAN * (img.naturalHeight / img.naturalWidth);
 

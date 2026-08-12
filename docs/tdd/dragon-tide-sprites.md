@@ -45,19 +45,29 @@
 
 ### 2-2. コードに登録するメタデータ
 
-火竜の実値（`prototypes/dragon-tide/index.html`）が雛形：
+**v0.35.2 で `DRAGON_PART_SPRITES` に一本化した**（旧 `DRAGON_FIRE_*` 定数は廃止）。
+竜種を足すときはこのテーブルに1エントリ追加するだけでよい。
 
 ```js
-// 胴体：回転ピボット＝アルファ質量重心（画像中心ではない）
-const DRAGON_FIRE_BODY_PIVOT = { cx: 164.6, cy: 545.3, w: 613, h: 1138 };
-// 肩（翼の付け根）の胴体画像座標。左右対称中心は cx と一致させる
-const DRAGON_FIRE_SHOULDER   = { left: { x: 30, y: 420 }, right: { x: 298, y: 420 } };
-// 翼：骨が収束する付け根（フック状の部分）
-const DRAGON_FIRE_WING_ANCHOR = { x: 855, y: 130 };
-// 描画サイズ（論理px）
-const DRAGON_FIRE_BODY_DRAW_H = 27;   // 胴体の高さ（鼻〜脚）
-const DRAGON_FIRE_WING_DRAW_W = 26;   // 翼の幅（スパン方向）
+const DRAGON_PART_SPRITES = {
+  fire: {
+    body: "assets/dragon_fire_body.png",
+    wing: "assets/dragon_fire_wing.png",
+    bodyPivot:  { cx: 164.6, cy: 545.3, w: 613, h: 1138 },  // アルファ質量重心
+    shoulder:   { left: { x: 30, y: 420 }, right: { x: 298, y: 420 } },
+    wingAnchor: { x: 855, y: 130 },                          // 骨が収束する付け根
+    bodyDrawH: 27,   // 胴体の描画高さ（論理px、鼻〜脚）
+    wingDrawW: 26,   // 翼の描画幅（論理px、スパン方向）
+  },
+};
+// 別属性の絵を流用する場合（緋竜は火竜の絵を赤ティント）
+const DRAGON_PARTS_ALIAS = { crimson: "fire" };
 ```
+
+描画方式は **属性ごとに** 決まる（`renderDragonFrame`）：
+**分離方式**（`DRAGON_PART_SPRITES` に登録＋画像が揃っている）→ **一体画像**（`dragonImages`）→ **ベクター**。
+v0.35.2 以前はグローバルな `dragonImagesLoaded` で全属性まとめて判定していたため、
+**1枚欠けると全竜種がベクターに落ちていた**。今は欠けた竜種だけが落ちる。
 
 **ピボットは必ず画像中心ではなくアルファ質量重心**を使う。
 竜の画像は翼と頭に質量が集中し脚側が空白なので、中心を軸にすると
