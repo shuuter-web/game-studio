@@ -561,7 +561,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.35.2";
+const GAME_VERSION = "v0.36.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10991,7 +10991,8 @@ const DRAGON_SPRITE_LOGICAL = 52;
 // fire のみ胴体・翼を別画像に分離済み（羽ばたきで胴体まで伸縮するのを防ぐため。
 // 詳細は DRAGON_PART_SPRITES のコメント参照）。
 const DRAGON_IMAGE_SOURCES = {
-  ice:    "assets/dragon_ice.png",
+  // v0.36: ice は分離方式（DRAGON_PART_SPRITES.ice）へ移行したのでここから外した。
+  // shadow は未移行。移行したらこのテーブルは空になる。
   shadow: "assets/dragon_shadow.png",
 };
 
@@ -11104,18 +11105,36 @@ const DRAGON_SPRITE_PIVOTS = {
 // ので、竜は原則こちらへ移行する。値の意味と測り方は上記TDDの §2 を参照。
 //   bodyPivot  : 胴体画像のアルファ質量重心（画像中心ではない。中心だと回転が破綻する）
 //   shoulder   : 翼の付け根の胴体側アンカー（胴体画像座標。左右対称中心は bodyPivot.cx）
-//   wingAnchor : 翼画像側の付け根（骨が収束するフック部分）
+//   wingAnchor : **翼画像の内側端（肩側の付け根）**。翼はここから外へ広がる
 //   bodyDrawH  : 胴体の描画高さ（論理px、鼻〜脚方向）
 //   wingDrawW  : 翼の描画幅（論理px、スパン方向）
+//
+// ★v0.36 で wingAnchor の意味を変えた（重要）:
+// 旧実装は「手首の関節」をアンカーにしていたが、翼画像には関節より内側（肩側）に
+// スパンの約30%の膜があるため、それが**背中を越えて反対側まで被っていた**
+// （火竜で中心線を6.6論理px、氷竜で5.1論理px 越える）。
+// アンカーを**翼の内側端**に変えると、翼が胴の側面から外へ広がり、
+// 畳んだときも胴体側へ縮む（正しい折り畳み）。
+// アンカーの位置は画像ごとに違うので**竜種ごとに値を持つ**（生成物は毎回同じにならない）。
+// 内側端は「右から走査して厚み30px以上になる最初の列」で機械的に求められる。
 const DRAGON_PART_SPRITES = {
   fire: {
     body: "assets/dragon_fire_body.png",
     wing: "assets/dragon_fire_wing.png",
     bodyPivot:  { cx: 164.6, cy: 545.3, w: 613, h: 1138 },
-    shoulder:   { left: { x: 30, y: 420 }, right: { x: 298, y: 420 } },
-    wingAnchor: { x: 855, y: 130 },
+    shoulder:   { left: { x: 39.6, y: 425 }, right: { x: 289.6, y: 425 } },  // cx ±125
+    wingAnchor: { x: 1268, y: 387 },
     bodyDrawH: 27,
-    wingDrawW: 26,
+    wingDrawW: 30,
+  },
+  ice: {
+    body: "assets/dragon_ice_body.png",
+    wing: "assets/dragon_ice_wing.png",
+    bodyPivot:  { cx: 214.6, cy: 519.9, w: 430, h: 928 },
+    shoulder:   { left: { x: 94.6, y: 395 }, right: { x: 334.6, y: 395 } },  // cx ±120
+    wingAnchor: { x: 1303, y: 271 },
+    bodyDrawH: 27,
+    wingDrawW: 30,
   },
 };
 
@@ -11272,8 +11291,9 @@ function drawPartSeparatedDragon(partsKey, flapFactor, c) {
   const leftShoulder  = shoulderLocal(spec.shoulder.left.x,  spec.shoulder.left.y);
   const rightShoulder = shoulderLocal(spec.shoulder.right.x, spec.shoulder.right.y);
 
-  // ---- 胴体（固定サイズ・flapFactorのscaleを適用しない）----
-  c.drawImage(bodyImg, -bodyPivotX, -bodyPivotY, bodyDrawW, bodyDrawH);
+  // v0.36: **翼を先に描いて胴体を上に重ねる**。
+  // 逆順（胴体が下）だと翼の肩側の膜が背中を覆ってしまい、
+  // 竜のシルエットが読めなくなる（ユーザー指摘の「翼の位置がよくない」の一因）。
 
   // ---- 左翼: 肩に付け根(root)を合わせ、翼のスパン軸（画像ローカルX）にのみflapFactorを適用 ----
   c.save();
@@ -11288,6 +11308,9 @@ function drawPartSeparatedDragon(partsKey, flapFactor, c) {
   c.scale(-flapFactor, 1);
   c.drawImage(wingImg, -wingRootX, -wingRootY, wingDrawW, wingDrawH);
   c.restore();
+
+  // ---- 胴体（固定サイズ・flapFactorのscaleを適用しない）: 翼の上に重ねる ----
+  c.drawImage(bodyImg, -bodyPivotX, -bodyPivotY, bodyDrawW, bodyDrawH);
 }
 
 /**
