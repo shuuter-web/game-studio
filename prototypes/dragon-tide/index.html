@@ -252,6 +252,20 @@
   .upgrade-card .card-name { font-size: 15px; font-weight: bold; letter-spacing: 0.08em; }
   .upgrade-card .card-desc { font-size: 11px; color: #a8c4e0; margin-top: 2px; }
 
+  /* v0.37: 竜種選択だけ2列グリッド。11種を1列で出すと縦776pxになり小さい端末で
+     上のカードが画面外へ出て押せなくなる。スクロールにしないのは、カードが
+     pointerdown で即選択される作りなので、スクロールのドラッグと衝突するため。 */
+  #card-list.species-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    width: min(94vw, 400px);
+  }
+  #card-list.species-grid .upgrade-card { padding: 7px 9px; gap: 7px; min-height: 46px; }
+  #card-list.species-grid .card-icon { font-size: 19px; }
+  #card-list.species-grid .card-name { font-size: 13px; letter-spacing: 0.04em; }
+  #card-list.species-grid .card-desc { font-size: 10px; line-height: 1.25; }
+  #card-list.species-grid .card-span-2 { grid-column: 1 / -1; }
+
   /* v0.6: タイトル画面 */
   #title-overlay {
     position: fixed;
@@ -561,7 +575,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.36.2";
+const GAME_VERSION = "v0.37.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -612,7 +626,7 @@ function debugResetProfile() {
 }
 
 // v0.33: 動きプロファイルの切り替え（実機で手触りを比べるため）。
-// null = 竜種本来の動き → ufo → ground → null … と巡回する。
+// null = 竜種本来の動き → hover → ground → null … と巡回する。
 function debugCycleMoveProfile() {
   const order = [null, ...Object.keys(MOVE_PROFILE_PRESETS)];
   const idx = order.indexOf(moveProfileOverride);
@@ -857,12 +871,21 @@ const INSTANT = Infinity;
 // （体当たりの硬直は操作性ではなく攻撃手段の性質。→ ATTACK_DEFS）。
 const MOVE_PROFILE_DEFAULT = {
   maxSpeed:    160,    // 最高速度 px/s
-  minSpeed:    60,     // 最低速度 px/s（0 にすると止まれる）
+  minSpeed:    60,     // 最低速度 px/s（0 にすると止まれる。maxSpeed と同値にすると等速＝減速しない）
   accel:       320,    // 加速度の上限 px/s^2（INSTANT で即時）
   turnRate:    2.0,    // 旋回角速度の上限 rad/s（INSTANT で即時方向転換＝UFO型）
   leaderSpeed: 220,    // 操縦点（リーダー）の移動速度 px/s
   leaderPull:  1.6,    // リーダーへの引力の重み
   pathEndMode: "loop", // パス末端に達した後の挙動（下記）
+
+  // v0.37: 極端な動きのための追加チャネル。既定値はすべて「無効」＝従来挙動。
+  // 名前付きプリセットには畳まず、竜種ごとに自由に組み合わせられる形を保つ。
+  orbitRadius:   0,    // >0: 操縦点にこの距離まで寄ったら**回り込む**（接線方向へ舵を切る）。
+                       //     等速で止まれない竜が操縦点の上で往復・振動するのを防ぐ。0=直進で寄る
+  hopPeriod:     0,    // >0: 跳躍移動（蛙型）。1サイクルの秒数
+  hopFlightFrac: 0.42, // サイクルのうち滞空している割合（残りは着地して静止）
+  hopGroundFrac: 0.06, // 着地中の速さ（maxSpeed比）。完全に0にすると向きを見失うので微速で残す
+  hopPathSkip:   0,    // 跳躍1回でリーダーが進むパス点数（>0で「パスを飛ばして処理」する）
 };
 
 // pathEndMode: 指を離してパスの終端まで行った後どうするか。
@@ -870,9 +893,16 @@ const MOVE_PROFILE_DEFAULT = {
 //   "wander"   … その場でウロウロする（群れ重心のまわりを旋回）
 //   "straight" … そのままの向きへ直進し続ける
 //   "stop"     … 減速してその場に留まる
+//   "orbit"    … 終端の点を中心に**一定半径で旋回し続ける**（v0.37。等速型のUFO用）
 // ※閉じた線（始点と終点が近い）は竜種に関わらず常に周回する。
 //   周回は「円を描いて放置して眺める」アクアリウム柱の要なので潰さない。
-const PATH_END_MODES = ["loop", "wander", "straight", "stop"];
+const PATH_END_MODES = ["loop", "wander", "straight", "stop", "orbit"];
+
+// "orbit" の既定旋回半径（px）。竜種が orbitRadius を持つならそちらを優先する。
+const PATH_END_ORBIT_RADIUS = 90;
+// 跳躍の位相を個体ごとにずらす量（サイクルに対する割合）。
+// 0 にすると群れ全員が同時に跳ぶ（軍隊行進に見える）。大きくすると跳躍感が薄れる。
+const HOP_PHASE_STAGGER = 0.14;
 
 // -----------------------------------------------------------------
 // v0.34: 攻撃定義（竜種から独立）
@@ -896,6 +926,9 @@ const ATTACK_DEFS = {
   featherscatter: { ja: "羽根散弾",   en: "Feather Scatter",   kind: "scatter",   recoilDist: 8,  fireStun: 0    },
   satelliteswarm: { ja: "衛星蜂",     en: "Satellite Swarm",   kind: "satellite", recoilDist: 0,  fireStun: 0    },
   divebomb:       { ja: "落下叩きつけ", en: "Divebomb",         kind: "divebomb",  recoilDist: 0,  fireStun: 0.18 },
+  // v0.37: 突竜。遠隔を持たず**体当たりだけ**で戦う（kind:"melee" は updateCollisionAttacks が担う）。
+  // 爪撃と違って硬直0＝止まらずに轢き続ける。突進の重さは移動プロファイル側（低turnRate・低accel）で出す。
+  ram:            { ja: "突進",       en: "Ram",               kind: "melee",     recoilDist: 0,  fireStun: 0    },
 };
 
 // v0.34.1: 反動の効きを実機で確かめるためのデバッグ上書き（null=攻撃の定義値）。
@@ -954,19 +987,65 @@ const SPECIES_DEFS = {
     desc: "真下を石の衝撃で叩く。加速は鋭いが旋回は重い",
     move: { maxSpeed: 150, minSpeed: 50, accel: 480, turnRate: 1.4, leaderSpeed: 190, pathEndMode: "wander" },
   },
+
+  // ---- v0.37: Ⅲ群（極端枠）----
+  // v0.35 の4種は「効いてはいるが差が穏やか」という実機判定だったので、
+  // **振り幅を上限まで開いた3種**を足して手触りの限界を確かめる。
+  // 3種とも既存4種の指針（旋回半径60〜110px）を意図的に外している＝これ自体が検証対象。
+  ufo: {      // 旋回半径0（即時方向転換）。減速もしない
+    ja: "UFO", en: "Saucer", icon: "\u{1F6F8}", color: "#9ff0d0", element: "ufo",
+    attack: "flamebreath",
+    desc: "牽引光線で焼き払う。旋回も加速もロスなしの等速。指の周りを回り込む",
+    // minSpeed === maxSpeed ＝ 減速しない（到達しても速度が落ちない＝完全な等速）。
+    // 止まれないので、操縦点の上では orbitRadius で**回り込む**（そうしないと往復して震える）。
+    move: {
+      maxSpeed: 175, minSpeed: 175, accel: INSTANT, turnRate: INSTANT,
+      leaderSpeed: 215, orbitRadius: 64, pathEndMode: "orbit",
+    },
+  },
+  charger: {  // 旋回半径 179（ガーゴイル107の1.7倍）。出足も最鈍
+    ja: "突竜", en: "Charger Dragon", icon: "\u{1F98F}", color: "#d8a05a", element: "charger",
+    attack: "ram",
+    desc: "体当たりだけで轢き潰す。曲がれない・止まれない・出足が重い",
+    // accel 90 は ground プリセット(130)よりさらに鈍い。minSpeed 115 ＝ 実質止まれない。
+    // leaderPull を上げているのは、旋回が効かないぶん隊列が千切れやすいのを引力で補うため。
+    // ★もっと極端にするなら turnRate を下げる。ただし turnRate 0.8（半径219）では
+    //   群れが操縦点のまわりを大回りして平均258px離れ、カメラ倍率1.05の画面（実効371px）から
+    //   溢れた。0.95 は「画面に収まる範囲での最悪」。
+    move: {
+      maxSpeed: 170, minSpeed: 115, accel: 90, turnRate: 0.95,
+      leaderSpeed: 185, leaderPull: 2.2, pathEndMode: "straight",
+    },
+  },
+  frog: {     // 跳躍移動。滞空中は舵が効かない（弾道）
+    ja: "蛙竜", en: "Frog Dragon", icon: "\u{1F438}", color: "#8ce05a", element: "frog",
+    attack: "divebomb",
+    desc: "跳ねて進み、着地で地面を叩く。滞空中は曲がれない。指を離すと止まる",
+    // turnRate は「着地して向きを合わせるときの旋回速度」。滞空中は 0 に固定される（simStep）。
+    // 跳躍1回の飛距離 ≒ maxSpeed/hopFlightFrac × hopPeriod × hopFlightFrac = maxSpeed × hopPeriod ≒ 105px。
+    move: {
+      maxSpeed: 150, minSpeed: 0, accel: INSTANT, turnRate: 5.0,
+      leaderSpeed: 190, pathEndMode: "stop",
+      hopPeriod: 0.7, hopFlightFrac: 0.42, hopGroundFrac: 0.06, hopPathSkip: 12,
+    },
+  },
 };
 
-// 攻撃の kind から竜種IDを引く（進化カード・旧セーブの互換用）
+// 攻撃の kind から竜種IDを引く（進化カード・旧セーブの互換用）。
+// 同じ kind を複数の竜種が使う場合（melee＝緋竜/突竜、divebomb＝ガーゴイル/蛙竜）は
+// **先に定義された方を正**とする（後勝ちにすると既存セーブの復元先が変わってしまう）。
 const SPECIES_BY_ATTACK_KIND = {};
 for (const [sid, sdef] of Object.entries(SPECIES_DEFS)) {
-  SPECIES_BY_ATTACK_KIND[ATTACK_DEFS[sdef.attack].kind] = sid;
+  const kind = ATTACK_DEFS[sdef.attack].kind;
+  if (!(kind in SPECIES_BY_ATTACK_KIND)) SPECIES_BY_ATTACK_KIND[kind] = sid;
 }
 
 // 将来の竜種用プリセット。まだ竜種には割り当てていないので、
 // 実機の手触り確認はデバッグパネルの「🛸 動き」から切り替えて行う。
 const MOVE_PROFILE_PRESETS = {
-  // UFO型: 加速も旋回も制限なし＝指に対して向きと速さが即時に変わる。止まれる。
-  ufo: {
+  // ホバー型: 加速も旋回も制限なし＝指に対して向きと速さが即時に変わる。**止まれる**。
+  // v0.37 の UFO 竜種（等速で止まれない・回り込む）とは別物なので名前を分けてある。
+  hover: {
     maxSpeed: 170, minSpeed: 0, accel: INSTANT, turnRate: INSTANT,
     leaderSpeed: 200, pathEndMode: "stop",
   },
@@ -6299,6 +6378,9 @@ let boidFadeTimer;
 let boidHitStopTimer;
 // v0.34.1: 外力（反動・ノックバック）の速度チャネル。操舵とは別に持つ（下の applyKick 参照）
 let boidKickX, boidKickY;
+// v0.37: 跳躍（hopPeriod>0 の竜種）の滞空度 0..1。simStep が書き、drawBoids が
+// 「跳ねて見える」大きさに使う。跳ばない竜種では常に0。
+let boidHopAir;
 // 変更2: 衝突クールダウン（建物インデックスごとに記録）
 // boidCollisionCooldown[i] は「最後に衝突した時刻からの残り秒数」
 let boidCollisionCooldown;
@@ -6337,6 +6419,7 @@ function initBoids() {
   boidHitStopTimer      = new Float32Array(MAX_BOIDS);
   boidKickX             = new Float32Array(MAX_BOIDS);
   boidKickY             = new Float32Array(MAX_BOIDS);
+  boidHopAir            = new Float32Array(MAX_BOIDS);
   boidCollisionCooldown = new Float32Array(MAX_BOIDS);
   // 変更2: ダウン/復帰モデル配列
   boidDowned            = new Uint8Array(MAX_BOIDS);
@@ -6359,6 +6442,7 @@ function initBoids() {
     boidHitStopTimer[i]      = 0;
     boidKickX[i]             = 0;
     boidKickY[i]             = 0;
+    boidHopAir[i]            = 0;
     boidCollisionCooldown[i] = 0;
     boidDowned[i]            = 0;
     boidDownTimer[i]         = 0;
@@ -6418,6 +6502,7 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     boidHitStopTimer[i]      = 0;
     boidKickX[i]             = 0;
     boidKickY[i]             = 0;
+    boidHopAir[i]            = 0;
     boidCollisionCooldown[i] = 0;
     boidDowned[i]            = 0;
     boidDownTimer[i]         = 0;
@@ -7175,6 +7260,7 @@ function buildLevelUpCards() {
 
 /** カード定義の配列をそのまま3択UIとしてDOMに並べる。 */
 function renderLevelUpCards(picks) {
+  cardListEl.classList.remove("species-grid");   // 竜種選択の2列モードを解除（同じDOMを使い回す）
   cardListEl.innerHTML = "";
   for (const def of picks) {
     const text = STRINGS.cards[def.id];
@@ -8785,6 +8871,10 @@ const SPECIES_CHOICES = [
   { species: "swallow" },
   { species: "hornet" },
   { species: "gargoyle" },
+  // v0.37: Ⅲ群（極端枠）。手触りの限界を実機で確かめるための3種。
+  { species: "ufo" },
+  { species: "charger" },
+  { species: "frog" },
 ];
 let speciesSelecting = false;
 
@@ -8813,6 +8903,9 @@ function showSpeciesSelect() {
   if (gameState !== "title") return;
   speciesSelecting = true;
   levelupTitleEl.textContent = STRINGS.chooseDragon;
+  // v0.37: 11種になって1列では画面に収まらない（12行×60px≒776px）。
+  // スクロールにすると pointerdown 選択とドラッグが喧嘩するので**2列グリッド**にする。
+  cardListEl.classList.add("species-grid");
   cardListEl.innerHTML = "";
   for (const ch of SPECIES_CHOICES) {
     const s    = SPECIES_DEFS[ch.species];
@@ -8831,7 +8924,7 @@ function showSpeciesSelect() {
   }
   // 「もどる」でタイトルへ戻れる（つづきから等を選び直せる）
   const back = document.createElement("button");
-  back.className = "upgrade-card";
+  back.className = "upgrade-card card-span-2";   // 2列グリッドでは横いっぱいに広げる
   back.style.justifyContent = "center";
   back.style.minHeight = "40px";
   back.innerHTML = `<span class="card-name">${STRINGS.backToTitle}</span>`;
@@ -9419,8 +9512,26 @@ const neighbours = [];
 // v0.6: フレーム内で使い回す速度倍率キャッシュ（simStep 冒頭で更新）
 let _simSpeedMult = 1;
 
+// v0.37: 跳躍サイクルの共通時計（秒）。スローモー中は遅く進む＝群れと歩調が合う。
+// 個体ごとの位相は BOID_FLAP_PHASE から作るので、個体別の配列は持たない。
+let hopClock = 0;
+
+// v0.37: 回り込み（orbitRadius）の回転方向。群れ全体で共有する（+1/-1）。
+let _orbitSide = 1;
+// 回転方向を切り替える角運動量のしきい値。0付近で毎フレーム反転しないための不感帯。
+const ORBIT_SIDE_HYSTERESIS = 4000;
+// 回り込み中の分離を外力チャネルへ流すときの加速度 px/s^2。
+// 定常速度 = これ × 分離ベクトルの大きさ / KICK_DECAY_PER_SEC なので、
+// 300 なら隣が1体で約50px/s の押し分けになる。
+const ORBIT_SEP_KICK_ACCEL = 300;
+// 輪を何列ぶんまで詰め込んでよいか。1=きれいな1本の輪だが群れが増えると輪が巨大化して
+// 縦持ち390pxの画面から溢れる。3 なら 80体でも半径119px＝直径238pxに収まり、
+// はみ出したぶんは分離（外力チャネル）が内外へ散らして自然な帯になる。
+const ORBIT_RING_ROWS = 3;
+
 function simStep(dt) {
   _simSpeedMult = effSpeedMult();
+  hopClock += dt * _simSpeedMult;
   updateLeader(dt);
 
   // ヒットストップ中の個体は移動・加速を計算するが位置更新をスキップ
@@ -9441,6 +9552,32 @@ function simStep(dt) {
   const wLead    = prof.leaderPull;
   const accelLim = prof.accel === INSTANT ? Infinity : prof.accel * _simSpeedMult;
   const turnLim  = prof.turnRate === INSTANT ? Infinity : prof.turnRate;
+  // v0.37: 回り込み半径（0=無効）と跳躍サイクル。ループ外で1回だけ解決する。
+  let   orbitR   = prof.orbitRadius;
+  const hopPer   = prof.hopPeriod;
+
+  // v0.37: 回り込みの向きは**群れ全体で1つ**にする。
+  // 個体ごとに「今回っている向き」で決めると半数が逆回りになって正面衝突し、
+  // 分離力と接線が毎フレーム争って激しく震える（実測: 1フレームあたり平均0.30rad・
+  // 符号反転11回/秒）。群れの角運動量の符号で全員の回転方向を揃えると輪になって回る。
+  if (orbitR > 0) {
+    let angularMomentum = 0, aliveForOrbit = 0;
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      const rx = px[i] - leader.x, ry = py[i] - leader.y;
+      angularMomentum += rx * vy[i] - ry * vx[i];
+      aliveForOrbit++;
+    }
+    // ヒステリシス: ほぼ0のときは前の向きを保つ（0付近でパタパタ反転させない）
+    if (Math.abs(angularMomentum) > ORBIT_SIDE_HYSTERESIS) {
+      _orbitSide = angularMomentum > 0 ? 1 : -1;
+    }
+    // 群れが増えたら輪を広げる。固定半径のままだと 40体で間隔10px＝重なって潰れる
+    // （実測: 最近接4.5px）。ORBIT_RING_ROWS 列ぶんの詰め込みまでは許容して輪を太らせる。
+    const needed = (aliveForOrbit * sepR) / (Math.PI * 2 * ORBIT_RING_ROWS);
+    if (needed > orbitR) orbitR = needed;
+  }
+  const orbitSide = _orbitSide;
 
   gridClear();
   for (let i = 0; i < N; i++) {
@@ -9512,14 +9649,48 @@ function simStep(dt) {
     const ldx = leader.x - xi, ldy = leader.y - yi;
     const aDist = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
     const leadNx = ldx / aDist, leadNy = ldy / aDist;
-    ax += leadNx * wLead * 120;
-    ay += leadNy * wLead * 120;
+
+    // v0.37: 操縦点へ「まっすぐ寄る」か「回り込む」か。
+    // 等速で止まれない竜（minSpeed===maxSpeed）は操縦点の上で往復して激しく震えるので、
+    // orbitRadius の内側では**接線方向**へ舵を切って周回に落とす。
+    // 半径のズレは半径方向成分で補正する（外なら内向き・内なら外向き）。
+    let steerNx = leadNx, steerNy = leadNy;
+    const orbiting = orbitR > 0 && aDist < orbitR * 2;
+    if (orbiting) {
+      const rxn = -leadNx, ryn = -leadNy;                  // 操縦点→竜（半径方向の外向き）
+      const radialErr = Math.max(-1, Math.min(1, (aDist - orbitR) / orbitR));
+      // 接線（群れ共通の回転方向）＋ 半径のズレを戻す成分（leadN＝内向き）
+      const ox = -ryn * orbitSide + leadNx * radialErr;
+      const oy =  rxn * orbitSide + leadNy * radialErr;
+      const om = Math.sqrt(ox * ox + oy * oy) || 1;
+      steerNx = ox / om; steerNy = oy / om;
+    }
+
+    ax += steerNx * wLead * 120;
+    ay += steerNy * wLead * 120;
 
     // ---- v0.33: 「向き」と「速さ」を分けて積分する ----
     // 向きは turnRate、速さは accel で別々に制限するので、
     // 「小回りは利くが加速は鈍い」「即時方向転換（UFO）」を独立に表現できる。
     const curSpeed = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
     const curAngle = curSpeed > 0.0001 ? Math.atan2(vy[i], vx[i]) : 0;
+
+    // ---- v0.37: 跳躍（蛙型）----
+    // サイクルの前半 hopFlightFrac が滞空、残りが着地。滞空中は**舵が効かない（弾道）**、
+    // 着地中は turnRate で向きを合わせ直すだけでほとんど進まない。
+    // 滞空中の速さを 1/hopFlightFrac 倍にするので、平均速度は maxSpeed に一致する。
+    let hopAirborne = false, hopSpeedMul = 1;
+    if (hopPer > 0) {
+      const phase = ((hopClock + BOID_FLAP_PHASE[i] * HOP_PHASE_STAGGER * hopPer) % hopPer) / hopPer;
+      hopAirborne = phase < prof.hopFlightFrac;
+      hopSpeedMul = hopAirborne ? 1 / prof.hopFlightFrac : prof.hopGroundFrac;
+      // 描画用の滞空度（0=着地, 1=跳躍の頂点）。sin で山なりにする。
+      boidHopAir[i] = hopAirborne ? Math.sin((phase / prof.hopFlightFrac) * Math.PI) : 0;
+    } else if (boidHopAir[i] !== 0) {
+      boidHopAir[i] = 0;   // 跳ばない竜種へ切り替えた直後に浮いたままにしない
+    }
+    // 滞空中は旋回不能。着地中と通常の竜種は竜種の turnRate。
+    const turnLimI = hopAirborne ? 0 : turnLim;
 
     // 行きたい向きの決定（v0.33.1 で作り直し）。2段構えにする。
     //
@@ -9537,26 +9708,39 @@ function simStep(dt) {
     //    仲間との小さなズレでは静か」になる＝旋回性能が実際に効くパラメータになる。
     //    リーダー方向を基準にするのが要点：操舵の合力を使うと分離・整列の弱い横力にも
     //    即応してしまい群れが高周波で震える（実測 45回/秒/体）。
-    let err = Math.atan2(leadNy, leadNx) - naturalAngle;
+    let err = Math.atan2(steerNy, steerNx) - naturalAngle;
     while (err >  Math.PI) err -= Math.PI * 2;
     while (err < -Math.PI) err += Math.PI * 2;
 
     let desiredAngle;
-    if (turnLim === Infinity) {
-      // 即時方向転換（UFO型）: リーダー方向へ即座に向く。
-      // ただし**分離だけは合成する**。これを入れないと全個体が操縦点へ直行して
-      // 1点に重なる（実測: 最近接距離 0.1px の団子になった）。
-      // 整列・結合は入れない＝弱い横力に即応して高周波で震えるのを避ける。
-      const gx = leadNx * wLead * 120 + sepX * wSep * 80;
-      const gy = leadNy * wLead * 120 + sepY * wSep * 80;
-      desiredAngle = (gx * gx + gy * gy) > 0.0001 ? Math.atan2(gy, gx) : naturalAngle;
+    if (turnLimI === Infinity) {
+      if (orbiting) {
+        // v0.37: 回り込み中は**向きを分離で汚さない**。周回の接線だけを見る＝滑らかに回る。
+        // 代わりに分離は**外力チャネル（kick）へ回して位置で押し分ける**。
+        // 分離を向きに混ぜたままだと、即時方向転換ゆえに隣とのわずかな押し合いが
+        // そのまま毎フレームの方向転換になり、群れが増えるほど激しく震える
+        // （実測 40体: 平均0.15rad/フレーム・符号反転17.5回/秒・急転回29%のフレーム）。
+        desiredAngle = Math.atan2(steerNy, steerNx);
+        if (nSep > 0) {
+          boidKickX[i] += sepX * ORBIT_SEP_KICK_ACCEL * dt;
+          boidKickY[i] += sepY * ORBIT_SEP_KICK_ACCEL * dt;
+        }
+      } else {
+        // 即時方向転換（UFO型）: 操縦点方向へ即座に向く。
+        // ただし**分離だけは合成する**。これを入れないと全個体が操縦点へ直行して
+        // 1点に重なる（実測: 最近接距離 0.1px の団子になった）。
+        // 整列・結合は入れない＝弱い横力に即応して高周波で震えるのを避ける。
+        const gx = steerNx * wLead * 120 + sepX * wSep * 80;
+        const gy = steerNy * wLead * 120 + sepY * wSep * 80;
+        desiredAngle = (gx * gx + gy * gy) > 0.0001 ? Math.atan2(gy, gx) : naturalAngle;
+      }
     } else {
       // 不感帯を差し引いた誤差に比例させる（小さなズレでは舵を当てない）
       let eMag = Math.abs(err) - TURN_DEADZONE;
       if (eMag < 0) eMag = 0;
       let rate = TURN_GAIN * eMag * Math.sign(err);
-      if      (rate >  turnLim) rate =  turnLim;
-      else if (rate < -turnLim) rate = -turnLim;
+      if      (rate >  turnLimI) rate =  turnLimI;
+      else if (rate < -turnLimI) rate = -turnLimI;
       let turnDelta = rate * dt;
       // 目標を追い越さない（追い越すと行き過ぎ→引き返しの振動になる）
       if (Math.abs(turnDelta) > Math.abs(err)) turnDelta = err;
@@ -9565,6 +9749,7 @@ function simStep(dt) {
 
     // 望む速さ: 基本は最高速。リーダーに近いほど落として最低速に寄せる
     // ＝ minSpeed が 0 の竜種は操縦点の上でその場に留まれる。
+    // minSpeed === maxSpeed の竜種（UFO）はこの減速が丸ごと無効になり**等速**になる。
     let desiredSpeed = maxSp * Math.min(1, aDist / BOID_ARRIVE_DIST);
     if (desiredSpeed < minSp) desiredSpeed = minSp;
     // v0.33.1: 近すぎる仲間がいるときは、操縦点の上でも最低限の速さを残して押し分ける。
@@ -9573,12 +9758,16 @@ function simStep(dt) {
       const sepFloor = maxSp * SEP_MIN_SPEED_FRAC;
       if (desiredSpeed < sepFloor) desiredSpeed = sepFloor;
     }
+    // v0.37: 跳躍の速度エンベロープは**最後に掛ける**（分離の下限より優先）。
+    // ここより前に掛けると着地中も分離の下限速度でずるずる進んで「静止」に見えない。
+    if (hopPer > 0) desiredSpeed *= hopSpeedMul;
 
-    // 旋回制限: 1ステップで turnLim*dt ラジアンまでしか向きを変えられない
+    // 旋回制限: 1ステップで turnRate*dt ラジアンまでしか向きを変えられない
+    // （滞空中は turnLimI=0 ＝ 向きが固定される＝弾道飛行）
     let dAng = desiredAngle - curAngle;
     while (dAng >  Math.PI) dAng -= Math.PI * 2;
     while (dAng < -Math.PI) dAng += Math.PI * 2;
-    const turnMax = turnLim * dt;
+    const turnMax = turnLimI * dt;
     if      (dAng >  turnMax) dAng =  turnMax;
     else if (dAng < -turnMax) dAng = -turnMax;
     const newAngle = curAngle + dAng;
@@ -9666,7 +9855,19 @@ const LEADER_ARRIVAL_DIST = 60; // px（パスの先読み半径 24px より大�
 function updateLeader(dt) {
   // v0.6: 「疾風」カードでリーダー速度も伸びる（群れと感覚を揃える）
   // v0.33: 竜種プロファイルの leaderSpeed を使う（鈍重な竜は操縦点も遅い）
-  const speed = mv().leaderSpeed * _simSpeedMult;
+  const prof = mv();
+  let speed = prof.leaderSpeed * _simSpeedMult;
+
+  // v0.37: 跳躍する竜種は**操縦点も跳ぶ**。群れと同じ位相（stagger なし）で
+  // 進む／止まるを繰り返すので、群れが操縦点に置いていかれない。
+  // さらに hopPathSkip でパスの先読みを大きく取り、1回の跳躍でパスを数点ぶん飛ばす。
+  const hopPer   = prof.hopPeriod;
+  let   hopAhead = 0;
+  if (hopPer > 0) {
+    const phase = (hopClock % hopPer) / hopPer;
+    speed *= (phase < prof.hopFlightFrac) ? (1 / prof.hopFlightFrac) : prof.hopGroundFrac;
+    hopAhead = prof.hopPathSkip;
+  }
 
   if (isDrawing) {
     // ---- 追従モード（v0.32: 巡航操舵を廃止して「指へ向かう、着いたら止まる」に単純化）----
@@ -9705,8 +9906,9 @@ function updateLeader(dt) {
       // 末尾に達したらパス追従を終え、指の現在位置へ向かう。
       // ここで pathClear はしない＝指を離した後のループ追従（円を描いて離すと周回）のため保持。
       if (leaderPathConsumeIdx < pathLen - 1) {
-        // 最近傍より少し先（lookahead +2）を目標にして弧へ早めに舵を切る
-        const aimIdx = Math.min(leaderPathConsumeIdx + 2, pathLen - 1);
+        // 最近傍より少し先（lookahead +2）を目標にして弧へ早めに舵を切る。
+        // v0.37: 跳躍する竜種は hopPathSkip ぶん先を見る＝1回の跳躍でパスを飛ばして処理する。
+        const aimIdx = Math.min(leaderPathConsumeIdx + (hopAhead > 0 ? hopAhead : 2), pathLen - 1);
         const atgt = pathGet(aimIdx);
         tx = atgt.x; ty = atgt.y;
       }
@@ -9736,11 +9938,13 @@ function updateLeader(dt) {
     // 開いた線は末尾で折り返さず、終端に着いたら竜種の pathEndMode へ移す
     // （旧実装は開いた線でも (ni+3)%pathLen で先頭へ飛び、終端付近で
     //   「前へ進む／先頭へ戻る」が拮抗してリーダーが停止していた）。
+    // v0.37: 跳躍する竜種は hopPathSkip ぶん先読みして、パスを数点ずつ飛ばして進む。
+    const lookAhead = hopAhead > 0 ? hopAhead : 3;
     let aimIdx;
     if (isPathClosed()) {
-      aimIdx = (ni + 3) % pathLen;
+      aimIdx = (ni + lookAhead) % pathLen;
     } else {
-      aimIdx = ni + 3;
+      aimIdx = ni + lookAhead;
       if (aimIdx >= pathLen) {
         aimIdx = pathLen - 1;
         const last = pathGet(pathLen - 1);
@@ -9760,9 +9964,27 @@ function updateLeader(dt) {
     // ---- パス末端に到達した後、またはパスが無いとき ----
     // v0.33: 竜種の pathEndMode で挙動を変える。パスが無い（ステージ開始直後など）は常にウロウロ。
     // "loop" の竜種が開いた線を引いた場合もここに来る＝ウロウロに落ち着く。
-    const mode = (pathLen > 2 && pathEndReached) ? mv().pathEndMode : "wander";
+    const mode = (pathLen > 2 && pathEndReached) ? prof.pathEndMode : "wander";
 
-    if (mode === "straight") {
+    if (mode === "orbit") {
+      // v0.37: パスの終端を中心に一定半径で旋回し続ける（等速で止まれない竜用）。
+      // 中心はパス末尾の点そのものなので**状態を持たない**（リロードや再計算で揺れない）。
+      // 回る向きは「いま向いている向き」から決めるので、旋回に入っても反転しない。
+      const c  = pathGet(pathLen - 1);
+      const R  = prof.orbitRadius > 0 ? prof.orbitRadius : PATH_END_ORBIT_RADIUS;
+      const rx = leader.x - c.x, ry = leader.y - c.y;
+      const rd = Math.sqrt(rx * rx + ry * ry) || 1;
+      const ux = rx / rd, uy = ry / rd;                       // 中心→リーダーの単位ベクトル
+      const side = (leader.vx * -uy + leader.vy * ux) >= 0 ? 1 : -1;
+      // 接線（周回方向）＋ 半径のズレを戻す成分
+      const radialErr = Math.max(-1, Math.min(1, (rd - R) / R));
+      const tx2 = -uy * side - ux * radialErr;
+      const ty2 =  ux * side - uy * radialErr;
+      const tm  = Math.sqrt(tx2 * tx2 + ty2 * ty2) || 1;
+      const k   = Math.min(1, dt * 4);
+      leader.vx += ((tx2 / tm) * speed - leader.vx) * k;
+      leader.vy += ((ty2 / tm) * speed - leader.vy) * k;
+    } else if (mode === "straight") {
       // 今の向きへ直進し続ける。速さは leaderSpeed に寄せる。
       const sp = Math.sqrt(leader.vx * leader.vx + leader.vy * leader.vy);
       if (sp > 1) {
@@ -10506,12 +10728,29 @@ function drawBoids() {
     ctx.globalAlpha = 1.0;
     ctx.restore();
 
+    // ---- v0.37: 跳躍中は「浮いている」ぶん大きく描き、真下に影を落とす ----
+    // トップビューなので高さは大きさでしか表せない。影は地面（=論理座標そのもの）に残す。
+    const hopAir = boidHopAir[i];
+    if (hopAir > 0.01) {
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.28 * hopAir;
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.ellipse(wx, wy, 7, 4.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     // ---- drawImage（rotate→translate。毎フレームパスを引かない） ----
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(wx, wy);
     ctx.rotate(angle);
     if (unitScale !== 1) ctx.scale(unitScale, unitScale);  // v0.15: リーダーの体格成長
+    if (hopAir > 0.01) {
+      const hopScale = 1 + HOP_DRAW_SCALE * hopAir;
+      ctx.scale(hopScale, hopScale);
+    }
     // スプライト中心が竜の重心に来るよう -halfLogical オフセット
     ctx.drawImage(
       sprite,
@@ -10965,6 +11204,11 @@ const DRAGON_ELEMENT_COLORS = {
   swallow:  { body: "rgba(160, 226, 198, 1.0)", wing: "rgba(70, 150, 130, 1.0)",  rim: "rgba(30, 90, 80, 0.0)" },
   hornet:   { body: "rgba(255, 216, 58, 1.0)",  wing: "rgba(190, 140, 20, 1.0)",  rim: "rgba(110, 80, 10, 0.0)" },
   gargoyle: { body: "rgba(166, 176, 186, 1.0)", wing: "rgba(105, 115, 126, 1.0)", rim: "rgba(60, 66, 74, 0.0)" },
+
+  // v0.37: Ⅲ群（極端枠）。こちらも専用ラスター画像はまだ無くベクター描画で出る。
+  ufo:      { body: "rgba(159, 240, 208, 1.0)", wing: "rgba(90, 180, 165, 1.0)",  rim: "rgba(40, 100, 95, 0.0)" },
+  charger:  { body: "rgba(216, 160, 90, 1.0)",  wing: "rgba(150, 100, 45, 1.0)",  rim: "rgba(90, 60, 25, 0.0)" },
+  frog:     { body: "rgba(140, 224, 90, 1.0)",  wing: "rgba(80, 160, 60, 1.0)",   rim: "rgba(40, 90, 30, 0.0)" },
 };
 
 // プリレンダ設定
@@ -10973,6 +11217,10 @@ const DRAGON_FLAP_FRAMES = 16;     // 羽ばたき1サイクルのフレーム�
                                    // プリレンダ枚数=属性数×本数（fireのみで16枚≈672KB）。
 const DRAGON_FLAP_SPEED  = 1.6;   // 羽ばたきサイクル毎秒（breathTime に掛ける係数）。
                                   // 低いほどゆったり滑空する。速いと虫のように見えるため抑えめ。
+
+// v0.37: 跳躍の頂点で竜をどれだけ大きく描くか（1.0 + これ ＝ 最大倍率）。
+// トップビューでは高さを大きさでしか表せないので、影とセットで「浮いている」を作る。
+const HOP_DRAW_SCALE = 0.35;
 
 // スプライト1枚の論理サイズ（翼を広げた最大幅を内包する正方形）
 // ラスター画像は翼スパン40論理px・最長縦(fire)約35.8論理pxなので52px枠に余裕で収まる。
