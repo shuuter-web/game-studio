@@ -575,7 +575,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.37.0";
+const GAME_VERSION = "v0.37.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -886,6 +886,8 @@ const MOVE_PROFILE_DEFAULT = {
   hopFlightFrac: 0.42, // サイクルのうち滞空している割合（残りは着地して静止）
   hopGroundFrac: 0.06, // 着地中の速さ（maxSpeed比）。完全に0にすると向きを見失うので微速で残す
   hopPathSkip:   0,    // 跳躍1回でリーダーが進むパス点数（>0で「パスを飛ばして処理」する）
+  pathTrace:     false,// true で**描いた線を弧長でそのままなぞる**（角を丸めない）。
+                       // 群れも線上の隊列スロットを追うので、線の形がそのまま群れの軌跡になる
 };
 
 // pathEndMode: 指を離してパスの終端まで行った後どうするか。
@@ -926,9 +928,11 @@ const ATTACK_DEFS = {
   featherscatter: { ja: "羽根散弾",   en: "Feather Scatter",   kind: "scatter",   recoilDist: 8,  fireStun: 0    },
   satelliteswarm: { ja: "衛星蜂",     en: "Satellite Swarm",   kind: "satellite", recoilDist: 0,  fireStun: 0    },
   divebomb:       { ja: "落下叩きつけ", en: "Divebomb",         kind: "divebomb",  recoilDist: 0,  fireStun: 0.18 },
-  // v0.37: 突竜。遠隔を持たず**体当たりだけ**で戦う（kind:"melee" は updateCollisionAttacks が担う）。
-  // 爪撃と違って硬直0＝止まらずに轢き続ける。突進の重さは移動プロファイル側（低turnRate・低accel）で出す。
-  ram:            { ja: "突進",       en: "Ram",               kind: "melee",     recoilDist: 0,  fireStun: 0    },
+  // v0.37.1: 爆竜。**通り過ぎた後ろで**広範囲が爆ぜる（投下 → 導火 → 炸裂）。
+  // 曲がれない・止まれない移動プロファイルと噛み合わせて「爆撃機で舐める」操作にする。
+  carpetbomb:     { ja: "絨毯爆撃",   en: "Carpet Bombing",    kind: "bomb",      recoilDist: 0,  fireStun: 0    },
+  // v0.37.1: 蛙竜。**正面まっすぐだけ**に伸びる舌の斬撃（扇ではなく線）。
+  tonguelash:     { ja: "舌撃",       en: "Tongue Lash",       kind: "tongue",    recoilDist: 0,  fireStun: 0    },
 };
 
 // v0.34.1: 反動の効きを実機で確かめるためのデバッグ上書き（null=攻撃の定義値）。
@@ -998,15 +1002,17 @@ const SPECIES_DEFS = {
     desc: "牽引光線で焼き払う。旋回も加速もロスなしの等速。指の周りを回り込む",
     // minSpeed === maxSpeed ＝ 減速しない（到達しても速度が落ちない＝完全な等速）。
     // 止まれないので、操縦点の上では orbitRadius で**回り込む**（そうしないと往復して震える）。
+    // v0.37.1: `pathTrace` で**描いた線を弧長でそのままなぞる**（角を丸めない）。
+    // leaderSpeed は maxSpeed と同値にする＝隊列スロットが竜より速く逃げないため。
     move: {
       maxSpeed: 175, minSpeed: 175, accel: INSTANT, turnRate: INSTANT,
-      leaderSpeed: 215, orbitRadius: 64, pathEndMode: "orbit",
+      leaderSpeed: 175, orbitRadius: 64, pathEndMode: "orbit", pathTrace: true,
     },
   },
-  charger: {  // 旋回半径 179（ガーゴイル107の1.7倍）。出足も最鈍
-    ja: "突竜", en: "Charger Dragon", icon: "\u{1F98F}", color: "#d8a05a", element: "charger",
-    attack: "ram",
-    desc: "体当たりだけで轢き潰す。曲がれない・止まれない・出足が重い",
+  bomber: {   // 旋回半径 179（ガーゴイル107の1.7倍）。出足も最鈍
+    ja: "爆竜", en: "Bomber Dragon", icon: "\u{1F4A3}", color: "#d8a05a", element: "bomber",
+    attack: "carpetbomb",
+    desc: "通り過ぎた後ろで広範囲が爆ぜる。曲がれない・止まれない・出足が重い",
     // accel 90 は ground プリセット(130)よりさらに鈍い。minSpeed 115 ＝ 実質止まれない。
     // leaderPull を上げているのは、旋回が効かないぶん隊列が千切れやすいのを引力で補うため。
     // ★もっと極端にするなら turnRate を下げる。ただし turnRate 0.8（半径219）では
@@ -1019,8 +1025,8 @@ const SPECIES_DEFS = {
   },
   frog: {     // 跳躍移動。滞空中は舵が効かない（弾道）
     ja: "蛙竜", en: "Frog Dragon", icon: "\u{1F438}", color: "#8ce05a", element: "frog",
-    attack: "divebomb",
-    desc: "跳ねて進み、着地で地面を叩く。滞空中は曲がれない。指を離すと止まる",
+    attack: "tonguelash",
+    desc: "正面まっすぐへ舌を伸ばして斬る。跳ねて進み、滞空中は曲がれない。指を離すと止まる",
     // turnRate は「着地して向きを合わせるときの旋回速度」。滞空中は 0 に固定される（simStep）。
     // 跳躍1回の飛距離 ≒ maxSpeed/hopFlightFrac × hopPeriod × hopFlightFrac = maxSpeed × hopPeriod ≒ 105px。
     move: {
@@ -2839,6 +2845,8 @@ function generateStageLayout(stageIndex) {
   // --- (7) v0.6-p4: 移動敵ユニット（文明別・ステージ数に応じた混成編成） ---
   movers = generateMovers(stageIndex, boss);
   shockwaveFxList.length = 0;
+  bombList.length = 0;       // v0.37.1: 前ステージの未炸裂爆弾を持ち越さない
+  tongueFxList.length = 0;
   resetRaiderState();   // v0.8: レイダー湧き状態もステージごとにリセット
 
   // --- (8) v0.6-p4: 後半ステージの難度底上げ（仕様 §4。プレイヤーの3択強化ぶんを相殺） ---
@@ -7418,6 +7426,9 @@ function currentFireInterval() {
   if (flockWeapon === "blade")    return BLADE_INTERVAL * effFireIntervalMult("blade");
   if (flockWeapon === "scatter")  return SCATTER_INTERVAL * effFireIntervalMult("scatter");
   if (flockWeapon === "divebomb") return DIVE_INTERVAL * effFireIntervalMult("divebomb");
+  // v0.37.1: 極端枠
+  if (flockWeapon === "bomb")     return BOMB_INTERVAL * effFireIntervalMult("bomb");
+  if (flockWeapon === "tongue")   return TONGUE_INTERVAL * effFireIntervalMult("tongue");
   return 1.0;   // beam / melee / satellite は発射タイマーを使わない
 }
 
@@ -8037,6 +8048,163 @@ function updateDivebombAttacks(dt) {
   }
 }
 
+// ---- 絨毯爆撃（爆竜）: 今いる場所に爆弾を落とし、通り過ぎた後ろで炸裂する ----
+// 「移動したあとに広範囲攻撃が発生する」＝投下と炸裂の間に竜が前へ抜けるのが要点。
+// 竜が止まれない・曲がれない移動プロファイルと噛み合って「舐めるように爆撃する」操作になる。
+const BOMB_FUSE     = 0.55;  // 投下から炸裂まで（秒）。竜は最高速175で約96px先へ抜ける
+const BOMB_RADIUS    = 92;   // 炸裂半径（落下叩きつけ56より明確に広い）
+const BOMB_DAMAGE    = 26;
+const BOMB_INTERVAL  = 1.6;  // 1体あたりの投下間隔
+const BOMB_MAX       = 160;  // 同時に空中にある爆弾の上限（群れ100体でも溢れない）
+const bombList = [];         // { x, y, t } t=残りの導火時間
+
+/** 投下（爆竜のときだけ呼ぶ）。 */
+function updateBombDrops(dt) {
+  const radius = BOMB_RADIUS * effWeaponRangeMult("bomb");
+  const inter  = BOMB_INTERVAL * effFireIntervalMult("bomb");
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    boidFireTimer[i] -= dt;
+    if (boidFireTimer[i] > 0) continue;
+    // 炸裂したとき当たるものが今この場所にあるか（空振りでは落とさない＝他武器と同じ作法）
+    if (damageInRadius(px[i], py[i], radius, 0) === 0) continue;
+    boidFireTimer[i] = inter;
+    if (bombList.length < BOMB_MAX) bombList.push({ x: px[i], y: py[i], t: BOMB_FUSE });
+  }
+}
+
+/** 導火 → 炸裂。**竜種を切り替えても投下済みの爆弾は炸裂させきる**ので毎フレーム呼ぶ。 */
+function updateBombFuses(dt) {
+  if (bombList.length === 0) return;
+  const radius = BOMB_RADIUS * effWeaponRangeMult("bomb");
+  const dmg    = BOMB_DAMAGE * effWeaponDmgMult("bomb");
+  for (let k = bombList.length - 1; k >= 0; k--) {
+    const b = bombList[k];
+    b.t -= dt;
+    if (b.t > 0) continue;
+    damageInRadius(b.x, b.y, radius, dmg);
+    shockwaveFxList.push({ x: b.x, y: b.y, maxR: radius, life: SHOCKWAVE_FX_DURATION, color: "#ffb060" });
+    spawnCollisionParticles(b.x, b.y);
+    bombList.splice(k, 1);
+  }
+}
+
+/** 投下済みで未炸裂の爆弾。導火が進むほど速く明滅する＝どこが吹き飛ぶかの予告。 */
+function drawBombs() {
+  if (bombList.length === 0) return;
+  ctx.save();
+  for (const b of bombList) {
+    const prog  = 1 - Math.max(0, b.t) / BOMB_FUSE;     // 0=投下直後, 1=炸裂寸前
+    const blink = 0.45 + 0.55 * Math.abs(Math.sin(prog * Math.PI * 6));
+    // 予告円（炸裂半径まで縮んでいく＝範囲が読める）
+    ctx.globalAlpha = 0.18 + 0.22 * prog;
+    ctx.strokeStyle = "#ffb060";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, BOMB_RADIUS * (1.15 - 0.15 * prog), 0, Math.PI * 2);
+    ctx.stroke();
+    // 爆弾本体
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "#3a3026";
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = blink;
+    ctx.fillStyle = "#ffd070";
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 2.0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---- 舌撃（蛙竜）: 正面まっすぐだけに伸びる舌 ----
+// 刃翼（扇・半角57度）と違い、**線（カプセル）判定**にして「まっすぐ前だけ」を厳密に出す。
+// 射程は竜の体長（スプライト実測で約33論理px）の約2倍。
+const TONGUE_RANGE    = 66;   // 届く距離 px
+const TONGUE_HALF_W   = 7;    // 舌の太さの半分 px（当たり判定の膨らみ）
+const TONGUE_DAMAGE   = 24;
+const TONGUE_INTERVAL = 0.7;  // 跳躍周期（0.7）と同じ＝1回の跳躍につき1回伸ばす
+const TONGUE_FX_LIFE  = 0.14;
+const tongueFxList = [];      // { x, y, angle, t }
+
+function updateTongueAttacks(dt) {
+  const range = TONGUE_RANGE * effWeaponRangeMult("tongue");
+  const dmg   = TONGUE_DAMAGE * effWeaponDmgMult("tongue");
+  const inter = TONGUE_INTERVAL * effFireIntervalMult("tongue");
+  const cell  = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
+
+  for (let k = tongueFxList.length - 1; k >= 0; k--) {
+    tongueFxList[k].t -= dt;
+    if (tongueFxList[k].t <= 0) tongueFxList.splice(k, 1);
+  }
+
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    boidFireTimer[i] -= dt;
+    if (boidFireTimer[i] > 0) continue;
+
+    const heading = Math.atan2(vy[i], vx[i]);
+    const hx = Math.cos(heading), hy = Math.sin(heading);
+    let hit = false;
+
+    // 前方の線分（太さ TONGUE_HALF_W）に触れているものだけ斬る
+    buildingGridQueryRadius(px[i], py[i], cell, _buildingNeighbourBuf);
+    for (const sIdx of _buildingNeighbourBuf) {
+      const s = settlements[sIdx];
+      if (!s || s.fallen) continue;
+      const dx = s.wx - px[i], dy = s.wy - py[i];
+      const along = dx * hx + dy * hy;                  // 前方への距離
+      if (along < 0 || along > range) continue;
+      const side = Math.abs(dx * -hy + dy * hx);        // 線からの横ずれ
+      if (side > s.radius + TONGUE_HALF_W) continue;
+      damageBuilding(sIdx, dmg);
+      hit = true;
+    }
+    for (const m of movers) {
+      if (!m.alive) continue;
+      const dx = m.wx - px[i], dy = m.wy - py[i];
+      const along = dx * hx + dy * hy;
+      if (along < 0 || along > range) continue;
+      const side = Math.abs(dx * -hy + dy * hx);
+      if (side > (m.radius || 12) + TONGUE_HALF_W) continue;
+      damageMover(m, dmg);
+      hit = true;
+    }
+    if (!hit) continue;   // 空振りでは伸ばさない
+    boidFireTimer[i] = inter;
+    tongueFxList.push({ x: px[i], y: py[i], angle: heading, t: TONGUE_FX_LIFE });
+  }
+}
+
+/** 伸びた舌。付け根が太く先が細い1本の線。伸び切ってから素早く戻る。 */
+function drawTongueFx() {
+  if (tongueFxList.length === 0) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const f of tongueFxList) {
+    const prog = 1 - f.t / TONGUE_FX_LIFE;              // 0→1
+    // 前半で伸びて後半で戻る
+    const reach = TONGUE_RANGE * (prog < 0.4 ? prog / 0.4 : 1 - (prog - 0.4) / 0.6);
+    const ex = f.x + Math.cos(f.angle) * reach;
+    const ey = f.y + Math.sin(f.angle) * reach;
+    ctx.globalAlpha = 0.85 * (1 - prog * 0.4);
+    ctx.strokeStyle = "#ff7a9a";
+    ctx.lineWidth = 3.4;
+    ctx.beginPath();
+    ctx.moveTo(f.x, f.y);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    // 先端の光
+    ctx.globalAlpha = 0.9 * (1 - prog);
+    ctx.fillStyle = "#ffd0dc";
+    ctx.beginPath();
+    ctx.arc(ex, ey, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 function updateWeaponAttacks(dt) {
   if (gameState !== "playing") return;
   breathTime += dt;
@@ -8056,8 +8224,14 @@ function updateWeaponAttacks(dt) {
     updateSatelliteAttacks(dt);
   } else if (flockWeapon === "divebomb") {
     updateDivebombAttacks(dt);
+  } else if (flockWeapon === "bomb") {
+    updateBombDrops(dt);
+  } else if (flockWeapon === "tongue") {
+    updateTongueAttacks(dt);
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
+
+  updateBombFuses(dt);   // 投下済みの爆弾は竜種が変わっても炸裂させきる
 
   updateMotherBreath(dt);   // v0.22: 母竜の署名ブレス（v0.31: ラン中に「母なる吐息」を引いた時のみ）
   updateDragonProjectiles(dt);
@@ -8873,7 +9047,7 @@ const SPECIES_CHOICES = [
   { species: "gargoyle" },
   // v0.37: Ⅲ群（極端枠）。手触りの限界を実機で確かめるための3種。
   { species: "ufo" },
-  { species: "charger" },
+  { species: "bomber" },
   { species: "frog" },
 ];
 let speciesSelecting = false;
@@ -9266,6 +9440,67 @@ function pathClear() {
   pathHead = 0;
   leaderPathConsumeIdx = 0;
   pathEndReached = false;
+  leaderArc  = 0;
+  traceIdle  = 0;
+}
+
+// -----------------------------------------------------------------
+// v0.37.1: パスを「弧長」で扱う（`pathTrace` の竜種＝UFO用）
+// -----------------------------------------------------------------
+// 通常の竜は「数点先のウェイポイントへ操舵する」ので、角を丸めて内側を突っ切る。
+// UFO は**描いた線をそのままなぞる**のが仕様なので、操舵ではなく
+// 「線の上を弧長で進む」に切り替える。そのために累積長のテーブルをフレーム内で1回作る。
+const _pathCum = new Float32Array(PATH_MAX);   // _pathCum[k] = 点0から点kまでの長さ
+let _pathCumLen = 0;                            // テーブルが有効な点数
+let leaderArc   = 0;                            // リーダーの弧長位置（px）
+let traceIdle   = 0;                            // 弧が伸びていない時間（秒）
+
+/** 累積長テーブルを作り直し、パス全長を返す。フレームに1回でよい。 */
+function pathBuildCum() {
+  _pathCumLen = pathLen;
+  if (pathLen === 0) return 0;
+  _pathCum[0] = 0;
+  let prev = pathGet(0);
+  for (let k = 1; k < pathLen; k++) {
+    const p = pathGet(k);
+    _pathCum[k] = _pathCum[k - 1] + Math.hypot(p.x - prev.x, p.y - prev.y);
+    prev = p;
+  }
+  return _pathCum[pathLen - 1];
+}
+
+/**
+ * 弧長 arc の位置と、その点での進行方向（単位ベクトル）を out に書く。
+ * pathBuildCum() を**同じフレームで先に呼んでおくこと**。
+ */
+const _tracePtA = { x: 0, y: 0, tx: 1, ty: 0 };
+const _tracePtB = { x: 0, y: 0, tx: 1, ty: 0 };
+function pathPointAtArc(arc, out) {
+  const n = Math.min(_pathCumLen, pathLen);
+  if (n === 0) { out.x = leader.x; out.y = leader.y; out.tx = 1; out.ty = 0; return out; }
+  const total = _pathCum[n - 1];
+  if (arc <= 0)      { const a = pathGet(0), b = pathGet(Math.min(1, n - 1));
+                       out.x = a.x; out.y = a.y;
+                       const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+                       out.tx = dx / d; out.ty = dy / d; return out; }
+  if (arc >= total)  { const a = pathGet(Math.max(0, n - 2)), b = pathGet(n - 1);
+                       out.x = b.x; out.y = b.y;
+                       const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+                       out.tx = dx / d; out.ty = dy / d; return out; }
+  // 二分探索で arc を含む区間を求める
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (_pathCum[mid] <= arc) lo = mid; else hi = mid;
+  }
+  const a = pathGet(lo), b = pathGet(hi);
+  const segLen = _pathCum[hi] - _pathCum[lo];
+  const t = segLen > 0.0001 ? (arc - _pathCum[lo]) / segLen : 0;
+  out.x = a.x + (b.x - a.x) * t;
+  out.y = a.y + (b.y - a.y) * t;
+  const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+  out.tx = dx / d; out.ty = dy / d;
+  return out;
 }
 
 function pathPush(wx, wy) {
@@ -9524,6 +9759,21 @@ const ORBIT_SIDE_HYSTERESIS = 4000;
 // 定常速度 = これ × 分離ベクトルの大きさ / KICK_DECAY_PER_SEC なので、
 // 300 なら隣が1体で約50px/s の押し分けになる。
 const ORBIT_SEP_KICK_ACCEL = 300;
+// ---- v0.37.1: 線をそのままなぞる（pathTrace）ときの隊列 ----
+// 線の上に「1行 PATH_TRACE_COLUMNS 機」の隊列を並べ、行ごとに後ろへずらす。
+// 竜は線上のスロットではなく**その少し先（LOOKAHEAD）**を狙う＝純追尾。
+// スロットそのものを狙うと、到達した瞬間に狙う向きが定まらず（距離0）その場で震える。
+// 行間・列間は分離半径（BASE_CFG.separationRadius = 28）より広く取る。
+// 狭いと隊列を組んだ瞬間に押し合って、線から横へ弾かれる。
+// 列数は群れの数で決める：**少数のときほど細く**して線の上に重ねる（トレースが最も目に付く場面）。
+// 増えたら横に広げる（1列で伸ばすと100体で1000px超の蛇になり、線より隊列の長さが目立つ）。
+const PATH_TRACE_COLS_MIN  = 3;
+const PATH_TRACE_COLS_MAX  = 7;
+const PATH_TRACE_ROW_GAP   = 32;   // 行間（線に沿った距離 px）
+const PATH_TRACE_LATERAL   = 32;   // 列間（線に垂直な距離 px）
+const PATH_TRACE_LOOKAHEAD = 36;   // スロットからどれだけ先を狙うか px
+const PATH_TRACE_SNAP_DIST = 70;   // リーダーがこの距離まで線に寄ったら弧長の追従に入る
+const PATH_TRACE_IDLE_HOLD = 0.3;  // 弧が伸びないまま経った時間がこれを超えたら隊列を解いて操縦点へ戻る
 // 輪を何列ぶんまで詰め込んでよいか。1=きれいな1本の輪だが群れが増えると輪が巨大化して
 // 縦持ち390pxの画面から溢れる。3 なら 80体でも半径119px＝直径238pxに収まり、
 // はみ出したぶんは分離（外力チャネル）が内外へ散らして自然な帯になる。
@@ -9555,6 +9805,19 @@ function simStep(dt) {
   // v0.37: 回り込み半径（0=無効）と跳躍サイクル。ループ外で1回だけ解決する。
   let   orbitR   = prof.orbitRadius;
   const hopPer   = prof.hopPeriod;
+
+  // v0.37.1: 弧長トレース中は、竜は操縦点ではなく**線上の隊列スロット**を追う。
+  // これで線の形がそのまま群れの軌跡になる（操縦点だけを追うと角の内側を突っ切る）。
+  // 弧が伸びていない（指が止まった／末端に着いた）ときは隊列を解いて操縦点へ戻す。
+  const traceActive = prof.pathTrace && pathLen > 1 && !pathEndReached && traceIdle < PATH_TRACE_IDLE_HOLD;
+  let traceCols = PATH_TRACE_COLS_MIN;
+  if (traceActive) {
+    pathBuildCum();   // updateLeader と同じフレームだが、パス更新後に作り直す
+    // 「1列あたり3行」くらいの塊になる列数。少数なら細く、増えたら横に広がる。
+    traceCols = Math.round(Math.sqrt(countAliveBoids() / 3));
+    if (traceCols < PATH_TRACE_COLS_MIN) traceCols = PATH_TRACE_COLS_MIN;
+    else if (traceCols > PATH_TRACE_COLS_MAX) traceCols = PATH_TRACE_COLS_MAX;
+  }
 
   // v0.37: 回り込みの向きは**群れ全体で1つ**にする。
   // 個体ごとに「今回っている向き」で決めると半数が逆回りになって正面衝突し、
@@ -9645,8 +9908,21 @@ function simStep(dt) {
       ay += (cohY * inv - yi) * wCoh;
     }
 
-    // リーダーへの引力（方向のみ。距離減衰はなし）。単位ベクトルと距離は下でも使う。
-    const ldx = leader.x - xi, ldy = leader.y - yi;
+    // 追う点。通常は操縦点、弧長トレース中は線上の隊列スロット（の少し先）。
+    let tgtX = leader.x, tgtY = leader.y;
+    if (traceActive) {
+      const row = (i / traceCols) | 0;
+      const col = (i % traceCols) - (traceCols - 1) * 0.5;
+      const slotArc = leaderArc - row * PATH_TRACE_ROW_GAP;
+      // スロットそのものではなく LOOKAHEAD ぶん先を狙う（純追尾）。
+      // 直接狙うと到達時に方向が定まらず震える。
+      const p = pathPointAtArc(Math.max(0, slotArc + PATH_TRACE_LOOKAHEAD), _tracePtB);
+      tgtX = p.x - p.ty * col * PATH_TRACE_LATERAL;   // 進行方向の法線へ列ぶんずらす
+      tgtY = p.y + p.tx * col * PATH_TRACE_LATERAL;
+    }
+
+    // 目標への引力（方向のみ。距離減衰はなし）。単位ベクトルと距離は下でも使う。
+    const ldx = tgtX - xi, ldy = tgtY - yi;
     const aDist = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
     const leadNx = ldx / aDist, leadNy = ldy / aDist;
 
@@ -9654,8 +9930,9 @@ function simStep(dt) {
     // 等速で止まれない竜（minSpeed===maxSpeed）は操縦点の上で往復して激しく震えるので、
     // orbitRadius の内側では**接線方向**へ舵を切って周回に落とす。
     // 半径のズレは半径方向成分で補正する（外なら内向き・内なら外向き）。
+    // ※トレース中は回り込まない（隊列スロットの周りを回ったら線をなぞらなくなる）。
     let steerNx = leadNx, steerNy = leadNy;
-    const orbiting = orbitR > 0 && aDist < orbitR * 2;
+    const orbiting = orbitR > 0 && !traceActive && aDist < orbitR * 2;
     if (orbiting) {
       const rxn = -leadNx, ryn = -leadNy;                  // 操縦点→竜（半径方向の外向き）
       const radialErr = Math.max(-1, Math.min(1, (aDist - orbitR) / orbitR));
@@ -9714,8 +9991,8 @@ function simStep(dt) {
 
     let desiredAngle;
     if (turnLimI === Infinity) {
-      if (orbiting) {
-        // v0.37: 回り込み中は**向きを分離で汚さない**。周回の接線だけを見る＝滑らかに回る。
+      if (orbiting || traceActive) {
+        // v0.37: 回り込み・トレース中は**向きを分離で汚さない**。狙う方向だけを見る。
         // 代わりに分離は**外力チャネル（kick）へ回して位置で押し分ける**。
         // 分離を向きに混ぜたままだと、即時方向転換ゆえに隣とのわずかな押し合いが
         // そのまま毎フレームの方向転換になり、群れが増えるほど激しく震える
@@ -9869,6 +10146,50 @@ function updateLeader(dt) {
     hopAhead = prof.hopPathSkip;
   }
 
+  // ---- v0.37.1: 弧長トレース（`pathTrace` の竜種）----
+  // 「数点先へ操舵する」のをやめ、**線の上を弧長で進む**。角を丸めず線の形をそのまま描く。
+  // 閉じた線は弧長を折り返して周回し続ける（アクアリウム柱を潰さない）。
+  if (prof.pathTrace && pathLen > 1 && !pathEndReached) {
+    const total = pathBuildCum();
+    const closed = isPathClosed();
+    const cur = pathPointAtArc(Math.min(leaderArc, total), _tracePtA);
+    const gx = cur.x - leader.x, gy = cur.y - leader.y;
+    const gd = Math.hypot(gx, gy);
+    if (gd > PATH_TRACE_SNAP_DIST) {
+      // まだ線に乗っていない（線から遠い所で描き始めた）。弧は進めず、線上の現在地へ寄る。
+      const k = Math.min(1, dt * 10);
+      leader.vx += ((gx / gd) * speed - leader.vx) * k;
+      leader.vy += ((gy / gd) * speed - leader.vy) * k;
+      leader.x += leader.vx * dt;
+      leader.y += leader.vy * dt;
+      traceIdle += dt;
+    } else {
+      const prevX = leader.x, prevY = leader.y;
+      leaderArc += speed * dt;
+      const atEnd = leaderArc >= total;
+      if (closed && total > 1) leaderArc = leaderArc % total;
+      else if (atEnd)          leaderArc = total;
+      const q = pathPointAtArc(leaderArc, _tracePtA);
+      leader.x = q.x; leader.y = q.y;
+      // 見かけの速度（尻尾の向き・カメラ・末端旋回の初期方向に使う）。
+      // 弧が飛んだフレームで暴れないよう speed で頭打ちにする。
+      const mx = (leader.x - prevX) / dt, my = (leader.y - prevY) / dt;
+      const mm = Math.hypot(mx, my);
+      const cap = mm > speed ? speed / mm : 1;
+      leader.vx = mx * cap; leader.vy = my * cap;
+      // 指を止めて線の終端に着いたら隊列を解く（traceIdle）。離していれば pathEndMode へ移す。
+      if (!closed && atEnd) {
+        traceIdle += dt;
+        if (!isDrawing) pathEndReached = true;
+      } else {
+        traceIdle = 0;
+      }
+    }
+    leader.x = Math.max(0, Math.min(WORLD_W, leader.x));
+    leader.y = Math.max(0, Math.min(WORLD_H, leader.y));
+    return;
+  }
+
   if (isDrawing) {
     // ---- 追従モード（v0.32: 巡航操舵を廃止して「指へ向かう、着いたら止まる」に単純化）----
     // 旧実装は指に到達すると指を見るのをやめて直進し続けたため、
@@ -9973,8 +10294,17 @@ function updateLeader(dt) {
       const c  = pathGet(pathLen - 1);
       const R  = prof.orbitRadius > 0 ? prof.orbitRadius : PATH_END_ORBIT_RADIUS;
       const rx = leader.x - c.x, ry = leader.y - c.y;
-      const rd = Math.sqrt(rx * rx + ry * ry) || 1;
-      const ux = rx / rd, uy = ry / rd;                       // 中心→リーダーの単位ベクトル
+      const rd = Math.sqrt(rx * rx + ry * ry);
+      // 中心→リーダーの単位ベクトル。**中心にちょうど乗っている場合は方向が決まらない**ので
+      // 進行方向で代用する（弧長トレースの竜は終端の点に正確に着くので必ずここを通る）。
+      let ux, uy;
+      if (rd > 0.5) {
+        ux = rx / rd; uy = ry / rd;
+      } else {
+        const lsp = Math.hypot(leader.vx, leader.vy);
+        if (lsp > 1) { ux = leader.vx / lsp; uy = leader.vy / lsp; }
+        else         { ux = 1; uy = 0; }
+      }
       const side = (leader.vx * -uy + leader.vy * ux) >= 0 ? 1 : -1;
       // 接線（周回方向）＋ 半径のズレを戻す成分
       const radialErr = Math.max(-1, Math.min(1, (rd - R) / R));
@@ -10061,8 +10391,10 @@ function render(now) {
   drawBreathAttacks(now);
   drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
   drawSlashFx();             // v0.8: 緋竜の斬閃 / v0.35: 隼竜の刃翼（銀）
+  drawBombs();               // v0.37.1: 爆竜の投下済み爆弾（竜より下＝地面にある）
   drawBoids();
   drawSatellites();          // v0.35: 蜂竜の衛星蜂（竜の上に描く）
+  drawTongueFx();            // v0.37.1: 蛙竜の舌（竜の上に描く）
   drawProjectiles();
   drawParticles();
   drawAppearEffects();  // 変更2: 竜出現リングエフェクト（ワールド座標系）
@@ -11207,7 +11539,7 @@ const DRAGON_ELEMENT_COLORS = {
 
   // v0.37: Ⅲ群（極端枠）。こちらも専用ラスター画像はまだ無くベクター描画で出る。
   ufo:      { body: "rgba(159, 240, 208, 1.0)", wing: "rgba(90, 180, 165, 1.0)",  rim: "rgba(40, 100, 95, 0.0)" },
-  charger:  { body: "rgba(216, 160, 90, 1.0)",  wing: "rgba(150, 100, 45, 1.0)",  rim: "rgba(90, 60, 25, 0.0)" },
+  bomber:   { body: "rgba(216, 160, 90, 1.0)",  wing: "rgba(150, 100, 45, 1.0)",  rim: "rgba(90, 60, 25, 0.0)" },
   frog:     { body: "rgba(140, 224, 90, 1.0)",  wing: "rgba(80, 160, 60, 1.0)",   rim: "rgba(40, 90, 30, 0.0)" },
 };
 
