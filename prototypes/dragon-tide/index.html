@@ -575,8 +575,68 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.37.1";
+const GAME_VERSION = "v0.38.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
+
+// -----------------------------------------------------------------
+// 決定性RNG（v0.38.0）
+// 乱数を「ロジック用 random()」と「演出用 fxRandom()」の2ストリームに分ける。
+// 分ける理由: パーティクルや画面揺れを間引いてもロジック側の乱数列がずれないため、
+// 描画なしのヘッドレス実行と実プレイで同じランを再現できる（自動プレイテスト・回帰テストの前提）。
+// 素の Math.random() の直接呼び出しは禁止（tools/check.mjs が検出する）。 allow-math-random
+//
+// 使い方:
+//   ?seed=12345 を付けて開くと、そのシードでランが固定され何度でも同じ展開を再現できる。
+//   シード無しの場合は起動ごとに引き直し、現在値は debugGetSeed() で取得できる。
+// -----------------------------------------------------------------
+function makeRandomGenerator(seedValue) {   // mulberry32
+  let state = seedValue >>> 0;
+  return function nextRandom() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// 文字列シード（"boss-bug" など覚えやすい名前）も使えるように32bitへ畳む
+function hashSeed(text) {
+  let hash = 0x811C9DC5;
+  const source = String(text);
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+let currentSeed        = 0;
+let nextLogicRandom    = null;
+let nextFxRandom       = null;
+
+function reseedRandom(seedValue) {
+  currentSeed = (typeof seedValue === "number") ? (seedValue >>> 0) : hashSeed(seedValue);
+  nextLogicRandom = makeRandomGenerator(currentSeed);
+  // 演出用は別ストリーム。ロジック側の消費数に一切影響されないよう種をずらす。
+  nextFxRandom    = makeRandomGenerator((currentSeed ^ 0x9E3779B9) >>> 0);
+  return currentSeed;
+}
+
+function random()   { return nextLogicRandom(); }   // ゲーム状態に影響する乱数
+function fxRandom() { return nextFxRandom(); }      // 見た目だけの乱数
+
+// URLで固定されたシード（指定が無ければ null）。ラン開始のたびにこの値へ戻す。
+const fixedSeedParam = new URLSearchParams(location.search).get("seed") || null;
+
+// ラン開始時に呼ぶ。?seed= 指定時は毎ランその値へ固定＝完全再現できる。
+function reseedForNewRun() {
+  return reseedRandom(fixedSeedParam !== null ? fixedSeedParam : (Date.now() >>> 0));
+}
+
+function debugGetSeed() { return currentSeed; }
+
+reseedForNewRun();   // 起動直後のタイトル演出などにも乱数が要るため先に初期化しておく
 
 // -----------------------------------------------------------------
 // v0.16.1 / v0.19.2: デバッグパネル（テスト用・Shooter依頼）
@@ -607,8 +667,8 @@ function debugAddDragons(n) {
   if (gameState !== "playing") return;
   const c = calcFriendlyCentroid();
   for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = 30 + Math.random() * 60;
+    const a = random() * Math.PI * 2;
+    const r = 30 + random() * 60;
     spawnBoidAtEgg(c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
   }
 }
@@ -669,7 +729,9 @@ function debugStatusLine() {
   const rec = debugRecoilOverride === null ? `既定(${atk().recoilDist})` : `${debugRecoilOverride}`;
   return `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
-         `動き:${move} / 反動:${rec}`;
+         `動き:${move} / 反動:${rec} / ` +
+         // v0.38: 不具合報告用。この値を ?seed= に渡すと同じランをやり直せる
+         `seed:${debugGetSeed()}${fixedSeedParam !== null ? "(固定)" : ""}`;
 }
 
 function renderDebugPanel() {
@@ -1810,15 +1872,15 @@ function updateCamera(dt) {
 let settlements = [];
 
 function randRange(min, max) {
-  return min + Math.random() * (max - min);
+  return min + random() * (max - min);
 }
 
 function randInt(min, max) {
-  return min + Math.floor(Math.random() * (max - min + 1));
+  return min + Math.floor(random() * (max - min + 1));
 }
 
 function randChoice(array) {
-  return array[Math.floor(Math.random() * array.length)];
+  return array[Math.floor(random() * array.length)];
 }
 
 function dist2(ax, ay, bx, by) {
@@ -2071,9 +2133,9 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     let wx, wy, face;
     if (layout === "grid" && gridRoads.length > 0) {
       // 中心街区の大通り沿い（官庁・大工場）
-      const road = gridRoads[Math.floor(Math.random() * gridRoads.length)];
+      const road = gridRoads[Math.floor(random() * gridRoads.length)];
       const t    = randRange(-road.halfLen * 0.5, road.halfLen * 0.5);
-      const side = Math.random() < 0.5 ? 1 : -1;
+      const side = random() < 0.5 ? 1 : -1;
       const off  = side * (20 + BUILDING_SIZE_PARAMS.large.radiusBase);
       wx = road.mx + Math.cos(road.angle) * t + Math.cos(road.angle + Math.PI / 2) * off;
       wy = road.my + Math.sin(road.angle) * t + Math.sin(road.angle + Math.PI / 2) * off;
@@ -2106,7 +2168,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   for (let k = 0; k < mediumCount * 10 && placedMedium < mediumCount; k++) {
     let wx, wy, face;
     if (layout === "grid" && gridRoads.length > 0) {
-      const road = gridRoads[Math.floor(Math.random() * gridRoads.length)];
+      const road = gridRoads[Math.floor(random() * gridRoads.length)];
       const t    = randRange(-road.halfLen * 0.8, road.halfLen * 0.8);
       const side = k % 2 === 0 ? 1 : -1;
       const off  = side * (16 + randRange(0, 8) + BUILDING_SIZE_PARAMS.medium.radiusBase);
@@ -2190,7 +2252,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   for (let k = 0; k < smallCount * 16 && placedSmall < smallCount; k++) {
     let wx, wy, face;
     if (layout === "scattered" && scatterHubs.length > 0) {
-      const hub = scatterHubs[Math.floor(Math.random() * scatterHubs.length)];
+      const hub = scatterHubs[Math.floor(random() * scatterHubs.length)];
       const spread = 50 + (k / (smallCount * 16)) * 50;   // 混んできたら少しずつ外へ
       wx = hub.x + randRange(-spread, spread);
       wy = hub.y + randRange(-spread, spread);
@@ -2202,12 +2264,12 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
       const ca = Math.cos(rectTheta), sa = Math.sin(rectTheta);
       wx = townCenterX + lx * ca - ly * sa;
       wy = townCenterY + lx * sa + ly * ca;
-      face = rectTheta + (Math.random() < 0.5 ? 0 : Math.PI / 2) + Math.PI / 2;
+      face = rectTheta + (random() < 0.5 ? 0 : Math.PI / 2) + Math.PI / 2;
     } else {
       // 円/ブロブ: 中心に密・外縁に疎（√分布で中心へ寄せ、輪郭半径で打ち切る）
       const angle = randRange(0, Math.PI * 2);
       const rMax  = townRadiusAt(angle);
-      const r     = PLAZA_R + 14 + Math.sqrt(Math.random()) * (rMax - PLAZA_R - 14);
+      const r     = PLAZA_R + 14 + Math.sqrt(random()) * (rMax - PLAZA_R - 14);
       wx = townCenterX + Math.cos(angle) * r;
       wy = townCenterY + Math.sin(angle) * r;
       face = angle + Math.PI / 2 + randRange(-0.3, 0.3);
@@ -2228,7 +2290,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     const dirAngle   = clusterBase + c * (Math.PI * 2 / clusterCount) + randRange(-0.35, 0.35);
     const fieldAngle = dirAngle + Math.PI / 2 + randRange(-0.12, 0.12);
     const cols = randInt(2, 4);
-    const rows = Math.random() < 0.4 ? 2 : 1;
+    const rows = random() < 0.4 ? 2 : 1;
     const pw   = randRange(52, 78);
     const ph   = randRange(36, 54);
     const gap  = 7;
@@ -2354,7 +2416,7 @@ function makeBuilding(wx, wy, size, color, bConfig, hp) {
     isEggBearer: false,
     // ボス集落フラグ（通常建物は false。makeBossBuilding で true になる）
     isBoss: false,
-    attackTimer: Math.random() * bConfig.projectileInterval,
+    attackTimer: random() * bConfig.projectileInterval,
     attackRadius:        bConfig.attackRadius,
     projectileInterval:  bConfig.projectileInterval,
     projectileSpeed:     bConfig.projectileSpeed,
@@ -2409,8 +2471,8 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
     let hamletPlaced = false;
 
     for (let attempt = 0; attempt < TINY_HAMLET_MAX_ATTEMPTS && !hamletPlaced; attempt++) {
-      const cx = TINY_MARGIN + Math.random() * (WORLD_W - TINY_MARGIN * 2);
-      const cy = TINY_MARGIN + Math.random() * (WORLD_H - TINY_MARGIN * 2);
+      const cx = TINY_MARGIN + random() * (WORLD_W - TINY_MARGIN * 2);
+      const cy = TINY_MARGIN + random() * (WORLD_H - TINY_MARGIN * 2);
 
       // 首都占有領域チェック（クラスタ中心がボス周辺に入らない）
       if (dist2(cx, cy, bossWx, bossWy) < excl2) continue;
@@ -2458,8 +2520,8 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
 
       for (let attempt = 0; attempt < TINY_PER_BUILDING_MAX_ATTEMPTS && !placed; attempt++) {
         // クラスタ中心の周囲 hamletR 以内にランダム配置（一様分布にするため√補正）
-        const angle = Math.random() * Math.PI * 2;
-        const r     = hamletR * Math.sqrt(Math.random());
+        const angle = random() * Math.PI * 2;
+        const r     = hamletR * Math.sqrt(random());
         const wx    = centerX + Math.cos(angle) * r;
         const wy    = centerY + Math.sin(angle) * r;
 
@@ -2541,7 +2603,7 @@ function generateRoadsideHamlets(existingBuildings, roadEdges, boss, config) {
       const t   = (h + 1) / (hamletCount + 1) + randRange(-0.08, 0.08);
       const dx  = b.x - a.x, dy = b.y - a.y;
       const len = Math.sqrt(dx * dx + dy * dy) || 1;
-      const side = Math.random() < 0.5 ? 1 : -1;
+      const side = random() < 0.5 ? 1 : -1;
       const off  = side * (34 + randRange(0, 26));   // 道の脇（街道帯の外側すぐ）
       const cx = a.x + dx * t + (-dy / len) * off;
       const cy = a.y + dy * t + (dx / len) * off;
@@ -2637,8 +2699,8 @@ function generateStartAreaHouses(existing, config) {
   let placed = 0, attempts = 0;
   while (placed < target && attempts < target * 14) {
     attempts++;
-    const a = Math.random() * Math.PI * 2;
-    const d = INNER + Math.random() * (OUTER - INNER);
+    const a = random() * Math.PI * 2;
+    const d = INNER + random() * (OUTER - INNER);
     const wx = START_X + Math.cos(a) * d;
     const wy = START_Y + Math.sin(a) * d;
     if (wx < TINY_MARGIN || wx > WORLD_W - TINY_MARGIN ||
@@ -2670,7 +2732,7 @@ function placeWallArcAlong(points, hp, out) {
   }
   if (total < WALL_SEG_SPACING) return;
   const span  = total * randRange(0.35, 0.5);   // 全部は覆わない（一部だけ）
-  const start = Math.random() * total;
+  const start = random() * total;
   for (let d = 0; d < span; d += WALL_SEG_SPACING) {
     let t = (start + d) % total, idx = 0;
     while (idx < n && t > segLen[idx]) { t -= segLen[idx]; idx++; }
@@ -2688,7 +2750,7 @@ function generateTownWalls(townMetas, stageIndex) {
   const hp = Math.round((wcfg && wcfg.hp ? wcfg.hp : 52) * 0.7);   // 町壁はボス城壁より弱め
   const result = [];
   const idxs = townMetas.map((_, i) => i);
-  for (let i = idxs.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [idxs[i], idxs[j]] = [idxs[j], idxs[i]]; }
+  for (let i = idxs.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [idxs[i], idxs[j]] = [idxs[j], idxs[i]]; }
   const walledCount = Math.max(1, Math.round(townMetas.length * 0.4));   // 一部の町だけ
   for (let w = 0; w < walledCount && w < idxs.length; w++) {
     const meta = townMetas[idxs[w]];
@@ -2738,7 +2800,7 @@ function generateStageLayout(stageIndex) {
   {
     const order = townCenters.map((_, i) => i);
     for (let i = order.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(random() * (i + 1));
       [order[i], order[j]] = [order[j], order[i]];
     }
     cityScaleByIdx.set(order[0], 1.7);                       // 大都市（首府級）
@@ -2805,7 +2867,7 @@ function generateStageLayout(stageIndex) {
   const tinyEggCount = Math.max(1, Math.round(tinyBuildings.length * eggBearerRatio()));
   const tinyIndices  = Array.from({ length: tinyBuildings.length }, (_, i) => i);
   for (let i = 0; i < tinyEggCount && i < tinyIndices.length; i++) {
-    const j   = i + Math.floor(Math.random() * (tinyIndices.length - i));
+    const j   = i + Math.floor(random() * (tinyIndices.length - i));
     const tmp = tinyIndices[i]; tinyIndices[i] = tinyIndices[j]; tinyIndices[j] = tmp;
     tinyBuildings[tinyIndices[i]].isEggBearer = true;
   }
@@ -2817,7 +2879,7 @@ function generateStageLayout(stageIndex) {
   const rsEggCount  = Math.max(1, Math.round(roadsideBuildings.length * eggBearerRatio()));
   const rsIndices   = Array.from({ length: roadsideBuildings.length }, (_, i) => i);
   for (let i = 0; i < rsEggCount && i < rsIndices.length; i++) {
-    const j   = i + Math.floor(Math.random() * (rsIndices.length - i));
+    const j   = i + Math.floor(random() * (rsIndices.length - i));
     const tmp = rsIndices[i]; rsIndices[i] = rsIndices[j]; rsIndices[j] = tmp;
     roadsideBuildings[rsIndices[i]].isEggBearer = true;
   }
@@ -2872,7 +2934,7 @@ function generateStageLayout(stageIndex) {
     }
     const fwCount = 1 + Math.floor(stageIndex / 3);   // stage1-3=1, 4-6=2, 7-8=3
     for (let k = 0; k < fwCount && fwCandidates.length > 0; k++) {
-      const pick = Math.floor(Math.random() * fwCandidates.length);
+      const pick = Math.floor(random() * fwCandidates.length);
       const idx  = fwCandidates.splice(pick, 1)[0];
       result[idx].isFirework = true;
     }
@@ -3017,8 +3079,8 @@ function placeBossBuilding(stageIndex, config) {
   // 乱数で配置（マップが狭くて範囲が逆転しないようクランプ）
   const safeMaxX = Math.max(minX + 1, maxX);
   const safeMaxY = Math.max(minY + 1, maxY);
-  const bossWx = minX + Math.random() * (safeMaxX - minX);
-  const bossWy = minY + Math.random() * (safeMaxY - minY);
+  const bossWx = minX + random() * (safeMaxX - minX);
+  const bossWy = minY + random() * (safeMaxY - minY);
 
   return makeBossBuilding(bossWx, bossWy, stageIndex, bossTheme);
 }
@@ -3058,10 +3120,10 @@ function placeCapitalDistrict(boss, config) {
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !placed; attempt++) {
       // 角度に±15%のランダムオフセット（有機的な配置感）
-      const baseAngle = k * angleStep + (Math.random() * angleStep * 0.30 - angleStep * 0.15);
+      const baseAngle = k * angleStep + (random() * angleStep * 0.30 - angleStep * 0.15);
 
       // 半径: ドーナツ内縁〜外縁のランダム位置（attempt が増えるほど内縁寄りを試して境界を回避）
-      const radiusRand = Math.max(0, Math.random() - attempt * 0.15);
+      const radiusRand = Math.max(0, random() - attempt * 0.15);
       const radius = CAPITAL_RING_INNER + radiusRand * (CAPITAL_RING_OUTER - CAPITAL_RING_INNER);
 
       const wx = bossX + Math.cos(baseAngle) * radius;
@@ -3106,10 +3168,10 @@ function placeCapitalDistrict(boss, config) {
   for (let k = 0; k < CAPITAL_SMALL_COUNT; k++) {
     let placed = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS_SMALL && !placed; attempt++) {
-      const angle = Math.random() * Math.PI * 2;
+      const angle = random() * Math.PI * 2;
       // 内縁〜外縁のランダム半径（均等分布にするため√変換を使う）
       const rMin = CAPITAL_SMALL_INNER, rMax = CAPITAL_SMALL_OUTER;
-      const rnd  = Math.sqrt(Math.random());  // 外側に密度が偏らないよう補正
+      const rnd  = Math.sqrt(random());  // 外側に密度が偏らないよう補正
       const r    = rMin + rnd * (rMax - rMin);
 
       const wx = bossX + Math.cos(angle) * r;
@@ -3258,7 +3320,7 @@ function generateWallRing(boss, stageIndex) {
   if (!config) return [];
 
   const result = [];
-  const gateBaseAngle = Math.random() * Math.PI * 2;
+  const gateBaseAngle = random() * Math.PI * 2;
   const gateAngles = [];
   for (let g = 0; g < config.gates; g++) {
     gateAngles.push(gateBaseAngle + (g * Math.PI * 2) / config.gates);
@@ -3445,8 +3507,8 @@ function generateMovers(stageIndex, boss) {
   const bossClear2 = (WALL_OUTER_RING_RADIUS + 150) ** 2;
   function randPoint() {
     for (let attempt = 0; attempt < 20; attempt++) {
-      const x = 300 + Math.random() * (WORLD_W - 600);
-      const y = 250 + Math.random() * (WORLD_H - 500);
+      const x = 300 + random() * (WORLD_W - 600);
+      const y = 250 + random() * (WORLD_H - 500);
       if (dist2(x, y, boss.wx, boss.wy) < bossClear2) continue;
       if (dist2(x, y, 250, WORLD_H * 0.5) < 500 * 500) continue;
       return { x, y };
@@ -3510,7 +3572,7 @@ function generateMovers(stageIndex, boss) {
       arm.xpValue     = MOVER_DEFS.behemoth_arm.xp;
       arm.parent      = core;
       arm.armSide     = side;   // -1=左 / +1=右（コアの向きに対する脇）
-      arm.attackTimer = Math.random() * 2;
+      arm.attackTimer = random() * 2;
       core[side < 0 ? "armL" : "armR"] = arm;
       result.push(arm);
     }
@@ -3555,7 +3617,7 @@ function makeMover(def, randPoint) {
       waypoints.push(a, b);
     }
 
-    const start = waypoints[Math.floor(Math.random() * waypoints.length)];
+    const start = waypoints[Math.floor(random() * waypoints.length)];
     return {
       def,
       hp: def.hp,
@@ -3565,11 +3627,11 @@ function makeMover(def, randPoint) {
       headingX: 1,
       headingY: 0,
       waypoints,
-      wpIdx: Math.floor(Math.random() * waypoints.length),
+      wpIdx: Math.floor(random() * waypoints.length),
       wpDir: 1,                 // pingpong 用の進行方向（1/-1）
-      attackTimer: Math.random() * 2.0,
+      attackTimer: random() * 2.0,
       beamTargetIdx: -1,        // colossus の照射対象（描画用）
-      swayPhase: Math.random() * Math.PI * 2,  // v0.9: 生気づけアニメの個体位相
+      swayPhase: random() * Math.PI * 2,  // v0.9: 生気づけアニメの個体位相
       alive: true,
     };
   }
@@ -3781,8 +3843,8 @@ function updateMovers(dt) {
         for (const o of movers) if (o.alive && o.def.name === "raider") raiders++;
         if (raiders < (atk.cap ?? 8)) {
           const ra = makeMover(MOVER_DEFS.raider, () => ({ x: m.wx, y: m.wy }));
-          ra.wx = m.wx + (Math.random() - 0.5) * 40;
-          ra.wy = m.wy + (Math.random() - 0.5) * 40;
+          ra.wx = m.wx + (random() - 0.5) * 40;
+          ra.wy = m.wy + (random() - 0.5) * 40;
           ra.xpValue = MOVER_DEFS.raider.xp;
           _pendingMovers.push(ra);   // 反復中は直接 push せず末尾でまとめて追加
           spawnCollisionParticles(m.wx, m.wy);
@@ -3947,7 +4009,7 @@ let rushTimer = RUSH_INTERVAL;
 
 // 群れ重心の外周にラッシュ用の敵を1体湧かせる（_rushWave タグ付き）。
 function spawnRushMover(def, centroid) {
-  const a  = Math.random() * Math.PI * 2;
+  const a  = random() * Math.PI * 2;
   const r  = RUSH_SPAWN_RADIUS + randRange(-50, 110);
   const wx = Math.max(60, Math.min(WORLD_W - 60, centroid.x + Math.cos(a) * r));
   const wy = Math.max(60, Math.min(WORLD_H - 60, centroid.y + Math.sin(a) * r));
@@ -4017,9 +4079,9 @@ function updateRaiderSpawns(dt) {
   if (aliveRaiders >= RAIDER_MAX_ALIVE) return;
 
   // ボス城塞の縁から1〜2体湧く（経路はボス周辺の徘徊。追跡は共通ロジックが担う）
-  const spawnCount = Math.min(1 + (Math.random() < 0.5 ? 1 : 0), RAIDER_MAX_ALIVE - aliveRaiders);
+  const spawnCount = Math.min(1 + (random() < 0.5 ? 1 : 0), RAIDER_MAX_ALIVE - aliveRaiders);
   for (let k = 0; k < spawnCount; k++) {
-    const angle = Math.random() * Math.PI * 2;
+    const angle = random() * Math.PI * 2;
     const raider = makeMover(MOVER_DEFS.raider, () => ({
       x: Math.max(100, Math.min(WORLD_W - 100, boss.wx + randRange(-800, 800))),
       y: Math.max(100, Math.min(WORLD_H - 100, boss.wy + randRange(-800, 800))),
@@ -4047,18 +4109,18 @@ function damageMover(m, damage) {
     spawnXpGems(m.wx, m.wy, m.xpValue ?? m.def.xp);
     let eggs = m.def.eggDrop;
     // v0.8: 確率卵（レイダー用。群れの供給源が完全に絶えないように）
-    if (m.def.eggChance && Math.random() < m.def.eggChance) eggs += 1;
+    if (m.def.eggChance && random() < m.def.eggChance) eggs += 1;
     for (let k = 0; k < eggs; k++) {
-      const angle = Math.random() * Math.PI * 2;
-      const r = m.def.radius + 12 + Math.random() * 30;
+      const angle = random() * Math.PI * 2;
+      const r = m.def.radius + 12 + random() * 30;
       spawnEgg(m.wx + Math.cos(angle) * r, m.wy + Math.sin(angle) * r);
     }
     // v0.25.1: 財宝馬車は金色の大量スパーク＋竜晶ボーナス（当たり枠）
     if (m.def.treasureReward) {
       awardCrystals(m.def.treasureReward);
       for (let k = 0; k < 24; k++) {
-        const a = Math.random() * Math.PI * 2;
-        const r = 10 + Math.random() * 60;
+        const a = fxRandom() * Math.PI * 2;
+        const r = 10 + fxRandom() * 60;
         spawnHitParticles(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
       }
       triggerFlash("rgba(255,210,80,0.40)", 0.30);
@@ -4075,8 +4137,8 @@ function damageMover(m, damage) {
       if (m.armR && m.armR.alive) m.armR.alive = false;
       if (m.def.behemothReward) awardCrystals(m.def.behemothReward);
       for (let k = 0; k < 30; k++) {
-        const a = Math.random() * Math.PI * 2;
-        const r = 20 + Math.random() * 90;
+        const a = fxRandom() * Math.PI * 2;
+        const r = 20 + fxRandom() * 90;
         spawnHitParticles(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
       }
       triggerFlash("rgba(255,150,60,0.50)", 0.40);
@@ -4386,8 +4448,8 @@ function generateForests(buildings, boss) {
   for (let k = 0; k < count; k++) {
     const radius = randRange(45, 95);
     for (let attempt = 0; attempt < 24; attempt++) {
-      const wx = FOREST_MARGIN + Math.random() * (WORLD_W - FOREST_MARGIN * 2);
-      const wy = FOREST_MARGIN + Math.random() * (WORLD_H - FOREST_MARGIN * 2);
+      const wx = FOREST_MARGIN + random() * (WORLD_W - FOREST_MARGIN * 2);
+      const wy = FOREST_MARGIN + random() * (WORLD_H - FOREST_MARGIN * 2);
 
       if (dist2(wx, wy, 250, WORLD_H * 0.5) < (TERRAIN_START_CLEAR + radius) ** 2) continue;
       if (dist2(wx, wy, boss.wx, boss.wy) < (bossClear + radius) ** 2) continue;
@@ -4469,12 +4531,12 @@ function generateTerrainObstacles(buildings, boss) {
   }
 
   for (let k = 0; k < count; k++) {
-    const type   = Math.random() < 0.55 ? "rock" : "lake";
+    const type   = random() < 0.55 ? "rock" : "lake";
     const radius = type === "rock" ? randRange(40, 85) : randRange(55, 105);
 
     for (let attempt = 0; attempt < TERRAIN_MAX_ATTEMPTS; attempt++) {
-      const wx = TERRAIN_MARGIN + Math.random() * (WORLD_W - TERRAIN_MARGIN * 2);
-      const wy = TERRAIN_MARGIN + Math.random() * (WORLD_H - TERRAIN_MARGIN * 2);
+      const wx = TERRAIN_MARGIN + random() * (WORLD_W - TERRAIN_MARGIN * 2);
+      const wy = TERRAIN_MARGIN + random() * (WORLD_H - TERRAIN_MARGIN * 2);
 
       // 群れスタート地点の確保
       if (dist2(wx, wy, 250, WORLD_H * 0.5) < (TERRAIN_START_CLEAR + radius) ** 2) continue;
@@ -4538,7 +4600,7 @@ function assignEggBearers(buildings) {
     for (let i = 0; i < town.length; i++) indices.push(i);
     // フィッシャー–イェーツで先頭 count 要素だけ選ぶ（部分シャッフル）
     for (let i = 0; i < count; i++) {
-      const j = i + Math.floor(Math.random() * (indices.length - i));
+      const j = i + Math.floor(random() * (indices.length - i));
       const tmp = indices[i]; indices[i] = indices[j]; indices[j] = tmp;
       town[indices[i]].isEggBearer = true;
     }
@@ -4633,24 +4695,24 @@ function drawGroundDetailOnLayer(bctx) {
 
   // 大きな柔らかいパッチ（地表のむら）
   for (let k = 0; k < 60; k++) {
-    const x = Math.random() * WORLD_W;
-    const y = Math.random() * WORLD_H;
-    const rx = 90 + Math.random() * 240;
-    const ry = rx * (0.5 + Math.random() * 0.5);
-    bctx.globalAlpha = 0.16 + Math.random() * 0.10;
-    bctx.fillStyle = Math.random() < 0.5 ? lighter : darker;
+    const x = fxRandom() * WORLD_W;
+    const y = fxRandom() * WORLD_H;
+    const rx = 90 + fxRandom() * 240;
+    const ry = rx * (0.5 + fxRandom() * 0.5);
+    bctx.globalAlpha = 0.16 + fxRandom() * 0.10;
+    bctx.fillStyle = fxRandom() < 0.5 ? lighter : darker;
     bctx.beginPath();
-    bctx.ellipse(x, y, rx, ry, Math.random() * Math.PI, 0, Math.PI * 2);
+    bctx.ellipse(x, y, rx, ry, fxRandom() * Math.PI, 0, Math.PI * 2);
     bctx.fill();
   }
 
   // 細かいスペックル（砂利・草むら。v0.9: タイルが質感を担うため減量）
   bctx.globalAlpha = 0.22;
   for (let k = 0; k < 700; k++) {
-    const x = Math.random() * WORLD_W;
-    const y = Math.random() * WORLD_H;
-    const size = 1 + Math.random() * 2.5;
-    bctx.fillStyle = Math.random() < 0.6 ? lighter : darker;
+    const x = fxRandom() * WORLD_W;
+    const y = fxRandom() * WORLD_H;
+    const size = 1 + fxRandom() * 2.5;
+    bctx.fillStyle = fxRandom() < 0.6 ? lighter : darker;
     bctx.fillRect(x, y, size, size);
   }
   bctx.globalAlpha = 1.0;
@@ -5741,7 +5803,7 @@ function updateSettlementAttacks(dt) {
       }
     } else {
       const angleStep = (Math.PI * 2) / count;
-      const baseAngle = Math.random() * Math.PI * 2;
+      const baseAngle = random() * Math.PI * 2;
       for (let k = 0; k < count; k++) {
         spawnFanProjectileRaw(
           settlement.wx, settlement.wy,
@@ -6019,8 +6081,8 @@ function updateBeamAttacks(dt) {
       if (settlement._breathParticleTimer <= 0) {
         settlement._breathParticleTimer = BREATH_PARTICLE_INTERVAL;
         spawnHitParticles(
-          settlement.wx + (Math.random() - 0.5) * settlement.radius,
-          settlement.wy + (Math.random() - 0.5) * settlement.radius,
+          settlement.wx + (fxRandom() - 0.5) * settlement.radius,
+          settlement.wy + (fxRandom() - 0.5) * settlement.radius,
         );
       }
 
@@ -6131,20 +6193,20 @@ function updateCollisionAttacks(dt) {
 // 衝突時の強めパーティクル（破片感）
 function spawnCollisionParticles(wx, wy) {
   // 通常のブレスパーティクルより多く、速く、広がりも大きい
-  const count = 6 + Math.floor(Math.random() * 5); // 6〜10個
+  const count = 6 + Math.floor(fxRandom() * 5); // 6〜10個
   let spawned = 0;
   for (let i = 0; i < MAX_PARTICLES && spawned < count; i++) {
     if (partActive[i]) continue;
     partActive[i] = 1;
-    partX[i] = wx + (Math.random() - 0.5) * 12;
-    partY[i] = wy + (Math.random() - 0.5) * 12;
-    const angle = Math.random() * Math.PI * 2;
+    partX[i] = wx + (fxRandom() - 0.5) * 12;
+    partY[i] = wy + (fxRandom() - 0.5) * 12;
+    const angle = fxRandom() * Math.PI * 2;
     // 通常の2〜3倍の初速で破片が吹き飛ぶ
-    const speed = 80 + Math.random() * 160;
+    const speed = 80 + fxRandom() * 160;
     partVx[i]   = Math.cos(angle) * speed;
     partVy[i]   = Math.sin(angle) * speed;
     // 寿命も少し長め
-    partLife[i] = 0.25 + Math.random() * 0.20;
+    partLife[i] = 0.25 + fxRandom() * 0.20;
     spawned++;
   }
 }
@@ -6281,8 +6343,8 @@ function detonateFirework(settlement) {
   spawnXpGems(settlement.wx, settlement.wy, FIREWORK_XP_BONUS);
   const cx = settlement.wx, cy = settlement.wy;
   for (let k = 0; k < 20; k++) {
-    const a = (k / 20) * Math.PI * 2 + Math.random() * 0.4;
-    const r = 20 + Math.random() * 80;
+    const a = (k / 20) * Math.PI * 2 + fxRandom() * 0.4;
+    const r = 20 + fxRandom() * 80;
     spawnHitParticles(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
   }
   spawnFire(cx, cy, settlement.radius * 2.2);
@@ -6309,8 +6371,8 @@ function settlementFall(settlementIndex) {
   // 残りの建物は壊しても卵を落とさない（破壊演出はそのまま）。
   if (settlement.isEggBearer) {
     for (let k = 0; k < EGG_DROP_COUNT; k++) {
-      const angle = Math.random() * Math.PI * 2;
-      const r = settlement.radius + 10 + Math.random() * 40;
+      const angle = random() * Math.PI * 2;
+      const r = settlement.radius + 10 + random() * 40;
       spawnEgg(settlement.wx + Math.cos(angle) * r, settlement.wy + Math.sin(angle) * r);
     }
   }
@@ -6463,11 +6525,11 @@ function initBoids() {
 
   // 最初の N 体を有効化
   for (let i = 0; i < N; i++) {
-    const r = Math.random() * 80;
-    const a = Math.random() * Math.PI * 2;
+    const r = random() * 80;
+    const a = random() * Math.PI * 2;
     px[i] = startWx + Math.cos(a) * r;
     py[i] = startWy + Math.sin(a) * r;
-    const ang = Math.random() * Math.PI * 2;
+    const ang = random() * Math.PI * 2;
     vx[i] = Math.cos(ang) * mv().minSpeed;
     vy[i] = Math.sin(ang) * mv().minSpeed;
     boidHp[i]        = BOID_MAX_HP;
@@ -6515,18 +6577,18 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     boidDowned[i]            = 0;
     boidDownTimer[i]         = 0;
     boidReviveTimer[i]       = 0;
-    boidFireTimer[i]         = Math.random() * currentFireInterval(); // 射撃をばらけさせる
+    boidFireTimer[i]         = random() * currentFireInterval(); // 射撃をばらけさせる
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = 0;
   }
 
   // BOIDS_INITIAL 体だけ有効化・配置
   for (let i = 0; i < N; i++) {
-    const r   = Math.random() * 80;
-    const a   = Math.random() * Math.PI * 2;
+    const r   = random() * 80;
+    const a   = random() * Math.PI * 2;
     px[i]     = startWx + Math.cos(a) * r;
     py[i]     = startWy + Math.sin(a) * r;
-    const ang = Math.random() * Math.PI * 2;
+    const ang = random() * Math.PI * 2;
     vx[i]     = Math.cos(ang) * mv().minSpeed;
     vy[i]     = Math.sin(ang) * mv().minSpeed;
     boidDead[i] = 0;
@@ -6564,7 +6626,7 @@ const partType   = new Uint8Array(MAX_PARTICLES);
 
 function spawnHitParticles(wx, wy) {
   // ブレスの火花は少数（2〜4個）に抑えてパフォーマンスを確保
-  const count = 2 + Math.floor(Math.random() * 3);
+  const count = 2 + Math.floor(fxRandom() * 3);
   let spawned = 0;
   for (let i = 0; i < MAX_PARTICLES && spawned < count; i++) {
     if (partActive[i]) continue;
@@ -6572,11 +6634,11 @@ function spawnHitParticles(wx, wy) {
     partType[i]   = 0; // ブレス火花
     partX[i] = wx;
     partY[i] = wy;
-    const angle = Math.random() * Math.PI * 2;
-    const speed = 30 + Math.random() * 60;
+    const angle = fxRandom() * Math.PI * 2;
+    const speed = 30 + fxRandom() * 60;
     partVx[i]   = Math.cos(angle) * speed;
     partVy[i]   = Math.sin(angle) * speed;
-    partLife[i] = 0.20 + Math.random() * 0.15;
+    partLife[i] = 0.20 + fxRandom() * 0.15;
     spawned++;
   }
 }
@@ -6633,7 +6695,7 @@ function spawnFire(wx, wy, radius) {
   fireActive[slot]  = 1;
   fireX[slot]       = wx;
   fireY[slot]       = wy;
-  fireLife[slot]    = FIRE_DURATION * (0.7 + Math.random() * 0.6);
+  fireLife[slot]    = FIRE_DURATION * (0.7 + fxRandom() * 0.6);
   fireEmit[slot]    = 0;
   fireScale[slot]   = Math.max(0.7, radius / 12);
 }
@@ -6643,16 +6705,16 @@ function _spawnEmber(wx, wy, type, scale) {
   for (let i = 0; i < MAX_EMBERS; i++) { if (!emberActive[i]) { slot = i; break; } }
   if (slot < 0) return;
   emberActive[slot] = 1;
-  emberX[slot] = wx + (Math.random() - 0.5) * 8 * scale;
-  emberY[slot] = wy + (Math.random() - 0.5) * 6 * scale;
+  emberX[slot] = wx + (fxRandom() - 0.5) * 8 * scale;
+  emberY[slot] = wy + (fxRandom() - 0.5) * 6 * scale;
   if (type === 0) {
-    emberVx[slot]   = (Math.random() - 0.5) * 30;
-    emberVy[slot]   = -40 - Math.random() * 50;      // 火の粉は上へ舞う
-    emberLife[slot] = 0.4 + Math.random() * 0.35;
+    emberVx[slot]   = (fxRandom() - 0.5) * 30;
+    emberVy[slot]   = -40 - fxRandom() * 50;      // 火の粉は上へ舞う
+    emberLife[slot] = 0.4 + fxRandom() * 0.35;
   } else {
-    emberVx[slot]   = (Math.random() - 0.5) * 18 - 6; // 煙はわずかに一方向へ流れる
-    emberVy[slot]   = -22 - Math.random() * 16;
-    emberLife[slot] = 1.1 + Math.random() * 0.8;
+    emberVx[slot]   = (fxRandom() - 0.5) * 18 - 6; // 煙はわずかに一方向へ流れる
+    emberVy[slot]   = -22 - fxRandom() * 16;
+    emberLife[slot] = 1.1 + fxRandom() * 0.8;
   }
   emberMaxLife[slot] = emberLife[slot];
   emberType[slot]    = type;
@@ -6665,10 +6727,10 @@ function updateFires(dt) {
     if (fireLife[i] <= 0) { fireActive[i] = 0; continue; }
     fireEmit[i] -= dt;
     if (fireEmit[i] <= 0) {
-      fireEmit[i] = 0.05 + Math.random() * 0.05;
+      fireEmit[i] = 0.05 + fxRandom() * 0.05;
       const sc = fireScale[i];
       _spawnEmber(fireX[i], fireY[i], 0, sc);                       // 火の粉
-      if (Math.random() < 0.7) _spawnEmber(fireX[i], fireY[i], 1, sc); // 煙
+      if (fxRandom() < 0.7) _spawnEmber(fireX[i], fireY[i], 1, sc); // 煙
     }
   }
   for (let i = 0; i < MAX_EMBERS; i++) {
@@ -6777,7 +6839,7 @@ function spawnBoidAtEgg(wx, wy) {
     avgVy = 0;
   }
   // 群れ平均速度にランダム成分を少し加える（単純コピーで整列しすぎないよう）
-  const randAngle = Math.random() * Math.PI * 2;
+  const randAngle = random() * Math.PI * 2;
   const randStrength = mv().minSpeed * 0.3;
   const initVx = avgVx + Math.cos(randAngle) * randStrength;
   const initVy = avgVy + Math.sin(randAngle) * randStrength;
@@ -7011,8 +7073,8 @@ function applyCardImmediate(cardId) {
     // 上限+25 に加えて即時に竜5体を群れ重心付近へ無償孵化
     const centroid = calcFriendlyCentroid();
     for (let k = 0; k < 5; k++) {
-      const angle = Math.random() * Math.PI * 2;
-      const r     = 30 + Math.random() * 50;
+      const angle = random() * Math.PI * 2;
+      const r     = 30 + random() * 50;
       spawnBoidAtEgg(centroid.x + Math.cos(angle) * r, centroid.y + Math.sin(angle) * r);
     }
   } else if (cardId === "evo_bullet") {
@@ -7108,10 +7170,10 @@ function spawnXpGems(wx, wy, value) {
       }
       if (slot < 0) { addXp(remaining + denom); return; } // プール枯渇: 残額を直接加算
       gemActive[slot] = 1;
-      gemX[slot]   = wx + (Math.random() - 0.5) * 8;
-      gemY[slot]   = wy + (Math.random() - 0.5) * 8;
-      const angle  = Math.random() * Math.PI * 2;
-      const speed  = 60 + Math.random() * 120;
+      gemX[slot]   = wx + (random() - 0.5) * 8;
+      gemY[slot]   = wy + (random() - 0.5) * 8;
+      const angle  = random() * Math.PI * 2;
+      const speed  = 60 + random() * 120;
       gemVx[slot]  = Math.cos(angle) * speed;
       gemVy[slot]  = Math.sin(angle) * speed;
       gemVal[slot] = denom;
@@ -7250,7 +7312,7 @@ function buildLevelUpCards() {
   while (picks.length < 3 && candidates.length > 0) {
     let totalWeight = 0;
     for (const def of candidates) totalWeight += CARD_RARITY_WEIGHT[def.rarity];
-    let roll = Math.random() * totalWeight;
+    let roll = random() * totalWeight;
     let chosenIdx = 0;
     for (let i = 0; i < candidates.length; i++) {
       roll -= CARD_RARITY_WEIGHT[candidates[i].rarity];
@@ -7405,14 +7467,14 @@ function convertFlock(speciesId) {
   for (let i = 0; i < N; i++) {
     if (!boidDead[i]) boidHp[i] = Math.min(newMax, boidHp[i] * ratio);
     // 射撃タイマーをばらけさせて一斉射撃の不自然さを防ぐ
-    if (boidFireTimer) boidFireTimer[i] = Math.random() * currentFireInterval();
+    if (boidFireTimer) boidFireTimer[i] = random() * currentFireInterval();
   }
 
   // 進化演出: 群れの一部個体に出現FXリング＋強フラッシュ＋強振動
   let fxCount = 0;
   for (let i = 0; i < N && fxCount < 12; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
-    if (Math.random() < 0.4) { spawnDragonAppearEffect(px[i], py[i]); fxCount++; }
+    if (fxRandom() < 0.4) { spawnDragonAppearEffect(px[i], py[i]); fxCount++; }
   }
   triggerFlash(SPECIES_FLASH_COLOR[speciesId] ?? "rgba(255,255,255,0.5)", 0.35);
   hapticPulse(120);
@@ -7511,7 +7573,7 @@ function spawnDragonProjectile(fromX, fromY, kind, angle, targetIdx) {
     dprojHits[slot] = Math.min(255, effBulletPierce());
   } else {
     // ミサイルは初速が遅く、発射方向にゆらぎ（±0.8rad）を持たせてから加速追尾する
-    const wobbled = angle + (Math.random() - 0.5) * 1.6;
+    const wobbled = angle + (random() - 0.5) * 1.6;
     dprojVx[slot]  = Math.cos(wobbled) * MISSILE_INIT_SPEED;
     dprojVy[slot]  = Math.sin(wobbled) * MISSILE_INIT_SPEED;
     dprojHits[slot] = 1;
@@ -8277,21 +8339,21 @@ function spawnDragonDownEffect(wx, wy) {
 
   // --- 飛散パーティクル（灰/暗赤・5〜7個）---
   // 出現FXは金色で14個だが、やられFXは灰系で少数に抑えて地味な「やられ感」を出す
-  const DEATH_SPARK_COUNT = 5 + Math.floor(Math.random() * 3); // 5〜7個
+  const DEATH_SPARK_COUNT = 5 + Math.floor(fxRandom() * 3); // 5〜7個
   let spawned = 0;
   for (let i = 0; i < MAX_PARTICLES && spawned < DEATH_SPARK_COUNT; i++) {
     if (partActive[i]) continue;
     partActive[i] = 1;
     partType[i]   = 2; // 死亡FX（灰〜暗赤）
-    partX[i] = wx + (Math.random() - 0.5) * 10;
-    partY[i] = wy + (Math.random() - 0.5) * 10;
-    const angle = Math.random() * Math.PI * 2;
+    partX[i] = wx + (fxRandom() - 0.5) * 10;
+    partY[i] = wy + (fxRandom() - 0.5) * 10;
+    const angle = fxRandom() * Math.PI * 2;
     // 出現FXより遅め（しぼむ感・エネルギーが抜ける感）
-    const speed = 40 + Math.random() * 80;
+    const speed = 40 + fxRandom() * 80;
     partVx[i]   = Math.cos(angle) * speed;
     partVy[i]   = Math.sin(angle) * speed;
     // 寿命短め（やられは素早く消える）
-    partLife[i] = 0.25 + Math.random() * 0.15;
+    partLife[i] = 0.25 + fxRandom() * 0.15;
     spawned++;
   }
 
@@ -8392,15 +8454,15 @@ function spawnDragonAppearEffect(wx, wy) {
     if (partActive[i]) continue;
     partActive[i] = 1;
     partType[i]   = 1; // 出現エフェクト火花（金〜白〜薄橙）
-    partX[i] = wx + (Math.random() - 0.5) * 14;
-    partY[i] = wy + (Math.random() - 0.5) * 14;
-    const angle = Math.random() * Math.PI * 2;
+    partX[i] = wx + (fxRandom() - 0.5) * 14;
+    partY[i] = wy + (fxRandom() - 0.5) * 14;
+    const angle = fxRandom() * Math.PI * 2;
     // 内側の輝く粒子（遅め・大きめ）と外側に飛ぶ粒子（速め）を混在させる
-    const speed = 80 + Math.random() * 160;
+    const speed = 80 + fxRandom() * 160;
     partVx[i]   = Math.cos(angle) * speed;
     partVy[i]   = Math.sin(angle) * speed;
     // 寿命: 0.45〜0.65秒（APPEAR_FX_DURATIONに近い長さで同期感）
-    partLife[i] = 0.45 + Math.random() * 0.20;
+    partLife[i] = 0.45 + fxRandom() * 0.20;
     spawned++;
   }
 
@@ -8531,20 +8593,20 @@ function spawnMeleeImpactFx(wx, wy, angle) {
   pushSlashFx(wx, wy, angle);
 
   // 深紅の火花（partType=3）を撒く
-  const count = 8 + Math.floor(Math.random() * 5);
+  const count = 8 + Math.floor(fxRandom() * 5);
   let spawned = 0;
   for (let i = 0; i < MAX_PARTICLES && spawned < count; i++) {
     if (partActive[i]) continue;
     partActive[i] = 1;
     partType[i]   = 3;
-    partX[i] = wx + (Math.random() - 0.5) * 10;
-    partY[i] = wy + (Math.random() - 0.5) * 10;
+    partX[i] = wx + (fxRandom() - 0.5) * 10;
+    partY[i] = wy + (fxRandom() - 0.5) * 10;
     // 斬撃方向を中心に扇状へ飛ぶ
-    const sparkAngle = angle + (Math.random() - 0.5) * 1.8;
-    const speed = 120 + Math.random() * 200;
+    const sparkAngle = angle + (fxRandom() - 0.5) * 1.8;
+    const speed = 120 + fxRandom() * 200;
     partVx[i]   = Math.cos(sparkAngle) * speed;
     partVy[i]   = Math.sin(sparkAngle) * speed;
-    partLife[i] = 0.22 + Math.random() * 0.18;
+    partLife[i] = 0.22 + fxRandom() * 0.18;
     spawned++;
   }
 }
@@ -9132,6 +9194,9 @@ function cancelSpeciesSelect() {
 // 新規ランを開始する（竜種 weapon 確定済み）。
 function beginRun(speciesId) {
   if (gameState !== "title") return;
+  // 乱数を引き直す。以降このランで使う乱数はすべてこのシードから決まるので、
+  // 同じシード＋同じ操作なら同じランになる（不具合はシードとセットで報告する）。
+  reseedForNewRun();
   currentRunIsFirst = isFirstEverRun();   // runsStarted を増やす前に固定
   profile.runsStarted++;
   saveProfile();
@@ -9181,6 +9246,10 @@ function resumeRun() {
   if (gameState !== "title") return;
   const save = loadRunSave();
   if (!save) { refreshTitleMenu(); return; }
+
+  // 再開ランは途中経過を復元するので厳密な再現はできないが、
+  // 以降の乱数列を定義された状態から始めるためここでも引き直す。
+  reseedForNewRun();
 
   // 進行の復元
   currentRunIsFirst = !!save.isFirstRun;
@@ -9684,8 +9753,8 @@ function updateDeathTimers(dt) {
       if (boidDownTimer[i] <= 0 && boidReviveTimer[i] <= 0) {
         // 復帰開始: 群れの重心付近にフェードインで出現
         const centroid = calcFriendlyCentroid();
-        const angle    = Math.random() * Math.PI * 2;
-        const scatter  = 40 + Math.random() * 60;
+        const angle    = random() * Math.PI * 2;
+        const scatter  = 40 + random() * 60;
         px[i] = centroid.x + Math.cos(angle) * scatter;
         py[i] = centroid.y + Math.sin(angle) * scatter;
         // 群れ平均速度に乗せる
@@ -9695,8 +9764,8 @@ function updateDeathTimers(dt) {
         }
         if (cnt > 0) { avgVx /= cnt; avgVy /= cnt; }
         else { avgVx = mv().minSpeed; avgVy = 0; }
-        vx[i] = avgVx + (Math.random() - 0.5) * 30;
-        vy[i] = avgVy + (Math.random() - 0.5) * 30;
+        vx[i] = avgVx + (random() - 0.5) * 30;
+        vy[i] = avgVy + (random() - 0.5) * 30;
         // HP全回復・フラグリセット（v0.6: 硬鱗カード分も含めた実効最大HP。v0.22: 母竜は motherHp 込み）
         boidHp[i]          = effBoidMaxHpFor(i);
         boidDowned[i]      = 0;
@@ -10355,7 +10424,7 @@ function render(now) {
   // v0.8: 画面シェイク（減衰しながらランダムに揺れる）
   if (shakeTimer > 0 && shakeDuration > 0) {
     const shakePower = shakeAmplitude * (shakeTimer / shakeDuration);
-    ctx.translate((Math.random() - 0.5) * 2 * shakePower, (Math.random() - 0.5) * 2 * shakePower);
+    ctx.translate((fxRandom() - 0.5) * 2 * shakePower, (fxRandom() - 0.5) * 2 * shakePower);
   }
   // カメラ変換: 画面中心を原点にしてズームスケールを適用してからワールドオフセット
   ctx.translate(viewW * 0.5, viewH * 0.5);

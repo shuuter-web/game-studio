@@ -41,6 +41,8 @@
 ## アイディア量産ワークフロー（Seed Sprint）
 
 GDD化の前段。「お題1つ → 種10件 → 採用2件」のバッチで回す。1スプリント＝半日想定。
+**`/seed-sprint <お題> [full]` で一括実行できる**（`.claude/skills/seed-sprint/`。lite=発散〜保存、full=judge判定込み）。
+**ユーザーがお題を出して案出しを頼んだら、明示がなくてもこのスキルを自動で使う**（手動で工程を再現しない）。
 
 1. **お題設定**（producer）: テーマ・制約を1つ決める（例「親指1本で遊べるWebカジュアル」）。
    お題に**抽象語（可愛い／癒し／ヒキ／怖い 等）が含まれる場合は、発散前にその語を作業定義し直す**
@@ -73,7 +75,8 @@ GDD化の前段。「お題1つ → 種10件 → 採用2件」のバッチで回
 .
 ├── .claude/
 │   ├── agents/          # サブエージェント定義
-│   └── commands/        # カスタムスラッシュコマンド
+│   ├── commands/        # カスタムスラッシュコマンド
+│   └── skills/          # スキル（/seed-sprint 等のワークフロー手順書）
 ├── docs/
 │   ├── gdd/             # Game Design Documents
 │   ├── tdd/             # Technical Design Documents
@@ -103,7 +106,8 @@ GDD化の前段。「お題1つ → 種10件 → 採用2件」のバッチで回
 - 命名は省略しない
 - コメントは「なぜ」を書く
 - マジックナンバー禁止、データは `data/` に切り出し
-- すべてのユーザー向け文字列は i18n を通す（ハードコード禁止）
+- すべてのユーザー向け文字列は i18n を通す（ハードコード禁止）。
+  ただし `prototypes/` の単一HTMLプロトは免除（インライン辞書可・本制作移行時に `locales/` へ抽出）
 
 ## コミットメッセージ
 Conventional Commits 形式:
@@ -118,3 +122,45 @@ Conventional Commits 形式:
 - **エンジン非依存**: コアロジックはエンジンに依存しない層に置く
 - **ローカライズ前提**: 全UIは多言語対応を最初から想定
 - **データ駆動**: バランス調整がコード変更を伴わないようにする
+
+## 検証（AIは自己申告で完了としない）
+
+`prototypes/` を編集したら、機械が採点したうえで報告する。目視だけで「できました」と言わない。
+
+```bash
+node tools/check.mjs                              # 全プロト
+node tools/check.mjs prototypes/dragon-tide/index.html
+```
+
+検査内容: 構文（`<script>` 抽出 → `node --check`、行番号はHTML基準に読み替え）/
+`Math.random()` の直接呼び出し / 参照アセットの実在 / `GAME_VERSION` の形式。
+`Edit`・`Write`・`MultiEdit` の後に PostToolUse フックで自動実行され、失敗すると差し戻される
+（`.claude/settings.json`）。検査を足したいときは `tools/check.mjs` の `CHECKS` に関数を追加する。
+
+**乱数は決定性を壊さないこと**（Dragon Tide v0.38.0〜）:
+ゲーム状態に影響する乱数は `random()`、見た目だけの乱数は `fxRandom()` を使う。
+`Math.random()` の直接呼び出しは禁止（どうしても必要な行には `// allow-math-random`）。
+分けている理由は、描画を間引いてもロジック側の乱数列がずれず、
+**ヘッドレス実行と実プレイで同じランを再現できる**ようにするため。
+`?seed=12345` でランを固定でき、現在のシードはHUDに出る。**不具合は再現シードとセットで報告する。**
+
+## プロトタイプ検証の既知の落とし穴（preview_* ツール）
+
+`prototypes/` の単一HTMLゲームを Claude Code のプレビューで検証するときの実証済みの罠。
+時間を溶かした実績があるので必ず先に読むこと。
+
+- **`preview_screenshot` は必ずタイムアウトする**。見た目検証は `preview_eval` でのピクセル解析
+  （オフスクリーンcanvasの `getImageData`）や状態検査で代替する
+- **プレビューでは canvas サイズが 0（viewH=0）** になり、画面座標に依存する入力ハンドラ
+  （UIゾーン判定など）が早期returnする。入力テストは `viewW/viewH` を実機相当（390/844）に
+  設定してから行うか、入力フラグ（`isDrawing` 等）を直接立ててロジックだけ検証する
+- **実行時FPSは計測不能**（バックグラウンドスロットリングで `fpsEma` 等が0〜数fpsに張り付く）。
+  性能judgeはコード構造（per-frameの計算量・描画呼び出し数）で行い、実測はユーザーの実機に委ねる
+- **`window.location.reload()` 直後の `preview_eval` はレースで旧コードを掴む**ことがある
+  （"Inspected target navigated or closed" エラー、または古い関数定義）。リロード後は
+  関数ソース（`fn.toString()`）に新コードの目印が含まれるか確認してから検証を始める
+- **構文チェックは手で書かない**: `node tools/check.mjs <path>` を使う（BOMなしUTF-8での抽出も
+  行番号の読み替えも中でやっている）。PowerShell の `Out-File` はUTF-16になり文字化けで誤判定するため、
+  自前で抽出しようとしないこと
+
+関連コマンド: デプロイ一式は `/deploy-dragon-tide`、画像アセット生成は `/gen-game-asset`（`.claude/commands/`）。
