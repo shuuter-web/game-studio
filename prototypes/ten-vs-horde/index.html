@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>十人と百鬼 / Ten vs Horde</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #0a0c14; color: #e8ecf4;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    touch-action: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+
+  #hud-top {
+    position: fixed; top: 0; left: 0; right: 0; padding: 8px 12px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px; letter-spacing: 0.04em; pointer-events: none; z-index: 10;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  }
+  #hud-castle { color: #7fd4ff; }
+  #hud-wave   { color: #ffd479; }
+
+  /* 「1タップの影響量」= このゲームの価値そのもの。数字を主役として大きく出す。 */
+  #impact {
+    position: fixed; left: 0; right: 0; top: 34%;
+    text-align: center; pointer-events: none; z-index: 12;
+    font-weight: 800; font-size: 68px; letter-spacing: -0.02em;
+    color: #fff; text-shadow: 0 0 24px rgba(120,200,255,0.9), 0 4px 12px rgba(0,0,0,0.6);
+    opacity: 0; transform: scale(0.7);
+  }
+  #impact .label { display: block; font-size: 15px; font-weight: 600; letter-spacing: 0.3em; opacity: 0.75; }
+  #impact.show { animation: impactPop 0.85s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+  @keyframes impactPop {
+    0%   { opacity: 0; transform: scale(0.6); }
+    18%  { opacity: 1; transform: scale(1.12); }
+    45%  { opacity: 1; transform: scale(1.0); }
+    100% { opacity: 0; transform: scale(1.0) translateY(-26px); }
+  }
+
+  #hud-version {
+    position: fixed; left: 8px; bottom: 6px; font-size: 11px;
+    color: rgba(230,238,255,0.4); z-index: 10;
+  }
+  #hud-stats {
+    position: fixed; right: 8px; bottom: 6px; font-size: 11px; text-align: right;
+    color: rgba(230,238,255,0.55); z-index: 10; line-height: 1.5;
+  }
+
+  #result {
+    position: fixed; inset: 0; display: none; z-index: 20;
+    background: rgba(6,8,14,0.92); flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px; padding: 24px;
+  }
+  #result.visible { display: flex; }
+  #result h1 { font-size: 22px; letter-spacing: 0.1em; }
+  #result .rows { font-size: 14px; line-height: 2; color: #b9c6dc; text-align: center; }
+  #result .rows b { color: #fff; font-size: 18px; }
+  #result button {
+    margin-top: 8px; padding: 14px 34px; font-size: 16px; font-weight: 700;
+    border: none; border-radius: 999px; background: #4a8fff; color: #fff;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="hud-top">
+  <span id="hud-castle">城 100</span>
+  <span id="hud-wave">WAVE 1</span>
+</div>
+<div id="impact"><span class="label">IMPACT</span><span id="impact-num">0</span></div>
+<div id="hud-version">v0.1.0</div>
+<div id="hud-stats"></div>
+<div id="result">
+  <h1 id="result-title">突破された</h1>
+  <div class="rows" id="result-rows"></div>
+  <button id="result-retry">もう一度</button>
+</div>
+
+<script>
+"use strict";
+
+// =================================================================
+// 十人と百鬼 / Ten vs Horde
+//
+// 価値基準: 「ユーザーの少ないアクションで、たくさんの影響が起きること」。
+// この価値は主観ではなく客観量として測れるので、最初から計測器を内蔵している:
+//   - 1タップごとに「影響を受けた敵の数」を記録し、画面にも出す（計測器＝演出を兼ねる）
+//   - 描画なしで回す headless 実行を用意し、無操作ベースラインとの差分を取れるようにする
+//
+// コードは SIM / RENDER / INPUT / HEADLESS に分けてある。
+// SIM は DOM も canvas も触らない（＝描画を止めても同じ結果になる）。
+// =================================================================
+
+const GAME_VERSION = "v0.3.0";
+
+// -----------------------------------------------------------------
+// 決定性RNG（Dragon Tide v0.38.0 と同じ方式）
+// ロジック用 random() と演出用 fxRandom() を分ける。描画を間引いても
+// ロジックの乱数列がずれないため、headless と実プレイで同じ結果になる。
+// 素の Math.random() の直接呼び出しは禁止（tools/check.mjs が検出）。 allow-math-random
+// -----------------------------------------------------------------
+function makeRandomGenerator(seedValue) {   // mulberry32
+  let state = seedValue >>> 0;
+  return function nextRandom() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashSeed(text) {
+  let hash = 0x811C9DC5;
+  const source = String(text);
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+let currentSeed     = 0;
+let nextLogicRandom = null;
+let nextFxRandom    = null;
+
+function reseedRandom(seedValue) {
+  currentSeed = (typeof seedValue === "number") ? (seedValue >>> 0) : hashSeed(seedValue);
+  nextLogicRandom = makeRandomGenerator(currentSeed);
+  nextFxRandom    = makeRandomGenerator((currentSeed ^ 0x9E3779B9) >>> 0);
+  return currentSeed;
+}
+
+function random()   { return nextLogicRandom(); }
+function fxRandom() { return nextFxRandom(); }
+
+const fixedSeedParam = new URLSearchParams(location.search).get("seed") || null;
+function seedForNewGame() {
+  return reseedRandom(fixedSeedParam !== null ? fixedSeedParam : (Date.now() >>> 0));
+}
+
+// =================================================================
+// 設定
+// =================================================================
+const COLS = 12;
+const ROWS = 22;
+const CASTLE_ROW = ROWS - 1;          // ここに到達されると城が削れる
+const MAX_ENEMIES = 900;
+const CASTLE_HP_MAX = 100;
+
+const ENEMY_HP      = 4;
+const ENEMY_SPEED   = 1.15;           // マス/秒
+const ENEMY_CONTACT_DAMAGE = 1;
+
+const ALLY_DPS      = 2.0;            // 味方の通常攻撃（タップなしのベースライン）
+const ALLY_RANGE    = 3.2;
+
+const SIM_DT = 1 / 60;                // 固定ステップ（headless と実プレイで同一）
+
+// 敵の湧き（v0.3.0）
+// v0.2.0 は「ウェーブごとに総量N体を撒く」方式だったため、撒き終わると敵ゼロの空白が
+// 20秒生まれ、同時生存もピーク94体で「数百体」に届いていなかった。
+// 常時湧きの「レート」に変え、ウェーブごとにレートが上がる形にする。
+const SPAWN_RATE_BASE     = 7;    // 毎秒の湧き数（ウェーブ1）
+const SPAWN_RATE_PER_WAVE = 5;    // ウェーブごとの増加
+const WAVE_INTERVAL_SEC   = 26;
+
+/**
+ * スキル定義。
+ * 「1タップで盤面がどれだけ動くか」を最大化する方向で設計している。
+ * ダメージを与えないスキル（引き寄せ・壁）は、それ自体の影響量よりも
+ * 「次の1タップの影響量を跳ね上げる」ことを狙った布石役。
+ */
+const SKILLS = {
+  pull: {
+    name: "磁",  color: "#c98bff", cooldown: 7,
+    desc: "広範囲の敵を自分へ引き寄せる（ダメージなし・布石）",
+  },
+  blast: {
+    name: "爆",  color: "#ff8a5c", cooldown: 9,
+    desc: "半径内に大ダメージ。密集しているほど戦果が伸びる",
+  },
+  chain: {
+    name: "雷",  color: "#7fd4ff", cooldown: 8,
+    desc: "敵から敵へ連鎖。密集度が高いほど連鎖が伸びる",
+  },
+  wall: {
+    name: "壁",  color: "#9fe8a0", cooldown: 12,
+    desc: "壁を作って進路を強制的に曲げる（数百体の経路が変わる）",
+  },
+  push: {
+    name: "風",  color: "#ffd479", cooldown: 8,
+    desc: "縦一列の敵を後方へ吹き飛ばす",
+  },
+  pit: {
+    name: "穴",  color: "#ff6b8a", cooldown: 14,
+    desc: "地面を陥没させ、上にいる敵を落とす＋通行不可にする",
+  },
+};
+
+// 10人の配置と担当スキル（col, row, skill）
+const ALLY_LAYOUT = [
+  { col: 1,  row: ROWS - 4, skill: "wall"  },
+  { col: 3,  row: ROWS - 4, skill: "pull"  },
+  { col: 5,  row: ROWS - 4, skill: "blast" },
+  { col: 7,  row: ROWS - 4, skill: "chain" },
+  { col: 9,  row: ROWS - 4, skill: "pull"  },
+  { col: 11, row: ROWS - 4, skill: "wall"  },
+  { col: 2,  row: ROWS - 2, skill: "push"  },
+  { col: 5,  row: ROWS - 2, skill: "blast" },
+  { col: 8,  row: ROWS - 2, skill: "chain" },
+  { col: 10, row: ROWS - 2, skill: "pit"   },
+];
+
+// 地形
+const TERRAIN_OPEN = 0;
+const TERRAIN_WALL = 1;
+const TERRAIN_PIT  = 2;
+
+const WALL_DURATION = 9;
+const PIT_DURATION  = 7;
+
+// =================================================================
+// ===== SIM ======================================================
+// ここから下の createState / simStep / activateSkill は DOM・canvas を
+// 一切触らない。描画を止めても同じ状態遷移になることが headless の前提。
+// =================================================================
+
+function createState(seedValue) {
+  const seed = reseedRandom(seedValue);
+  const state = {
+    seed,
+    time: 0,
+    tick: 0,
+    over: false,
+    castleHp: CASTLE_HP_MAX,
+    wave: 1,
+    waveTimer: 0,
+    spawnCredit: 0,   // 端数を持ち越して湧きレートを正確に保つ
+
+    // 敵（フラット配列。数百体を扱うため個別オブジェクトにしない）
+    enemyCount: 0,
+    ex:     new Float32Array(MAX_ENEMIES),
+    ey:     new Float32Array(MAX_ENEMIES),
+    ehp:    new Float32Array(MAX_ENEMIES),
+    ealive: new Uint8Array(MAX_ENEMIES),
+    ejit:   new Float32Array(MAX_ENEMIES),   // 横方向の個体差（重なり防止）
+
+    // 味方
+    allies: ALLY_LAYOUT.map((a) => ({
+      col: a.col, row: a.row, skill: a.skill,
+      cooldown: 0, cooldownMax: SKILLS[a.skill].cooldown,
+    })),
+
+    // 地形（時限）
+    terrain:      new Uint8Array(COLS * ROWS),
+    terrainTimer: new Float32Array(COLS * ROWS),
+    flow:         new Int32Array(COLS * ROWS),   // 城までの距離場
+    flowDirty:    true,
+
+    // 空間バケット（近傍探索用。毎ステップ作り直す）
+    buckets: Array.from({ length: COLS * ROWS }, () => []),
+
+    // ---- 計測（このゲームの価値そのもの）----
+    taps: 0,
+    tapLog: [],           // { time, skill, affected, killed, cellsChanged, chainLen }
+    kills: 0,
+    leaked: 0,            // 城まで到達された数
+  };
+  rebuildFlow(state);
+  return state;
+}
+
+function cellIndex(col, row) { return row * COLS + col; }
+function inBounds(col, row)  { return col >= 0 && col < COLS && row >= 0 && row < ROWS; }
+
+/**
+ * 城までの距離場をBFSで作る。壁・穴は通れない。
+ * 地形が変わるたびに作り直す（12×22＝264セルなので毎回作っても安い）。
+ * これがあるので「壁を1枚置く」だけで数百体の経路が同時に変わる。
+ */
+function rebuildFlow(state) {
+  const flow = state.flow;
+  flow.fill(-1);
+  const queue = [];
+  for (let col = 0; col < COLS; col++) {
+    const index = cellIndex(col, CASTLE_ROW);
+    if (state.terrain[index] === TERRAIN_OPEN) { flow[index] = 0; queue.push(index); }
+  }
+  let head = 0;
+  while (head < queue.length) {
+    const index = queue[head++];
+    const col = index % COLS, row = (index / COLS) | 0;
+    const nextDistance = flow[index] + 1;
+    for (let d = 0; d < 4; d++) {
+      const nc = col + [1, -1, 0, 0][d];
+      const nr = row + [0, 0, 1, -1][d];
+      if (!inBounds(nc, nr)) continue;
+      const ni = cellIndex(nc, nr);
+      if (state.terrain[ni] !== TERRAIN_OPEN) continue;
+      if (flow[ni] !== -1) continue;
+      flow[ni] = nextDistance;
+      queue.push(ni);
+    }
+  }
+  state.flowDirty = false;
+}
+
+function spawnEnemy(state, col) {
+  if (state.enemyCount >= MAX_ENEMIES) return -1;
+  let slot = -1;
+  for (let i = 0; i < MAX_ENEMIES; i++) if (!state.ealive[i]) { slot = i; break; }
+  if (slot < 0) return -1;
+  state.ealive[slot] = 1;
+  state.ex[slot]  = col + 0.5;
+  state.ey[slot]  = 0.5 + random() * 0.8;
+  state.ehp[slot] = ENEMY_HP;
+  state.ejit[slot] = (random() - 0.5) * 0.55;
+  state.enemyCount++;
+  return slot;
+}
+
+function rebuildBuckets(state) {
+  const buckets = state.buckets;
+  for (let i = 0; i < buckets.length; i++) buckets[i].length = 0;
+  for (let i = 0; i < MAX_ENEMIES; i++) {
+    if (!state.ealive[i]) continue;
+    const col = Math.min(COLS - 1, Math.max(0, state.ex[i] | 0));
+    const row = Math.min(ROWS - 1, Math.max(0, state.ey[i] | 0));
+    buckets[cellIndex(col, row)].push(i);
+  }
+}
+
+/** 半径 radius 内の生存敵インデックスを集める */
+function enemiesNear(state, x, y, radius) {
+  const found = [];
+  const r2 = radius * radius;
+  const minCol = Math.max(0, Math.floor(x - radius));
+  const maxCol = Math.min(COLS - 1, Math.ceil(x + radius));
+  const minRow = Math.max(0, Math.floor(y - radius));
+  const maxRow = Math.min(ROWS - 1, Math.ceil(y + radius));
+  for (let row = minRow; row <= maxRow; row++) {
+    for (let col = minCol; col <= maxCol; col++) {
+      const list = state.buckets[cellIndex(col, row)];
+      for (let k = 0; k < list.length; k++) {
+        const i = list[k];
+        const dx = state.ex[i] - x, dy = state.ey[i] - y;
+        if (dx * dx + dy * dy <= r2) found.push(i);
+      }
+    }
+  }
+  return found;
+}
+
+function killEnemy(state, i) {
+  if (!state.ealive[i]) return false;
+  state.ealive[i] = 0;
+  state.enemyCount--;
+  state.kills++;
+  return true;
+}
+
+function setTerrain(state, col, row, kind, duration) {
+  if (!inBounds(col, row)) return false;
+  if (row >= CASTLE_ROW) return false;          // 城の列は塞げない（詰み防止）
+  const index = cellIndex(col, row);
+  state.terrain[index] = kind;
+  state.terrainTimer[index] = duration;
+  state.flowDirty = true;
+  return true;
+}
+
+function simStep(state) {
+  if (state.over) return;
+  const dt = SIM_DT;
+  state.time += dt;
+  state.tick++;
+
+  // ---- 地形の時間切れ ----
+  let terrainExpired = false;
+  for (let index = 0; index < state.terrain.length; index++) {
+    if (state.terrain[index] === TERRAIN_OPEN) continue;
+    state.terrainTimer[index] -= dt;
+    if (state.terrainTimer[index] <= 0) { state.terrain[index] = TERRAIN_OPEN; terrainExpired = true; }
+  }
+  if (terrainExpired || state.flowDirty) rebuildFlow(state);
+
+  // ---- ウェーブと湧き（常時湧き。レートがウェーブごとに上がる）----
+  state.waveTimer += dt;
+  if (state.waveTimer >= WAVE_INTERVAL_SEC) {
+    state.waveTimer -= WAVE_INTERVAL_SEC;
+    state.wave++;
+  }
+  const spawnRate = SPAWN_RATE_BASE + SPAWN_RATE_PER_WAVE * (state.wave - 1);
+  state.spawnCredit += spawnRate * dt;
+  while (state.spawnCredit >= 1) {
+    state.spawnCredit -= 1;
+    spawnEnemy(state, (random() * COLS) | 0);
+  }
+
+  rebuildBuckets(state);
+
+  // ---- 敵の移動（距離場を降りる）----
+  for (let i = 0; i < MAX_ENEMIES; i++) {
+    if (!state.ealive[i]) continue;
+    const col = Math.min(COLS - 1, Math.max(0, state.ex[i] | 0));
+    const row = Math.min(ROWS - 1, Math.max(0, state.ey[i] | 0));
+
+    // 穴の上に乗ってしまった敵は落ちる
+    if (state.terrain[cellIndex(col, row)] === TERRAIN_PIT) { killEnemy(state, i); continue; }
+
+    // 城に到達
+    if (row >= CASTLE_ROW) {
+      state.castleHp -= ENEMY_CONTACT_DAMAGE;
+      state.leaked++;
+      killEnemy(state, i);
+      if (state.castleHp <= 0) { state.castleHp = 0; state.over = true; }
+      continue;
+    }
+
+    // 隣接セルのうち距離が小さい方へ進む
+    const here = state.flow[cellIndex(col, row)];
+    let bestCol = col, bestRow = row, bestDistance = here < 0 ? Infinity : here;
+    for (let d = 0; d < 4; d++) {
+      const nc = col + [1, -1, 0, 0][d];
+      const nr = row + [0, 0, 1, -1][d];
+      if (!inBounds(nc, nr)) continue;
+      const nd = state.flow[cellIndex(nc, nr)];
+      if (nd < 0) continue;
+      if (nd < bestDistance) { bestDistance = nd; bestCol = nc; bestRow = nr; }
+    }
+    const targetX = bestCol + 0.5 + state.ejit[i];
+    const targetY = bestRow + 0.5;
+    const dx = targetX - state.ex[i], dy = targetY - state.ey[i];
+    const length = Math.hypot(dx, dy) || 1;
+    const step = ENEMY_SPEED * dt;
+    state.ex[i] += (dx / length) * step;
+    state.ey[i] += (dy / length) * step;
+  }
+
+  // ---- 味方の通常攻撃（タップなしのベースライン）----
+  for (const ally of state.allies) {
+    if (ally.cooldown > 0) ally.cooldown = Math.max(0, ally.cooldown - dt);
+    const ax = ally.col + 0.5, ay = ally.row + 0.5;
+    const targets = enemiesNear(state, ax, ay, ALLY_RANGE);
+    if (targets.length === 0) continue;
+    // 最も城に近い敵から順に削る
+    targets.sort((a, b) => state.ey[b] - state.ey[a]);
+    const focus = targets[0];
+    state.ehp[focus] -= ALLY_DPS * dt;
+    if (state.ehp[focus] <= 0) killEnemy(state, focus);
+  }
+}
+
+// 位置が変わった敵を「影響あり」と数える最小距離。
+// これ未満のわずかな移動まで数えると、引き寄せ系スキルの影響量が過大に出て
+// 計測器そのものが嘘をつく（v0.1.0 で pull が 59.3影響/タップ と出た原因）。
+const MEANINGFUL_MOVE = 0.6;
+
+/**
+ * 発動可能か。射程内に対象がいないタップは「空振り」として弾き、
+ * クールダウンも消費させない。
+ * ワンタップの価値を謳うゲームで「押したのに何も起きない」が起きると
+ * 体験がまるごと薄まるため、空振りを構造的に起きなくする。
+ */
+function canActivate(state, allyIndex) {
+  const ally = state.allies[allyIndex];
+  if (!ally || ally.cooldown > 0 || state.over) return false;
+  const ax = ally.col + 0.5, ay = ally.row + 0.5;
+
+  if (ally.skill === "pull")  return enemiesNear(state, ax, ay, 6.5).length > 0;
+  if (ally.skill === "blast") return enemiesNear(state, ax, ay, 3.4).length > 0;
+  if (ally.skill === "chain") return enemiesNear(state, ax, ay, 7.5).length > 0;
+  if (ally.skill === "push") {
+    return enemiesNear(state, ax, ay, 20).some((i) =>
+      Math.abs(state.ex[i] - ax) <= 1.6 && state.ey[i] <= ay);
+  }
+  // 地形スキルは「曲げる相手」がいて初めて意味がある
+  return enemiesNear(state, ax, ay - 5, 7).length >= 3;
+}
+
+/** 前方で最も敵が密集しているセルを探す（穴を置く場所を敵に合わせるため） */
+function densestCellAhead(state, ally, reach) {
+  let bestCol = ally.col, bestRow = Math.max(1, ally.row - 4), bestCount = -1;
+  for (let row = Math.max(1, ally.row - reach); row < ally.row; row++) {
+    for (let col = 0; col < COLS; col++) {
+      if (Math.abs(col - ally.col) > reach) continue;
+      const count = enemiesNear(state, col + 0.5, row + 0.5, 1.6).length;
+      if (count > bestCount) { bestCount = count; bestCol = col; bestRow = row; }
+    }
+  }
+  return { col: bestCol, row: bestRow };
+}
+
+/**
+ * スキル発動。戻り値が「この1タップが盤面に与えた影響」の記録。
+ * affected = 意味のある変化（死亡・被ダメ・1マス弱以上の移動・経路変更）を受けた敵の数。
+ */
+function activateSkill(state, allyIndex) {
+  const ally = state.allies[allyIndex];
+  if (!ally || ally.cooldown > 0 || state.over) return null;
+  if (!canActivate(state, allyIndex)) return null;   // 空振りはクールダウンを消費しない
+
+  const ax = ally.col + 0.5, ay = ally.row + 0.5;
+  const affected = new Set();
+  let killed = 0;
+  let cellsChanged = 0;
+  let chainLen = 0;
+
+  if (ally.skill === "pull") {
+    const radius = 6.5;
+    for (const i of enemiesNear(state, ax, ay, radius)) {
+      const dx = ax - state.ex[i], dy = ay - state.ey[i];
+      const length = Math.hypot(dx, dy) || 1;
+      const pull = Math.min(length - 0.4, 3.6);
+      if (pull <= 0) continue;
+      state.ex[i] += (dx / length) * pull;
+      state.ey[i] += (dy / length) * pull;
+      if (pull >= MEANINGFUL_MOVE) affected.add(i);
+    }
+  } else if (ally.skill === "blast") {
+    const radius = 3.4;
+    for (const i of enemiesNear(state, ax, ay, radius)) {
+      state.ehp[i] -= 8;
+      affected.add(i);
+      if (state.ehp[i] <= 0 && killEnemy(state, i)) killed++;
+    }
+  } else if (ally.skill === "chain") {
+    // 最寄りの敵から始め、敵から敵へ伝播する。密集しているほど伸びる。
+    const seedTargets = enemiesNear(state, ax, ay, 7.5);
+    if (seedTargets.length > 0) {
+      seedTargets.sort((a, b) => {
+        const da = (state.ex[a] - ax) ** 2 + (state.ey[a] - ay) ** 2;
+        const db = (state.ex[b] - ax) ** 2 + (state.ey[b] - ay) ** 2;
+        return da - db;
+      });
+      const visited = new Set();
+      const queue = [seedTargets[0]];
+      visited.add(seedTargets[0]);
+      while (queue.length > 0 && visited.size < 90) {
+        const current = queue.shift();
+        state.ehp[current] -= 5;
+        affected.add(current);
+        const neighbours = enemiesNear(state, state.ex[current], state.ey[current], 1.7);
+        for (const n of neighbours) {
+          if (visited.has(n)) continue;
+          visited.add(n);
+          queue.push(n);
+          if (visited.size >= 90) break;
+        }
+      }
+      chainLen = visited.size;
+      for (const i of visited) if (state.ehp[i] <= 0 && killEnemy(state, i)) killed++;
+    }
+  } else if (ally.skill === "wall") {
+    const row = ally.row - 3;
+    for (let col = ally.col - 2; col <= ally.col + 1; col++) {
+      if (setTerrain(state, col, row, TERRAIN_WALL, WALL_DURATION)) cellsChanged++;
+    }
+    // 壁の影響は「経路が変わった敵の数」。距離場を作り直して、進行方向が変わった敵を数える。
+    const before = [];
+    for (let i = 0; i < MAX_ENEMIES; i++) if (state.ealive[i]) before.push([i, preferredCell(state, i)]);
+    rebuildFlow(state);
+    for (const [i, prev] of before) if (preferredCell(state, i) !== prev) affected.add(i);
+  } else if (ally.skill === "push") {
+    for (const i of enemiesNear(state, ax, ay, 20)) {
+      if (Math.abs(state.ex[i] - ax) > 1.6) continue;
+      if (state.ey[i] > ay) continue;
+      state.ey[i] = Math.max(0.4, state.ey[i] - 6);
+      state.ehp[i] -= 2;
+      affected.add(i);
+      if (state.ehp[i] <= 0 && killEnemy(state, i)) killed++;
+    }
+  } else if (ally.skill === "pit") {
+    // v0.2.0: 固定位置だと敵のいない場所に空くだけで死にスキルだった（1.2影響/タップ）。
+    // 前方で最も密集しているセルに合わせて開ける。
+    const spot = densestCellAhead(state, ally, 6);
+    const centerRow = spot.row;
+    for (let row = centerRow - 1; row <= centerRow + 1; row++) {
+      for (let col = spot.col - 1; col <= spot.col + 1; col++) {
+        if (!setTerrain(state, col, row, TERRAIN_PIT, PIT_DURATION)) continue;
+        cellsChanged++;
+        for (const i of enemiesNear(state, col + 0.5, row + 0.5, 0.75)) {
+          affected.add(i);
+          if (killEnemy(state, i)) killed++;
+        }
+      }
+    }
+    const before = [];
+    for (let i = 0; i < MAX_ENEMIES; i++) if (state.ealive[i]) before.push([i, preferredCell(state, i)]);
+    rebuildFlow(state);
+    for (const [i, prev] of before) if (preferredCell(state, i) !== prev) affected.add(i);
+  }
+
+  ally.cooldown = ally.cooldownMax;
+  state.taps++;
+  const record = {
+    time: state.time, skill: ally.skill, allyIndex,
+    affected: affected.size, killed, cellsChanged, chainLen,
+  };
+  state.tapLog.push(record);
+  return record;
+}
+
+/** その敵が次に進もうとしているセル（壁の影響を測るために使う） */
+function preferredCell(state, i) {
+  const col = Math.min(COLS - 1, Math.max(0, state.ex[i] | 0));
+  const row = Math.min(ROWS - 1, Math.max(0, state.ey[i] | 0));
+  let bestIndex = cellIndex(col, row);
+  let bestDistance = state.flow[bestIndex];
+  if (bestDistance < 0) bestDistance = Infinity;
+  for (let d = 0; d < 4; d++) {
+    const nc = col + [1, -1, 0, 0][d];
+    const nr = row + [0, 0, 1, -1][d];
+    if (!inBounds(nc, nr)) continue;
+    const ni = cellIndex(nc, nr);
+    const nd = state.flow[ni];
+    if (nd < 0) continue;
+    if (nd < bestDistance) { bestDistance = nd; bestIndex = ni; }
+  }
+  return bestIndex;
+}
+
+// =================================================================
+// ===== HEADLESS =================================================
+// 描画せずにロジックだけ回す。1タップあたりの影響量を測るための計測モード。
+// =================================================================
+
+/**
+ * @param {object} options seed / seconds / policy("none"|"random"|"greedy")
+ * 無操作(none)との差分こそが「タップに意味があるか」の答えになる。
+ */
+function headlessRun(options) {
+  const seconds = options.seconds ?? 90;
+  const policy  = options.policy ?? "none";
+  const state = createState(options.seed ?? 1);
+  const totalTicks = Math.round(seconds / SIM_DT);
+
+  for (let t = 0; t < totalTicks && !state.over; t++) {
+    simStep(state);
+    if (policy === "none") continue;
+
+    // 0.25秒ごとに1回だけ発動判断（人間の操作頻度に近づける）
+    if (state.tick % 15 !== 0) continue;
+    const ready = state.allies.map((a, i) => [a, i]).filter(([a]) => a.cooldown <= 0);
+    if (ready.length === 0) continue;
+
+    if (policy === "random") {
+      if (random() < 0.35) activateSkill(state, ready[(random() * ready.length) | 0][1]);
+    } else if (policy === "greedy") {
+      // 射程内の敵が最も多いユニットを選ぶ（素朴だが人間に近い判断）
+      let bestIndex = -1, bestCount = -1;
+      for (const [ally, index] of ready) {
+        const count = enemiesNear(state, ally.col + 0.5, ally.row + 0.5, 5).length;
+        if (count > bestCount) { bestCount = count; bestIndex = index; }
+      }
+      if (bestIndex >= 0 && bestCount >= 6) activateSkill(state, bestIndex);
+    }
+  }
+
+  const perSkill = {};
+  for (const record of state.tapLog) {
+    const bucket = perSkill[record.skill] || (perSkill[record.skill] = { taps: 0, affected: 0, killed: 0 });
+    bucket.taps++; bucket.affected += record.affected; bucket.killed += record.killed;
+  }
+  for (const key of Object.keys(perSkill)) {
+    perSkill[key].affectedPerTap = +(perSkill[key].affected / perSkill[key].taps).toFixed(1);
+    perSkill[key].killedPerTap   = +(perSkill[key].killed   / perSkill[key].taps).toFixed(1);
+  }
+  const affectedList = state.tapLog.map((r) => r.affected).sort((a, b) => a - b);
+
+  return {
+    seed: state.seed, policy,
+    survivedSec: +state.time.toFixed(1),
+    over: state.over,
+    castleHp: state.castleHp,
+    taps: state.taps,
+    kills: state.kills,
+    leaked: state.leaked,
+    affectedPerTap: state.taps > 0 ? +(affectedList.reduce((a, b) => a + b, 0) / state.taps).toFixed(1) : 0,
+    affectedMedian: affectedList.length > 0 ? affectedList[(affectedList.length / 2) | 0] : 0,
+    affectedMax: affectedList.length > 0 ? affectedList[affectedList.length - 1] : 0,
+    perSkill,
+  };
+}
+
+// =================================================================
+// ===== RENDER / INPUT ===========================================
+// =================================================================
+
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+const hudCastle  = document.getElementById("hud-castle");
+const hudWave    = document.getElementById("hud-wave");
+const hudStats   = document.getElementById("hud-stats");
+const impactEl   = document.getElementById("impact");
+const impactNum  = document.getElementById("impact-num");
+const resultEl   = document.getElementById("result");
+const resultRows = document.getElementById("result-rows");
+
+document.getElementById("hud-version").textContent = GAME_VERSION;
+
+let viewW = 0, viewH = 0, cellSize = 0, originX = 0, originY = 0;
+let game = null;
+const floaters = [];   // 発動位置に出る小さな数字
+
+function resize() {
+  viewW = canvas.width  = Math.floor(window.innerWidth);
+  viewH = canvas.height = Math.floor(window.innerHeight);
+  cellSize = Math.min(viewW / COLS, (viewH - 90) / ROWS);
+  originX = (viewW - cellSize * COLS) / 2;
+  originY = (viewH - cellSize * ROWS) / 2 + 18;
+}
+window.addEventListener("resize", resize);
+resize();
+
+function worldToScreenX(x) { return originX + x * cellSize; }
+function worldToScreenY(y) { return originY + y * cellSize; }
+
+function render() {
+  ctx.fillStyle = "#0a0c14";
+  ctx.fillRect(0, 0, viewW, viewH);
+  if (!game) return;
+
+  // 盤面
+  ctx.fillStyle = "#111726";
+  ctx.fillRect(originX, originY, cellSize * COLS, cellSize * ROWS);
+  ctx.strokeStyle = "rgba(255,255,255,0.045)";
+  ctx.lineWidth = 1;
+  for (let col = 0; col <= COLS; col++) {
+    ctx.beginPath();
+    ctx.moveTo(worldToScreenX(col), originY);
+    ctx.lineTo(worldToScreenX(col), originY + cellSize * ROWS);
+    ctx.stroke();
+  }
+  for (let row = 0; row <= ROWS; row++) {
+    ctx.beginPath();
+    ctx.moveTo(originX, worldToScreenY(row));
+    ctx.lineTo(originX + cellSize * COLS, worldToScreenY(row));
+    ctx.stroke();
+  }
+
+  // 城
+  ctx.fillStyle = "rgba(90,160,255,0.20)";
+  ctx.fillRect(originX, worldToScreenY(CASTLE_ROW), cellSize * COLS, cellSize);
+
+  // 地形
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      const kind = game.terrain[cellIndex(col, row)];
+      if (kind === TERRAIN_OPEN) continue;
+      ctx.fillStyle = kind === TERRAIN_WALL ? "rgba(159,232,160,0.55)" : "rgba(20,6,14,0.95)";
+      ctx.fillRect(worldToScreenX(col) + 1, worldToScreenY(row) + 1, cellSize - 2, cellSize - 2);
+    }
+  }
+
+  // 敵
+  const enemyRadius = Math.max(2.0, cellSize * 0.17);
+  ctx.fillStyle = "#e8556d";
+  for (let i = 0; i < MAX_ENEMIES; i++) {
+    if (!game.ealive[i]) continue;
+    ctx.beginPath();
+    ctx.arc(worldToScreenX(game.ex[i]), worldToScreenY(game.ey[i]), enemyRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 味方（クールダウンをリングで表示）
+  for (const ally of game.allies) {
+    const cx = worldToScreenX(ally.col + 0.5);
+    const cy = worldToScreenY(ally.row + 0.5);
+    const radius = cellSize * 0.42;
+    const skill = SKILLS[ally.skill];
+    const ready = ally.cooldown <= 0;
+
+    ctx.fillStyle = ready ? skill.color : "rgba(80,92,116,0.85)";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (!ready) {
+      ctx.strokeStyle = skill.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius - 1, -Math.PI / 2,
+              -Math.PI / 2 + Math.PI * 2 * (1 - ally.cooldown / ally.cooldownMax));
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = ready ? "#0a0c14" : "rgba(255,255,255,0.5)";
+    ctx.font = `700 ${Math.floor(cellSize * 0.46)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(skill.name, cx, cy + 1);
+  }
+
+  // 影響量のフローター
+  for (const floater of floaters) {
+    const life = floater.life / floater.maxLife;
+    ctx.globalAlpha = Math.max(0, life);
+    ctx.fillStyle = floater.color;
+    ctx.font = "700 20px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(`+${floater.value}`, floater.x, floater.y - (1 - life) * 40);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function showImpact(record) {
+  impactNum.textContent = String(record.affected);
+  impactEl.classList.remove("show");
+  void impactEl.offsetWidth;      // アニメーションを再起動させる
+  impactEl.classList.add("show");
+
+  const ally = game.allies[record.allyIndex];
+  floaters.push({
+    x: worldToScreenX(ally.col + 0.5), y: worldToScreenY(ally.row + 0.5),
+    value: record.affected, color: SKILLS[record.skill].color,
+    life: 0.9, maxLife: 0.9,
+  });
+  if (navigator.vibrate) navigator.vibrate(Math.min(120, 20 + record.affected));
+}
+
+function updateHud() {
+  hudCastle.textContent = `城 ${game.castleHp}`;
+  hudWave.textContent = `WAVE ${game.wave}`;
+  const avg = game.taps > 0
+    ? (game.tapLog.reduce((sum, r) => sum + r.affected, 0) / game.taps).toFixed(1)
+    : "—";
+  hudStats.innerHTML = `敵 ${game.enemyCount} / 撃破 ${game.kills}<br>タップ ${game.taps}・平均影響 ${avg}`;
+}
+
+function endGame() {
+  const avg = game.taps > 0
+    ? (game.tapLog.reduce((sum, r) => sum + r.affected, 0) / game.taps).toFixed(1) : "0";
+  resultRows.innerHTML =
+    `到達 WAVE ${game.wave} ・ ${game.time.toFixed(0)}秒<br>` +
+    `撃破 <b>${game.kills}</b><br>` +
+    `タップ <b>${game.taps}</b> 回<br>` +
+    `1タップあたりの影響 <b>${avg}</b> 体<br>` +
+    `<span style="opacity:.6;font-size:12px">seed: ${game.seed}</span>`;
+  resultEl.classList.add("visible");
+}
+
+function startGame() {
+  game = createState(seedForNewGame());
+  floaters.length = 0;
+  resultEl.classList.remove("visible");
+}
+
+// ---- 入力: ユニットをワンタップするだけ ----
+function handleTap(clientX, clientY) {
+  if (!game || game.over) return;
+  let bestIndex = -1, bestDistance = Infinity;
+  for (let i = 0; i < game.allies.length; i++) {
+    const ally = game.allies[i];
+    const dx = clientX - worldToScreenX(ally.col + 0.5);
+    const dy = clientY - worldToScreenY(ally.row + 0.5);
+    const distance = Math.hypot(dx, dy);
+    if (distance < bestDistance) { bestDistance = distance; bestIndex = i; }
+  }
+  // 指は太いので、セル1個分くらいの余裕を持って拾う
+  if (bestIndex < 0 || bestDistance > cellSize * 1.1) return;
+  const record = activateSkill(game, bestIndex);
+  if (record) showImpact(record);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  handleTap(event.clientX, event.clientY);
+});
+document.getElementById("result-retry").addEventListener("click", startGame);
+
+// ---- ループ ----
+let lastFrameTime = performance.now();
+let simAccumulator = 0;
+
+function frame(now) {
+  const elapsed = Math.min(0.25, (now - lastFrameTime) / 1000);
+  lastFrameTime = now;
+
+  if (game && !game.over) {
+    simAccumulator += elapsed;
+    while (simAccumulator >= SIM_DT) { simStep(game); simAccumulator -= SIM_DT; }
+    if (game.over) endGame();
+  }
+
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    floaters[i].life -= elapsed;
+    if (floaters[i].life <= 0) floaters.splice(i, 1);
+  }
+
+  render();
+  if (game) updateHud();
+  requestAnimationFrame(frame);
+}
+
+startGame();
+requestAnimationFrame(frame);
+
+// 計測・デバッグ用の入口（headless 実行はここから叩く）
+window.tenVsHorde = {
+  headlessRun, createState, simStep, activateSkill, reseedRandom,
+  getState: () => game, SKILLS, COLS, ROWS,
+};
+</script>
+</body>
+</html>
