@@ -75,6 +75,43 @@
     color: rgba(230,238,255,0.5); z-index: 10; line-height: 1.5;
   }
 
+  /* 効果の説明。プレイを止めないよう、モーダルにはしない
+     （開いている間もゲームは進行し、スキルバーも隠さない） */
+  #help-toggle {
+    position: fixed; right: 8px; top: 4px; z-index: 16;
+    width: 26px; height: 26px; border: none; border-radius: 50%;
+    background: rgba(60,74,102,0.9); color: #dfe8f7; font-size: 14px; font-weight: 700;
+  }
+  #help-panel {
+    position: fixed; left: 6px; right: 6px; z-index: 15; display: none;
+    padding: 8px; border-radius: 12px;
+    background: rgba(10,14,24,0.93); border: 1px solid rgba(255,255,255,0.12);
+    font-size: 11px; line-height: 1.45; max-height: 62vh; overflow-y: auto;
+  }
+  #help-panel.visible { display: block; }
+  #help-panel .row { display: flex; gap: 7px; padding: 3px 0; align-items: baseline; }
+  #help-panel .row .g { font-weight: 800; font-size: 15px; min-width: 1.3em; text-align: center; }
+  #help-panel .row .n { font-weight: 700; min-width: 3.2em; }
+  #help-panel .row .c { opacity: 0.6; min-width: 2.4em; text-align: right; }
+  #help-panel .row .e { flex: 1; opacity: 0.85; }
+  #help-panel .fam { margin-top: 6px; font-size: 10px; letter-spacing: 0.2em; opacity: 0.5; }
+
+  /* 発動したスキルが何をしたかを、その場で言葉にする */
+  #toast {
+    position: fixed; left: 8px; right: 8px; z-index: 15;
+    padding: 7px 10px; border-radius: 10px; pointer-events: none;
+    background: rgba(10,14,24,0.9); border: 1px solid rgba(255,255,255,0.1);
+    font-size: 12px; line-height: 1.4; opacity: 0;
+  }
+  #toast.show { animation: toastFade 2.6s ease forwards; }
+  @keyframes toastFade {
+    0% { opacity: 0; transform: translateY(6px); }
+    8% { opacity: 1; transform: translateY(0); }
+    75% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  #toast b { font-size: 13px; }
+
   #result {
     position: fixed; inset: 0; display: none; z-index: 20;
     background: rgba(6,8,14,0.93); flex-direction: column;
@@ -99,6 +136,9 @@
 <div id="hud-version">v0.4.0</div>
 <div id="hud-stats"></div>
 <div id="impact"><span class="label">IMPACT</span><span id="impact-num">0</span></div>
+<button id="help-toggle">?</button>
+<div id="help-panel"></div>
+<div id="toast"></div>
 <div id="skillbar"></div>
 <div id="result">
   <h1>突破された</h1>
@@ -127,7 +167,7 @@
 // SIM は DOM も canvas も触らない（描画を止めても同じ状態遷移になる）。
 // =================================================================
 
-const GAME_VERSION = "v0.5.0";
+const GAME_VERSION = "v0.6.0";
 
 // -----------------------------------------------------------------
 // 決定性RNG（ロジック用 random / 演出用 fxRandom の2ストリーム）
@@ -183,9 +223,13 @@ const ENEMY_HP    = 4;
 const ENEMY_SPEED = 1.15;             // マス/秒
 const ENEMY_CONTACT_DAMAGE = 1;
 
-// 城の自動迎撃。これが「無操作ベースライン」の火力になる。
-const CASTLE_DPS     = 22;
-const CASTLE_TARGETS = 10;            // 同時に狙う数
+// 城の自動迎撃（v0.6.0 で 0 に）。
+// v0.5.0 までは 22 あり、放っておいても敵が減っていた。計測の「無操作ベースライン」を
+// 非ゼロにするために入れていたが、価値基準（プレイヤーの一手で盤面が動く）を薄めていた。
+// 0 にするとタップの価値はむしろ広がる（無操作との差が3.0倍→4.4倍）。
+// createState / headlessRun の castleDps オプションで有無を比較できる。
+const CASTLE_DPS     = 0;
+const CASTLE_TARGETS = 10;            // 同時に狙う数（迎撃を有効にした場合）
 
 const SIM_DT = 1 / 60;
 
@@ -212,16 +256,16 @@ const MEANINGFUL_MOVE = 0.6;
  *   抑える … 時間を稼ぐ（凍・腐・鼓）
  */
 const SKILL_DEFS = [
-  { id: "chain", cost: 25,   glyph: "雷", name: "連鎖",  color: "#7fd4ff", cooldown: 8,  family: "狩る" },
-  { id: "blast", cost: 22,   glyph: "爆", name: "爆発",  color: "#ff8a5c", cooldown: 7,  family: "狩る" },
-  { id: "pit", cost: 34,     glyph: "穴", name: "陥没",  color: "#ff6b8a", cooldown: 13, family: "狩る" },
-  { id: "pull", cost: 16,    glyph: "磁", name: "集約",  color: "#c98bff", cooldown: 7,  family: "崩す" },
-  { id: "push", cost: 20,    glyph: "風", name: "後退",  color: "#ffd479", cooldown: 8,  family: "崩す" },
-  { id: "wall", cost: 24,    glyph: "壁", name: "遮断",  color: "#9fe8a0", cooldown: 11, family: "崩す" },
-  { id: "reverse", cost: 22, glyph: "反", name: "反転",  color: "#ff9ad5", cooldown: 12, family: "崩す" },
-  { id: "freeze", cost: 28,  glyph: "凍", name: "停止",  color: "#a8ddff", cooldown: 10, family: "抑える" },
-  { id: "rot", cost: 30,     glyph: "腐", name: "腐蝕",  color: "#a0d468", cooldown: 12, family: "抑える" },
-  { id: "rally", cost: 18,   glyph: "鼓", name: "鼓舞",  color: "#ffe08a", cooldown: 15, family: "抑える" },
+  { id: "chain", cost: 25,   glyph: "雷", name: "連鎖",  color: "#7fd4ff", cooldown: 8,  family: "狩る", effect: "密集地から敵づたいに感電。密集しているほど連鎖が伸びる" },
+  { id: "blast", cost: 22,   glyph: "爆", name: "爆発",  color: "#ff8a5c", cooldown: 7,  family: "狩る", effect: "最も密集した場所を吹き飛ばす" },
+  { id: "pit", cost: 34,     glyph: "穴", name: "陥没",  color: "#ff6b8a", cooldown: 13, family: "狩る", effect: "密集地を落とし穴に。数秒間そこを通れなくなる" },
+  { id: "pull", cost: 16,    glyph: "磁", name: "集約",  color: "#c98bff", cooldown: 7,  family: "崩す", effect: "盤面全体の敵を一点に集める。単体では倒せない布石" },
+  { id: "push", cost: 20,    glyph: "風", name: "後退",  color: "#ffd479", cooldown: 8,  family: "崩す", effect: "手前まで来た敵をまとめて後方へ押し戻す" },
+  { id: "wall", cost: 24,    glyph: "壁", name: "遮断",  color: "#9fe8a0", cooldown: 11, family: "崩す", effect: "前線の手前に壁。数百体の進路がまとめて変わる" },
+  { id: "reverse", cost: 22, glyph: "反", name: "反転",  color: "#ff9ad5", cooldown: 12, family: "崩す", effect: "密集地の敵を反転させ、後続にぶつける" },
+  { id: "freeze", cost: 28,  glyph: "凍", name: "停止",  color: "#a8ddff", cooldown: 10, family: "抑える", effect: "城に近い60体をその場に凍結する" },
+  { id: "rot", cost: 30,     glyph: "腐", name: "腐蝕",  color: "#a0d468", cooldown: 12, family: "抑える", effect: "盤面の全ての敵をじわじわ削る" },
+  { id: "rally", cost: 18,   glyph: "鼓", name: "鼓舞",  color: "#ffe08a", cooldown: 15, family: "抑える", effect: "城の自動迎撃を数秒間3倍にする" },
 ];
 
 // 気力: 全スキル共通の消費リソース（v0.5.0）
@@ -248,6 +292,9 @@ function createState(seedValue, options) {
     seed, time: 0, tick: 0, over: false,
     // 難易度を外から掃引できるようにしておく（headless で天井を測るため）
     spawnMultiplier: (options && options.spawnMultiplier) || 1,
+    // 城の自動迎撃の強さ。0 にすると「倒すのは全てプレイヤーの一手」になる。
+    // 外から差し替えられるようにしてあるのは、有無を計測で比べるため。
+    castleDps: (options && options.castleDps !== undefined) ? options.castleDps : CASTLE_DPS,
     castleHp: CASTLE_HP_MAX, wave: 1, waveTimer: 0, spawnCredit: 0,
 
     enemyCount: 0,
@@ -258,6 +305,7 @@ function createState(seedValue, options) {
     ejit:   new Float32Array(MAX_ENEMIES),
     estun:  new Float32Array(MAX_ENEMIES),   // 凍結
     erev:   new Float32Array(MAX_ENEMIES),   // 反転（城から遠ざかる）
+    eflash: new Float32Array(MAX_ENEMIES),   // 見た目専用: 影響を受けた瞬間の発光
 
     energy: ENERGY_MAX,
     skills: SKILL_DEFS.map((d) => ({ id: d.id, cooldown: 0, cooldownMax: d.cooldown, cost: d.cost })),
@@ -317,6 +365,7 @@ function spawnEnemy(state, col) {
   state.ehp[slot] = ENEMY_HP;
   state.ejit[slot] = (random() - 0.5) * 0.55;
   state.estun[slot] = 0;
+  state.eflash[slot] = 0;
   state.erev[slot]  = 0;
   state.enemyCount++;
   return slot;
@@ -415,6 +464,7 @@ function simStep(state) {
   state.tick++;
 
   state.energy = Math.min(ENERGY_MAX, state.energy + ENERGY_REGEN * dt);
+  for (let i = 0; i < MAX_ENEMIES; i++) if (state.eflash[i] > 0) state.eflash[i] -= dt;
   if (state.rotTimer   > 0) state.rotTimer   = Math.max(0, state.rotTimer - dt);
   if (state.rallyTimer > 0) state.rallyTimer = Math.max(0, state.rallyTimer - dt);
   for (const skill of state.skills) {
@@ -490,10 +540,10 @@ function simStep(state) {
   }
 
   // ---- 城の自動迎撃（無操作ベースライン）----
-  const targets = frontlineEnemies(state, CASTLE_TARGETS);
+  const targets = state.castleDps > 0 ? frontlineEnemies(state, CASTLE_TARGETS) : [];
   if (targets.length > 0) {
     const multiplier = state.rallyTimer > 0 ? RALLY_MULTIPLIER : 1;
-    const perTarget = (CASTLE_DPS * multiplier * dt) / targets.length;
+    const perTarget = (state.castleDps * multiplier * dt) / targets.length;
     for (const i of targets) {
       state.ehp[i] -= perTarget;
       if (state.ehp[i] <= 0) killEnemy(state, i);
@@ -637,6 +687,9 @@ function activateSkill(state, skillIndex) {
     state.rallyTimer = RALLY_DURATION;
   }
 
+  // 「1タップで何がどこまで届いたか」を目で見せる（見た目専用・ロジックには影響しない）
+  for (const i of affected) state.eflash[i] = 0.45;
+
   skill.cooldown = skill.cooldownMax;
   state.energy -= skill.cost;
   state.taps++;
@@ -678,7 +731,10 @@ function preferredCell(state, i) {
 function headlessRun(options) {
   const seconds = options.seconds ?? 240;
   const policy  = options.policy ?? "none";
-  const state = createState(options.seed ?? 1, { spawnMultiplier: options.spawnMultiplier ?? 1 });
+  const state = createState(options.seed ?? 1, {
+    spawnMultiplier: options.spawnMultiplier ?? 1,
+    castleDps: options.castleDps,
+  });
   const totalTicks = Math.round(seconds / SIM_DT);
 
   for (let t = 0; t < totalTicks && !state.over; t++) {
@@ -739,6 +795,9 @@ const hudStats  = document.getElementById("hud-stats");
 const impactEl  = document.getElementById("impact");
 const impactNum = document.getElementById("impact-num");
 const skillbar  = document.getElementById("skillbar");
+const helpPanel = document.getElementById("help-panel");
+const helpToggle = document.getElementById("help-toggle");
+const toastEl   = document.getElementById("toast");
 const resultEl  = document.getElementById("result");
 const resultRows = document.getElementById("result-rows");
 
@@ -763,6 +822,35 @@ const buttons = SKILL_DEFS.map((def, index) => {
   return button;
 });
 
+// 効果一覧。系統ごとにまとめて、何を選んでいるのかが分かるようにする。
+(function buildHelpPanel() {
+  const families = ["狩る", "崩す", "抑える"];
+  const labels = { "狩る": "狩る — 敵を減らす", "崩す": "崩す — 隊列と進路を動かす", "抑える": "抑える — 時間を稼ぐ" };
+  helpPanel.innerHTML = families.map((family) =>
+    `<div class="fam">${labels[family]}</div>` +
+    SKILL_DEFS.filter((d) => d.family === family).map((d) =>
+      `<div class="row"><span class="g" style="color:${d.color}">${d.glyph}</span>` +
+      `<span class="n">${d.name}</span><span class="c">気力${d.cost}</span>` +
+      `<span class="e">${d.effect}</span></div>`).join("")
+  ).join("");
+})();
+
+helpToggle.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  helpPanel.classList.toggle("visible");
+});
+
+function showToast(def, record) {
+  toastEl.innerHTML =
+    `<b style="color:${def.color}">${def.glyph} ${def.name}</b> — ${def.effect}` +
+    `<br>この一手で <b>${record.affected}</b> 体に影響` +
+    (record.killed > 0 ? `／<b>${record.killed}</b> 体撃破` : "");
+  toastEl.classList.remove("show");
+  void toastEl.offsetWidth;
+  toastEl.classList.add("show");
+}
+
 function resize() {
   viewW = window.innerWidth;
   viewH = window.innerHeight;
@@ -773,6 +861,9 @@ function resize() {
   cellSize = Math.min(viewW / COLS, (boardH - 40) / ROWS);
   originX = (viewW - cellSize * COLS) / 2;
   originY = (boardH - cellSize * ROWS) / 2 + 14;
+  // スキルバーを覆わない位置に置く（開いたままでも遊べるようにするため）
+  helpPanel.style.bottom = (barHeight + 8) + "px";
+  toastEl.style.bottom   = (barHeight + 8) + "px";
 }
 window.addEventListener("resize", resize);
 
@@ -816,11 +907,13 @@ function render() {
   const radius = Math.max(2.0, cellSize * 0.18);
   for (let i = 0; i < MAX_ENEMIES; i++) {
     if (!game.ealive[i]) continue;
-    ctx.fillStyle = game.estun[i] > 0 ? "#a8ddff"
+    const flash = game.eflash[i];
+    ctx.fillStyle = flash > 0 ? "#ffffff"
+                  : game.estun[i] > 0 ? "#a8ddff"
                   : game.erev[i]  > 0 ? "#ff9ad5"
                   : game.rotTimer > 0 ? "#b6c96a" : "#e8556d";
     ctx.beginPath();
-    ctx.arc(screenX(game.ex[i]), screenY(game.ey[i]), radius, 0, Math.PI * 2);
+    ctx.arc(screenX(game.ex[i]), screenY(game.ey[i]), flash > 0 ? radius * 1.9 : radius, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -846,6 +939,8 @@ function tapSkill(index) {
   impactEl.classList.remove("show");
   void impactEl.offsetWidth;
   impactEl.classList.add("show");
+
+  showToast(SKILL_DEFS[index], record);
 
   if (record.focusCol >= 0) {
     bursts.push({
