@@ -104,7 +104,7 @@
 // まったく同じ状況に対して撃って比べられる。決定性RNGの主目的はこれ。
 // =================================================================
 
-const GAME_VERSION = "v0.8.0";
+const GAME_VERSION = "v0.10.0";
 
 // -----------------------------------------------------------------
 // 決定性RNG（ロジック用 random / 演出用 fxRandom）
@@ -320,6 +320,7 @@ function simStep(state) {
     if (state.terrain[here] === TERRAIN_PIT)  { removeEnemy(state, i); continue; }
     if (state.terrain[here] === TERRAIN_BURN) {
       state.ehp[i] -= 6 * dt;
+      state.flash[i] = Math.max(state.flash[i], 0.12);   // 地形で焼かれたことを計測にも見えるように
       if (state.ehp[i] <= 0) { removeEnemy(state, i); continue; }
     }
 
@@ -413,8 +414,9 @@ function makeEffectContext(state, record) {
 const SKILLS = [
   // ---- 瞬間・広範囲（ドカンと消える）----
   { id: "blast", glyph: "爆", name: "爆発", family: "瞬間", desc: "最も密集した場所に大爆発",
-    run(s, fx) { const d = fx.dense(3); fx.focus(d.col, d.row);
-      for (const i of fx.near(d.col + 0.5, d.row + 0.5, 3.4)) fx.damage(i, 8); } },
+    params: { radius: 7.5, damage: 8 },        // 自動探索: radius 3.4→7.5（形の変化 5.3%→17.2%）
+    run(s, fx, p) { const d = fx.dense(3); fx.focus(d.col, d.row);
+      for (const i of fx.near(d.col + 0.5, d.row + 0.5, p.radius)) fx.damage(i, p.damage); } },
 
   { id: "meteor", glyph: "隕", name: "隕石", family: "瞬間", desc: "3発が時間差で降る。連続で弾ける",
     run(s, fx) { const d = fx.dense(3); fx.focus(d.col, d.row);
@@ -428,9 +430,10 @@ const SKILLS = [
       }); } },
 
   { id: "cross", glyph: "十", name: "十字", family: "瞬間", desc: "縦一列と横一列を同時に薙ぐ",
-    run(s, fx) { const d = fx.dense(2); fx.focus(d.col, d.row);
+    params: { thickness: 3.5, damage: 9 },     // 自動探索: thickness 1.1→3.5（形の変化 7.1%→18.1%）
+    run(s, fx, p) { const d = fx.dense(2); fx.focus(d.col, d.row);
       for (const i of fx.all()) {
-        if (Math.abs(s.ex[i] - (d.col + 0.5)) < 1.1 || Math.abs(s.ey[i] - (d.row + 0.5)) < 1.1) fx.damage(i, 9);
+        if (Math.abs(s.ex[i] - (d.col + 0.5)) < p.thickness || Math.abs(s.ey[i] - (d.row + 0.5)) < p.thickness) fx.damage(i, p.damage);
       } } },
 
   { id: "shock", glyph: "波", name: "衝撃波", family: "瞬間", desc: "手前から扇状に広がり押し返す",
@@ -443,8 +446,9 @@ const SKILLS = [
       } } },
 
   { id: "crush", glyph: "圧", name: "圧壊", family: "瞬間", desc: "盤面の上半分をまとめて押し潰す",
-    run(s, fx) { fx.focus(COLS >> 1, 5);
-      for (const i of fx.all()) if (s.ey[i] < ROWS * 0.5) fx.damage(i, 6); } },
+    params: { share: 0.5, damage: 6 },         // 自動探索: 変更なし（既に型に一致）
+    run(s, fx, p) { fx.focus(COLS >> 1, 5);
+      for (const i of fx.all()) if (s.ey[i] < ROWS * p.share) fx.damage(i, p.damage); } },
 
   // ---- 連鎖・伝播（じわっと広がる）----
   { id: "chain", glyph: "雷", name: "連鎖", family: "伝播", desc: "敵づたいに感電。密集ほど伸びる",
@@ -536,8 +540,9 @@ const SKILLS = [
       } } },
 
   { id: "push", glyph: "風", name: "後退", family: "操作", desc: "手前の敵をまとめて押し戻す",
-    run(s, fx) { fx.focus(COLS >> 1, GOAL_ROW - 3);
-      for (const i of fx.all()) if (s.ey[i] >= ROWS * 0.45) { fx.move(i, 0, -6); fx.damage(i, 2); } } },
+    params: { reach: 0.45, distance: 9, damage: 2 },  // 自動探索: distance 6→9
+    run(s, fx, p) { fx.focus(COLS >> 1, GOAL_ROW - 3);
+      for (const i of fx.all()) if (s.ey[i] >= ROWS * p.reach) { fx.move(i, 0, -p.distance); fx.damage(i, p.damage); } } },
 
   { id: "reverse", glyph: "反", name: "反転", family: "操作", desc: "向きを反転させ、後続とぶつける",
     run(s, fx) { const d = fx.dense(3); fx.focus(d.col, d.row);
@@ -599,9 +604,11 @@ const SKILLS = [
       fx.reroute(); } },
 
   { id: "pit", glyph: "穴", name: "陥没", family: "地形", desc: "地面を落とす。落ちたら即消える",
-    run(s, fx) { const d = fx.dense(2); fx.focus(d.col, d.row);
-      for (let row = d.row - 1; row <= d.row + 1; row++) for (let col = d.col - 1; col <= d.col + 1; col++) {
-        fx.terrain(col, row, TERRAIN_PIT, 7);
+    params: { size: 3, duration: 7 },          // 自動探索: size 1→3（形の変化 8.3%→22.8%）
+    run(s, fx, p) { const d = fx.dense(2); fx.focus(d.col, d.row);
+      const size = Math.round(p.size);
+      for (let row = d.row - size; row <= d.row + size; row++) for (let col = d.col - size; col <= d.col + size; col++) {
+        fx.terrain(col, row, TERRAIN_PIT, p.duration);
         for (const i of fx.near(col + 0.5, row + 0.5, 0.75)) fx.slay(i);
       }
       fx.reroute(); } },
@@ -639,9 +646,10 @@ const SKILLS = [
 
   // ---- 時間・状態（止める・弱らせる）----
   { id: "freeze", glyph: "凍", name: "停止", family: "状態", desc: "手前の一団をその場に止める",
-    run(s, fx) { const front = fx.front(70);
+    params: { count: 105, duration: 4 },       // 自動探索: count 70→105（形の変化 12.4%→19.1%）
+    run(s, fx, p) { const front = fx.front(Math.round(p.count));
       if (front.length) fx.focus(s.ex[front[0]] | 0, s.ey[front[0]] | 0);
-      for (const i of front) fx.status(i, "stun", 4); } },
+      for (const i of front) fx.status(i, "stun", p.duration); } },
 
   { id: "petrify", glyph: "石", name: "石化", family: "状態", desc: "石にする。砕くと周りを巻き込む",
     run(s, fx) { const d = fx.dense(3); fx.focus(d.col, d.row);
@@ -688,7 +696,8 @@ function useSkill(state, skillId) {
     delayed: false, focusCol: -1, focusRow: -1,
   };
   rebuildBuckets(state);
-  def.run(state, makeEffectContext(state, record));
+  // params は自動探索が差し替える。持たないスキルは空オブジェクトで動く。
+  def.run(state, makeEffectContext(state, record), def.params || {});
   return {
     id: skillId, affected: record.affected.size, killed: record.killed,
     cells: record.cells, delayed: record.delayed,
@@ -845,17 +854,15 @@ function profileSkill(skillId, seed, density) {
   const result = useSkill(withSkill, skillId);
   if (!result) return null;
 
-  // 影響を受けた敵の広がり（集中度）
-  let sumX = 0, sumY = 0, marked = 0;
-  const markedIndices = [];
+  // 影響は「観測窓の間に一度でも光った敵」で数える。
+  // 発動直後の flash だけを見ると、時間差で効くスキル（隕石・導火線・嵐）が
+  // 影響0・読みやすさ0 と出て、実際より不当に低く評価される。
+  const everMarked = new Uint8Array(MAX_ENEMIES);
+  const statusBefore = new Uint8Array(MAX_ENEMIES);
   for (let i = 0; i < MAX_ENEMIES; i++) {
-    if (withSkill.flash[i] > 0 && aliveBefore[i]) { sumX += beforeX[i]; sumY += beforeY[i]; marked++; markedIndices.push(i); }
-  }
-  let spread = 0;
-  if (marked > 0) {
-    const cx = sumX / marked, cy = sumY / marked;
-    const distances = markedIndices.map((i) => Math.hypot(beforeX[i] - cx, beforeY[i] - cy)).sort((a, b) => a - b);
-    spread = distances[Math.floor(distances.length * 0.8)] || 0;   // 8割が収まる半径
+    if (withSkill.flash[i] > 0 && aliveBefore[i]) everMarked[i] = 1;
+    statusBefore[i] = (base.stun[i] > 0 ? 1 : 0) | (base.slow[i] > 0 ? 2 : 0) | (base.burn[i] > 0 ? 4 : 0)
+                    | (base.pet[i] > 0 ? 8 : 0) | (base.rev[i] > 0 ? 16 : 0) | (base.ally[i] ? 32 : 0);
   }
 
   // 時間を進めながら、撃破の時間分布と画面変化を測る
@@ -880,6 +887,7 @@ function profileSkill(skillId, seed, density) {
     reachedSoFar = withSkill.reached;
     binKills += Math.max(0, previousCount - withSkill.count - exited);
     previousCount = withSkill.count;
+    for (let i = 0; i < MAX_ENEMIES; i++) if (withSkill.flash[i] > 0 && aliveBefore[i]) everMarked[i] = 1;
     if ((t + 1) % binTicks === 0) { killBins.push(binKills); binKills = 0; }
     if (markIndex < PROFILE_MARKS.length && elapsed >= PROFILE_MARKS[markIndex] - 1e-6) {
       pixelMarks.push(pixelDifference(snapshotPixels(withSkill, false), snapshotPixels(without, false)));
@@ -898,15 +906,32 @@ function profileSkill(skillId, seed, density) {
   const peakBin = Math.max(0, ...killBins);
   const ninetyIndex = cumulative.findIndex((n) => n >= running * 0.95);
 
-  // 読みやすさ: 影響を受けたうち「消えた or 1マス以上動いた」割合
+  const markedIndices = [];
+  for (let i = 0; i < MAX_ENEMIES; i++) if (everMarked[i]) markedIndices.push(i);
+  const marked = markedIndices.length;
+
+  let spread = 0;
+  if (marked > 0) {
+    let sumX = 0, sumY = 0;
+    for (const i of markedIndices) { sumX += beforeX[i]; sumY += beforeY[i]; }
+    const cx = sumX / marked, cy = sumY / marked;
+    const distances = markedIndices.map((i) => Math.hypot(beforeX[i] - cx, beforeY[i] - cy)).sort((a, b) => a - b);
+    spread = distances[Math.floor(distances.length * 0.8)] || 0;   // 8割が収まる半径
+  }
+
+  // 読みやすさ: 影響を受けたうち「消えた／1マス以上動いた／状態が変わった」割合。
+  // 「消えたか動いたか」だけで定義すると、止める系（停止・石化）が構造的に0点になる。
   let readable = 0;
   for (const i of markedIndices) {
     if (!withSkill.alive[i]) { readable++; continue; }
-    if (Math.hypot(withSkill.ex[i] - beforeX[i], withSkill.ey[i] - beforeY[i]) > 1.0) readable++;
+    if (Math.hypot(withSkill.ex[i] - beforeX[i], withSkill.ey[i] - beforeY[i]) > 1.0) { readable++; continue; }
+    const now = (withSkill.stun[i] > 0 ? 1 : 0) | (withSkill.slow[i] > 0 ? 2 : 0) | (withSkill.burn[i] > 0 ? 4 : 0)
+              | (withSkill.pet[i] > 0 ? 8 : 0) | (withSkill.rev[i] > 0 ? 16 : 0) | (withSkill.ally[i] ? 32 : 0);
+    if (now !== statusBefore[i]) readable++;
   }
 
   return {
-    影響: result.affected,
+    影響: marked,
     撃破: totalKilled,
     遅延秒: firstKillBin < 0 ? null : +(firstKillBin * 0.1).toFixed(1),
     ピーク: peakBin,
@@ -948,6 +973,100 @@ function profileAll(options) {
     };
   }
   return table;
+}
+
+// =================================================================
+// ===== パラメータ自動探索 ========================================
+//
+// 「気持ちよさ」の順位は機械には出せない。が、
+// **系統ごとに狙う撃ち味の型を数値で与えれば、そこへ寄せる作業は機械にできる。**
+// 各パラメータを振ってプロファイルを実測し、型に最も近い値を選ぶ（座標降下）。
+// =================================================================
+
+/** 系統ごとの目標プロファイル。撃ち味の「型」を数値にしたもの。 */
+const ARCHETYPES = {
+  瞬間: { 形の変化ピーク: 18, 持続秒: 0.2, 読みやすさ: 1.0, 集中半径: 4.0 },
+  伝播: { 形の変化ピーク: 18, 持続秒: 1.5, 読みやすさ: 1.0, 集中半径: 3.0 },
+  操作: { 形の変化ピーク: 25, 持続秒: 0.2, 読みやすさ: 1.0, 集中半径: 5.0 },
+  地形: { 形の変化ピーク: 20, 持続秒: 0.3, 読みやすさ: 1.0, 集中半径: 5.0 },
+  状態: { 形の変化ピーク: 20, 持続秒: 0.5, 読みやすさ: 1.0, 集中半径: 6.0 },
+  増殖: { 形の変化ピーク: 15, 持続秒: 2.0, 読みやすさ: 1.0, 集中半径: 3.0 },
+};
+
+// 型からのズレを測る重み。形の変化（＝画面がどれだけ動くか）を最重視する。
+const ARCHETYPE_WEIGHTS = { 形の変化ピーク: 1.0, 持続秒: 0.5, 読みやすさ: 1.5, 集中半径: 0.3 };
+const ARCHETYPE_SCALES  = { 形の変化ピーク: 20, 持続秒: 2.0, 読みやすさ: 1.0, 集中半径: 6.0 };
+
+function archetypeError(profile, target) {
+  let error = 0;
+  for (const key of Object.keys(target)) {
+    const diff = (profile[key] - target[key]) / ARCHETYPE_SCALES[key];
+    error += ARCHETYPE_WEIGHTS[key] * diff * diff;
+  }
+  return error;
+}
+
+/** 平均プロファイル（探索中は軽くしたいのでシードを絞る） */
+function averageProfile(skillId, seeds, density) {
+  const runs = seeds.map((seed) => profileSkill(skillId, seed, density)).filter(Boolean);
+  if (!runs.length) return null;
+  const mean = (key) => runs.reduce((sum, r) => sum + (r[key] ?? 0), 0) / runs.length;
+  return {
+    形の変化ピーク: mean("形の変化ピーク"), 持続秒: mean("持続秒"),
+    読みやすさ: mean("読みやすさ"), 集中半径: mean("集中半径"),
+    撃破: mean("撃破"), 通過阻止: mean("通過阻止"), 影響: mean("影響"),
+  };
+}
+
+/**
+ * 1スキルのパラメータを目標へ寄せる。
+ * 各パラメータを候補倍率で振り、最も型に近づいた値を採用する（座標降下を passes 回）。
+ */
+function tuneSkill(skillId, options) {
+  const settings = options || {};
+  const seeds = settings.seeds || [11];
+  const density = settings.density || "中";
+  const factors = settings.factors || [0.5, 0.7, 1.0, 1.5, 2.2, 3.2];
+  const passes = settings.passes || 2;
+
+  const def = SKILLS.find((skill) => skill.id === skillId);
+  if (!def || !def.params) return null;
+  const target = ARCHETYPES[def.family];
+  const original = Object.assign({}, def.params);
+
+  let best = Object.assign({}, original);
+  let bestProfile = averageProfile(skillId, seeds, density);
+  let bestError = archetypeError(bestProfile, target);
+  const beforeError = bestError, beforeProfile = bestProfile;
+  let evaluations = 1;
+
+  for (let pass = 0; pass < passes; pass++) {
+    for (const key of Object.keys(original)) {
+      for (const factor of factors) {
+        const candidate = Object.assign({}, best);
+        candidate[key] = original[key] * factor;
+        def.params = candidate;
+        const profile = averageProfile(skillId, seeds, density);
+        evaluations++;
+        if (!profile) continue;
+        const error = archetypeError(profile, target);
+        if (error < bestError - 1e-6) { bestError = error; best = candidate; bestProfile = profile; }
+      }
+    }
+  }
+  def.params = best;
+
+  const round = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, +v.toFixed(2)]));
+  return {
+    id: skillId, 名: def.name, 系: def.family,
+    前のパラメータ: round(original), 後のパラメータ: round(best),
+    前: { 形の変化: +beforeProfile.形の変化ピーク.toFixed(1), 持続: +beforeProfile.持続秒.toFixed(1),
+          読み: +beforeProfile.読みやすさ.toFixed(2), 撃破: Math.round(beforeProfile.撃破) },
+    後: { 形の変化: +bestProfile.形の変化ピーク.toFixed(1), 持続: +bestProfile.持続秒.toFixed(1),
+          読み: +bestProfile.読みやすさ.toFixed(2), 撃破: Math.round(bestProfile.撃破) },
+    ズレ: { 前: +beforeError.toFixed(3), 後: +bestError.toFixed(3) },
+    試行回数: evaluations,
+  };
 }
 
 /**
@@ -1219,6 +1338,7 @@ window.skillLab = {
   SKILLS, FAMILIES, DENSITY_PRESETS,
   makeBoard, useSkill, simStep, benchmarkSkills, createState, reseedRandom,
   cloneState, profileSkill, profileAll, snapshotPixels, pixelDifference, selectTen,
+  tuneSkill, averageProfile, ARCHETYPES,
   getBoard: () => board,
 };
 </script>
