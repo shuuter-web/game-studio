@@ -1,6 +1,6 @@
 # Dragon Tide — 検討中の方針（次スレッド引き継ぎ）
 
-- 作成: 2026-07-30 ／ 全面更新: 2026-08-12（v0.36.2）／ **更新: 2026-08-18（v0.39.0 時点）**
+- 作成: 2026-07-30 ／ 全面更新: 2026-08-12（v0.36.2）／ **更新: 2026-08-18（v0.40.0 時点）**
 - 対象コード: `prototypes/dragon-tide/index.html`
 - この文書は**残作業と検討中アイディアの保管**。実装済みの living doc は下記を参照。
 - 行番号は変動するため**識別子（関数名・定数名）で参照**する。最新の実像はコードを正とする。
@@ -17,11 +17,11 @@
 
 ---
 
-## 1. 現在地（v0.39.0）
+## 1. 現在地（v0.40.0）
 
 | 領域 | 状態 |
 |---|---|
-| **竜種** | **11種**が選択可。火竜/氷竜/影竜/緋竜（動きは共通のスタンダード）＋隼竜/燕竜/蜂竜/ガーゴイル（v0.35・動きが異なる）＋**UFO/爆竜/蛙竜（v0.37・極端枠）** |
+| **竜種** | **12種**が選択可。火竜/氷竜/影竜/緋竜（動きは共通のスタンダード）＋隼竜/燕竜/蜂竜/ガーゴイル（v0.35・動きが異なる）＋**UFO/爆竜/蛙竜（v0.37・極端枠）**＋**惑竜（v0.40・爆竜と同一の体で操作だけ旧方式）** |
 | **攻撃** | 10種（炎息・氷槍・影弾・爪撃・刃翼・羽根散弾・衛星蜂・落下叩きつけ・**絨毯爆撃**・**舌撃**）。`ATTACK_DEFS` で竜種から独立 |
 | **構造** | `SPECIES_DEFS`（攻撃×動き×見た目）／`ATTACK_DEFS`（kind・反動・硬直）／`DRAGON_PART_SPRITES`（パーツ座標） |
 | **動き** | 極座標積分（向きと速さを別々に制限）。`turnRate`/`accel`/`minSpeed`/`leaderSpeed`/`leaderPull`/`pathEndMode`＋**`orbitRadius`/`hop*`/`pathTrace`（v0.37）** |
@@ -51,7 +51,8 @@
 
 | 竜種 | 直近の判定 | v0.39 で変えたこと | 見るポイント |
 |---|---|---|---|
-| 💣 **爆竜** | 「動きは面白いが**操作感が悪くなりすぎる**。広がりすぎて制御しづらいこと自体は面白いので、**動きはそのままで操作を新しい方式に**」 | **`controlScheme:"vector"` 新設**。なぞっている間は操縦せず、**離した瞬間に矢印の向きへ進路が確定**して以後そこへ突っ込む。短いなぞり＝タップは「重心→その点」。動きのパラメータは**1つも変えていない** | 「進路を決めて突っ込む」動詞が爆撃機として気持ちいいか／矢印（照準中の太い矢印＋確定後の細い矢印）が読めるか／**曲がり切るまでの待ち時間**が快感か苛立ちか／世界の縁で進路が壁沿いに寝るのが自然か |
+| 💣 **爆竜** | 「いい感じ。**まっすぐ進み続けて爆撃し続けるので、むしろこいつが一番アクアリウムを実現している**」 | 確定後の矢印を**2.2秒で消える**ようにした（最後の0.7秒でフェード。縁で進路が変わったときは出し直す） | 矢印が消えるタイミングが早すぎ／遅すぎないか。放置して眺めたときの気持ちよさ |
+| 🌀 **惑竜**（新） | 「**前のバージョンの操作がまごつく感じも良かった**」 | 旧操作の爆竜を**別種として復活**。動き・攻撃は爆竜と完全に同一で、`controlScheme` だけが "path"（線をなぞる） | 爆竜と続けて遊んで、**操作方式の違いだけでどれだけ別のゲームになるか**。まごつきが持ち味として成立するか |
 | 🛸 **UFO** | 「いい感じ」（v0.37.1 で `pathTrace` 導入済み） | 変更なし | 引き続き、線と群れの軌跡の一致／指を速く動かしたときの遅れ |
 | 🐸 **蛙竜** | 「**非常にいい感じ**」 | 変更なし | 跳躍と舌のリズム／射程66pxが短すぎないか |
 
@@ -296,7 +297,7 @@ UFO と鬼火の**アセット**はカテゴリD（無翼・`forward:"none"`・�
 | 回り込み（v0.37） | `orbitRadius`（竜種）＋ `_orbitSide`・`ORBIT_SIDE_HYSTERESIS`・`ORBIT_SEP_KICK_ACCEL`・`ORBIT_RING_ROWS`。パス末端側は `pathEndMode:"orbit"` と `PATH_END_ORBIT_RADIUS` |
 | 跳躍（v0.37） | `hopPeriod` / `hopFlightFrac` / `hopGroundFrac` / `hopPathSkip`（竜種）＋ 共通時計 `hopClock`・位相ずらし `HOP_PHASE_STAGGER`。描画は `boidHopAir[i]` と `HOP_DRAW_SCALE` |
 | 弧長トレース（v0.37.1） | `pathTrace`（竜種）＋ `pathBuildCum` / `pathPointAtArc` / `leaderArc` / `traceIdle`。隊列は `PATH_TRACE_*`（列数は生存数から算出） |
-| 操作方式の切替（v0.39） | `controlScheme`（竜種）。"vector" は `updateLeaderVector`（進路の決定）＋ `deflectVectorBearingAtWall`（縁の処理）＋ `drawVectorAim`（矢印）。状態は `vectorBearing` / `vectorAiming` / `vectorCommitFx`、定数は `VECTOR_*` |
+| 操作方式の切替（v0.39〜） | `controlScheme`（竜種）。"vector" は `updateLeaderVector`（進路の決定）＋ `deflectVectorBearingAtWall`（縁の処理）＋ `drawVectorAim`（矢印）。状態は `vectorBearing` / `vectorAiming` / `vectorCommitFx` / `vectorShowTimer`、定数は `VECTOR_*`。<br>**同じ動き・同じ攻撃で操作方式だけ違うペア**＝爆竜（vector）と惑竜（path） |
 | 爆撃・舌撃（v0.37.1） | `updateBombDrops` / `updateBombFuses` / `drawBombs`（`bombList`・`BOMB_*`）／`updateTongueAttacks` / `drawTongueFx`（`tongueFxList`・`TONGUE_*`）。どちらも `updateWeaponAttacks` の kind 分岐に接続 |
 | 反動・ノックバック | `applyKick` / `applyKickDist`（減衰する外力）。`KICK_DECAY_PER_SEC` |
 | スプライト | `DRAGON_PART_SPRITES`（パーツ座標）／`getSpeciesSprites(id)`（種IDキーLRU）／`DRAGON_ELEMENT_COLORS`（パレット） |

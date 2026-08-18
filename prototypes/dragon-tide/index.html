@@ -575,7 +575,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.39.0";
+const GAME_VERSION = "v0.40.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1092,6 +1092,19 @@ const SPECIES_DEFS = {
       maxSpeed: 170, minSpeed: 115, accel: 90, turnRate: 0.95,
       leaderSpeed: 185, leaderPull: 2.2, pathEndMode: "straight",
       controlScheme: "vector",
+    },
+  },
+  wayward: {  // 爆竜と同じ体・同じ爆撃。**操作だけが旧方式（線をなぞる）**
+    ja: "惑竜", en: "Wayward Dragon", icon: "\u{1F300}", color: "#b49ae8", element: "wayward",
+    attack: "carpetbomb",
+    desc: "爆竜と同じ体で、線をなぞって操る。思い通りに曲がらない手綱そのものが持ち味",
+    // v0.40: 爆竜を矢印操作へ移したとき、**旧操作の「まごつく感じ」も面白い**という
+    // 実機判定だったので、旧仕様をそのまま別の竜種として残した。
+    // 動き・攻撃は爆竜と完全に同一で、違いは controlScheme（既定の "path"）だけ。
+    // ＝**操作方式そのものを比較するためのペア**になっている。
+    move: {
+      maxSpeed: 170, minSpeed: 115, accel: 90, turnRate: 0.95,
+      leaderSpeed: 185, leaderPull: 2.2, pathEndMode: "straight",
     },
   },
   frog: {     // 跳躍移動。滞空中は舵が効かない（弾道）
@@ -9119,6 +9132,7 @@ const SPECIES_CHOICES = [
   // v0.37: Ⅲ群（極端枠）。手触りの限界を実機で確かめるための3種。
   { species: "ufo" },
   { species: "bomber" },
+  { species: "wayward" },   // v0.40: 爆竜の旧操作（線をなぞる）版
   { species: "frog" },
 ];
 let speciesSelecting = false;
@@ -9609,6 +9623,7 @@ let vectorBearing   = null;   // 確定した進路（rad）。null = まだ指�
 let vectorAiming    = false;  // なぞっている最中（プレビュー矢印を出す）
 let vectorAimAngle  = 0;      // なぞり中の暫定の向き
 let vectorCommitFx  = 0;      // 確定直後の演出タイマー（秒）
+let vectorShowTimer = 0;      // 進路矢印を表示しておく残り時間（秒）。0で消える
 
 function resetLeader() {
   leader.x  = 250;
@@ -9617,9 +9632,10 @@ function resetLeader() {
   leader.vy = 0;
   pathClear();
   idleAngle = 0;
-  vectorBearing  = null;
-  vectorAiming   = false;
-  vectorCommitFx = 0;
+  vectorBearing   = null;
+  vectorAiming    = false;
+  vectorCommitFx  = 0;
+  vectorShowTimer = 0;
 }
 
 // -----------------------------------------------------------------
@@ -9867,6 +9883,8 @@ const PATH_TRACE_SNAP_DIST = 70;   // リーダーがこの距離まで線に寄
 // 「approach vector を決めて突っ込む」爆撃機の動詞に置き換える。
 const VECTOR_MIN_STROKE   = 26;   // これ未満のなぞりは「タップ」扱い（重心→触れた点を進路にする）
 const VECTOR_COMMIT_FX    = 0.45; // 確定直後に矢印を強く光らせる時間（秒）
+const VECTOR_BEARING_SHOW = 2.2;  // 確定後に進路矢印を出しておく時間（秒）。過ぎたら消える
+const VECTOR_BEARING_FADE = 0.7;  // 消える前のフェード時間（秒）
 const VECTOR_WALL_MARGIN  = 120;  // 世界の縁からこの距離で進路を壁沿いに寝かせる
 const VECTOR_WALL_ESCAPE  = 0.3;  // 壁沿いに寝かせるとき外向きに混ぜる量（0=真横。縁に貼り付かないため）
 const VECTOR_AIM_LEN      = 150;  // 照準中の矢印の長さ（px）
@@ -10255,11 +10273,20 @@ function deflectVectorBearingAtWall() {
     const sign = Math.abs(bx) > 0.05 ? Math.sign(bx) : (Math.abs(leader.vx) > 1 ? Math.sign(leader.vx) : 1);
     by = (leader.y < VECTOR_WALL_MARGIN ? 1 : -1) * VECTOR_WALL_ESCAPE; bx = sign; changed = true;
   }
-  if (changed) vectorBearing = Math.atan2(by, bx);
+  if (changed) {
+    const next = Math.atan2(by, bx);
+    // 実際に向きが変わったときだけ矢印を出し直す（縁を沿って走っている間は出しっぱなしにしない）
+    let d = next - vectorBearing;
+    while (d >  Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    if (Math.abs(d) > 0.05) vectorShowTimer = VECTOR_BEARING_SHOW;
+    vectorBearing = next;
+  }
 }
 
 function updateLeaderVector(dt, speed) {
-  if (vectorCommitFx > 0) vectorCommitFx = Math.max(0, vectorCommitFx - dt);
+  if (vectorCommitFx  > 0) vectorCommitFx  = Math.max(0, vectorCommitFx - dt);
+  if (vectorShowTimer > 0) vectorShowTimer = Math.max(0, vectorShowTimer - dt);
 
   if (isDrawing && pathLen > 0) {
     // 照準中。線は「始点 → 現在点」のベクトルとしてだけ読む（途中の形は使わない）。
@@ -10275,9 +10302,10 @@ function updateLeaderVector(dt, speed) {
     }
   } else if (vectorAiming) {
     // 指を離した＝確定。パスは軌跡として使わないのでここで捨てる。
-    vectorAiming   = false;
-    vectorBearing  = vectorAimAngle;
-    vectorCommitFx = VECTOR_COMMIT_FX;
+    vectorAiming    = false;
+    vectorBearing   = vectorAimAngle;
+    vectorCommitFx  = VECTOR_COMMIT_FX;
+    vectorShowTimer = VECTOR_BEARING_SHOW;
     pathClear();
   }
 
@@ -11499,7 +11527,8 @@ function drawTrail(now) {
  */
 function drawVectorAim() {
   if (mv().controlScheme !== "vector") return;
-  if (vectorBearing === null && !vectorAiming) return;
+  const showBearing = vectorBearing !== null && vectorShowTimer > 0;
+  if (!showBearing && !vectorAiming) return;
   const c = calcFriendlyCentroid();
 
   const arrow = (angle, len, width, color, alpha) => {
@@ -11525,11 +11554,13 @@ function drawVectorAim() {
   };
 
   ctx.save();
-  // 確定済みの進路（常時・控えめ）。確定直後だけ強く光らせる。
-  if (vectorBearing !== null) {
-    const boost = vectorCommitFx / VECTOR_COMMIT_FX;   // 1→0
+  // 確定した進路。確定直後だけ強く光り、VECTOR_BEARING_SHOW 秒でフェードして消える
+  // （出しっぱなしだと画面に常駐して邪魔になる。進路は群れの向きそのものが語る）。
+  if (showBearing) {
+    const boost = vectorCommitFx / VECTOR_COMMIT_FX;                        // 1→0
+    const fade  = Math.min(1, vectorShowTimer / VECTOR_BEARING_FADE);       // 消える直前に1→0
     arrow(vectorBearing, VECTOR_BEARING_LEN * (1 + 0.35 * boost), 3 + 3 * boost,
-          "#ffb060", 0.3 + 0.6 * boost);
+          "#ffb060", (0.3 + 0.6 * boost) * fade);
   }
   // 照準中の予告（明るい）
   if (vectorAiming) {
@@ -11770,6 +11801,7 @@ const DRAGON_ELEMENT_COLORS = {
   // v0.37: Ⅲ群（極端枠）。こちらも専用ラスター画像はまだ無くベクター描画で出る。
   ufo:      { body: "rgba(159, 240, 208, 1.0)", wing: "rgba(90, 180, 165, 1.0)",  rim: "rgba(40, 100, 95, 0.0)" },
   bomber:   { body: "rgba(216, 160, 90, 1.0)",  wing: "rgba(150, 100, 45, 1.0)",  rim: "rgba(90, 60, 25, 0.0)" },
+  wayward:  { body: "rgba(180, 154, 232, 1.0)", wing: "rgba(120, 96, 175, 1.0)",  rim: "rgba(70, 55, 110, 0.0)" },
   frog:     { body: "rgba(140, 224, 90, 1.0)",  wing: "rgba(80, 160, 60, 1.0)",   rim: "rgba(40, 90, 30, 0.0)" },
 };
 
