@@ -575,7 +575,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.38.0";
+const GAME_VERSION = "v0.39.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -950,6 +950,10 @@ const MOVE_PROFILE_DEFAULT = {
   hopPathSkip:   0,    // 跳躍1回でリーダーが進むパス点数（>0で「パスを飛ばして処理」する）
   pathTrace:     false,// true で**描いた線を弧長でそのままなぞる**（角を丸めない）。
                        // 群れも線上の隊列スロットを追うので、線の形がそのまま群れの軌跡になる
+  // v0.38: 描いた線の**解釈**を切り替える。物理（リーダー・群れ）は共通のまま。
+  //   "path"   … 線を軌跡として追う（従来。指が常に操縦点）
+  //   "vector" … 線を**向きの指定**として読む。離した瞬間に進路が確定し、以後その向きへ突っ込む
+  controlScheme: "path",
 };
 
 // pathEndMode: 指を離してパスの終端まで行った後どうするか。
@@ -1074,15 +1078,20 @@ const SPECIES_DEFS = {
   bomber: {   // 旋回半径 179（ガーゴイル107の1.7倍）。出足も最鈍
     ja: "爆竜", en: "Bomber Dragon", icon: "\u{1F4A3}", color: "#d8a05a", element: "bomber",
     attack: "carpetbomb",
-    desc: "通り過ぎた後ろで広範囲が爆ぜる。曲がれない・止まれない・出足が重い",
+    desc: "なぞった向きへ突っ込み、通り過ぎた後ろで広範囲が爆ぜる。曲がれない・止まれない",
     // accel 90 は ground プリセット(130)よりさらに鈍い。minSpeed 115 ＝ 実質止まれない。
     // leaderPull を上げているのは、旋回が効かないぶん隊列が千切れやすいのを引力で補うため。
     // ★もっと極端にするなら turnRate を下げる。ただし turnRate 0.8（半径219）では
     //   群れが操縦点のまわりを大回りして平均258px離れ、カメラ倍率1.05の画面（実効371px）から
     //   溢れた。0.95 は「画面に収まる範囲での最悪」。
+    // v0.38: 操作を**矢印方式**に変更（controlScheme:"vector"）。
+    // 曲がれない・止まれない群れを線でなぞらせると操作が破綻したので、
+    // 「なぞった向きへ突っ込む」＝爆撃機の approach vector に置き換えた。
+    // 動き（曲がらなさ・鈍さ・広がり）は実機で通ったので**一切変えていない**。
     move: {
       maxSpeed: 170, minSpeed: 115, accel: 90, turnRate: 0.95,
       leaderSpeed: 185, leaderPull: 2.2, pathEndMode: "straight",
+      controlScheme: "vector",
     },
   },
   frog: {     // 跳躍移動。滞空中は舵が効かない（弾道）
@@ -9594,6 +9603,13 @@ function pathPush(wx, wy) {
 
 const leader = { x: 250, y: WORLD_H * 0.5, vx: 0, vy: 0 };
 
+// v0.38: 矢印操作の状態。**リーダーと群れの物理はそのまま**で、
+// 「描いた線をどう読むか」と「何を表示するか」だけがここで変わる。
+let vectorBearing   = null;   // 確定した進路（rad）。null = まだ指示なし＝従来のウロウロ
+let vectorAiming    = false;  // なぞっている最中（プレビュー矢印を出す）
+let vectorAimAngle  = 0;      // なぞり中の暫定の向き
+let vectorCommitFx  = 0;      // 確定直後の演出タイマー（秒）
+
 function resetLeader() {
   leader.x  = 250;
   leader.y  = WORLD_H * 0.5;
@@ -9601,6 +9617,9 @@ function resetLeader() {
   leader.vy = 0;
   pathClear();
   idleAngle = 0;
+  vectorBearing  = null;
+  vectorAiming   = false;
+  vectorCommitFx = 0;
 }
 
 // -----------------------------------------------------------------
@@ -9842,6 +9861,16 @@ const PATH_TRACE_ROW_GAP   = 32;   // 行間（線に沿った距離 px）
 const PATH_TRACE_LATERAL   = 32;   // 列間（線に垂直な距離 px）
 const PATH_TRACE_LOOKAHEAD = 36;   // スロットからどれだけ先を狙うか px
 const PATH_TRACE_SNAP_DIST = 70;   // リーダーがこの距離まで線に寄ったら弧長の追従に入る
+// ---- v0.38: 矢印操作（controlScheme:"vector"）----
+// なぞっている間は操縦しない。**離した瞬間に進路が確定**し、以後その向きへ突っ込み続ける。
+// 曲がれない・止まれない群れを線でなぞらせると操作が破綻するので、
+// 「approach vector を決めて突っ込む」爆撃機の動詞に置き換える。
+const VECTOR_MIN_STROKE   = 26;   // これ未満のなぞりは「タップ」扱い（重心→触れた点を進路にする）
+const VECTOR_COMMIT_FX    = 0.45; // 確定直後に矢印を強く光らせる時間（秒）
+const VECTOR_WALL_MARGIN  = 120;  // 世界の縁からこの距離で進路を壁沿いに寝かせる
+const VECTOR_WALL_ESCAPE  = 0.3;  // 壁沿いに寝かせるとき外向きに混ぜる量（0=真横。縁に貼り付かないため）
+const VECTOR_AIM_LEN      = 150;  // 照準中の矢印の長さ（px）
+const VECTOR_BEARING_LEN  = 96;   // 確定後に出しっぱなしにする矢印の長さ（px）
 const PATH_TRACE_IDLE_HOLD = 0.3;  // 弧が伸びないまま経った時間がこれを超えたら隊列を解いて操縦点へ戻る
 // 輪を何列ぶんまで詰め込んでよいか。1=きれいな1本の輪だが群れが増えると輪が巨大化して
 // 縦持ち390pxの画面から溢れる。3 なら 80体でも半径119px＝直径238pxに収まり、
@@ -10198,6 +10227,83 @@ function pushBoidOutOfCircle(i, cx, cy, minDist) {
 // 目標の上でなめらかに停止する（等速のまま突っ込むと通り過ぎ→引き返しの往復になる）。
 const LEADER_ARRIVAL_DIST = 60; // px（パスの先読み半径 24px より大きく取る）
 
+/**
+ * v0.38: 矢印操作。**線の解釈と表示だけ**が新しく、リーダーの存在と群れの物理は従来のまま。
+ *
+ *  なぞっている間 … 操縦しない（群れは今の進路のまま飛び続ける）。始点→現在点で進路を予告。
+ *  離した瞬間     … その向きに進路が確定し、以後リーダーはその向きへ進み続ける。
+ *  タップ（短いなぞり）… 群れの重心から触れた点への向きを進路にする（タップを死に入力にしない）。
+ *
+ * リーダーは止まらないので、世界の縁では進路を壁沿いに寝かせる（潰れて団子にならないため）。
+ */
+/**
+ * 進路が世界の縁へ向いているとき、**壁に沿う向きへ確定し直す**。
+ * 沿う向きは今の進み方に近い方を選ぶ（真正面から当たった場合は上下/左右を速度で決める）。
+ */
+function deflectVectorBearingAtWall() {
+  if (vectorBearing === null) return;
+  let bx = Math.cos(vectorBearing), by = Math.sin(vectorBearing);
+  let changed = false;
+  // 左右の壁 → 上下（±Y）へ寝かせる
+  if ((leader.x < VECTOR_WALL_MARGIN && bx < 0) || (leader.x > WORLD_W - VECTOR_WALL_MARGIN && bx > 0)) {
+    const sign = Math.abs(by) > 0.05 ? Math.sign(by) : (Math.abs(leader.vy) > 1 ? Math.sign(leader.vy) : 1);
+    // 真横ではなく少しだけ内側へ向ける＝縁に貼り付いて群れが世界の外へはみ出すのを防ぐ
+    bx = (leader.x < VECTOR_WALL_MARGIN ? 1 : -1) * VECTOR_WALL_ESCAPE; by = sign; changed = true;
+  }
+  // 上下の壁 → 左右（±X）へ寝かせる
+  if ((leader.y < VECTOR_WALL_MARGIN && by < 0) || (leader.y > WORLD_H - VECTOR_WALL_MARGIN && by > 0)) {
+    const sign = Math.abs(bx) > 0.05 ? Math.sign(bx) : (Math.abs(leader.vx) > 1 ? Math.sign(leader.vx) : 1);
+    by = (leader.y < VECTOR_WALL_MARGIN ? 1 : -1) * VECTOR_WALL_ESCAPE; bx = sign; changed = true;
+  }
+  if (changed) vectorBearing = Math.atan2(by, bx);
+}
+
+function updateLeaderVector(dt, speed) {
+  if (vectorCommitFx > 0) vectorCommitFx = Math.max(0, vectorCommitFx - dt);
+
+  if (isDrawing && pathLen > 0) {
+    // 照準中。線は「始点 → 現在点」のベクトルとしてだけ読む（途中の形は使わない）。
+    const a = pathGet(0), b = pathGet(pathLen - 1);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    vectorAiming = true;
+    if (dx * dx + dy * dy >= VECTOR_MIN_STROKE * VECTOR_MIN_STROKE) {
+      vectorAimAngle = Math.atan2(dy, dx);
+    } else {
+      const c = calcFriendlyCentroid();          // タップ＝重心からその点へ
+      const tx = b.x - c.x, ty = b.y - c.y;
+      if (tx * tx + ty * ty > 1) vectorAimAngle = Math.atan2(ty, tx);
+    }
+  } else if (vectorAiming) {
+    // 指を離した＝確定。パスは軌跡として使わないのでここで捨てる。
+    vectorAiming   = false;
+    vectorBearing  = vectorAimAngle;
+    vectorCommitFx = VECTOR_COMMIT_FX;
+    pathClear();
+  }
+
+  if (vectorBearing === null) {
+    // まだ一度も指示されていない（ステージ開始直後）。従来どおり重心のまわりをウロウロ。
+    const target = getIdleLeaderTarget(dt);
+    leader.vx += ((target.x - leader.x) * 0.8 - leader.vx) * Math.min(1, dt * 2.0);
+    leader.vy += ((target.y - leader.y) * 0.8 - leader.vy) * Math.min(1, dt * 2.0);
+  } else {
+    // 世界の縁：壁に突っ込む進路は**壁沿いへ寝かせて確定し直す**。
+    // 成分を殺すだけだと、縁を出た瞬間に元の進路へ戻って壁際で往復し、
+    // リーダーの速さが0を通る（実測 minSpeed 0）＝群れが縁でガタつく。
+    // 進路そのものを書き換えれば「縁に当たったので縁沿いに走る」で安定し、矢印表示とも一致する。
+    deflectVectorBearingAtWall();
+    const bx = Math.cos(vectorBearing), by = Math.sin(vectorBearing);
+    const k = Math.min(1, dt * 3);   // 進路変更はリーダー側でも少し粘らせる（唐突に折れない）
+    leader.vx += (bx * speed - leader.vx) * k;
+    leader.vy += (by * speed - leader.vy) * k;
+  }
+
+  leader.x += leader.vx * dt;
+  leader.y += leader.vy * dt;
+  leader.x = Math.max(0, Math.min(WORLD_W, leader.x));
+  leader.y = Math.max(0, Math.min(WORLD_H, leader.y));
+}
+
 function updateLeader(dt) {
   // v0.6: 「疾風」カードでリーダー速度も伸びる（群れと感覚を揃える）
   // v0.33: 竜種プロファイルの leaderSpeed を使う（鈍重な竜は操縦点も遅い）
@@ -10213,6 +10319,13 @@ function updateLeader(dt) {
     const phase = (hopClock % hopPer) / hopPer;
     speed *= (phase < prof.hopFlightFrac) ? (1 / prof.hopFlightFrac) : prof.hopGroundFrac;
     hopAhead = prof.hopPathSkip;
+  }
+
+  // ---- v0.38: 矢印操作（`controlScheme:"vector"` の竜種）----
+  // 線を軌跡ではなく**向きの指定**として読む。指を離した瞬間に進路が確定する。
+  if (prof.controlScheme === "vector") {
+    updateLeaderVector(dt, speed);
+    return;
   }
 
   // ---- v0.37.1: 弧長トレース（`pathTrace` の竜種）----
@@ -10472,6 +10585,7 @@ function render(now) {
   // 軌跡はワールド座標で保持しているのでカメラ変換の内側で描く。
   // これでドラゴンが実際に追う経路と一致し、地面に固定されたまま流れる。
   drawTrail(now);
+  drawVectorAim();           // v0.38: 爆竜の進路矢印（ワールド座標）
 
   ctx.restore();
 
@@ -11376,6 +11490,53 @@ function drawTrail(now) {
     ctx.lineTo(p.x, p.y);
     ctx.stroke();
   }
+}
+
+/**
+ * v0.38: 矢印操作の表示。ワールド座標（カメラ変換の内側）で群れの重心に描く。
+ *  - 照準中：太い明るい矢印＋現在の進路（薄い矢印）を同時に出して「どう変わるか」を見せる
+ *  - 確定後：進路を細い矢印で出しっぱなしにする（今どっちへ飛んでいるかが常に分かる）
+ */
+function drawVectorAim() {
+  if (mv().controlScheme !== "vector") return;
+  if (vectorBearing === null && !vectorAiming) return;
+  const c = calcFriendlyCentroid();
+
+  const arrow = (angle, len, width, color, alpha) => {
+    const ex = c.x + Math.cos(angle) * len, ey = c.y + Math.sin(angle) * len;
+    const headLen = Math.min(22, len * 0.32), headHalf = headLen * 0.55;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.fillStyle   = color;
+    ctx.lineWidth   = width;
+    ctx.lineCap     = "round";
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y);
+    ctx.lineTo(ex - Math.cos(angle) * headLen * 0.8, ey - Math.sin(angle) * headLen * 0.8);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - Math.cos(angle) * headLen + Math.cos(angle + Math.PI / 2) * headHalf,
+               ey - Math.sin(angle) * headLen + Math.sin(angle + Math.PI / 2) * headHalf);
+    ctx.lineTo(ex - Math.cos(angle) * headLen - Math.cos(angle + Math.PI / 2) * headHalf,
+               ey - Math.sin(angle) * headLen - Math.sin(angle + Math.PI / 2) * headHalf);
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  ctx.save();
+  // 確定済みの進路（常時・控えめ）。確定直後だけ強く光らせる。
+  if (vectorBearing !== null) {
+    const boost = vectorCommitFx / VECTOR_COMMIT_FX;   // 1→0
+    arrow(vectorBearing, VECTOR_BEARING_LEN * (1 + 0.35 * boost), 3 + 3 * boost,
+          "#ffb060", 0.3 + 0.6 * boost);
+  }
+  // 照準中の予告（明るい）
+  if (vectorAiming) {
+    arrow(vectorAimAngle, VECTOR_AIM_LEN, 5, "#ffe0a0", 0.9);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 function drawTouchRing() {
