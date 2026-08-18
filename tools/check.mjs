@@ -84,7 +84,26 @@ function checkVersion({ text, fileLabel }, fail) {
   }
 }
 
-const CHECKS = [checkSyntax, checkDeterministicRandom, checkAssetsExist, checkVersion];
+/**
+ * 未解決のマージ競合マーカーを検出する。
+ * JS の外（HTML本体やCSS）に残ったマーカーは node --check をすり抜けるため、
+ * ファイル全体を対象に見る（cherry-pick 途中のファイルを取り違えて公開した実績あり）。
+ */
+function checkConflictMarkers({ lines, fileLabel }, fail) {
+  const hits = [];
+  lines.forEach((line, index) => {
+    const head = line.slice(0, 7);
+    if (head === "<<<<<<<" || head === "=======" || head === ">>>>>>>") {
+      hits.push(fileLabel + ":" + (index + 1) + ": " + line.trim().slice(0, 60));
+    }
+  });
+  if (hits.length > 0) {
+    const message = ["マージ競合マーカーが残っている（" + hits.length + "件）"].concat(hits);
+    fail(message.join(String.fromCharCode(10)));
+  }
+}
+
+const CHECKS = [checkSyntax, checkConflictMarkers, checkDeterministicRandom, checkAssetsExist, checkVersion];
 
 // -----------------------------------------------------------------
 // 実行
