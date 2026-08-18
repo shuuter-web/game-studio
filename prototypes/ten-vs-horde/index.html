@@ -756,6 +756,254 @@ function benchmarkSkills(options) {
 }
 
 // =================================================================
+// ===== 撃ち味プロファイラ ========================================
+//
+// 「気持ちよさ」そのものは計算できない。が、それを構成する物理量は測れる:
+//   遅延 / ピーク強度 / 持続の形 / 画面がどれだけ変わったか / 効果の集中度 /
+//   読みやすさ（何が起きたか分かる割合）/ ばらつき
+//
+// 特に「画面変化量」は、実際に描画してピクセルを数えれば直接測れる。
+// ただし敵は撃たなくても動くので、**同じ盤面を複製して「撃たなかった世界」を
+// 並走させ、同時刻のフレーム同士を比べる**（交絡を除く）。
+// =================================================================
+
+function cloneState(state) {
+  const copy = Object.assign({}, state);
+  for (const key of ["ex", "ey", "ehp", "emax", "alive", "jit", "stun", "slow",
+                     "rev", "burn", "pet", "ally", "flash", "terrain", "terrainTimer", "flow"]) {
+    copy[key] = state[key].slice();
+  }
+  copy.buckets = Array.from({ length: COLS * ROWS }, () => []);
+  copy.pending = state.pending.slice();
+  rebuildBuckets(copy);
+  return copy;
+}
+
+const PROFILE_CELL = 10;
+let profileCanvas = null, profileCtx = null;
+
+/** 盤面を小さく描いてピクセルを取り出す（見た目の変化量を測るため） */
+function snapshotPixels(state, silhouette) {
+  if (!profileCanvas) {
+    profileCanvas = document.createElement("canvas");
+    profileCanvas.width = COLS * PROFILE_CELL;
+    profileCanvas.height = ROWS * PROFILE_CELL;
+    profileCtx = profileCanvas.getContext("2d", { willReadFrequently: true });
+  }
+  const c = profileCtx;
+  c.fillStyle = "#111726";
+  c.fillRect(0, 0, profileCanvas.width, profileCanvas.height);
+  for (let row = 0; row < ROWS; row++) for (let col = 0; col < COLS; col++) {
+    const kind = state.terrain[cellIndex(col, row)];
+    if (kind === TERRAIN_OPEN) continue;
+    c.fillStyle = kind === TERRAIN_WALL ? "#6f9e70" : kind === TERRAIN_PIT ? "#100408"
+                : kind === TERRAIN_SLOW ? "#6b7c4e" : "#a04a20";
+    c.fillRect(col * PROFILE_CELL, row * PROFILE_CELL, PROFILE_CELL, PROFILE_CELL);
+  }
+  for (let i = 0; i < MAX_ENEMIES; i++) {
+    if (!state.alive[i]) continue;
+    // silhouette=true では状態色を無視する。色だけ変わったのか、
+    // 実際に敵が動いた／消えたのかを切り分けるため。
+    c.fillStyle = silhouette ? "#ffffff"
+                : state.flash[i] > 0 ? "#ffffff"
+                : state.ally[i] ? "#7dffb0"
+                : state.stun[i] > 0 ? "#a8ddff"
+                : state.burn[i] > 0 ? "#c7d45a" : "#e8556d";
+    c.beginPath();
+    c.arc(state.ex[i] * PROFILE_CELL, state.ey[i] * PROFILE_CELL, PROFILE_CELL * 0.3, 0, Math.PI * 2);
+    c.fill();
+  }
+  return c.getImageData(0, 0, profileCanvas.width, profileCanvas.height).data;
+}
+
+/** 2枚のフレームで色が変わったピクセルの割合 */
+function pixelDifference(a, b) {
+  let changed = 0;
+  const total = a.length / 4;
+  for (let k = 0; k < a.length; k += 4) {
+    const d = Math.abs(a[k] - b[k]) + Math.abs(a[k + 1] - b[k + 1]) + Math.abs(a[k + 2] - b[k + 2]);
+    if (d > 40) changed++;
+  }
+  return changed / total;
+}
+
+const PROFILE_MARKS = [0.1, 0.3, 0.6, 1.0, 2.0, 3.0];
+
+/**
+ * 1スキルの撃ち味プロファイル。撃った世界と撃たなかった世界を並走させる。
+ */
+function profileSkill(skillId, seed, density) {
+  const base = makeBoard(seed, density);
+  const withSkill = cloneState(base);
+  const without   = cloneState(base);
+
+  const beforeX = base.ex.slice(), beforeY = base.ey.slice();
+  const aliveBefore = base.alive.slice();
+  const countBefore = base.count;
+  const reachedBefore = base.reached;
+
+  const result = useSkill(withSkill, skillId);
+  if (!result) return null;
+
+  // 影響を受けた敵の広がり（集中度）
+  let sumX = 0, sumY = 0, marked = 0;
+  const markedIndices = [];
+  for (let i = 0; i < MAX_ENEMIES; i++) {
+    if (withSkill.flash[i] > 0 && aliveBefore[i]) { sumX += beforeX[i]; sumY += beforeY[i]; marked++; markedIndices.push(i); }
+  }
+  let spread = 0;
+  if (marked > 0) {
+    const cx = sumX / marked, cy = sumY / marked;
+    const distances = markedIndices.map((i) => Math.hypot(beforeX[i] - cx, beforeY[i] - cy)).sort((a, b) => a - b);
+    spread = distances[Math.floor(distances.length * 0.8)] || 0;   // 8割が収まる半径
+  }
+
+  // 時間を進めながら、撃破の時間分布と画面変化を測る
+  const killBins = [];
+  const pixelMarks = [];
+  const shapeMarks = [];
+  // 発動した瞬間の撃破も最初のビンに入れる（ここを withSkill.count にすると
+  // 即死系の遅延が「発動後に初めて死んだ時刻」になり、瞬間系が全部0.8秒遅延と出る）
+  let previousCount = countBefore;
+  let reachedSoFar = reachedBefore;
+  let elapsed = 0, markIndex = 0;
+  const totalTicks = Math.round(3.0 / SIM_DT);
+  const binTicks = Math.round(0.1 / SIM_DT);
+  let binKills = 0;
+
+  for (let t = 0; t < totalTicks; t++) {
+    simStep(withSkill); simStep(without);
+    elapsed += SIM_DT;
+    // ゴールに抜けた分は「撃破」ではない。これを引かないと、何も殺さないスキルが
+    // 一律「撃破28・遅延0.9秒」と出る（v0.8.0 の初回プロファイルでこれを踏んだ）。
+    const exited = withSkill.reached - reachedSoFar;
+    reachedSoFar = withSkill.reached;
+    binKills += Math.max(0, previousCount - withSkill.count - exited);
+    previousCount = withSkill.count;
+    if ((t + 1) % binTicks === 0) { killBins.push(binKills); binKills = 0; }
+    if (markIndex < PROFILE_MARKS.length && elapsed >= PROFILE_MARKS[markIndex] - 1e-6) {
+      pixelMarks.push(pixelDifference(snapshotPixels(withSkill, false), snapshotPixels(without, false)));
+      shapeMarks.push(pixelDifference(snapshotPixels(withSkill, true), snapshotPixels(without, true)));
+      markIndex++;
+    }
+  }
+
+  const totalKilled = (countBefore - withSkill.count) - (withSkill.reached - reachedBefore);
+  const blocked = (without.reached - reachedBefore) - (withSkill.reached - reachedBefore);
+  const cumulative = [];
+  let running = 0;
+  for (const bin of killBins) { running += bin; cumulative.push(running); }
+
+  const firstKillBin = killBins.findIndex((n) => n > 0);
+  const peakBin = Math.max(0, ...killBins);
+  const ninetyIndex = cumulative.findIndex((n) => n >= running * 0.95);
+
+  // 読みやすさ: 影響を受けたうち「消えた or 1マス以上動いた」割合
+  let readable = 0;
+  for (const i of markedIndices) {
+    if (!withSkill.alive[i]) { readable++; continue; }
+    if (Math.hypot(withSkill.ex[i] - beforeX[i], withSkill.ey[i] - beforeY[i]) > 1.0) readable++;
+  }
+
+  return {
+    影響: result.affected,
+    撃破: totalKilled,
+    遅延秒: firstKillBin < 0 ? null : +(firstKillBin * 0.1).toFixed(1),
+    ピーク: peakBin,
+    持続秒: ninetyIndex < 0 ? 0 : +((ninetyIndex + 1) * 0.1).toFixed(1),
+    集中半径: +spread.toFixed(1),
+    読みやすさ: marked > 0 ? +(readable / marked).toFixed(2) : 0,
+    通過阻止: blocked,
+    画面変化: pixelMarks.map((v) => +(v * 100).toFixed(1)),
+    画面変化ピーク: +(Math.max(0, ...pixelMarks) * 100).toFixed(1),
+    形の変化ピーク: +(Math.max(0, ...shapeMarks) * 100).toFixed(1),
+  };
+}
+
+/** 全スキルをプロファイルし、シード間のばらつきも出す */
+function profileAll(options) {
+  const seeds = (options && options.seeds) || [11, 22, 33];
+  const density = (options && options.density) || "中";
+  const table = {};
+  for (const def of SKILLS) {
+    const runs = seeds.map((seed) => profileSkill(def.id, seed, density)).filter(Boolean);
+    if (!runs.length) continue;
+    const mean = (key) => runs.reduce((sum, r) => sum + (r[key] ?? 0), 0) / runs.length;
+    const killValues = runs.map((r) => r.撃破);
+    const meanKill = killValues.reduce((a, b) => a + b, 0) / killValues.length;
+    const variance = killValues.reduce((sum, v) => sum + (v - meanKill) ** 2, 0) / killValues.length;
+    table[def.id] = {
+      名: def.name, 系: def.family,
+      影響: Math.round(mean("影響")),
+      撃破: Math.round(mean("撃破")),
+      遅延秒: +mean("遅延秒").toFixed(2),
+      ピーク: Math.round(mean("ピーク")),
+      持続秒: +mean("持続秒").toFixed(1),
+      集中半径: +mean("集中半径").toFixed(1),
+      読みやすさ: +mean("読みやすさ").toFixed(2),
+      通過阻止: Math.round(mean("通過阻止")),
+      画面変化ピーク: +mean("画面変化ピーク").toFixed(1),
+      形の変化ピーク: +mean("形の変化ピーク").toFixed(1),
+      ばらつき: +(Math.sqrt(variance) / Math.max(1, meanKill)).toFixed(2),
+    };
+  }
+  return table;
+}
+
+/**
+ * 撃ち味プロファイルから10種を機械的に選ぶ。
+ *
+ * 機械にできるのは「気持ちよさの順位づけ」ではなく、次の2つだけ:
+ *   1. 必要条件を満たさないものを落とす（画面が動く／何が起きたか分かる／盤面に利益がある）
+ *   2. 残りから、撃ち味プロファイルが最も散らばる組を選ぶ（＝被りの排除）
+ * 「どれが一番気持ちいいか」は人間の採点でしか決まらない。
+ */
+function selectTen(table, count) {
+  const wanted = count || 10;
+  const rejected = [];
+  const survivors = Object.entries(table).filter(([, r]) => {
+    const reasons = [];
+    if (r.形の変化ピーク < 5) reasons.push("画面がほぼ動かない(" + r.形の変化ピーク + "%)");
+    if (r.読みやすさ < 0.5) reasons.push("何が起きたか分からない(" + r.読みやすさ + ")");
+    if (r.撃破 === 0 && r.通過阻止 <= 0) reasons.push("盤面に利益がない");
+    if (reasons.length) { rejected.push({ 名: r.名, 理由: reasons }); return false; }
+    return true;
+  });
+
+  const axes = ["撃破", "通過阻止", "遅延秒", "持続秒", "ピーク", "形の変化ピーク", "集中半径", "読みやすさ"];
+  const min = {}, max = {};
+  for (const axis of axes) {
+    const values = survivors.map(([, r]) => r[axis]);
+    min[axis] = Math.min(...values); max[axis] = Math.max(...values);
+  }
+  const toVector = (r) => axes.map((a) => (max[a] - min[a]) ? (r[a] - min[a]) / (max[a] - min[a]) : 0);
+  const distance = (a, b) => Math.hypot(...a.map((v, i) => v - b[i]));
+
+  const points = survivors.map(([id, r]) => ({ id, 名: r.名, 系: r.系, vector: toVector(r), row: r }));
+  if (!points.length) return { 足切り: rejected, 選抜: [], 落選: [] };
+
+  // 最も画面が動くものを起点に、既に選んだどれからも最も遠いものを足していく
+  const picked = [points.reduce((best, p) => (p.row.形の変化ピーク > best.row.形の変化ピーク ? p : best), points[0])];
+  while (picked.length < wanted && picked.length < points.length) {
+    let bestPoint = null, bestScore = -1;
+    for (const p of points) {
+      if (picked.includes(p)) continue;
+      const nearest = Math.min(...picked.map((q) => distance(p.vector, q.vector)));
+      if (nearest > bestScore) { bestScore = nearest; bestPoint = p; }
+    }
+    picked.push(bestPoint);
+  }
+
+  const dropped = points.filter((p) => !picked.includes(p)).map((p) => {
+    let nearest = null, best = Infinity;
+    for (const q of picked) { const d = distance(p.vector, q.vector); if (d < best) { best = d; nearest = q; } }
+    return { 名: p.名, 被り相手: nearest.名, 距離: +best.toFixed(2) };
+  }).sort((a, b) => a.距離 - b.距離);
+
+  return { 足切り: rejected, 選抜: picked.map((p) => ({ 名: p.名, 系: p.系, id: p.id })), 落選: dropped };
+}
+
+// =================================================================
 // ===== RENDER / UI ==============================================
 // =================================================================
 const canvas = document.getElementById("stage");
@@ -970,6 +1218,7 @@ requestAnimationFrame(frame);
 window.skillLab = {
   SKILLS, FAMILIES, DENSITY_PRESETS,
   makeBoard, useSkill, simStep, benchmarkSkills, createState, reseedRandom,
+  cloneState, profileSkill, profileAll, snapshotPixels, pixelDifference, selectTen,
   getBoard: () => board,
 };
 </script>
