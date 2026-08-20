@@ -575,7 +575,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.41.0";
+const GAME_VERSION = "v0.42.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2896,6 +2896,21 @@ function generateStageLayout(stageIndex) {
   result.length = 0;
   for (const b of purged) result.push(b);
 
+  // v0.42: 焼夷塔 — large 建物のいくつかを「持続する炎の輪」を張る塔にする。
+  // 建物側にも「その場から退かせる」圧を持たせるための枠（敵の hazard と同じ仕組み）。
+  {
+    const towerCount = EMBER_TOWER_BY_STAGE[stageIndex] ?? 1;
+    const larges = result.filter(b => b.size === "large" && !b.isBoss);
+    for (let i = larges.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      const t = larges[i]; larges[i] = larges[j]; larges[j] = t;
+    }
+    for (let k = 0; k < towerCount && k < larges.length; k++) {
+      larges[k]._emberTower = true;
+      larges[k].attackRadius = Math.max(larges[k].attackRadius, EMBER_TOWER_RADIUS + 30);
+    }
+  }
+
   // 卵持ちフラグをステージ全体に散らばらせて付与する（町ごとに均等割当）。
   assignEggBearers(result);
 
@@ -2954,6 +2969,7 @@ function generateStageLayout(stageIndex) {
   shockwaveFxList.length = 0;
   bombList.length = 0;       // v0.37.1: 前ステージの未炸裂爆弾を持ち越さない
   tongueFxList.length = 0;
+  hazards.length = 0;        // v0.42: 前ステージの危険地帯を持ち越さない
   resetRaiderState();   // v0.8: レイダー湧き状態もステージごとにリセット
 
   // --- (8) v0.6-p4: 後半ステージの難度底上げ（仕様 §4。プレイヤーの3択強化ぶんを相殺） ---
@@ -3542,6 +3558,79 @@ const MOVER_DEFS = {
     color: "#3a2a2a", glowColor: "#ff8040",
     // 攻撃は updateBehemothArm 内の叩きつけ衝撃波（ここには置かない）
   },
+  // =====================================================================
+  // v0.42: 攻略対象の拡張（実機判定 2026-08-20 で採用された4系統）
+  // 収穫者（卵/XPを奪う）と誘爆（敵側の連鎖爆発）は**不採用**。
+  //   - 収穫者: 画面にXPがあまり残らない／卵を取られるのが強い不快感
+  //   - 誘爆  : やるなら竜側のスキルとして。敵側には不要
+  // =====================================================================
+
+  // 鏡の盾兵: 正面からの攻撃を弾き、**背後からしか通らない**。
+  // 追跡型なので盾は常に群れの方を向く＝「回り込む」ための操作が要る。
+  // 単体では脅威が薄いので隊で湧かせ、盾の壁として立ちはだからせる。
+  shieldman: {
+    name: "shieldman", sprite: "knights", showHpBar: true,
+    hp: 90, speed: 40, xp: 60, eggDrop: 1, radius: 14,
+    packCount: 4,
+    color: "#cfd8e8", glowColor: "#9fd8ff", moveType: "pingpong",
+    // 正面 ±SHIELD_ARC の被弾を shieldBlock 倍にする（0 = 完全反射）
+    shieldArc: 1.15, shieldBlock: 0.0,
+    attack: { type: "fan", interval: 1.9, count: 1, damage: 1.6, speed: 78, range: 360 },
+  },
+
+  // 分裂体: 壊すと2体に分かれる。3世代で 1→2→4 と増えるので、
+  // 「早めに潰しきる」か「無視して本命へ行く」かの判断が生まれる。
+  splitter: {
+    name: "splitter", sprite: "balloon", flying: true, showHpBar: true,
+    hp: 180, speed: 34, xp: 90, eggDrop: 2, radius: 24,
+    color: "#7a5aa8", glowColor: "#c88cff", moveType: "patrol",
+    splitInto: { key: "splitter_mid", count: 2 },
+    attack: { type: "bomb", interval: 2.2, damage: 2.2, aoe: 40, speed: 55, range: 380 },
+  },
+  splitter_mid: {
+    name: "splitter_mid", sprite: "balloon", flying: true,
+    hp: 70, speed: 44, xp: 35, eggDrop: 1, radius: 15,
+    color: "#8a68b8", glowColor: "#d0a0ff", moveType: "patrol",
+    splitInto: { key: "splitter_small", count: 2 },
+    attack: { type: "fan", interval: 2.0, count: 1, damage: 1.2, speed: 80, range: 300 },
+  },
+  splitter_small: {
+    name: "splitter_small", sprite: "balloon", flying: true,
+    hp: 26, speed: 56, xp: 14, eggDrop: 0, eggChance: 0.4, radius: 9,
+    color: "#9a78c8", glowColor: "#e0c0ff", moveType: "patrol",
+    attack: { type: "fan", interval: 2.4, count: 1, damage: 0.9, speed: 82, range: 260 },
+  },
+
+  // 潜行者: 地中に潜っている間は**無敵で攻撃もしない**。浮上した時だけ殴れる／殴られる。
+  // 「浮上の瞬間に群れを乗せる」タイミング合わせの的。滞在型の竜種と噛む。
+  lurker: {
+    name: "lurker", sprite: "mammoth", showHpBar: true,
+    hp: 260, speed: 46, xp: 130, eggDrop: 2, radius: 18,
+    color: "#6a5a3a", glowColor: "#ffd080", moveType: "patrol",
+    submerge: { hidden: 3.4, exposed: 2.6 },
+    attack: { type: "shockwave", interval: 1.4, radius: 105, damage: 4, push: 40 },
+  },
+
+  // 火吹き車（持続範囲その1）: 群れの足元に**燃える帯**を置いて居座らせない。
+  // 一撃は軽いが、留まると効く＝「退く」操作を要求する。
+  flamewagon: {
+    name: "flamewagon", sprite: "ironclad", showHpBar: true,
+    hp: 380, speed: 32, xp: 190, eggDrop: 3, radius: 26,
+    color: "#8a4020", glowColor: "#ff9040", moveType: "patrol",
+    attack: { type: "hazard", interval: 3.2, range: 400, radius: 110, life: 3.6, dps: 5.5,
+              color: "#ff8038", atTarget: true },
+  },
+
+  // 瘴気塔（持続範囲その2）: 停止した塔。**広がりながら居座る雲**を自分の周りに吐く。
+  // 火吹き車より薄く広い＝「近寄れない領域」を作る側。
+  miasma: {
+    name: "miasma", sprite: "colossus", showHpBar: true,
+    hp: 300, speed: 0, xp: 160, eggDrop: 2, radius: 22,
+    color: "#3a6a4a", glowColor: "#90ffb0", moveType: "patrol",
+    attack: { type: "hazard", interval: 5.0, range: 520, radius: 230, life: 5.0, dps: 3.0,
+              color: "#7ce0a0", atTarget: false, growFrom: 60 },
+  },
+
   // v0.25.1 財宝馬車: 竜ではない運搬体。群れから逃げ回り、倒すと竜晶/XPが大量に弾ける当たり枠。
   // 攻撃はせず（fleer）、空を漂って地形も無視。既存 balloon スプライトを金色オーラで流用。
   treasure: {
@@ -3554,15 +3643,17 @@ const MOVER_DEFS = {
 
 // ステージ別の出現構成。後半ほど種類と数が増える（Shooterプレイテスト「後半にバリエーション」）
 // v0.8: ステージ5〜8を追加（既存5種の混成密度を上げ、HP/XPはステージ係数でスケール）
+// v0.42: 新顔（盾兵・分裂体・潜行者・火吹き車・瘴気塔）を段階的に混ぜる。
+// 「初出は1体だけ」→ 覚えてもらってから増やす。
 const MOVER_SPAWNS_BY_STAGE = [
-  [["mammoth", 1]],
-  [["colossus", 2]],
-  [["knights", 2], ["colossus", 1]],
-  [["ironclad", 2], ["knights", 2], ["balloon", 2]],
-  [["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1]],
-  [["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1]],
-  [["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1]],
-  [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1]],
+  [["mammoth", 1], ["lurker", 1]],
+  [["colossus", 2], ["shieldman", 1]],
+  [["knights", 2], ["colossus", 1], ["shieldman", 1], ["splitter", 1]],
+  [["ironclad", 2], ["knights", 2], ["balloon", 2], ["lurker", 1], ["flamewagon", 1]],
+  [["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1], ["shieldman", 1], ["miasma", 1]],
+  [["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1], ["splitter", 2], ["flamewagon", 1]],
+  [["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1], ["lurker", 2], ["miasma", 1]],
+  [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1], ["shieldman", 1], ["splitter", 2], ["flamewagon", 1]],
 ];
 
 // v0.41: ボス直衛の守備隊。**従来 generateMovers はボス圏内を明示的に避けており、
@@ -3570,15 +3661,16 @@ const MOVER_SPAWNS_BY_STAGE = [
 // 「守られている」感が出ないので、城壁の内側を巡回する守備隊を別枠で置く。
 // moveType:"loop" の敵（ironclad/warlord/behemoth）は経路がマップ外周固定なので守備隊には使えない。
 // 使うのは patrol（randPoint を4点使う）と静止型（healer/summoner）と pingpong。
+// v0.42: 守備隊にも新顔を入れる。**盾兵は城門前に置くと「回り込む」段取りが生まれる**。
 const BOSS_GARRISON_BY_STAGE = [
   [["knights", 1]],
-  [["colossus", 1], ["knights", 1]],
-  [["colossus", 1], ["knights", 1], ["balloon", 1]],
-  [["colossus", 1], ["balloon", 2], ["knights", 1]],
-  [["colossus", 1], ["shockman", 1], ["balloon", 1], ["knights", 1]],
-  [["colossus", 2], ["healer", 1], ["balloon", 2], ["knights", 1]],
-  [["shockman", 1], ["healer", 1], ["summoner", 1], ["colossus", 1], ["knights", 2]],
-  [["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["balloon", 2], ["knights", 2]],
+  [["colossus", 1], ["shieldman", 1]],
+  [["colossus", 1], ["shieldman", 1], ["balloon", 1]],
+  [["colossus", 1], ["balloon", 2], ["shieldman", 1], ["miasma", 1]],
+  [["colossus", 1], ["shockman", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
+  [["colossus", 2], ["healer", 1], ["balloon", 2], ["shieldman", 1], ["flamewagon", 1]],
+  [["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
+  [["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["splitter", 1], ["flamewagon", 1]],
 ];
 // 守備隊が巡回する帯（ボス中心からの距離）。城壁(420)の内側に収める＝
 // 「壁を破ってから守備隊と戦う」段取りになる。
@@ -3604,6 +3696,129 @@ let movers = [];
 // 踏鳴らし衝撃波の表示FX（小プール）
 const shockwaveFxList = [];
 const SHOCKWAVE_FX_DURATION = 0.5;
+
+// -----------------------------------------------------------------
+// v0.42: 持続する範囲攻撃（危険地帯 / hazard）
+// -----------------------------------------------------------------
+// 一瞬の衝撃波（emitShockwave）と違い、**地面に居座って居続けるとダメージ**を与える帯。
+// 「その場から退く」という操作の課題を作るのが目的で、敵からも建物からも同じ仕組みで出せる。
+// 竜は止まれない種も多いので、避ける＝進路を作り直す＝操作の見せ場になる。
+// 焼夷塔（建物側の持続範囲攻撃）。一部の large 建物がこれになる。
+// 「街の中に踏み込むと足元が燃える」＝建物側にも退かせる圧を持たせる。
+const EMBER_TOWER_BY_STAGE = [1, 2, 3, 4, 5, 6, 7, 8];  // ステージごとの設置数
+const EMBER_TOWER_INTERVAL = 6.5;   // 発動間隔（秒）
+const EMBER_TOWER_RADIUS   = 145;
+const EMBER_TOWER_LIFE     = 4.0;
+const EMBER_TOWER_DPS      = 4.0;
+
+const HAZARD_MAX        = 48;    // 同時に存在できる数（超えたら古いものから消す）
+const HAZARD_TICK       = 0.25;  // ダメージを刻む間隔（秒）。毎フレーム引くと数値が細かすぎる
+const HAZARD_WARN_TIME  = 0.7;   // 出現直後の予告時間。この間はダメージなしで輪だけ出す
+const hazards = [];
+
+/**
+ * 危険地帯を1つ置く。
+ * @param {number} x,y      中心（ワールド）
+ * @param {number} radius   最終半径
+ * @param {number} life     持続（秒。予告時間を含む）
+ * @param {number} dps      1秒あたりのダメージ
+ * @param {string} color    表示色
+ * @param {number} growFrom 開始半径（radius へ広がる。同値なら固定サイズ）
+ */
+function spawnHazard(x, y, radius, life, dps, color, growFrom = radius) {
+  if (hazards.length >= HAZARD_MAX) hazards.shift();
+  hazards.push({ x, y, r: radius, r0: growFrom, life, maxLife: life, dps, color, tick: 0 });
+}
+
+function updateHazards(dt) {
+  for (let k = hazards.length - 1; k >= 0; k--) {
+    const h = hazards[k];
+    h.life -= dt;
+    if (h.life <= 0) { hazards.splice(k, 1); continue; }
+    // 予告中はまだ焼かない（理不尽に見えないよう、必ず輪が先に出る）
+    const age = h.maxLife - h.life;
+    if (age < HAZARD_WARN_TIME) continue;
+    h.tick -= dt;
+    if (h.tick > 0) continue;
+    h.tick = HAZARD_TICK;
+    const rNow = hazardRadiusAt(h);
+    const r2 = rNow * rNow;
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      const dx = px[i] - h.x, dy = py[i] - h.y;
+      if (dx * dx + dy * dy > r2) continue;
+      applyDamageToBoid(i, h.dps * HAZARD_TICK);
+    }
+  }
+}
+
+/** 現在の半径（growFrom → radius へ寿命の前半で広がる）。 */
+function hazardRadiusAt(h) {
+  if (h.r0 === h.r) return h.r;
+  const t = Math.min(1, (h.maxLife - h.life) / (h.maxLife * 0.5));
+  return h.r0 + (h.r - h.r0) * t;
+}
+
+/** 焼夷塔の目印。脈打つ輪で「ここは燃える」を予告する。ライブ描画（建物レイヤーはキャッシュのため）。 */
+function drawEmberTowers() {
+  ctx.save();
+  for (const s of settlements) {
+    if (!s || !s._emberTower || s.fallen) continue;
+    const pulse = 0.5 + 0.5 * Math.sin(breathTime * 3 + s.wx * 0.01);
+    ctx.globalAlpha = 0.25 + 0.35 * pulse;
+    ctx.strokeStyle = "#ff9040";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(s.wx, s.wy, s.radius + 6 + pulse * 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = "#ffb060";
+    ctx.beginPath();
+    ctx.arc(s.wx, s.wy, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/** 危険地帯の描画。カメラ変換の内側（ワールド座標）で呼ぶ。 */
+function drawHazards() {
+  if (hazards.length === 0) return;
+  ctx.save();
+  for (const h of hazards) {
+    const age   = h.maxLife - h.life;
+    const rNow  = hazardRadiusAt(h);
+    const warn  = age < HAZARD_WARN_TIME;
+    // 消える間際は薄くなる＝「もう抜けていい」が読める
+    const fade  = Math.min(1, h.life / 0.6);
+    if (warn) {
+      // 予告: 輪だけが点滅する（まだ安全）
+      ctx.globalAlpha = 0.35 + 0.35 * Math.abs(Math.sin(age * 14));
+      ctx.strokeStyle = h.color;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, rNow, 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      ctx.globalAlpha = 0.16 * fade;
+      ctx.fillStyle = h.color;
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, rNow, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.5 * fade;
+      ctx.strokeStyle = h.color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // 内側で揺らめく小さな輪（静止画に見せない）
+      ctx.globalAlpha = 0.22 * fade;
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, rNow * (0.45 + 0.12 * Math.sin(age * 5)), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
 
 /** ステージの移動敵を生成する。waypoint はボス要塞圏・スタート地点を避けて取る。 */
 function generateMovers(stageIndex, boss) {
@@ -3842,6 +4057,21 @@ function updateMovers(dt) {
     // v0.26: 巨獣の腕はコアに追従して浮遊し、独自ロジックで叩きつける
     if (def.part === "arm") { updateBehemothArm(m, dt); continue; }
 
+    // v0.42: 潜行者 — 潜っている間は無敵・攻撃なし。移動は続けるので「どこから出るか」を読む。
+    if (def.submerge) {
+      if (m.submergeTimer === undefined) {
+        m.submerged = true;
+        m.submergeTimer = def.submerge.hidden * (0.4 + random() * 0.6);   // 個体ごとに位相をずらす
+      }
+      m.submergeTimer -= dt;
+      if (m.submergeTimer <= 0) {
+        m.submerged = !m.submerged;
+        m.submergeTimer = m.submerged ? def.submerge.hidden : def.submerge.exposed;
+        // 浮上の瞬間は土煙＝「今叩ける」の合図
+        if (!m.submerged) { spawnCollisionParticles(m.wx, m.wy); m.attackTimer = 0.35; }
+      }
+    }
+
     // ---- 移動 ----
     // v0.7: 全移動敵が追跡型に。反応距離内に群れがいれば重心へ進撃、
     // いなければ各自の経路（往復/巡回/外周）を回る。
@@ -3923,6 +4153,7 @@ function updateMovers(dt) {
 
     const atk = def.attack;
     if (!atk) { m.beamTargetIdx = -1; continue; }   // v0.25.1: 財宝馬車など無攻撃ユニット
+    if (m.submerged) { m.beamTargetIdx = -1; continue; }   // v0.42: 潜行中は撃たない
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
     const ferocity = moverStageFerocity(currentStage);
     if (atk.type === "beam") {
@@ -4006,6 +4237,16 @@ function updateMovers(dt) {
         for (let k = -1; k <= 1; k++) {
           spawnFanProjectileRaw(m.wx, m.wy, heading + side + k * 0.15, atk.speed, atk.damage, "#90b0d0", 1);
         }
+      }
+    } else if (atk.type === "hazard") {
+      // v0.42: 持続する範囲攻撃。atTarget=true なら群れの足元、false なら自分の周り。
+      if (nearestD2 < atk.range * atk.range) {
+        const hx = atk.atTarget ? px[nearestIdx] : m.wx;
+        const hy = atk.atTarget ? py[nearestIdx] : m.wy;
+        spawnHazard(hx, hy, atk.radius, atk.life, atk.damage ?? atk.dps, atk.color,
+                    atk.growFrom ?? atk.radius);
+      } else {
+        m.attackTimer = 0.4;
       }
     } else if (atk.type === "bomb") {
       // v0.7 爆撃気球: 最寄りの竜めがけてAoE爆弾を投下（projectileAoe で着弾時に範囲被害）
@@ -4219,8 +4460,36 @@ function updateRaiderSpawns(dt) {
 }
 
 /** 移動敵へのダメージ適用。倒したらXPジェム＋卵＋演出。 */
-function damageMover(m, damage) {
+/**
+ * 移動敵にダメージを与える。
+ * v0.42: srcX/srcY（攻撃が来た位置）を渡すと、**盾の向き**を見て弾けるようになる。
+ * 渡さない攻撃は「どこから来たか分からない」＝盾は働かない（＝素通しにはしない）ので、
+ * 呼び出し側は可能な限り攻撃者の座標を渡すこと。
+ */
+function damageMover(m, damage, srcX, srcY) {
   if (!m.alive) return;
+  // v0.42: 潜行中は無敵（浮上した時だけ殴れる）
+  if (m.submerged) {
+    // 手応えが無いと「当たっていないのかバグなのか」が分からないので土煙だけ返す
+    if (fxRandom() < 0.12) spawnHitParticles(m.wx + (fxRandom() - 0.5) * 20, m.wy + (fxRandom() - 0.5) * 20);
+    return;
+  }
+  // v0.42: 鏡の盾兵 — 正面（進行方向±shieldArc）からの被弾を減衰させる
+  if (m.def.shieldArc !== undefined && srcX !== undefined) {
+    let a = Math.atan2(srcY - m.wy, srcX - m.wx) - Math.atan2(m.headingY, m.headingX);
+    while (a >  Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    if (Math.abs(a) < m.def.shieldArc) {
+      damage *= m.def.shieldBlock ?? 0;
+      // 弾いた合図（火花）。ここが無いと「効いていない」ことが伝わらない
+      if (fxRandom() < 0.5) {
+        const fx = m.wx + Math.cos(a + Math.atan2(m.headingY, m.headingX)) * (m.def.radius + 4);
+        const fy = m.wy + Math.sin(a + Math.atan2(m.headingY, m.headingX)) * (m.def.radius + 4);
+        spawnHitParticles(fx, fy);
+      }
+      if (damage <= 0) return;
+    }
+  }
   m.hp -= damage;
   if (m.hp <= 0) {
     m.alive = false;
@@ -4254,6 +4523,24 @@ function damageMover(m, damage) {
       triggerFlash("rgba(255,255,255,0.18)", 0.12);
       hapticPulse(90);
     }
+    // v0.42: 分裂体 — 壊れると小さいのが2体出る（世代が進むほど小さく速く弱い）
+    if (m.def.splitInto) {
+      const childDef = MOVER_DEFS[m.def.splitInto.key];
+      if (childDef) {
+        for (let k = 0; k < m.def.splitInto.count; k++) {
+          const child = makeMover(childDef, () => ({ x: m.wx, y: m.wy }));
+          const a = (k / m.def.splitInto.count) * Math.PI * 2 + random() * 0.6;
+          child.wx = m.wx + Math.cos(a) * (m.def.radius + 6);
+          child.wy = m.wy + Math.sin(a) * (m.def.radius + 6);
+          child.xpValue = childDef.xp;
+          // 親の巡回路を引き継ぐ（散り散りにならず、その場を守り続ける）
+          child.waypoints = m.waypoints;
+          _pendingMovers.push(child);
+        }
+        spawnCollisionParticles(m.wx, m.wy);
+      }
+    }
+
     // v0.26: 巨獣コア撃破 → 腕も道連れ＋大報酬＋派手演出
     if (m.def.part === "core") {
       if (m.armL && m.armL.alive) m.armL.alive = false;
@@ -4286,7 +4573,7 @@ function updateMoverRams() {
       const dx = m.wx - px[i];
       const dy = m.wy - py[i];
       if (dx * dx + dy * dy > hitR2) continue;
-      damageMover(m, ramDamage);
+      damageMover(m, ramDamage, px[i], py[i]);
       boidHitStopTimer[i]      = HITSTOP_DURATION;
       boidCollisionCooldown[i] = isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
       spawnCollisionParticles(m.wx, m.wy);
@@ -4308,8 +4595,56 @@ function drawMovers() {
     const def = m.def;
     const angle = Math.atan2(m.headingY, m.headingX);
 
+    // v0.42: 潜行中は本体を描かず、地面の膨らみ（土煙の輪）だけにする＝無敵なのが一目で分かる。
+    if (m.submerged) {
+      const t = breathTime * 2 + (m.swayPhase ?? 0);
+      ctx.save();
+      ctx.globalAlpha = 0.30;
+      ctx.fillStyle = def.color;
+      ctx.beginPath();
+      ctx.ellipse(m.wx, m.wy, def.radius * (0.9 + 0.08 * Math.sin(t)), def.radius * 0.55, angle, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = def.glowColor;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(m.wx, m.wy, def.radius * 1.15, def.radius * 0.7, angle, 0, Math.PI * 2);
+      ctx.stroke();
+      // まもなく浮上: 残り0.8秒で輪が強く脈打つ（叩く準備をさせる）
+      if (m.submergeTimer !== undefined && m.submergeTimer < 0.8) {
+        ctx.globalAlpha = 0.35 + 0.45 * Math.abs(Math.sin(breathTime * 16));
+        ctx.beginPath();
+        ctx.arc(m.wx, m.wy, def.radius * 1.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+      continue;
+    }
+
     ctx.save();
     ctx.translate(m.wx, m.wy);
+
+    // v0.42: 鏡の盾兵の盾。**正面（進行方向）に弧を描く**ので、どちらから殴れば通るかが見える。
+    if (def.shieldArc !== undefined) {
+      ctx.save();
+      ctx.rotate(angle);
+      const rr = def.radius + 7;
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = "#dff0ff";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, 0, rr, -def.shieldArc, def.shieldArc);
+      ctx.stroke();
+      ctx.globalAlpha = 0.35;
+      ctx.strokeStyle = "#9fd8ff";
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.arc(0, 0, rr, -def.shieldArc, def.shieldArc);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
 
     // 外周グロー（存在感。v0.24: エリートは赤／財宝馬車は金の、大きく明るいオーラで際立たせる）
     const bigGlow = def.elite || def.treasure;
@@ -5879,6 +6214,14 @@ function updateSettlementAttacks(dt) {
       ? settlement.projectileInterval
       : settlement.projectileInterval * 4.0;
 
+    // v0.42: 焼夷塔は弾ではなく**足元に燃える輪**を置く（0.7秒の予告つき）
+    if (settlement._emberTower) {
+      settlement.attackTimer = EMBER_TOWER_INTERVAL;
+      spawnHazard(settlement.wx, settlement.wy, EMBER_TOWER_RADIUS, EMBER_TOWER_LIFE,
+                  EMBER_TOWER_DPS, "#ff8038");
+      continue;
+    }
+
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
 
@@ -6186,7 +6529,7 @@ function updateBeamAttacks(dt) {
         if (md2 < nearestMoverD2) { nearestMoverD2 = md2; nearestMover = m; }
       }
       if (nearestMover) {
-        damageMover(nearestMover, damageThisFrame);
+        damageMover(nearestMover, damageThisFrame, px[i], py[i]);
         activeBreaths.push({ boidIdx: i, targetWx: nearestMover.wx, targetWy: nearestMover.wy });
       }
       continue;
@@ -7850,12 +8193,12 @@ function updateDragonProjectiles(dt) {
       const mHitR = m.def.radius + 3;
       if (mdx * mdx + mdy * mdy > mHitR * mHitR) continue;
       if (dprojKind[i] === 0) {
-        damageMover(m, BULLET_DAMAGE * effWeaponDmgMult("bullet"));
+        damageMover(m, BULLET_DAMAGE * effWeaponDmgMult("bullet"), dprojX[i], dprojY[i]);
         spawnHitParticles(dprojX[i], dprojY[i]);
         dprojHits[i]--;
         if (dprojHits[i] <= 0) dprojActive[i] = 0;
       } else {
-        damageMover(m, MISSILE_DAMAGE * effWeaponDmgMult("missile"));
+        damageMover(m, MISSILE_DAMAGE * effWeaponDmgMult("missile"), dprojX[i], dprojY[i]);
         spawnCollisionParticles(dprojX[i], dprojY[i]);
         dprojActive[i] = 0;
       }
@@ -8044,7 +8387,7 @@ function updateMotherBreath(dt) {
       if (!m.alive) continue;
       const mdx = m.wx - mx, mdy = m.wy - my;
       if (mdx * mdx + mdy * mdy >= R2) continue;
-      damageMover(m, dmg);
+      damageMover(m, dmg, mx, my);
       pushMotherBreathFx(mx, my, m.wx, m.wy, (hits * 60) % 360);   // 虹色に色相をずらす
       hits++;
     }
@@ -8076,7 +8419,7 @@ function damageInRadius(wx, wy, radius, damage) {
     if (!m.alive) continue;
     const dx = m.wx - wx, dy = m.wy - wy;
     if (dx * dx + dy * dy > r2) continue;
-    damageMover(m, damage);
+    damageMover(m, damage, wx, wy);
     hits++;
   }
   return hits;
@@ -8122,7 +8465,7 @@ function updateBladeAttacks(dt) {
       while (da >  Math.PI) da -= Math.PI * 2;
       while (da < -Math.PI) da += Math.PI * 2;
       if (Math.abs(da) > BLADE_ARC) continue;
-      damageMover(m, dmg);
+      damageMover(m, dmg, px[i], py[i]);
       hit = true;
     }
     // 空振りでは撃たない（タイマーを進めず標的を待つ＝他武器と同じ作法）
@@ -8354,7 +8697,7 @@ function updateTongueAttacks(dt) {
       if (along < 0 || along > range) continue;
       const side = Math.abs(dx * -hy + dy * hx);
       if (side > (m.radius || 12) + TONGUE_HALF_W) continue;
-      damageMover(m, dmg);
+      damageMover(m, dmg, px[i], py[i]);
       hit = true;
     }
     if (!hit) continue;   // 空振りでは伸ばさない
@@ -10702,6 +11045,8 @@ function render(now) {
   drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
   drawBreathAttacks(now);
   drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
+  drawHazards();             // v0.42: 持続する範囲攻撃（地面に敷く＝竜より下）
+  drawEmberTowers();         // v0.42: 焼夷塔の目印
   drawSlashFx();             // v0.8: 緋竜の斬閃 / v0.35: 隼竜の刃翼（銀）
   drawBombs();               // v0.37.1: 爆竜の投下済み爆弾（竜より下＝地面にある）
   drawBoids();
@@ -12663,6 +13008,7 @@ function tick() {
     updateWeaponAttacks(wdt);     // v0.6-p2: 武器ディスパッチ（BEAM/BULLET/MISSILE）
     updateCollisionAttacks(wdt);  // 変更2: 直接衝突ダメージ＋ヒットストップ（MELEEは威力増）
     updateMovers(wdt);            // v0.6-p4: 移動敵の巡回・攻撃
+    updateHazards(wdt);           // v0.42: 持続する範囲攻撃（敵・建物が置く危険地帯）
     updateMoverRams();            // v0.6-p4: 移動敵への体当たり
     updateBossNova(wdt);          // v0.7: ボスの反発衝撃波
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
@@ -12683,6 +13029,7 @@ function tick() {
     updateParticles(dt);
   } else if (gameState === "stage-clear") {
     simStep(dt);
+    updateHazards(dt);            // v0.42: クリア演出中も燃え尽きさせる（画面に焼き付いたまま残さない）
     applyObstaclePushout();
     updateCamera(dt);
     updateParticles(dt);
