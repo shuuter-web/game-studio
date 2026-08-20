@@ -575,7 +575,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.40.0";
+const GAME_VERSION = "v0.41.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1234,16 +1234,39 @@ const CAPITAL_RADIUS_BASE = BUILDING_SIZE_PARAMS.large.radiusBase; // 28px
 // radius*2 + 4px = 60px（ぎりぎり接触しない最小値）
 const CAPITAL_MIN_SPACING = CAPITAL_RADIUS_BASE * 2 + 4; // 60px
 
-// 変更1: 城下の雑魚建物（small）充填パラメータ
-// 大型リング（外縁180px）の外側〜360px の環状帯に small 建物を敷き詰めて城下町にする。
-// small radius=10px なので間隔26px あれば隣接せず、32px で余裕を確保。
-const CAPITAL_SMALL_INNER  = CAPITAL_RING_OUTER + 8;   // 188px: リング直外から開始
-const CAPITAL_SMALL_OUTER  = 400;  // v0.29: 城下の帯を広げる（360→400）
-// small 建物内の充填試行数。ポアソンディスク風にランダム配置 × 試行でほぼ上限に収束。
-const CAPITAL_SMALL_COUNT  = 70;   // v0.29: 城下をより密集（45→70。ボス周りの手応え）
+// 城下町（ボスを囲む首都）の充填パラメータ。
+// v0.41: **マップで最も濃い場所をボス周辺にする**（実機判定 2026-08-18:
+// 「ボス周辺は大きめの街と同等以上の密度にしたい」）。
+// v0.40 までは半径260px内に16〜35棟しかなく、最も濃い街（110〜177棟）の 1〜2割だった。
+// 変えたのは3点：①リングの内側まで埋める ②間隔を街と同じにする ③棟数を大幅に増やす。
+// 68px = ボス半径(46) + 22。**BOSS_RADIUS はこの行より後で宣言されるので参照できない**
+// （const の TDZ でロード時に落ちる。実際に踏んだ）。既存の CAPITAL_RING_INNER と同じ書き方に揃える。
+const CAPITAL_SMALL_INNER  = 68;   // 大型リングの内側からもう充填を始める
+const CAPITAL_SMALL_OUTER  = 400;  // 城壁（420px）の内側いっぱいまで
+// 充填する棟数（実際の配置数は重なり判定で決まる。候補は倍以上作る）
+const CAPITAL_SMALL_COUNT  = 700;
 const CAPITAL_SMALL_RADIUS = BUILDING_SIZE_PARAMS.small.radiusBase; // 10px
-// small 同士の最小間隔（radius*2 + 12px のゆとり）
-const CAPITAL_SMALL_MIN_SPACING = CAPITAL_SMALL_RADIUS * 2 + 12; // 32px
+// small 同士の最小間隔。**街の small と同じ値**にする（街は radius*2 + sizeGap 4 = 24px）。
+// ここが街より広いと、同じ棟数でも街より薄く見える＝密度の逆転が起きる。
+// 街の small 同士は 24px。首都は**街より一段詰める**（22px = 隙間2px）＝「同等以上」の要件。
+const CAPITAL_SMALL_MIN_SPACING = CAPITAL_SMALL_RADIUS * 2 + 2; // 22px
+// v0.41: 城下にも medium を混ぜる（街は small/medium/large が混在するのに
+// 城下は large リング＋small だけで、密度以前に「街に見えない」問題があった）。
+const CAPITAL_MEDIUM_COUNT       = 40;   // 増やすほど small の入る隙間が減る（棟数密度とのトレードオフ）
+// medium は**外周側だけ**に置く。ボス至近は large リングが場所を食っているので、
+// そこへさらに大きい建物を混ぜると棟数密度が落ちる（内側は small で埋め切る）。
+const CAPITAL_MEDIUM_INNER       = 210;
+// 城下の民家が**撃つ**割合。建物の射撃量は棟数に比例するので、密度を5倍にすると
+// 弾も5倍になる（実測: 密集させただけで群れ35体が2秒で全滅した。原因は建物の射撃で、
+// 守備隊でも衝突でもない）。密度は保ったまま弾量だけ街と同等に戻すための係数。
+// 実測（同一レイアウトでのA/B・群れ60体固定・STAGE8）:
+//   1/5が射手 → 20秒で群れ全滅・破壊56棟／全員射手 → 5秒で全滅・29棟
+//   民家撤去(v0.40相当) → 53体生存・462棟。**射手の数が支配的**だった。
+// 城下の民家は「壊して卵を得る材料」であって射撃陣地ではない、と割り切って更に絞る。
+// 守りは城壁・要塞リング（カタパルト）・守備隊・ボス本体が担う。
+const CAPITAL_SMALL_SHOOTER_RATE = 0.06;
+const CAPITAL_MEDIUM_RADIUS      = BUILDING_SIZE_PARAMS.medium.radiusBase; // 16px
+const CAPITAL_MEDIUM_MIN_SPACING = CAPITAL_MEDIUM_RADIUS * 2 + 6; // 38px
 
 // 小集落クラスタとの分離に使う「ボス＋リング＋城下充填」占有半径
 // 城下外縁 CAPITAL_SMALL_OUTER + small radius + 余白 → 他クラスタを外に追い出す
@@ -3175,49 +3198,72 @@ function placeCapitalDistrict(boss, config) {
     // （ボスが端に追い込まれた場合の安全網）
   }
 
-  // 変更1: 城下の雑魚建物（small）を CAPITAL_SMALL_INNER〜SMALL_OUTER の環状帯に充填する。
-  // ポアソンディスク風: 候補をランダムに生成し、既配置建物との最小間隔で除去する。
-  // ボスとの間隔も確保。卵持ち割当の対象に含める（_townMeta は持たないが
-  // assignEggBearers のフォールバックで全体1町として処理される）。
-  const smallPad = CAPITAL_SMALL_RADIUS + 10;
-  const smallMinD2 = CAPITAL_SMALL_MIN_SPACING * CAPITAL_SMALL_MIN_SPACING;
-  // ボス本体との最小距離（ボス半径 + small 半径 + 余白）
-  const bossSmallDist2 = (BOSS_RADIUS + CAPITAL_SMALL_RADIUS + 14) * (BOSS_RADIUS + CAPITAL_SMALL_RADIUS + 14);
-  // 配置された全建物（ring + small）を重なりチェックに使うためまとめて参照する
-  // result にはリング建物が入っているので、small 同士 + ring との距離も見る
-  const MAX_ATTEMPTS_SMALL = 6;
-
-  for (let k = 0; k < CAPITAL_SMALL_COUNT; k++) {
-    let placed = false;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS_SMALL && !placed; attempt++) {
-      const angle = random() * Math.PI * 2;
-      // 内縁〜外縁のランダム半径（均等分布にするため√変換を使う）
-      const rMin = CAPITAL_SMALL_INNER, rMax = CAPITAL_SMALL_OUTER;
-      const rnd  = Math.sqrt(random());  // 外側に密度が偏らないよう補正
-      const r    = rMin + rnd * (rMax - rMin);
-
-      const wx = bossX + Math.cos(angle) * r;
-      const wy = bossY + Math.sin(angle) * r;
-
-      // ワールド境界チェック
-      if (wx < smallPad || wx > WORLD_W - smallPad || wy < smallPad || wy > WORLD_H - smallPad) continue;
-
-      // ボス本体との距離チェック
-      if (dist2(wx, wy, bossX, bossY) < bossSmallDist2) continue;
-
-      // 既配置建物（ring large + 先行small）との重なりチェック
-      let tooClose = false;
-      for (const cap of result) {
-        // ring の large と small では最小間隔を変える
-        const gap = (cap.size === "small")
-          ? CAPITAL_SMALL_MIN_SPACING
-          : CAPITAL_SMALL_RADIUS + CAPITAL_RADIUS_BASE + 14;
-        if (dist2(wx, wy, cap.wx, cap.wy) < gap * gap) { tooClose = true; break; }
+  // v0.41: 城下の充填。**候補点を同心リング上に作ってから置く**方式に変えた。
+  // 旧実装は「完全ランダムな点を6回試す」だったので、密度を上げようとしても
+  // 後半はほぼ全部が重なりで弾かれ、棟数を増やしても密にならなかった。
+  // 六方最密に近い候補列（行間 = 間隔×0.87）を作ってシャッフルすれば、
+  // 見た目のランダムさを保ったまま**上限近くまで詰められる**。
+  const fillPad = CAPITAL_SMALL_RADIUS + 10;
+  function capitalFillCandidates(spacing, phase = 0, rInner = CAPITAL_SMALL_INNER) {
+    const pts = [];
+    let row = 0;
+    for (let r = rInner; r <= CAPITAL_SMALL_OUTER; r += spacing * 0.87, row++) {
+      const slots = Math.max(1, Math.floor((Math.PI * 2 * r) / spacing));
+      // 隣の行と半スロットずらす＝六方最密。ずらさないと行間が詰まったとき互いに弾き合う。
+      const angOff = random() * Math.PI * 2 + (row % 2) * (Math.PI / slots) + phase;
+      for (let k = 0; k < slots; k++) {
+        // ジッタは控えめ（大きくすると隣と衝突して置けなくなり、かえって粗くなる）
+        const rr = r + randRange(-spacing * 0.07, spacing * 0.07);
+        const aa = angOff + ((k + randRange(-0.12, 0.12)) / slots) * Math.PI * 2;
+        pts.push({ x: bossX + Math.cos(aa) * rr, y: bossY + Math.sin(aa) * rr });
       }
-      if (tooClose) continue;
+    }
+    for (let i = pts.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      const t = pts[i]; pts[i] = pts[j]; pts[j] = t;
+    }
+    return pts;
+  }
 
-      result.push(makeCapitalSmallBuilding(wx, wy, config));
-      placed = true;
+  // 既存の首都建物すべてと重ならないか（サイズごとに必要な間隔が違う）
+  function capitalSpotFree(wx, wy, radius, selfSpacing) {
+    if (wx < fillPad || wx > WORLD_W - fillPad || wy < fillPad || wy > WORLD_H - fillPad) return false;
+    if (dist2(wx, wy, bossX, bossY) < (BOSS_RADIUS + radius + 14) ** 2) return false;
+    for (const cap of result) {
+      const capR = cap.size === "large" ? CAPITAL_RADIUS_BASE
+                 : cap.size === "medium" ? CAPITAL_MEDIUM_RADIUS
+                 : CAPITAL_SMALL_RADIUS;
+      // 同サイズ同士は selfSpacing、異サイズは「両者の半径 + 余白」
+      const gap = (capR === radius) ? selfSpacing : (capR + radius + 5);
+      if (dist2(wx, wy, cap.wx, cap.wy) < gap * gap) return false;
+    }
+    return true;
+  }
+
+  // medium を先に置く（大きい方から置かないと small に埋められて入る場所が無くなる）
+  {
+    const cands = capitalFillCandidates(CAPITAL_MEDIUM_MIN_SPACING, 0, CAPITAL_MEDIUM_INNER);
+    let placed = 0;
+    for (const p of cands) {
+      if (placed >= CAPITAL_MEDIUM_COUNT) break;
+      if (!capitalSpotFree(p.x, p.y, CAPITAL_MEDIUM_RADIUS, CAPITAL_MEDIUM_MIN_SPACING)) continue;
+      result.push(makeCapitalMediumBuilding(p.x, p.y, config));
+      placed++;
+    }
+  }
+
+  // small で残りの隙間を埋める。**2巡する**（1巡目で弾かれた隙間を、
+  // 角度位相をずらした2巡目が拾う。1巡だけだと上限の6割程度で止まる）。
+  {
+    let placed = 0;
+    for (let pass = 0; pass < 4 && placed < CAPITAL_SMALL_COUNT; pass++) {
+      const cands = capitalFillCandidates(CAPITAL_SMALL_MIN_SPACING, pass * 0.37);
+      for (const p of cands) {
+        if (placed >= CAPITAL_SMALL_COUNT) break;
+        if (!capitalSpotFree(p.x, p.y, CAPITAL_SMALL_RADIUS, CAPITAL_SMALL_MIN_SPACING)) continue;
+        result.push(makeCapitalSmallBuilding(p.x, p.y, config));
+        placed++;
+      }
     }
   }
 
@@ -3263,9 +3309,27 @@ function makeCapitalSmallBuilding(wx, wy, config) {
   const hp     = randInt(BUILDING_SIZE_PARAMS.small.hpMin, BUILDING_SIZE_PARAMS.small.hpMax);
   // 城下の small は small カラーから選ぶ（ステージテーマに合わせる）
   const color  = randChoice(bSmall.colors);
+  // v0.41: HP倍率は掛けない。城下の民家は**壊して卵に変える材料**なので、
+  // 密度を上げたぶん1棟あたりは軽いままにしておかないと群れが育つ前に足が止まる
+  // （実測: ×1.3 だと STAGE8 でボスHPを88%残して全滅した）。
   const building = makeBuilding(wx, wy, "small", color, bSmall, hp);
   // 城下建物フラグ（通常クラスタとの区別用。卵割当・カリング対象には通常通り含まれる）
   building._isCapitalSmall = true;
+  // 大半は「ただの民家」＝撃たない。守りは城壁・要塞リング・守備隊が担う。
+  building._noAttack = random() > CAPITAL_SMALL_SHOOTER_RATE;
+  return building;
+}
+
+/**
+ * v0.41: 城下の medium 建物。街と同じサイズ構成にして「首都の市街」に見せるために足した。
+ * 通常 medium 帯のパラメータをそのまま使う（カタパルトは撃たない＝弾幕は増やさない）。
+ */
+function makeCapitalMediumBuilding(wx, wy, config) {
+  const bMedium = config.buildings.medium;
+  const hp      = randInt(BUILDING_SIZE_PARAMS.medium.hpMin, BUILDING_SIZE_PARAMS.medium.hpMax);
+  const building = makeBuilding(wx, wy, "medium", randChoice(bMedium.colors), bMedium, hp);
+  building._isCapitalSmall = true;   // 城下フラグ（卵割当・カリングは通常どおり）
+  building._noAttack = random() > CAPITAL_SMALL_SHOOTER_RATE;
   return building;
 }
 
@@ -3501,6 +3565,26 @@ const MOVER_SPAWNS_BY_STAGE = [
   [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1]],
 ];
 
+// v0.41: ボス直衛の守備隊。**従来 generateMovers はボス圏内を明示的に避けており、
+// ボス周辺に敵が1体も居なかった**（bossClear2 で除外）。城下だけ濃くしても
+// 「守られている」感が出ないので、城壁の内側を巡回する守備隊を別枠で置く。
+// moveType:"loop" の敵（ironclad/warlord/behemoth）は経路がマップ外周固定なので守備隊には使えない。
+// 使うのは patrol（randPoint を4点使う）と静止型（healer/summoner）と pingpong。
+const BOSS_GARRISON_BY_STAGE = [
+  [["knights", 1]],
+  [["colossus", 1], ["knights", 1]],
+  [["colossus", 1], ["knights", 1], ["balloon", 1]],
+  [["colossus", 1], ["balloon", 2], ["knights", 1]],
+  [["colossus", 1], ["shockman", 1], ["balloon", 1], ["knights", 1]],
+  [["colossus", 2], ["healer", 1], ["balloon", 2], ["knights", 1]],
+  [["shockman", 1], ["healer", 1], ["summoner", 1], ["colossus", 1], ["knights", 2]],
+  [["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["balloon", 2], ["knights", 2]],
+];
+// 守備隊が巡回する帯（ボス中心からの距離）。城壁(420)の内側に収める＝
+// 「壁を破ってから守備隊と戦う」段取りになる。
+const BOSS_GARRISON_INNER = 200;
+const BOSS_GARRISON_OUTER = 395;
+
 // v0.15: 移動敵のステージスケーリングは「攻撃の苛烈さ」のみ。
 // HPスケール（moverStageHpMult）は廃止 — HPの増加は目に見えず「群れが育ったのに
 // 手応えが変わらない」という塊魂と逆行する体感を生むため（Shooter指示）。
@@ -3538,15 +3622,32 @@ function generateMovers(stageIndex, boss) {
     return { x: WORLD_W * 0.5, y: WORLD_H * 0.5 };
   }
 
-  for (const [defKey, count] of spawns) {
+  // v0.41: ボス直衛の守備隊。巡回点をボス周りのリング内に限定して湧かせる。
+  const garrison = BOSS_GARRISON_BY_STAGE[stageIndex] ?? [];
+  function garrisonPoint() {
+    const a = random() * Math.PI * 2;
+    const r = BOSS_GARRISON_INNER + random() * (BOSS_GARRISON_OUTER - BOSS_GARRISON_INNER);
+    return {
+      x: Math.max(60, Math.min(WORLD_W - 60, boss.wx + Math.cos(a) * r)),
+      y: Math.max(60, Math.min(WORLD_H - 60, boss.wy + Math.sin(a) * r)),
+    };
+  }
+
+  // 通常枠（マップ全体を巡回）＋ 守備隊枠（ボス周りだけを巡回）をまとめて処理する。
+  // 3要素目 true が守備隊 = 巡回点の生成器だけを差し替える。
+  const spawnEntries = spawns.map(e => [e[0], e[1], false])
+                             .concat(garrison.map(e => [e[0], e[1], true]));
+
+  for (const [defKey, count, isGarrison] of spawnEntries) {
     const def = MOVER_DEFS[defKey];
+    const pointFor = isGarrison ? garrisonPoint : randPoint;
     for (let k = 0; k < count; k++) {
       // v0.13: packCount 持ちの敵は「同じ経路を共有する別々の個体」を頭数分湧かせる。
       // 先頭個体の経路・出現位置を仲間へ複製し、位置は散らして群れの初期配置にする。
-      const leader = makeMover(def, randPoint);
+      const leader = makeMover(def, pointFor);
       const pack = [leader];
       for (let p = 1; p < (def.packCount ?? 1); p++) {
-        const member = makeMover(def, randPoint);
+        const member = makeMover(def, pointFor);
         member.waypoints = leader.waypoints;   // 経路を共有（配列参照ごと）
         member.wpIdx     = leader.wpIdx;
         member.wpDir     = leader.wpDir;
@@ -5758,6 +5859,7 @@ function updateSettlementAttacks(dt) {
   for (const s of _settlementsInRange) {
     const settlement = settlements[s];
     if (!settlement || settlement.fallen) continue;
+    if (settlement._noAttack) continue;   // v0.41: 城下の民家は撃たない（弾量を街と同等に保つ）
 
     let inRange = false;
     const atkR2 = settlement.attackRadius * settlement.attackRadius;
