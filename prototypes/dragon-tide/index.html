@@ -575,7 +575,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.42.0";
+const GAME_VERSION = "v0.43.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2896,6 +2896,23 @@ function generateStageLayout(stageIndex) {
   result.length = 0;
   for (const b of purged) result.push(b);
 
+  // v0.43: ダム／堰 — 川の中流に1基だけ置く。川沿いは建物が避けているので場所は空いている。
+  if (riverPolyline.length > 4) {
+    const idx = Math.floor(riverPolyline.length * randRange(0.35, 0.62));
+    const rp  = riverPolyline[idx];
+    const nxt = riverPolyline[Math.min(idx + 1, riverPolyline.length - 1)];
+    const bLarge = config.buildings.large;
+    const hp = Math.round(randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax) * DAM_HP_MULT);
+    const dam = makeBuilding(rp.x, rp.y, "large", "#8a94a0", bLarge, hp);
+    dam._isDam     = true;
+    dam._damIdx    = idx;                                        // 下流の起点
+    dam._damAngle  = Math.atan2(nxt.y - rp.y, nxt.x - rp.x);      // 川に直交して描くための向き
+    dam.radius     = 34;
+    dam.attackRadius = 0;                                        // 堰は撃たない（構造物）
+    dam._noAttack  = true;
+    result.push(dam);
+  }
+
   // v0.42: 焼夷塔 — large 建物のいくつかを「持続する炎の輪」を張る塔にする。
   // 建物側にも「その場から退かせる」圧を持たせるための枠（敵の hazard と同じ仕組み）。
   {
@@ -2970,6 +2987,8 @@ function generateStageLayout(stageIndex) {
   bombList.length = 0;       // v0.37.1: 前ステージの未炸裂爆弾を持ち越さない
   tongueFxList.length = 0;
   hazards.length = 0;        // v0.42: 前ステージの危険地帯を持ち越さない
+  chainFxList.length = 0;
+  floodWave = null;          // v0.43: 前ステージの洪水を持ち越さない
   resetRaiderState();   // v0.8: レイダー湧き状態もステージごとにリセット
 
   // --- (8) v0.6-p4: 後半ステージの難度底上げ（仕様 §4。プレイヤーの3択強化ぶんを相殺） ---
@@ -3050,6 +3069,18 @@ function buildTownRoadNetwork(townCenters, boss) {
 // 川は蛇行しながらマップを縦断する視覚要素（通行判定なし＝飛竜は川を越えて飛べる）。
 // 橋は川と街道が交わる点に架け、地理の説得力と攻略導線の両方を担う。
 // -----------------------------------------------------------------
+// -----------------------------------------------------------------
+// v0.43: ダム／堰 — 壊すと下流が一斉に水没する
+// -----------------------------------------------------------------
+// 「1つ壊すと広域が落ちる」＝俯瞰で最も映える攻略対象（next-steps §5-3 の推し筆頭）。
+// 川沿いに建つ堰を壊すと、下流へ水の壁が走り、通り過ぎた帯の建物が順に崩れる。
+// 高HPにして「わざわざ狙いに行く価値のある的」にする。
+const DAM_HP_MULT      = 6.0;   // large 建物基準の倍率
+const DAM_FLOOD_SPEED  = 900;   // 水が下流へ走る速さ（px/s）。速すぎると何が起きたか読めない
+const DAM_FLOOD_BAND   = 230;   // 水没する川からの距離（片側）
+const DAM_FLOOD_DAMAGE = 400;   // 水没した建物へのダメージ（小屋〜大型まで確実に落ちる量）
+let floodWave = null;           // { dist, maxDist, fromIdx } 進行中の洪水（1本だけ）
+
 let riverPolyline    = [];   // [{x,y}, ...] 川の中心線
 let riverWidth       = 56;
 let bridgePlacements = [];    // [{x, y, angle}] 街道×川の交点
@@ -3611,6 +3642,21 @@ const MOVER_DEFS = {
     attack: { type: "shockwave", interval: 1.4, radius: 105, damage: 4, push: 40 },
   },
 
+  // 雷撃塔車: 最寄りの竜から**近くの竜へ次々に飛び移る**電撃。
+  // 群れを固めているほど多くに当たり、散らしていれば数珠が途切れる
+  // ＝**Boids でしか成立しない課題**（密集が有利という前提を崩す枠）。
+  teslawagon: {
+    name: "teslawagon", sprite: "ironclad", showHpBar: true,
+    hp: 340, speed: 34, xp: 200, eggDrop: 3, radius: 25,
+    color: "#3a5a8a", glowColor: "#a0d8ff", moveType: "patrol",
+    // 「群れを固めると損」は**連鎖の長さ**では作れなかった（実測: Boids の群れは
+    // 常に分離半径28前後で並ぶので、線に伸ばしても密集させても最大まで連鎖する）。
+    // そこで**1体ごとのダメージを、その竜の周りの密度に比例させる**方式にした。
+    // 塊の中心にいる竜は隣が多いほど強く感電する＝固めるほど痛い。
+    attack: { type: "chain", interval: 2.8, range: 380, damage: 2.4,
+              hops: 16, hopRange: 58, densityRange: 46, densityScale: 0.34, densityMax: 3.2 },
+  },
+
   // 火吹き車（持続範囲その1）: 群れの足元に**燃える帯**を置いて居座らせない。
   // 一撃は軽いが、留まると効く＝「退く」操作を要求する。
   flamewagon: {
@@ -3650,10 +3696,10 @@ const MOVER_SPAWNS_BY_STAGE = [
   [["colossus", 2], ["shieldman", 1]],
   [["knights", 2], ["colossus", 1], ["shieldman", 1], ["splitter", 1]],
   [["ironclad", 2], ["knights", 2], ["balloon", 2], ["lurker", 1], ["flamewagon", 1]],
-  [["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1], ["shieldman", 1], ["miasma", 1]],
+  [["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1], ["shieldman", 1], ["miasma", 1], ["teslawagon", 1]],
   [["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1], ["splitter", 2], ["flamewagon", 1]],
-  [["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1], ["lurker", 2], ["miasma", 1]],
-  [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1], ["shieldman", 1], ["splitter", 2], ["flamewagon", 1]],
+  [["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1], ["lurker", 2], ["miasma", 1], ["teslawagon", 1]],
+  [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1], ["shieldman", 1], ["splitter", 2], ["flamewagon", 1], ["teslawagon", 2]],
 ];
 
 // v0.41: ボス直衛の守備隊。**従来 generateMovers はボス圏内を明示的に避けており、
@@ -3670,7 +3716,7 @@ const BOSS_GARRISON_BY_STAGE = [
   [["colossus", 1], ["shockman", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
   [["colossus", 2], ["healer", 1], ["balloon", 2], ["shieldman", 1], ["flamewagon", 1]],
   [["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
-  [["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["splitter", 1], ["flamewagon", 1]],
+  [["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["splitter", 1], ["flamewagon", 1], ["teslawagon", 1]],
 ];
 // 守備隊が巡回する帯（ボス中心からの距離）。城壁(420)の内側に収める＝
 // 「壁を破ってから守備隊と戦う」段取りになる。
@@ -3757,6 +3803,170 @@ function hazardRadiusAt(h) {
   if (h.r0 === h.r) return h.r;
   const t = Math.min(1, (h.maxLife - h.life) / (h.maxLife * 0.5));
   return h.r0 + (h.r - h.r0) * t;
+}
+
+// v0.43: 連鎖電撃の表示FX（折れ線をそのまま描く）
+const chainFxList = [];
+const CHAIN_FX_DURATION = 0.28;
+
+function updateChainFx(dt) {
+  for (let k = chainFxList.length - 1; k >= 0; k--) {
+    chainFxList[k].life -= dt;
+    if (chainFxList[k].life <= 0) chainFxList.splice(k, 1);
+  }
+}
+
+/** 連鎖電撃。竜から竜へ数珠つなぎの折れ線を描く＝「固めていると全部に通る」が一目で分かる。 */
+function drawChainFx() {
+  if (chainFxList.length === 0) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const fx of chainFxList) {
+    const a = Math.max(0, fx.life / CHAIN_FX_DURATION);
+    for (const [w, col, alpha] of [[6, "#a0d8ff", 0.30], [2.2, "#eaf6ff", 0.95]]) {
+      ctx.globalAlpha = alpha * a;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      for (const sg of fx.segs) {
+        // 稲妻らしく中点を折る（見た目だけの乱数なので fxRandom）
+        const mxs = (sg[0] + sg[2]) * 0.5 + (fxRandom() - 0.5) * 9;
+        const mys = (sg[1] + sg[3]) * 0.5 + (fxRandom() - 0.5) * 9;
+        ctx.moveTo(sg[0], sg[1]);
+        ctx.lineTo(mxs, mys);
+        ctx.lineTo(sg[2], sg[3]);
+      }
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/**
+ * v0.43: 堰の決壊 — 下流へ水の壁を走らせる。
+ * @param {number} fromIdx 川ポリラインのどの点から下流かのインデックス
+ */
+function triggerFlood(fromIdx) {
+  if (riverPolyline.length < 2) return;
+  // 下流側の残り距離を測って、そこまで走らせる
+  let total = 0;
+  for (let i = fromIdx; i < riverPolyline.length - 1; i++) {
+    total += Math.hypot(riverPolyline[i + 1].x - riverPolyline[i].x,
+                        riverPolyline[i + 1].y - riverPolyline[i].y);
+  }
+  floodWave = { dist: 0, maxDist: total, fromIdx, hit: new Set() };
+  triggerFlash("rgba(120,200,255,0.35)", 0.35);
+  triggerShake(6, 0.5);
+  hapticPulse(220);
+}
+
+/** 洪水の先端位置（ワールド座標）と、そこでの進行方向。 */
+function floodFrontAt(dist) {
+  let acc = 0;
+  for (let i = floodWave.fromIdx; i < riverPolyline.length - 1; i++) {
+    const a = riverPolyline[i], b = riverPolyline[i + 1];
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    if (acc + segLen >= dist) {
+      const t = (dist - acc) / segLen;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
+               dx: (b.x - a.x) / segLen, dy: (b.y - a.y) / segLen };
+    }
+    acc += segLen;
+  }
+  const last = riverPolyline[riverPolyline.length - 1];
+  return { x: last.x, y: last.y, dx: 0, dy: 1 };
+}
+
+function updateFlood(dt) {
+  if (!floodWave) return;
+  const prev = floodWave.dist;
+  floodWave.dist += DAM_FLOOD_SPEED * dt;
+  // 先端が通り過ぎた区間の建物を水没させる。刻みが粗いと取りこぼすので少しずつ進めて判定する
+  const STEP = 60;
+  for (let d = prev; d < floodWave.dist; d += STEP) {
+    const f = floodFrontAt(Math.min(d, floodWave.maxDist));
+    const cell = Math.max(1, Math.ceil(DAM_FLOOD_BAND / BUILDING_GRID_CELL));
+    buildingGridQueryRadius(f.x, f.y, cell, _buildingNeighbourBuf);
+    for (const sIdx of _buildingNeighbourBuf) {
+      const b = settlements[sIdx];
+      if (!b || b.fallen || b.isBoss || b._isWall) continue;   // 城壁とボスは流されない
+      if (floodWave.hit.has(sIdx)) continue;
+      const bx = b.wx - f.x, by = b.wy - f.y;
+      if (bx * bx + by * by > DAM_FLOOD_BAND * DAM_FLOOD_BAND) continue;
+      floodWave.hit.add(sIdx);
+      b.hp -= DAM_FLOOD_DAMAGE;
+      if (b.hp <= 0) settlementFall(sIdx);
+    }
+    // 水しぶき（先端の左右へ）
+    if (fxRandom() < 0.6) {
+      const side = fxRandom() < 0.5 ? 1 : -1;
+      spawnHitParticles(f.x - f.dy * side * (30 + fxRandom() * DAM_FLOOD_BAND * 0.7),
+                        f.y + f.dx * side * (30 + fxRandom() * DAM_FLOOD_BAND * 0.7));
+    }
+  }
+  if (floodWave.dist >= floodWave.maxDist) floodWave = null;
+}
+
+/** 洪水の描画。通り過ぎた帯を水色に沈め、先端に白い波頭を置く。 */
+function drawFlood() {
+  if (!floodWave || riverPolyline.length < 2) return;
+  ctx.save();
+  // 沈んだ帯（堰から先端まで）
+  ctx.globalAlpha = 0.30;
+  ctx.strokeStyle = "#5ab0e8";
+  ctx.lineWidth = DAM_FLOOD_BAND * 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  let acc = 0, started = false;
+  for (let i = floodWave.fromIdx; i < riverPolyline.length - 1; i++) {
+    const a = riverPolyline[i], b = riverPolyline[i + 1];
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    if (!started) { ctx.moveTo(a.x, a.y); started = true; }
+    if (acc + segLen >= floodWave.dist) {
+      const t = (floodWave.dist - acc) / segLen;
+      ctx.lineTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+      break;
+    }
+    ctx.lineTo(b.x, b.y);
+    acc += segLen;
+  }
+  ctx.stroke();
+  // 波頭
+  const f = floodFrontAt(Math.min(floodWave.dist, floodWave.maxDist));
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = "#dff2ff";
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(f.x - f.dy * DAM_FLOOD_BAND, f.y + f.dx * DAM_FLOOD_BAND);
+  ctx.lineTo(f.x + f.dy * DAM_FLOOD_BAND, f.y - f.dx * DAM_FLOOD_BAND);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/** 堰の見た目。川に直交する石の壁として live 描画する（建物レイヤーはキャッシュのため）。 */
+function drawDams() {
+  for (const b of settlements) {
+    if (!b || !b._isDam || b.fallen) continue;
+    ctx.save();
+    ctx.translate(b.wx, b.wy);
+    ctx.rotate(b._damAngle ?? 0);
+    // 川を堰き止める板（進行方向に対して直交＝横長）
+    ctx.fillStyle = "#8a94a0";
+    ctx.fillRect(-10, -riverWidth * 0.9, 20, riverWidth * 1.8);
+    ctx.strokeStyle = "#c8d4e0";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-10, -riverWidth * 0.9, 20, riverWidth * 1.8);
+    // 上流側に溜まった水（壊すと出るぞ、の予告）
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = "#5ab0e8";
+    ctx.fillRect(-46, -riverWidth * 0.85, 36, riverWidth * 1.7);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
 }
 
 /** 焼夷塔の目印。脈打つ輪で「ここは燃える」を予告する。ライブ描画（建物レイヤーはキャッシュのため）。 */
@@ -4237,6 +4447,66 @@ function updateMovers(dt) {
         for (let k = -1; k <= 1; k++) {
           spawnFanProjectileRaw(m.wx, m.wy, heading + side + k * 0.15, atk.speed, atk.damage, "#90b0d0", 1);
         }
+      }
+    } else if (atk.type === "chain") {
+      // v0.43: 連鎖電撃。最寄りの竜に落ちてから、**触れている仲間へ次々に広がる**（幅優先）。
+      // 一本道で辿ると、最初に落ちた1体が群れの端のはぐれ個体だった場合にそこで途切れる
+      // （実測: 密集しているのに2体で止まった）。幅優先なら塊の中へ入った時点で全体へ回る。
+      // 1体ごとのダメージは**その竜の周りの密度**に比例＝固めるほど痛い。
+      if (nearestD2 < atk.range * atk.range) {
+        const dRange2 = atk.densityRange * atk.densityRange;
+        const hopR2   = atk.hopRange * atk.hopRange;
+        // 落雷点は「最寄り」だが、**はぐれ個体には落とさない**。
+        // 群れの端の1体に落ちるとそこで途切れて、密集させても何も起きない
+        // （実測: 平均6.9体の隣がいる密集状態なのに1体しか感電しなかった）。
+        const hasNeighbour = (idx) => {
+          for (let i = 0; i < N; i++) {
+            if (i === idx || boidDead[i] || boidDowned[i]) continue;
+            const dx2 = px[i] - px[idx], dy2 = py[i] - py[idx];
+            if (dx2 * dx2 + dy2 * dy2 < hopR2) return true;
+          }
+          return false;
+        };
+        let strike = nearestIdx;
+        if (!hasNeighbour(strike)) {
+          let bestD2s = Infinity;
+          for (let i = 0; i < N; i++) {
+            if (boidDead[i] || boidDowned[i]) continue;
+            const dx2 = px[i] - m.wx, dy2 = py[i] - m.wy;
+            const d2s = dx2 * dx2 + dy2 * dy2;
+            if (d2s < bestD2s && d2s < atk.range * atk.range && hasNeighbour(i)) { bestD2s = d2s; strike = i; }
+          }
+        }
+        // ① 触れ合っている仲間をたどって感電する範囲を集める（幅優先）
+        const segs = [[m.wx, m.wy, px[strike], py[strike]]];
+        const hitList = [strike];
+        const hitSet = new Set(hitList);
+        for (let q = 0; q < hitList.length && hitList.length < atk.hops; q++) {
+          const cur = hitList[q];
+          for (let i = 0; i < N && hitList.length < atk.hops; i++) {
+            if (boidDead[i] || boidDowned[i] || hitSet.has(i)) continue;
+            const cdx = px[i] - px[cur], cdy = py[i] - py[cur];
+            if (cdx * cdx + cdy * cdy > hopR2) continue;
+            hitSet.add(i);
+            hitList.push(i);
+            segs.push([px[cur], py[cur], px[i], py[i]]);
+          }
+        }
+        // ② 集めきってからダメージを配る（集計と適用を分けないと、
+        //    上限に達した時点で残りが無傷のまま終わる）
+        for (const idx of hitList) {
+          let neighbours = 0;
+          for (let i = 0; i < N; i++) {
+            if (i === idx || boidDead[i] || boidDowned[i]) continue;
+            const ndx2 = px[i] - px[idx], ndy2 = py[i] - py[idx];
+            if (ndx2 * ndx2 + ndy2 * ndy2 < dRange2) neighbours++;
+          }
+          const mult = Math.min(atk.densityMax, 1 + neighbours * atk.densityScale);
+          applyDamageToBoid(idx, atk.damage * ferocity * mult);
+        }
+        chainFxList.push({ segs, life: CHAIN_FX_DURATION });
+      } else {
+        m.attackTimer = 0.4;
       }
     } else if (atk.type === "hazard") {
       // v0.42: 持続する範囲攻撃。atTarget=true なら群れの足元、false なら自分の周り。
@@ -6830,6 +7100,9 @@ function settlementFall(settlementIndex) {
 
   // v0.23: 花火要塞は派手な演出＋竜晶/XPボーナス
   if (settlement.isFirework) detonateFirework(settlement);
+
+  // v0.43: 堰が落ちたら下流へ洪水を流す（通った帯の建物が順に崩れる）
+  if (settlement._isDam) triggerFlood(settlement._damIdx);
 
   // v0.10: 石造りの城壁以外は炎上させる（燃える街の演出）
   if (!settlement._isWall) spawnFire(settlement.wx, settlement.wy, settlement.radius);
@@ -11046,11 +11319,14 @@ function render(now) {
   drawBreathAttacks(now);
   drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
   drawHazards();             // v0.42: 持続する範囲攻撃（地面に敷く＝竜より下）
+  drawFlood();               // v0.43: 洪水（地面の上・竜より下）
+  drawDams();                // v0.43: 堰の見た目
   drawEmberTowers();         // v0.42: 焼夷塔の目印
   drawSlashFx();             // v0.8: 緋竜の斬閃 / v0.35: 隼竜の刃翼（銀）
   drawBombs();               // v0.37.1: 爆竜の投下済み爆弾（竜より下＝地面にある）
   drawBoids();
   drawSatellites();          // v0.35: 蜂竜の衛星蜂（竜の上に描く）
+  drawChainFx();             // v0.43: 連鎖電撃（竜の上に描く）
   drawTongueFx();            // v0.37.1: 蛙竜の舌（竜の上に描く）
   drawProjectiles();
   drawParticles();
@@ -13009,6 +13285,8 @@ function tick() {
     updateCollisionAttacks(wdt);  // 変更2: 直接衝突ダメージ＋ヒットストップ（MELEEは威力増）
     updateMovers(wdt);            // v0.6-p4: 移動敵の巡回・攻撃
     updateHazards(wdt);           // v0.42: 持続する範囲攻撃（敵・建物が置く危険地帯）
+    updateFlood(wdt);             // v0.43: 決壊した堰の洪水（下流の建物を順に沈める）
+    updateChainFx(wdt);           // v0.43: 連鎖電撃のFX
     updateMoverRams();            // v0.6-p4: 移動敵への体当たり
     updateBossNova(wdt);          // v0.7: ボスの反発衝撃波
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
