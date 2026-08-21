@@ -474,6 +474,10 @@
     border-radius: 7px; cursor: pointer; -webkit-tap-highlight-color: transparent;
   }
   #debug-panel .dbg-btn:active { transform: scale(0.96); background: rgba(50,66,92,0.95); }
+  /* v0.44: 敵図鑑は3列。ボタンは pointerdown で即発火するので、
+     スクロールが要るとドラッグが「湧かせる」に化ける。画面内に収める。 */
+  #debug-panel .dbg-grid.enemies { grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  #debug-panel .dbg-grid.enemies .dbg-btn { font-size: 11px; padding: 8px 3px; line-height: 1.35; }
 
   /* v0.6: リザルト統計 */
   #result-stats {
@@ -575,7 +579,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.43.1";
+const GAME_VERSION = "v0.44.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -701,7 +705,111 @@ function debugCycleRecoil() {
 }
 
 // パネルのボタン定義。run 実行後にパネルは自動で再描画/クローズされる。
+// -----------------------------------------------------------------
+// v0.44: 敵を確認するためのデバッグ機能
+// -----------------------------------------------------------------
+// マップは 4800×3600 あるので、特定の敵の挙動を見たいときに「探す」のが一番の手間だった。
+// ここでは「呼ぶ・見分ける・落ち着いて眺める」の3つを用意する。
+//   ① 敵図鑑: 種類を選んで**群れのすぐ隣に湧かせる**（隊で出る敵は隊ごと）
+//   ② 名前ラベル: 全ての敵に名前とHPを出す（見分けがつかない問題の解消）
+//   ③ 竜を無敵: 群れが落ちないので敵の動きだけを観察できる
+let debugShowEnemyLabels = false;
+let debugInvincible      = false;
+let debugPage            = "main";   // "main" | "enemies"
+
+// 敵の表示名（デバッグ専用。ゲーム内の文言ではないので STRINGS には置かない）
+const DEBUG_ENEMY_LABELS = {
+  shieldman: "🛡盾兵", splitter: "🫧分裂体", splitter_mid: "🫧分裂体(中)", splitter_small: "🫧分裂体(小)",
+  lurker: "🕳潜行者", flamewagon: "🔥火吹き車", miasma: "☁瘴気塔", teslawagon: "⚡雷撃塔車",
+  mammoth: "🦣マンモス", colossus: "🗿コロッサス", knights: "⚔騎士団", ironclad: "🚂甲鉄艦",
+  balloon: "🎈爆撃気球", raider: "🏹レイダー", warlord: "💀ウォーロード", shockman: "💢衝撃兵",
+  healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車",
+  behemoth_core: "👹巨獣(腕2本つき)", behemoth_arm: "👹巨獣の腕",
+};
+
+// 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
+const DEBUG_ENEMY_ORDER = [
+  "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
+  "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
+  "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
+];
+
+/** 群れのすぐ横に敵を湧かせる。隊（packCount）は隊ごと、巨獣はコア＋腕2本まとめて。 */
+function debugSpawnEnemy(key) {
+  if (gameState !== "playing") return;
+  const def = MOVER_DEFS[key];
+  if (!def) return;
+  const c = calcFriendlyCentroid();
+  // 群れの右手前に置く（重なって見えないよう少し離す）
+  const baseX = Math.max(80, Math.min(WORLD_W - 80, c.x + 300));
+  const baseY = Math.max(80, Math.min(WORLD_H - 80, c.y));
+  const at = () => ({ x: baseX, y: baseY });
+
+  const spawnOne = (d, ox, oy) => {
+    const m = makeMover(d, at);
+    m.wx = baseX + ox; m.wy = baseY + oy;
+    m.maxHp = d.hp; m.hp = d.hp; m.xpValue = d.xp;
+    movers.push(m);
+    spawnDragonAppearEffect(m.wx, m.wy);
+    return m;
+  };
+
+  if (key === "behemoth_core") {
+    const core = spawnOne(def, 0, 0);
+    for (const side of [-1, 1]) {
+      const arm = spawnOne(MOVER_DEFS.behemoth_arm, side * 60, 0);
+      arm.parent = core; arm.armSide = side; arm.attackTimer = random() * 2;
+      core[side < 0 ? "armL" : "armR"] = arm;
+    }
+    return;
+  }
+
+  const count = def.packCount ?? 1;
+  const leaderM = spawnOne(def, 0, 0);
+  for (let k = 1; k < count; k++) {
+    const a = (k / count) * Math.PI * 2;
+    const mem = spawnOne(def, Math.cos(a) * 46, Math.sin(a) * 46);
+    mem.waypoints = leaderM.waypoints;   // 隊で同じ経路を共有する（本編の湧き方と同じ）
+    mem.packId    = leaderM.packId ?? (leaderM.packId = nextPackId++);
+    mem.speedMult = randRange(0.92, 1.08);
+  }
+  if (count > 1 && leaderM.packId === undefined) leaderM.packId = nextPackId++;
+}
+
+/** 場を片付けて1体だけ観察したいとき用。 */
+function debugClearEnemies() {
+  for (const m of movers) m.alive = false;
+  movers.length = 0;
+}
+
+/** 堰を探しに行かずに決壊を見る。 */
+function debugBreakDam() {
+  const idx = settlements.findIndex(b => b && b._isDam && !b.fallen);
+  if (idx >= 0) settlementFall(idx);
+}
+
+/** ボス周辺（守備隊・城下・城壁）を見に行く。群れとカメラごと運ぶ。 */
+function debugWarpToBoss() {
+  const boss = settlements.find(b => b && b.isBoss);
+  if (!boss) return;
+  const tx = boss.wx - 560, ty = boss.wy;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+    px[i] = tx + (i % 8) * 22;
+    py[i] = ty - 80 + Math.floor(i / 8) * 22;
+  }
+  leader.x = tx; leader.y = ty; leader.vx = 0; leader.vy = 0;
+  cam.x = tx; cam.y = ty;
+  pathClear();
+}
+
 const DEBUG_ACTIONS = [
+  { label: "👾 敵を出す…",           run: () => { debugPage = "enemies"; }, keepOpen: true },
+  { label: "🏷 敵の名札",            run: () => { debugShowEnemyLabels = !debugShowEnemyLabels; }, keepOpen: true },
+  { label: "🛡 竜を無敵",            run: () => { debugInvincible = !debugInvincible; }, keepOpen: true },
+  { label: "☠ 敵を全部消す",         run: () => debugClearEnemies(), keepOpen: true },
+  { label: "🌊 堰を決壊させる",       run: () => debugBreakDam() },
+  { label: "🎯 ボス手前へワープ",     run: () => debugWarpToBoss() },
   { label: "🛸 動き切替",            run: () => debugCycleMoveProfile() },
   { label: "💥 反動切替",            run: () => debugCycleRecoil() },
   { label: "▶ 次ステージ",          run: () => debugAdvanceStage() },
@@ -727,7 +835,8 @@ function debugStatusLine() {
   const move = moveProfileOverride ? moveProfileOverride : `種:${flockSpecies}`;
   // v0.34.1: 反動は「定義値」か上書き値かを出す（実機で今どの設定か分かるように）
   const rec = debugRecoilOverride === null ? `既定(${atk().recoilDist})` : `${debugRecoilOverride}`;
-  return `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
+  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}` +
+         `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
          `動き:${move} / 反動:${rec} / ` +
          // v0.38: 不具合報告用。この値を ?seed= に渡すと同じランをやり直せる
@@ -735,21 +844,63 @@ function debugStatusLine() {
 }
 
 function renderDebugPanel() {
+  const title = debugPage === "enemies" ? "ENEMIES" : `DEBUG ${GAME_VERSION}`;
   debugPanelEl.innerHTML =
-    `<div class="dbg-title">DEBUG ${GAME_VERSION}<span class="dbg-close">✕</span></div>` +
+    `<div class="dbg-title">${title}<span class="dbg-close">✕</span></div>` +
     `<div class="dbg-status">${debugStatusLine()}</div>` +
     `<div class="dbg-grid"></div>`;
   const grid = debugPanelEl.querySelector(".dbg-grid");
+
+  // v0.44: 敵図鑑ページ — 押すとその敵が群れの隣に湧く（パネルは開いたまま＝続けて出せる）
+  if (debugPage === "enemies") {
+    grid.classList.add("enemies");
+    const back = document.createElement("button");
+    back.className = "dbg-btn";
+    back.style.gridColumn = "1 / -1";
+    back.textContent = "← もどる";
+    back.addEventListener("pointerdown", (e) => {
+      e.stopPropagation(); e.preventDefault();
+      debugPage = "main"; renderDebugPanel();
+    });
+    grid.appendChild(back);
+
+    for (const key of DEBUG_ENEMY_ORDER) {
+      const def = MOVER_DEFS[key];
+      if (!def) continue;
+      const b = document.createElement("button");
+      b.className = "dbg-btn";
+      // HPは現場の名札に出るので、ここは名前だけにして高さを詰める（スクロール回避）
+      const packNote = def.packCount ? `×${def.packCount}` : "";
+      b.textContent = `${DEBUG_ENEMY_LABELS[key] ?? key}${packNote}`;
+      b.addEventListener("pointerdown", (e) => {
+        e.stopPropagation(); e.preventDefault();
+        debugSpawnEnemy(key);
+        renderDebugPanel();
+      });
+      grid.appendChild(b);
+    }
+    debugPanelEl.querySelector(".dbg-close").addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      toggleDebugPanel(false);
+    });
+    return;
+  }
+
   for (const act of DEBUG_ACTIONS) {
     const b = document.createElement("button");
     b.className = "dbg-btn";
-    b.textContent = act.label;
+    // トグル系は現在の状態を出す（押したのに何も起きていないように見えるのを防ぐ）
+    let label = act.label;
+    if (act.label.startsWith("🏷")) label += debugShowEnemyLabels ? "：ON" : "：OFF";
+    if (act.label.startsWith("🛡")) label += debugInvincible ? "：ON" : "：OFF";
+    b.textContent = label;
     b.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       e.preventDefault();
       act.run();
       // プレイ外へ抜けた／カードが開いたらパネルは閉じ、そうでなければ数値を更新
-      if (gameState !== "playing" || upgradeCardsVisible) toggleDebugPanel(false);
+      // （keepOpen の項目は観察を続けたいので閉じない）
+      if (!act.keepOpen && (gameState !== "playing" || upgradeCardsVisible)) toggleDebugPanel(false);
       else renderDebugPanel();
     });
     grid.appendChild(b);
@@ -3965,6 +4116,45 @@ function drawDams() {
     ctx.globalAlpha = 1;
     ctx.restore();
   }
+}
+
+/**
+ * v0.44: デバッグ用の敵ラベル。名前・HP・状態（潜航中／盾の向き）を頭上に出す。
+ * 見た目が似た敵（スプライトを流用している）を**現場で見分けられない**問題への対応。
+ * カメラ変換の内側（ワールド座標）で呼ぶ。
+ */
+function drawEnemyDebugLabels() {
+  if (!debugShowEnemyLabels) return;
+  ctx.save();
+  ctx.font = "10px monospace";
+  ctx.textAlign = "center";
+  for (const m of movers) {
+    if (!m.alive) continue;
+    const name = DEBUG_ENEMY_LABELS[m.def.name] ?? m.def.name;
+    const state = m.submerged ? " [潜航中/無敵]" : "";
+    const text = `${name} ${Math.max(0, Math.ceil(m.hp))}/${m.maxHp}${state}`;
+    const y = m.wy - m.def.radius - 12;
+    const w = ctx.measureText(text).width + 8;
+    ctx.globalAlpha = 0.72;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(m.wx - w / 2, y - 10, w, 13);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = m.submerged ? "#ffd080" : "#e8f4ff";
+    ctx.fillText(text, m.wx, y);
+    // 盾持ちは弾かれる向きが分かるように扇を出す
+    if (m.def.shieldArc !== undefined) {
+      const ang = Math.atan2(m.headingY, m.headingX);
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = "#9fd8ff";
+      ctx.beginPath();
+      ctx.moveTo(m.wx, m.wy);
+      ctx.arc(m.wx, m.wy, m.def.radius + 26, ang - m.def.shieldArc, ang + m.def.shieldArc);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.restore();
 }
 
 /** 焼夷塔の目印。脈打つ輪で「ここは燃える」を予告する。ライブ描画（建物レイヤーはキャッシュのため）。 */
@@ -10538,6 +10728,7 @@ function updateDeathTimers(dt) {
 function applyDamageToBoid(boidIndex, damage) {
   // 変更2: ダウン中・すでに dead の場合は何もしない
   if (boidDead[boidIndex] || boidDowned[boidIndex]) return;
+  if (debugInvincible) return;   // v0.44: デバッグ「竜を無敵」中は落ちない（敵の観察用）
   // v0.6: 「竜鱗共鳴」カードで被ダメージ軽減
   boidHp[boidIndex] -= damage * effDmgTakenMult();
   if (boidHp[boidIndex] <= 0) {
@@ -11325,6 +11516,7 @@ function render(now) {
   drawBoids();
   drawSatellites();          // v0.35: 蜂竜の衛星蜂（竜の上に描く）
   drawChainFx();             // v0.43: 連鎖電撃（竜の上に描く）
+  drawEnemyDebugLabels();    // v0.44: デバッグ「敵の名札」（既定OFF）
   drawTongueFx();            // v0.37.1: 蛙竜の舌（竜の上に描く）
   drawProjectiles();
   drawParticles();
