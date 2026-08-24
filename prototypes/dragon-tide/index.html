@@ -579,7 +579,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.47.0";
+const GAME_VERSION = "v0.47.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -12084,6 +12084,10 @@ function drawBoids() {
   //   getSpeciesSprites(boidSpecies[i]) を引く形にすればよい（キャッシュは複数種対応済み）。
   const element       = sp().element ?? "fire";
   const sprites       = getSpeciesSprites(flockSpecies);
+  // v0.47.1: 跳躍ポーズの列（持っている竜種＝蛙竜だけ）。滞空中の個体はこちらを使う。
+  const partsKeyNow   = dragonPartsKey(element);
+  const hasAirPose    = !!(partsKeyNow && DRAGON_PART_SPRITES[partsKeyNow].bodyAir);
+  const spritesAir    = hasAirPose ? getSpeciesSprites(flockSpecies, "air") : null;
   const palette       = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
@@ -12137,7 +12141,8 @@ function drawBoids() {
     // sin を 0〜1 に正規化してフレームインデックスへ
     const tNorm     = (Math.sin(phase) * 0.5 + 0.5);
     const frameIdx  = Math.floor(tNorm * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
-    const sprite    = sprites[frameIdx];
+    // 滞空している蛙竜は「後脚を伸ばした」ポーズへ差し替える＝跳ぶたびに脚が動いて見える
+    const sprite    = (spritesAir && boidHopAir[i] > 0.15) ? spritesAir[frameIdx] : sprites[frameIdx];
 
     // ---- 尻尾（動的描画）----
     // 進行方向後方に TAIL_SEGS セグメントをカーブさせる。
@@ -12850,7 +12855,9 @@ const ENEMY_SPRITE_META = {
   balloon:        { px: 0.499, py: 0.459, forward: "none", drawScale: 2.97, hover: true },
   behemoth_arm:   { px: 0.524, py: 0.482, forward: "up", drawScale: 1.41, hover: true },
   behemoth_core:  { px: 0.498, py: 0.525, forward: "up", drawScale: 3.42 },
-  colossus:       { px: 0.497, py: 0.493, forward: "up", drawScale: 2.8, hover: true },
+  // v0.47.1: 生成された絵の前後が逆だった（冠に見えた台形が実は台座で、顔が下を向いていた）ので
+  // 画像そのものを180度回してある。ここは回転後の実測値。
+  colossus:       { px: 0.500, py: 0.504, forward: "up", drawScale: 2.8, hover: true },
   flamewagon:     { px: 0.497, py: 0.593, forward: "up", drawScale: 2.04 },
   healer:         { px: 0.498, py: 0.499, forward: "none", drawScale: 3.58 },
   ironclad:       { px: 0.497, py: 0.540, forward: "up", drawScale: 1.34 },
@@ -12859,7 +12866,9 @@ const ENEMY_SPRITE_META = {
   mammoth:        { px: 0.498, py: 0.579, forward: "up", drawScale: 2.08 },
   miasma:         { px: 0.498, py: 0.548, forward: "none", drawScale: 3.15 },
   raider:         { px: 0.606, py: 0.487, forward: "up", drawScale: 1.53 },
-  shieldman:      { px: 0.488, py: 0.501, forward: "up", drawScale: 3.45 },
+  // v0.47.1: コード側が描く「弾く扇」（drawMovers）と絵が重なって盾が読めなかったので、
+  // エフェクトはそのままに**絵を一回り小さく**した（3.45 → 2.4）。
+  shieldman:      { px: 0.488, py: 0.501, forward: "up", drawScale: 2.4 },
   shockman:       { px: 0.498, py: 0.516, forward: "up", drawScale: 3.26 },
   splitter:       { px: 0.494, py: 0.520, forward: "none", drawScale: 3.49, hover: true },
   summoner:       { px: 0.497, py: 0.518, forward: "none", drawScale: 3.34, hover: true },
@@ -13030,12 +13039,16 @@ const DRAGON_PART_SPRITES = {
   },
   frog: {
     body: "assets/dragon_frog_body.png",
+    // v0.47.1: 跳んでいる間だけ差し替える「後脚を伸ばした」胴体。
+    // 実機判定「ジャンプする時に脚が動いてほしい」への対応。2ポーズの差し替えで脚が動いて見える。
+    bodyAir: "assets/dragon_frog_body_air.png",
+    bodyAirPivot: { cx: 159.3, cy: 149.4, w: 320, h: 315 },
     wing: "assets/dragon_frog_wing.png",
     bodyPivot:  { cx: 139.9, cy: 185.3, w: 281, h: 320 },
     shoulder:   { left: { x: 71.0, y: 182 }, right: { x: 208.0, y: 182 } },
     wingAnchor: { x: 317, y: 66.1 },
     bodyDrawH: 27,
-    wingDrawW: 25,
+    wingDrawW: 15,   // v0.47.1: 蛙なので翼は小さく（実機判定「翼はもっと小さく」）
   },
   // UFO だけは**円盤1枚**（sprites.md のカテゴリD）。翼を持たないので wing を書かない。
   // drawPartSeparatedDragon は wing が無ければ胴体だけを描く。
@@ -13094,7 +13107,7 @@ function preloadDragonImages() {
     ...Object.keys(DRAGON_PART_SPRITES).flatMap((el) => {
       dragonPartImages[el] = dragonPartImages[el] || {};
       // v0.46: 翼を持たない竜種（UFO）は wing を宣言していないので body だけ読む
-      return ["body", "wing"]
+      return ["body", "wing", "bodyAir"]
         .filter((part) => DRAGON_PART_SPRITES[el][part])
         .map((part) =>
           loadOne(DRAGON_PART_SPRITES[el][part], (img) => { dragonPartImages[el][part] = img; }));
@@ -13175,13 +13188,15 @@ function easeAngle(cur, target, k) {
  * @param {number} flapFactor  翼スパン軸の縮小係数（常に正、0.13〜1.0）
  * @param {CanvasRenderingContext2D} c
  */
-function drawPartSeparatedDragon(partsKey, flapFactor, c) {
+function drawPartSeparatedDragon(partsKey, flapFactor, c, variant) {
   const spec    = DRAGON_PART_SPRITES[partsKey];
   const imgs    = dragonPartImages[partsKey];
-  const bodyImg = imgs.body;
+  // v0.47.1: 跳躍ポーズ（後脚を伸ばした胴体）。持っていない竜種は通常の胴体のまま。
+  const useAir  = variant === "air" && !!(spec.bodyAir && imgs.bodyAir);
+  const bodyImg = useAir ? imgs.bodyAir : imgs.body;
   const wingImg = imgs.wing;
 
-  const bodyPivot = spec.bodyPivot;
+  const bodyPivot = useAir ? spec.bodyAirPivot : spec.bodyPivot;
   const bodyDrawH = spec.bodyDrawH;
   const bodyDrawW = bodyDrawH * (bodyImg.naturalWidth / bodyImg.naturalHeight);
   // 胴体の論理スケール（元画像px → 描画px）。肩オフセットの換算にも使う。
@@ -13244,7 +13259,7 @@ function drawPartSeparatedDragon(partsKey, flapFactor, c) {
  * @param {number} spritePx  canvas物理解像度（= 論理サイズ × DPR）
  * @returns {HTMLCanvasElement}
  */
-function renderDragonFrame(element, wingAngle, spritePx) {
+function renderDragonFrame(element, wingAngle, spritePx, variant) {
 
   // v0.35.2: 描画方式は**属性ごとに**決める（従来はグローバルな dragonImagesLoaded で
   // 全属性まとめて判定していたため、1枚欠けると全竜種がベクターに落ちていた）。
@@ -13281,7 +13296,7 @@ function renderDragonFrame(element, wingAngle, spritePx) {
 
   if (usesParts) {
     // 分離方式: 胴体固定 + 翼のみ羽ばたき（胴体まで伸縮する「蝶々開閉」を防ぐため）
-    drawPartSeparatedDragon(partsKey, flapFactor, c);
+    drawPartSeparatedDragon(partsKey, flapFactor, c, variant);
   } else {
     // 一体画像方式（旧）: 全身画像に flapFactor の scale をまとめて適用する。
     // **胴体まで横に伸縮する**ので、分離方式へ移行できた竜種は上の分岐に載せる。
@@ -13530,7 +13545,7 @@ function drawWing(c, bx, _by, wingTipY, palette) {
 }
 
 /** 1属性ぶんの羽ばたき全コマをプリレンダして返す。 */
-function buildElementSprites(element) {
+function buildElementSprites(element, variant) {
   const spriteDpr = Math.min(window.devicePixelRatio || 1, 2);
   const spritePx  = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
   const frames    = [];
@@ -13539,7 +13554,7 @@ function buildElementSprites(element) {
     // wingAngle: 0=水平（最大展開）→ π*0.65 = 約37度折りたたみ
     const phase     = (f / DRAGON_FLAP_FRAMES) * Math.PI * 2;
     const wingAngle = (Math.sin(phase) * 0.5 + 0.5) * (Math.PI * 0.65);
-    frames.push(renderDragonFrame(element, wingAngle, spritePx));
+    frames.push(renderDragonFrame(element, wingAngle, spritePx, variant));
   }
   return frames;
 }
@@ -13554,17 +13569,23 @@ function buildElementSprites(element) {
 const spriteCache = new Map();      // speciesId -> フレーム配列
 const SPRITE_CACHE_MAX = 3;         // 同時保持数。1固定にはしない（暫定値・実機で調整）
 
-function getSpeciesSprites(speciesId) {
-  let frames = spriteCache.get(speciesId);
+/**
+ * 竜種のスプライト列を返す。
+ * v0.47.1: variant="air" で「跳躍ポーズ」の列を別に持てる（蛙竜の脚の動き）。
+ * キャッシュキーを分けるだけなので、変種を持たない竜種では従来どおり1列しか作られない。
+ */
+function getSpeciesSprites(speciesId, variant) {
+  const cacheKey = variant ? speciesId + ":" + variant : speciesId;
+  let frames = spriteCache.get(cacheKey);
   if (frames) {
     // 参照されたら最新に回す（Map は挿入順を保つので削除→再挿入でLRUになる）
-    spriteCache.delete(speciesId);
-    spriteCache.set(speciesId, frames);
+    spriteCache.delete(cacheKey);
+    spriteCache.set(cacheKey, frames);
     return frames;
   }
   const def = SPECIES_DEFS[speciesId] || SPECIES_DEFS.fire;
-  frames = buildElementSprites(def.element);
-  spriteCache.set(speciesId, frames);
+  frames = buildElementSprites(def.element, variant);
+  spriteCache.set(cacheKey, frames);
   while (spriteCache.size > SPRITE_CACHE_MAX) {
     spriteCache.delete(spriteCache.keys().next().value);   // 最古から破棄
   }
