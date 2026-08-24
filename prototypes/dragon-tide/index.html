@@ -579,7 +579,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.45.0";
+const GAME_VERSION = "v0.46.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1228,6 +1228,10 @@ const SPECIES_DEFS = {
       maxSpeed: 175, minSpeed: 175, accel: INSTANT, turnRate: INSTANT,
       leaderSpeed: 175, orbitRadius: 64, pathEndMode: "orbit", pathTrace: true,
     },
+    // v0.46: 円盤なので**尻尾を描かず、進行方向も向かない**（代わりにゆっくり自転する）。
+    // 「尻尾のある同じ動きの竜が見たい」という要望は彗星竜が担う。
+    noTail: true,
+    spin: 0.9,        // 自転の角速度 rad/s
   },
   comet: {    // v0.45: UFO と**動きは完全に同一**。違うのは名前・見た目・攻撃だけ。
     ja: "彗星竜", en: "Comet Dragon", icon: "\u2604\uFE0F", color: "#ffe9a0", element: "comet",
@@ -12089,7 +12093,8 @@ function drawBoids() {
   // 先頭セグメントは現在の進行方向へ、後続は1つ前のセグメントへ、指数平滑で寄せる。
   // これにより尻尾は遅れて柔らかくしなる（生の履歴シフトのカクつきを排除）。
   // ヒットストップ中は vx/vy が凍結されるので尻尾はゆっくりまっすぐに落ち着く。
-  for (let i = 0; i < N; i++) {
+  const speciesNoTail = !!sp().noTail;   // v0.46: 円盤（UFO）は尻尾を持たない
+  for (let i = 0; i < N && !speciesNoTail; i++) {
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
     // 変更2: ダウン中でフェード完了かつ復帰フェードイン未開始は更新不要
     if (boidDowned[i] && boidFadeTimer[i] <= 0 && boidReviveTimer[i] <= 0) continue;
@@ -12166,7 +12171,7 @@ function drawBoids() {
     // 時間ベースの微小揺れ（個体ごとに位相をずらす）
     const wobble = Math.sin(breathTime * 1.5 + BOID_FLAP_PHASE[i] * Math.PI * 2) * TAIL_WOBBLE;
 
-    for (let s = 0; s < TAIL_SEGS; s++) {
+    for (let s = 0; s < (speciesNoTail ? 0 : TAIL_SEGS); s++) {
       // s番目のセグメントは「s個前の角度履歴」の逆方向（後方）を使う
       // 旋回差：現在角度と履歴角度の差をセグメント方向に加える
       const histAngle  = boidAngleHistory[base + Math.min(s, TAIL_SEGS - 1)];
@@ -12219,7 +12224,10 @@ function drawBoids() {
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(wx, wy);
-    ctx.rotate(angle);
+    // v0.46: 円盤は進行方向を向かない（向く顔が無い）。代わりに一定速度で自転させる。
+    ctx.rotate(speciesNoTail && sp().spin
+      ? breathTime * sp().spin + BOID_FLAP_PHASE[i] * Math.PI * 2
+      : angle);
     if (unitScale !== 1) ctx.scale(unitScale, unitScale);  // v0.15: リーダーの体格成長
     if (hopAir > 0.01) {
       const hopScale = 1 + HOP_DRAW_SCALE * hopAir;
@@ -12749,8 +12757,10 @@ const DRAGON_FLAP_SPEED  = 1.6;   // 羽ばたきサイクル毎秒（breathTime
 const HOP_DRAW_SCALE = 0.35;
 
 // スプライト1枚の論理サイズ（翼を広げた最大幅を内包する正方形）
-// ラスター画像は翼スパン40論理px・最長縦(fire)約35.8論理pxなので52px枠に余裕で収まる。
-const DRAGON_SPRITE_LOGICAL = 52;
+// v0.46: 52 → 66。作り直した翼は付け根から先端までが以前より長く、
+// 52px 枠だと13種中7種で**翼の先が枠に当たって切れていた**（プリレンダを実測して検出）。
+// ここは「枠」なので広げても竜の見た目の大きさは変わらない（中身は bodyDrawH/wingDrawW で決まる）。
+const DRAGON_SPRITE_LOGICAL = 66;
 
 // 要素 × フレームのスプライトキャッシュ
 // v0.34: プリレンダの保持は spriteCache（種IDキーの簡易LRU）へ移した。
@@ -12891,41 +12901,129 @@ const DRAGON_SPRITE_PIVOTS = {
 // アンカーの位置は画像ごとに違うので**竜種ごとに値を持つ**（生成物は毎回同じにならない）。
 // 内側端は「右から走査して厚み30px以上になる最初の列」で機械的に求められる。
 const DRAGON_PART_SPRITES = {
+  // v0.46: 全13種のスプライトを作り直した（実機判定 2026-08-23「一新しましょう」）。
+  // 数値は tools/sprite_meta.py の実測値をそのまま貼っている（手で詰め直していない）。
+  // 同ツールは、手で詰めた旧・火竜の値（bodyPivot 164.6/545.3・shoulder ±125・y425）を
+  // 誤差1px未満で再現できることを確認済みなので、この自動値を正とする。
+  // 画像は長辺320pxへ縮小済み（描画は最大50論理px＝DPR2で100pxなので3倍以上の余裕がある。
+  //  1K のままだと竜だけで14MBあり、モバイルのロードで割に合わない → 1.7MBになった）。
+  // wingDrawW は 30 → 25。作り直した翼は付け根が画像の右端にあり「付け根から先端まで＝画像幅」
+  // なので、30 のままだと両翼スパンが47〜58論理pxまで伸びて旧アセット（目標40前後）より
+  // 2割以上大きくなった。25 で 40〜51 に収まる。
   fire: {
     body: "assets/dragon_fire_body.png",
     wing: "assets/dragon_fire_wing.png",
-    bodyPivot:  { cx: 164.6, cy: 545.3, w: 613, h: 1138 },
-    shoulder:   { left: { x: 39.6, y: 425 }, right: { x: 289.6, y: 425 } },  // cx ±125
-    wingAnchor: { x: 1268, y: 387 },
+    bodyPivot:  { cx: 64.4, cy: 169.1, w: 130, h: 320 },
+    shoulder:   { left: { x: 17.0, y: 152 }, right: { x: 112.0, y: 152 } },
+    wingAnchor: { x: 317, y: 64.7 },
     bodyDrawH: 27,
-    wingDrawW: 30,
+    wingDrawW: 25,
   },
   ice: {
     body: "assets/dragon_ice_body.png",
     wing: "assets/dragon_ice_wing.png",
-    bodyPivot:  { cx: 214.6, cy: 519.9, w: 430, h: 928 },
-    shoulder:   { left: { x: 94.6, y: 395 }, right: { x: 334.6, y: 395 } },  // cx ±120
-    wingAnchor: { x: 1303, y: 271 },
+    bodyPivot:  { cx: 83.5, cy: 175.0, w: 168, h: 320 },
+    shoulder:   { left: { x: 24.3, y: 151 }, right: { x: 142.7, y: 151 } },
+    wingAnchor: { x: 316, y: 71.2 },
     bodyDrawH: 27,
-    wingDrawW: 30,
+    wingDrawW: 25,
   },
   shadow: {
     body: "assets/dragon_shadow_body.png",
     wing: "assets/dragon_shadow_wing.png",
-    bodyPivot:  { cx: 231.6, cy: 500.3, w: 464, h: 903 },
-    shoulder:   { left: { x: 114.6, y: 379 }, right: { x: 348.6, y: 379 } },  // cx ±117
-    wingAnchor: { x: 1231, y: 266 },
+    bodyPivot:  { cx: 74.5, cy: 174.7, w: 150, h: 320 },
+    shoulder:   { left: { x: 22.8, y: 177 }, right: { x: 126.2, y: 177 } },
+    wingAnchor: { x: 317, y: 63.4 },
     bodyDrawH: 27,
-    wingDrawW: 30,
+    wingDrawW: 25,
   },
   crimson: {
     body: "assets/dragon_crimson_body.png",
     wing: "assets/dragon_crimson_wing.png",
-    bodyPivot:  { cx: 184.6, cy: 476.6, w: 370, h: 882 },
-    shoulder:   { left: { x: 70.6, y: 358 }, right: { x: 298.6, y: 358 } },  // cx ±114
-    wingAnchor: { x: 1309, y: 232 },
+    bodyPivot:  { cx: 97.5, cy: 176.6, w: 196, h: 320 },
+    shoulder:   { left: { x: 18.1, y: 161 }, right: { x: 176.9, y: 161 } },
+    wingAnchor: { x: 316, y: 66.7 },
     bodyDrawH: 27,
-    wingDrawW: 30,
+    wingDrawW: 25,
+  },
+  falcon: {
+    body: "assets/dragon_falcon_body.png",
+    wing: "assets/dragon_falcon_wing.png",
+    bodyPivot:  { cx: 63.0, cy: 179.6, w: 127, h: 320 },
+    shoulder:   { left: { x: 32.8, y: 183 }, right: { x: 93.2, y: 183 } },
+    wingAnchor: { x: 316, y: 55.0 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  swallow: {
+    body: "assets/dragon_swallow_body.png",
+    wing: "assets/dragon_swallow_wing.png",
+    bodyPivot:  { cx: 53.0, cy: 179.7, w: 107, h: 320 },
+    shoulder:   { left: { x: 12.7, y: 182 }, right: { x: 93.3, y: 182 } },
+    wingAnchor: { x: 317, y: 60.2 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  hornet: {
+    body: "assets/dragon_hornet_body.png",
+    wing: "assets/dragon_hornet_wing.png",
+    bodyPivot:  { cx: 82.3, cy: 173.0, w: 166, h: 320 },
+    shoulder:   { left: { x: 22.4, y: 139 }, right: { x: 142.6, y: 139 } },
+    wingAnchor: { x: 316, y: 18.1 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  gargoyle: {
+    body: "assets/dragon_gargoyle_body.png",
+    wing: "assets/dragon_gargoyle_wing.png",
+    bodyPivot:  { cx: 115.0, cy: 173.2, w: 231, h: 320 },
+    shoulder:   { left: { x: 20.9, y: 110 }, right: { x: 209.1, y: 110 } },
+    wingAnchor: { x: 317, y: 68.0 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  comet: {
+    body: "assets/dragon_comet_body.png",
+    wing: "assets/dragon_comet_wing.png",
+    bodyPivot:  { cx: 58.3, cy: 178.1, w: 118, h: 320 },
+    shoulder:   { left: { x: 13.6, y: 180 }, right: { x: 103.4, y: 180 } },
+    wingAnchor: { x: 316, y: 69.3 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  bomber: {
+    body: "assets/dragon_bomber_body.png",
+    wing: "assets/dragon_bomber_wing.png",
+    bodyPivot:  { cx: 89.0, cy: 171.9, w: 179, h: 320 },
+    shoulder:   { left: { x: 16.8, y: 96 }, right: { x: 161.2, y: 96 } },
+    wingAnchor: { x: 317, y: 49.6 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  wayward: {
+    body: "assets/dragon_wayward_body.png",
+    wing: "assets/dragon_wayward_wing.png",
+    bodyPivot:  { cx: 92.0, cy: 172.9, w: 185, h: 320 },
+    shoulder:   { left: { x: 25.6, y: 126 }, right: { x: 158.4, y: 126 } },
+    wingAnchor: { x: 317, y: 49.8 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  frog: {
+    body: "assets/dragon_frog_body.png",
+    wing: "assets/dragon_frog_wing.png",
+    bodyPivot:  { cx: 139.9, cy: 185.3, w: 281, h: 320 },
+    shoulder:   { left: { x: 71.0, y: 182 }, right: { x: 208.0, y: 182 } },
+    wingAnchor: { x: 317, y: 66.1 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  // UFO だけは**円盤1枚**（sprites.md のカテゴリD）。翼を持たないので wing を書かない。
+  // drawPartSeparatedDragon は wing が無ければ胴体だけを描く。
+  ufo: {
+    body: "assets/dragon_ufo_body.png",
+    bodyPivot:  { cx: 159.5, cy: 159.4, w: 320, h: 320 },
+    bodyDrawH: 30,
   },
 };
 
@@ -12974,8 +13072,11 @@ function preloadDragonImages() {
     // 分離方式の竜種ぶん（body/wing の2枚ずつ）
     ...Object.keys(DRAGON_PART_SPRITES).flatMap((el) => {
       dragonPartImages[el] = dragonPartImages[el] || {};
-      return ["body", "wing"].map((part) =>
-        loadOne(DRAGON_PART_SPRITES[el][part], (img) => { dragonPartImages[el][part] = img; }));
+      // v0.46: 翼を持たない竜種（UFO）は wing を宣言していないので body だけ読む
+      return ["body", "wing"]
+        .filter((part) => DRAGON_PART_SPRITES[el][part])
+        .map((part) =>
+          loadOne(DRAGON_PART_SPRITES[el][part], (img) => { dragonPartImages[el][part] = img; }));
     }),
   ];
 
@@ -13001,7 +13102,8 @@ function preloadDragonImages() {
     dragonImagesLoaded =
       Object.keys(DRAGON_IMAGE_SOURCES).every((element) => dragonImages[element]) &&
       Object.keys(DRAGON_PART_SPRITES).every((el) =>
-        dragonPartImages[el] && dragonPartImages[el].body && dragonPartImages[el].wing);
+        dragonPartImages[el] && dragonPartImages[el].body &&
+        (!DRAGON_PART_SPRITES[el].wing || dragonPartImages[el].wing));
     if (!dragonImagesLoaded) {
       console.error("[DragonTide] 一部の竜画像が読み込めなかったため、ベクター描画にフォールバックします。");
     }
@@ -13067,11 +13169,13 @@ function drawPartSeparatedDragon(partsKey, flapFactor, c) {
   const bodyPivotX = bodyPivot.cx * kxBody;
   const bodyPivotY = bodyPivot.cy * kyBody;
 
-  const wingDrawW = spec.wingDrawW;
-  const wingDrawH = wingDrawW * (wingImg.naturalHeight / wingImg.naturalWidth);
-  const wingAnchor = spec.wingAnchor;
-  const wingRootX = wingAnchor.x * (wingDrawW / wingImg.naturalWidth);
-  const wingRootY = wingAnchor.y * (wingDrawH / wingImg.naturalHeight);
+  // v0.46: 翼を持たない竜種（カテゴリD＝UFOの円盤）は wing を宣言しない。
+  // その場合は胴体だけを描いて終わる。
+  const hasWing = !!(wingImg && spec.wing && spec.wingAnchor);
+  const wingDrawW = hasWing ? spec.wingDrawW : 0;
+  const wingDrawH = hasWing ? wingDrawW * (wingImg.naturalHeight / wingImg.naturalWidth) : 0;
+  const wingRootX = hasWing ? spec.wingAnchor.x * (wingDrawW / wingImg.naturalWidth) : 0;
+  const wingRootY = hasWing ? spec.wingAnchor.y * (wingDrawH / wingImg.naturalHeight) : 0;
 
   // 肩の元画像座標を、胴体ピボットと同じ回転後ローカル座標系に変換する。
   // （回転後の座標系では「前後方向」がlocalX、「左右方向」がlocalYになる。
@@ -13081,14 +13185,15 @@ function drawPartSeparatedDragon(partsKey, flapFactor, c) {
     const localX = -kyBody * (rawY - bodyPivot.cy);
     return { localX, localY };
   }
-  const leftShoulder  = shoulderLocal(spec.shoulder.left.x,  spec.shoulder.left.y);
-  const rightShoulder = shoulderLocal(spec.shoulder.right.x, spec.shoulder.right.y);
+  const leftShoulder  = hasWing ? shoulderLocal(spec.shoulder.left.x,  spec.shoulder.left.y)  : null;
+  const rightShoulder = hasWing ? shoulderLocal(spec.shoulder.right.x, spec.shoulder.right.y) : null;
 
   // v0.36: **翼を先に描いて胴体を上に重ねる**。
   // 逆順（胴体が下）だと翼の肩側の膜が背中を覆ってしまい、
   // 竜のシルエットが読めなくなる（ユーザー指摘の「翼の位置がよくない」の一因）。
 
   // ---- 左翼: 肩に付け根(root)を合わせ、翼のスパン軸（画像ローカルX）にのみflapFactorを適用 ----
+  if (hasWing) {
   c.save();
   c.translate(leftShoulder.localY, -leftShoulder.localX);
   c.scale(flapFactor, 1);
@@ -13101,6 +13206,7 @@ function drawPartSeparatedDragon(partsKey, flapFactor, c) {
   c.scale(-flapFactor, 1);
   c.drawImage(wingImg, -wingRootX, -wingRootY, wingDrawW, wingDrawH);
   c.restore();
+  }
 
   // ---- 胴体（固定サイズ・flapFactorのscaleを適用しない）: 翼の上に重ねる ----
   c.drawImage(bodyImg, -bodyPivotX, -bodyPivotY, bodyDrawW, bodyDrawH);
@@ -13126,7 +13232,8 @@ function renderDragonFrame(element, wingAngle, spritePx) {
   //   3) ベクター描画（どちらも無い＝新竜種の暫定表示）
   const partsKey  = dragonPartsKey(element);
   const partImgs  = partsKey ? dragonPartImages[partsKey] : null;
-  const usesParts = !!(partImgs && partImgs.body && partImgs.wing);
+  const usesParts = !!(partImgs && partImgs.body &&
+                       (!DRAGON_PART_SPRITES[partsKey].wing || partImgs.wing));
   const wholeImg  = dragonImages[element];
   if (!usesParts && !wholeImg) {
     return renderDragonFrameVector(element, wingAngle, spritePx);
