@@ -579,7 +579,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.47.1";
+const GAME_VERSION = "v0.48.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3086,15 +3086,21 @@ function generateStageLayout(stageIndex) {
   // v0.42: 焼夷塔 — large 建物のいくつかを「持続する炎の輪」を張る塔にする。
   // 建物側にも「その場から退かせる」圧を持たせるための枠（敵の hazard と同じ仕組み）。
   {
-    const towerCount = EMBER_TOWER_BY_STAGE[stageIndex] ?? 1;
+    const feat = stageFeatures(stageIndex);
     const larges = result.filter(b => b.size === "large" && !b.isBoss);
     for (let i = larges.length - 1; i > 0; i--) {
       const j = Math.floor(random() * (i + 1));
       const t = larges[i]; larges[i] = larges[j]; larges[j] = t;
     }
-    for (let k = 0; k < towerCount && k < larges.length; k++) {
-      larges[k]._emberTower = true;
-      larges[k].attackRadius = Math.max(larges[k].attackRadius, EMBER_TOWER_RADIUS + 30);
+    let cursor = 0;
+    for (let k = 0; k < feat.emberTowers && cursor < larges.length; k++, cursor++) {
+      larges[cursor]._emberTower = true;
+      larges[cursor].attackRadius = Math.max(larges[cursor].attackRadius, EMBER_TOWER_RADIUS + 30);
+    }
+    // v0.48: ロケット砲台（産業革命以降）。焼夷塔と同じ建物には付けない
+    for (let k = 0; k < feat.rocketBatteries && cursor < larges.length; k++, cursor++) {
+      larges[cursor]._rocketBattery = true;
+      larges[cursor].attackRadius = Math.max(larges[cursor].attackRadius, ROCKET_MAX_RANGE * 0.75);
     }
   }
 
@@ -3157,6 +3163,7 @@ function generateStageLayout(stageIndex) {
   bombList.length = 0;       // v0.37.1: 前ステージの未炸裂爆弾を持ち越さない
   tongueFxList.length = 0;
   hazards.length = 0;        // v0.42: 前ステージの危険地帯を持ち越さない
+  laserStrikes.length = 0;   // v0.48: 撃ちかけのレーザーを持ち越さない
   chainFxList.length = 0;
   floodWave = null;          // v0.43: 前ステージの洪水を持ち越さない
   resetRaiderState();   // v0.8: レイダー湧き状態もステージごとにリセット
@@ -3909,6 +3916,131 @@ const SHOCKWAVE_PUSH_DIST = 26;
 
 let movers = [];
 
+/**
+ * v0.48: ロケット弾を1発、指定の角度へ撃つ（誘導なし・遅い・着弾でAoE）。
+ * spawnFanProjectileRaw と同じく「角度で撃つ」形にして、斉射の扇を作れるようにする。
+ */
+function spawnRocket(fromWx, fromWy, angle) {
+  let slot = -1;
+  for (let i = 0; i < MAX_PROJECTILES; i++) {
+    if (!projActive[i]) { slot = i; break; }
+  }
+  if (slot < 0) return;
+  const sp = ROCKET_SPEED * PROJECTILE_SPEED_MULT;
+  projActive[slot]    = 1;
+  projWx[slot]        = fromWx;   projWy[slot]      = fromWy;
+  projTailX[slot]     = fromWx;   projTailY[slot]   = fromWy;
+  projStartWx[slot]   = fromWx;   projStartWy[slot] = fromWy;
+  projVx[slot]        = Math.cos(angle) * sp;
+  projVy[slot]        = Math.sin(angle) * sp;
+  projDmg[slot]       = ROCKET_DAMAGE;
+  projAoe[slot]       = ROCKET_AOE;
+  projTracking[slot]  = 0;
+  projTargetIdx[slot] = -1;
+  projColor[slot]     = "#ffb060";
+  projKind[slot]      = 3;
+}
+
+// -----------------------------------------------------------------
+// v0.48: 極太レーザー（予兆つき）
+// -----------------------------------------------------------------
+// 「予兆 → 極太の一撃」は、危険地帯（hazards）と同じ**先に見せてから当てる**作法の
+// 見せ場版。狙いは撃つ瞬間ではなく**予兆の1.3秒で群れを線から外させる**こと。
+// 当たると重いが、避ければゼロ＝プレイヤーの操作が結果を決める。
+const LASER_WARN_TIME  = 1.3;   // 予兆（細い線が伸びて脈打つ）
+const LASER_FIRE_TIME  = 0.9;   // 照射（極太・この間ずっと判定がある）
+const LASER_TICK       = 0.15;  // ダメージを刻む間隔
+const laserStrikes = [];
+
+/**
+ * 極太レーザーを1本置く。予兆の時点で向きが確定するので、プレイヤーは横へ抜ければ避けられる。
+ * @param {number} x,y     発射位置
+ * @param {number} angle   照射方向（rad）
+ * @param {number} width   ビームの太さ（px）
+ * @param {number} length  届く距離（px）
+ * @param {number} dps     照射中の毎秒ダメージ
+ */
+function spawnLaserStrike(x, y, angle, width, length, dps, color) {
+  laserStrikes.push({ x, y, angle, width, length, dps, color,
+                      t: 0, tick: 0, total: LASER_WARN_TIME + LASER_FIRE_TIME });
+}
+
+function updateLaserStrikes(dt) {
+  for (let k = laserStrikes.length - 1; k >= 0; k--) {
+    const L = laserStrikes[k];
+    L.t += dt;
+    if (L.t >= L.total) { laserStrikes.splice(k, 1); continue; }
+    if (L.t < LASER_WARN_TIME) continue;          // 予兆中は当たらない
+    L.tick -= dt;
+    if (L.tick > 0) continue;
+    L.tick = LASER_TICK;
+    // ビーム軸に射影して「線分の内側か」を見る（矩形判定）
+    const ax = Math.cos(L.angle), ay = Math.sin(L.angle);
+    const half = L.width * 0.5;
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      const dx = px[i] - L.x, dy = py[i] - L.y;
+      const along = dx * ax + dy * ay;
+      if (along < 0 || along > L.length) continue;
+      const perp = dx * -ay + dy * ax;
+      if (Math.abs(perp) > half) continue;
+      applyDamageToBoid(i, L.dps * LASER_TICK);
+      // 軸の外へ押し出す＝「なぎ払われる」感触。減衰する外力チャネルに乗せる
+      const sgn = perp >= 0 ? 1 : -1;
+      applyKickDist(i, -ay * sgn, ax * sgn, 26);
+    }
+  }
+}
+
+/** 予兆＝細い線が脈打つ／照射＝極太の帯。カメラ変換の内側で呼ぶ。 */
+function drawLaserStrikes() {
+  if (laserStrikes.length === 0) return;
+  ctx.save();
+  ctx.lineCap = "butt";
+  for (const L of laserStrikes) {
+    const ex = L.x + Math.cos(L.angle) * L.length;
+    const ey = L.y + Math.sin(L.angle) * L.length;
+    if (L.t < LASER_WARN_TIME) {
+      const prog = L.t / LASER_WARN_TIME;              // 0→1
+      // 予兆: 細い線が伸びていき、当たる幅も薄く見せる（どこが焼けるか読める）
+      ctx.globalAlpha = 0.20 + 0.25 * Math.abs(Math.sin(L.t * 12));
+      ctx.strokeStyle = L.color;
+      ctx.lineWidth = L.width;
+      ctx.beginPath();
+      ctx.moveTo(L.x, L.y);
+      ctx.lineTo(L.x + Math.cos(L.angle) * L.length * prog,
+                 L.y + Math.sin(L.angle) * L.length * prog);
+      ctx.stroke();
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(L.x, L.y);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+    } else {
+      const f = (L.t - LASER_WARN_TIME) / LASER_FIRE_TIME;   // 0→1
+      const fade = f > 0.8 ? (1 - f) / 0.2 : 1;              // 終わり際だけ薄れる
+      for (const [wMul, alpha] of [[1.0, 0.35], [0.55, 0.75], [0.22, 1.0]]) {
+        ctx.globalAlpha = alpha * fade;
+        ctx.strokeStyle = wMul < 0.3 ? "#ffffff" : L.color;
+        ctx.lineWidth = L.width * wMul;
+        ctx.beginPath();
+        ctx.moveTo(L.x, L.y);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+      }
+      // 発射口の閃光
+      ctx.globalAlpha = 0.8 * fade;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(L.x, L.y, L.width * 0.42, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 // 踏鳴らし衝撃波の表示FX（小プール）
 const shockwaveFxList = [];
 const SHOCKWAVE_FX_DURATION = 0.5;
@@ -3921,7 +4053,47 @@ const SHOCKWAVE_FX_DURATION = 0.5;
 // 竜は止まれない種も多いので、避ける＝進路を作り直す＝操作の見せ場になる。
 // 焼夷塔（建物側の持続範囲攻撃）。一部の large 建物がこれになる。
 // 「街の中に踏み込むと足元が燃える」＝建物側にも退かせる圧を持たせる。
-const EMBER_TOWER_BY_STAGE = [1, 2, 3, 4, 5, 6, 7, 8];  // ステージごとの設置数
+// -----------------------------------------------------------------
+// v0.48: ステージごとの「らしさ」テーブル
+// -----------------------------------------------------------------
+// 敵の顔ぶれ（MOVER_SPAWNS_BY_STAGE）は既にステージ別だが、**建物側とボスの技**が
+// 全ステージ同じだったので、どの時代でも同じ手触りになっていた。
+// ここで時代ごとに「何が置かれ、ボスが何を撃つか」を分ける。
+//   emberTowers    … 焼夷塔の数（篝火 → 火薬庫 → 焼夷弾と読み替えられる汎用の火）
+//   rocketBatteries… ロケット砲台の数（産業革命以降にだけ存在する）
+//   bossLaser      … ボスが極太レーザーを撃つか（電気時代以降の超兵器）
+const STAGE_FEATURES = [
+  // 1 石器: 火だけ。飛び道具の見せ場は無く、敵（マンモス・潜行者）が主役
+  { emberTowers: 1, rocketBatteries: 0, bossLaser: false },
+  // 2 古代: 篝火が増える。神殿都市の守りは物量
+  { emberTowers: 3, rocketBatteries: 0, bossLaser: false },
+  // 3 中世: 城下に火が回る
+  { emberTowers: 5, rocketBatteries: 0, bossLaser: false },
+  // 4 近世要塞: 火は控えめ、代わりに**初めてロケット砲台**が出る（黎明期なので2基）
+  { emberTowers: 3, rocketBatteries: 2, bossLaser: false },
+  // 5 産業: 工場の火＋ロケットが主力に
+  { emberTowers: 5, rocketBatteries: 5, bossLaser: false },
+  // 6 電気: **ボスの極太レーザー解禁**。街の火は減り、エネルギー兵器の時代へ
+  { emberTowers: 3, rocketBatteries: 5, bossLaser: true },
+  // 7 大戦: 総力戦。すべてが同時に来る
+  { emberTowers: 6, rocketBatteries: 8, bossLaser: true },
+  // 8 最終: 最大数
+  { emberTowers: 8, rocketBatteries: 10, bossLaser: true },
+];
+function stageFeatures(idx) {
+  return STAGE_FEATURES[idx] ?? STAGE_FEATURES[STAGE_FEATURES.length - 1];
+}
+
+// v0.48: ロケット砲台（建物側の見せ場）。**弾速の遅い大きな弾をまとめて撃つ**。
+// 速い弾は「気づいたら削れている」だけだが、遅い弾は**飛んでくる間に避けられる**＝
+// 画面を読んで群れを動かす時間が生まれる。当たると重い（AoE付き）。
+const ROCKET_INTERVAL   = 5.5;   // 斉射の間隔（秒）
+const ROCKET_COUNT      = 5;     // 1斉射の発数
+const ROCKET_SPREAD     = 0.42;  // 扇の広がり（rad）
+const ROCKET_SPEED      = 46;    // 遅い（矢は75〜95）
+const ROCKET_DAMAGE     = 3.0;
+const ROCKET_AOE        = 52;    // 着弾の巻き込み半径
+const ROCKET_MAX_RANGE  = 620;   // 遅いぶん遠くまで届く
 const EMBER_TOWER_INTERVAL = 6.5;   // 発動間隔（秒）
 const EMBER_TOWER_RADIUS   = 145;
 const EMBER_TOWER_LIFE     = 4.0;
@@ -4773,10 +4945,44 @@ function updateMovers(dt) {
 // -----------------------------------------------------------------
 let bossSettlementIdx = -1;   // 現ステージのボス index（generateStageLayout 後に検索）
 let bossNovaTimer = BOSS_NOVA_INTERVAL;
+// v0.48: 極太レーザー（電気時代以降のボスだけ）。ノヴァとは別サイクルで撃つ。
+const BOSS_LASER_INTERVAL = 7.5;
+const BOSS_LASER_WIDTH    = 86;    // 極太。群れの塊がまるごと入る
+const BOSS_LASER_LENGTH   = 1500;  // 画面を越えて伸びる
+const BOSS_LASER_DPS      = 26;
+let bossLaserTimer = BOSS_LASER_INTERVAL;
 
 function cacheBossIndex() {
   bossSettlementIdx = settlements.findIndex(s => s.isBoss);
   bossNovaTimer = BOSS_NOVA_INTERVAL;
+  bossLaserTimer = BOSS_LASER_INTERVAL;
+}
+
+/**
+ * v0.48: ボスの極太レーザー。**予兆の時点で狙いが固定される**ので、
+ * プレイヤーは1.3秒のあいだに群れを線から外せば無傷で抜けられる。
+ * 「避けられる大技」＝見せ場になり、かつ操作の腕が結果に出る。
+ */
+function updateBossLaser(dt) {
+  if (bossSettlementIdx < 0) return;
+  if (!stageFeatures(currentStage).bossLaser) return;
+  const boss = settlements[bossSettlementIdx];
+  if (!boss || boss.fallen) return;
+
+  bossLaserTimer -= dt;
+  if (bossLaserTimer > 0) return;
+
+  // 群れが射程内に居るときだけ撃つ（無人の空へ撃たない）
+  const c = calcFriendlyCentroid();
+  const dx = c.x - boss.wx, dy = c.y - boss.wy;
+  if (dx * dx + dy * dy > BOSS_LASER_LENGTH * BOSS_LASER_LENGTH) { bossLaserTimer = 0.6; return; }
+
+  bossLaserTimer = BOSS_LASER_INTERVAL;
+  spawnLaserStrike(boss.wx, boss.wy, Math.atan2(dy, dx),
+                   BOSS_LASER_WIDTH, BOSS_LASER_LENGTH, BOSS_LASER_DPS,
+                   boss._bossGlowColor ?? "#ff8800");
+  triggerShake(3.5, 0.25);
+  hapticPulse(60);
 }
 
 function updateBossNova(dt) {
@@ -6530,8 +6736,8 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
   projTracking[slot]   = isTracking ? 1 : 0;
   projTargetIdx[slot]  = targetBoidIdx;
   projColor[slot]      = color;
-  // 変更5: 種別を記録（デフォルト 0=arrow）
-  projKind[slot]       = (kind === 1) ? 1 : 0;
+  // 変更5: 種別を記録（デフォルト 0=arrow）。v0.48: 3=ロケットを追加したので丸めない
+  projKind[slot]       = (kind === 1 || kind === 2 || kind === 3) ? kind : 0;
 
   if (targetBoidIdx >= 0 && !boidDead[targetBoidIdx]) {
     const dx = px[targetBoidIdx] - fromWx;
@@ -6704,6 +6910,19 @@ function updateSettlementAttacks(dt) {
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
 
+    // v0.48: ロケット砲台は**遅い大弾を扇状にまとめて**撃つ（避けられる猶予がある）。
+    // ※ targetIdx を使うので、必ずその宣言より後に置くこと
+    //   （前に置いて const の TDZ で落ちた。構文チェックでは検出できない）。
+    if (settlement._rocketBattery) {
+      settlement.attackTimer = ROCKET_INTERVAL;
+      const base = Math.atan2(py[targetIdx] - settlement.wy, px[targetIdx] - settlement.wx);
+      for (let k = 0; k < ROCKET_COUNT; k++) {
+        const spread = ROCKET_COUNT === 1 ? 0 : (k / (ROCKET_COUNT - 1) - 0.5) * 2;   // -1..1
+        spawnRocket(settlement.wx, settlement.wy, base + spread * ROCKET_SPREAD);
+      }
+      continue;
+    }
+
     // 変更5: 集落種別に応じて弾種を決定する。
     // ボス → ボス重弾（kind=2: 位置ごと押し戻す強烈なノックバック。v0.7）
     // large・首都（_isCapital）→ カタパルト弾（kind=1: 強ノックバック・大きな矢）
@@ -6826,7 +7045,8 @@ function updateProjectiles(dt) {
     // arrow  (kind=0): ARROW_MAX_RANGE=250px（短い射程、近づかないと当たらない）
     const tdx      = projWx[i] - projStartWx[i];
     const tdy      = projWy[i] - projStartWy[i];
-    const maxRange = projKind[i] === 2 ? BOSS_SHOT_MAX_RANGE
+    const maxRange = projKind[i] === 3 ? ROCKET_MAX_RANGE      // v0.48: ロケットは遅い代わりに長射程
+                   : projKind[i] === 2 ? BOSS_SHOT_MAX_RANGE
                    : projKind[i] === 1 ? PROJECTILE_MAX_RANGE
                    : ARROW_MAX_RANGE;
     if (tdx * tdx + tdy * tdy > maxRange * maxRange) {
@@ -11530,6 +11750,7 @@ function render(now) {
   drawBreathAttacks(now);
   drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
   drawHazards();             // v0.42: 持続する範囲攻撃（地面に敷く＝竜より下）
+  drawLaserStrikes();        // v0.48: 極太レーザー（予兆＋照射）
   drawFlood();               // v0.43: 洪水（地面の上・竜より下）
   drawDams();                // v0.43: 堰の見た目
   drawEmberTowers();         // v0.42: 焼夷塔の目印
@@ -12296,6 +12517,49 @@ function drawProjectiles() {
     // 進行方向（速度ベクトルから算出）
     const angle = Math.atan2(projVy[i], projVx[i]);
     const color = projColor[i];
+
+    // v0.48: ロケット（kind=3）— 遅くて大きいので、避ける対象として目立たせる。
+    // 弾頭＋噴射炎＋後ろへ流れる煙で「飛んできている」ことを読ませる。
+    if (projKind[i] === 3) {
+      ctx.save();
+      ctx.translate(projWx[i], projWy[i]);
+      ctx.rotate(angle);
+      // 煙の尾（後方へ数個の丸）
+      for (let k = 1; k <= 4; k++) {
+        ctx.globalAlpha = 0.20 - k * 0.035;
+        ctx.fillStyle = "#d0d0d0";
+        ctx.beginPath();
+        ctx.arc(-8 - k * 7, 0, 3.2 + k * 0.9, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // 噴射炎（脈動）
+      const jet = 0.7 + 0.3 * Math.sin(breathTime * 22 + i);
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = "#ffd070";
+      ctx.beginPath();
+      ctx.moveTo(-7, -2.6);
+      ctx.lineTo(-7 - 11 * jet, 0);
+      ctx.lineTo(-7, 2.6);
+      ctx.closePath();
+      ctx.fill();
+      // 弾体
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#5a6470";
+      ctx.fillRect(-7, -3.2, 13, 6.4);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(6, -3.2);
+      ctx.lineTo(12, 0);
+      ctx.lineTo(6, 3.2);
+      ctx.closePath();
+      ctx.fill();
+      // 尾翼
+      ctx.fillStyle = "#3a424c";
+      ctx.fillRect(-8, -5.2, 3, 10.4);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      continue;
+    }
 
     // v0.7: ボス重弾（kind=2）は矢でなく脈動する光弾として描く（明確な脅威表示）
     if (projKind[i] === 2) {
@@ -13647,6 +13911,8 @@ function tick() {
     updateChainFx(wdt);           // v0.43: 連鎖電撃のFX
     updateMoverRams();            // v0.6-p4: 移動敵への体当たり
     updateBossNova(wdt);          // v0.7: ボスの反発衝撃波
+    updateBossLaser(wdt);         // v0.48: ボスの極太レーザー（予兆つき）
+    updateLaserStrikes(wdt);
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
     updateDeathTimers(wdt);
