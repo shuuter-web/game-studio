@@ -580,7 +580,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.51.0";
+const GAME_VERSION = "v0.52.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -969,10 +969,13 @@ const WORLD_REF_W = 4800;
 const WORLD_REF_H = 3600;
 const WORLD_AREA_RATIO = (WORLD_W * WORLD_H) / (WORLD_REF_W * WORLD_REF_H);
 
-// 町だけは面積比そのままだと多すぎる（数が増えるほど1つの町の重みが薄れる）。
-// 大陸は少し余白がある方が「渡り歩く」意味が出るので密度を落とす。
-// 1.0 で従来と同密度。ここは体感で詰める調整代（フェーズ5）。
-const TOWN_DENSITY_FACTOR = 0.75;
+// 町の密度。1.0 で基準ワールドと同密度。
+// v0.52: 0.75 では大陸がスカスカだったため 1.25 へ（Shooter指示）。
+const TOWN_DENSITY_FACTOR = 1.25;
+
+// 巡回する動く要塞は町とは別の密度で持つ。町と同じ係数で増やすと
+// ステージ後半で200体近くになり、遭遇密度ではなく物量になってしまう。
+const MOVER_DENSITY_FACTOR = 0.75;
 
 /** ワールド面積に合わせて個数をスケールする（基準ワールドでの個数を渡す）。 */
 function scaledForWorld(baseCount, densityFactor = 1) {
@@ -1998,8 +2001,8 @@ const TOTAL_STAGES = STAGE_CONFIGS.length;
 const ERAS_PER_RUN = 4;                 // 1ラン＝連続4時代
 
 // その時代に建っていた破壊対象を何割落としたら次の時代へ進むか。
-// **体感の要。フェーズ5で詰める調整代**（高すぎると作業、低すぎると素通り）。
-const ERA_ADVANCE_RATIO = 0.6;
+// v0.52: 0.6 は時代1で2100棟の破壊を要求して作業になっていたため 0.3 へ（Shooter指示）。
+const ERA_ADVANCE_RATIO = 0.3;
 
 // 時代が上がるとき、廃墟のうちどれだけが新しい町として復興するか。
 // これが無いと時代が進むほどマップが空になり、後半ほど手応えが薄くなる。
@@ -2008,6 +2011,24 @@ const ERA_REVIVE_RATIO = 0.3;
 // 時代ごとの群れ上限（effFlockCap への係数）。
 // 群れは時代をまたいでも削らない代わりに、天井が段階的に開く＝解放の快感にする。
 const ERA_FLOCK_CAP_FRACTION = [0.55, 0.70, 0.85, 1.0];
+
+// v0.52: 大陸は最初から一様ではない。首都と一部の街は「先の時代」の建築で建っている。
+// 壊す前から強さが見た目で分かり、進んだ文明が既にそこにある感じを出す（Shooter指示）。
+// オフセットは時代が上がっても保たれる＝その街はずっと先を行く。
+const CAPITAL_ERA_OFFSET   = 2;      // 首都（ボスの街）は2時代先
+const TOWN_ERA_OFFSET_ELITE    = 2;  // 要塞都市＝2時代先
+const TOWN_ERA_OFFSET_ADVANCED = 1;  // 一部の街＝1時代先
+const TOWN_ADVANCED_RATIO      = 0.25;
+
+/** 時代番号を STAGE_CONFIGS の範囲に収める。 */
+function clampEra(eraIdx) {
+  return Math.max(0, Math.min(STAGE_CONFIGS.length - 1, eraIdx));
+}
+
+/** その建物が属する時代（ラン進行＋その街のオフセット）。 */
+function settlementEra(settlement, baseEra) {
+  return clampEra(baseEra + (settlement._eraOffset || 0));
+}
 
 let runStartEra          = 0;   // このランの開始時代（フェーズ4で選択可能にする）
 let eraIndexInRun        = 0;   // 0..ERAS_PER_RUN-1
@@ -3205,7 +3226,10 @@ function generateStageLayout(stageIndex) {
   // --- (1) ボスを先に配置する ---
   // ボス＋要塞リングが確実にマップ内に収まる位置を確保してから、
   // 小集落クラスタをその周囲を避けて配置する（先取り方式）。
-  const boss = placeBossBuilding(stageIndex, config);
+  // v0.52: ボスも2時代先。HP は calcBossHp が時代で伸びるので自動的に格上になる。
+  const bossEra = clampEra(stageIndex + CAPITAL_ERA_OFFSET);
+  const boss = placeBossBuilding(bossEra, STAGE_CONFIGS[bossEra]);
+  boss._eraOffset = CAPITAL_ERA_OFFSET;
 
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
   const townCenters = placeTownCenters(scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR), boss.wx, boss.wy);
@@ -3241,21 +3265,35 @@ function generateStageLayout(stageIndex) {
     if (order.length > 1) cityScaleByIdx.set(order[1], 1.35); // 中核都市
   }
 
+  // v0.52: 街ごとの時代オフセット。要塞都市は2時代先、ほかにも一部が1時代先。
+  // 「最初から強い街がある」＝壊す前に強さが見た目で分かる（Shooter指示）。
+  const townEraOffset = new Map();
+  for (let t = 0; t < townCenters.length; t++) {
+    if (fortifiedSet.has(t)) townEraOffset.set(t, TOWN_ERA_OFFSET_ELITE);
+    else if (random() < TOWN_ADVANCED_RATIO) townEraOffset.set(t, TOWN_ERA_OFFSET_ADVANCED);
+  }
+
   const result = [];
   const townMetas = [];   // v0.29: 部分壁を付けるための町メタ一覧
   for (let t = 0; t < townCenters.length; t++) {
     const center = townCenters[t];
     const cityScale = cityScaleByIdx.get(t) ?? randRange(0.9, 1.1);
     const s2 = cityScale * cityScale;
+    // この街が属する時代（建築・攻撃性能・レイアウトすべてこの時代のものになる）
+    const offset  = townEraOffset.get(t) || 0;
+    const townEra = clampEra(stageIndex + offset);
+    const tConfig = STAGE_CONFIGS[townEra];
     const townBuildings = generateTown(
       center.x, center.y,
-      Math.round(config.smallPerTown  * BUILDING_DENSITY_MULT * s2),
-      Math.round(config.mediumPerTown * BUILDING_DENSITY_MULT * s2),
-      Math.max(1, Math.round(config.largePerTown * BUILDING_DENSITY_MULT * s2)),
-      config,
+      Math.round(tConfig.smallPerTown  * BUILDING_DENSITY_MULT * s2),
+      Math.round(tConfig.mediumPerTown * BUILDING_DENSITY_MULT * s2),
+      Math.max(1, Math.round(tConfig.largePerTown * BUILDING_DENSITY_MULT * s2)),
+      tConfig,
       t,
-      stageIndex,   // v0.16: 文明ごとの町レイアウト選択に使う
+      townEra,   // v0.16: 文明ごとの町レイアウト選択に使う
     );
+    // 時代が上がってもこの街は先を行き続ける（建て替えのたびに同じ差が保たれる）
+    for (const b of townBuildings) b._eraOffset = offset;
     if (fortifiedSet.has(t)) applyTownFortification(townBuildings);
     const tmeta = townBuildings.find(b => b._townMeta);   // v0.29: 部分壁のため町メタを収集
     if (tmeta) townMetas.push(tmeta._townMeta);
@@ -3265,7 +3303,11 @@ function generateStageLayout(stageIndex) {
   // --- (2b) 首都要塞リング（座標のみ先計算）して小集落建物との衝突除去に使う ---
   // placeCapitalDistrict は config が必要なため、ここで仮実行して座標を取得する。
   // 首都建物と重なるクラスタ建物は remove してから result に残す。
-  const capitalBuildings = placeCapitalDistrict(boss, config);
+  // v0.52: 首都（ボスの街）は2時代先の建築で建つ。ラン開始時点で明確に格上に見える。
+  const capitalEra    = clampEra(stageIndex + CAPITAL_ERA_OFFSET);
+  const capitalConfig = STAGE_CONFIGS[capitalEra];
+  const capitalBuildings = placeCapitalDistrict(boss, capitalConfig);
+  for (const b of capitalBuildings) b._eraOffset = CAPITAL_ERA_OFFSET;
 
   // 首都建物の占有エリアを「除去対象」として各小集落建物をフィルタリングする。
   // 重なり判定: 中心距離 < 首都建物 radius + 小集落建物 radius + 最小隙間 6px
@@ -4663,7 +4705,7 @@ function generateMovers(stageIndex, boss) {
   // v0.49: マップ全体を巡回する枠はワールド面積に合わせて増やす。
   // 大陸サイズで数を据え置くと「動く要塞」に一度も出会わないまま終わってしまう。
   // 守備隊はボス周りの固定半径を巡回するので、密度は世界の広さに影響されない＝据え置き。
-  const spawnEntries = spawns.map(e => [e[0], scaledForWorld(e[1], TOWN_DENSITY_FACTOR), false])
+  const spawnEntries = spawns.map(e => [e[0], scaledForWorld(e[1], MOVER_DENSITY_FACTOR), false])
                              .concat(garrison.map(e => [e[0], e[1], true]));
 
   for (const [defKey, count, isGarrison] of spawnEntries) {
@@ -7868,32 +7910,17 @@ function settlementFall(settlementIndex) {
 
   updateHUDBuildings();
 
-  // v0.51: 首都は「時代の関門」ではなくなった。
-  // 最終時代の首都だけがランの終わりで、それ以前の首都は任意目標＝落とせば臨時報酬。
-  // 落とさずに時代を進めると、首都は次の時代の姿に建て替わって強くなる
-  // （＝今のうちに落とすか、無視して進むかの選択が1ランに3回生まれる）。
+  // v0.52: ランのクリア条件は「ボス（首都）撃破」。時代は問わない（Shooter指示）。
+  // 首都は2時代先の建築で建っていて最初から格上なので、
+  // 「今の群れで挑むか、時代を進めて力をつけてから挑むか」の判断がランを貫く軸になる。
+  // ただし待つほど首都も建て替わって強くなるので、待てば有利とは限らない。
   if (settlement.isBoss) {
-    if (isFinalEra()) {
-      triggerAllClear();
-    } else {
-      awardCapitalBonus();
-    }
+    triggerAllClear();
     return;
   }
 
   // 通常建物: その時代の破壊率が閾値を超えたら文明が次の時代へ進む
   maybeAdvanceEra();
-}
-
-// 最終時代より前の首都を落としたときの臨時報酬。
-// ラン終了にはならないので、代わりに竜晶と強化カードで「割に合う」ようにする。
-const CAPITAL_BONUS_CRYSTALS = 25;
-function awardCapitalBonus() {
-  awardCrystals(CAPITAL_BONUS_CRYSTALS);
-  pendingCards++;              // 3択カードを1枚（次のレベルアップ枠と同じ扱い）
-  triggerFlash("rgba(255,220,120,0.75)", 0.30);
-  hapticPulse(200);
-  evaluateChallenges();
 }
 
 // -----------------------------------------------------------------
@@ -10872,7 +10899,11 @@ function beginEra(indexInRun) {
  * 建物1棟を「新しい時代の建築」に建て替える。位置・大きさ・向きは動かさない
  * （同じ町が建て替わったように見せるため）。色・形・HP・攻撃性能だけが変わる。
  */
-function rebuildSettlementForEra(settlement, config, boost) {
+function rebuildSettlementForEra(settlement, baseEra) {
+  // v0.52: その街のオフセットを足した時代で建て直す＝先を行く街はずっと先を行く
+  const era     = settlementEra(settlement, baseEra);
+  const config  = STAGE_CONFIGS[era];
+  const boost   = STAGE_DIFFICULTY_BOOST[era];
   // tiny は small のパラメータを流用する（生成時と同じ扱い）
   const key     = settlement.size === "tiny" ? "small" : settlement.size;
   const bConfig = config.buildings[key] ?? config.buildings.small;
@@ -10911,8 +10942,9 @@ function rebuildSettlementForEra(settlement, config, boost) {
 }
 
 /** 首都を新しい時代の姿に建て替える（落とされていても新文明が建て直す）。 */
-function rebuildBossForEra(boss, eraIdx, config) {
-  const fresh = makeBossBuilding(boss.wx, boss.wy, eraIdx, config.boss);
+function rebuildBossForEra(boss, baseEra) {
+  const era   = settlementEra(boss, baseEra);
+  const fresh = makeBossBuilding(boss.wx, boss.wy, era, STAGE_CONFIGS[era].boss);
   for (const key of Object.keys(fresh)) {
     if (key === "wx" || key === "wy") continue;
     boss[key] = fresh[key];
@@ -10925,7 +10957,7 @@ function rebuildBossForEra(boss, eraIdx, config) {
  * これが無いと時代が進むほどマップが空になり、後半ほど壊す対象が減ってしまう。
  * @returns {number} 復興した棟数
  */
-function reviveRuinsForEra(config, boost) {
+function reviveRuinsForEra(baseEra) {
   const ruins = [];
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
@@ -10942,7 +10974,7 @@ function reviveRuinsForEra(config, boost) {
     s.fallen = false;
     // 復興した町には卵を配り直す（新しい時代の狩り場になる）
     s.isEggBearer = random() < ratio;
-    rebuildSettlementForEra(s, config, boost);
+    rebuildSettlementForEra(s, baseEra);
   }
   return count;
 }
@@ -10970,23 +11002,21 @@ function rebuildWallsForEra(eraIdx) {
 function advanceEra() {
   const nextIndex = eraIndexInRun + 1;
   const eraIdx    = absoluteEra(nextIndex);
-  const config    = STAGE_CONFIGS[eraIdx];
-  const boost     = STAGE_DIFFICULTY_BOOST[eraIdx];
 
   // (1) 廃墟の一部を復興させる（先に立たせてから、生きている建物をまとめて建て替える）
-  const revived = reviveRuinsForEra(config, boost);
+  const revived = reviveRuinsForEra(eraIdx);
 
-  // (2) 生き残っている建物を新しい時代の建築へ
+  // (2) 生き残っている建物を新しい時代の建築へ（街ごとのオフセットは保たれる）
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
     if (s.isBoss || s._isWall || s.fallen) continue;
-    rebuildSettlementForEra(s, config, boost);
+    rebuildSettlementForEra(s, eraIdx);
   }
 
   // (3) 首都と城壁
   const boss = settlements.find(s => s.isBoss);
-  if (boss) rebuildBossForEra(boss, eraIdx, config);
-  rebuildWallsForEra(eraIdx);
+  if (boss) rebuildBossForEra(boss, eraIdx);
+  rebuildWallsForEra(settlementEra({ _eraOffset: CAPITAL_ERA_OFFSET }, eraIdx));
 
   // (4) 動く要塞をその時代の編成に入れ替える
   movers = generateMovers(eraIdx, settlements.find(s => s.isBoss));
