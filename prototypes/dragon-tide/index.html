@@ -1980,33 +1980,174 @@ const ctx = canvas.getContext("2d", { alpha: false });
 const minimapCanvas = document.getElementById("minimap");
 const minimapCtx = minimapCanvas.getContext("2d");
 
-// オフスクリーンCanvas: 建物の静的レイヤー（毎フレーム再描画しない）
-let buildingLayerCanvas = null;
-let buildingLayerCtx    = null;
+// -----------------------------------------------------------------
+// 静的レイヤー（地面 / 建物）— タイル化オフスクリーンキャンバス
+// -----------------------------------------------------------------
+// v0.49: ワールド全面のキャンバス2枚をやめ、LAYER_TILE 角のタイルに分割して
+// 「見えている範囲だけ」保持する方式に変えた。
+//
+// 経緯: 4800×3600 の全面キャンバスは 17.3Mpx × RGBA ≒ 69MB で、2枚で約138MB。
+// iOS Safari の canvas 面積上限（約16.7Mpx）を既に超えかけている。大陸化で
+// 面積を4倍にすると2枚で約553MB になりモバイルで確実に落ちるため、
+// ワールドを広げる前提としてここをタイル化する。
+//
+// 各タイルの ctx には translate(-tileX, -tileY) を掛けてあるので、
+// 既存の「ワールド座標で描く」描画関数をそのまま呼べる。タイルの外に出た分は
+// キャンバス境界で自動的にクリップされる。
+//
+// v0.11.3 からの「地面と建物を別キャンバスに分ける」方針は維持している。
+// 建物破壊時の部分クリアが道路・畑・川を巻き込んで消す不具合の根本対策のため、
+// ここを1枚に戻してはいけない。
+const LAYER_TILE         = 1200;   // WORLD_W/H の約数にしておくと端に無駄が出ない
+const LAYER_PAINT_MARGIN = 300;    // 可視範囲をこれだけ広げた範囲まで先に焼く
+const LAYER_KEEP_MARGIN  = 1500;   // これを超えて離れたタイルは破棄してメモリを返す
+
 let buildingLayerDirty  = true;
 
-// v0.11.3: 地面レイヤー（地表・川・街道・橋・地形・町の下地）を建物とは
-// 完全に別のキャンバスに分離する。
-// 経緯: 建物が破壊されるたびに buildingLayerCanvas を部分クリアしていたが、
-// 従来はこのキャンバス1枚に地面・道路・畑・川も同居していたため、
-// クリア矩形が周囲の道路や畑、密集した隣の建物まで巻き込んで消してしまい、
-// 「壊した場所の周りの街や道が消える」不具合になっていた（Shooter報告で発覚）。
-// 地面をこの別キャンバスに焼いておけば、建物側をいくらクリアしても
-// 地面・道路・畑・川は一切影響を受けない。
-let groundLayerCanvas = null;
-let groundLayerCtx    = null;
+let groundTiledLayer   = null;
+let buildingTiledLayer = null;
+
+/**
+ * タイル化レイヤーを作る。
+ * @param {string}   name  デバッグ表示用の名前
+ * @param {Function} paint (tileCtx, bounds) を受け取り、その範囲を描く関数。
+ *                         bounds は {x0,y0,x1,y1}（ワールド座標）。
+ */
+function makeTiledLayer(name, paint) {
+  return {
+    name,
+    paint,
+    cols:  Math.ceil(WORLD_W / LAYER_TILE),
+    rows:  Math.ceil(WORLD_H / LAYER_TILE),
+    tiles: new Map(),   // key = row * cols + col → { canvas, ctx, col, row, x, y }
+  };
+}
 
 function createBuildingLayer() {
-  buildingLayerCanvas = document.createElement("canvas");
-  buildingLayerCanvas.width  = WORLD_W;
-  buildingLayerCanvas.height = WORLD_H;
-  buildingLayerCtx = buildingLayerCanvas.getContext("2d");
+  groundTiledLayer   = makeTiledLayer("ground",   paintGroundTile);
+  buildingTiledLayer = makeTiledLayer("building", paintBuildingTile);
   buildingLayerDirty = true;
+}
 
-  groundLayerCanvas = document.createElement("canvas");
-  groundLayerCanvas.width  = WORLD_W;
-  groundLayerCanvas.height = WORLD_H;
-  groundLayerCtx = groundLayerCanvas.getContext("2d");
+/** 円（中心＋半径）がタイル範囲に掛かるか。bounds 未指定なら常に true（全面描画用）。 */
+function layerBoundsHitCircle(bounds, wx, wy, radius) {
+  if (!bounds) return true;
+  return wx + radius >= bounds.x0 && wx - radius <= bounds.x1 &&
+         wy + radius >= bounds.y0 && wy - radius <= bounds.y1;
+}
+
+/** 現在の可視ワールド矩形を margin ぶん広げて返す。 */
+function viewWorldRect(margin) {
+  const halfW = viewW * 0.5 / cam.scale;
+  const halfH = viewH * 0.5 / cam.scale;
+  return {
+    x0: cam.x - halfW - margin, y0: cam.y - halfH - margin,
+    x1: cam.x + halfW + margin, y1: cam.y + halfH + margin,
+  };
+}
+
+/** 指定タイルを用意する（無ければ生成して焼く）。 */
+function acquireLayerTile(layer, col, row) {
+  const key = row * layer.cols + col;
+  const cached = layer.tiles.get(key);
+  if (cached) return cached;
+
+  const tileCanvas = document.createElement("canvas");
+  tileCanvas.width  = LAYER_TILE;
+  tileCanvas.height = LAYER_TILE;
+  const tileCtx = tileCanvas.getContext("2d");
+
+  const x = col * LAYER_TILE;
+  const y = row * LAYER_TILE;
+  // ワールド座標のまま描けるように原点をタイル左上へずらす
+  tileCtx.setTransform(1, 0, 0, 1, -x, -y);
+
+  const tile = { canvas: tileCanvas, ctx: tileCtx, col, row, x, y };
+  layer.tiles.set(key, tile);
+  layer.paint(tileCtx, { x0: x, y0: y, x1: x + LAYER_TILE, y1: y + LAYER_TILE });
+  return tile;
+}
+
+/** 矩形に掛かるタイルの範囲（列・行のインデックス）を返す。 */
+function layerTileRange(layer, x0, y0, x1, y1) {
+  return {
+    c0: Math.max(0, Math.min(layer.cols - 1, Math.floor(x0 / LAYER_TILE))),
+    c1: Math.max(0, Math.min(layer.cols - 1, Math.floor(x1 / LAYER_TILE))),
+    r0: Math.max(0, Math.min(layer.rows - 1, Math.floor(y0 / LAYER_TILE))),
+    r1: Math.max(0, Math.min(layer.rows - 1, Math.floor(y1 / LAYER_TILE))),
+  };
+}
+
+/** 矩形に掛かる「既に生成済みの」タイルだけを走査する（部分クリア・部分再描画用）。 */
+function forEachLayerTileOverlapping(layer, x0, y0, x1, y1, fn) {
+  if (!layer) return;
+  const r = layerTileRange(layer, x0, y0, x1, y1);
+  for (let row = r.r0; row <= r.r1; row++) {
+    for (let col = r.c0; col <= r.c1; col++) {
+      // 未生成のタイルは触らない。後で焼かれるときに最新状態で描かれる。
+      const tile = layer.tiles.get(row * layer.cols + col);
+      if (tile) fn(tile);
+    }
+  }
+}
+
+/** レイヤー全体を無効化する（次の描画で可視範囲から焼き直される）。 */
+function invalidateTiledLayer(layer) {
+  if (!layer) return;
+  for (const tile of layer.tiles.values()) {
+    // width=0 でバックストアを即座に解放する（Map から消すだけでは GC 任せになる）
+    tile.canvas.width  = 0;
+    tile.canvas.height = 0;
+  }
+  layer.tiles.clear();
+}
+
+/** 可視範囲のタイルを用意し、遠く離れたタイルを破棄する。描画の直前に呼ぶ。 */
+function updateTiledLayer(layer) {
+  if (!layer) return;
+
+  const paintRect = viewWorldRect(LAYER_PAINT_MARGIN);
+  const range = layerTileRange(layer, paintRect.x0, paintRect.y0, paintRect.x1, paintRect.y1);
+  for (let row = range.r0; row <= range.r1; row++) {
+    for (let col = range.c0; col <= range.c1; col++) acquireLayerTile(layer, col, row);
+  }
+
+  const keepRect = viewWorldRect(LAYER_KEEP_MARGIN);
+  for (const [key, tile] of layer.tiles) {
+    if (tile.x + LAYER_TILE < keepRect.x0 || tile.x > keepRect.x1 ||
+        tile.y + LAYER_TILE < keepRect.y0 || tile.y > keepRect.y1) {
+      tile.canvas.width  = 0;
+      tile.canvas.height = 0;
+      layer.tiles.delete(key);
+    }
+  }
+}
+
+/**
+ * タイルをメインキャンバスへ転送する。
+ *
+ * 転送先はスクリーン座標で整数に丸める。ワールド変換のまま drawImage すると
+ * 隣り合うタイルの境界が非整数ピクセルに落ち、リサンプルの取りこぼしで
+ * 継ぎ目が1本の線として見えてしまう。左右の端を同じ丸め方で求めれば
+ * 隣接タイルは必ず同じ整数境界を共有し、隙間も二重描画も出ない。
+ */
+function drawTiledLayer(targetCtx, layer) {
+  if (!layer) return;
+  const m = targetCtx.getTransform();   // 回転は掛けていないので a/d/e/f だけ見ればよい
+  const view = viewWorldRect(0);
+
+  targetCtx.save();
+  targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+  for (const tile of layer.tiles.values()) {
+    if (tile.x + LAYER_TILE < view.x0 || tile.x > view.x1 ||
+        tile.y + LAYER_TILE < view.y0 || tile.y > view.y1) continue;
+    const sx0 = Math.round(m.a * tile.x + m.e);
+    const sy0 = Math.round(m.d * tile.y + m.f);
+    const sx1 = Math.round(m.a * (tile.x + LAYER_TILE) + m.e);
+    const sy1 = Math.round(m.d * (tile.y + LAYER_TILE) + m.f);
+    targetCtx.drawImage(tile.canvas, sx0, sy0, sx1 - sx0, sy1 - sy0);
+  }
+  targetCtx.restore();
 }
 
 let viewW = 0, viewH = 0, dpr = 1;
@@ -5634,10 +5775,12 @@ function generateForests(buildings, boss) {
 }
 
 /** v0.17: 森スプライトを地面レイヤーに焼く（当たり判定なし・純装飾）。 */
-function drawForestsOnLayer(bctx) {
+function drawForestsOnLayer(bctx, bounds) {
   const img = terrainImages.forest;
   if (!img) return;   // 画像が読めないときは森を描かない（ベクター林は用意しない）
   for (const fo of forestClusters) {
+    // v0.49: スプライトは半径の2.3倍まで広がるので、判定もその外接円で行う
+    if (!layerBoundsHitCircle(bounds, fo.wx, fo.wy, fo.radius * 2.3)) continue;
     const drawW = fo.radius * 2.3;
     const drawH = drawW * (img.naturalHeight / img.naturalWidth);
     const rot   = Math.sin(fo.wx * 0.011 + fo.wy * 0.019) * 0.6;
@@ -5757,17 +5900,24 @@ function assignEggBearers(buildings) {
 /**
  * v0.11.3: 地面レイヤー（地表・川・街道・橋・地形・町の下地）を一度だけ焼く。
  * ステージ生成のたびに1回だけ呼ばれ、以降は建物が壊れても二度と書き換わらない
- * （buildingLayerCanvas 側の部分クリアが道路・畑・川を消す不具合の根本対策）。
+ * （建物レイヤー側の部分クリアが道路・畑・川を消す不具合の根本対策）。
  */
 function rebuildGroundLayer() {
-  if (!groundLayerCtx) return;
-  const bctx = groundLayerCtx;
+  // v0.49: 地表のむらの位置をここで確定させる（理由は regenerateGroundDetail 参照）
+  regenerateGroundDetail();
+  invalidateTiledLayer(groundTiledLayer);
+}
 
-  // 完全クリア
-  bctx.clearRect(0, 0, WORLD_W, WORLD_H);
+/**
+ * v0.49: 地面レイヤーのタイル1枚を焼く。描く順序は従来の全面焼きと同じ。
+ * bounds を渡された描画関数は、その範囲に掛からない要素を自前で捨てる
+ * （タイルごとに全ワールドを走査すると枚数ぶんの無駄になるため）。
+ */
+function paintGroundTile(bctx, bounds) {
+  bctx.clearRect(bounds.x0, bounds.y0, LAYER_TILE, LAYER_TILE);
 
   // v0.8: 地面のディテール（土のパッチ＋スペックル）を最背面に焼く
-  drawGroundDetailOnLayer(bctx);
+  drawGroundDetailOnLayer(bctx, bounds);
 
   // v0.10: 川（街道より下に敷き、橋は街道の後で川の上に架ける）
   drawRiverOnLayer(bctx);
@@ -5779,37 +5929,43 @@ function rebuildGroundLayer() {
   drawBridgesOnLayer(bctx);
 
   // v0.6-p3: 地形（岩山・湖）は最背面に焼く
-  drawTerrainOnLayer(bctx);
+  drawTerrainOnLayer(bctx, bounds);
 
   // v0.17: 森（非ブロッキングの自然装飾。文明の外側に広がる林）
-  drawForestsOnLayer(bctx);
+  drawForestsOnLayer(bctx, bounds);
 
   // v0.9.1: 街区の下地（石畳ベース＋集落の土地面）。道路より先に敷く
-  drawTownBasesOnLayer(bctx);
+  drawTownBasesOnLayer(bctx, bounds);
 
   // 道路ラインを先に描く（建物の下に来る）
-  drawRoadsOnLayer(bctx);
+  drawRoadsOnLayer(bctx, bounds);
 }
 
 /**
  * v0.11.3: 建物レイヤー（建物・城壁・ボスのみ）を焼く。
- * このキャンバスは透過背景のまま groundLayerCanvas の上に重ねて描画される。
+ * このレイヤーは透過背景のまま地面レイヤーの上に重ねて転送される。
  * 建物破壊時の部分クリアはこちらのキャンバスにしか影響しないため、
  * 地面・道路・畑・川が巻き込まれて消えることがない。
  */
 function rebuildBuildingLayer() {
-  if (!buildingLayerCtx) return;
-  const bctx = buildingLayerCtx;
-
-  // 完全クリア（透過に戻す。地面は別キャンバスなので影響しない）
-  bctx.clearRect(0, 0, WORLD_W, WORLD_H);
-
-  // 全建物を描画
-  for (let s = 0; s < settlements.length; s++) {
-    drawSettlementOnLayer(bctx, settlements[s]);
-  }
-
+  invalidateTiledLayer(buildingTiledLayer);
   buildingLayerDirty = false;
+}
+
+/**
+ * v0.49: 建物レイヤーのタイル1枚を焼く。
+ * settlements の配列順はそのまま保つ（重なりの前後関係が変わらないように）。
+ * タイルに掛からない棟は描かずに捨てる。
+ */
+function paintBuildingTile(bctx, bounds) {
+  bctx.clearRect(bounds.x0, bounds.y0, LAYER_TILE, LAYER_TILE);
+
+  for (let s = 0; s < settlements.length; s++) {
+    const settlement = settlements[s];
+    if (!layerBoundsHitCircle(bounds, settlement.wx, settlement.wy,
+                              settlementLayerPadding(settlement))) continue;
+    drawSettlementOnLayer(bctx, settlement);
+  }
 }
 
 /**
@@ -5817,7 +5973,46 @@ function rebuildBuildingLayer() {
  * ステージ背景色から導出した明暗2色で、大きな柔らかいパッチ（地表のむら）と
  * 細かいスペックル（砂利・草）を散らす。ステージ生成時に1回だけ実行される。
  */
-function drawGroundDetailOnLayer(bctx) {
+// v0.49: 地表のむら・スペックルは「焼くとき」ではなく「ステージ生成時」に
+// 位置を確定させておく。レイヤーをタイル化したことで焼くタイミングが
+// タイルごとにばらばらになり、描画のたびに fxRandom() を引くと
+// 同じ場所が焼き直されるたびに違う模様になってしまうため。
+// 個数は面積比で決める（4800×3600 のとき従来と同じ 60 / 700 になる）。
+const GROUND_PATCH_DENSITY   = 60  / (4800 * 3600);
+const GROUND_SPECKLE_DENSITY = 700 / (4800 * 3600);
+
+let groundDetailPatches  = [];
+let groundDetailSpeckles = [];
+
+function regenerateGroundDetail() {
+  const patchCount   = Math.round(GROUND_PATCH_DENSITY   * WORLD_W * WORLD_H);
+  const speckleCount = Math.round(GROUND_SPECKLE_DENSITY * WORLD_W * WORLD_H);
+
+  groundDetailPatches  = new Array(patchCount);
+  groundDetailSpeckles = new Array(speckleCount);
+
+  // fxRandom() を引く順序は従来の描画コードと同じにしてある（見た目を変えないため）
+  for (let k = 0; k < patchCount; k++) {
+    const x     = fxRandom() * WORLD_W;
+    const y     = fxRandom() * WORLD_H;
+    const rx    = 90 + fxRandom() * 240;
+    const ry    = rx * (0.5 + fxRandom() * 0.5);
+    const alpha = 0.16 + fxRandom() * 0.10;
+    const light = fxRandom() < 0.5;
+    const rot   = fxRandom() * Math.PI;
+    groundDetailPatches[k] = { x, y, rx, ry, alpha, light, rot };
+  }
+
+  for (let k = 0; k < speckleCount; k++) {
+    const x     = fxRandom() * WORLD_W;
+    const y     = fxRandom() * WORLD_H;
+    const size  = 1 + fxRandom() * 2.5;
+    const light = fxRandom() < 0.6;
+    groundDetailSpeckles[k] = { x, y, size, light };
+  }
+}
+
+function drawGroundDetailOnLayer(bctx, bounds) {
   const config = STAGE_CONFIGS[currentStage];
   // bgColor("#rrggbb")から明・暗のバリエーションを作る
   const lighter = shadeColor(config.bgColor, 14);
@@ -5826,48 +6021,59 @@ function drawGroundDetailOnLayer(bctx) {
   // v0.9: Gemini生成の低コントラスト地表タイルを薄く敷く。
   // alpha を抑えてステージ背景色を透かす＝時代ごとの色味を保ちつつ質感だけ足す。
   // ユニット視認性を優先し、これ以上濃くしないこと。
+  // v0.49: パターンの原点は変換行列に従うのでタイルをまたいでワールド原点で揃う＝継ぎ目が出ない。
+  // 塗る矩形はタイルの範囲だけに絞る（ワールド全面を塗るとタイル1枚あたり数msを無駄にする）。
   if (groundTileImage) {
     const pattern = bctx.createPattern(groundTileImage, "repeat");
     if (pattern) {
       bctx.globalAlpha = 0.30;
       bctx.fillStyle = pattern;
-      bctx.fillRect(0, 0, WORLD_W, WORLD_H);
+      if (bounds) bctx.fillRect(bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0);
+      else        bctx.fillRect(0, 0, WORLD_W, WORLD_H);
       bctx.globalAlpha = 1.0;
     }
   }
 
   // 大きな柔らかいパッチ（地表のむら）
-  for (let k = 0; k < 60; k++) {
-    const x = fxRandom() * WORLD_W;
-    const y = fxRandom() * WORLD_H;
-    const rx = 90 + fxRandom() * 240;
-    const ry = rx * (0.5 + fxRandom() * 0.5);
-    bctx.globalAlpha = 0.16 + fxRandom() * 0.10;
-    bctx.fillStyle = fxRandom() < 0.5 ? lighter : darker;
+  for (let k = 0; k < groundDetailPatches.length; k++) {
+    const patch = groundDetailPatches[k];
+    const reach = Math.max(patch.rx, patch.ry);
+    if (!layerBoundsHitCircle(bounds, patch.x, patch.y, reach)) continue;
+    bctx.globalAlpha = patch.alpha;
+    bctx.fillStyle = patch.light ? lighter : darker;
     bctx.beginPath();
-    bctx.ellipse(x, y, rx, ry, fxRandom() * Math.PI, 0, Math.PI * 2);
+    bctx.ellipse(patch.x, patch.y, patch.rx, patch.ry, patch.rot, 0, Math.PI * 2);
     bctx.fill();
   }
 
   // 細かいスペックル（砂利・草むら。v0.9: タイルが質感を担うため減量）
   bctx.globalAlpha = 0.22;
-  for (let k = 0; k < 700; k++) {
-    const x = fxRandom() * WORLD_W;
-    const y = fxRandom() * WORLD_H;
-    const size = 1 + fxRandom() * 2.5;
-    bctx.fillStyle = fxRandom() < 0.6 ? lighter : darker;
-    bctx.fillRect(x, y, size, size);
+  for (let k = 0; k < groundDetailSpeckles.length; k++) {
+    const speckle = groundDetailSpeckles[k];
+    if (!layerBoundsHitCircle(bounds, speckle.x, speckle.y, speckle.size)) continue;
+    bctx.fillStyle = speckle.light ? lighter : darker;
+    bctx.fillRect(speckle.x, speckle.y, speckle.size, speckle.size);
   }
   bctx.globalAlpha = 1.0;
 }
 
-function drawRoadsOnLayer(bctx) {
+function drawRoadsOnLayer(bctx, bounds) {
   // 各町のメタ情報から道路を描く
   for (let s = 0; s < settlements.length; s++) {
     const meta = settlements[s]._townMeta;
     if (!meta) continue;
+    if (!layerBoundsHitCircle(bounds, meta.cx, meta.cy, townMetaLayerReach(meta))) continue;
     drawTownRoadsOnLayer(bctx, meta);
   }
+}
+
+/**
+ * v0.49: 町の下地・道路が中心からどこまで広がるかの外接半径。
+ * 下地グラデーションが maxExtent+30、畑や道路がさらに外へ出るため余裕を持たせる。
+ */
+function townMetaLayerReach(meta) {
+  const base = meta.maxExtent ?? meta.townR ?? 0;
+  return base + 120;
 }
 
 /**
@@ -5974,7 +6180,7 @@ function drawInterTownRoadsOnLayer(bctx) {
  * v0.9.1: 街区の下地。町全体に石畳ベース（角丸矩形）を敷いて
  * 「格子模様の上に建物が浮いている」感を消す。tiny集落には小さな土の広場。
  */
-function drawTownBasesOnLayer(bctx) {
+function drawTownBasesOnLayer(bctx, bounds) {
   const config = STAGE_CONFIGS[currentStage];
   const paveColor = shadeColor(config.bgColor, 16);
   const edgeColor = shadeColor(config.bgColor, -10);
@@ -5983,6 +6189,7 @@ function drawTownBasesOnLayer(bctx) {
   for (let s = 0; s < settlements.length; s++) {
     const meta = settlements[s]._townMeta;
     if (!meta) continue;
+    if (!layerBoundsHitCircle(bounds, meta.cx, meta.cy, townMetaLayerReach(meta))) continue;
     const { cx, cy, plazaR, streets, townR, fields } = meta;
     const ringRadii = meta.ringRadii ?? [meta.ringR];
     const gridRoads = meta.gridRoads ?? [];
@@ -6430,8 +6637,10 @@ function drawWallSegmentOnCtx(c, settlement, color) {
  * v0.6-p3: 地形障害物（岩山・湖）を静的レイヤーに焼く。
  * 岩山: 灰色の多角形の山＋ハイライト。湖: 深い青の楕円＋岸のリム。
  */
-function drawTerrainOnLayer(bctx) {
+function drawTerrainOnLayer(bctx, bounds) {
   for (const ob of terrainObstacles) {
+    // v0.49: 岩・湖のスプライトは判定円の 2.3 倍まではみ出す
+    if (!layerBoundsHitCircle(bounds, ob.wx, ob.wy, ob.radius * 2.3)) continue;
     const img = terrainImages[ob.type];
     if (img) {
       // v0.17: セル調スプライト（建物と画風を統一）。当たり判定円(radius)を
@@ -7410,7 +7619,7 @@ function settlementLayerPadding(settlement) {
 function clearSettlementLayerBox(bc, settlement) {
   const padding = settlementLayerPadding(settlement);
   // v0.11.3: このキャンバスは建物専用レイヤー（地面・道路・畑・川は別キャンバス
-  // groundLayerCanvas 側）なので、ここでクリアしても地面側は一切影響を受けない。
+  // 地面レイヤー側）なので、ここでクリアしても地面側は一切影響を受けない。
   bc.clearRect(
     settlement.wx - padding,
     settlement.wy - padding,
@@ -7552,16 +7761,26 @@ function settlementFall(settlementIndex) {
   minimapBaseDirty = true;  // v0.6-p4: ミニマップの建物ドットキャッシュも更新
 
   // 建物レイヤーを部分的に再描画（fallen状態に更新）
-  if (buildingLayerCtx) {
-    const bc = buildingLayerCtx;
-
+  if (buildingTiledLayer) {
     // v0.11.4: 密集した市街地ではクリア矩形が連鎖的に重なり合う（A⊃B⊃C…）ため、
     // 自分と直接重なる相手だけ直しても、3棟以上の巻き込みは取りこぼす。
     // 重なりが連鎖する範囲全体（連結成分）をBFSで集め、
     // 「全棟クリア→全棟描画」の二段階でまとめて処理する。
+    //
+    // v0.49: タイル化により、対象は「その棟に掛かる生成済みタイル」だけになる。
+    // 未生成のタイルは触らない（後で焼かれるとき fallen 状態で描かれる）。
+    // 二段階の順序はタイル内でも保たれる（全棟のクリアを終えてから全棟を描く）。
     const affected = collectOverlappingCluster(settlementIndex);
-    for (const s of affected) clearSettlementLayerBox(bc, s);
-    for (const s of affected) paintSettlementScorchAndSprite(bc, s);
+    for (const s of affected) {
+      const pad = settlementLayerPadding(s);
+      forEachLayerTileOverlapping(buildingTiledLayer, s.wx - pad, s.wy - pad, s.wx + pad, s.wy + pad,
+        (tile) => clearSettlementLayerBox(tile.ctx, s));
+    }
+    for (const s of affected) {
+      const pad = settlementLayerPadding(s);
+      forEachLayerTileOverlapping(buildingTiledLayer, s.wx - pad, s.wy - pad, s.wx + pad, s.wy + pad,
+        (tile) => paintSettlementScorchAndSprite(tile.ctx, s));
+    }
   }
 
   updateHUDBuildings();
@@ -11723,16 +11942,14 @@ function render(now) {
 
   drawWorldGrid();
 
+  // v0.49: 可視範囲のタイルだけを用意して転送する。
+  // update を draw の直前に呼ぶので、画面に入るタイルは必ず焼かれた後に描かれる
+  // （＝タイルの生成が間に合わずに穴が見えることはない）。
   // v0.11.3: 地面レイヤー（地表・道路・川・畑など）。建物破壊では一切書き換わらない
-  if (groundLayerCanvas) {
-    ctx.drawImage(groundLayerCanvas, 0, 0);
-  }
-
-  // 建物静的レイヤーをオフスクリーンCanvasからコピー（カメラオフセット適用済み）
-  if (buildingLayerCanvas) {
-    // drawImage の座標はすでにctx変換行列が適用されているので (0,0) から描く
-    ctx.drawImage(buildingLayerCanvas, 0, 0);
-  }
+  updateTiledLayer(groundTiledLayer);
+  updateTiledLayer(buildingTiledLayer);
+  drawTiledLayer(ctx, groundTiledLayer);
+  drawTiledLayer(ctx, buildingTiledLayer);
 
   drawBossCitadel();   // v0.7: ボス城塞スプライト（静的レイヤーのボス円の上に重ねる）
 
