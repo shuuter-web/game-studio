@@ -580,7 +580,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.53.0";
+const GAME_VERSION = "v0.54.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2025,8 +2025,13 @@ function clampEra(eraIdx) {
   return Math.max(0, Math.min(STAGE_CONFIGS.length - 1, eraIdx));
 }
 
-/** その建物が属する時代（ラン進行＋その街のオフセット）。 */
+/**
+ * その建物が属する時代。
+ * `_fixedEra` を持つ建物（ボス・首都区画・要塞都市）はラン中ずっとその時代に固定される。
+ * それ以外はラン進行＋その街のオフセット。
+ */
 function settlementEra(settlement, baseEra) {
+  if (settlement._fixedEra != null) return clampEra(settlement._fixedEra);
   return clampEra(baseEra + (settlement._eraOffset || 0));
 }
 
@@ -3239,9 +3244,11 @@ function generateStageLayout(stageIndex) {
   // ボス＋要塞リングが確実にマップ内に収まる位置を確保してから、
   // 小集落クラスタをその周囲を避けて配置する（先取り方式）。
   // v0.53: ボスはそのランで到達しうる最強の姿で最初から立つ（以後 建て替えない）。
-  const bossEra = runBossEra();
-  const boss = placeBossBuilding(bossEra, STAGE_CONFIGS[bossEra]);
-  boss._eraOffset = CAPITAL_ERA_OFFSET;   // 首都区画・城壁がこの差を参照する
+  // v0.54: 首都区画・城壁・要塞都市も同じ時代で固定する（ボス直行を道中で止める）。
+  const capitalFixedEra = runBossEra();
+  const boss = placeBossBuilding(capitalFixedEra, STAGE_CONFIGS[capitalFixedEra]);
+  boss._eraOffset = CAPITAL_ERA_OFFSET;
+  boss._fixedEra  = capitalFixedEra;
 
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
   const townCenters = placeTownCenters(scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR), boss.wx, boss.wy);
@@ -3291,9 +3298,12 @@ function generateStageLayout(stageIndex) {
     const center = townCenters[t];
     const cityScale = cityScaleByIdx.get(t) ?? randRange(0.9, 1.1);
     const s2 = cityScale * cityScale;
-    // この街が属する時代（建築・攻撃性能・レイアウトすべてこの時代のものになる）
-    const offset  = townEraOffset.get(t) || 0;
-    const townEra = clampEra(stageIndex + offset);
+    // この街が属する時代（建築・攻撃性能・レイアウトすべてこの時代のものになる）。
+    // v0.54: 要塞都市はボスと同じ最強時代で「建てる」。オフセットを後付けするだけでは
+    // 生成時の建物パラメータが古いままになる（＝見た目も強さも格上にならない）。
+    const offset     = townEraOffset.get(t) || 0;
+    const isFortress = fortifiedSet.has(t);
+    const townEra    = isFortress ? capitalFixedEra : clampEra(stageIndex + offset);
     const tConfig = STAGE_CONFIGS[townEra];
     const townBuildings = generateTown(
       center.x, center.y,
@@ -3306,7 +3316,12 @@ function generateStageLayout(stageIndex) {
     );
     // 時代が上がってもこの街は先を行き続ける（建て替えのたびに同じ差が保たれる）
     for (const b of townBuildings) b._eraOffset = offset;
-    if (fortifiedSet.has(t)) applyTownFortification(townBuildings);
+    if (isFortress) {
+      applyTownFortification(townBuildings);
+      // v0.54: 「強化しながらボス直行」を道中の街で止める（Shooter指示）。
+      // 時代が上がっても建て替えない＝削った傷が残り、攻略が積み上がる。
+      for (const b of townBuildings) b._fixedEra = capitalFixedEra;
+    }
     const tmeta = townBuildings.find(b => b._townMeta);   // v0.29: 部分壁のため町メタを収集
     if (tmeta) townMetas.push(tmeta._townMeta);
     for (const b of townBuildings) result.push(b);
@@ -3315,11 +3330,13 @@ function generateStageLayout(stageIndex) {
   // --- (2b) 首都要塞リング（座標のみ先計算）して小集落建物との衝突除去に使う ---
   // placeCapitalDistrict は config が必要なため、ここで仮実行して座標を取得する。
   // 首都建物と重なるクラスタ建物は remove してから result に残す。
-  // v0.52: 首都（ボスの街）は2時代先の建築で建つ。ラン開始時点で明確に格上に見える。
-  const capitalEra    = clampEra(stageIndex + CAPITAL_ERA_OFFSET);
-  const capitalConfig = STAGE_CONFIGS[capitalEra];
+  // v0.54: 首都区画もボスと同じ最強時代で固定。時代が上がっても変わらない。
+  const capitalConfig = STAGE_CONFIGS[capitalFixedEra];
   const capitalBuildings = placeCapitalDistrict(boss, capitalConfig);
-  for (const b of capitalBuildings) b._eraOffset = CAPITAL_ERA_OFFSET;
+  for (const b of capitalBuildings) {
+    b._eraOffset = CAPITAL_ERA_OFFSET;
+    b._fixedEra  = capitalFixedEra;
+  }
 
   // 首都建物の占有エリアを「除去対象」として各小集落建物をフィルタリングする。
   // 重なり判定: 中心距離 < 首都建物 radius + 小集落建物 radius + 最小隙間 6px
@@ -3416,7 +3433,7 @@ function generateStageLayout(stageIndex) {
   for (const b of startHouses) result.push(b);
 
   // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
-  const wallSegments = generateWallRing(boss, stageIndex);
+  const wallSegments = generateWallRing(boss, capitalFixedEra);   // v0.54: 首都の守りは最強で固定
   for (const w of wallSegments) result.push(w);
 
   // --- (5b) v0.29: 一部の町にも部分的な城壁（STAGE3以降。rect町は長方形の壁）---
@@ -3443,14 +3460,15 @@ function generateStageLayout(stageIndex) {
 
   // --- (8) v0.6-p4: 後半ステージの難度底上げ（仕様 §4。プレイヤーの3択強化ぶんを相殺） ---
   // ボスは BOSS_HP_STAGE_MULT で既にスケールするため対象外。城壁もステージ別HP設定済みのため対象外。
-  const boost = STAGE_DIFFICULTY_BOOST[stageIndex];
-  if (boost) {
-    for (const b of result) {
-      if (b.isBoss || b._isWall) continue;
-      b.maxHp = Math.round(b.maxHp * boost.hp);
-      b.hp    = b.maxHp;
-      b.projectileDamage *= boost.dmg;
-    }
+  // v0.54: 係数は**建物ごとの時代**で引く。世界の時代で一律に掛けていたため、
+  // 要塞都市や首都区画（先の時代で建っている）に本来の底上げが乗っていなかった。
+  for (const b of result) {
+    if (b.isBoss || b._isWall) continue;
+    const boost = STAGE_DIFFICULTY_BOOST[settlementEra(b, stageIndex)];
+    if (!boost) continue;
+    b.maxHp = Math.round(b.maxHp * boost.hp);
+    b.hp    = b.maxHp;
+    b.projectileDamage *= boost.dmg;
   }
 
   // --- (9) v0.23: 花火要塞 — 倒すと連鎖的に散る"うまみ"建物を各ステージに数棟仕込む ---
@@ -5241,7 +5259,10 @@ function cacheBossIndex() {
  */
 function updateBossLaser(dt) {
   if (bossSettlementIdx < 0) return;
-  if (!stageFeatures(currentStage).bossLaser) return;
+  // v0.54: ボスの武装はボス自身の時代で決まる（世界の時代ではない）。
+  // ボスは runBossEra() で固定＝既定ランでは電気時代なので、最初からレーザーを撃つ。
+  // 今後ボス武装のバリエーションを増やすときも、参照するのはこの時代にする。
+  if (!stageFeatures(runBossEra()).bossLaser) return;
   const boss = settlements[bossSettlementIdx];
   if (!boss || boss.fallen) return;
 
@@ -10963,6 +10984,8 @@ function reviveRuinsForEra(baseEra) {
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
     if (s.isBoss || s._isWall) continue;
+    // v0.54: 時代固定の要塞は復興しない。落としたら落としたまま＝攻略が積み上がる
+    if (s._fixedEra != null) continue;
     if (s.fallen) ruins.push(s);
   }
   const count = Math.round(ruins.length * ERA_REVIVE_RATIO);
@@ -10992,7 +11015,10 @@ function rebuildWallsForEra(eraIdx) {
   const townMetas = [];
   for (const s of kept) if (s._townMeta) townMetas.push(s._townMeta);
 
-  const walls = generateWallRing(boss, eraIdx).concat(generateTownWalls(townMetas, eraIdx));
+  // v0.54: 首都のリングはボスと同じ固定時代（＝ラン中ずっと最強の守り）。
+  // 町の部分壁だけが時代とともに増えていく。
+  const walls = generateWallRing(boss, runBossEra())
+    .concat(generateTownWalls(townMetas, eraIdx));
   settlements = kept.concat(walls);
 }
 
@@ -11007,16 +11033,19 @@ function advanceEra() {
   // (1) 廃墟の一部を復興させる（先に立たせてから、生きている建物をまとめて建て替える）
   const revived = reviveRuinsForEra(eraIdx);
 
-  // (2) 生き残っている建物を新しい時代の建築へ（街ごとのオフセットは保たれる）
+  // (2) 生き残っている建物を新しい時代の建築へ（街ごとのオフセットは保たれる）。
+  //     v0.54: 時代固定の建物（ボス・首都区画・要塞都市）は建て替えない。
+  //     建て替えると同じ時代のままHPだけ全快してしまい、削った意味が消えるため。
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
     if (s.isBoss || s._isWall || s.fallen) continue;
+    if (s._fixedEra != null) continue;
     rebuildSettlementForEra(s, eraIdx);
   }
 
   // (3) 城壁だけ建て替える。
   //     ボスは runBossEra() で最大値に固定済み＝時代が上がっても強くならない（v0.53）。
-  rebuildWallsForEra(settlementEra({ _eraOffset: CAPITAL_ERA_OFFSET }, eraIdx));
+  rebuildWallsForEra(eraIdx);
 
   // (4) 動く要塞をその時代の編成に入れ替える
   movers = generateMovers(eraIdx, settlements.find(s => s.isBoss));
