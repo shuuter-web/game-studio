@@ -89,7 +89,8 @@
   /* 残建物カウント（ミニマップの上） */
   #hud-buildings {
     position: fixed;
-    bottom: calc(20vh + env(safe-area-inset-bottom, 0px) + 8px + 60px + 4px);
+    /* ミニマップ（120×90）の上に置く。高さを変えたらここも合わせること */
+    bottom: calc(20vh + env(safe-area-inset-bottom, 0px) + 8px + 90px + 4px);
     left: 8px;
     padding: 3px 8px;
     background: rgba(8, 16, 26, 0.70);
@@ -520,7 +521,7 @@
 
 <!-- 左下: ミニマップ -->
 <div id="minimap-container">
-  <canvas id="minimap" width="80" height="60"></canvas>
+  <canvas id="minimap" width="120" height="90"></canvas>
 </div>
 
 <!-- バージョン表示（左下・スクリーン固定） -->
@@ -579,7 +580,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.49.0";
+const GAME_VERSION = "v0.50.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -951,8 +952,26 @@ function toggleDebugPanel(force) {
 // 変更1: ワールドサイズを拡大（4800×3600）
 // オフスクリーンcanvasメモリ: 4800×3600×4byte = 69.1MB（許容範囲内）
 // 建物間隔も52px（旧26px）に広げているため、1町の占有面積は旧比約4倍になる
-const WORLD_W = 4800;
-const WORLD_H = 3600;
+// v0.49: 大陸サイズへ拡張（面積4倍）。「1ラン＝1大陸」構成の土台。
+// 静的レイヤーはタイル化済みなので、ここを広げてもメモリは可視範囲に比例したままになる。
+// 従来サイズ（4800×3600）は WORLD_REF_W/H として残し、町・地形・森の数を面積比で決める。
+const WORLD_W = 9600;
+const WORLD_H = 7200;
+
+// 数量スケールの基準（v0.48 までのワールド）
+const WORLD_REF_W = 4800;
+const WORLD_REF_H = 3600;
+const WORLD_AREA_RATIO = (WORLD_W * WORLD_H) / (WORLD_REF_W * WORLD_REF_H);
+
+// 町だけは面積比そのままだと多すぎる（数が増えるほど1つの町の重みが薄れる）。
+// 大陸は少し余白がある方が「渡り歩く」意味が出るので密度を落とす。
+// 1.0 で従来と同密度。ここは体感で詰める調整代（フェーズ5）。
+const TOWN_DENSITY_FACTOR = 0.75;
+
+/** ワールド面積に合わせて個数をスケールする（基準ワールドでの個数を渡す）。 */
+function scaledForWorld(baseCount, densityFactor = 1) {
+  return Math.max(1, Math.round(baseCount * WORLD_AREA_RATIO * densityFactor));
+}
 
 // ブレス射程（px）
 const BREATH_RANGE = 80;
@@ -3130,7 +3149,7 @@ function generateStageLayout(stageIndex) {
   const boss = placeBossBuilding(stageIndex, config);
 
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
-  const townCenters = placeTownCenters(config.townCount, boss.wx, boss.wy);
+  const townCenters = placeTownCenters(scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR), boss.wx, boss.wy);
 
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
   townRoadEdges = buildTownRoadNetwork(townCenters, boss);
@@ -4582,7 +4601,10 @@ function generateMovers(stageIndex, boss) {
 
   // 通常枠（マップ全体を巡回）＋ 守備隊枠（ボス周りだけを巡回）をまとめて処理する。
   // 3要素目 true が守備隊 = 巡回点の生成器だけを差し替える。
-  const spawnEntries = spawns.map(e => [e[0], e[1], false])
+  // v0.49: マップ全体を巡回する枠はワールド面積に合わせて増やす。
+  // 大陸サイズで数を据え置くと「動く要塞」に一度も出会わないまま終わってしまう。
+  // 守備隊はボス周りの固定半径を巡回するので、密度は世界の広さに影響されない＝据え置き。
+  const spawnEntries = spawns.map(e => [e[0], scaledForWorld(e[1], TOWN_DENSITY_FACTOR), false])
                              .concat(garrison.map(e => [e[0], e[1], true]));
 
   for (const [defKey, count, isGarrison] of spawnEntries) {
@@ -5720,7 +5742,8 @@ const FOREST_MARGIN    = 90;
  */
 function generateForests(buildings, boss) {
   const result = [];
-  const count  = randInt(FOREST_COUNT_MIN, FOREST_COUNT_MAX);
+  // v0.49: 森も空白を埋める役なので面積比そのまま
+  const count  = randInt(scaledForWorld(FOREST_COUNT_MIN), scaledForWorld(FOREST_COUNT_MAX));
   const bossClear = WALL_OUTER_RING_RADIUS + 100;
   // 畑クラスタの位置（森が畑に被らないように）
   const fieldSpots = [];
@@ -5802,7 +5825,8 @@ function drawForestsOnLayer(bctx, bounds) {
  */
 function generateTerrainObstacles(buildings, boss) {
   const result = [];
-  const count  = randInt(TERRAIN_COUNT_MIN, TERRAIN_COUNT_MAX);
+  // v0.49: 岩山・湖は「空白を埋める」役なので面積比そのままで増やす
+  const count  = randInt(scaledForWorld(TERRAIN_COUNT_MIN), scaledForWorld(TERRAIN_COUNT_MAX));
   // 城壁リング＋余白の外側にのみ配置（要塞攻略の導線を地形で塞がない）
   const bossClear = WALL_OUTER_RING_RADIUS + 120;
 
@@ -10755,6 +10779,7 @@ function loadStageWorld(stageIdx) {
   rebuildBuildingGrid();
   buildingLayerDirty = true;
   minimapBaseDirty = true;
+  minimapBaseLastBuilt = -Infinity;   // ステージ切り替えは間引かずに即座に焼き直す
   rebuildGroundLayer();   // v0.11.3: 地面（道路・畑・川など）を新ステージ分焼き直す
   rebuildBuildingLayer();
   cacheBossIndex();
@@ -10830,6 +10855,7 @@ function returnToTitle() {
   rebuildBuildingGrid();
   buildingLayerDirty = true;
   minimapBaseDirty = true;
+  minimapBaseLastBuilt = -Infinity;   // タイトルへ戻すときも即座に焼き直す
   rebuildGroundLayer();   // v0.11.3: 地面をSTAGE1分に焼き直す
   rebuildBuildingLayer();
   cacheBossIndex();
@@ -13013,8 +13039,20 @@ function drawFlash() {
 // -----------------------------------------------------------------
 // ミニマップ描画
 // -----------------------------------------------------------------
-const MINIMAP_W = 80;
-const MINIMAP_H = 60;
+// v0.49: ワールドが4倍になり 80×60 では町が1〜2pxに潰れて読めなくなったため拡大。
+// 4:3 のままなのでワールドとの縦横比は変わらない（#hud-buildings の bottom も追随させること）。
+const MINIMAP_W = 120;
+const MINIMAP_H = 90;
+
+// 基準ワールド（4800×3600）をミニマップ80×60で描いていたときのドット太さを保つ係数。
+// これが無いとワールドを広げるほど町のドットが重なって一枚の色面になる。
+const MINIMAP_DOT_SCALE = (MINIMAP_W / WORLD_W) / (80 / 4800);
+
+// ミニマップ基底の焼き直しは建物が壊れるたびに要求されるが、全建物走査が
+// 5000棟超で 1.6ms かかる（大陸サイズ）。ドットの更新が数フレーム遅れても
+// 見た目には分からないので、破壊が続く間は間引く。
+const MINIMAP_REBUILD_INTERVAL_MS = 120;
+let minimapBaseLastBuilt = -Infinity;
 
 // v0.6-p4: 建物ドットは静的なのでオフスクリーンにキャッシュする。
 // 建物数が約2倍（1500〜1900棟）になり、毎フレーム全棟の arc/fill を
@@ -13073,7 +13111,10 @@ function rebuildMinimapBase() {
       }
     } else {
       // 通常建物
-      const dotR = settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : (settlement.size === "tiny" ? 1.0 : 1.5));
+      // v0.49: ワールドが広がるとドットが相対的に太くなって町が潰れるため、
+      // 基準ワールド（4800×3600 / ミニマップ80×60）との比で縮める。
+      const dotR = MINIMAP_DOT_SCALE *
+        (settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : (settlement.size === "tiny" ? 1.0 : 1.5)));
       minimapCtx.fillStyle = settlement.fallen ? "#333" : settlement.color;
       minimapCtx.beginPath();
       minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
@@ -13085,7 +13126,12 @@ function rebuildMinimapBase() {
 }
 
 function drawMinimap() {
-  if (minimapBaseDirty || !minimapBaseCanvas) rebuildMinimapBase();
+  const nowMs = performance.now();
+  if (!minimapBaseCanvas ||
+      (minimapBaseDirty && nowMs - minimapBaseLastBuilt >= MINIMAP_REBUILD_INTERVAL_MS)) {
+    rebuildMinimapBase();
+    minimapBaseLastBuilt = nowMs;
+  }
   minimapCtx.drawImage(minimapBaseCanvas, 0, 0);
 
   const scaleX = MINIMAP_W / WORLD_W;
