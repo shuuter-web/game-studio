@@ -580,7 +580,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.52.0";
+const GAME_VERSION = "v0.53.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2030,6 +2030,18 @@ function settlementEra(settlement, baseEra) {
   return clampEra(baseEra + (settlement._eraOffset || 0));
 }
 
+/**
+ * v0.53: 首都（ボス）の時代は**ラン開始時に最大値で固定**する（Shooter指示）。
+ *
+ * 時代が上がるたびにボスも強くなると、待って強くなった群れの伸びをボスの伸びが
+ * 相殺してしまい、「いつ挑んでも同じ」になっていた。そのランで到達しうる
+ * 最強の姿（最終時代＋首都オフセット）で最初から立たせることで、
+ * ボスは動かない壁になり、群れを育てて越える対象になる。
+ */
+function runBossEra() {
+  return clampEra(runStartEra + ERAS_PER_RUN - 1 + CAPITAL_ERA_OFFSET);
+}
+
 let runStartEra          = 0;   // このランの開始時代（フェーズ4で選択可能にする）
 let eraIndexInRun        = 0;   // 0..ERAS_PER_RUN-1
 let eraStartDestructible = 0;   // その時代の開始時に建っていた破壊対象の数（比率の分母）
@@ -3226,10 +3238,10 @@ function generateStageLayout(stageIndex) {
   // --- (1) ボスを先に配置する ---
   // ボス＋要塞リングが確実にマップ内に収まる位置を確保してから、
   // 小集落クラスタをその周囲を避けて配置する（先取り方式）。
-  // v0.52: ボスも2時代先。HP は calcBossHp が時代で伸びるので自動的に格上になる。
-  const bossEra = clampEra(stageIndex + CAPITAL_ERA_OFFSET);
+  // v0.53: ボスはそのランで到達しうる最強の姿で最初から立つ（以後 建て替えない）。
+  const bossEra = runBossEra();
   const boss = placeBossBuilding(bossEra, STAGE_CONFIGS[bossEra]);
-  boss._eraOffset = CAPITAL_ERA_OFFSET;
+  boss._eraOffset = CAPITAL_ERA_OFFSET;   // 首都区画・城壁がこの差を参照する
 
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
   const townCenters = placeTownCenters(scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR), boss.wx, boss.wy);
@@ -10941,17 +10953,6 @@ function rebuildSettlementForEra(settlement, baseEra) {
   settlement._breathParticleTimer = 0;
 }
 
-/** 首都を新しい時代の姿に建て替える（落とされていても新文明が建て直す）。 */
-function rebuildBossForEra(boss, baseEra) {
-  const era   = settlementEra(boss, baseEra);
-  const fresh = makeBossBuilding(boss.wx, boss.wy, era, STAGE_CONFIGS[era].boss);
-  for (const key of Object.keys(fresh)) {
-    if (key === "wx" || key === "wy") continue;
-    boss[key] = fresh[key];
-  }
-  boss.fallen = false;
-}
-
 /**
  * 廃墟の一部を新しい町として復興させる。
  * これが無いと時代が進むほどマップが空になり、後半ほど壊す対象が減ってしまう。
@@ -11013,9 +11014,8 @@ function advanceEra() {
     rebuildSettlementForEra(s, eraIdx);
   }
 
-  // (3) 首都と城壁
-  const boss = settlements.find(s => s.isBoss);
-  if (boss) rebuildBossForEra(boss, eraIdx);
+  // (3) 城壁だけ建て替える。
+  //     ボスは runBossEra() で最大値に固定済み＝時代が上がっても強くならない（v0.53）。
   rebuildWallsForEra(settlementEra({ _eraOffset: CAPITAL_ERA_OFFSET }, eraIdx));
 
   // (4) 動く要塞をその時代の編成に入れ替える
