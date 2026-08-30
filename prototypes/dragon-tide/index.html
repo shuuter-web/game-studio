@@ -249,6 +249,15 @@
   .upgrade-card:active { transform: scale(0.97); }
   .upgrade-card.rarity-rare { border-color: #ffd060; box-shadow: 0 0 14px rgba(255,208,96,0.35); }
   .upgrade-card.rarity-star { border-color: #ff70d0; box-shadow: 0 0 18px rgba(255,112,208,0.45); }
+  /* v0.55: 未解放の大陸。押せないことが見て分かればよいので彩度と輝度だけ落とす */
+  .upgrade-card.card-locked {
+    border-color: #3a4a5a;
+    color: #7a8a9a;
+    opacity: 0.55;
+    cursor: default;
+    box-shadow: none;
+  }
+  .upgrade-card.card-locked:active { transform: none; }
   .upgrade-card .card-icon { font-size: 24px; flex-shrink: 0; }
   .upgrade-card .card-name { font-size: 15px; font-weight: bold; letter-spacing: 0.08em; }
   .upgrade-card .card-desc { font-size: 11px; color: #a8c4e0; margin-top: 2px; }
@@ -580,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.54.0";
+const GAME_VERSION = "v0.55.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2047,7 +2056,38 @@ function runBossEra() {
   return clampEra(runStartEra + ERAS_PER_RUN - 1 + CAPITAL_ERA_OFFSET);
 }
 
-let runStartEra          = 0;   // このランの開始時代（フェーズ4で選択可能にする）
+// -----------------------------------------------------------------
+// 大陸（＝開始時代）— v0.55
+// -----------------------------------------------------------------
+// 1ランは連続 ERAS_PER_RUN 時代なので、開始時代は 0..(全時代数 - ERAS_PER_RUN) から選ぶ。
+// 後ろの大陸ほど初手から難度が高く、ランは短く濃くなる（Balatro の ante に相当）。
+// 解放は順送り: 大陸I をクリアすると II が開く。
+const CONTINENT_DEFS = [
+  { startEra: 0, name: "黎明の大陸", icon: "🪨" },
+  { startEra: 1, name: "神話の大陸", icon: "🏛" },
+  { startEra: 2, name: "鉄の大陸",   icon: "🏰" },
+  { startEra: 3, name: "煙の大陸",   icon: "⚙" },
+  { startEra: 4, name: "終焉の大陸", icon: "⚡" },
+];
+const CONTINENT_NUMERALS = ["I", "II", "III", "IV", "V"];
+
+/** 解放済みの大陸数（1以上）。 */
+function unlockedContinentCount() {
+  const n = (profile && profile.unlockedContinents) | 0;
+  return Math.max(1, Math.min(CONTINENT_DEFS.length, n));
+}
+
+/** 大陸クリア時に次の大陸を解放する。 */
+function unlockNextContinent(clearedStartEra) {
+  const idx = CONTINENT_DEFS.findIndex(c => c.startEra === clearedStartEra);
+  if (idx < 0) return false;
+  if (profile.unlockedContinents > idx + 1) return false;   // すでに先まで解放済み
+  if (idx + 1 >= CONTINENT_DEFS.length) return false;       // 最後の大陸には次が無い
+  profile.unlockedContinents = idx + 2;
+  return true;
+}
+
+let runStartEra          = 0;   // このランの開始時代（タイトルの大陸選択で決まる）
 let eraIndexInRun        = 0;   // 0..ERAS_PER_RUN-1
 let eraStartDestructible = 0;   // その時代の開始時に建っていた破壊対象の数（比率の分母）
 
@@ -8452,6 +8492,10 @@ const STRINGS = {
   toTitle: "タイトルへ",
   levelUp: "LEVEL UP",
   chooseDragon: "竜を選ぶ",
+  chooseContinent: "大陸を選ぶ",
+  continentLocked: (prev) => `大陸${prev} をクリアで解放`,
+  continentBoss: (name) => `首都: ${name}`,
+  continentUnlocked: (name) => `${name} が解放された`,
   startRun: "はじめる",
   backToTitle: "← もどる",
   openTree: (crystals) => `強化ツリー　🔷${crystals}`,
@@ -10262,6 +10306,8 @@ function defaultProfile() {
     // v0.25: チャレンジ用の累計カウンタ
     eliteKills: 0,        // エリート敵の累計撃破数
     fireworksDestroyed: 0, // 花火要塞の累計破壊数
+    // v0.55: 解放済みの大陸（開始時代）の数。1 = 大陸I のみ。クリアで1つ増える。
+    unlockedContinents: 1,
   };
 }
 
@@ -10693,10 +10739,81 @@ function stageStartFlockCount() {
 function onTitleStart() {
   if (gameState !== "title") return;
   if (isFirstEverRun()) {
-    beginRun("fire");        // 初回は火竜固定で即開始
+    // 初回だけは特別ラン。大陸も竜種も選ばせず、黎明の大陸×火竜で即開始する。
+    pendingStartEra = 0;
+    beginRun("fire");
   } else {
-    showSpeciesSelect();     // 2回目以降は竜種を選んでから
+    // v0.55: 2回目以降は「どの大陸から始めるか」→「どの竜で行くか」の2段階
+    showContinentSelect();
   }
+}
+
+// 次に始めるランの開始時代。大陸選択で確定し beginRun が読む。
+let pendingStartEra = 0;
+let continentSelecting = false;
+
+// 大陸（開始時代）選択メニュー。竜種選択と同じオーバーレイを流用する。
+function showContinentSelect() {
+  if (gameState !== "title") return;
+  continentSelecting = true;
+  levelupTitleEl.textContent = STRINGS.chooseContinent;
+  cardListEl.classList.add("species-grid");
+  cardListEl.innerHTML = "";
+
+  const unlocked = unlockedContinentCount();
+  for (let i = 0; i < CONTINENT_DEFS.length; i++) {
+    const c        = CONTINENT_DEFS[i];
+    const isLocked = i >= unlocked;
+    // その大陸が通る時代の並び（＝何を相手にするかが一目で分かる）
+    const eras = [];
+    for (let k = 0; k < ERAS_PER_RUN; k++) {
+      eras.push(STAGE_CONFIGS[clampEra(c.startEra + k)].name);
+    }
+    const bossName = STAGE_CONFIGS[clampEra(c.startEra + ERAS_PER_RUN - 1 + CAPITAL_ERA_OFFSET)].name;
+
+    const btn = document.createElement("button");
+    btn.className = "upgrade-card card-span-2" + (isLocked ? " card-locked" : " rarity-star");
+    btn.innerHTML =
+      `<span class="card-icon">${isLocked ? "🔒" : c.icon}</span>` +
+      `<span><div class="card-name">${CONTINENT_NUMERALS[i]}. ${c.name}</div>` +
+      `<div class="card-desc">${isLocked ? STRINGS.continentLocked(CONTINENT_NUMERALS[i - 1] || "I")
+                                          : eras.join(" → ")}</div>` +
+      `${isLocked ? "" : `<div class="card-desc" style="opacity:0.7">${STRINGS.continentBoss(bossName)}</div>`}</span>`;
+    if (!isLocked) {
+      btn.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        pendingStartEra = c.startEra;
+        dismissContinentSelect();
+        showSpeciesSelect();
+      });
+    }
+    cardListEl.appendChild(btn);
+  }
+
+  const back = document.createElement("button");
+  back.className = "upgrade-card card-span-2";
+  back.style.justifyContent = "center";
+  back.style.minHeight = "40px";
+  back.innerHTML = `<span class="card-name">${STRINGS.backToTitle}</span>`;
+  back.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    dismissContinentSelect();
+    refreshTitleMenu();
+    titleOverlayEl.classList.add("visible");
+  });
+  cardListEl.appendChild(back);
+
+  titleOverlayEl.classList.remove("visible");
+  levelupOverlayEl.classList.add("visible");
+}
+
+function dismissContinentSelect() {
+  if (!continentSelecting) return;
+  continentSelecting = false;
+  levelupTitleEl.textContent = STRINGS.levelUp;
+  levelupOverlayEl.classList.remove("visible");
 }
 
 // 竜種選択メニュー（レベルアップ用オーバーレイを流用）。
@@ -10749,9 +10866,10 @@ function dismissSpeciesSelect() {
   levelupOverlayEl.classList.remove("visible");
 }
 
-// 竜種選択をやめてタイトルへ戻す。
+// 竜種選択をやめる。v0.55: 2回目以降は1段前（大陸選択）へ戻す。
 function cancelSpeciesSelect() {
   dismissSpeciesSelect();
+  if (!isFirstEverRun()) { showContinentSelect(); return; }
   refreshTitleMenu();
   titleOverlayEl.classList.add("visible");
 }
@@ -10775,7 +10893,8 @@ function beginRun(speciesId) {
   // 以前はタイトル背景のワールドをそのまま使い回していたため、ランのシードと
   // ワールドのシードが食い違っていた（?seed= 指定時だけ偶然一致していた）。
   // ここで作り直すことで「同じシード＝同じ大陸」が常に成り立つ。
-  runStartEra = 0;                         // フェーズ4で開始時代を選べるようにする
+  // v0.55: タイトルで選んだ大陸（開始時代）から始める。初回ランは 0 固定。
+  runStartEra = currentRunIsFirst ? 0 : clampEra(pendingStartEra);
   buildContinent(0);                       // ワールド生成＋時代0の確定＋初期群れ
 
   runStartTime = performance.now();
@@ -10870,6 +10989,8 @@ function triggerAllClear() {
   const runTimeMs = performance.now() - runStartTime;
   saveBestRecord(runTimeMs, runKills);
   profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
+  // v0.55: この大陸をクリアしたら次の大陸（開始時代）を解放する
+  const unlockedNew = unlockNextContinent(runStartEra);
   // v0.51: 最終時代ぶん＋大陸制覇ボーナスの竜晶（awardCrystals が saveProfile 済み）
   awardCrystals(crystalsForStageClear(currentStage) + CRYSTAL_ALLCLEAR_BONUS);
   evaluateChallenges();               // v0.25: 全クリア・累計系チャレンジを判定
@@ -10883,7 +11004,11 @@ function triggerAllClear() {
     `${STRINGS.statKills}: <span class="stat-value">${runKills}</span><br>` +
     `${STRINGS.statFlock}: <span class="stat-value">${runMaxFlock}</span><br>` +
     `${STRINGS.statLevel}: <span class="stat-value">Lv.${playerLevel}</span><br>` +
-    `${STRINGS.statXp}: <span class="stat-value">${runTotalXp}</span>`;
+    `${STRINGS.statXp}: <span class="stat-value">${runTotalXp}</span>` +
+    (unlockedNew
+      ? `<br><span class="stat-value" style="color:#ffd060">🔓 ${
+          STRINGS.continentUnlocked(CONTINENT_DEFS[profile.unlockedContinents - 1].name)}</span>`
+      : "");
   resultStatsEl.classList.add("visible");
   retryBtn.textContent = STRINGS.toTitle;
   setTimeout(() => overlayTitle.classList.add("show"), 300);
@@ -11232,7 +11357,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "r" || e.key === "R") {
     if (gameState === "all-clear") returnToTitle();
   } else if (e.key === " " || e.key === "Enter") {
-    if (gameState === "title" && !speciesSelecting) onTitleStart();
+    if (gameState === "title" && !speciesSelecting && !continentSelecting) onTitleStart();
   }
 });
 
