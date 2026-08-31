@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.55.0";
+const GAME_VERSION = "v0.56.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -666,12 +666,13 @@ reseedForNewRun();   // 起動直後のタイトル演出などにも乱数が�
 // 最終時代では大陸を作り直して時代1へ戻す（デバッグで回し続けられるように）。
 function debugAdvanceStage() {
   if (typeof gameState === "undefined" || gameState !== "playing") return;
-  if (isFinalEra()) {
-    runStartEra = (runStartEra + 1) % Math.max(1, STAGE_CONFIGS.length - ERAS_PER_RUN + 1);
+  // 最大段階なら次の文明へ回す（デバッグで全時代を見て回れるように）
+  if (isFinalTier()) {
+    runEra = (runEra + 1) % STAGE_CONFIGS.length;
     buildContinent(0);
     return;
   }
-  triggerEraAdvance();
+  triggerTierAdvance();
 }
 
 // n レベル分のレベルアップを発生させる（3択カードが開く）。
@@ -2001,106 +2002,120 @@ const STAGE_CONFIGS = [
 const TOTAL_STAGES = STAGE_CONFIGS.length;
 
 // -----------------------------------------------------------------
-// 時代進行（v0.51: 1ラン＝1大陸。壊すほど人類が文明を進めて反撃してくる）
+// 時代（フレーバー）と 動員段階（強化）— v0.56 で分離
 // -----------------------------------------------------------------
-// STAGE_CONFIGS の8文明を「空間の並び」ではなく「1つの大陸の時間軸」として使う。
-// ワールドは1ランに1度しか生成せず、時代が上がると生き残った町がその場で
-// 次の時代の建築に建て替わり、廃墟の一部が新しい町として復興する。
-// 設計は docs/gdd/dragon-tide-era-run.md を正とする。
-const ERAS_PER_RUN = 4;                 // 1ラン＝連続4時代
+// v0.51〜v0.55 は「壊すほど文明が時代を進める」構成だったが、1ランの中で
+// 石器の街が神殿になり城塞になる、というのは世界の理屈として無理があった。
+//
+// そこで**時代は1ランを通して固定のフレーバー**に戻し、
+// 「ラン中に敵が強くなる」ぶんは **動員段階（mobilization tier）** という
+// 別の軸に分けた。時代が決めるのは見た目・建築・敵の顔ぶれ・兵器の種類で、
+// 段階が決めるのは強さ（HP・火力）と物量だけ。両者は互いに独立している。
+//
+//   時代 runEra    … ラン開始時に選ぶ。ラン中ずっと変わらない（currentStage と同値）
+//   段階 powerTier … 0..TIERS_PER_RUN-1。破壊率で上がる。強さと物量だけが変わる
+const TIERS_PER_RUN = 4;
 
-// その時代に建っていた破壊対象を何割落としたら次の時代へ進むか。
-// v0.52: 0.6 は時代1で2100棟の破壊を要求して作業になっていたため 0.3 へ（Shooter指示）。
-const ERA_ADVANCE_RATIO = 0.3;
+// その段階で建っていた破壊対象を何割落としたら次の段階へ上がるか。
+const TIER_ADVANCE_RATIO = 0.3;
 
-// 時代が上がるとき、廃墟のうちどれだけが新しい町として復興するか。
-// これが無いと時代が進むほどマップが空になり、後半ほど手応えが薄くなる。
-const ERA_REVIVE_RATIO = 0.3;
+// 段階が上がるとき、廃墟のうちどれだけが再建されるか。
+// これが無いと段階が進むほどマップが空になり、後半ほど手応えが薄くなる。
+const TIER_REBUILD_RATIO = 0.3;
 
-// 時代ごとの群れ上限（effFlockCap への係数）。
-// 群れは時代をまたいでも削らない代わりに、天井が段階的に開く＝解放の快感にする。
-const ERA_FLOCK_CAP_FRACTION = [0.55, 0.70, 0.85, 1.0];
+// 段階ごとの群れ上限（effFlockCap への係数）。
+// 群れは段階をまたいでも削らない代わりに、天井が段階的に開く＝解放の快感にする。
+const TIER_FLOCK_CAP_FRACTION = [0.55, 0.70, 0.85, 1.0];
 
-// v0.52: 大陸は最初から一様ではない。首都と一部の街は「先の時代」の建築で建っている。
-// 壊す前から強さが見た目で分かり、進んだ文明が既にそこにある感じを出す（Shooter指示）。
-// オフセットは時代が上がっても保たれる＝その街はずっと先を行く。
-const CAPITAL_ERA_OFFSET   = 2;      // 首都（ボスの街）は2時代先
-const TOWN_ERA_OFFSET_ELITE    = 2;  // 要塞都市＝2時代先
-const TOWN_ERA_OFFSET_ADVANCED = 1;  // 一部の街＝1時代先
-const TOWN_ADVANCED_RATIO      = 0.25;
+// 動員段階ごとの強さ倍率。**時代とは独立した純粋な強さの軸**。
+// 建物の見た目（建築・色の系統）はこの段階では変わらない。
+const POWER_TIER_BOOST = [
+  { hp: 1.00, dmg: 1.00 },   // 段階1 平時
+  { hp: 1.35, dmg: 1.20 },   // 段階2 動員
+  { hp: 1.80, dmg: 1.45 },   // 段階3 総力戦
+  { hp: 2.40, dmg: 1.75 },   // 段階4 決戦
+];
+const TIER_NAMES = ["平時", "動員", "総力戦", "決戦"];
 
+// 段階が上がると動く要塞（守備隊）の数も増える。
+// 顔ぶれは時代で決まっているので変わらない——増えるのは頭数だけ。
+const TIER_MOVER_MULT = [1.0, 1.3, 1.6, 2.0];
+
+// 段階が上がるほど建物の色を締める（同じ建築のまま「補強された」ことを見せる）。
+// 建て替えではないので形は変わらない。段階ごとの暗さの差。
+const TIER_SHADE_STEP = -10;
+
+// 最初から最大段階で立っている陣営（Shooter指示: ボス直行を道中で止める）。
+const TOWN_TIER_ADVANCED   = 1;     // 一部の街は1段階先
+const TOWN_ADVANCED_RATIO  = 0.25;
+// 首都は最大段階のさらに上。ランの「壁」として動かない。
+const CAPITAL_POWER_MULT   = 2.6;
+
+/** 動員段階を範囲に収める。 */
+function clampTier(tier) {
+  return Math.max(0, Math.min(POWER_TIER_BOOST.length - 1, tier));
+}
 /** 時代番号を STAGE_CONFIGS の範囲に収める。 */
 function clampEra(eraIdx) {
   return Math.max(0, Math.min(STAGE_CONFIGS.length - 1, eraIdx));
 }
+/** 最大段階（要塞・首都はここに固定される）。 */
+function maxPowerTier() { return POWER_TIER_BOOST.length - 1; }
 
 /**
- * その建物が属する時代。
- * `_fixedEra` を持つ建物（ボス・首都区画・要塞都市）はラン中ずっとその時代に固定される。
+ * その建物の動員段階。
+ * `_fixedTier` を持つ建物（首都区画・要塞都市）はラン中ずっとその段階に固定。
  * それ以外はラン進行＋その街のオフセット。
  */
-function settlementEra(settlement, baseEra) {
-  if (settlement._fixedEra != null) return clampEra(settlement._fixedEra);
-  return clampEra(baseEra + (settlement._eraOffset || 0));
+function settlementTier(settlement, baseTier) {
+  if (settlement._fixedTier != null) return clampTier(settlement._fixedTier);
+  return clampTier(baseTier + (settlement._tierOffset || 0));
 }
 
-/**
- * v0.53: 首都（ボス）の時代は**ラン開始時に最大値で固定**する（Shooter指示）。
- *
- * 時代が上がるたびにボスも強くなると、待って強くなった群れの伸びをボスの伸びが
- * 相殺してしまい、「いつ挑んでも同じ」になっていた。そのランで到達しうる
- * 最強の姿（最終時代＋首都オフセット）で最初から立たせることで、
- * ボスは動かない壁になり、群れを育てて越える対象になる。
- */
-function runBossEra() {
-  return clampEra(runStartEra + ERAS_PER_RUN - 1 + CAPITAL_ERA_OFFSET);
+/** その建物に掛かる強さ倍率（時代の底上げ × 動員段階）。 */
+function settlementPowerBoost(settlement, baseTier) {
+  const eraBoost  = STAGE_DIFFICULTY_BOOST[currentStage] || { hp: 1, dmg: 1 };
+  const tierBoost = POWER_TIER_BOOST[settlementTier(settlement, baseTier)];
+  return { hp: eraBoost.hp * tierBoost.hp, dmg: eraBoost.dmg * tierBoost.dmg };
 }
 
 // -----------------------------------------------------------------
-// 大陸（＝開始時代）— v0.55
+// 攻め込む文明（＝ランの時代）— v0.56
 // -----------------------------------------------------------------
-// 1ランは連続 ERAS_PER_RUN 時代なので、開始時代は 0..(全時代数 - ERAS_PER_RUN) から選ぶ。
-// 後ろの大陸ほど初手から難度が高く、ランは短く濃くなる（Balatro の ante に相当）。
-// 解放は順送り: 大陸I をクリアすると II が開く。
-const CONTINENT_DEFS = [
-  { startEra: 0, name: "黎明の大陸", icon: "🪨" },
-  { startEra: 1, name: "神話の大陸", icon: "🏛" },
-  { startEra: 2, name: "鉄の大陸",   icon: "🏰" },
-  { startEra: 3, name: "煙の大陸",   icon: "⚙" },
-  { startEra: 4, name: "終焉の大陸", icon: "⚡" },
-];
-const CONTINENT_NUMERALS = ["I", "II", "III", "IV", "V"];
+// v0.55 までは「連続4時代を通る大陸」を5種類から選ぶ形だったが、
+// 時代がラン中に進まなくなったので、選ぶのは素直に**どの文明に攻め込むか**。
+// STAGE_CONFIGS の8文明がそのまま8つの選択肢になる。
+// 後ろの文明ほど建物も敵も強く、兵器も増える。解放は順送り。
+const CONTINENT_DEFS = STAGE_CONFIGS.map((cfg, i) => ({
+  era: i, name: cfg.name, subtitle: cfg.subtitle,
+}));
+const CONTINENT_NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
 
-/** 解放済みの大陸数（1以上）。 */
+/** 解放済みの文明数（1以上）。 */
 function unlockedContinentCount() {
   const n = (profile && profile.unlockedContinents) | 0;
   return Math.max(1, Math.min(CONTINENT_DEFS.length, n));
 }
 
-/** 大陸クリア時に次の大陸を解放する。 */
-function unlockNextContinent(clearedStartEra) {
-  const idx = CONTINENT_DEFS.findIndex(c => c.startEra === clearedStartEra);
+/** 文明をクリアしたら次を解放する。 */
+function unlockNextContinent(clearedEra) {
+  const idx = CONTINENT_DEFS.findIndex(c => c.era === clearedEra);
   if (idx < 0) return false;
   if (profile.unlockedContinents > idx + 1) return false;   // すでに先まで解放済み
-  if (idx + 1 >= CONTINENT_DEFS.length) return false;       // 最後の大陸には次が無い
+  if (idx + 1 >= CONTINENT_DEFS.length) return false;       // 最後には次が無い
   profile.unlockedContinents = idx + 2;
   return true;
 }
 
-let runStartEra          = 0;   // このランの開始時代（タイトルの大陸選択で決まる）
-let eraIndexInRun        = 0;   // 0..ERAS_PER_RUN-1
-let eraStartDestructible = 0;   // その時代の開始時に建っていた破壊対象の数（比率の分母）
+let runEra                = 0;   // このランの時代（タイトルで選ぶ。ラン中ずっと固定）
+let powerTier             = 0;   // 動員段階 0..TIERS_PER_RUN-1（破壊率で上がる）
+let tierStartDestructible = 0;   // その段階の開始時に建っていた破壊対象の数（比率の分母）
 
-/** このランの絶対時代番号（STAGE_CONFIGS のインデックス）。 */
-function absoluteEra(indexInRun = eraIndexInRun) {
-  return Math.min(STAGE_CONFIGS.length - 1, runStartEra + indexInRun);
-}
+/** 最大段階（これ以上は上がらない）か。 */
+function isFinalTier() { return powerTier >= TIERS_PER_RUN - 1; }
 
-/** 最終時代（ここの首都を落とすとランが終わる）か。 */
-function isFinalEra() { return eraIndexInRun >= ERAS_PER_RUN - 1; }
-
-// 旧 API 互換（HUD・セーブが参照する）。1ランの長さは時代数で数える。
-function runStageCount() { return ERAS_PER_RUN; }
+// 旧 API 互換（HUD・セーブが参照する）。1ランの長さは段階数で数える。
+function runStageCount() { return TIERS_PER_RUN; }
 
 // -----------------------------------------------------------------
 // Canvas セットアップ
@@ -3283,12 +3298,16 @@ function generateStageLayout(stageIndex) {
   // --- (1) ボスを先に配置する ---
   // ボス＋要塞リングが確実にマップ内に収まる位置を確保してから、
   // 小集落クラスタをその周囲を避けて配置する（先取り方式）。
-  // v0.53: ボスはそのランで到達しうる最強の姿で最初から立つ（以後 建て替えない）。
-  // v0.54: 首都区画・城壁・要塞都市も同じ時代で固定する（ボス直行を道中で止める）。
-  const capitalFixedEra = runBossEra();
-  const boss = placeBossBuilding(capitalFixedEra, STAGE_CONFIGS[capitalFixedEra]);
-  boss._eraOffset = CAPITAL_ERA_OFFSET;
-  boss._fixedEra  = capitalFixedEra;
+  // v0.56: ボスの見た目・武装は**ランの時代**のまま（フレーバーは固定）。
+  // 強さだけ「最大段階 × 首都倍率」で最初から最強にする（以後 動かない壁）。
+  const boss = placeBossBuilding(stageIndex, config);
+  boss._fixedTier = maxPowerTier();
+  {
+    const tb = POWER_TIER_BOOST[maxPowerTier()];
+    boss.maxHp = Math.round(boss.maxHp * tb.hp * CAPITAL_POWER_MULT);
+    boss.hp    = boss.maxHp;
+    boss.projectileDamage *= tb.dmg;
+  }
 
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
   const townCenters = placeTownCenters(scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR), boss.wx, boss.wy);
@@ -3324,12 +3343,13 @@ function generateStageLayout(stageIndex) {
     if (order.length > 1) cityScaleByIdx.set(order[1], 1.35); // 中核都市
   }
 
-  // v0.52: 街ごとの時代オフセット。要塞都市は2時代先、ほかにも一部が1時代先。
-  // 「最初から強い街がある」＝壊す前に強さが見た目で分かる（Shooter指示）。
-  const townEraOffset = new Map();
+  // v0.56: 街ごとの**動員段階**オフセット（時代は全部同じ＝同じ文明の街並み）。
+  // 要塞都市は最初から最大段階、ほかにも一部が1段階先。
+  const townTierOffset = new Map();
   for (let t = 0; t < townCenters.length; t++) {
-    if (fortifiedSet.has(t)) townEraOffset.set(t, TOWN_ERA_OFFSET_ELITE);
-    else if (random() < TOWN_ADVANCED_RATIO) townEraOffset.set(t, TOWN_ERA_OFFSET_ADVANCED);
+    if (!fortifiedSet.has(t) && random() < TOWN_ADVANCED_RATIO) {
+      townTierOffset.set(t, TOWN_TIER_ADVANCED);
+    }
   }
 
   const result = [];
@@ -3338,29 +3358,26 @@ function generateStageLayout(stageIndex) {
     const center = townCenters[t];
     const cityScale = cityScaleByIdx.get(t) ?? randRange(0.9, 1.1);
     const s2 = cityScale * cityScale;
-    // この街が属する時代（建築・攻撃性能・レイアウトすべてこの時代のものになる）。
-    // v0.54: 要塞都市はボスと同じ最強時代で「建てる」。オフセットを後付けするだけでは
-    // 生成時の建物パラメータが古いままになる（＝見た目も強さも格上にならない）。
-    const offset     = townEraOffset.get(t) || 0;
+    // v0.56: 建築・レイアウトは全部ランの時代のもの（同じ文明の街並み）。
+    // 差がつくのは動員段階＝強さと、それに伴う色の締まり具合だけ。
+    const offset     = townTierOffset.get(t) || 0;
     const isFortress = fortifiedSet.has(t);
-    const townEra    = isFortress ? capitalFixedEra : clampEra(stageIndex + offset);
-    const tConfig = STAGE_CONFIGS[townEra];
     const townBuildings = generateTown(
       center.x, center.y,
-      Math.round(tConfig.smallPerTown  * BUILDING_DENSITY_MULT * s2),
-      Math.round(tConfig.mediumPerTown * BUILDING_DENSITY_MULT * s2),
-      Math.max(1, Math.round(tConfig.largePerTown * BUILDING_DENSITY_MULT * s2)),
-      tConfig,
+      Math.round(config.smallPerTown  * BUILDING_DENSITY_MULT * s2),
+      Math.round(config.mediumPerTown * BUILDING_DENSITY_MULT * s2),
+      Math.max(1, Math.round(config.largePerTown * BUILDING_DENSITY_MULT * s2)),
+      config,
       t,
-      townEra,   // v0.16: 文明ごとの町レイアウト選択に使う
+      stageIndex,   // v0.16: 文明ごとの町レイアウト選択に使う
     );
-    // 時代が上がってもこの街は先を行き続ける（建て替えのたびに同じ差が保たれる）
-    for (const b of townBuildings) b._eraOffset = offset;
+    for (const b of townBuildings) b._tierOffset = offset;
     if (isFortress) {
       applyTownFortification(townBuildings);
-      // v0.54: 「強化しながらボス直行」を道中の街で止める（Shooter指示）。
-      // 時代が上がっても建て替えない＝削った傷が残り、攻略が積み上がる。
-      for (const b of townBuildings) b._fixedEra = capitalFixedEra;
+      // 「強化しながらボス直行」を道中の街で止める（Shooter指示）。
+      // 最初から最大段階で、段階が上がっても補強し直さない
+      // ＝削った傷が残り、攻略が積み上がる。
+      for (const b of townBuildings) b._fixedTier = maxPowerTier();
     }
     const tmeta = townBuildings.find(b => b._townMeta);   // v0.29: 部分壁のため町メタを収集
     if (tmeta) townMetas.push(tmeta._townMeta);
@@ -3370,13 +3387,9 @@ function generateStageLayout(stageIndex) {
   // --- (2b) 首都要塞リング（座標のみ先計算）して小集落建物との衝突除去に使う ---
   // placeCapitalDistrict は config が必要なため、ここで仮実行して座標を取得する。
   // 首都建物と重なるクラスタ建物は remove してから result に残す。
-  // v0.54: 首都区画もボスと同じ最強時代で固定。時代が上がっても変わらない。
-  const capitalConfig = STAGE_CONFIGS[capitalFixedEra];
-  const capitalBuildings = placeCapitalDistrict(boss, capitalConfig);
-  for (const b of capitalBuildings) {
-    b._eraOffset = CAPITAL_ERA_OFFSET;
-    b._fixedEra  = capitalFixedEra;
-  }
+  // v0.56: 首都区画は同じ文明の建築のまま、最初から最大段階で固定。
+  const capitalBuildings = placeCapitalDistrict(boss, config);
+  for (const b of capitalBuildings) b._fixedTier = maxPowerTier();
 
   // 首都建物の占有エリアを「除去対象」として各小集落建物をフィルタリングする。
   // 重なり判定: 中心距離 < 首都建物 radius + 小集落建物 radius + 最小隙間 6px
@@ -3473,7 +3486,7 @@ function generateStageLayout(stageIndex) {
   for (const b of startHouses) result.push(b);
 
   // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
-  const wallSegments = generateWallRing(boss, capitalFixedEra);   // v0.54: 首都の守りは最強で固定
+  const wallSegments = generateWallRing(boss, stageIndex);   // v0.56: 城壁の量は文明（時代）で決まる
   for (const w of wallSegments) result.push(w);
 
   // --- (5b) v0.29: 一部の町にも部分的な城壁（STAGE3以降。rect町は長方形の壁）---
@@ -3500,15 +3513,20 @@ function generateStageLayout(stageIndex) {
 
   // --- (8) v0.6-p4: 後半ステージの難度底上げ（仕様 §4。プレイヤーの3択強化ぶんを相殺） ---
   // ボスは BOSS_HP_STAGE_MULT で既にスケールするため対象外。城壁もステージ別HP設定済みのため対象外。
-  // v0.54: 係数は**建物ごとの時代**で引く。世界の時代で一律に掛けていたため、
-  // 要塞都市や首都区画（先の時代で建っている）に本来の底上げが乗っていなかった。
+  // v0.56: 係数は「時代の底上げ（文明ごとの基礎難度）× その建物の動員段階」。
+  // 段階0の普通の街は等倍、要塞都市は最大段階ぶん重くなる。
   for (const b of result) {
     if (b.isBoss || b._isWall) continue;
-    const boost = STAGE_DIFFICULTY_BOOST[settlementEra(b, stageIndex)];
-    if (!boost) continue;
+    const boost = settlementPowerBoost(b, 0);
+    b._baseColor = b.color;   // 段階で色を締めるときの基準を控えておく
     b.maxHp = Math.round(b.maxHp * boost.hp);
     b.hp    = b.maxHp;
     b.projectileDamage *= boost.dmg;
+    // 最初から段階が上がっている街は、その分だけ色を締めて見分けられるようにする
+    // （要塞は最大段階のさらに1段上。段階4になっても普通の街と混ざらない）
+    const tier = settlementTier(b, 0);
+    const shadeTier = b._fixedTier != null ? tier + 1 : tier;
+    if (shadeTier > 0) b.color = shadeColor(b._baseColor, TIER_SHADE_STEP * shadeTier);
   }
 
   // --- (9) v0.23: 花火要塞 — 倒すと連鎖的に散る"うまみ"建物を各ステージに数棟仕込む ---
@@ -4743,7 +4761,7 @@ function drawHazards() {
 }
 
 /** ステージの移動敵を生成する。waypoint はボス要塞圏・スタート地点を避けて取る。 */
-function generateMovers(stageIndex, boss) {
+function generateMovers(stageIndex, boss, tierForCount = 0) {
   const spawns = MOVER_SPAWNS_BY_STAGE[stageIndex];
   const result = [];
 
@@ -4775,7 +4793,9 @@ function generateMovers(stageIndex, boss) {
   // v0.49: マップ全体を巡回する枠はワールド面積に合わせて増やす。
   // 大陸サイズで数を据え置くと「動く要塞」に一度も出会わないまま終わってしまう。
   // 守備隊はボス周りの固定半径を巡回するので、密度は世界の広さに影響されない＝据え置き。
-  const spawnEntries = spawns.map(e => [e[0], scaledForWorld(e[1], MOVER_DENSITY_FACTOR), false])
+  // v0.56: 動員段階のぶんだけ頭数を増やす（守備隊はボス周りの固定半径なので据え置き）
+  const tierMult = TIER_MOVER_MULT[clampTier(tierForCount)] ?? 1;
+  const spawnEntries = spawns.map(e => [e[0], Math.max(1, Math.round(scaledForWorld(e[1], MOVER_DENSITY_FACTOR) * tierMult)), false])
                              .concat(garrison.map(e => [e[0], e[1], true]));
 
   for (const [defKey, count, isGarrison] of spawnEntries) {
@@ -5299,10 +5319,10 @@ function cacheBossIndex() {
  */
 function updateBossLaser(dt) {
   if (bossSettlementIdx < 0) return;
-  // v0.54: ボスの武装はボス自身の時代で決まる（世界の時代ではない）。
-  // ボスは runBossEra() で固定＝既定ランでは電気時代なので、最初からレーザーを撃つ。
-  // 今後ボス武装のバリエーションを増やすときも、参照するのはこの時代にする。
-  if (!stageFeatures(runBossEra()).bossLaser) return;
+  // v0.56: 首都は時代を問わず「大技」を持つ（Shooter指示）。今はその1種目が極太レーザー。
+  // 時代・文明に合った技（投石／光の柱／一斉射／絨毯爆撃…）に差し替えていく予定で、
+  // それまではどの文明の首都もレーザーで代用する。街側の兵器（焼夷塔・ロケット砲台）は
+  // stageFeatures(currentStage) のまま＝時代どおりなので、文明の手触りはそちらが担う。
   const boss = settlements[bossSettlementIdx];
   if (!boss || boss.fallen) return;
 
@@ -7993,7 +8013,7 @@ function settlementFall(settlementIndex) {
   }
 
   // 通常建物: その時代の破壊率が閾値を超えたら文明が次の時代へ進む
-  maybeAdvanceEra();
+  maybeAdvanceTier();
 }
 
 // -----------------------------------------------------------------
@@ -8492,9 +8512,9 @@ const STRINGS = {
   toTitle: "タイトルへ",
   levelUp: "LEVEL UP",
   chooseDragon: "竜を選ぶ",
-  chooseContinent: "大陸を選ぶ",
-  continentLocked: (prev) => `大陸${prev} をクリアで解放`,
-  continentBoss: (name) => `首都: ${name}`,
+  chooseContinent: "攻め込む文明を選ぶ",
+  continentLocked: (prev) => `${prev} を制圧すると解放`,
+  continentToughness: (mult) => `建物の硬さ ${mult}`,
   continentUnlocked: (name) => `${name} が解放された`,
   startRun: "はじめる",
   backToTitle: "← もどる",
@@ -8644,7 +8664,7 @@ function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * upCount
 // v0.51: 群れは時代をまたいでも削らない。代わりに時代ごとに天井が開く。
 // 「敵が強くなる」と同時に「増やせる数が増える」ので、遷移が損ではなく解放になる。
 function eraFlockCapFraction() {
-  return ERA_FLOCK_CAP_FRACTION[Math.min(eraIndexInRun, ERA_FLOCK_CAP_FRACTION.length - 1)];
+  return TIER_FLOCK_CAP_FRACTION[Math.min(powerTier, TIER_FLOCK_CAP_FRACTION.length - 1)];
 }
 function effFlockCap()      {
   const base = BASE_FLOCK_CAP + 25 * upCount("brood") + permaBuff.flockCap;
@@ -8712,9 +8732,9 @@ function resetProgression() {
   playerXp     = 0;
   pendingCards = 0;
   // v0.51: 時代の進行もランごとにゼロへ（群れ上限の係数がこれに従うため必須）
-  runStartEra    = 0;
-  eraIndexInRun  = 0;
-  eraSlowmoTimer = 0;
+  runEra          = 0;
+  powerTier       = 0;
+  tierSlowmoTimer = 0;
   evolutionChosen = false;   // v0.14: 新しいランでは再び最初のレベルアップで竜種を選ぶ
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
   // 竜種も火竜に戻る（新しいランはビルドをゼロから組み直す）
@@ -10764,26 +10784,23 @@ function showContinentSelect() {
   for (let i = 0; i < CONTINENT_DEFS.length; i++) {
     const c        = CONTINENT_DEFS[i];
     const isLocked = i >= unlocked;
-    // その大陸が通る時代の並び（＝何を相手にするかが一目で分かる）
-    const eras = [];
-    for (let k = 0; k < ERAS_PER_RUN; k++) {
-      eras.push(STAGE_CONFIGS[clampEra(c.startEra + k)].name);
-    }
-    const bossName = STAGE_CONFIGS[clampEra(c.startEra + ERAS_PER_RUN - 1 + CAPITAL_ERA_OFFSET)].name;
+    // その文明の建物がどれだけ硬いか（時代の底上げ）を一言で出す
+    const eraBoost  = STAGE_DIFFICULTY_BOOST[c.era];
+    const toughness = "×" + (eraBoost ? eraBoost.hp : 1).toFixed(2);
 
     const btn = document.createElement("button");
     btn.className = "upgrade-card card-span-2" + (isLocked ? " card-locked" : " rarity-star");
     btn.innerHTML =
-      `<span class="card-icon">${isLocked ? "🔒" : c.icon}</span>` +
+      `<span class="card-icon">${isLocked ? "🔒" : "🏙"}</span>` +
       `<span><div class="card-name">${CONTINENT_NUMERALS[i]}. ${c.name}</div>` +
       `<div class="card-desc">${isLocked ? STRINGS.continentLocked(CONTINENT_NUMERALS[i - 1] || "I")
-                                          : eras.join(" → ")}</div>` +
-      `${isLocked ? "" : `<div class="card-desc" style="opacity:0.7">${STRINGS.continentBoss(bossName)}</div>`}</span>`;
+                                          : c.subtitle}</div>` +
+      `${isLocked ? "" : `<div class="card-desc" style="opacity:0.7">${STRINGS.continentToughness(toughness)}</div>`}</span>`;
     if (!isLocked) {
       btn.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        pendingStartEra = c.startEra;
+        pendingStartEra = c.era;
         dismissContinentSelect();
         showSpeciesSelect();
       });
@@ -10893,9 +10910,9 @@ function beginRun(speciesId) {
   // 以前はタイトル背景のワールドをそのまま使い回していたため、ランのシードと
   // ワールドのシードが食い違っていた（?seed= 指定時だけ偶然一致していた）。
   // ここで作り直すことで「同じシード＝同じ大陸」が常に成り立つ。
-  // v0.55: タイトルで選んだ大陸（開始時代）から始める。初回ランは 0 固定。
-  runStartEra = currentRunIsFirst ? 0 : clampEra(pendingStartEra);
-  buildContinent(0);                       // ワールド生成＋時代0の確定＋初期群れ
+  // v0.56: タイトルで選んだ文明（時代）に攻め込む。初回ランは石器時代で固定。
+  runEra = currentRunIsFirst ? 0 : clampEra(pendingStartEra);
+  buildContinent(0);                       // ワールド生成＋段階0の確定＋初期群れ
 
   runStartTime = performance.now();
   runKills     = 0;
@@ -10912,10 +10929,10 @@ function beginRun(speciesId) {
 // 「次ステージ開始状態」を保存し、途中でアプリを閉じても続きから遊べる。
 function snapshotRunSave() {
   saveRunSave({
-    // v0.51: 保存するのは「そのランの何番目の時代か」。旧セーブとの互換のため
-    // キー名は stage のまま（読み込み側で ERAS_PER_RUN にクランプする）。
-    stage:         eraIndexInRun,
-    startEra:      runStartEra,
+    // v0.56: 保存するのは「動員段階」と「ランの時代」。旧セーブとの互換のため
+    // キー名は stage / startEra のまま（読み込み側でクランプする）。
+    stage:         powerTier,
+    startEra:      runEra,
     isFirstRun:    currentRunIsFirst,
     playerLevel,
     playerXp,
@@ -10942,11 +10959,11 @@ function resumeRun() {
 
   // 進行の復元
   currentRunIsFirst = !!save.isFirstRun;
-  // v0.51: 旧セーブは stage に絶対ステージ番号（0..7）が入っている。
-  // ERAS_PER_RUN でクランプすれば、どちらでも破綻せずに再開できる。
-  runStartEra       = save.startEra | 0;
-  eraIndexInRun     = Math.max(0, Math.min(ERAS_PER_RUN - 1, save.stage | 0));
-  currentStage      = absoluteEra(eraIndexInRun);
+  // 旧セーブは stage に絶対ステージ番号（0..7）が入っていることがあるが、
+  // clampTier で潰せばどちらでも破綻せずに再開できる。
+  runEra            = clampEra(save.startEra | 0);
+  powerTier         = clampTier(save.stage | 0);
+  currentStage      = runEra;
   playerLevel       = (save.playerLevel | 0) || 1;
   playerXp          = save.playerXp || 0;
   pendingCards      = save.pendingCards | 0;
@@ -10965,7 +10982,7 @@ function resumeRun() {
   // 保存ステージを組み立てて再開（ステージ間リセット相当の体数）
   dismissSpeciesSelect();
   dismissLevelUpCards();
-  setupStageForResume(eraIndexInRun);   // v0.51: 引数は「そのランの何番目の時代か」
+  setupStageForResume(powerTier);   // v0.56: 引数は動員段階
 
   updateHUDWeapon();
   updateXpHud();
@@ -10979,8 +10996,8 @@ function resumeRun() {
 // 最終時代なら全クリア扱いにする。
 function triggerStageClear() {
   if (gameState !== "playing") return;
-  if (isFinalEra()) { triggerAllClear(); return; }
-  triggerEraAdvance();
+  if (isFinalTier()) { triggerAllClear(); return; }
+  triggerTierAdvance();
 }
 
 // ---- 全制覇（STAGE 4 ボス撃破）→ リザルト表示 ----
@@ -10990,7 +11007,7 @@ function triggerAllClear() {
   saveBestRecord(runTimeMs, runKills);
   profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
   // v0.55: この大陸をクリアしたら次の大陸（開始時代）を解放する
-  const unlockedNew = unlockNextContinent(runStartEra);
+  const unlockedNew = unlockNextContinent(runEra);
   // v0.51: 最終時代ぶん＋大陸制覇ボーナスの竜晶（awardCrystals が saveProfile 済み）
   awardCrystals(crystalsForStageClear(currentStage) + CRYSTAL_ALLCLEAR_BONUS);
   evaluateChallenges();               // v0.25: 全クリア・累計系チャレンジを判定
@@ -11018,7 +11035,7 @@ function triggerAllClear() {
 
 // v0.51: 旧「ステージクリア演出」（gameState を止めて 2.8 秒待たせるシーケンス）は撤去した。
 // 時代遷移はラン中に3回起きるため、止めると毎回テンポを殺す。
-// 代わりに triggerEraAdvance() がフラッシュ＋スローモー＋見出しだけで伝える（非モーダル）。
+// 代わりに triggerTierAdvance() がフラッシュ＋スローモー＋見出しだけで伝える（非モーダル）。
 
 // -----------------------------------------------------------------
 // 時代進行（v0.51）— ワールドを作り直さずに文明だけを進める
@@ -11035,61 +11052,57 @@ function countDestructibleAlive() {
   return n;
 }
 
-/** その時代に建っていた建物を何割落としたか（0..1）。 */
-function eraDestroyRatio() {
-  if (eraStartDestructible <= 0) return 0;
-  return 1 - countDestructibleAlive() / eraStartDestructible;
+/** その段階に建っていた建物を何割落としたか（0..1）。 */
+function tierDestroyRatio() {
+  if (tierStartDestructible <= 0) return 0;
+  return 1 - countDestructibleAlive() / tierStartDestructible;
 }
 
 /**
- * 時代の開始状態を確定する。currentStage（＝STAGE_CONFIGS の参照先）と
- * 比率の分母をここで揃える。ワールド生成の直後と時代遷移の直後に呼ぶ。
+ * 動員段階の開始状態を確定する。比率の分母をここで揃える。
+ * ワールド生成の直後と段階遷移の直後に呼ぶ。
+ * 時代（currentStage）はここでは触らない——ランを通して固定だから。
  */
-function beginEra(indexInRun) {
-  eraIndexInRun = indexInRun;
-  currentStage  = absoluteEra(indexInRun);
-  eraStartDestructible = countDestructibleAlive();
+function beginTier(tier) {
+  powerTier = clampTier(tier);
+  tierStartDestructible = countDestructibleAlive();
   updateHUDStage();
   updateHUDBuildings();
 }
 
 /**
- * 建物1棟を「新しい時代の建築」に建て替える。位置・大きさ・向きは動かさない
- * （同じ町が建て替わったように見せるため）。色・形・HP・攻撃性能だけが変わる。
+ * 建物1棟を「補強された状態」に更新する。
+ * v0.56: 建築（形・色の系統）は変えない。同じ文明の同じ建物が、
+ * 動員段階のぶんだけ頑丈になり火力が上がる——それだけ。
+ * 色は段階ぶん締める（同じ色相のまま暗くする）ので、
+ * 「別の時代の建物になった」ようには見えない。
  */
-function rebuildSettlementForEra(settlement, baseEra) {
-  // v0.52: その街のオフセットを足した時代で建て直す＝先を行く街はずっと先を行く
-  const era     = settlementEra(settlement, baseEra);
-  const config  = STAGE_CONFIGS[era];
-  const boost   = STAGE_DIFFICULTY_BOOST[era];
-  // tiny は small のパラメータを流用する（生成時と同じ扱い）
+function reinforceSettlementForTier(settlement, baseTier) {
+  const config  = STAGE_CONFIGS[currentStage];
   const key     = settlement.size === "tiny" ? "small" : settlement.size;
   const bConfig = config.buildings[key] ?? config.buildings.small;
+  const tier    = settlementTier(settlement, baseTier);
+  const boost   = settlementPowerBoost(settlement, baseTier);
 
-  // 色: 町に属する建物はその町の基準色から、単独の家は建物色から引く
-  const hues = config.townBaseHues;
-  if (settlement._landmark) {
-    settlement.color = config.buildings.large.colors[0];
-  } else if (settlement._townIndex >= 0 && hues && hues.length) {
-    const baseHue = hues[settlement._townIndex % hues.length];
-    settlement.color = shadeColor(baseHue, settlement.size === "medium" ? randInt(-10, 20) : randInt(-15, 15));
-  } else {
-    settlement.color = randChoice(bConfig.colors);
-  }
-  settlement.shape = randChoice(bConfig.shapes);
+  // 色は「元の色 × 段階ぶんの締め」。建て替えではないので色相は動かさない。
+  if (settlement._baseColor == null) settlement._baseColor = settlement.color;
+  // 要塞は「最大段階のさらに1段上」の濃さにする。そうしないと段階4で
+  // 普通の街と同じ色になり、格上であることが見た目で分からなくなる。
+  const shadeTier = settlement._fixedTier != null ? tier + 1 : tier;
+  settlement.color = shadeTier > 0 ? shadeColor(settlement._baseColor, TIER_SHADE_STEP * shadeTier)
+                                   : settlement._baseColor;
 
-  // HP は建て直しぶんを引き直す（サイズ由来の範囲＋ランドマーク補正＋時代の底上げ）
   const sizeParams = BUILDING_SIZE_PARAMS[settlement.size];
   let hp = randInt(sizeParams.hpMin, sizeParams.hpMax);
   if (settlement._landmark) hp = Math.round(hp * 1.3);
-  if (boost) hp = Math.round(hp * boost.hp);
+  hp = Math.round(hp * boost.hp);
   settlement.maxHp = hp;
   settlement.hp    = hp;
 
   settlement.attackRadius       = bConfig.attackRadius;
   settlement.projectileInterval = bConfig.projectileInterval;
   settlement.projectileSpeed    = bConfig.projectileSpeed;
-  settlement.projectileDamage   = bConfig.projectileDamage * (boost ? boost.dmg : 1);
+  settlement.projectileDamage   = bConfig.projectileDamage * boost.dmg;
   settlement.projectileColor    = bConfig.projectileColor;
   settlement.projectileCount    = bConfig.projectileCount;
   settlement.projectileTracking = bConfig.projectileTracking;
@@ -11100,36 +11113,34 @@ function rebuildSettlementForEra(settlement, baseEra) {
 }
 
 /**
- * 廃墟の一部を新しい町として復興させる。
- * これが無いと時代が進むほどマップが空になり、後半ほど壊す対象が減ってしまう。
- * @returns {number} 復興した棟数
+ * 廃墟の一部を再建する。同じ文明が同じ場所に建て直すだけで、時代は変わらない。
+ * これが無いと段階が進むほどマップが空になり、後半ほど壊す対象が減ってしまう。
+ * @returns {number} 再建した棟数
  */
-function reviveRuinsForEra(baseEra) {
+function rebuildRuinsForTier(baseTier) {
   const ruins = [];
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
     if (s.isBoss || s._isWall) continue;
-    // v0.54: 時代固定の要塞は復興しない。落としたら落としたまま＝攻略が積み上がる
-    if (s._fixedEra != null) continue;
+    // 時代固定ではなく「段階固定」の要塞は再建しない。落としたら落としたまま
+    if (s._fixedTier != null) continue;
     if (s.fallen) ruins.push(s);
   }
-  const count = Math.round(ruins.length * ERA_REVIVE_RATIO);
+  const count = Math.round(ruins.length * TIER_REBUILD_RATIO);
   const ratio = eggBearerRatio();
   for (let i = 0; i < count && i < ruins.length; i++) {
-    // Fisher-Yates で先頭 count 件を無作為に選ぶ
     const j = i + Math.floor(random() * (ruins.length - i));
     const tmp = ruins[i]; ruins[i] = ruins[j]; ruins[j] = tmp;
     const s = ruins[i];
     s.fallen = false;
-    // 復興した町には卵を配り直す（新しい時代の狩り場になる）
     s.isEggBearer = random() < ratio;
-    rebuildSettlementForEra(s, baseEra);
+    reinforceSettlementForTier(s, baseTier);
   }
   return count;
 }
 
-/** 城壁を新しい時代の設定で張り直す（時代が進むほどゲートが減る）。 */
-function rebuildWallsForEra(eraIdx) {
+/** 城壁を張り直す。時代は固定なので、増えるのは段階に応じた町の部分壁だけ。 */
+function rebuildWallsForTier() {
   const kept = [];
   for (let i = 0; i < settlements.length; i++) {
     if (!settlements[i]._isWall) kept.push(settlements[i]);
@@ -11140,104 +11151,92 @@ function rebuildWallsForEra(eraIdx) {
   const townMetas = [];
   for (const s of kept) if (s._townMeta) townMetas.push(s._townMeta);
 
-  // v0.54: 首都のリングはボスと同じ固定時代（＝ラン中ずっと最強の守り）。
-  // 町の部分壁だけが時代とともに増えていく。
-  const walls = generateWallRing(boss, runBossEra())
-    .concat(generateTownWalls(townMetas, eraIdx));
+  // 城壁の量は時代（文明）で決まる。段階では増減させない。
+  const walls = generateWallRing(boss, currentStage)
+    .concat(generateTownWalls(townMetas, currentStage));
   settlements = kept.concat(walls);
 }
 
 /**
- * 次の時代へ進める。ワールド（地形・川・道・町の位置）はそのままに、
- * 生き残った町を建て替え、廃墟の一部を復興させ、首都と城壁を作り直す。
+ * 次の動員段階へ上げる。ワールドも時代も変えない。
+ * 生き残った建物が補強され、廃墟の一部が再建され、守備隊が増える。
  */
-function advanceEra() {
-  const nextIndex = eraIndexInRun + 1;
-  const eraIdx    = absoluteEra(nextIndex);
+function advanceTier() {
+  const nextTier = clampTier(powerTier + 1);
 
-  // (1) 廃墟の一部を復興させる（先に立たせてから、生きている建物をまとめて建て替える）
-  const revived = reviveRuinsForEra(eraIdx);
+  // (1) 廃墟の一部を再建（先に立たせてから、生きている建物をまとめて補強する）
+  const rebuilt = rebuildRuinsForTier(nextTier);
 
-  // (2) 生き残っている建物を新しい時代の建築へ（街ごとのオフセットは保たれる）。
-  //     v0.54: 時代固定の建物（ボス・首都区画・要塞都市）は建て替えない。
-  //     建て替えると同じ時代のままHPだけ全快してしまい、削った意味が消えるため。
+  // (2) 生き残っている建物を補強。段階固定の要塞は触らない
+  //     （触ると同じ段階のままHPだけ全快してしまい、削った意味が消える）
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
     if (s.isBoss || s._isWall || s.fallen) continue;
-    if (s._fixedEra != null) continue;
-    rebuildSettlementForEra(s, eraIdx);
+    if (s._fixedTier != null) continue;
+    reinforceSettlementForTier(s, nextTier);
   }
 
-  // (3) 城壁だけ建て替える。
-  //     ボスは runBossEra() で最大値に固定済み＝時代が上がっても強くならない（v0.53）。
-  rebuildWallsForEra(eraIdx);
+  // (3) 城壁を張り直す（首都は最初から最大なのでボスは触らない）
+  rebuildWallsForTier();
 
-  // (4) 動く要塞をその時代の編成に入れ替える
-  movers = generateMovers(eraIdx, settlements.find(s => s.isBoss));
+  // (4) 動く要塞を増やす。時代は同じなので顔ぶれは変わらず、数だけ増える
+  movers = generateMovers(currentStage, settlements.find(s => s.isBoss), nextTier);
 
-  // (5) 前の時代の残り火・進行中の演出を持ち越さない
+  // (5) 前の段階の残り火・進行中の演出を持ち越さない
   resetFires();
   hazards.length = 0;
   floodWave = null;
 
-  // (6) 索引とレイヤーを作り直す。地面は時代ごとに色が変わるので焼き直す
-  //     （地形・川・道の配置そのものは同じ大陸なので変わらない）
+  // (6) 索引とレイヤーを作り直す。色を締めたぶんだけ焼き直す
   rebuildBuildingGrid();
   cacheBossIndex();
-  // 地表のむらの位置は同じ大陸なので引き直さない（色だけが時代で変わる）。
-  // タイルは捨てずに使い回して焼き直す＝遷移の瞬間のヒッチを抑える。
-  repaintTiledLayer(groundTiledLayer);
   repaintTiledLayer(buildingTiledLayer);
   minimapBaseDirty = true;
   minimapBaseLastBuilt = -Infinity;
 
-  // (7) 新しい時代の開始状態を確定（比率の分母がここでリセットされる）
-  beginEra(nextIndex);
+  // (7) 新しい段階の開始状態を確定（比率の分母がここでリセットされる）
+  beginTier(nextTier);
 
-  // (8) 群れの天井が開く。削らない代わりにここが解放の瞬間になる
+  // (8) 群れの天井が開く
   updateHUDWeapon();
 
   // (9) 報酬とチャレンジ
-  awardCrystals(crystalsForStageClear(eraIdx - 1));
+  awardCrystals(crystalsForStageClear(nextTier));
   evaluateChallenges();
   snapshotRunSave();
 
-  return revived;
+  return rebuilt;
 }
 
-// ---- 時代遷移の演出（非モーダル: プレイは止めない）----
-// 旧ステージクリアは gameState を止めて2.8秒待たせていたが、時代遷移は
-// ラン中に3回起きるため止めるとテンポを殺す。フラッシュ＋スローモー＋
-// 見出しだけで「世界が変わった」を伝える。
-const ERA_SLOWMO_DURATION = 1.2;
-const ERA_BANNER_DURATION_MS = 2200;
-let eraSlowmoTimer = 0;
+// ---- 動員段階の演出（非モーダル: プレイは止めない）----
+const TIER_SLOWMO_DURATION = 1.2;
+const TIER_BANNER_DURATION_MS = 2200;
+let tierSlowmoTimer = 0;
 
-function triggerEraAdvance() {
+function triggerTierAdvance() {
   if (gameState !== "playing") return;
-  if (isFinalEra()) return;
+  if (isFinalTier()) return;
 
-  const revived = advanceEra();
+  const rebuilt = advanceTier();
 
   triggerFlash("rgba(255,240,200,0.85)", 0.35);
-  eraSlowmoTimer = ERA_SLOWMO_DURATION;
+  tierSlowmoTimer = TIER_SLOWMO_DURATION;
   hapticPulse(150);
 
-  const config = STAGE_CONFIGS[currentStage];
-  stageTextEl.textContent = "ERA " + (eraIndexInRun + 1);
-  stageSubEl.textContent  = config.name;
+  stageTextEl.textContent = TIER_NAMES[powerTier] ?? ("PHASE " + (powerTier + 1));
+  stageSubEl.textContent  = STAGE_CONFIGS[currentStage].name + " — PHASE " + (powerTier + 1);
   stageOverlayEl.classList.add("visible");
-  setTimeout(() => stageOverlayEl.classList.remove("visible"), ERA_BANNER_DURATION_MS);
+  setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
 
-  return revived;
+  return rebuilt;
 }
 
-/** 建物が落ちるたびに呼ばれ、破壊率が閾値を超えたら時代を進める。 */
-function maybeAdvanceEra() {
+/** 建物が落ちるたびに呼ばれ、破壊率が閾値を超えたら動員段階を上げる。 */
+function maybeAdvanceTier() {
   if (gameState !== "playing") return;
-  if (isFinalEra()) return;
-  if (eraDestroyRatio() < ERA_ADVANCE_RATIO) return;
-  triggerEraAdvance();
+  if (isFinalTier()) return;
+  if (tierDestroyRatio() < TIER_ADVANCE_RATIO) return;
+  triggerTierAdvance();
 }
 
 // ステージ stageIdx のワールド（街・地形・レイヤー）を生成し直す共通処理。
@@ -11266,18 +11265,18 @@ function loadStageWorld(stageIdx) {
 }
 
 /**
- * v0.51: 大陸（ワールド）を組み立てて、指定の時代からランを始める。
- * 時代が上がるときにワールドを作り直すことはもう無い（advanceEra が中身だけ変える）ので、
+ * v0.56: 大陸（ワールド）を runEra の文明で組み立て、指定の動員段階から始める。
+ * 段階が上がってもワールドは作り直さない（advanceTier が強さだけ変える）ので、
  * ここが呼ばれるのは「新規ラン」と「つづきから」の2箇所だけ。
  */
-function buildContinent(indexInRun) {
+function buildContinent(tier) {
   stageClearPhase = "none";
   totalEggCount   = 0;
   gameState       = "playing";
 
-  currentStage = absoluteEra(indexInRun);
+  currentStage = clampEra(runEra);   // 時代はランを通して固定
   loadStageWorld(currentStage);
-  beginEra(indexInRun);
+  beginTier(tier);
 
   resetBoidsForStageStart(stageStartFlockCount());
   resetLeader();
@@ -11285,11 +11284,10 @@ function buildContinent(indexInRun) {
   updateHUDEggs();
 }
 
-// 「つづきから」で保存時代の大陸を組み立てて再開する（進行は resumeRun が復元済み）。
-function setupStageForResume(stageIdx) {
-  // v0.51: 保存されているのは「そのランの何番目の時代か」。
-  // 町の破壊状況までは保存しないので、その時代の頭（復興済みの状態）から組み直す。
-  buildContinent(Math.max(0, Math.min(ERAS_PER_RUN - 1, stageIdx)));
+// 「つづきから」で保存した段階から再開する（進行は resumeRun が復元済み）。
+function setupStageForResume(tier) {
+  // 町の破壊状況までは保存しないので、その段階の頭（再建済みの状態）から組み直す。
+  buildContinent(clampTier(tier));
 }
 
 /**
@@ -11334,7 +11332,7 @@ function returnToTitle() {
   resetBoidsForStageStart();
   resetLeader();
   resetProgression();
-  beginEra(0);   // v0.51: タイトル背景も時代0として確定（HUDと群れ上限の係数を揃える）
+  beginTier(0);   // v0.56: タイトル背景も段階0として確定（HUDと群れ上限の係数を揃える）
   updateHUDEggs();
 
   refreshTitleBest();
@@ -13668,11 +13666,10 @@ function updateHUDEggs() {
 }
 
 function updateHUDStage() {
-  // v0.51: 表示は「そのランの何番目の時代か」＋その時代の文明名。
-  // currentStage（絶対時代番号）ではなく eraIndexInRun を出すのは、
-  // 開始時代が選べるようになっても「4つのうち何番目か」が読めるようにするため。
+  // v0.56: 時代（文明名）はラン中ずっと固定のフレーバー。動くのは動員段階だけ。
   const config = STAGE_CONFIGS[currentStage];
-  hudStage.textContent = "ERA " + (eraIndexInRun + 1) + "/" + ERAS_PER_RUN + " " + config.name;
+  hudStage.textContent =
+    config.name + " / " + (TIER_NAMES[powerTier] ?? "") + " " + (powerTier + 1) + "/" + TIERS_PER_RUN;
 }
 
 function updateHUDBuildings() {
@@ -14633,11 +14630,11 @@ function tick() {
     // v0.51: 時代遷移も同じスローモー枠を使う（プレイは止めない。
     // ラン中に3回起きるので、止めるとテンポを殺すため）。
     const cardSlowmo = upgradeCardsVisible && slowmoTimer > 0;
-    const eraSlowmo  = eraSlowmoTimer > 0;
+    const eraSlowmo  = tierSlowmoTimer > 0;
     const targetScale = (cardSlowmo || eraSlowmo) ? SLOWMO_SCALE : 1;
     timeScale += (targetScale - timeScale) * Math.min(1, dt * SLOWMO_EASE);
     if (cardSlowmo) slowmoTimer -= dt;                 // 実時間で減衰
-    if (eraSlowmo)  eraSlowmoTimer = Math.max(0, eraSlowmoTimer - dt);
+    if (eraSlowmo)  tierSlowmoTimer = Math.max(0, tierSlowmoTimer - dt);
     const wdt = dt * timeScale;
 
     simStep(wdt);
@@ -14721,7 +14718,7 @@ async function boot() {
   rebuildGroundLayer();   // v0.11.3: 地面レイヤーの初回生成
   rebuildBuildingLayer();
   cacheBossIndex();
-  beginEra(0);   // v0.51: タイトル背景のワールドも時代0として確定させる
+  beginTier(0);   // v0.56: タイトル背景のワールドも段階0として確定させる
   // 変更1: initBoids で配列を確保してから resetBoidsForStageStart で初期状態を作る。
   // initBoids は配列アロケーションのみ担い、resetBoidsForStageStart が
   // boot/restart/advanceToNextStage の共通初期化パスになる。
