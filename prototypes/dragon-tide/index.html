@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.56.0";
+const GAME_VERSION = "v0.57.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -742,10 +742,17 @@ const DEBUG_ENEMY_LABELS = {
   balloon: "🎈爆撃気球", raider: "🏹レイダー", warlord: "💀ウォーロード", shockman: "💢衝撃兵",
   healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車",
   behemoth_core: "👹巨獣(腕2本つき)", behemoth_arm: "👹巨獣の腕",
+  // v0.57: 文明ごとの看板ユニット
+  mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
+  grenadiers: "💣擲弾兵隊", armortrain: "🚄装甲列車", teslagiant: "⚡雷公",
+  bomberwing: "🎈爆撃飛行隊", annihilator: "🎯殲滅砲兵",
 };
 
 // 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
 const DEBUG_ENEMY_ORDER = [
+  // v0.57: 文明の看板ユニット（石器→最終の順）
+  "mammoth_lord", "gilded_colossus", "siegetower", "grenadiers",
+  "armortrain", "teslagiant", "bomberwing", "annihilator",
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
@@ -3435,15 +3442,15 @@ function generateStageLayout(stageIndex) {
       const j = Math.floor(random() * (i + 1));
       const t = larges[i]; larges[i] = larges[j]; larges[j] = t;
     }
+    // v0.57: 時代ごとの兵器をテーブル順に割り当てる（同じ建物に2種は付けない）
     let cursor = 0;
-    for (let k = 0; k < feat.emberTowers && cursor < larges.length; k++, cursor++) {
-      larges[cursor]._emberTower = true;
-      larges[cursor].attackRadius = Math.max(larges[cursor].attackRadius, EMBER_TOWER_RADIUS + 30);
-    }
-    // v0.48: ロケット砲台（産業革命以降）。焼夷塔と同じ建物には付けない
-    for (let k = 0; k < feat.rocketBatteries && cursor < larges.length; k++, cursor++) {
-      larges[cursor]._rocketBattery = true;
-      larges[cursor].attackRadius = Math.max(larges[cursor].attackRadius, ROCKET_MAX_RANGE * 0.75);
+    for (const [key, count] of feat.emplacements) {
+      const def = EMPLACEMENT_DEFS[key];
+      if (!def) continue;
+      for (let k = 0; k < count && cursor < larges.length; k++, cursor++) {
+        larges[cursor]._emplacement = key;
+        larges[cursor].attackRadius = Math.max(larges[cursor].attackRadius, def.range);
+      }
     }
   }
 
@@ -3507,6 +3514,7 @@ function generateStageLayout(stageIndex) {
   tongueFxList.length = 0;
   hazards.length = 0;        // v0.42: 前ステージの危険地帯を持ち越さない
   laserStrikes.length = 0;   // v0.48: 撃ちかけのレーザーを持ち越さない
+  barrageQueue.length = 0;   // v0.57: 予約済みの斉射を持ち越さない
   chainFxList.length = 0;
   floodWave = null;          // v0.43: 前ステージの洪水を持ち越さない
   resetRaiderState();   // v0.8: レイダー湧き状態もステージごとにリセット
@@ -4203,6 +4211,85 @@ const MOVER_DEFS = {
               color: "#7ce0a0", atTarget: false, growFrom: 60 },
   },
 
+  // =====================================================================
+  // v0.57: 文明ごとの看板ユニット（1ラン＝1文明になったので、その時代に1体ずつ）
+  // =====================================================================
+  // 「その時代でしか会わない大物」を1体ずつ置く。**攻撃の型は時代兵器と対にする**:
+  //   石器/古代は踏み潰しと照射（避ける＝離れる）、中世〜近世は弾（線を外す）、
+  //   産業以降は面（円から退く）。ランごとに要求される操作が変わるのが狙い。
+  // スプライトは既存の絵をサイズとオーラで差別化して流用している（v0.24 エリートと同じ方式）。
+  // 専用の絵を起こすときは ENEMY_IMAGE_SOURCES / ENEMY_SPRITE_META に足して sprite: を外す。
+
+  // 1 石器: 長牙のマンモス — 群れの祖。踏鳴らしが桁違いに広く、押し飛ばしも強い
+  mammoth_lord: {
+    name: "mammoth_lord", sprite: "mammoth", elite: true, showHpBar: true,
+    hp: 900, speed: 28, xp: 380, eggDrop: 5, radius: 34,
+    color: "#8a5a2a", glowColor: "#ffb050", moveType: "patrol",
+    attack: { type: "shockwave", interval: 2.2, radius: 175, damage: 7, push: 70 },
+  },
+
+  // 2 古代: 黄金の巨像 — コロッサスの上位。長射程の眼光を絶やさない
+  gilded_colossus: {
+    name: "gilded_colossus", sprite: "colossus", elite: true, showHpBar: true,
+    hp: 1300, speed: 22, xp: 420, eggDrop: 5, radius: 40,
+    color: "#e0c040", glowColor: "#fff0a0", moveType: "patrol",
+    attack: { type: "beam", dps: 9.0, range: 320 },
+  },
+
+  // 3 中世: 攻城塔 — 動く石の塊。矢を面で撒きながらじりじり寄ってくる
+  siegetower: {
+    name: "siegetower", sprite: "citadel", showHpBar: true,
+    hp: 1500, speed: 16, xp: 400, eggDrop: 5, radius: 40,
+    color: "#8a8070", glowColor: "#d8c8a0", moveType: "patrol",
+    attack: { type: "fan", interval: 2.2, count: 5, damage: 2.0, speed: 90, range: 460 },
+  },
+
+  // 4 近世: 擲弾兵隊 — 隊で寄ってきて足元へ爆弾を放る。線ではなく円で迫る歩兵
+  grenadiers: {
+    name: "grenadiers", sprite: "knights", showHpBar: true,
+    hp: 55, speed: 44, xp: 40, eggDrop: 0, eggChance: 0.3, radius: 11,
+    packCount: 5,
+    color: "#c8b090", glowColor: "#ffd090", moveType: "pingpong",
+    attack: { type: "bomb", interval: 2.4, damage: 2.4, aoe: 46, speed: 55, range: 330 },
+  },
+
+  // 5 産業: 装甲列車 — 外周を高速で回りながら舷側砲を撃ち続ける。追いつくのが難しい火力塊
+  armortrain: {
+    name: "armortrain", sprite: "ironclad", elite: true, showHpBar: true,
+    hp: 2200, speed: 40, xp: 520, eggDrop: 6, radius: 46,
+    color: "#3a4550", glowColor: "#80c0ff", moveType: "loop",
+    attack: { type: "broadside", interval: 0.85, count: 4, damage: 3.0, speed: 95 },
+  },
+
+  // 6 電気: 雷公 — 連鎖電撃の親玉。**固まっているほど痛い**を最も強く突きつける
+  teslagiant: {
+    name: "teslagiant", sprite: "teslawagon", elite: true, showHpBar: true,
+    hp: 950, speed: 30, xp: 300, eggDrop: 4, radius: 34,
+    color: "#2a4a7a", glowColor: "#c0e8ff", moveType: "patrol",
+    // damage 3.0 では固まった35体に10秒で918（雷撃塔車の実質2倍）入ったので 2.6 に落とした
+    attack: { type: "chain", interval: 2.4, range: 430, damage: 2.6,
+              hops: 18, hopRange: 60, densityRange: 48, densityScale: 0.36, densityMax: 3.4 },
+  },
+
+  // 7 大戦: 爆撃飛行隊 — 4機の編隊。地形を無視して真上から爆弾を落としていく
+  bomberwing: {
+    name: "bomberwing", sprite: "balloon", flying: true, showHpBar: true,
+    hp: 120, speed: 34, xp: 90, eggDrop: 1, radius: 18,
+    packCount: 4,
+    color: "#5a6a50", glowColor: "#d0e090", moveType: "patrol",
+    // 4機編隊なので1機あたりの間隔は長め（1.5だと10秒で539と出過ぎた）
+    attack: { type: "bomb", interval: 2.1, damage: 2.2, aoe: 50, speed: 60, range: 400 },
+  },
+
+  // 8 最終: 殲滅砲兵 — 予告円つきの着弾弾を撒く移動砲台。街の臼砲が歩いてくる
+  annihilator: {
+    name: "annihilator", sprite: "warlord", elite: true, showHpBar: true,
+    hp: 2600, speed: 22, xp: 600, eggDrop: 7, radius: 44,
+    color: "#4a2a3a", glowColor: "#ff70c0", moveType: "patrol",
+    attack: { type: "shell", interval: 4.0, range: 620, count: 3,
+              damage: 4.0, aoe: 70, speed: 200, scatter: 90, color: "#ff9ad0" },
+  },
+
   // v0.25.1 財宝馬車: 竜ではない運搬体。群れから逃げ回り、倒すと竜晶/XPが大量に弾ける当たり枠。
   // 攻撃はせず（fleer）、空を漂って地形も無視。既存 balloon スプライトを金色オーラで流用。
   treasure: {
@@ -4217,15 +4304,16 @@ const MOVER_DEFS = {
 // v0.8: ステージ5〜8を追加（既存5種の混成密度を上げ、HP/XPはステージ係数でスケール）
 // v0.42: 新顔（盾兵・分裂体・潜行者・火吹き車・瘴気塔）を段階的に混ぜる。
 // 「初出は1体だけ」→ 覚えてもらってから増やす。
+// v0.57: 各行の先頭が**その文明の看板ユニット**（1ラン＝1文明なので、そのランで必ず会う大物）。
 const MOVER_SPAWNS_BY_STAGE = [
-  [["mammoth", 1], ["lurker", 1]],
-  [["colossus", 2], ["shieldman", 1]],
-  [["knights", 2], ["colossus", 1], ["shieldman", 1], ["splitter", 1]],
-  [["ironclad", 2], ["knights", 2], ["balloon", 2], ["lurker", 1], ["flamewagon", 1]],
-  [["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1], ["shieldman", 1], ["miasma", 1], ["teslawagon", 1]],
-  [["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1], ["splitter", 2], ["flamewagon", 1]],
-  [["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1], ["lurker", 2], ["miasma", 1], ["teslawagon", 1]],
-  [["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1], ["shieldman", 1], ["splitter", 2], ["flamewagon", 1], ["teslawagon", 2]],
+  [["mammoth_lord", 1], ["mammoth", 1], ["lurker", 1]],
+  [["gilded_colossus", 1], ["colossus", 2], ["shieldman", 1]],
+  [["siegetower", 1], ["knights", 2], ["colossus", 1], ["shieldman", 1], ["splitter", 1]],
+  [["grenadiers", 1], ["ironclad", 2], ["knights", 2], ["balloon", 2], ["lurker", 1], ["flamewagon", 1]],
+  [["armortrain", 1], ["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1], ["shieldman", 1], ["miasma", 1], ["teslawagon", 1]],
+  [["teslagiant", 1], ["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1], ["splitter", 2], ["flamewagon", 1]],
+  [["bomberwing", 2], ["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1], ["lurker", 2], ["miasma", 1], ["teslawagon", 1]],
+  [["annihilator", 1], ["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1], ["shieldman", 1], ["splitter", 2], ["flamewagon", 1], ["teslawagon", 2]],
 ];
 
 // v0.41: ボス直衛の守備隊。**従来 generateMovers はボス圏内を明示的に避けており、
@@ -4234,15 +4322,17 @@ const MOVER_SPAWNS_BY_STAGE = [
 // moveType:"loop" の敵（ironclad/warlord/behemoth）は経路がマップ外周固定なので守備隊には使えない。
 // 使うのは patrol（randPoint を4点使う）と静止型（healer/summoner）と pingpong。
 // v0.42: 守備隊にも新顔を入れる。**盾兵は城門前に置くと「回り込む」段取りが生まれる**。
+// v0.57: 守備隊にも文明の看板を1体入れる（首都まで来たら必ず相手をすることになる）。
+// 装甲列車（moveType:"loop"）だけは経路がマップ外周固定なので守備隊には置けない。
 const BOSS_GARRISON_BY_STAGE = [
-  [["knights", 1]],
-  [["colossus", 1], ["shieldman", 1]],
-  [["colossus", 1], ["shieldman", 1], ["balloon", 1]],
-  [["colossus", 1], ["balloon", 2], ["shieldman", 1], ["miasma", 1]],
+  [["mammoth_lord", 1], ["knights", 1]],
+  [["gilded_colossus", 1], ["colossus", 1], ["shieldman", 1]],
+  [["siegetower", 1], ["colossus", 1], ["shieldman", 1], ["balloon", 1]],
+  [["grenadiers", 1], ["colossus", 1], ["balloon", 2], ["shieldman", 1], ["miasma", 1]],
   [["colossus", 1], ["shockman", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
-  [["colossus", 2], ["healer", 1], ["balloon", 2], ["shieldman", 1], ["flamewagon", 1]],
-  [["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
-  [["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["splitter", 1], ["flamewagon", 1], ["teslawagon", 1]],
+  [["teslagiant", 1], ["colossus", 2], ["healer", 1], ["balloon", 2], ["shieldman", 1], ["flamewagon", 1]],
+  [["bomberwing", 1], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
+  [["annihilator", 1], ["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["splitter", 1], ["flamewagon", 1], ["teslawagon", 1]],
 ];
 // 守備隊が巡回する帯（ボス中心からの距離）。城壁(420)の内側に収める＝
 // 「壁を破ってから守備隊と戦う」段取りになる。
@@ -4403,47 +4493,91 @@ const SHOCKWAVE_FX_DURATION = 0.5;
 // 焼夷塔（建物側の持続範囲攻撃）。一部の large 建物がこれになる。
 // 「街の中に踏み込むと足元が燃える」＝建物側にも退かせる圧を持たせる。
 // -----------------------------------------------------------------
-// v0.48: ステージごとの「らしさ」テーブル
+// v0.48 → v0.57: 文明（時代）ごとの兵器テーブル
 // -----------------------------------------------------------------
-// 敵の顔ぶれ（MOVER_SPAWNS_BY_STAGE）は既にステージ別だが、**建物側とボスの技**が
-// 全ステージ同じだったので、どの時代でも同じ手触りになっていた。
-// ここで時代ごとに「何が置かれ、ボスが何を撃つか」を分ける。
-//   emberTowers    … 焼夷塔の数（篝火 → 火薬庫 → 焼夷弾と読み替えられる汎用の火）
-//   rocketBatteries… ロケット砲台の数（産業革命以降にだけ存在する）
-//   bossLaser      … ボスが極太レーザーを撃つか（電気時代以降の超兵器）
+// v0.56 で「1ラン＝1文明・時代はラン中ずっと固定」になった。つまり**そのランで見る
+// 兵器はここで選んだものが全部**であり、時代の手触りはこの表がほぼ全部を決める。
+// v0.57 で3層に分けた:
+//   emplacements … 街に置かれる時代兵器（large 建物のいくつかがこれになる）
+//   bossArt      … 首都の大技（1文明に1つ。予兆つきの見せ場）
+//   ※ 通常弾の見た目・速さは SHOT_STYLES（弾側）が持つ
+//
+// 街の兵器は「その時代にあり得る形」であると同時に、**竜に要求する操作が違う**ように選ぶ:
+//   投石機/臼砲/対空砲 → 落下点の円から退く   バリスタ/ロケット → 線から外れる
+//   焼夷塔/テスラ塔   → 居座らない・固まらない  プリズム塔 → 予兆の線を読む
+const EMPLACEMENT_DEFS = {
+  // 石器〜古代: 投石機。**一番遅くて一番大きい**弾。見てから歩いて避けられる
+  trebuchet: { label: "投石機",       ring: "#d8c8a8", interval: 5.0, range: 500 },
+  // 古代〜: 焼夷塔（v0.42から。足元に燃える輪を置く＝居座らせない）
+  ember:     { label: "焼夷塔",       ring: "#ff9040", interval: 6.5, range: 175 },
+  // 中世: バリスタ塔。3連の重矢を線で撃つ＝横へ抜ければ当たらないが、当たると大きく吹き飛ぶ
+  ballista:  { label: "バリスタ塔",   ring: "#e8dcc0", interval: 3.4, range: 460 },
+  // 近世〜: ロケット砲台（v0.48から。遅い大弾の斉射）
+  rocket:    { label: "ロケット砲台", ring: "#ffb060", interval: 5.5, range: 465 },
+  // 産業: 臼砲台。散らして3発落とす＝「群れを割って逃がす」判断が要る
+  mortar:    { label: "臼砲台",       ring: "#b8c0c8", interval: 4.6, range: 520 },
+  // 電気: テスラ塔。雷撃塔車と同じ連鎖電撃＝**固めているほど痛い**（建物側にも密度の罰を置く）
+  tesla:     { label: "テスラ塔",     ring: "#a0d8ff", interval: 3.6, range: 420 },
+  // 大戦: 対空砲。小さめの炸裂を群れの周囲へ広く撒く＝逃げ場が減っていく圧
+  flak:      { label: "対空砲",       ring: "#ffd070", interval: 3.2, range: 520 },
+  // 最終: プリズム塔。首都のレーザーの小型版を**街の建物が**撃ってくる
+  prism:     { label: "プリズム塔",   ring: "#e0a0ff", interval: 6.5, range: 520 },
+};
+
 const STAGE_FEATURES = [
-  // 1 石器: 火だけ。飛び道具の見せ場は無く、敵（マンモス・潜行者）が主役
-  { emberTowers: 1, rocketBatteries: 0, bossLaser: false },
-  // 2 古代: 篝火が増える。神殿都市の守りは物量
-  { emberTowers: 3, rocketBatteries: 0, bossLaser: false },
-  // 3 中世: 城下に火が回る
-  { emberTowers: 5, rocketBatteries: 0, bossLaser: false },
-  // 4 近世要塞: 火は控えめ、代わりに**初めてロケット砲台**が出る（黎明期なので2基）
-  { emberTowers: 3, rocketBatteries: 2, bossLaser: false },
-  // 5 産業: 工場の火＋ロケットが主力に
-  { emberTowers: 5, rocketBatteries: 5, bossLaser: false },
-  // 6 電気: **ボスの極太レーザー解禁**。街の火は減り、エネルギー兵器の時代へ
-  { emberTowers: 3, rocketBatteries: 5, bossLaser: true },
-  // 7 大戦: 総力戦。すべてが同時に来る
-  { emberTowers: 6, rocketBatteries: 8, bossLaser: true },
-  // 8 最終: 最大数
-  { emberTowers: 8, rocketBatteries: 10, bossLaser: true },
+  // 1 石器: 投石機だけ。飛び道具は遅く大きく、敵（マンモス・潜行者）が主役
+  { emplacements: [["trebuchet", 4], ["ember", 1]], bossArt: "boulders" },
+  // 2 古代: 神殿の火。投石機も残る
+  { emplacements: [["ember", 4], ["trebuchet", 2]], bossArt: "pillars" },
+  // 3 中世: 城壁のバリスタ＋城下に回る火
+  { emplacements: [["ballista", 5], ["ember", 4]], bossArt: "arrowRain" },
+  // 4 近世要塞: **ロケット砲台の初出**。バリスタと併存する過渡期
+  { emplacements: [["rocket", 3], ["ballista", 3], ["ember", 2]], bossArt: "volley" },
+  // 5 産業: 臼砲とロケットの砲兵陣地。工場の火も増える
+  { emplacements: [["mortar", 5], ["rocket", 4], ["ember", 3]], bossArt: "carpet" },
+  // 6 電気: テスラ塔が主役。街の火は減り、エネルギー兵器の時代へ
+  { emplacements: [["tesla", 5], ["rocket", 4], ["ember", 2]], bossArt: "laser" },
+  // 7 大戦: 総力戦。対空砲が空を埋める
+  { emplacements: [["flak", 6], ["mortar", 4], ["rocket", 4], ["tesla", 2]], bossArt: "flakStorm" },
+  // 8 最終: 超兵器の街。プリズム塔が普通の建物として並ぶ
+  { emplacements: [["prism", 5], ["flak", 6], ["tesla", 4], ["mortar", 4]], bossArt: "prismCross" },
 ];
 function stageFeatures(idx) {
   return STAGE_FEATURES[idx] ?? STAGE_FEATURES[STAGE_FEATURES.length - 1];
 }
 
+// v0.57: 時代兵器のパラメータ。
+// spawnShell に渡す速度は **px/s の実値**（矢のように PROJECTILE_SPEED_MULT を掛けない）。
+const TREBUCHET_SPEED   = 185;   // 一番遅い飛来物。500px先に着くまで約2.7秒
+const TREBUCHET_DAMAGE  = 5.0;
+const TREBUCHET_AOE     = 92;    // 一番大きい炸裂。群れの塊がまるごと入る
+const BALLISTA_SPEED    = 110;   // ×PROJECTILE_SPEED_MULT されるので実効 約400px/s
+const BALLISTA_DAMAGE   = 3.0;
+const BALLISTA_COUNT    = 3;     // 3連射（わずかに散らす）
+const MORTAR_SPEED      = 155;
+const MORTAR_DAMAGE     = 3.2;
+const MORTAR_AOE        = 62;
+const MORTAR_COUNT      = 3;
+const MORTAR_SCATTER    = 78;    // 落下点のばらつき（px）
+const FLAK_SPEED        = 265;
+const FLAK_DAMAGE       = 2.4;
+const FLAK_AOE          = 44;
+const FLAK_COUNT        = 5;
+const FLAK_SCATTER      = 135;
+const PRISM_WIDTH       = 30;    // 首都の極太レーザー(86)の小型版
+const PRISM_LENGTH      = 640;
+const PRISM_DPS         = 14;
+
 // v0.48: ロケット砲台（建物側の見せ場）。**弾速の遅い大きな弾をまとめて撃つ**。
 // 速い弾は「気づいたら削れている」だけだが、遅い弾は**飛んでくる間に避けられる**＝
 // 画面を読んで群れを動かす時間が生まれる。当たると重い（AoE付き）。
-const ROCKET_INTERVAL   = 5.5;   // 斉射の間隔（秒）
 const ROCKET_COUNT      = 5;     // 1斉射の発数
 const ROCKET_SPREAD     = 0.42;  // 扇の広がり（rad）
 const ROCKET_SPEED      = 46;    // 遅い（矢は75〜95）
 const ROCKET_DAMAGE     = 3.0;
 const ROCKET_AOE        = 52;    // 着弾の巻き込み半径
 const ROCKET_MAX_RANGE  = 620;   // 遅いぶん遠くまで届く
-const EMBER_TOWER_INTERVAL = 6.5;   // 発動間隔（秒）
+// ※ 発動間隔は EMPLACEMENT_DEFS[].interval が持つ（v0.57で一元化）
 const EMBER_TOWER_RADIUS   = 145;
 const EMBER_TOWER_LIFE     = 4.0;
 const EMBER_TOWER_DPS      = 4.0;
@@ -4699,20 +4833,26 @@ function drawEnemyDebugLabels() {
   ctx.restore();
 }
 
-/** 焼夷塔の目印。脈打つ輪で「ここは燃える」を予告する。ライブ描画（建物レイヤーはキャッシュのため）。 */
-function drawEmberTowers() {
+/**
+ * 時代兵器を持つ建物の目印。脈打つ輪で「ここは普通の建物ではない」と予告する。
+ * ライブ描画（建物レイヤーはキャッシュなのでここには置けない）。
+ * v0.57: 焼夷塔専用だったものを全兵器へ広げ、**輪の色で種類を見分けられる**ようにした。
+ */
+function drawEmplacements() {
   ctx.save();
   for (const s of settlements) {
-    if (!s || !s._emberTower || s.fallen) continue;
+    if (!s || !s._emplacement || s.fallen) continue;
+    const def = EMPLACEMENT_DEFS[s._emplacement];
+    if (!def) continue;
     const pulse = 0.5 + 0.5 * Math.sin(breathTime * 3 + s.wx * 0.01);
     ctx.globalAlpha = 0.25 + 0.35 * pulse;
-    ctx.strokeStyle = "#ff9040";
+    ctx.strokeStyle = def.ring;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(s.wx, s.wy, s.radius + 6 + pulse * 4, 0, Math.PI * 2);
     ctx.stroke();
     ctx.globalAlpha = 0.5;
-    ctx.fillStyle = "#ffb060";
+    ctx.fillStyle = def.ring;
     ctx.beginPath();
     ctx.arc(s.wx, s.wy, 3.2, 0, Math.PI * 2);
     ctx.fill();
@@ -4932,6 +5072,82 @@ const BEHEMOTH_ARM_SLAM_DMG      = 6;    // 衝撃波ダメージ
 const BEHEMOTH_ARM_SLAM_PUSH     = 70;   // ノックバック距離（通常の踏鳴らし26より強い）
 
 // 指定座標に衝撃波を発生（範囲内の竜へダメージ＋外向き押し飛ばし＋リングFX）。
+/**
+ * v0.43: 連鎖電撃。最寄りの竜に落ちてから、**触れている仲間へ次々に広がる**（幅優先）。
+ * v0.57: 敵（雷撃塔車）と建物（テスラ塔）の両方から呼べるよう関数に切り出した。
+ *
+ * 一本道で辿ると、最初に落ちた1体が群れの端のはぐれ個体だった場合にそこで途切れる
+ * （実測: 密集しているのに2体で止まった）。幅優先なら塊の中へ入った時点で全体へ回る。
+ * 1体ごとのダメージは**その竜の周りの密度**に比例＝固めるほど痛い。
+ * @returns {boolean} 撃てたら true（射程内に竜が居なければ false）
+ */
+function emitChainLightning(fromX, fromY, atk, ferocity = 1) {
+  const dRange2 = atk.densityRange * atk.densityRange;
+  const hopR2   = atk.hopRange * atk.hopRange;
+  const range2  = atk.range * atk.range;
+
+  let nearestIdx = -1, nearestD2 = Infinity;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - fromX, dy = py[i] - fromY;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < nearestD2) { nearestD2 = d2; nearestIdx = i; }
+  }
+  if (nearestIdx < 0 || nearestD2 > range2) return false;
+
+  // 落雷点は「最寄り」だが、**はぐれ個体には落とさない**。
+  // 群れの端の1体に落ちるとそこで途切れて、密集させても何も起きない
+  // （実測: 平均6.9体の隣がいる密集状態なのに1体しか感電しなかった）。
+  const hasNeighbour = (idx) => {
+    for (let i = 0; i < N; i++) {
+      if (i === idx || boidDead[i] || boidDowned[i]) continue;
+      const dx2 = px[i] - px[idx], dy2 = py[i] - py[idx];
+      if (dx2 * dx2 + dy2 * dy2 < hopR2) return true;
+    }
+    return false;
+  };
+  let strike = nearestIdx;
+  if (!hasNeighbour(strike)) {
+    let bestD2s = Infinity;
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      const dx2 = px[i] - fromX, dy2 = py[i] - fromY;
+      const d2s = dx2 * dx2 + dy2 * dy2;
+      if (d2s < bestD2s && d2s < range2 && hasNeighbour(i)) { bestD2s = d2s; strike = i; }
+    }
+  }
+
+  // ① 触れ合っている仲間をたどって感電する範囲を集める（幅優先）
+  const segs = [[fromX, fromY, px[strike], py[strike]]];
+  const hitList = [strike];
+  const hitSet = new Set(hitList);
+  for (let q = 0; q < hitList.length && hitList.length < atk.hops; q++) {
+    const cur = hitList[q];
+    for (let i = 0; i < N && hitList.length < atk.hops; i++) {
+      if (boidDead[i] || boidDowned[i] || hitSet.has(i)) continue;
+      const cdx = px[i] - px[cur], cdy = py[i] - py[cur];
+      if (cdx * cdx + cdy * cdy > hopR2) continue;
+      hitSet.add(i);
+      hitList.push(i);
+      segs.push([px[cur], py[cur], px[i], py[i]]);
+    }
+  }
+  // ② 集めきってからダメージを配る（集計と適用を分けないと、
+  //    上限に達した時点で残りが無傷のまま終わる）
+  for (const idx of hitList) {
+    let neighbours = 0;
+    for (let i = 0; i < N; i++) {
+      if (i === idx || boidDead[i] || boidDowned[i]) continue;
+      const ndx2 = px[i] - px[idx], ndy2 = py[i] - py[idx];
+      if (ndx2 * ndx2 + ndy2 * ndy2 < dRange2) neighbours++;
+    }
+    const mult = Math.min(atk.densityMax, 1 + neighbours * atk.densityScale);
+    applyDamageToBoid(idx, atk.damage * ferocity * mult);
+  }
+  chainFxList.push({ segs, life: CHAIN_FX_DURATION });
+  return true;
+}
+
 function emitShockwave(wx, wy, radius, damage, pushDist) {
   shockwaveFxList.push({ x: wx, y: wy, maxR: radius, life: SHOCKWAVE_FX_DURATION });
   for (let i = 0; i < N; i++) {
@@ -5184,62 +5400,9 @@ function updateMovers(dt) {
         }
       }
     } else if (atk.type === "chain") {
-      // v0.43: 連鎖電撃。最寄りの竜に落ちてから、**触れている仲間へ次々に広がる**（幅優先）。
-      // 一本道で辿ると、最初に落ちた1体が群れの端のはぐれ個体だった場合にそこで途切れる
-      // （実測: 密集しているのに2体で止まった）。幅優先なら塊の中へ入った時点で全体へ回る。
-      // 1体ごとのダメージは**その竜の周りの密度**に比例＝固めるほど痛い。
+      // v0.43: 連鎖電撃（本体は emitChainLightning。v0.57で建物のテスラ塔と共有した）
       if (nearestD2 < atk.range * atk.range) {
-        const dRange2 = atk.densityRange * atk.densityRange;
-        const hopR2   = atk.hopRange * atk.hopRange;
-        // 落雷点は「最寄り」だが、**はぐれ個体には落とさない**。
-        // 群れの端の1体に落ちるとそこで途切れて、密集させても何も起きない
-        // （実測: 平均6.9体の隣がいる密集状態なのに1体しか感電しなかった）。
-        const hasNeighbour = (idx) => {
-          for (let i = 0; i < N; i++) {
-            if (i === idx || boidDead[i] || boidDowned[i]) continue;
-            const dx2 = px[i] - px[idx], dy2 = py[i] - py[idx];
-            if (dx2 * dx2 + dy2 * dy2 < hopR2) return true;
-          }
-          return false;
-        };
-        let strike = nearestIdx;
-        if (!hasNeighbour(strike)) {
-          let bestD2s = Infinity;
-          for (let i = 0; i < N; i++) {
-            if (boidDead[i] || boidDowned[i]) continue;
-            const dx2 = px[i] - m.wx, dy2 = py[i] - m.wy;
-            const d2s = dx2 * dx2 + dy2 * dy2;
-            if (d2s < bestD2s && d2s < atk.range * atk.range && hasNeighbour(i)) { bestD2s = d2s; strike = i; }
-          }
-        }
-        // ① 触れ合っている仲間をたどって感電する範囲を集める（幅優先）
-        const segs = [[m.wx, m.wy, px[strike], py[strike]]];
-        const hitList = [strike];
-        const hitSet = new Set(hitList);
-        for (let q = 0; q < hitList.length && hitList.length < atk.hops; q++) {
-          const cur = hitList[q];
-          for (let i = 0; i < N && hitList.length < atk.hops; i++) {
-            if (boidDead[i] || boidDowned[i] || hitSet.has(i)) continue;
-            const cdx = px[i] - px[cur], cdy = py[i] - py[cur];
-            if (cdx * cdx + cdy * cdy > hopR2) continue;
-            hitSet.add(i);
-            hitList.push(i);
-            segs.push([px[cur], py[cur], px[i], py[i]]);
-          }
-        }
-        // ② 集めきってからダメージを配る（集計と適用を分けないと、
-        //    上限に達した時点で残りが無傷のまま終わる）
-        for (const idx of hitList) {
-          let neighbours = 0;
-          for (let i = 0; i < N; i++) {
-            if (i === idx || boidDead[i] || boidDowned[i]) continue;
-            const ndx2 = px[i] - px[idx], ndy2 = py[i] - py[idx];
-            if (ndx2 * ndx2 + ndy2 * ndy2 < dRange2) neighbours++;
-          }
-          const mult = Math.min(atk.densityMax, 1 + neighbours * atk.densityScale);
-          applyDamageToBoid(idx, atk.damage * ferocity * mult);
-        }
-        chainFxList.push({ segs, life: CHAIN_FX_DURATION });
+        emitChainLightning(m.wx, m.wy, atk, ferocity);
       } else {
         m.attackTimer = 0.4;
       }
@@ -5250,6 +5413,20 @@ function updateMovers(dt) {
         const hy = atk.atTarget ? py[nearestIdx] : m.wy;
         spawnHazard(hx, hy, atk.radius, atk.life, atk.damage ?? atk.dps, atk.color,
                     atk.growFrom ?? atk.radius);
+      } else {
+        m.attackTimer = 0.4;
+      }
+    } else if (atk.type === "shell") {
+      // v0.57: 予告円つきの着弾弾を散らして落とす（建物の臼砲と同じ部品）。
+      // 「線を外す」ではなく「円から退く」を敵側にも持たせる枠。
+      if (nearestD2 < atk.range * atk.range) {
+        const stx = px[nearestIdx], sty = py[nearestIdx];
+        for (let k = 0; k < atk.count; k++) {
+          const sa = random() * Math.PI * 2;
+          const sr = random() * atk.scatter;
+          queueShell(k * 0.2, m.wx, m.wy, stx + Math.cos(sa) * sr, sty + Math.sin(sa) * sr,
+                     atk.speed, atk.damage * ferocity, atk.aoe, atk.color);
+        }
       } else {
         m.attackTimer = 0.4;
       }
@@ -5299,47 +5476,170 @@ function updateMovers(dt) {
 // -----------------------------------------------------------------
 let bossSettlementIdx = -1;   // 現ステージのボス index（generateStageLayout 後に検索）
 let bossNovaTimer = BOSS_NOVA_INTERVAL;
-// v0.48: 極太レーザー（電気時代以降のボスだけ）。ノヴァとは別サイクルで撃つ。
-const BOSS_LASER_INTERVAL = 7.5;
+// v0.48 → v0.57: 首都の大技。**文明ごとに1種**（STAGE_FEATURES[].bossArt）。
+// 共通する作法は「予兆を見せてから当てる」。どれも1〜2秒の猶予があり、
+// 群れを動かせば無傷で抜けられる＝見せ場でありながら腕が結果に出る。
+const BOSS_ART_INTERVAL   = 7.5;   // 大技の間隔（全時代共通）
+const BOSS_ART_RANGE      = 1500;  // この距離に群れが居ないと撃たない（無人の空へ撃たない）
 const BOSS_LASER_WIDTH    = 86;    // 極太。群れの塊がまるごと入る
 const BOSS_LASER_LENGTH   = 1500;  // 画面を越えて伸びる
 const BOSS_LASER_DPS      = 26;
-let bossLaserTimer = BOSS_LASER_INTERVAL;
+// 石器: 巨岩投擲
+const BOSS_BOULDER_COUNT  = 3;
+const BOSS_BOULDER_SPEED  = 170;
+const BOSS_BOULDER_DMG    = 7;
+const BOSS_BOULDER_AOE    = 118;
+// 古代: 神託の光柱（円周に立つ火柱。1か所だけ空けて逃げ道にする）
+const BOSS_PILLAR_SLOTS   = 8;
+const BOSS_PILLAR_INNER   = 62;    // 内側の柱（重心を覆う＝居座ると必ず焼ける）
+const BOSS_PILLAR_OUTER   = 140;   // 外側の柱（逃げ道を狭める）
+const BOSS_PILLAR_RADIUS  = 74;
+const BOSS_PILLAR_LIFE    = 3.2;
+const BOSS_PILLAR_DPS     = 4.5;  // 8だと居座った群れに1388（レーザーの1.7倍）入りすぎた
+// 中世: 矢の雨
+const BOSS_RAIN_COUNT     = 34;   // 26だと当たりが疎で、測定のたび 27〜75 と暴れた
+const BOSS_RAIN_AREA      = 175;
+const BOSS_RAIN_SPREAD    = 1.8;   // 降り切るまでの秒数
+const BOSS_RAIN_SPEED     = 300;
+const BOSS_RAIN_DMG       = 3.0;
+const BOSS_RAIN_AOE       = 26;
+// 近世: 一斉射（弾の壁）
+const BOSS_VOLLEY_COUNT   = 13;
+const BOSS_VOLLEY_ARC     = 0.5;
+const BOSS_VOLLEY_WAVES   = [95, 80, 66];   // 同時に撃つが速度差で3枚の壁になる
+const BOSS_VOLLEY_SPEED   = 95;
+const BOSS_VOLLEY_DMG     = 3;
+const BOSS_VOLLEY_RANGE   = 900;   // 既定の catapult 射程(420)では首都から群れへ届かない
+// 産業: 絨毯爆撃（首都から群れへ向かって歩いてくる爆発の列）
+const BOSS_CARPET_COUNT   = 10;
+const BOSS_CARPET_STEP    = 95;
+const BOSS_CARPET_DELAY   = 0.13;
+const BOSS_CARPET_SPEED   = 210;
+const BOSS_CARPET_DMG     = 4;
+const BOSS_CARPET_AOE     = 74;
+// 大戦: 対空弾幕
+const BOSS_STORM_COUNT    = 26;   // 同上（16発では 18〜165 と安定しない）
+const BOSS_STORM_AREA     = 150;
+const BOSS_STORM_SPREAD   = 2.2;
+const BOSS_STORM_SPEED    = 285;
+const BOSS_STORM_DMG      = 3.0;
+const BOSS_STORM_AOE      = 46;
+// 最終: 十字プリズム（4方向の同時照射。四象限のどれかへ抜ける）
+const BOSS_CROSS_WIDTH    = 46;
+const BOSS_CROSS_LENGTH   = 1300;
+const BOSS_CROSS_DPS      = 20;
+
+let bossArtTimer = BOSS_ART_INTERVAL;
 
 function cacheBossIndex() {
   bossSettlementIdx = settlements.findIndex(s => s.isBoss);
+  // 建物の並びが変わったら攻撃判定クエリの走査半径も引き直す（時代兵器の射程が効くように）
+  recomputeAttackQueryRadius();
   bossNovaTimer = BOSS_NOVA_INTERVAL;
-  bossLaserTimer = BOSS_LASER_INTERVAL;
+  bossArtTimer = BOSS_ART_INTERVAL;
 }
 
 /**
- * v0.48: ボスの極太レーザー。**予兆の時点で狙いが固定される**ので、
- * プレイヤーは1.3秒のあいだに群れを線から外せば無傷で抜けられる。
- * 「避けられる大技」＝見せ場になり、かつ操作の腕が結果に出る。
+ * v0.57: 首都の大技。文明ごとに技が変わる（STAGE_FEATURES[].bossArt）。
+ * 予兆の時点で狙いが固定されるので、猶予のあいだに群れを退かせれば無傷で抜けられる。
  */
-function updateBossLaser(dt) {
+function updateBossArt(dt) {
   if (bossSettlementIdx < 0) return;
-  // v0.56: 首都は時代を問わず「大技」を持つ（Shooter指示）。今はその1種目が極太レーザー。
-  // 時代・文明に合った技（投石／光の柱／一斉射／絨毯爆撃…）に差し替えていく予定で、
-  // それまではどの文明の首都もレーザーで代用する。街側の兵器（焼夷塔・ロケット砲台）は
-  // stageFeatures(currentStage) のまま＝時代どおりなので、文明の手触りはそちらが担う。
   const boss = settlements[bossSettlementIdx];
   if (!boss || boss.fallen) return;
 
-  bossLaserTimer -= dt;
-  if (bossLaserTimer > 0) return;
+  bossArtTimer -= dt;
+  if (bossArtTimer > 0) return;
 
-  // 群れが射程内に居るときだけ撃つ（無人の空へ撃たない）
   const c = calcFriendlyCentroid();
   const dx = c.x - boss.wx, dy = c.y - boss.wy;
-  if (dx * dx + dy * dy > BOSS_LASER_LENGTH * BOSS_LASER_LENGTH) { bossLaserTimer = 0.6; return; }
+  if (dx * dx + dy * dy > BOSS_ART_RANGE * BOSS_ART_RANGE) { bossArtTimer = 0.6; return; }
 
-  bossLaserTimer = BOSS_LASER_INTERVAL;
-  spawnLaserStrike(boss.wx, boss.wy, Math.atan2(dy, dx),
-                   BOSS_LASER_WIDTH, BOSS_LASER_LENGTH, BOSS_LASER_DPS,
-                   boss._bossGlowColor ?? "#ff8800");
+  bossArtTimer = BOSS_ART_INTERVAL;
+  fireBossArt(boss, stageFeatures(currentStage).bossArt, c.x, c.y,
+              Math.atan2(dy, dx), boss._bossGlowColor ?? "#ff8800");
   triggerShake(3.5, 0.25);
   hapticPulse(60);
+}
+
+/**
+ * 首都の大技を1回撃つ。
+ * @param {object} boss  首都
+ * @param {string} art   STAGE_FEATURES[].bossArt
+ * @param {number} cx    群れの重心X
+ * @param {number} cy    群れの重心Y
+ * @param {number} ang   首都から群れへの向き
+ * @param {string} color 首都のテーマ色
+ */
+function fireBossArt(boss, art, cx, cy, ang, color) {
+  if (art === "boulders") {
+    // 石器: 巨岩投擲。**一番大きく一番遅い**炸裂。重心とその左右へ落とす
+    for (let k = 0; k < BOSS_BOULDER_COUNT; k++) {
+      const off = (k - (BOSS_BOULDER_COUNT - 1) / 2) * 150;
+      queueShell(k * 0.25, boss.wx, boss.wy,
+                 cx + Math.cos(ang + Math.PI / 2) * off,
+                 cy + Math.sin(ang + Math.PI / 2) * off,
+                 BOSS_BOULDER_SPEED, BOSS_BOULDER_DMG, BOSS_BOULDER_AOE, "#e8dcc0");
+    }
+  } else if (art === "pillars") {
+    // 古代: 神託の光柱。群れを囲む円周に火柱が立つ。**1か所だけ空ける**＝逃げ道を読ませる
+    const gap = Math.floor(random() * BOSS_PILLAR_SLOTS);
+    for (let k = 0; k < BOSS_PILLAR_SLOTS; k++) {
+      if (k === gap) continue;
+      const a = (k / BOSS_PILLAR_SLOTS) * Math.PI * 2;
+      // 内・外を交互に。内側の柱が重心を覆うので**その場に留まると必ず焼ける**
+      const orbit = (k % 2 === 0) ? BOSS_PILLAR_INNER : BOSS_PILLAR_OUTER;
+      spawnHazard(cx + Math.cos(a) * orbit, cy + Math.sin(a) * orbit,
+                  BOSS_PILLAR_RADIUS, BOSS_PILLAR_LIFE, BOSS_PILLAR_DPS, color, 20);
+    }
+  } else if (art === "arrowRain") {
+    // 中世: 矢の雨。細かい着弾が1.8秒かけて降る＝**走り抜ける**のが正解
+    for (let k = 0; k < BOSS_RAIN_COUNT; k++) {
+      const a = random() * Math.PI * 2;
+      const r = Math.sqrt(random()) * BOSS_RAIN_AREA;   // 面積で一様に散らす
+      queueShell(random() * BOSS_RAIN_SPREAD, boss.wx, boss.wy,
+                 cx + Math.cos(a) * r, cy + Math.sin(a) * r,
+                 BOSS_RAIN_SPEED, BOSS_RAIN_DMG, BOSS_RAIN_AOE, color);
+    }
+  } else if (art === "volley") {
+    // 近世: 一斉射。扇状の**弾の壁**。線と線の隙間を抜けるか、横へ回り込む
+    for (let w = 0; w < BOSS_VOLLEY_WAVES.length; w++) {
+      // 波ごとに半目盛ずらして、隙間が一直線に並ばないようにする
+      const jitter = (w % 2) * (BOSS_VOLLEY_ARC / (BOSS_VOLLEY_COUNT - 1)) * 0.5;
+      for (let k = 0; k < BOSS_VOLLEY_COUNT; k++) {
+        const t = (k / (BOSS_VOLLEY_COUNT - 1) - 0.5);
+        spawnFanProjectileRaw(boss.wx, boss.wy, ang + t * BOSS_VOLLEY_ARC + jitter,
+                              BOSS_VOLLEY_WAVES[w], BOSS_VOLLEY_DMG, color, 1, BOSS_VOLLEY_RANGE);
+      }
+    }
+  } else if (art === "carpet") {
+    // 産業: 絨毯爆撃。首都から群れへ**歩いてくる**爆発の列。横へ退けば抜けられる
+    for (let k = 0; k < BOSS_CARPET_COUNT; k++) {
+      const d = 120 + k * BOSS_CARPET_STEP;
+      queueShell(k * BOSS_CARPET_DELAY, boss.wx, boss.wy,
+                 boss.wx + Math.cos(ang) * d, boss.wy + Math.sin(ang) * d,
+                 BOSS_CARPET_SPEED, BOSS_CARPET_DMG, BOSS_CARPET_AOE, "#ffb060");
+    }
+  } else if (art === "flakStorm") {
+    // 大戦: 対空弾幕。逃げ場を削るように広く長く撒く
+    for (let k = 0; k < BOSS_STORM_COUNT; k++) {
+      const a = random() * Math.PI * 2;
+      const r = Math.sqrt(random()) * BOSS_STORM_AREA;
+      queueShell(random() * BOSS_STORM_SPREAD, boss.wx, boss.wy,
+                 cx + Math.cos(a) * r, cy + Math.sin(a) * r,
+                 BOSS_STORM_SPEED, BOSS_STORM_DMG, BOSS_STORM_AOE, "#ffd070");
+    }
+  } else if (art === "prismCross") {
+    // 最終: 十字プリズム。4方向を同時に焼く＝**四象限のどれかへ抜ける**しかない
+    for (let k = 0; k < 4; k++) {
+      spawnLaserStrike(boss.wx, boss.wy, ang + k * (Math.PI / 2),
+                       BOSS_CROSS_WIDTH, BOSS_CROSS_LENGTH, BOSS_CROSS_DPS, color);
+    }
+  } else {
+    // 電気（既定）: 極太レーザー。群れの塊がまるごと入る幅
+    spawnLaserStrike(boss.wx, boss.wy, ang,
+                     BOSS_LASER_WIDTH, BOSS_LASER_LENGTH, BOSS_LASER_DPS, color);
+  }
 }
 
 function updateBossNova(dt) {
@@ -7122,7 +7422,17 @@ const projStartWx   = new Float32Array(MAX_PROJECTILES);
 const projStartWy   = new Float32Array(MAX_PROJECTILES);
 // 変更5: 投射物種別 SoA（0=arrow 通常矢弾、1=catapult カタパルト弾）
 // Uint8Array: 0 or 1 で表現。初期化漏れなし（new Uint8Array はゼロ初期化される）
-const projKind      = new Uint8Array(MAX_PROJECTILES); // 0=arrow, 1=catapult
+const projKind      = new Uint8Array(MAX_PROJECTILES); // 0=arrow, 1=catapult, 2=ボス重弾, 3=ロケット, 4=着弾弾
+// v0.57: 着弾弾（kind=4）の落下点。飛行中は竜に当たらず、**この点まで飛んでから炸裂**する。
+// 「線に当たるか」ではなく「円から退けるか」を問う弾で、予告円とセットで使う。
+const projTgtX      = new Float32Array(MAX_PROJECTILES);
+const projTgtY      = new Float32Array(MAX_PROJECTILES);
+// v0.57: 通常弾の見た目（時代）。SHOT_STYLES の添字。発射時に現在の文明で焼き付ける。
+const projStyle     = new Uint8Array(MAX_PROJECTILES);
+// v0.57: 飛距離の個別上限（0 = kind ごとの既定値を使う）。
+// 首都の一斉射やバリスタ塔は**撃てる距離まで届かせたい**が、既定の 420/460px だと
+// 射程の手前で消えて1発も当たらない（実測: 首都から600px の群れに volley が0ダメージ）。
+const projRange     = new Float32Array(MAX_PROJECTILES);
 
 // 変更3: 投射物パラメータ定数
 // 弾速倍率: ステージ設定の projectileSpeed にこの倍率を掛けて「大型矢」の重厚な速さにする。
@@ -7139,6 +7449,92 @@ const CATAPULT_KNOCKBACK_SPEED = 220; // 旧120→220へ増強
 // 通常矢弾: 弱いノックバック（ちょっと押される程度）
 const ARROW_KNOCKBACK_SPEED    = 60;
 
+// -----------------------------------------------------------------
+// v0.57: 通常弾の「時代の顔」
+// -----------------------------------------------------------------
+// 1ラン＝1文明になったので、**ラン中ずっと目に入る通常弾**が時代を語る一番の面積になる。
+// 石器の街から鉛玉が飛んでくるのは絵として嘘なので、弾の形・速さ・尾を文明ごとに変える。
+// 速度倍率は見た目に合わせた**手触りの差**（投石は見てから避けられる／曳光弾は反応が要る）。
+// ダメージは STAGE_CONFIGS の projectileDamage のままで、ここでは触らない。
+const SHOT_STYLES = [
+  { key: "sling",   speedMult: 0.80, size: 1.00 },  // 1 石器: 回る石つぶて
+  { key: "javelin", speedMult: 1.00, size: 1.15 },  // 2 古代: 投槍（穂先が長い）
+  { key: "bolt",    speedMult: 1.05, size: 1.00 },  // 3 中世: 弩の矢（従来の矢）
+  { key: "musket",  speedMult: 1.50, size: 0.80 },  // 4 近世: 鉛玉＋白煙
+  { key: "shell",   speedMult: 1.15, size: 1.10 },  // 5 産業: 榴弾（黒い弾体＋煙）
+  { key: "arc",     speedMult: 1.30, size: 0.95 },  // 6 電気: 放電弾
+  { key: "tracer",  speedMult: 1.60, size: 0.90 },  // 7 大戦: 曳光弾
+  { key: "plasma",  speedMult: 1.20, size: 1.20 },  // 8 最終: プラズマ球
+];
+/** 現在の文明の弾スタイル添字。 */
+function eraShotStyle() {
+  return Math.max(0, Math.min(SHOT_STYLES.length - 1, currentStage));
+}
+/** 現在の文明の弾速倍率（kind=0/1 の通常弾にだけ掛ける）。 */
+function eraShotSpeedMult() {
+  return SHOT_STYLES[eraShotStyle()].speedMult;
+}
+
+// -----------------------------------------------------------------
+// v0.57: 着弾弾（bombardment shell / kind=4）
+// -----------------------------------------------------------------
+// 既存の弾は「竜に当たると消える線」だが、これは**指定した地面まで飛んで炸裂する点**。
+// 飛行中は当たり判定を持たず、落下点に予告円が出る＝**円から退く**という別種の課題になる。
+// 投石・矢の雨・絨毯爆撃・対空弾幕・臼砲を、この1つの部品で全部作っている。
+const SHELL_PUSH_DIST = 22;   // 炸裂の押し飛ばし（emitShockwave へ渡す）
+function spawnShell(fromWx, fromWy, tx, ty, speed, damage, aoe, color) {
+  let slot = -1;
+  for (let i = 0; i < MAX_PROJECTILES; i++) {
+    if (!projActive[i]) { slot = i; break; }
+  }
+  if (slot < 0) return;
+  const dx = tx - fromWx, dy = ty - fromWy;
+  const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+  projActive[slot]    = 1;
+  projWx[slot]        = fromWx;
+  projWy[slot]        = fromWy;
+  projTailX[slot]     = fromWx;
+  projTailY[slot]     = fromWy;
+  projStartWx[slot]   = fromWx;
+  projStartWy[slot]   = fromWy;
+  projTgtX[slot]      = tx;
+  projTgtY[slot]      = ty;
+  projVx[slot]        = dx / d * speed;
+  projVy[slot]        = dy / d * speed;
+  projDmg[slot]       = damage;
+  projAoe[slot]       = aoe;
+  projTracking[slot]  = 0;
+  projTargetIdx[slot] = -1;
+  projColor[slot]     = color;
+  projKind[slot]      = 4;
+  projStyle[slot]     = eraShotStyle();
+}
+
+/** 着弾弾の炸裂。範囲ダメージ＋押し飛ばし＋輪のFXは既存の衝撃波に集約する。 */
+function detonateShell(i) {
+  emitShockwave(projTgtX[i], projTgtY[i], projAoe[i], projDmg[i], SHELL_PUSH_DIST);
+  spawnCollisionParticles(projTgtX[i], projTgtY[i]);
+  projActive[i] = 0;
+}
+
+// 時間差の斉射キュー。**同時に撒くと避けようがない**ので、絨毯爆撃も矢の雨も
+// 「少しずつ落ちてくる」形にして、走って抜ける余地を作る。
+const barrageQueue = [];
+const BARRAGE_QUEUE_MAX = 96;
+function queueShell(delay, fromWx, fromWy, tx, ty, speed, damage, aoe, color) {
+  if (barrageQueue.length >= BARRAGE_QUEUE_MAX) return;
+  barrageQueue.push({ t: delay, fx: fromWx, fy: fromWy, tx, ty, speed, damage, aoe, color });
+}
+function updateBarrageQueue(dt) {
+  for (let i = barrageQueue.length - 1; i >= 0; i--) {
+    const q = barrageQueue[i];
+    q.t -= dt;
+    if (q.t > 0) continue;
+    spawnShell(q.fx, q.fy, q.tx, q.ty, q.speed, q.damage, q.aoe, q.color);
+    barrageQueue.splice(i, 1);
+  }
+}
+
 // 変更5: kind=0(arrow) / kind=1(catapult)
 function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, aoe, isTracking, kind) {
   let slot = -1;
@@ -7148,7 +7544,10 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
   if (slot < 0) return;
 
   // 変更3: 弾速倍率を適用（大型矢の重厚な速さ）
-  const actualSpeed = speed * PROJECTILE_SPEED_MULT;
+  // v0.57: 通常弾（kind=0/1）だけ、文明ごとの弾速倍率を重ねる。
+  // ボス重弾(2)・ロケット(3)は専用の速度設計なので触らない。
+  const eraMult     = (kind === 2 || kind === 3) ? 1 : eraShotSpeedMult();
+  const actualSpeed = speed * PROJECTILE_SPEED_MULT * eraMult;
 
   projActive[slot]     = 1;
   projWx[slot]         = fromWx;
@@ -7165,6 +7564,8 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
   projColor[slot]      = color;
   // 変更5: 種別を記録（デフォルト 0=arrow）。v0.48: 3=ロケットを追加したので丸めない
   projKind[slot]       = (kind === 1 || kind === 2 || kind === 3) ? kind : 0;
+  projStyle[slot]      = eraShotStyle();
+  projRange[slot]      = 0;
 
   if (targetBoidIdx >= 0 && !boidDead[targetBoidIdx]) {
     const dx = px[targetBoidIdx] - fromWx;
@@ -7273,21 +7674,94 @@ const _settlementsInRange = new Set();
 //  ヒットした建物インデックスを _settlementsInRange に登録する」
 // BUILDING_GRID_CELL=100 で cellRadius=ceil(300/100)=3 → ±3セル(7×7=49セル) のクエリ
 // ボスの BOSS_ATTACK_RADIUS=380 が最大値。空間ハッシュクエリ半径もこれに合わせる。
-const MAX_ATTACK_RADIUS = 380; // ボスの attackRadius（最大値）
-const _ATKCELL_RADIUS = Math.ceil(MAX_ATTACK_RADIUS / BUILDING_GRID_CELL); // = 4
+const MAX_ATTACK_RADIUS = 380; // ボスの attackRadius
+// v0.57: 走査半径は**実際に置かれた建物の最大 attackRadius** から毎ステージ決める。
+// ここを 380 固定にしていたせいで、attackRadius をいくら広げても
+// 400px より遠い群れは Set に入らず、その建物は永久に撃たなかった
+// （実測: プリズム塔は射程620のはずが496px の群れへ10秒間0ダメージ。
+//  v0.48 のロケット砲台も 465 と称して実効 400px だった）。
+let _atkCellRadius = Math.ceil(MAX_ATTACK_RADIUS / BUILDING_GRID_CELL);
+/** ステージ生成後に呼ぶ。置かれた建物の射程に合わせて走査半径を広げる。 */
+function recomputeAttackQueryRadius() {
+  let maxR = MAX_ATTACK_RADIUS;
+  for (const s of settlements) {
+    if (s && !s._noAttack && s.attackRadius > maxR) maxR = s.attackRadius;
+  }
+  _atkCellRadius = Math.ceil(maxR / BUILDING_GRID_CELL);
+}
 
 // ドラゴン位置周辺の建物を攻撃判定グリッドで収集する
 function _queryBuildingsForAttack(bx, by) {
   const cx = (bx / BUILDING_GRID_CELL) | 0;
   const cy = (by / BUILDING_GRID_CELL) | 0;
-  for (let dy = -_ATKCELL_RADIUS; dy <= _ATKCELL_RADIUS; dy++) {
-    for (let dx = -_ATKCELL_RADIUS; dx <= _ATKCELL_RADIUS; dx++) {
+  for (let dy = -_atkCellRadius; dy <= _atkCellRadius; dy++) {
+    for (let dx = -_atkCellRadius; dx <= _atkCellRadius; dx++) {
       const key = (cx + dx) * 100003 + (cy + dy);
       const bucket = buildingGrid.get(key);
       if (bucket) {
         for (const idx of bucket) _settlementsInRange.add(idx);
       }
     }
+  }
+}
+
+/**
+ * v0.57: 時代兵器を1回撃つ。次弾までの間隔もここで決める。
+ * @param {object} s          撃つ建物
+ * @param {number} targetIdx  狙う竜（最寄り）
+ */
+function fireEmplacement(s, targetIdx) {
+  const key = s._emplacement;
+  const def = EMPLACEMENT_DEFS[key];
+  if (!def) return;
+  s.attackTimer = def.interval;
+  const tx = px[targetIdx], ty = py[targetIdx];
+  const base = Math.atan2(ty - s.wy, tx - s.wx);
+
+  if (key === "ember") {
+    // 足元に燃える輪を置く（0.7秒の予告つき）。弾ではないので当たり判定は hazard 側
+    spawnHazard(s.wx, s.wy, EMBER_TOWER_RADIUS, EMBER_TOWER_LIFE, EMBER_TOWER_DPS, "#ff8038");
+  } else if (key === "trebuchet") {
+    // 巨岩を1発。遅い＝予告円を見てから退ける
+    spawnShell(s.wx, s.wy, tx, ty, TREBUCHET_SPEED, TREBUCHET_DAMAGE, TREBUCHET_AOE, "#e8dcc0");
+  } else if (key === "ballista") {
+    // 重矢の3連射。線なので横へ抜ければ避けられる（当たるとカタパルト弾の強ノックバック）
+    for (let k = 0; k < BALLISTA_COUNT; k++) {
+      spawnFanProjectileRaw(s.wx, s.wy, base + (k - (BALLISTA_COUNT - 1) / 2) * 0.055,
+                            BALLISTA_SPEED, BALLISTA_DAMAGE, "#f0e4c8", 1, def.range + 30);
+    }
+  } else if (key === "rocket") {
+    // 遅い大弾を扇状にまとめて撃つ（避けられる猶予がある）
+    for (let k = 0; k < ROCKET_COUNT; k++) {
+      const spread = ROCKET_COUNT === 1 ? 0 : (k / (ROCKET_COUNT - 1) - 0.5) * 2;   // -1..1
+      spawnRocket(s.wx, s.wy, base + spread * ROCKET_SPREAD);
+    }
+  } else if (key === "mortar") {
+    // 群れの周りへ散らして落とす。時間差にして「割って抜ける」余地を残す
+    for (let k = 0; k < MORTAR_COUNT; k++) {
+      const a = random() * Math.PI * 2;
+      const r = random() * MORTAR_SCATTER;
+      queueShell(k * 0.22, s.wx, s.wy, tx + Math.cos(a) * r, ty + Math.sin(a) * r,
+                 MORTAR_SPEED, MORTAR_DAMAGE, MORTAR_AOE, "#c8d0d8");
+    }
+  } else if (key === "tesla") {
+    // 連鎖電撃（敵の雷撃塔車と同じ）。固めているほど痛い＝建物側にも密度の罰を置く
+    const fired = emitChainLightning(s.wx, s.wy, {
+      range: def.range, damage: 2.2, hops: 14, hopRange: 58,
+      densityRange: 46, densityScale: 0.30, densityMax: 3.0,
+    });
+    if (!fired) s.attackTimer = 0.5;
+  } else if (key === "flak") {
+    // 対空弾幕。小さい炸裂を群れの周囲へ広く撒いて逃げ場を削る
+    for (let k = 0; k < FLAK_COUNT; k++) {
+      const a = random() * Math.PI * 2;
+      const r = random() * FLAK_SCATTER;
+      queueShell(k * 0.14, s.wx, s.wy, tx + Math.cos(a) * r, ty + Math.sin(a) * r,
+                 FLAK_SPEED, FLAK_DAMAGE, FLAK_AOE, "#ffd070");
+    }
+  } else if (key === "prism") {
+    // 首都の極太レーザーの小型版。細いぶん予兆から外れやすい
+    spawnLaserStrike(s.wx, s.wy, base, PRISM_WIDTH, PRISM_LENGTH, PRISM_DPS, "#e0a0ff");
   }
 }
 
@@ -7326,27 +7800,14 @@ function updateSettlementAttacks(dt) {
       ? settlement.projectileInterval
       : settlement.projectileInterval * 4.0;
 
-    // v0.42: 焼夷塔は弾ではなく**足元に燃える輪**を置く（0.7秒の予告つき）
-    if (settlement._emberTower) {
-      settlement.attackTimer = EMBER_TOWER_INTERVAL;
-      spawnHazard(settlement.wx, settlement.wy, EMBER_TOWER_RADIUS, EMBER_TOWER_LIFE,
-                  EMBER_TOWER_DPS, "#ff8038");
-      continue;
-    }
-
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
 
-    // v0.48: ロケット砲台は**遅い大弾を扇状にまとめて**撃つ（避けられる猶予がある）。
+    // v0.57: 時代兵器を持つ建物は通常弾を撃たず、専用の技を出す。
     // ※ targetIdx を使うので、必ずその宣言より後に置くこと
     //   （前に置いて const の TDZ で落ちた。構文チェックでは検出できない）。
-    if (settlement._rocketBattery) {
-      settlement.attackTimer = ROCKET_INTERVAL;
-      const base = Math.atan2(py[targetIdx] - settlement.wy, px[targetIdx] - settlement.wx);
-      for (let k = 0; k < ROCKET_COUNT; k++) {
-        const spread = ROCKET_COUNT === 1 ? 0 : (k / (ROCKET_COUNT - 1) - 0.5) * 2;   // -1..1
-        spawnRocket(settlement.wx, settlement.wy, base + spread * ROCKET_SPREAD);
-      }
+    if (settlement._emplacement) {
+      fireEmplacement(settlement, targetIdx);
       continue;
     }
 
@@ -7416,14 +7877,14 @@ function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
 }
 
 // 変更5: kind=0(arrow) / kind=1(catapult)
-function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind) {
+function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind, maxRange) {
   let slot = -1;
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) { slot = i; break; }
   }
   if (slot < 0) return;
-  // 変更3: 弾速倍率を適用
-  const actualSpeed = speed * PROJECTILE_SPEED_MULT;
+  // 変更3: 弾速倍率を適用（v0.57: 文明ごとの弾速倍率を重ねる）
+  const actualSpeed = speed * PROJECTILE_SPEED_MULT * eraShotSpeedMult();
   projActive[slot]     = 1;
   projWx[slot]         = fromWx;
   projWy[slot]         = fromWy;
@@ -7441,6 +7902,8 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind
   projColor[slot]      = color;
   // 変更5: 種別を記録（デフォルト 0=arrow）
   projKind[slot]       = (kind === 1) ? 1 : 0;
+  projStyle[slot]      = eraShotStyle();
+  projRange[slot]      = maxRange || 0;   // v0.57: 0 なら kind ごとの既定射程
 }
 
 function updateProjectiles(dt) {
@@ -7467,12 +7930,23 @@ function updateProjectiles(dt) {
       continue;
     }
 
+    // v0.57: 着弾弾（kind=4）は飛距離ではなく**落下点への到達**で終わる。
+    // 竜との当たり判定は持たない（線ではなく円で脅すための弾）。
+    if (projKind[i] === 4) {
+      const sdx = projTgtX[i] - projWx[i];
+      const sdy = projTgtY[i] - projWy[i];
+      // 行き過ぎ（内積が負）か、1フレームぶんの距離まで来たら炸裂
+      if (sdx * projVx[i] + sdy * projVy[i] <= 0 || sdx * sdx + sdy * sdy < 64) detonateShell(i);
+      continue;
+    }
+
     // 変更5: 飛距離上限チェック（種別ごとに異なる最大射程を適用）
     // catapult(kind=1): PROJECTILE_MAX_RANGE=420px（広い射程）
     // arrow  (kind=0): ARROW_MAX_RANGE=250px（短い射程、近づかないと当たらない）
     const tdx      = projWx[i] - projStartWx[i];
     const tdy      = projWy[i] - projStartWy[i];
-    const maxRange = projKind[i] === 3 ? ROCKET_MAX_RANGE      // v0.48: ロケットは遅い代わりに長射程
+    const maxRange = projRange[i] > 0  ? projRange[i]          // v0.57: 個別指定（首都の一斉射など）
+                   : projKind[i] === 3 ? ROCKET_MAX_RANGE      // v0.48: ロケットは遅い代わりに長射程
                    : projKind[i] === 2 ? BOSS_SHOT_MAX_RANGE
                    : projKind[i] === 1 ? PROJECTILE_MAX_RANGE
                    : ARROW_MAX_RANGE;
@@ -11100,6 +11574,11 @@ function reinforceSettlementForTier(settlement, baseTier) {
   settlement.hp    = hp;
 
   settlement.attackRadius       = bConfig.attackRadius;
+  // v0.57: 時代兵器は自前の射程を持つ。ここで街の既定値に戻すと、
+  // 動員段階が上がった瞬間に投石機やロケット砲台が近距離武器へ化ける
+  // （実測: 段階1に上げたら走査半径が5→4に落ちて投石機の射程が 500→400 になった）。
+  const _emp = settlement._emplacement ? EMPLACEMENT_DEFS[settlement._emplacement] : null;
+  if (_emp) settlement.attackRadius = Math.max(settlement.attackRadius, _emp.range);
   settlement.projectileInterval = bConfig.projectileInterval;
   settlement.projectileSpeed    = bConfig.projectileSpeed;
   settlement.projectileDamage   = bConfig.projectileDamage * boost.dmg;
@@ -12464,7 +12943,7 @@ function render(now) {
   drawLaserStrikes();        // v0.48: 極太レーザー（予兆＋照射）
   drawFlood();               // v0.43: 洪水（地面の上・竜より下）
   drawDams();                // v0.43: 堰の見た目
-  drawEmberTowers();         // v0.42: 焼夷塔の目印
+  drawEmplacements();        // v0.57: 時代兵器の目印（輪の色で種類が分かる）
   drawSlashFx();             // v0.8: 緋竜の斬閃 / v0.35: 隼竜の刃翼（銀）
   drawBombs();               // v0.37.1: 爆竜の投下済み爆弾（竜より下＝地面にある）
   drawBoids();
@@ -13200,23 +13679,6 @@ function drawBoids() {
  * 色は既存の projColor を流用してステージ別テーマを維持する。
  */
 function drawProjectiles() {
-  // 変更5: 種別ごとのサイズ定数（論理px）
-  // catapult: 従来の大きな矢サイズを維持（存在感のある重厚な矢）
-  const CATAPULT_SHAFT_LEN     = 18;
-  const CATAPULT_SHAFT_WIDTH   = 2.8;
-  const CATAPULT_HEAD_LEN      = 7;
-  const CATAPULT_HEAD_HALF_W   = 3.5;
-  const CATAPULT_FLETCH_LEN    = 5;
-  const CATAPULT_FLETCH_HALF_W = 2.8;
-
-  // arrow: カタパルトより一回り小さい矢（細く短く、多数が飛ぶ印象）
-  const ARROW_SHAFT_LEN     = 12;
-  const ARROW_SHAFT_WIDTH   = 1.6;
-  const ARROW_HEAD_LEN      = 4;
-  const ARROW_HEAD_HALF_W   = 2.2;
-  const ARROW_FLETCH_LEN    = 3;
-  const ARROW_FLETCH_HALF_W = 1.8;
-
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) continue;
 
@@ -13228,6 +13690,54 @@ function drawProjectiles() {
     // 進行方向（速度ベクトルから算出）
     const angle = Math.atan2(projVy[i], projVx[i]);
     const color = projColor[i];
+
+    // v0.57: 着弾弾（kind=4）— **落下点の予告円**が主役。弾体は「どこから来たか」を示す添え物。
+    // 予告円は近づくほど濃くなり、内側の輪が縮んで着弾の瞬間を示す（いつ来るかが読める）。
+    if (projKind[i] === 4) {
+      const tx = projTgtX[i], ty = projTgtY[i];
+      const totalX = tx - projStartWx[i], totalY = ty - projStartWy[i];
+      const total  = Math.sqrt(totalX * totalX + totalY * totalY) || 1;
+      const restX  = tx - projWx[i], restY = ty - projWy[i];
+      const rest   = Math.sqrt(restX * restX + restY * restY);
+      const prog   = Math.max(0, Math.min(1, 1 - rest / total));   // 0=発射直後 1=着弾
+      ctx.save();
+      ctx.globalAlpha = 0.22 + 0.5 * prog;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(tx, ty, projAoe[i], 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.35 + 0.45 * prog;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(tx, ty, Math.max(2, projAoe[i] * (1.05 - prog)), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.25 + 0.4 * prog;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(tx - 6, ty); ctx.lineTo(tx + 6, ty);
+      ctx.moveTo(tx, ty - 6); ctx.lineTo(tx, ty + 6);
+      ctx.stroke();
+      // 弾体（進むほど大きく＝落ちてくる感じ）
+      const r = 3.4 + 3.0 * prog;
+      ctx.globalAlpha = 0.30;
+      ctx.fillStyle = "#000000";
+      ctx.beginPath();
+      ctx.arc(projWx[i] + 3, projWy[i] + 3, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#3a3f46";
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(projWx[i] - r * 0.3, projWy[i] - r * 0.3, r * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      continue;
+    }
 
     // v0.48: ロケット（kind=3）— 遅くて大きいので、避ける対象として目立たせる。
     // 弾頭＋噴射炎＋後ろへ流れる煙で「飛んできている」ことを読ませる。
@@ -13293,30 +13803,175 @@ function drawProjectiles() {
       continue;
     }
 
-    // 変更5: 種別ごとにサイズを選択
-    const isCatapult  = projKind[i] === 1;
-    const SHAFT_LEN     = isCatapult ? CATAPULT_SHAFT_LEN     : ARROW_SHAFT_LEN;
-    const SHAFT_WIDTH   = isCatapult ? CATAPULT_SHAFT_WIDTH   : ARROW_SHAFT_WIDTH;
-    const HEAD_LEN      = isCatapult ? CATAPULT_HEAD_LEN      : ARROW_HEAD_LEN;
-    const HEAD_HALF_W   = isCatapult ? CATAPULT_HEAD_HALF_W   : ARROW_HEAD_HALF_W;
-    const FLETCH_LEN    = isCatapult ? CATAPULT_FLETCH_LEN    : ARROW_FLETCH_LEN;
-    const FLETCH_HALF_W = isCatapult ? CATAPULT_FLETCH_HALF_W : ARROW_FLETCH_HALF_W;
+    // v0.57: 通常弾（kind=0/1）は**文明ごとの見た目**で描き分ける。
+    // 弾はラン中ずっと画面を飛び続けるので、ここが「今どの時代に居るか」を語る最大の面積。
+    const style = SHOT_STYLES[projStyle[i]] ?? SHOT_STYLES[2];
+    // カタパルト弾（large/首都）は一回り大きい＝重い弾だと一目で分かる（従来の大小差を維持）
+    drawEraShot(style.key, projWx[i], projWy[i], angle, color,
+                style.size * (projKind[i] === 1 ? 1.55 : 1.0), i);
+  }
+}
 
-    ctx.save();
-    // 矢の中心（弾頭先端の少し手前）をワールド座標の現在位置に合わせて配置
-    ctx.translate(projWx[i], projWy[i]);
-    ctx.rotate(angle);
+/**
+ * v0.57: 文明ごとの通常弾を1発描く。
+ * @param {string} key   SHOT_STYLES[].key
+ * @param {number} x     ワールド座標X
+ * @param {number} y     ワールド座標Y
+ * @param {number} ang   進行方向
+ * @param {string} color ステージ設定の弾色（時代のテーマ色を保つ）
+ * @param {number} sc    大きさ倍率（カタパルト弾は 1.55 倍）
+ * @param {number} seed  弾ごとの位相ずらし（脈動が揃わないように）
+ */
+function drawEraShot(key, x, y, ang, color, sc, seed) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  ctx.lineCap = "round";
 
-    // --- シャフト（矢柄）: 後端 (-SHAFT_LEN) → 0 ---
+  if (key === "sling") {
+    // 石器: 投石。**回転する不定形の石**（進行方向と無関係に回るのが石らしさ）
+    ctx.rotate(breathTime * 6 + seed);
+    const R = 3.4 * sc;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      const rr = R * (k % 2 === 0 ? 1.0 : 0.72);
+      const fx = Math.cos(a) * rr, fy = Math.sin(a) * rr;
+      if (k === 0) ctx.moveTo(fx, fy); else ctx.lineTo(fx, fy);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.beginPath();
+    ctx.arc(-R * 0.3, -R * 0.3, R * 0.32, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (key === "javelin") {
+    // 古代: 投槍。矢羽根がなく**穂先が長い**細身のシルエット
+    const L = 15 * sc, HEAD = 7 * sc;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.7 * sc;
+    ctx.beginPath();
+    ctx.moveTo(-L, 0); ctx.lineTo(0, 0);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(HEAD, 0);
+    ctx.lineTo(0, -2.0 * sc);
+    ctx.lineTo(0,  2.0 * sc);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.lineWidth = 0.6 * sc;
+    ctx.beginPath();
+    ctx.moveTo(HEAD, 0); ctx.lineTo(0, -2.0 * sc);
+    ctx.stroke();
+  } else if (key === "musket") {
+    // 近世: 鉛玉。**小さく速く**、後ろに白煙をひと筋残す
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = "#e8e4dc";
+    ctx.lineWidth = 2.2 * sc;
+    ctx.beginPath();
+    ctx.moveTo(-14 * sc, 0); ctx.lineTo(-3 * sc, 0);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, 0, 2.4 * sc, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.beginPath();
+    ctx.arc(-0.6 * sc, -0.6 * sc, 0.9 * sc, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (key === "shell") {
+    // 産業: 榴弾。黒い弾体＋後ろへ流れる煙
+    for (let k = 1; k <= 3; k++) {
+      ctx.globalAlpha = 0.16 - k * 0.04;
+      ctx.fillStyle = "#c8c8c8";
+      ctx.beginPath();
+      ctx.arc(-6 * sc - k * 5 * sc, 0, (1.8 + k * 0.8) * sc, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#2e3238";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 5.2 * sc, 2.6 * sc, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(5.2 * sc, 0);
+    ctx.lineTo(1.5 * sc, -2.6 * sc);
+    ctx.lineTo(1.5 * sc,  2.6 * sc);
+    ctx.closePath();
+    ctx.fill();
+  } else if (key === "arc") {
+    // 電気: 放電弾。青白い芯＋ぎざぎざの尾（seed で形を散らす）
+    ctx.globalAlpha = 0.30;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, 0, 6.0 * sc, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = "#bfe8ff";
+    ctx.lineWidth = 1.3 * sc;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    for (let k = 1; k <= 3; k++) {
+      const zig = ((seed + k) % 2 === 0 ? 1 : -1) * 2.2 * sc;
+      ctx.lineTo(-k * 4.5 * sc, zig);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(0, 0, 2.0 * sc, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (key === "tracer") {
+    // 大戦: 曳光弾。**光の線**そのもの（速いので形は読めず、軌跡だけが見える）
+    const grad = ctx.createLinearGradient(-18 * sc, 0, 4 * sc, 0);
+    grad.addColorStop(0, "rgba(255,200,80,0)");
+    grad.addColorStop(1, color);
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 2.0 * sc;
+    ctx.beginPath();
+    ctx.moveTo(-18 * sc, 0); ctx.lineTo(4 * sc, 0);
+    ctx.stroke();
+    ctx.fillStyle = "#fffbe8";
+    ctx.beginPath();
+    ctx.arc(3 * sc, 0, 1.6 * sc, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (key === "plasma") {
+    // 最終: プラズマ球。コロナ＋残光の尾
+    const pulse = 0.85 + 0.15 * Math.sin(breathTime * 16 + seed);
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, 0, 8.0 * sc * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.45;
+    ctx.beginPath();
+    ctx.ellipse(-6 * sc, 0, 7 * sc, 2.2 * sc, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, 0, 3.4 * sc * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.beginPath();
+    ctx.arc(0, 0, 1.5 * sc, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    // 中世（既定）: 羽根つきの矢。従来の形をそのまま残す
+    const SHAFT_LEN = 12 * sc, SHAFT_WIDTH = 1.6 * sc;
+    const HEAD_LEN = 4 * sc, HEAD_HALF_W = 2.2 * sc;
+    const FLETCH_LEN = 3 * sc, FLETCH_HALF_W = 1.8 * sc;
     ctx.strokeStyle = color;
     ctx.lineWidth   = SHAFT_WIDTH;
-    ctx.lineCap     = "round";
     ctx.beginPath();
     ctx.moveTo(-SHAFT_LEN, 0);
     ctx.lineTo(0, 0);
     ctx.stroke();
-
-    // --- 鏃（やじり）: 三角形、先端が +HEAD_LEN の位置 ---
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(HEAD_LEN, 0);
@@ -13324,18 +13979,14 @@ function drawProjectiles() {
     ctx.lineTo(0,  HEAD_HALF_W);
     ctx.closePath();
     ctx.fill();
-
-    // 鏃に白いハイライト（輝き感）
     ctx.strokeStyle = "rgba(255,255,255,0.55)";
-    ctx.lineWidth   = isCatapult ? 0.8 : 0.5;
+    ctx.lineWidth   = 0.5 * sc;
     ctx.beginPath();
     ctx.moveTo(HEAD_LEN, 0);
     ctx.lineTo(0, -HEAD_HALF_W);
     ctx.stroke();
-
-    // --- フレッチング（矢羽根）: 末尾に小さなV字 ---
     ctx.strokeStyle = color;
-    ctx.lineWidth   = isCatapult ? 1.4 : 1.0;
+    ctx.lineWidth   = 1.0 * sc;
     ctx.globalAlpha = 0.80;
     ctx.beginPath();
     ctx.moveTo(-SHAFT_LEN + FLETCH_LEN, 0);
@@ -13343,10 +13994,10 @@ function drawProjectiles() {
     ctx.moveTo(-SHAFT_LEN + FLETCH_LEN, 0);
     ctx.lineTo(-SHAFT_LEN, FLETCH_HALF_W);
     ctx.stroke();
-    ctx.globalAlpha = 1.0;
-
-    ctx.restore();
   }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 function drawParticles() {
@@ -14650,8 +15301,9 @@ function tick() {
     updateChainFx(wdt);           // v0.43: 連鎖電撃のFX
     updateMoverRams();            // v0.6-p4: 移動敵への体当たり
     updateBossNova(wdt);          // v0.7: ボスの反発衝撃波
-    updateBossLaser(wdt);         // v0.48: ボスの極太レーザー（予兆つき）
+    updateBossArt(wdt);           // v0.57: 首都の大技（文明ごとに技が変わる・予兆つき）
     updateLaserStrikes(wdt);
+    updateBarrageQueue(wdt);      // v0.57: 時間差の斉射（矢の雨・絨毯爆撃・対空弾幕）
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
     updateDeathTimers(wdt);
