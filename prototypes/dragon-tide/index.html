@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.58.0";
+const GAME_VERSION = "v0.59.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -746,6 +746,10 @@ const DEBUG_ENEMY_LABELS = {
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
   grenadiers: "💣擲弾兵隊", armortrain: "🚄装甲列車", teslagiant: "⚡雷公",
   bomberwing: "🎈爆撃飛行隊", annihilator: "🎯殲滅砲兵",
+  // v0.59: 文明ごとの押してくる敵
+  clubmen: "🪨石打ちの衆", bullchariot: "🐂牡牛戦車", batteringram: "🪵破城槌",
+  grapeshot: "💥散弾砲車", steamhammer: "🔨蒸気打鉄", repulsor: "🌀反発塔車",
+  concussion: "📣衝撃砲", gravitygun: "🕳重力砲",
 };
 
 // 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
@@ -753,6 +757,9 @@ const DEBUG_ENEMY_ORDER = [
   // v0.57: 文明の看板ユニット（石器→最終の順）
   "mammoth_lord", "gilded_colossus", "siegetower", "grenadiers",
   "armortrain", "teslagiant", "bomberwing", "annihilator",
+  // v0.59: 押してくる敵（石器→最終の順）
+  "clubmen", "bullchariot", "batteringram", "grapeshot",
+  "steamhammer", "repulsor", "concussion", "gravitygun",
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
@@ -1094,8 +1101,30 @@ const KICK_MAX_SPEED     = 1200;  // 多重ヒットで暴れないための上�
 /** 押し戻したい距離(px) → 必要な初速(px/s)。既存の距離チューニング値をそのまま使えるように。 */
 function kickSpeedForDistance(dist) { return dist * KICK_DECAY_PER_SEC; }
 
-/** 個体 i に外力を加える。nx,ny は正規化済みの向き、speed は px/s。 */
-function applyKick(i, nx, ny, speed) {
+// -----------------------------------------------------------------
+// v0.59: ノックバック硬直
+// -----------------------------------------------------------------
+// 「押されている間は攻撃が止まる」（Shooter指示）。押し返しが**ただの見た目**ではなく
+// 火力の損失になるので、ノックバック持ちの敵が「先に処理する理由のある的」になる。
+// 自分の攻撃の反動（氷槍の recoilDist など）では止まらない＝反動は硬直 fireStun が別に持つ。
+const KNOCK_STUN_MIN_DIST = 12;     // これ未満の押しでは止まらない（矢の小突きで攻撃が途切れないように）
+const KNOCK_STUN_BASE     = 0.15;   // 押された瞬間の最低硬直（秒）
+const KNOCK_STUN_PER_PX   = 0.0055; // 押し距離1pxあたりの追加硬直
+const KNOCK_STUN_MAX      = 0.85;   // 上限（連打で永久に撃てなくならないように）
+
+/** 押し距離(px)に応じた攻撃停止時間を積む。既にもっと長い硬直中なら伸ばさない。 */
+function applyKnockbackStun(i, dist) {
+  if (dist < KNOCK_STUN_MIN_DIST) return;
+  const t = Math.min(KNOCK_STUN_MAX, KNOCK_STUN_BASE + dist * KNOCK_STUN_PER_PX);
+  if (t > boidKnockStun[i]) boidKnockStun[i] = t;
+}
+
+/**
+ * 個体 i に外力を加える。nx,ny は正規化済みの向き、speed は px/s。
+ * @param {boolean} stun  敵に押された場合は true（既定）。自分の攻撃の反動なら false。
+ */
+function applyKick(i, nx, ny, speed, stun = true) {
+  if (stun) applyKnockbackStun(i, speed / KICK_DECAY_PER_SEC);
   boidKickX[i] += nx * speed;
   boidKickY[i] += ny * speed;
   const m = Math.sqrt(boidKickX[i] * boidKickX[i] + boidKickY[i] * boidKickY[i]);
@@ -1106,8 +1135,8 @@ function applyKick(i, nx, ny, speed) {
 }
 
 /** 距離指定版（push距離のチューニング値をそのまま渡せる）。 */
-function applyKickDist(i, nx, ny, dist) {
-  applyKick(i, nx, ny, kickSpeedForDistance(dist));
+function applyKickDist(i, nx, ny, dist, stun = true) {
+  applyKick(i, nx, ny, kickSpeedForDistance(dist), stun);
 }
 
 // -----------------------------------------------------------------
@@ -4216,6 +4245,88 @@ const MOVER_DEFS = {
   },
 
   // =====================================================================
+  // v0.59: 文明ごとの「押してくる敵」（Shooter指示）
+  // =====================================================================
+  // 押し返しは v0.59 から**火力の損失**になった（ノックバック中は攻撃が止まる）ので、
+  // 「群れをどかされる」こと自体が脅威として成立する。どの時代にも1種を置き、
+  // ボス周りではなく**普通の街を巡回する枠**（MOVER_SPAWNS_BY_STAGE に count 2）に混ぜる。
+  //
+  // 押し方は2系統に分けてある:
+  //   衝撃波型（radius/push）… 近づかれると面で飛ばされる。離れるのが答え
+  //   射撃型（fan + kind:1）… 線で飛ばされる。横へ抜けるのが答え
+  // どれも `knockback: true` を持ち、drawMovers が共通の「外へ広がる輪」を描く。
+  // ダメージは軽め＝**削られるのではなく、攻撃の手を止められるのが痛い**。
+
+  // 1 石器: 石打ちの衆 — 3人組。棍棒の一撃で群れを散らす
+  clubmen: {
+    name: "clubmen", sprite: "knights", knockback: true, showHpBar: true,
+    hp: 60, speed: 46, xp: 30, eggDrop: 0, eggChance: 0.3, radius: 11,
+    packCount: 3,
+    color: "#9a7a4a", glowColor: "#ffd090", moveType: "pingpong",
+    attack: { type: "shockwave", interval: 2.6, radius: 95, damage: 1.5, push: 55 },
+  },
+
+  // 2 古代: 牡牛戦車 — 速い。突っ込んできて群れを轢き分ける
+  bullchariot: {
+    name: "bullchariot", sprite: "mammoth", knockback: true, showHpBar: true,
+    hp: 240, speed: 52, xp: 120, eggDrop: 2, radius: 20,
+    color: "#b08830", glowColor: "#ffdc80", moveType: "pingpong",
+    attack: { type: "shockwave", interval: 2.8, radius: 110, damage: 2.0, push: 70 },
+  },
+
+  // 3 中世: 破城槌 — 遅くて硬い。当たると大きく飛ぶ
+  batteringram: {
+    name: "batteringram", sprite: "flamewagon", knockback: true, showHpBar: true,
+    hp: 420, speed: 24, xp: 170, eggDrop: 3, radius: 26,
+    color: "#7a5a3a", glowColor: "#ffc070", moveType: "patrol",
+    attack: { type: "shockwave", interval: 3.0, radius: 125, damage: 2.2, push: 85 },
+  },
+
+  // 4 近世: 散弾砲車 — **射撃型**。重い弾を5発を扇状に撒いて群れを線で押し返す
+  grapeshot: {
+    name: "grapeshot", sprite: "ironclad", knockback: true, showHpBar: true,
+    hp: 360, speed: 30, xp: 180, eggDrop: 3, radius: 24,
+    color: "#5a5a4a", glowColor: "#ffd8a0", moveType: "patrol",
+    // 弾を増やすだけでは攻撃停止が2%しか出なかった（弾1発は竜1体しか押せないため）。
+    // knockR で着弾点を小さな衝撃波にして「線の上に居ると止められる」を成立させる。
+    attack: { type: "fan", interval: 2.0, count: 7, damage: 1.8, speed: 85, range: 380,
+              kind: 1, spread: 0.10, color: "#ffe0b0", knockR: 46 },
+  },
+
+  // 5 産業: 蒸気打鉄 — 定期的に地面を叩いて広く飛ばす
+  steamhammer: {
+    name: "steamhammer", sprite: "shockman", knockback: true, showHpBar: true,
+    hp: 620, speed: 28, xp: 230, eggDrop: 3, radius: 28,
+    color: "#4a4a52", glowColor: "#ffb060", moveType: "patrol",
+    attack: { type: "shockwave", interval: 2.6, radius: 130, damage: 2.5, push: 95 },
+  },
+
+  // 6 電気: 反発塔車 — **ほとんど削らないが一番飛ばす**。攻撃を止めることが目的の敵
+  repulsor: {
+    name: "repulsor", sprite: "teslawagon", knockback: true, showHpBar: true,
+    hp: 400, speed: 32, xp: 200, eggDrop: 3, radius: 24,
+    color: "#3a5a7a", glowColor: "#b0e8ff", moveType: "patrol",
+    attack: { type: "shockwave", interval: 2.2, radius: 150, damage: 0.8, push: 115 },
+  },
+
+  // 7 大戦: 衝撃砲 — **射撃型**。3発の重弾を遠くから撃ち込む
+  concussion: {
+    name: "concussion", sprite: "warlord", knockback: true, showHpBar: true,
+    hp: 700, speed: 26, xp: 260, eggDrop: 4, radius: 30,
+    color: "#4a3a3a", glowColor: "#ffa070", moveType: "patrol",
+    attack: { type: "fan", interval: 2.2, count: 4, damage: 2.0, speed: 95, range: 460,
+              kind: 1, spread: 0.12, color: "#ffc0a0", knockR: 60 },
+  },
+
+  // 8 最終: 重力砲 — 一番広い押し出し。群れの形ごと崩される
+  gravitygun: {
+    name: "gravitygun", sprite: "summoner", knockback: true, flying: true, showHpBar: true,
+    hp: 800, speed: 24, xp: 300, eggDrop: 4, radius: 28,
+    color: "#3a2a5a", glowColor: "#d0a0ff", moveType: "patrol",
+    attack: { type: "shockwave", interval: 3.0, radius: 175, damage: 1.5, push: 130 },
+  },
+
+  // =====================================================================
   // v0.57: 文明ごとの看板ユニット（1ラン＝1文明になったので、その時代に1体ずつ）
   // =====================================================================
   // 「その時代でしか会わない大物」を1体ずつ置く。**攻撃の型は時代兵器と対にする**:
@@ -4309,15 +4420,18 @@ const MOVER_DEFS = {
 // v0.42: 新顔（盾兵・分裂体・潜行者・火吹き車・瘴気塔）を段階的に混ぜる。
 // 「初出は1体だけ」→ 覚えてもらってから増やす。
 // v0.57: 各行の先頭が**その文明の看板ユニット**（1ラン＝1文明なので、そのランで必ず会う大物）。
+// v0.59: 2番目が**その文明の押してくる敵**。count 2（＝大陸全体で6体前後）で
+// 普通の街をまわらせる＝ボス周りだけの特殊枠にしない（Shooter指示「普通の街にも少数居るくらい」）。
 const MOVER_SPAWNS_BY_STAGE = [
-  [["mammoth_lord", 1], ["mammoth", 1], ["lurker", 1]],
-  [["gilded_colossus", 1], ["colossus", 2], ["shieldman", 1]],
-  [["siegetower", 1], ["knights", 2], ["colossus", 1], ["shieldman", 1], ["splitter", 1]],
-  [["grenadiers", 1], ["ironclad", 2], ["knights", 2], ["balloon", 2], ["lurker", 1], ["flamewagon", 1]],
-  [["armortrain", 1], ["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1], ["shieldman", 1], ["miasma", 1], ["teslawagon", 1]],
-  [["teslagiant", 1], ["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1], ["splitter", 2], ["flamewagon", 1]],
-  [["bomberwing", 2], ["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1], ["lurker", 2], ["miasma", 1], ["teslawagon", 1]],
-  [["annihilator", 1], ["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1], ["shieldman", 1], ["splitter", 2], ["flamewagon", 1], ["teslawagon", 2]],
+  // 石打ちの衆は3人組なので枠は1（＝大陸に3組9体前後。他の文明は単体7体前後で揃う）
+  [["mammoth_lord", 1], ["clubmen", 1], ["mammoth", 1], ["lurker", 1]],
+  [["gilded_colossus", 1], ["bullchariot", 2], ["colossus", 2], ["shieldman", 1]],
+  [["siegetower", 1], ["batteringram", 2], ["knights", 2], ["colossus", 1], ["shieldman", 1], ["splitter", 1]],
+  [["grenadiers", 1], ["grapeshot", 2], ["ironclad", 2], ["knights", 2], ["balloon", 2], ["lurker", 1], ["flamewagon", 1]],
+  [["armortrain", 1], ["steamhammer", 2], ["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1], ["shieldman", 1], ["miasma", 1], ["teslawagon", 1]],
+  [["teslagiant", 1], ["repulsor", 2], ["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1], ["splitter", 2], ["flamewagon", 1]],
+  [["bomberwing", 2], ["concussion", 2], ["ironclad", 3], ["knights", 3], ["balloon", 2], ["warlord", 1], ["shockman", 1], ["summoner", 1], ["lurker", 2], ["miasma", 1], ["teslawagon", 1]],
+  [["annihilator", 1], ["gravitygun", 2], ["ironclad", 3], ["colossus", 2], ["knights", 2], ["balloon", 3], ["warlord", 2], ["summoner", 1], ["shieldman", 1], ["splitter", 2], ["flamewagon", 1], ["teslawagon", 2]],
 ];
 
 // v0.41: ボス直衛の守備隊。**従来 generateMovers はボス圏内を明示的に避けており、
@@ -4329,14 +4443,14 @@ const MOVER_SPAWNS_BY_STAGE = [
 // v0.57: 守備隊にも文明の看板を1体入れる（首都まで来たら必ず相手をすることになる）。
 // 装甲列車（moveType:"loop"）だけは経路がマップ外周固定なので守備隊には置けない。
 const BOSS_GARRISON_BY_STAGE = [
-  [["mammoth_lord", 1], ["knights", 1]],
-  [["gilded_colossus", 1], ["colossus", 1], ["shieldman", 1]],
-  [["siegetower", 1], ["colossus", 1], ["shieldman", 1], ["balloon", 1]],
-  [["grenadiers", 1], ["colossus", 1], ["balloon", 2], ["shieldman", 1], ["miasma", 1]],
-  [["colossus", 1], ["shockman", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
-  [["teslagiant", 1], ["colossus", 2], ["healer", 1], ["balloon", 2], ["shieldman", 1], ["flamewagon", 1]],
-  [["bomberwing", 1], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
-  [["annihilator", 1], ["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["splitter", 1], ["flamewagon", 1], ["teslawagon", 1]],
+  [["mammoth_lord", 1], ["clubmen", 1], ["knights", 1]],
+  [["gilded_colossus", 1], ["bullchariot", 1], ["colossus", 1], ["shieldman", 1]],
+  [["siegetower", 1], ["batteringram", 1], ["colossus", 1], ["shieldman", 1], ["balloon", 1]],
+  [["grenadiers", 1], ["grapeshot", 1], ["colossus", 1], ["balloon", 2], ["shieldman", 1], ["miasma", 1]],
+  [["steamhammer", 1], ["colossus", 1], ["shockman", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
+  [["teslagiant", 1], ["repulsor", 1], ["colossus", 2], ["healer", 1], ["balloon", 2], ["shieldman", 1], ["flamewagon", 1]],
+  [["bomberwing", 1], ["concussion", 1], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["lurker", 1], ["miasma", 1]],
+  [["annihilator", 1], ["gravitygun", 1], ["colossus", 2], ["shockman", 1], ["healer", 1], ["summoner", 1], ["shieldman", 1], ["splitter", 1], ["flamewagon", 1], ["teslawagon", 1]],
 ];
 // 守備隊が巡回する帯（ボス中心からの距離）。城壁(420)の内側に収める＝
 // 「壁を破ってから守備隊と戦う」段取りになる。
@@ -5387,10 +5501,14 @@ function updateMovers(dt) {
       }
     } else if (atk.type === "fan") {
       // 騎士方陣: 扇状の矢斉射
+      // v0.59: atk.kind=1 を指定すると**カタパルト弾**（強ノックバック）で撃つ。
+      // 散弾砲車・衝撃砲がこれで「押してくる射撃」になる。
       if (nearestD2 < atk.range * atk.range) {
         const baseAngle = Math.atan2(ndy, ndx);
+        const fanSpread = atk.spread ?? 0.22;
         for (let k = -(atk.count >> 1); k <= (atk.count >> 1); k++) {
-          spawnFanProjectileRaw(m.wx, m.wy, baseAngle + k * 0.22, atk.speed, atk.damage, "#e8eef8", 0);
+          spawnFanProjectileRaw(m.wx, m.wy, baseAngle + k * fanSpread, atk.speed, atk.damage,
+                                atk.color ?? "#e8eef8", atk.kind ?? 0, 0, atk.knockR ?? 0);
         }
       } else {
         m.attackTimer = 0.4;
@@ -6085,6 +6203,10 @@ function updateMoverRams() {
   }
 }
 
+// v0.59: 押してくる敵の標識色。敵の固有色（暖色〜寒色までばらばら）に埋もれないよう、
+// どの文明でも同じ**白に寄せた水色**を使う＝「この色の輪＝押される」を1つ覚えれば済む。
+const KNOCKBACK_MARK_COLOR = "#cfefff";
+
 /** 移動敵の描画（本体＋HPバー＋コロッサスの眼光ビーム＋衝撃波リング）。ワールド座標系で呼ぶ。 */
 function drawMovers() {
   for (const m of movers) {
@@ -6141,6 +6263,38 @@ function drawMovers() {
       ctx.stroke();
       ctx.globalAlpha = 1;
       ctx.restore();
+    }
+
+    // v0.59: 押してくる敵の標識。**外へ広がり続ける二重の輪＋4方向のくさび**で
+    // 「こいつは押す」を一目で読ませる（Shooter指示「見た目でわかるように」）。
+    // 種類ごとの絵は流用なので、識別はこの共通の標識が担う。
+    // 攻撃の瞬間ではなく**常時**出す＝近づく前に判断できる。
+    if (def.knockback) {
+      const kphase = (breathTime * 0.75 + (m.swayPhase ?? 0)) % 1;
+      for (let k = 0; k < 2; k++) {
+        const ph = (kphase + k * 0.5) % 1;
+        ctx.globalAlpha = 0.50 * (1 - ph);
+        ctx.strokeStyle = KNOCKBACK_MARK_COLOR;
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, def.radius * (0.85 + ph * 1.25), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // 外向きのくさび4つ（輪と同じ位相で外へ流れる＝押し出す向きが分かる）
+      const wedge = def.radius * (1.15 + 0.35 * Math.sin(breathTime * 3 + (m.swayPhase ?? 0)));
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = KNOCKBACK_MARK_COLOR;
+      for (let k = 0; k < 4; k++) {
+        const a = k * (Math.PI / 2) + Math.PI / 4;
+        const cosA = Math.cos(a), sinA = Math.sin(a);
+        ctx.beginPath();
+        ctx.moveTo(cosA * (wedge + 7), sinA * (wedge + 7));
+        ctx.lineTo(cosA * wedge - sinA * 4.2, sinA * wedge + cosA * 4.2);
+        ctx.lineTo(cosA * wedge + sinA * 4.2, sinA * wedge - cosA * 4.2);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
     }
 
     // 外周グロー（存在感。v0.24: エリートは赤／財宝馬車は金の、大きく明るいオーラで際立たせる）
@@ -7588,6 +7742,11 @@ const projStyle     = new Uint8Array(MAX_PROJECTILES);
 // 首都の一斉射やバリスタ塔は**撃てる距離まで届かせたい**が、既定の 420/460px だと
 // 射程の手前で消えて1発も当たらない（実測: 首都から600px の群れに volley が0ダメージ）。
 const projRange     = new Float32Array(MAX_PROJECTILES);
+// v0.59: 着弾点で**周囲も押し飛ばす**半径（0 = 押さない）。
+// 弾1発は竜1体しか押せないので、射撃型のノックバック敵は
+// 弾を増やしても攻撃停止が2%しか出なかった（実測）。着弾を小さな衝撃波にして解決する。
+const projKnockR    = new Float32Array(MAX_PROJECTILES);
+const KNOCK_SHOT_PUSH = 52;   // 着弾衝撃の押し距離（px）
 
 // 変更3: 投射物パラメータ定数
 // 弾速倍率: ステージ設定の projectileSpeed にこの倍率を掛けて「大型矢」の重厚な速さにする。
@@ -7721,6 +7880,7 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
   projKind[slot]       = (kind === 1 || kind === 2 || kind === 3) ? kind : 0;
   projStyle[slot]      = eraShotStyle();
   projRange[slot]      = 0;
+  projKnockR[slot]     = 0;
 
   if (targetBoidIdx >= 0 && !boidDead[targetBoidIdx]) {
     const dx = px[targetBoidIdx] - fromWx;
@@ -8032,7 +8192,7 @@ function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
 }
 
 // 変更5: kind=0(arrow) / kind=1(catapult)
-function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind, maxRange) {
+function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind, maxRange, knockR) {
   let slot = -1;
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) { slot = i; break; }
@@ -8059,6 +8219,7 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind
   projKind[slot]       = (kind === 1) ? 1 : 0;
   projStyle[slot]      = eraShotStyle();
   projRange[slot]      = maxRange || 0;   // v0.57: 0 なら kind ごとの既定射程
+  projKnockR[slot]     = knockR || 0;     // v0.59: 着弾点で周囲を押す半径
 }
 
 function updateProjectiles(dt) {
@@ -8170,6 +8331,11 @@ function checkProjectileHitBoids(projIdx) {
                                  projDmg[projIdx] * 0.6);
         spawnCollisionParticles(projWx[projIdx], projWy[projIdx]);
       }
+      // v0.59: 押してくる射撃（散弾砲車・衝撃砲）は**着弾点で周りごと押す**。
+      // ダメージは既に上で入っているので、ここは押し出しとリングFXだけ（damage 0）。
+      if (projKnockR[projIdx] > 0) {
+        emitShockwave(projWx[projIdx], projWy[projIdx], projKnockR[projIdx], 0, KNOCK_SHOT_PUSH);
+      }
       spawnHitParticles(projWx[projIdx], projWy[projIdx]);
       if (!boidDowned[i]) applyProjectileKnockback(i, projIdx);
       projActive[projIdx] = 0;
@@ -8250,7 +8416,7 @@ function updateBeamAttacks(dt) {
   // Spatial Hash を使ってブレス射程内の建物候補を絞る
   for (let i = 0; i < N; i++) {
     // 変更2: ダウン中はブレスを吐かない
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
 
     buildingGridQueryRadius(px[i], py[i], cellRadius, _buildingNeighbourBuf);
 
@@ -8335,7 +8501,7 @@ function updateBeamAttacks(dt) {
     for (const b of activeBreaths) {
       const i = b.boidIdx;
       const ang = Math.atan2(b.targetWy - py[i], b.targetWx - px[i]);
-      applyKick(i, -Math.cos(ang), -Math.sin(ang), inject);
+      applyKick(i, -Math.cos(ang), -Math.sin(ang), inject, false);   // 自分の反動なので硬直させない
     }
   }
 }
@@ -8351,12 +8517,13 @@ function updateCollisionAttacks(dt) {
   // ヒットストップタイマーとクールダウンを先に進める
   for (let i = 0; i < N; i++) {
     if (boidHitStopTimer[i] > 0)      boidHitStopTimer[i]    = Math.max(0, boidHitStopTimer[i] - dt);
+    if (boidKnockStun[i] > 0)         boidKnockStun[i]       = Math.max(0, boidKnockStun[i] - dt);
     if (boidCollisionCooldown[i] > 0) boidCollisionCooldown[i] = Math.max(0, boidCollisionCooldown[i] - dt);
   }
 
   for (let i = 0; i < N; i++) {
     // 変更2: ダウン中は建物に衝突しない
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     // クールダウン中はこの個体の衝突判定をスキップ
     if (boidCollisionCooldown[i] > 0) continue;
 
@@ -8686,6 +8853,8 @@ let boidDead;
 let boidFadeTimer;
 // 衝突ヒットストップタイマー（>0の間、その個体を停止させる）
 let boidHitStopTimer;
+// v0.59: ノックバック硬直（>0の間、その個体は攻撃できない。移動は止めない）
+let boidKnockStun;
 // v0.34.1: 外力（反動・ノックバック）の速度チャネル。操舵とは別に持つ（下の applyKick 参照）
 let boidKickX, boidKickY;
 // v0.37: 跳躍（hopPeriod>0 の竜種）の滞空度 0..1。simStep が書き、drawBoids が
@@ -8727,6 +8896,7 @@ function initBoids() {
   boidDead              = new Uint8Array(MAX_BOIDS);
   boidFadeTimer         = new Float32Array(MAX_BOIDS);
   boidHitStopTimer      = new Float32Array(MAX_BOIDS);
+  boidKnockStun         = new Float32Array(MAX_BOIDS);
   boidKickX             = new Float32Array(MAX_BOIDS);
   boidKickY             = new Float32Array(MAX_BOIDS);
   boidHopAir            = new Float32Array(MAX_BOIDS);
@@ -8750,6 +8920,7 @@ function initBoids() {
     boidDead[i]      = 1; // 一旦全部 dead にしてから N 体だけ有効化
     boidFadeTimer[i] = 0;
     boidHitStopTimer[i]      = 0;
+    boidKnockStun[i]         = 0;
     boidKickX[i]             = 0;
     boidKickY[i]             = 0;
     boidHopAir[i]            = 0;
@@ -8811,6 +8982,7 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     boidDead[i]              = 1;           // 一旦全滅状態に
     boidFadeTimer[i]         = 0;
     boidHitStopTimer[i]      = 0;
+    boidKnockStun[i]         = 0;
     boidKickX[i]             = 0;
     boidKickY[i]             = 0;
     boidHopAir[i]            = 0;
@@ -9103,6 +9275,7 @@ function spawnBoidAtEgg(wx, wy) {
   boidDead[idx]             = 0;
   boidFadeTimer[idx]        = 0;
   boidHitStopTimer[idx]     = 0;
+  boidKnockStun[idx]        = 0;
   boidKickX[idx]            = 0;
   boidKickY[idx]            = 0;
   boidCollisionCooldown[idx] = 0;
@@ -9804,7 +9977,8 @@ function applyFireKick(boidIdx, angle) {
   // ほぼ体感できていなかった（実測：18px/s の反動が速度差 2.8〜9.4px/s しか残らず、
   // 横方向へ撃つと0、後方へ撃つと逆に加速していた）。
   const recoil = effRecoilDist();
-  if (recoil > 0) applyKickDist(boidIdx, -Math.cos(angle), -Math.sin(angle), recoil);
+  // 自分の反動では攻撃を止めない（硬直は fireStun が別に持つ）
+  if (recoil > 0) applyKickDist(boidIdx, -Math.cos(angle), -Math.sin(angle), recoil, false);
   if (a.fireStun > 0) {
     boidHitStopTimer[boidIdx] = Math.max(boidHitStopTimer[boidIdx], a.fireStun);
   }
@@ -9871,7 +10045,7 @@ function updateBulletAttacks(dt) {
   const cellRadius = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
 
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -9893,7 +10067,7 @@ function updateMissileAttacks(dt) {
   const cellRadius = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
 
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -10230,7 +10404,7 @@ function updateBladeAttacks(dt) {
   const cell   = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
   const r2     = range * range;
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -10281,7 +10455,7 @@ function updateScatterAttacks(dt) {
   const inter = SCATTER_INTERVAL * effFireIntervalMult("scatter");
   const cell  = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -10316,7 +10490,7 @@ function updateSatelliteAttacks(dt) {
   const dmg = SAT_DPS * effWeaponDmgMult("satellite") * dt;
   const hitR = SAT_HIT_R * effWeaponRangeMult("satellite");
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     for (let k = 0; k < SAT_COUNT; k++) {
       satellitePos(i, k, _satPos);
       damageInRadius(_satPos.x, _satPos.y, hitR, dmg);
@@ -10355,7 +10529,7 @@ function updateDivebombAttacks(dt) {
   const dmg    = DIVE_DAMAGE * effWeaponDmgMult("divebomb");
   const inter  = DIVE_INTERVAL * effFireIntervalMult("divebomb");
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -10385,7 +10559,7 @@ function updateBombDrops(dt) {
   const radius = BOMB_RADIUS * effWeaponRangeMult("bomb");
   const inter  = BOMB_INTERVAL * effFireIntervalMult("bomb");
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
     // 炸裂したとき当たるものが今この場所にあるか（空振りでは落とさない＝他武器と同じ作法）
@@ -10462,7 +10636,7 @@ function updateTongueAttacks(dt) {
   }
 
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
