@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.57.1";
+const GAME_VERSION = "v0.58.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3929,15 +3929,19 @@ const WALL_SEG_RADIUS    = 26;
 const WALL_GATE_WIDTH    = 150;
 // ステージ別城壁設定（stageIndex 0始まり）: STAGE1は城壁なし、進むほどゲートが減る（§8.2）
 // v0.8: ステージ5〜8を追加。後半は二重リング＋高HPが標準になる
+// v0.58: **HPを6倍**にした（Shooter指示「全体的に壁はもっと硬くていい」）。
+// 旧値では40体の群れが1セグメントを **0.27〜0.97秒**で割っていて、
+// 城壁が「門を探すか壊すか」の判断を一切生んでいなかった。
+// 町壁は generateTownWalls がこの値の0.7倍を使う＝同時に厚くなる。
 const WALL_STAGE_CONFIG = [
   null,
-  { gates: 3, hp: 40, doubleRing: false },
-  { gates: 2, hp: 46, doubleRing: false },
-  { gates: 1, hp: 52, doubleRing: true },
-  { gates: 2, hp: 64, doubleRing: true },
-  { gates: 2, hp: 72, doubleRing: true },
-  { gates: 1, hp: 84, doubleRing: true },
-  { gates: 1, hp: 96, doubleRing: true },
+  { gates: 3, hp: 240, doubleRing: false },
+  { gates: 2, hp: 280, doubleRing: false },
+  { gates: 1, hp: 320, doubleRing: true },
+  { gates: 2, hp: 380, doubleRing: true },
+  { gates: 2, hp: 440, doubleRing: true },
+  { gates: 1, hp: 500, doubleRing: true },
+  { gates: 1, hp: 580, doubleRing: true },
 ];
 // 二重リング（STAGE 4）の外側リング半径
 const WALL_OUTER_RING_RADIUS = 484;
@@ -5744,6 +5748,157 @@ function updateEnemyRush(dt) {
 
   triggerFlash("rgba(210,40,40,0.16)", 0.28);
   hapticPulse(120);
+}
+
+// -----------------------------------------------------------------
+// v0.58: 首都の増援
+// -----------------------------------------------------------------
+// 実機判定（2026-09-02）「取り巻きを倒してしまうと後は消化試合になる」。
+// 守備隊は**置いてあるだけの有限な数**なので、片付けたあとの首都は
+// 建物の弾を浴びながらHPを削るだけの作業になっていた。
+// 群れが首都の圏内に居るあいだ、**首都が兵を出し続ける**ようにする。
+//
+// 設計の意図:
+//   - 湧くのは首都の門（中心から150px）＝「城から出てくる」ことが見えるので理不尽にならない
+//   - 顔ぶれはその文明の守備隊表（BOSS_GARRISON_BY_STAGE）＝時代の手触りを崩さない
+//   - 3波に1回は**看板ユニット**が出る＝波が進むほど重くなる
+//   - 同時生存数に上限を置く（溜めて処理落ちさせない・囲まれ殺しにしない）
+//   - 群れが圏外へ出れば止まり、タイマーも巻き戻る＝逃げれば追撃されない
+const BOSS_REINFORCE_RANGE     = 720;  // 群れ重心がこの距離に居るあいだだけ出す
+const BOSS_REINFORCE_FIRST     = 8;    // 圏内に入ってから最初の波までの秒数
+const BOSS_REINFORCE_INTERVAL  = 13;   // 波の間隔（秒）
+const BOSS_REINFORCE_RECHECK   = 4;    // 上限に達しているときの再チェック間隔（秒）
+// 前の波を片付けたら次を早める。育った群れは1波を5秒で溶かすので、
+// 間隔を固定にすると「湧く→即殲滅→10秒の空白」になって消化試合が戻ってくる（実測）。
+const BOSS_REINFORCE_MIN_GAP   = 4;    // 全滅させた場合の最短の間隔（秒）
+const BOSS_REINFORCE_MAX_ALIVE = 22;   // 同時に生きていられる増援の頭数
+const BOSS_REINFORCE_BASE      = 4;    // 第1波の頭数
+const BOSS_REINFORCE_GROW      = 1;    // 波ごとの増分
+const BOSS_REINFORCE_CAP       = 12;   // 1波の頭数上限
+const BOSS_REINFORCE_SIG_EVERY = 3;    // この波数ごとに看板ユニットを混ぜる
+const BOSS_REINFORCE_SPAWN_R   = 150;  // 首都中心からこの距離に出現（＝門から出てくる）
+const BOSS_REINFORCE_ARC       = 1.2;  // 出現角の広がり（群れの方向を中心に ±ARC/2）
+let bossReinforceTimer = BOSS_REINFORCE_FIRST;
+let bossReinforceWave  = 0;
+
+function resetBossReinforcements() {
+  bossReinforceTimer = BOSS_REINFORCE_FIRST;
+  bossReinforceWave  = 0;
+}
+
+/**
+ * 増援を1組（隊なら隊ごと）湧かせる。
+ * @returns {number} 実際に出た頭数
+ */
+function spawnBossReinforcement(defKey, boss, angle) {
+  const def = MOVER_DEFS[defKey];
+  if (!def) return 0;
+  const baseX = Math.max(60, Math.min(WORLD_W - 60, boss.wx + Math.cos(angle) * BOSS_REINFORCE_SPAWN_R));
+  const baseY = Math.max(60, Math.min(WORLD_H - 60, boss.wy + Math.sin(angle) * BOSS_REINFORCE_SPAWN_R));
+  // 巡回点は首都の周り＝門を出たあと城の周囲を回る（群れが近ければ追撃に切り替わる）
+  const ringPoint = () => {
+    const a = random() * Math.PI * 2;
+    const r = BOSS_GARRISON_INNER + random() * (BOSS_GARRISON_OUTER - BOSS_GARRISON_INNER);
+    return {
+      x: Math.max(60, Math.min(WORLD_W - 60, boss.wx + Math.cos(a) * r)),
+      y: Math.max(60, Math.min(WORLD_H - 60, boss.wy + Math.sin(a) * r)),
+    };
+  };
+  const spawnOne = (offX, offY) => {
+    const m = makeMover(def, ringPoint);
+    m.wx = baseX + offX; m.wy = baseY + offY;
+    m.maxHp = def.hp; m.hp = def.hp; m.xpValue = def.xp;
+    m._bossReinforce = true;
+    movers.push(m);
+    spawnDragonAppearEffect(m.wx, m.wy);
+    return m;
+  };
+
+  const count = def.packCount ?? 1;
+  const leader = spawnOne(0, 0);
+  for (let k = 1; k < count; k++) {
+    const a = (k / count) * Math.PI * 2;
+    const mem = spawnOne(Math.cos(a) * 42, Math.sin(a) * 42);
+    mem.waypoints = leader.waypoints;   // 隊は同じ経路を共有する（本編の湧き方と同じ）
+    mem.packId    = leader.packId ?? (leader.packId = nextPackId++);
+    mem.speedMult = randRange(0.92, 1.08);
+  }
+  if (count > 1 && leader.packId === undefined) leader.packId = nextPackId++;
+  return count;
+}
+
+function updateBossReinforcements(dt) {
+  if (gameState !== "playing") return;
+  if (bossSettlementIdx < 0) return;
+  const boss = settlements[bossSettlementIdx];
+  if (!boss || boss.fallen) return;
+
+  // 圏外なら止める＆タイマーを巻き戻す（離れて立て直す余地を残す）
+  const c = calcFriendlyCentroid();
+  const dx = c.x - boss.wx, dy = c.y - boss.wy;
+  if (dx * dx + dy * dy > BOSS_REINFORCE_RANGE * BOSS_REINFORCE_RANGE) {
+    bossReinforceTimer = BOSS_REINFORCE_FIRST;
+    return;
+  }
+
+  // 前の波が残っていなければ待ち時間を詰める（詰めるだけで、伸ばしはしない）
+  let aliveReinforce = 0;
+  for (const m of movers) if (m.alive && m._bossReinforce) aliveReinforce++;
+  if (aliveReinforce === 0 && bossReinforceWave > 0) {
+    bossReinforceTimer = Math.min(bossReinforceTimer, BOSS_REINFORCE_MIN_GAP);
+  }
+
+  bossReinforceTimer -= dt;
+  if (bossReinforceTimer > 0) return;
+
+  // 溜まりすぎているあいだは出さない（処理落ちと囲まれ殺しの両方を避ける）
+  if (aliveReinforce >= BOSS_REINFORCE_MAX_ALIVE) {
+    bossReinforceTimer = BOSS_REINFORCE_RECHECK;
+    return;
+  }
+
+  bossReinforceTimer = BOSS_REINFORCE_INTERVAL;
+  bossReinforceWave++;
+
+  // 倒した増援の死骸を配列から掃除する。増援は無限に湧くので、
+  // 放っておくと movers が延々伸びて毎フレームの走査が重くなる
+  // （レイダーだけ同じ掃除を updateRaiderSpawns がやっている）。
+  movers = movers.filter(m => m.alive || !m._bossReinforce);
+
+  // 顔ぶれはその文明の守備隊表から（数の重みぶんだけ候補に入れる）
+  const roster = [];
+  for (const [key, n] of (BOSS_GARRISON_BY_STAGE[currentStage] ?? [])) {
+    for (let k = 0; k < n; k++) roster.push(key);
+  }
+  if (roster.length === 0) roster.push("raider");
+
+  const budget = Math.min(BOSS_REINFORCE_CAP,
+                          BOSS_REINFORCE_BASE + (bossReinforceWave - 1) * BOSS_REINFORCE_GROW);
+  const baseAngle = Math.atan2(dy, dx);
+  let spawned = 0;
+
+  // 3波に1回は看板ユニット（MOVER_SPAWNS_BY_STAGE の先頭）を先鋒に置く
+  if (bossReinforceWave % BOSS_REINFORCE_SIG_EVERY === 0) {
+    const sig = (MOVER_SPAWNS_BY_STAGE[currentStage] ?? [])[0];
+    if (sig) spawned += spawnBossReinforcement(sig[0], boss, baseAngle);
+  }
+  while (spawned < budget) {
+    const key = roster[Math.floor(random() * roster.length)];
+    const a = baseAngle + (random() - 0.5) * BOSS_REINFORCE_ARC;
+    const got = spawnBossReinforcement(key, boss, a);
+    if (got === 0) break;   // 未知のキー: 無限ループを避ける
+    spawned += got;
+  }
+
+  triggerFlash("rgba(255,170,60,0.14)", 0.24);
+  hapticPulse(90);
+  // 初回だけ非モーダルのバナーで知らせる（毎回出すとテンポを壊す）
+  if (bossReinforceWave === 1) {
+    stageTextEl.textContent = STRINGS.bossReinforceTitle;
+    stageSubEl.textContent  = STRINGS.bossReinforceSub;
+    stageOverlayEl.classList.add("visible");
+    setTimeout(() => stageOverlayEl.classList.remove("visible"), 1600);
+  }
 }
 
 function resetRaiderState() {
@@ -8640,6 +8795,7 @@ function initBoids() {
  */
 function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
   rushTimer = RUSH_INTERVAL;   // v0.29: ステージ開始ごとにラッシュ間隔をリセット
+  resetBossReinforcements();   // v0.58: 増援の波数とタイマーも持ち越さない
   const startWx = 250;
   const startWy = WORLD_H * 0.5;
 
@@ -8985,6 +9141,9 @@ const STRINGS = {
   statXp: "総XP",
   toTitle: "タイトルへ",
   levelUp: "LEVEL UP",
+  // v0.58: 首都の増援（最初の波だけ非モーダルのバナーで知らせる）
+  bossReinforceTitle: "増援",
+  bossReinforceSub: "首都が兵を出した",
   chooseDragon: "竜を選ぶ",
   chooseContinent: "攻め込む文明を選ぶ",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -15305,6 +15464,7 @@ function tick() {
     updateLaserStrikes(wdt);
     updateBarrageQueue(wdt);      // v0.57: 時間差の斉射（矢の雨・絨毯爆撃・対空弾幕）
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
+    updateBossReinforcements(wdt); // v0.58: 首都が兵を出し続ける（取り巻きを倒しても消化試合にしない）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
     updateDeathTimers(wdt);
     updateParticles(wdt);
