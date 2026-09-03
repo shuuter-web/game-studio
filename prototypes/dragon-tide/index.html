@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.60.0";
+const GAME_VERSION = "v0.61.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5503,7 +5503,8 @@ function updateMovers(dt) {
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
     m.headingX = dx / d;
     m.headingY = dy / d;
-    const moveSpeed = def.speed * (m.speedMult ?? 1);
+    // v0.61: 画面外から来る増援は、群れに近づくまで行軍速度で走る
+    const moveSpeed = def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
     m.wx += m.headingX * moveSpeed * dt;
     m.wy += m.headingY * moveSpeed * dt;
 
@@ -5994,14 +5995,49 @@ const BOSS_REINFORCE_BASE      = 4;    // 第1波の頭数
 const BOSS_REINFORCE_GROW      = 1;    // 波ごとの増分
 const BOSS_REINFORCE_CAP       = 12;   // 1波の頭数上限
 const BOSS_REINFORCE_SIG_EVERY = 3;    // この波数ごとに看板ユニットを混ぜる
-const BOSS_REINFORCE_SPAWN_R   = 150;  // 首都中心からこの距離に出現（＝門から出てくる）
-const BOSS_REINFORCE_ARC       = 1.2;  // 出現角の広がり（群れの方向を中心に ±ARC/2）
+// v0.61: **画面外から入ってくる**（Shooter指示「同じ場所からダンゴになって出てくるので
+// 風情がない」）。首都の門(150px)に一気に湧かせる方式をやめ、
+//   ・湧く位置は**カメラの視界の外**（群れ重心を中心にした画面対角より外側）
+//   ・角度は首都側の半円に散らす＝「帝国の領内から来た」に見える
+//   ・1体ずつ時間差で出す＝隊列がほどけて、順に画面端から現れる
+// 一気に見えないところで湧かせるので、遠すぎると来ない。到着までは行軍速度で走る。
+const BOSS_REINFORCE_ARC        = 2.6;  // 出現角の広がり（首都方向を中心に ±ARC/2）
+const BOSS_REINFORCE_EDGE_PAD   = 90;   // 画面の外接円からさらに外へ出す余白(px)
+const BOSS_REINFORCE_MIN_RADIUS = 640;  // 画面サイズが取れない場合の下限（プレビュー対策）
+const BOSS_REINFORCE_MAX_RADIUS = 1150; // 遠すぎると永遠に来ないので上限
+const BOSS_REINFORCE_STAGGER    = 0.55; // 1組ごとの時間差（秒）
+const BOSS_REINFORCE_MIN_GROUPS = 3;    // 1波あたりの最低の出現方向数
+// 到着までの行軍。コロッサス(22px/s)が800px歩くと36秒かかって波が成立しないため、
+// **群れから遠いあいだだけ**速度を上げる。近づいたら本来の速度に戻る＝戦闘中は等速。
+const BOSS_REINFORCE_MARCH_MULT = 3.2;
+// 420 では「640→420 の220pxだけ速く走って、残り420pxを本来の速度で歩く」だけになり、
+// コロッサス(26px/s)は接敵まで20秒かかっていた（実測）。射程に入る手前まで行軍させる。
+const BOSS_REINFORCE_MARCH_DIST = 260;  // これより近づいたら行軍をやめる
+// 行軍の時間切れ。群れが逃げ続けて一度も近づかない場合に、
+// 速いままの敵が延々マップを走り回るのを防ぐ保険。
+const BOSS_REINFORCE_MARCH_MAX  = 14;
 let bossReinforceTimer = BOSS_REINFORCE_FIRST;
 let bossReinforceWave  = 0;
+
+// 出撃待ちの増援（1体ずつ時間差で画面外に現れる）
+const bossReinforceQueue = [];
 
 function resetBossReinforcements() {
   bossReinforceTimer = BOSS_REINFORCE_FIRST;
   bossReinforceWave  = 0;
+  bossReinforceQueue.length = 0;
+}
+
+/**
+ * v0.61: 群れ重心から見て「画面の外」になる距離。
+ * 画面の外接円（対角の半分）＋余白。プレビューでは viewW/viewH が0になるので下限を置く
+ * （既知の罠: canvas サイズが0でも湧き位置が群れの真上にならないようにする）。
+ */
+function offscreenSpawnRadius() {
+  const halfW = (viewW * 0.5) / (cam.scale || 1);
+  const halfH = (viewH * 0.5) / (cam.scale || 1);
+  const diag  = Math.sqrt(halfW * halfW + halfH * halfH) + BOSS_REINFORCE_EDGE_PAD;
+  return Math.max(BOSS_REINFORCE_MIN_RADIUS, Math.min(BOSS_REINFORCE_MAX_RADIUS, diag));
 }
 
 /**
@@ -6011,8 +6047,12 @@ function resetBossReinforcements() {
 function spawnBossReinforcement(defKey, boss, angle) {
   const def = MOVER_DEFS[defKey];
   if (!def) return 0;
-  const baseX = Math.max(60, Math.min(WORLD_W - 60, boss.wx + Math.cos(angle) * BOSS_REINFORCE_SPAWN_R));
-  const baseY = Math.max(60, Math.min(WORLD_H - 60, boss.wy + Math.sin(angle) * BOSS_REINFORCE_SPAWN_R));
+  // v0.61: 群れ重心を基準に「画面の外」へ置く。首都からの相対ではなく群れからの相対に
+  // するのは、**画面に映っていないこと**が湧きの条件だから（首都が画面外のこともある）。
+  const c = calcFriendlyCentroid();
+  const r = offscreenSpawnRadius();
+  const baseX = Math.max(60, Math.min(WORLD_W - 60, c.x + Math.cos(angle) * r));
+  const baseY = Math.max(60, Math.min(WORLD_H - 60, c.y + Math.sin(angle) * r));
   // 巡回点は首都の周り＝門を出たあと城の周囲を回る（群れが近ければ追撃に切り替わる）
   const ringPoint = () => {
     const a = random() * Math.PI * 2;
@@ -6027,16 +6067,27 @@ function spawnBossReinforcement(defKey, boss, angle) {
     m.wx = baseX + offX; m.wy = baseY + offY;
     m.maxHp = def.hp; m.hp = def.hp; m.xpValue = def.xp;
     m._bossReinforce = true;
+    m._marching      = true;   // 群れに近づくまでは行軍速度で走る
+    m._marchTimer    = BOSS_REINFORCE_MARCH_MAX;
     movers.push(m);
     spawnDragonAppearEffect(m.wx, m.wy);
     return m;
   };
 
   const count = def.packCount ?? 1;
-  const leader = spawnOne(0, 0);
+  // v0.61: 隊は**進行方向に対して横一列**で並べる（旧: 半径42pxの輪＝ダンゴに見えた）。
+  // 画面端から横に広がって入ってくるので「部隊が来た」と読める。
+  const tx = -Math.sin(angle), ty = Math.cos(angle);   // 進行方向の法線
+  const lineGap = 58;
+  const offAt = (k) => {
+    const t = (k - (count - 1) / 2) * lineGap;
+    return [tx * t, ty * t];
+  };
+  const lead0 = offAt(0);
+  const leader = spawnOne(lead0[0], lead0[1]);
   for (let k = 1; k < count; k++) {
-    const a = (k / count) * Math.PI * 2;
-    const mem = spawnOne(Math.cos(a) * 42, Math.sin(a) * 42);
+    const off = offAt(k);
+    const mem = spawnOne(off[0], off[1]);
     mem.waypoints = leader.waypoints;   // 隊は同じ経路を共有する（本編の湧き方と同じ）
     mem.packId    = leader.packId ?? (leader.packId = nextPackId++);
     mem.speedMult = randRange(0.92, 1.08);
@@ -6045,11 +6096,41 @@ function spawnBossReinforcement(defKey, boss, angle) {
   return count;
 }
 
+/**
+ * 行軍の解除。群れに近づいた増援は本来の速度へ戻す
+ * （遠いあいだだけ速いので、戦闘が始まってからは等速で読める）。
+ * 首都が落ちても圏外でも必ず走らせたいので、増援の湧き処理とは分けてある
+ * ＝速いままの敵が延々マップを走り回るのを防ぐ。
+ */
+function releaseMarchingReinforcements(dt) {
+  let any = false;
+  for (const m of movers) { if (m._marching && m.alive) { any = true; break; } }
+  if (!any) return;
+  const c = calcFriendlyCentroid();
+  const marchD2 = BOSS_REINFORCE_MARCH_DIST * BOSS_REINFORCE_MARCH_DIST;
+  for (const m of movers) {
+    if (!m._marching || !m.alive) continue;
+    m._marchTimer -= dt;
+    const ddx = m.wx - c.x, ddy = m.wy - c.y;
+    if (m._marchTimer <= 0 || ddx * ddx + ddy * ddy < marchD2) m._marching = false;
+  }
+}
+
 function updateBossReinforcements(dt) {
   if (gameState !== "playing") return;
+  releaseMarchingReinforcements(dt);
   if (bossSettlementIdx < 0) return;
   const boss = settlements[bossSettlementIdx];
   if (!boss || boss.fallen) return;
+
+  // 出撃待ちを時間差で画面外へ出す（1体ずつ・別々の方向から）
+  for (let i = bossReinforceQueue.length - 1; i >= 0; i--) {
+    const q = bossReinforceQueue[i];
+    q.t -= dt;
+    if (q.t > 0) continue;
+    spawnBossReinforcement(q.key, boss, q.angle);
+    bossReinforceQueue.splice(i, 1);
+  }
 
   // 圏外なら止める＆タイマーを巻き戻す（離れて立て直す余地を残す）
   const c = calcFriendlyCentroid();
@@ -6092,20 +6173,34 @@ function updateBossReinforcements(dt) {
 
   const budget = Math.min(BOSS_REINFORCE_CAP,
                           BOSS_REINFORCE_BASE + (bossReinforceWave - 1) * BOSS_REINFORCE_GROW);
+  // 首都から群れへ向かう向き＝「敵の領内の側」。この半円に散らして出す
   const baseAngle = Math.atan2(dy, dx);
-  let spawned = 0;
+  const picks = [];
 
   // 3波に1回は看板ユニット（MOVER_SPAWNS_BY_STAGE の先頭）を先鋒に置く
   if (bossReinforceWave % BOSS_REINFORCE_SIG_EVERY === 0) {
     const sig = (MOVER_SPAWNS_BY_STAGE[currentStage] ?? [])[0];
-    if (sig) spawned += spawnBossReinforcement(sig[0], boss, baseAngle);
+    if (sig) picks.push(sig[0]);
   }
-  while (spawned < budget) {
+  let planned = picks.reduce((n, k) => n + (MOVER_DEFS[k]?.packCount ?? 1), 0);
+  // v0.61: **最低3方向**から出す。隊（packCount 4〜5）を1つ引くと頭数だけで budget を
+  // 満たしてしまい、結局「1か所から出てくる」に戻るため（実測: 第1波が盾兵4体×1方向だけ）。
+  const minGroups = Math.min(BOSS_REINFORCE_MIN_GROUPS, budget);
+  const headCap   = budget * 2;   // 隊を足しすぎて一気に増えないための上限
+  while ((planned < budget || picks.length < minGroups) && planned < headCap) {
     const key = roster[Math.floor(random() * roster.length)];
-    const a = baseAngle + (random() - 0.5) * BOSS_REINFORCE_ARC;
-    const got = spawnBossReinforcement(key, boss, a);
-    if (got === 0) break;   // 未知のキー: 無限ループを避ける
-    spawned += got;
+    if (!MOVER_DEFS[key]) break;   // 未知のキー: 無限ループを避ける
+    picks.push(key);
+    planned += MOVER_DEFS[key].packCount ?? 1;
+  }
+
+  // v0.61: 1体ずつ時間差で**画面外の別々の方向**から出す。
+  // 同時に1点へ出すと「ダンゴで湧いた」と見えてしまうため（Shooter指摘）。
+  for (let k = 0; k < picks.length; k++) {
+    const spread = picks.length === 1 ? 0 : (k / (picks.length - 1) - 0.5);
+    // 等間隔＋わずかな揺らぎ＝並びすぎず、固まりすぎない
+    const a = baseAngle + spread * BOSS_REINFORCE_ARC + (random() - 0.5) * 0.35;
+    bossReinforceQueue.push({ t: k * BOSS_REINFORCE_STAGGER, key: picks[k], angle: a });
   }
 
   triggerFlash("rgba(255,170,60,0.14)", 0.24);
@@ -10850,8 +10945,13 @@ const downFxWx     = new Float32Array(MAX_DOWN_FX);
 const downFxWy     = new Float32Array(MAX_DOWN_FX);
 const downFxLife   = new Float32Array(MAX_DOWN_FX);
 const downFxActive = new Uint8Array(MAX_DOWN_FX);
-const DOWN_FX_DURATION = 0.40; // やられリング表示時間（出現FXより短め・速く消える）
-const DOWN_FX_RING_MAX = 40;   // やられリングの最大半径（出現FXの半分）
+const DOWN_FX_DURATION = 0.70; // やられリング表示時間（0.40では一瞬すぎて気づけなかった）
+const DOWN_FX_SPOKES   = 7;    // 放射する光条の本数
+// v0.61: やられFXを目立たせる（Shooter指示）。
+// 旧: 0.40秒・半径40の**しぼむ暗いリング**＋灰の火花5〜7個＝画面の中で埋もれていた。
+// 新: **白熱の爆発リングが外へ広がる**＋光条＋赤白の火花＝1体落ちたことが必ず目に入る。
+// 出現FX（金色・弾ける）とは色で対になる（やられ＝白→赤）。
+const DOWN_FX_RING_MAX = 62;   // 広がりきったときの半径
 
 /**
  * 竜がダウンに入った瞬間に呼ぶ。
@@ -10876,28 +10976,31 @@ function spawnDragonDownEffect(wx, wy) {
   downFxWy[slot]     = wy;
   downFxLife[slot]   = DOWN_FX_DURATION;
 
-  // --- 飛散パーティクル（灰/暗赤・5〜7個）---
-  // 出現FXは金色で14個だが、やられFXは灰系で少数に抑えて地味な「やられ感」を出す
-  const DEATH_SPARK_COUNT = 5 + Math.floor(fxRandom() * 3); // 5〜7個
+  // --- 飛散パーティクル（白熱→赤・14〜18個）---
+  // v0.61: 5〜7個の灰では地味すぎたので、数・速さ・寿命をすべて上げて
+  // 「弾け飛ぶ」読み味にした（出現FXの金14個と同格の存在感）
+  const DEATH_SPARK_COUNT = 14 + Math.floor(fxRandom() * 5); // 14〜18個
   let spawned = 0;
   for (let i = 0; i < MAX_PARTICLES && spawned < DEATH_SPARK_COUNT; i++) {
     if (partActive[i]) continue;
     partActive[i] = 1;
-    partType[i]   = 2; // 死亡FX（灰〜暗赤）
+    partType[i]   = 2; // 死亡FX（白熱→赤）
     partX[i] = wx + (fxRandom() - 0.5) * 10;
     partY[i] = wy + (fxRandom() - 0.5) * 10;
     const angle = fxRandom() * Math.PI * 2;
-    // 出現FXより遅め（しぼむ感・エネルギーが抜ける感）
-    const speed = 40 + fxRandom() * 80;
+    // v0.61: 勢いよく散らす（旧 40〜120 → 110〜260）
+    const speed = 110 + fxRandom() * 150;
     partVx[i]   = Math.cos(angle) * speed;
     partVy[i]   = Math.sin(angle) * speed;
-    // 寿命短め（やられは素早く消える）
-    partLife[i] = 0.25 + fxRandom() * 0.15;
+    // v0.61: 寿命も伸ばす（旧 0.25〜0.40 → 0.40〜0.62）
+    partLife[i] = 0.40 + fxRandom() * 0.22;
     spawned++;
   }
 
-  // 短い振動フィードバック（ダウンの衝撃感）
-  hapticPulse(20);
+  // v0.61: 小さく揺らす。triggerShake は「進行中より強いときだけ上書き」なので、
+  // 大量にやられても揺れが積み上がって画面が壊れることはない。
+  triggerShake(2.2, 0.12);
+  hapticPulse(35);
 }
 
 function updateDownEffects(dt) {
@@ -10917,37 +11020,75 @@ function drawDownEffects() {
   for (let i = 0; i < MAX_DOWN_FX; i++) {
     if (!downFxActive[i]) continue;
     const progress = 1.0 - downFxLife[i] / DOWN_FX_DURATION; // 0→1
-    // しぼむ: 最初は大きく、末期に向けて収縮する（出現FXとは逆）
-    const ringRadius = DOWN_FX_RING_MAX * (1.0 - progress * 0.5);
-    // フェードアウト: 後半で急速に消える
-    const alpha = Math.max(0, 1.0 - progress * progress * 1.8);
     const wx = downFxWx[i];
     const wy = downFxWy[i];
 
     ctx.save();
 
-    // 外リング（暗赤）
-    ctx.globalAlpha = alpha * 0.80;
-    ctx.strokeStyle = "#c03020";
-    ctx.lineWidth   = Math.max(0.5, 2.5 * (1 - progress));
-    ctx.beginPath();
-    ctx.arc(wx, wy, Math.max(0.5, ringRadius), 0, Math.PI * 2);
-    ctx.stroke();
-
-    // 内リング（灰）: わずかに遅れて登場
-    if (progress > 0.1) {
-      const innerP = (progress - 0.1) / 0.9;
-      const innerR = DOWN_FX_RING_MAX * 0.55 * (1.0 - innerP * 0.4);
-      ctx.globalAlpha = alpha * 0.55;
-      ctx.strokeStyle = "#808080";
-      ctx.lineWidth   = Math.max(0.5, 1.5 * (1 - innerP));
+    // --- (1) 白熱の爆発リング: 外へ広がりながら消える（v0.61の主役）---
+    // 旧FXは「しぼむ暗いリング」で、群れの中で落ちると全く見えなかった。
+    // 広がる明るい輪にすると、周りの竜より外側へ抜けるので必ず視界に入る。
+    {
+      const p = Math.min(1, progress / 0.75);            // 0.75 まで広がりきる
+      const r = DOWN_FX_RING_MAX * (0.18 + p * 0.82);
+      const a = Math.max(0, 1 - p * p);
+      ctx.globalAlpha = a * 0.95;
+      ctx.strokeStyle = "#fff2e8";
+      ctx.lineWidth   = Math.max(0.6, 4.2 * (1 - p));
       ctx.beginPath();
-      ctx.arc(wx, wy, Math.max(0.5, innerR), 0, Math.PI * 2);
+      ctx.arc(wx, wy, Math.max(0.5, r), 0, Math.PI * 2);
+      ctx.stroke();
+      // 少し遅れる赤い輪（白の外側に残光を作る）
+      ctx.globalAlpha = a * 0.65;
+      ctx.strokeStyle = "#ff4020";
+      ctx.lineWidth   = Math.max(0.5, 6.0 * (1 - p));
+      ctx.beginPath();
+      ctx.arc(wx, wy, Math.max(0.5, r * 0.82), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // --- (2) 放射する光条: 最初の 0.25 だけ。爆ぜた向きを作る ---
+    if (progress < 0.25) {
+      const p = progress / 0.25;
+      const inner = DOWN_FX_RING_MAX * 0.20;
+      const outer = DOWN_FX_RING_MAX * (0.55 + p * 0.75);
+      ctx.globalAlpha = (1 - p) * 0.85;
+      ctx.strokeStyle = "#ffd9c0";
+      ctx.lineWidth   = 2.0;
+      ctx.beginPath();
+      for (let k = 0; k < DOWN_FX_SPOKES; k++) {
+        const a = (k / DOWN_FX_SPOKES) * Math.PI * 2 + wx * 0.01;
+        const c = Math.cos(a), sn = Math.sin(a);
+        ctx.moveTo(wx + c * inner, wy + sn * inner);
+        ctx.lineTo(wx + c * outer, wy + sn * outer);
+      }
+      ctx.stroke();
+    }
+
+    // --- (3) 中心の閃光: ごく短く、真っ白に飛ばす ---
+    if (progress < 0.35) {
+      const p = progress / 0.35;
+      ctx.globalAlpha = (1 - p) * 0.9;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(wx, wy, Math.max(0.5, 13 * (1 - p)), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // --- (4) しぼむ暗い輪: 旧FXの「力が抜ける」読み味を残す ---
+    if (progress > 0.15) {
+      const p = (progress - 0.15) / 0.85;
+      ctx.globalAlpha = Math.max(0, 1 - p) * 0.5;
+      ctx.strokeStyle = "#802018";
+      ctx.lineWidth   = Math.max(0.5, 2.0 * (1 - p));
+      ctx.beginPath();
+      ctx.arc(wx, wy, Math.max(0.5, DOWN_FX_RING_MAX * 0.5 * (1 - p * 0.7)), 0, Math.PI * 2);
       ctx.stroke();
     }
 
     ctx.restore();
   }
+  ctx.globalAlpha = 1;
 }
 
 // -----------------------------------------------------------------
@@ -14464,15 +14605,15 @@ function drawParticles() {
       ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
       ctx.fill();
     } else if (partType[i] === 2) {
-      // 死亡FX: 灰〜暗赤。出現FX(金)とは明確に色を分ける
-      const lifeRatio = Math.max(0, partLife[i] / 0.35);
-      const alpha  = Math.max(0, lifeRatio * lifeRatio);
-      // 序盤は暗赤(r=180,g=40,b=40)、末期は灰(r=120,g=120,b=120)へ変化
-      const r = (120 + (60 * lifeRatio)) | 0;
-      const g = (40  + (80 * (1 - lifeRatio))) | 0;
-      const b = (40  + (80 * (1 - lifeRatio))) | 0;
-      const radius = Math.max(0.5, 0.8 + lifeRatio * 2.2); // 小さめ
-      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
+      // 死亡FX: v0.61 で**白熱→赤**へ（旧: 灰〜暗赤で背景に沈んでいた）。
+      // 出現FX(金)と色で対になり、かつ暗い地面の上でも必ず読める明るさにする。
+      const lifeRatio = Math.max(0, partLife[i] / 0.62);
+      const alpha  = Math.max(0, lifeRatio);
+      // 若いほど白熱(255,240,220)、末期は赤(255,60,40)へ落ちる
+      const g = (60  + 180 * lifeRatio) | 0;
+      const b = (40  + 180 * lifeRatio) | 0;
+      const radius = Math.max(0.5, 1.2 + lifeRatio * 3.2);
+      ctx.fillStyle = `rgba(255, ${g}, ${b}, ${alpha.toFixed(3)})`;
       ctx.beginPath();
       ctx.arc(partX[i], partY[i], radius, 0, Math.PI * 2);
       ctx.fill();
