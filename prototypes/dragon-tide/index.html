@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.64.1";
+const GAME_VERSION = "v0.65.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -695,6 +695,30 @@ function debugAddDragons(n) {
 }
 
 // プロファイルとラン再開データを消して初回ラン状態に戻す（初回/2回目フローの検証用）。
+/**
+ * v0.65: 全文明（開始時代）を解放する（Shooter指示）。
+ * ラン構成が「1ラン＝1文明」になってから、後半の時代を確認するには
+ * 前の文明を全部クリアする必要があり、動作確認に何十分もかかっていた。
+ *
+ * 解放フラグを立てるだけでは足りない点が2つある:
+ *   - 初回ラン（runsStarted=0）はタイトルのメニュー自体が出ず、
+ *     beginRun も era 0 に固定する（`currentRunIsFirst ? 0 : ...`）ので選べない
+ *   - 大陸選択が開いたままだと、その場では鍵アイコンが消えない
+ * どちらもここで面倒を見る。
+ */
+function debugUnlockAllContinents() {
+  if (!profile) return;
+  profile.unlockedContinents = CONTINENT_DEFS.length;
+  // 「初回ラン」扱いのままだと文明を選べないので、1回遊んだ状態にしておく
+  if (profile.runsStarted <= 0) profile.runsStarted = 1;
+  saveProfile();
+  if (gameState === "title") {
+    refreshTitleMenu();
+    // 大陸選択を開いている最中なら、その場で描き直して鍵を外す
+    if (continentSelecting) showContinentSelect();
+  }
+}
+
 function debugResetProfile() {
   try {
     localStorage.removeItem(PROFILE_KEY);
@@ -851,6 +875,7 @@ const DEBUG_ACTIONS = [
   { label: "🐉 竜 +10",              run: () => debugAddDragons(10) },
   { label: "💠 XP +500",             run: () => { if (gameState === "playing") addXp(500); } },
   { label: "🔷 竜晶 +100",           run: () => { profile.crystals += 100; saveProfile(); } },
+  { label: "🗺 全文明を解放",         run: () => debugUnlockAllContinents() },
   { label: "🗑 再開データ削除",       run: () => { clearRunSave(); refreshTitleMenu(); } },
   { label: "♻ プロファイル初期化",   run: () => debugResetProfile() },
 ];
@@ -866,7 +891,9 @@ function debugStatusLine() {
   const move = moveProfileOverride ? moveProfileOverride : `種:${flockSpecies}`;
   // v0.34.1: 反動は「定義値」か上書き値かを出す（実機で今どの設定か分かるように）
   const rec = debugRecoilOverride === null ? `既定(${atk().recoilDist})` : `${debugRecoilOverride}`;
-  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}` +
+  const cont = (typeof profile !== "undefined" && profile)
+    ? `文明:${unlockedContinentCount()}/${CONTINENT_DEFS.length} ` : "";
+  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}${cont}` +
          `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
          `動き:${move} / 反動:${rec} / ` +
