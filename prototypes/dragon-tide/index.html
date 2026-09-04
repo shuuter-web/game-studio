@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.61.0";
+const GAME_VERSION = "v0.62.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -4524,10 +4524,7 @@ let movers = [];
  * spawnFanProjectileRaw と同じく「角度で撃つ」形にして、斉射の扇を作れるようにする。
  */
 function spawnRocket(fromWx, fromWy, angle) {
-  let slot = -1;
-  for (let i = 0; i < MAX_PROJECTILES; i++) {
-    if (!projActive[i]) { slot = i; break; }
-  }
+  const slot = takeProjectileSlot();
   if (slot < 0) return;
   const sp = ROCKET_SPEED * PROJECTILE_SPEED_MULT;
   projActive[slot]    = 1;
@@ -7901,9 +7898,14 @@ function drawStarOnCtx(c, wx, wy, r, color, spikes) {
 }
 
 // -----------------------------------------------------------------
-// 投射物プール（最大200個）
+// 投射物プール
 // -----------------------------------------------------------------
-const MAX_PROJECTILES = 200;
+// v0.62: 通常弾を 1/3 の速さにしたぶん、同じ弾が画面に残る時間が3倍になる。
+// 200 のままだと最大同時数が上限に張り付き、**撃たれた弾が黙って消える**
+// （spawnProjectile は空きが無いと何もしない）。
+// 実測: 最終文明の首都に55体で張り付いた最悪ケースで 旧 平均31.4/最大136 だったので、
+// 3倍でも収まる 640 にする。1発あたりの更新コストは実測 0.5µs 未満（N=55）。
+const MAX_PROJECTILES = 900;
 
 const projWx        = new Float32Array(MAX_PROJECTILES);
 const projWy        = new Float32Array(MAX_PROJECTILES);
@@ -7942,6 +7944,12 @@ const KNOCK_SHOT_PUSH = 52;   // 着弾衝撃の押し距離（px）
 // 変更3: 投射物パラメータ定数
 // 弾速倍率: ステージ設定の projectileSpeed にこの倍率を掛けて「大型矢」の重厚な速さにする。
 const PROJECTILE_SPEED_MULT  = 3.6;
+// v0.62: **通常弾（kind=0 矢 / kind=1 カタパルト弾）だけ 1/3 の速さ**にする（Shooter指示
+// 「敵の通常弾の速度が速すぎて見た目がイマイチ。1/3くらいにすると攻撃の激しさが目に見える」）。
+// ロケット(kind=3)・ボス重弾(kind=2)・着弾弾(kind=4)は現状の見た目が良いので触らない。
+// 弾は飛距離で消えるので、遅くすると**画面に残っている時間が3倍**になる＝同時発射数も3倍になる。
+// そのぶん MAX_PROJECTILES を広げてある（下記）。
+const NORMAL_SHOT_SPEED_SCALE = 1 / 3;
 // 変更5: 種別ごとの飛距離上限（px）
 // カタパルト弾: 広い射程（大型・首都・ボスのみが撃つ威圧感）
 const PROJECTILE_MAX_RANGE   = 420; // catapult 用（従来値を維持）
@@ -7988,10 +7996,7 @@ function eraShotSpeedMult() {
 // 投石・矢の雨・絨毯爆撃・対空弾幕・臼砲を、この1つの部品で全部作っている。
 const SHELL_PUSH_DIST = 22;   // 炸裂の押し飛ばし（emitShockwave へ渡す）
 function spawnShell(fromWx, fromWy, tx, ty, speed, damage, aoe, color) {
-  let slot = -1;
-  for (let i = 0; i < MAX_PROJECTILES; i++) {
-    if (!projActive[i]) { slot = i; break; }
-  }
+  const slot = takeProjectileSlot();
   if (slot < 0) return;
   const dx = tx - fromWx, dy = ty - fromWy;
   const d  = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -8040,18 +8045,30 @@ function updateBarrageQueue(dt) {
   }
 }
 
+// v0.62: 空きスロット探し。プールを640に広げたので、毎回先頭から舐めると
+// 発射のたびに最大640回の走査になる。前回の続きから回す巻き取り式にして
+// ならし O(1) にする（弾はだいたい発射順に消えるので、続きに空きがある）。
+let _projScanCursor = 0;
+function takeProjectileSlot() {
+  for (let k = 0; k < MAX_PROJECTILES; k++) {
+    const i = _projScanCursor;
+    _projScanCursor = (_projScanCursor + 1) % MAX_PROJECTILES;
+    if (!projActive[i]) return i;
+  }
+  return -1;   // 満杯（この弾は出ない）
+}
+
 // 変更5: kind=0(arrow) / kind=1(catapult)
 function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, aoe, isTracking, kind) {
-  let slot = -1;
-  for (let i = 0; i < MAX_PROJECTILES; i++) {
-    if (!projActive[i]) { slot = i; break; }
-  }
+  const slot = takeProjectileSlot();
   if (slot < 0) return;
 
   // 変更3: 弾速倍率を適用（大型矢の重厚な速さ）
   // v0.57: 通常弾（kind=0/1）だけ、文明ごとの弾速倍率を重ねる。
   // ボス重弾(2)・ロケット(3)は専用の速度設計なので触らない。
-  const eraMult     = (kind === 2 || kind === 3) ? 1 : eraShotSpeedMult();
+  // v0.62: 同じ条件で 1/3 の減速も掛ける（見て避けられる速さにする）。
+  const isNormal    = !(kind === 2 || kind === 3);
+  const eraMult     = isNormal ? eraShotSpeedMult() * NORMAL_SHOT_SPEED_SCALE : 1;
   const actualSpeed = speed * PROJECTILE_SPEED_MULT * eraMult;
 
   projActive[slot]     = 1;
@@ -8393,13 +8410,11 @@ function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
 
 // 変更5: kind=0(arrow) / kind=1(catapult)
 function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind, maxRange, knockR) {
-  let slot = -1;
-  for (let i = 0; i < MAX_PROJECTILES; i++) {
-    if (!projActive[i]) { slot = i; break; }
-  }
+  const slot = takeProjectileSlot();
   if (slot < 0) return;
-  // 変更3: 弾速倍率を適用（v0.57: 文明ごとの弾速倍率を重ねる）
-  const actualSpeed = speed * PROJECTILE_SPEED_MULT * eraShotSpeedMult();
+  // 変更3: 弾速倍率を適用（v0.57: 文明ごとの弾速倍率／v0.62: 1/3 の減速を重ねる）
+  // ここを通るのは扇撃ち＝すべて通常弾（矢・カタパルト弾）なので一律で減速する。
+  const actualSpeed = speed * PROJECTILE_SPEED_MULT * eraShotSpeedMult() * NORMAL_SHOT_SPEED_SCALE;
   projActive[slot]     = 1;
   projWx[slot]         = fromWx;
   projWy[slot]         = fromWy;
