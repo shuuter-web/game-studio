@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.62.0";
+const GAME_VERSION = "v0.63.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3590,6 +3590,7 @@ function generateStageLayout(stageIndex) {
   hazards.length = 0;        // v0.42: 前ステージの危険地帯を持ち越さない
   laserStrikes.length = 0;   // v0.48: 撃ちかけのレーザーを持ち越さない
   barrageQueue.length = 0;   // v0.57: 予約済みの斉射を持ち越さない
+  hazardShots.length = 0;    // v0.63: 飛行中の見せ弾を持ち越さない
   chainFxList.length = 0;
   floodWave = null;          // v0.43: 前ステージの洪水を持ち越さない
   resetRaiderState();   // v0.8: レイダー湧き状態もステージごとにリセット
@@ -4125,9 +4126,12 @@ const MOVER_DEFS = {
   },
   // 古代: 歩く神像（コロッサス）— 眼光ビーム（高DPS持続照射）
   colossus: {
-    name: "colossus", hp: 250, speed: 26, xp: 160, eggDrop: 2, radius: 26,
+    // v0.63: 巨人型。向きは60度刻みでしか変えず、移動は目標方向のまま＝**横歩きする**。
+    // 正面±35度にしかビームが通らないぶん、当たると苛烈（dps 5.0 → 8.5）。
+    name: "colossus", stepTurn: Math.PI / 3,
+    hp: 250, speed: 26, xp: 160, eggDrop: 2, radius: 26,
     color: "#c8a030", glowColor: "#ffe080", moveType: "patrol",
-    attack: { type: "beam", dps: 5.0, range: 240 },
+    attack: { type: "beam", dps: 8.5, range: 240, frontArc: 0.61 },
   },
   // 中世: 騎士（v0.13で個体分割）— 単発の矢。8体の隊で湧き、斉射に相当する密度になる
   // （8体合計で旧方陣とほぼ同等: hp192/xp136/卵約2個/矢5本毎秒）
@@ -4139,7 +4143,8 @@ const MOVER_DEFS = {
   },
   // 近世: 陸上甲鉄艦 — 舷側砲（高頻度の3連砲×2方向）
   ironclad: {
-    name: "ironclad", hp: 400, speed: 30, xp: 240, eggDrop: 3, radius: 30,
+    name: "ironclad", turnRate: 0.55,   // v0.63: 陸上甲鉄艦。旋回半径55pxの大回り
+    hp: 400, speed: 30, xp: 240, eggDrop: 3, radius: 30,
     color: "#4a5a6a", glowColor: "#90b0d0", moveType: "loop",
     attack: { type: "broadside", interval: 1.0, count: 3, damage: 2.5, speed: 90 },
   },
@@ -4160,7 +4165,8 @@ const MOVER_DEFS = {
   // 大型・超高HP＝育った群れを試す壁。舷側砲を高頻度化し弾幕（＝ダウン圧）を増やす。
   // 撃破報酬も大きい（XP・卵）＝倒せば一気に育つご褒美。
   warlord: {
-    name: "warlord", elite: true,
+    name: "warlord", turnRate: 0.60,   // v0.63: ウォーロード（甲鉄艦の親玉）
+    elite: true,
     hp: 1400, speed: 26, xp: 400, eggDrop: 5, radius: 42,
     color: "#5a2a2a", glowColor: "#ff5030", moveType: "loop",
     attack: { type: "broadside", interval: 0.75, count: 4, damage: 4, speed: 95 },
@@ -4259,7 +4265,8 @@ const MOVER_DEFS = {
   // 群れを固めているほど多くに当たり、散らしていれば数珠が途切れる
   // ＝**Boids でしか成立しない課題**（密集が有利という前提を崩す枠）。
   teslawagon: {
-    name: "teslawagon", showHpBar: true,
+    name: "teslawagon", turnRate: 0.85,   // v0.63: 雷撃塔車
+    showHpBar: true,
     hp: 340, speed: 34, xp: 200, eggDrop: 3, radius: 25,
     color: "#3a5a8a", glowColor: "#a0d8ff", moveType: "patrol",
     // 「群れを固めると損」は**連鎖の長さ**では作れなかった（実測: Boids の群れは
@@ -4273,7 +4280,8 @@ const MOVER_DEFS = {
   // 火吹き車（持続範囲その1）: 群れの足元に**燃える帯**を置いて居座らせない。
   // 一撃は軽いが、留まると効く＝「退く」操作を要求する。
   flamewagon: {
-    name: "flamewagon", showHpBar: true,
+    name: "flamewagon", turnRate: 0.85,   // v0.63: 火吹き車
+    showHpBar: true,
     hp: 380, speed: 32, xp: 190, eggDrop: 3, radius: 26,
     color: "#8a4020", glowColor: "#ff9040", moveType: "patrol",
     attack: { type: "hazard", interval: 3.2, range: 400, radius: 110, life: 3.6, dps: 5.5,
@@ -4314,7 +4322,8 @@ const MOVER_DEFS = {
 
   // 2 古代: 牡牛戦車 — 速い。突っ込んできて群れを轢き分ける
   bullchariot: {
-    name: "bullchariot", sprite: "mammoth", knockback: true, showHpBar: true,
+    name: "bullchariot", turnRate: 1.10,   // v0.63: 牡牛戦車。車両の中では曲がれるほう
+    sprite: "mammoth", knockback: true, showHpBar: true,
     hp: 240, speed: 52, xp: 120, eggDrop: 2, radius: 20,
     color: "#b08830", glowColor: "#ffdc80", moveType: "pingpong",
     attack: { type: "shockwave", interval: 2.8, radius: 110, damage: 2.0, push: 70 },
@@ -4322,7 +4331,8 @@ const MOVER_DEFS = {
 
   // 3 中世: 破城槌 — 遅くて硬い。当たると大きく飛ぶ
   batteringram: {
-    name: "batteringram", sprite: "flamewagon", knockback: true, showHpBar: true,
+    name: "batteringram", turnRate: 0.60,   // v0.63: 破城槌
+    sprite: "flamewagon", knockback: true, showHpBar: true,
     hp: 420, speed: 24, xp: 170, eggDrop: 3, radius: 26,
     color: "#7a5a3a", glowColor: "#ffc070", moveType: "patrol",
     attack: { type: "shockwave", interval: 3.0, radius: 125, damage: 2.2, push: 85 },
@@ -4330,7 +4340,8 @@ const MOVER_DEFS = {
 
   // 4 近世: 散弾砲車 — **射撃型**。重い弾を5発を扇状に撒いて群れを線で押し返す
   grapeshot: {
-    name: "grapeshot", sprite: "ironclad", knockback: true, showHpBar: true,
+    name: "grapeshot", turnRate: 0.65,   // v0.63: 散弾砲車
+    sprite: "ironclad", knockback: true, showHpBar: true,
     hp: 360, speed: 30, xp: 180, eggDrop: 3, radius: 24,
     color: "#5a5a4a", glowColor: "#ffd8a0", moveType: "patrol",
     // 弾を増やすだけでは攻撃停止が2%しか出なかった（弾1発は竜1体しか押せないため）。
@@ -4357,7 +4368,8 @@ const MOVER_DEFS = {
 
   // 7 大戦: 衝撃砲 — **射撃型**。3発の重弾を遠くから撃ち込む
   concussion: {
-    name: "concussion", sprite: "warlord", knockback: true, showHpBar: true,
+    name: "concussion", turnRate: 0.60,   // v0.63: 衝撃砲
+    sprite: "warlord", knockback: true, showHpBar: true,
     hp: 700, speed: 26, xp: 260, eggDrop: 4, radius: 30,
     color: "#4a3a3a", glowColor: "#ffa070", moveType: "patrol",
     attack: { type: "fan", interval: 2.2, count: 4, damage: 2.0, speed: 95, range: 460,
@@ -4392,9 +4404,10 @@ const MOVER_DEFS = {
   // 2 古代: 黄金の巨像 — コロッサスの上位。長射程の眼光を絶やさない
   gilded_colossus: {
     name: "gilded_colossus", sprite: "colossus", elite: true, showHpBar: true,
+    stepTurn: Math.PI / 3,   // v0.63: 巨人型（コロッサスと同じ踏み替え）
     hp: 1300, speed: 22, xp: 420, eggDrop: 5, radius: 40,
     color: "#e0c040", glowColor: "#fff0a0", moveType: "patrol",
-    attack: { type: "beam", dps: 9.0, range: 320 },
+    attack: { type: "beam", dps: 15.0, range: 320, frontArc: 0.61 },
   },
 
   // 3 中世: 攻城塔 — 動く石の塊。矢を面で撒きながらじりじり寄ってくる
@@ -4416,7 +4429,8 @@ const MOVER_DEFS = {
 
   // 5 産業: 装甲列車 — 外周を高速で回りながら舷側砲を撃ち続ける。追いつくのが難しい火力塊
   armortrain: {
-    name: "armortrain", sprite: "ironclad", elite: true, showHpBar: true,
+    name: "armortrain", turnRate: 0.45,   // v0.63: 装甲列車。速いぶん一番曲がれない（旋回半径89px）
+    sprite: "ironclad", elite: true, showHpBar: true,
     hp: 2200, speed: 40, xp: 520, eggDrop: 6, radius: 46,
     color: "#3a4550", glowColor: "#80c0ff", moveType: "loop",
     attack: { type: "broadside", interval: 0.85, count: 4, damage: 3.0, speed: 95 },
@@ -4444,7 +4458,8 @@ const MOVER_DEFS = {
 
   // 8 最終: 殲滅砲兵 — 予告円つきの着弾弾を撒く移動砲台。街の臼砲が歩いてくる
   annihilator: {
-    name: "annihilator", sprite: "warlord", elite: true, showHpBar: true,
+    name: "annihilator", turnRate: 0.50,   // v0.63: 殲滅砲兵
+    sprite: "warlord", elite: true, showHpBar: true,
     hp: 2600, speed: 22, xp: 600, eggDrop: 7, radius: 44,
     color: "#4a2a3a", glowColor: "#ff70c0", moveType: "patrol",
     attack: { type: "shell", interval: 4.0, range: 620, count: 3,
@@ -4454,7 +4469,8 @@ const MOVER_DEFS = {
   // v0.25.1 財宝馬車: 竜ではない運搬体。群れから逃げ回り、倒すと竜晶/XPが大量に弾ける当たり枠。
   // 攻撃はせず（fleer）、空を漂って地形も無視。既存 balloon スプライトを金色オーラで流用。
   treasure: {
-    name: "treasure", treasure: true, fleer: true, flying: true,
+    name: "treasure", turnRate: 1.20,   // v0.63: 財宝馬車。逃げ足は残す
+    treasure: true, fleer: true, flying: true,
     hp: 140, speed: 80, xp: 200, eggDrop: 2, radius: 20,
     color: "#b08020", glowColor: "#ffd040", moveType: "patrol",
     treasureReward: 40,   // 撃破時の竜晶ボーナス
@@ -4509,6 +4525,31 @@ const BOSS_GARRISON_OUTER = 395;
 // 苛烈さは攻撃間隔の短縮とビームDPSに乗る＝画面上の弾・照射が明確に増えて見える。
 // XPスケールも廃止済み（v0.14。敵XPは種類固定、レベル進行はxpForNext曲線で制御）
 function moverStageFerocity(stageIndex) { return 1 + 0.20 * stageIndex; }
+
+// -----------------------------------------------------------------
+// v0.63: 移動敵の「向き」の作り方（Shooter指示）
+// -----------------------------------------------------------------
+// v0.62 まではどの敵も**進みたい方向へ即座に向く**ので、船や車両の見た目のものが
+// その場で回れ右をして違和感があった。向きの作り方を3つに分ける:
+//
+//   既定           … 従来どおり。目標方向へ即座に向き、その方向へ進む
+//   def.turnRate   … 船・車両。旋回角速度に上限があり、**向いている方向にしか進まない**
+//                     ＝行き過ぎたら大きく回り込む（旋回半径 = 速度 / turnRate）
+//   def.stepTurn   … 巨人型。向きは60度刻みでしか変わらず、**移動は目標方向そのまま**
+//                     ＝横歩き・後ずさりが出る。正面にだけ苛烈な攻撃をする（frontArc）
+//
+// stepTurn の切り替えはヒステリシス付き。境界でガタガタ切り替わるのを防ぐ。
+// 0.62rad(36°)だと踏み替えが早すぎて、向きと進行方向のずれが平均15°しか出なかった
+// （＝横歩きに見えない）。60°まで我慢させると、正面(±35°)から外れて撃てない時間が生まれ、
+// 足を踏み替えてまた撃つ、というメリハリが出る。
+const STEP_TURN_HYSTERESIS = 1.05;   // 目標方向がこれ(rad=60°)以上ずれたら踏み替える
+
+/** 角度差を -π..π に畳む。 */
+function wrapAngle(a) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
 
 // 全移動敵共通の追跡反応距離（この距離内の群れへ進撃する）
 const MOVER_PURSUIT_RANGE = 650;
@@ -4783,7 +4824,91 @@ const hazards = [];
  * @param {string} color    表示色
  * @param {number} growFrom 開始半径（radius へ広がる。同値なら固定サイズ）
  */
-function spawnHazard(x, y, radius, life, dps, color, growFrom = radius) {
+// -----------------------------------------------------------------
+// v0.63: 危険地帯の「撃った弾」の演出（当たり判定なし）
+// -----------------------------------------------------------------
+// 実機判定「円形の予兆あり範囲攻撃は誰が撃ってきてるか分からない」（Shooter指示）。
+// 予告の輪だけだと**降ってくる出どころ**が読めず、狙ってきた相手を潰す判断ができない。
+// 予告時間（HAZARD_WARN_TIME=0.7秒）ちょうどで着弾する見せ弾を飛ばして、
+// 「あいつが撃った → あいつを先に潰す」を成立させる。
+// 当たり判定は一切持たない（ダメージは hazard 側が持つ）ので、投射物プールとは別管理。
+const MAX_HAZARD_SHOTS = 48;
+const hazardShots = [];
+
+/**
+ * 見せ弾を1発飛ばす。到達時間は予告時間ちょうど。
+ * @param {number} fx,fy  発射元
+ * @param {number} tx,ty  着弾点（危険地帯の中心）
+ * @param {number} life   飛行時間（＝予告時間）
+ */
+function spawnHazardShot(fx, fy, tx, ty, life, color) {
+  if (hazardShots.length >= MAX_HAZARD_SHOTS) hazardShots.shift();
+  hazardShots.push({ fx, fy, tx, ty, t: 0, life, color });
+}
+
+function updateHazardShots(dt) {
+  for (let i = hazardShots.length - 1; i >= 0; i--) {
+    const h = hazardShots[i];
+    h.t += dt;
+    if (h.t >= h.life) hazardShots.splice(i, 1);
+  }
+}
+
+/**
+ * 見せ弾の描画。**山なりに投げた**ように見せるため、直線の中間を法線方向へ膨らませる
+ * （トップビューなので高さは出せない。弧を描かせることで「飛んできた」を表す）。
+ * 影を地面の直線上に置くと、弧と影の差が高さに読める。
+ */
+function drawHazardShots() {
+  ctx.save();
+  for (const h of hazardShots) {
+    const p  = Math.min(1, h.t / h.life);
+    const gx = h.fx + (h.tx - h.fx) * p;      // 地面をまっすぐ進む影
+    const gy = h.fy + (h.ty - h.fy) * p;
+    const dx = h.tx - h.fx, dy = h.ty - h.fy;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    // 弧の高さ: 中間で最大。距離に比例させる（遠いほど大きく打ち上がる）
+    const lift = Math.sin(p * Math.PI) * Math.min(70, len * 0.22);
+    const bx = gx + (-dy / len) * lift;
+    const by = gy + ( dx / len) * lift;
+
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = "#000000";
+    ctx.beginPath();
+    ctx.ellipse(gx, gy, 4.5, 2.4, 0, 0, Math.PI * 2);   // 地面の影
+    ctx.fill();
+
+    ctx.globalAlpha = 0.30;
+    ctx.fillStyle = h.color;
+    ctx.beginPath();
+    ctx.arc(bx, by, 9, 0, Math.PI * 2);                  // 外側のもや
+    ctx.fill();
+    ctx.globalAlpha = 0.95;
+    ctx.beginPath();
+    ctx.arc(bx, by, 4.2, 0, Math.PI * 2);                // 芯
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath();
+    ctx.arc(bx - 1.2, by - 1.2, 1.6, 0, Math.PI * 2);    // ハイライト
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/**
+ * @param {number} [fromX] 撃った相手の位置。渡すと見せ弾が飛ぶ（当たり判定なし）
+ * @param {number} [fromY]
+ */
+function spawnHazard(x, y, radius, life, dps, color, growFrom = radius, fromX, fromY) {
+  // 発射元が離れているときだけ見せ弾を出す。自分の足元に置くタイプ（焼夷塔・瘴気塔）は
+  // 出どころが自明なので飛ばさない。
+  if (fromX !== undefined && fromY !== undefined) {
+    const fdx = x - fromX, fdy = y - fromY;
+    if (fdx * fdx + fdy * fdy > 60 * 60) {
+      spawnHazardShot(fromX, fromY, x, y, HAZARD_WARN_TIME, color);
+    }
+  }
   if (hazards.length >= HAZARD_MAX) hazards.shift();
   hazards.push({ x, y, r: radius, r0: growFrom, life, maxLife: life, dps, color, tick: 0 });
 }
@@ -5498,12 +5623,38 @@ function updateMovers(dt) {
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
-    m.headingX = dx / d;
-    m.headingY = dy / d;
+    const dirX = dx / d, dirY = dy / d;
+    // 進む向き。既定は「向いている方向」＝従来と同じ（向きが即座に目標を向くため）
+    let moveX = dirX, moveY = dirY;
+
+    if (def.stepTurn) {
+      // 巨人型: 向きは60度刻み。移動は目標方向のままなので**横歩き・後ずさり**が出る
+      const want = Math.atan2(dirY, dirX);
+      if (m.faceAngle === undefined) m.faceAngle = Math.round(want / def.stepTurn) * def.stepTurn;
+      if (Math.abs(wrapAngle(want - m.faceAngle)) > STEP_TURN_HYSTERESIS) {
+        m.faceAngle = Math.round(want / def.stepTurn) * def.stepTurn;
+      }
+      m.headingX = Math.cos(m.faceAngle);
+      m.headingY = Math.sin(m.faceAngle);
+    } else if (def.turnRate) {
+      // 船・車両: 旋回角速度に上限。**向いている方向にしか進めない**ので大回りになる
+      const cur  = Math.atan2(m.headingY, m.headingX);
+      const diff = wrapAngle(Math.atan2(dirY, dirX) - cur);
+      const maxTurn = def.turnRate * dt;
+      const next = cur + Math.max(-maxTurn, Math.min(maxTurn, diff));
+      m.headingX = Math.cos(next);
+      m.headingY = Math.sin(next);
+      moveX = m.headingX;
+      moveY = m.headingY;
+    } else {
+      m.headingX = dirX;
+      m.headingY = dirY;
+    }
+
     // v0.61: 画面外から来る増援は、群れに近づくまで行軍速度で走る
     const moveSpeed = def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
-    m.wx += m.headingX * moveSpeed * dt;
-    m.wy += m.headingY * moveSpeed * dt;
+    m.wx += moveX * moveSpeed * dt;
+    m.wy += moveY * moveSpeed * dt;
 
     // 地形（岩山）は移動敵も回り込む（押し出しスライド）。飛行ユニットは無視。
     // v0.17.1: 湖は単なる背景（当たり判定なし）にしたので押し出し対象から除外
@@ -5535,7 +5686,16 @@ function updateMovers(dt) {
     const ferocity = moverStageFerocity(currentStage);
     if (atk.type === "beam") {
       // コロッサス: 眼光ビーム（持続照射）
-      if (nearestD2 < atk.range * atk.range) {
+      // v0.63: atk.frontArc があると**正面の扇の中にいる竜にしか当たらない**。
+      // 向きが60度刻みでしか変わらないので「正面から外れる」が有効な回避になる。
+      // そのぶん dps は上げてある（当てられたら苛烈）。
+      let inFront = true;
+      if (atk.frontArc !== undefined) {
+        const toTarget = Math.atan2(ndy, ndx);
+        const face = Math.atan2(m.headingY, m.headingX);
+        inFront = Math.abs(wrapAngle(toTarget - face)) < atk.frontArc;
+      }
+      if (inFront && nearestD2 < atk.range * atk.range) {
         m.beamTargetIdx = nearestIdx;
         applyDamageToBoid(nearestIdx, atk.dps * ferocity * dt);
       } else {
@@ -5632,7 +5792,7 @@ function updateMovers(dt) {
         const hx = atk.atTarget ? px[nearestIdx] : m.wx;
         const hy = atk.atTarget ? py[nearestIdx] : m.wy;
         spawnHazard(hx, hy, atk.radius, atk.life, atk.damage ?? atk.dps, atk.color,
-                    atk.growFrom ?? atk.radius);
+                    atk.growFrom ?? atk.radius, m.wx, m.wy);   // v0.63: 見せ弾の発射元
       } else {
         m.attackTimer = 0.4;
       }
@@ -5810,7 +5970,8 @@ function fireBossArt(boss, art, cx, cy, ang, color) {
       // 内・外を交互に。内側の柱が重心を覆うので**その場に留まると必ず焼ける**
       const orbit = (k % 2 === 0) ? BOSS_PILLAR_INNER : BOSS_PILLAR_OUTER;
       spawnHazard(cx + Math.cos(a) * orbit, cy + Math.sin(a) * orbit,
-                  BOSS_PILLAR_RADIUS, BOSS_PILLAR_LIFE, BOSS_PILLAR_DPS, color, 20);
+                  BOSS_PILLAR_RADIUS, BOSS_PILLAR_LIFE, BOSS_PILLAR_DPS, color, 20,
+                  boss.wx, boss.wy);   // v0.63: 首都から光の柱が飛んでくるのを見せる
     }
   } else if (art === "arrowRain") {
     // 中世: 矢の雨。細かい着弾が1.8秒かけて降る＝**走り抜ける**のが正解
@@ -8507,6 +8668,12 @@ function updateProjectiles(dt) {
 // 0.0 から復活。ダウンモデルにより恒久消滅しないのでダメージを有効化する。
 const PROJECTILE_DAMAGE_MULTIPLIER = 1.0;
 
+// v0.63: **通常弾（kind=0 矢 / kind=1 カタパルト弾）だけ威力+30%**（Shooter指示）。
+// v0.62 で 1/3 の速さにしたぶん当たらなくなり、20秒の被ダメージが 24,265 → 20,900（-14%）
+// まで落ちていた。速くするのではなく1発を重くして戻す＝弾幕の見た目はそのまま。
+// ロケット・ボス重弾・着弾弾は速度も威力も据え置き（見た目・手触りが良いとの判断）。
+const NORMAL_SHOT_DAMAGE_MULT = 1.3;
+
 // 変更3: 投射物命中時のノックバック速度（px/s）
 // 弾の進行方向と同方向に押し出す（矢が刺さって押される感覚）。
 // 120px/s は maxSpeed(160) の75%なので体感できるが maxSpeed クランプで飛び出さない。
@@ -8539,7 +8706,10 @@ function checkProjectileHitBoids(projIdx) {
     }
 
     if (hit) {
-      applyDamageToBoid(i, PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER);
+      // v0.63: 遅くした通常弾(0/1)だけ +30%。ロケット(3)・ボス重弾(2)・着弾弾(4)は据え置き
+      const kindMult = (projKind[projIdx] === 0 || projKind[projIdx] === 1)
+        ? NORMAL_SHOT_DAMAGE_MULT : 1;
+      applyDamageToBoid(i, PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER * kindMult);
       // v0.7: AoE弾（爆撃気球・古代の投石など projectileAoe>0）は着弾点周囲にも被害
       if (projAoe[projIdx] > 0) {
         applyAoeProjectileDamage(projWx[projIdx], projWy[projIdx], projAoe[projIdx],
@@ -13537,6 +13707,7 @@ function render(now) {
   drawLaserStrikes();        // v0.48: 極太レーザー（予兆＋照射）
   drawFlood();               // v0.43: 洪水（地面の上・竜より下）
   drawDams();                // v0.43: 堰の見た目
+  drawHazardShots();         // v0.63: 危険地帯の見せ弾（誰が撃ったかを見せる）
   drawEmplacements();        // v0.57: 時代兵器の目印（輪の色で種類が分かる）
   drawSlashFx();             // v0.8: 緋竜の斬閃 / v0.35: 隼竜の刃翼（銀）
   drawBombs();               // v0.37.1: 爆竜の投下済み爆弾（竜より下＝地面にある）
@@ -15891,6 +16062,7 @@ function tick() {
     updateCollisionAttacks(wdt);  // 変更2: 直接衝突ダメージ＋ヒットストップ（MELEEは威力増）
     updateMovers(wdt);            // v0.6-p4: 移動敵の巡回・攻撃
     updateHazards(wdt);           // v0.42: 持続する範囲攻撃（敵・建物が置く危険地帯）
+    updateHazardShots(wdt);       // v0.63: 危険地帯の見せ弾（当たり判定なし）
     updateFlood(wdt);             // v0.43: 決壊した堰の洪水（下流の建物を順に沈める）
     updateChainFx(wdt);           // v0.43: 連鎖電撃のFX
     updateMoverRams();            // v0.6-p4: 移動敵への体当たり
