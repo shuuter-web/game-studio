@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.63.0";
+const GAME_VERSION = "v0.64.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3534,6 +3534,24 @@ function generateStageLayout(stageIndex) {
     }
     // ボス周辺（首都区画）。城下の民家は _noAttack なので対象から外す
     pickInto(result.filter(b => b._isCapital && !b._noAttack), CONCUSSION_IN_CAPITAL);
+
+    // v0.64: 連装貫通砲。衝撃砲台と同じ「格上だけ」の方針で、要塞都市と首都に置く
+    const pickLancer = (pool, count) => {
+      const free = pool.filter(b => !b._emplacement && !b.fallen);
+      for (let i = free.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1));
+        const t = free[i]; free[i] = free[j]; free[j] = t;
+      }
+      const def = EMPLACEMENT_DEFS.lancerBattery;
+      for (let k = 0; k < count && k < free.length; k++) {
+        free[k]._emplacement = "lancerBattery";
+        free[k].attackRadius = Math.max(free[k].attackRadius, def.range);
+      }
+    };
+    for (const [, buildings] of byTown) {
+      if (buildings.some(b => b._fixedTier != null)) pickLancer(buildings, LANCER_PER_FORTRESS);
+    }
+    pickLancer(result.filter(b => b._isCapital && !b._noAttack), LANCER_IN_CAPITAL);
   }
 
   // --- (4) 変更4: tiny 集落をマップ全体に散布する ---
@@ -4372,8 +4390,10 @@ const MOVER_DEFS = {
     sprite: "warlord", knockback: true, showHpBar: true,
     hp: 700, speed: 26, xp: 260, eggDrop: 4, radius: 30,
     color: "#4a3a3a", glowColor: "#ffa070", moveType: "patrol",
-    attack: { type: "fan", interval: 2.2, count: 4, damage: 2.0, speed: 95, range: 460,
-              kind: 1, spread: 0.12, color: "#ffc0a0", knockR: 60 },
+    // v0.64: 貫通型に変更。着弾で弾ける散弾砲車（knockR）と対になる
+    // ＝「円から退く」ではなく「線から出る」を長く突きつける枠。
+    attack: { type: "fan", interval: 2.0, count: 5, damage: 2.0, speed: 95, range: 460,
+              kind: 1, spread: 0.10, color: "#ffc0a0", pierce: true, maxRange: 620 },
   },
 
   // 8 最終: 重力砲 — 一番広い押し出し。群れの形ごと崩される
@@ -4433,7 +4453,9 @@ const MOVER_DEFS = {
     sprite: "ironclad", elite: true, showHpBar: true,
     hp: 2200, speed: 40, xp: 520, eggDrop: 6, radius: 46,
     color: "#3a4550", glowColor: "#80c0ff", moveType: "loop",
-    attack: { type: "broadside", interval: 0.85, count: 4, damage: 3.0, speed: 95 },
+    // v0.64: 舷側砲を貫通弾に。走りながら群れを串刺しにしていく
+    attack: { type: "broadside", interval: 0.85, count: 4, damage: 3.0, speed: 95,
+              pierce: true, maxRange: 560, color: "#bfe0ff" },
   },
 
   // 6 電気: 雷公 — 連鎖電撃の親玉。**固まっているほど痛い**を最も強く突きつける
@@ -4580,6 +4602,9 @@ function spawnRocket(fromWx, fromWy, angle) {
   projTargetIdx[slot] = -1;
   projColor[slot]     = "#ffb060";
   projKind[slot]      = 3;
+  projPierce[slot]    = 0;
+  projHitCd[slot]     = 0;
+  projOrb[slot]       = 0;
 }
 
 // -----------------------------------------------------------------
@@ -4732,6 +4757,13 @@ const EMPLACEMENT_DEFS = {
   concussionBattery: {
     label: "衝撃砲台", ring: KNOCKBACK_MARK_COLOR, interval: 3.2, range: 470, knockback: true,
   },
+  // v0.64: 連装貫通砲 — **当たっても消えない弾を速い間隔で連射する**（Shooter指示）。
+  // 衝撃砲台（着弾で弾ける）と対になる押し方。弾幕として置きたいので間隔は短い。
+  lancerBattery: {
+    // 間隔2.1では固定した35体に10秒で391入り、他の兵器（投石機340・臼砲246）より頭一つ高かった。
+    // 2.4に緩めて同じ帯に収める。
+    label: "連装貫通砲", ring: KNOCKBACK_MARK_COLOR, interval: 2.4, range: 500, knockback: true,
+  },
 };
 
 // 衝撃砲台のパラメータ。弾自体は敵の「衝撃砲」と同じ仕組み
@@ -4751,6 +4783,14 @@ const CONCUSSION_PER_ADVANCED_TOWN = 1;  // 格上の街（_tierOffset > 0）1�
 // 格上の街は3つに1つだけにする。要塞都市と首都には必ず置く。
 const CONCUSSION_ADVANCED_CHANCE   = 0.34;
 const CONCUSSION_IN_CAPITAL        = 3;  // 首都区画（_isCapital）に置く数
+// 連装貫通砲のパラメータ。3発を細い扇で連射し、群れを貫いて飛び続ける
+const LANCER_COUNT   = 3;
+const LANCER_SPREAD  = 0.07;
+const LANCER_SPEED   = 105;
+const LANCER_DAMAGE  = 1.8;
+const LANCER_RANGE   = 640;   // 貫通するぶん射程は長い
+const LANCER_IN_CAPITAL      = 2;   // 首都区画に置く数
+const LANCER_PER_FORTRESS    = 1;   // 要塞都市1町あたり
 
 const STAGE_FEATURES = [
   // 1 石器: 投石機だけ。飛び道具は遅く大きく、敵（マンモス・潜行者）が主役
@@ -4841,9 +4881,12 @@ const hazardShots = [];
  * @param {number} tx,ty  着弾点（危険地帯の中心）
  * @param {number} life   飛行時間（＝予告時間）
  */
-function spawnHazardShot(fx, fy, tx, ty, life, color) {
+function spawnHazardShot(fx, fy, tx, ty, life, color, radius) {
   if (hazardShots.length >= MAX_HAZARD_SHOTS) hazardShots.shift();
-  hazardShots.push({ fx, fy, tx, ty, t: 0, life, color });
+  // v0.64: 弾の大きさは**置かれる危険地帯の大きさ**に比例させる（Shooter指示「もっと大きく」）。
+  // 大きい輪ほど大きい塊が飛んでくる＝着弾前に規模が読める。
+  const scale = Math.max(0.9, Math.min(2.1, (radius ?? 110) / 95));
+  hazardShots.push({ fx, fy, tx, ty, t: 0, life, color, scale });
 }
 
 function updateHazardShots(dt) {
@@ -4872,24 +4915,46 @@ function drawHazardShots() {
     const bx = gx + (-dy / len) * lift;
     const by = gy + ( dx / len) * lift;
 
-    ctx.globalAlpha = 0.22;
+    const sc = h.scale ?? 1;
+
+    // 地面の影（弾が高いほど小さく薄い＝高度が読める）
+    ctx.globalAlpha = 0.30 * (1 - 0.5 * Math.sin(p * Math.PI));
     ctx.fillStyle = "#000000";
     ctx.beginPath();
-    ctx.ellipse(gx, gy, 4.5, 2.4, 0, 0, Math.PI * 2);   // 地面の影
+    ctx.ellipse(gx, gy, 9 * sc, 4.5 * sc, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.globalAlpha = 0.30;
+    // 尾: 少し前の位置を3つ、小さく薄く重ねる（飛んでいる向きが読める）
+    for (let k = 1; k <= 3; k++) {
+      const pt = Math.max(0, p - k * 0.045);
+      const tgx = h.fx + (h.tx - h.fx) * pt;
+      const tgy = h.fy + (h.ty - h.fy) * pt;
+      const tl  = Math.sin(pt * Math.PI) * Math.min(70, len * 0.22);
+      ctx.globalAlpha = 0.20 - k * 0.045;
+      ctx.fillStyle = h.color;
+      ctx.beginPath();
+      ctx.arc(tgx + (-dy / len) * tl, tgy + (dx / len) * tl, (12 - k * 2.2) * sc, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 本体: 脈打つ外光 → 芯 → 白いハイライト
+    const pulse = 0.88 + 0.12 * Math.sin(breathTime * 18 + h.fx * 0.01);
+    ctx.globalAlpha = 0.34;
     ctx.fillStyle = h.color;
     ctx.beginPath();
-    ctx.arc(bx, by, 9, 0, Math.PI * 2);                  // 外側のもや
+    ctx.arc(bx, by, 20 * sc * pulse, 0, Math.PI * 2);
     ctx.fill();
-    ctx.globalAlpha = 0.95;
+    ctx.globalAlpha = 0.75;
     ctx.beginPath();
-    ctx.arc(bx, by, 4.2, 0, Math.PI * 2);                // 芯
+    ctx.arc(bx, by, 12 * sc * pulse, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.globalAlpha = 1;
     ctx.beginPath();
-    ctx.arc(bx - 1.2, by - 1.2, 1.6, 0, Math.PI * 2);    // ハイライト
+    ctx.arc(bx, by, 7.5 * sc, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.beginPath();
+    ctx.arc(bx - 2.2 * sc, by - 2.2 * sc, 3.0 * sc, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -4906,7 +4971,7 @@ function spawnHazard(x, y, radius, life, dps, color, growFrom = radius, fromX, f
   if (fromX !== undefined && fromY !== undefined) {
     const fdx = x - fromX, fdy = y - fromY;
     if (fdx * fdx + fdy * fdy > 60 * 60) {
-      spawnHazardShot(fromX, fromY, x, y, HAZARD_WARN_TIME, color);
+      spawnHazardShot(fromX, fromY, x, y, HAZARD_WARN_TIME, color, radius);
     }
   }
   if (hazards.length >= HAZARD_MAX) hazards.shift();
@@ -5766,7 +5831,8 @@ function updateMovers(dt) {
         const fanSpread = atk.spread ?? 0.22;
         for (let k = -(atk.count >> 1); k <= (atk.count >> 1); k++) {
           spawnFanProjectileRaw(m.wx, m.wy, baseAngle + k * fanSpread, atk.speed, atk.damage,
-                                atk.color ?? "#e8eef8", atk.kind ?? 0, 0, atk.knockR ?? 0);
+                                atk.color ?? "#e8eef8", atk.kind ?? 0, atk.maxRange ?? 0,
+                                atk.knockR ?? 0, atk.pierce);
         }
       } else {
         m.attackTimer = 0.4;
@@ -5776,7 +5842,9 @@ function updateMovers(dt) {
       const heading = Math.atan2(m.headingY, m.headingX);
       for (const side of [Math.PI / 2, -Math.PI / 2]) {
         for (let k = -1; k <= 1; k++) {
-          spawnFanProjectileRaw(m.wx, m.wy, heading + side + k * 0.15, atk.speed, atk.damage, "#90b0d0", 1);
+          // v0.64: atk.pierce で「群れを貫く舷側斉射」になる（装甲列車）
+          spawnFanProjectileRaw(m.wx, m.wy, heading + side + k * 0.15, atk.speed, atk.damage,
+                                atk.color ?? "#90b0d0", 1, atk.maxRange ?? 0, 0, atk.pierce);
         }
       }
     } else if (atk.type === "chain") {
@@ -5989,8 +6057,11 @@ function fireBossArt(boss, art, cx, cy, ang, color) {
       const jitter = (w % 2) * (BOSS_VOLLEY_ARC / (BOSS_VOLLEY_COUNT - 1)) * 0.5;
       for (let k = 0; k < BOSS_VOLLEY_COUNT; k++) {
         const t = (k / (BOSS_VOLLEY_COUNT - 1) - 0.5);
+        // v0.64: 貫通弾の壁。群れを突き抜けて飛び続けるので、
+        // 「壁が通り過ぎるまで線から出ている」ことが要求される
         spawnFanProjectileRaw(boss.wx, boss.wy, ang + t * BOSS_VOLLEY_ARC + jitter,
-                              BOSS_VOLLEY_WAVES[w], BOSS_VOLLEY_DMG, color, 1, BOSS_VOLLEY_RANGE);
+                              BOSS_VOLLEY_WAVES[w], BOSS_VOLLEY_DMG, color, 1,
+                              BOSS_VOLLEY_RANGE, 0, true);
       }
     }
   } else if (art === "carpet") {
@@ -8101,6 +8172,14 @@ const projRange     = new Float32Array(MAX_PROJECTILES);
 // 弾を増やしても攻撃停止が2%しか出なかった（実測）。着弾を小さな衝撃波にして解決する。
 const projKnockR    = new Float32Array(MAX_PROJECTILES);
 const KNOCK_SHOT_PUSH = 52;   // 着弾衝撃の押し距離（px）
+// v0.64: 貫通弾（Shooter指示）。**当たっても消えず、群れを貫いて多段ヒットする**。
+// 代わりに着弾衝撃（projKnockR）は持たない＝押しは1体ずつだが、線上の全員を押す。
+// 着弾型が「円から退く」課題なのに対し、貫通弾は「線から出る」課題を長く突きつける。
+// v0.64: 全方位弾（旋回しながら撒く遅い球）。通常弾と見た目・速さで区別する。
+const projOrb       = new Uint8Array(MAX_PROJECTILES);
+const projPierce    = new Uint8Array(MAX_PROJECTILES);
+const projHitCd     = new Float32Array(MAX_PROJECTILES);   // 次に当てられるまでの待ち（秒）
+const PIERCE_HIT_INTERVAL = 0.09;   // これ未満の間隔では同じ弾が続けて当たらない
 
 // 変更3: 投射物パラメータ定数
 // 弾速倍率: ステージ設定の projectileSpeed にこの倍率を掛けて「大型矢」の重厚な速さにする。
@@ -8179,6 +8258,9 @@ function spawnShell(fromWx, fromWy, tx, ty, speed, damage, aoe, color) {
   projColor[slot]     = color;
   projKind[slot]      = 4;
   projStyle[slot]     = eraShotStyle();
+  projPierce[slot]    = 0;
+  projHitCd[slot]     = 0;
+  projOrb[slot]       = 0;
 }
 
 /** 着弾弾の炸裂。範囲ダメージ＋押し飛ばし＋輪のFXは既存の衝撃波に集約する。 */
@@ -8250,6 +8332,9 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
   projStyle[slot]      = eraShotStyle();
   projRange[slot]      = 0;
   projKnockR[slot]     = 0;
+  projPierce[slot]     = 0;
+  projHitCd[slot]      = 0;
+  projOrb[slot]        = 0;
 
   if (targetBoidIdx >= 0 && !boidDead[targetBoidIdx]) {
     const dx = px[targetBoidIdx] - fromWx;
@@ -8452,6 +8537,13 @@ function fireEmplacement(s, targetIdx) {
                             CONCUSSION_BATTERY_SPEED, CONCUSSION_BATTERY_DAMAGE,
                             "#dff2ff", 1, def.range + 40, CONCUSSION_BATTERY_KNOCK_R);
     }
+  } else if (key === "lancerBattery") {
+    // 貫通弾の連射。線上に居続けると刻まれ続ける＝**横へ出る**のが答え
+    for (let k = 0; k < LANCER_COUNT; k++) {
+      const t = (k - (LANCER_COUNT - 1) / 2);
+      spawnFanProjectileRaw(s.wx, s.wy, base + t * LANCER_SPREAD,
+                            LANCER_SPEED, LANCER_DAMAGE, "#cfe8ff", 1, LANCER_RANGE, 0, true);
+    }
   } else if (key === "prism") {
     // 首都の極太レーザーの小型版。細いぶん予兆から外れやすい
     spawnLaserStrike(s.wx, s.wy, base, PRISM_WIDTH, PRISM_LENGTH, PRISM_DPS, "#e0a0ff");
@@ -8548,20 +8640,47 @@ function updateSettlementAttacks(dt) {
         );
       }
     } else {
-      const angleStep = (Math.PI * 2) / count;
-      const baseAngle = random() * Math.PI * 2;
-      for (let k = 0; k < count; k++) {
-        spawnFanProjectileRaw(
-          settlement.wx, settlement.wy,
-          baseAngle + k * angleStep,
-          settlement.projectileSpeed,
-          settlement.projectileDamage,
-          settlement.projectileColor,
-          kind,
-        );
+      // v0.64: 全方位（4方向以上）は**ボスと各町の中央の建物だけ**が撃つ（Shooter指示）。
+      // 以前は近世・産業・最終の medium/large 全部が撃っていて、
+      // どこを焼いても同じ花火が上がり続けて飽きていた。
+      // それ以外の建物は狙い撃ちの2連射に落とす。
+      if (!canFireOmni(settlement)) {
+        const baseAngle = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
+        for (let k = -1; k <= 0; k++) {
+          spawnFanProjectileRaw(
+            settlement.wx, settlement.wy, baseAngle + k * 0.4,
+            settlement.projectileSpeed, settlement.projectileDamage,
+            settlement.projectileColor, kind,
+          );
+        }
+      } else {
+        // 撃つ側は**旋回しながら遅い球を撒く**。斉射ごとに基準角をずらすので
+        // 続けて撃つと風車のように回って見える＝他の通常弾と明確に別物になる。
+        settlement._omniAngle = (settlement._omniAngle ?? random() * Math.PI * 2) + OMNI_SPIN_STEP;
+        const angleStep = (Math.PI * 2) / count;
+        for (let k = 0; k < count; k++) {
+          const slot = spawnFanProjectileRaw(
+            settlement.wx, settlement.wy,
+            settlement._omniAngle + k * angleStep,
+            settlement.projectileSpeed * OMNI_SHOT_SPEED_SCALE,
+            settlement.projectileDamage,
+            settlement.projectileColor,
+            kind, OMNI_SHOT_RANGE,
+          );
+          if (slot !== undefined && slot >= 0) projOrb[slot] = 1;
+        }
       }
     }
   }
+}
+
+// v0.64: 全方位攻撃を撃てるのは「ボス」と「町の中央のランドマーク（神殿/風車）」だけ。
+// 首都区画にも1棟だけ許して、城下に踏み込んだときの花火を残す。
+const OMNI_SHOT_SPEED_SCALE = 0.55;  // 通常弾（既に1/3）のさらに0.55倍＝一番遅い球
+const OMNI_SPIN_STEP        = 0.42;  // 斉射ごとに基準角をずらす量（rad）＝風車の回転
+const OMNI_SHOT_RANGE       = 430;   // 遅いぶん射程は伸ばす（届かないと意味がない）
+function canFireOmni(settlement) {
+  return !!(settlement.isBoss || settlement._landmark);
 }
 
 function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
@@ -8570,7 +8689,7 @@ function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
 }
 
 // 変更5: kind=0(arrow) / kind=1(catapult)
-function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind, maxRange, knockR) {
+function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind, maxRange, knockR, pierce) {
   const slot = takeProjectileSlot();
   if (slot < 0) return;
   // 変更3: 弾速倍率を適用（v0.57: 文明ごとの弾速倍率／v0.62: 1/3 の減速を重ねる）
@@ -8596,6 +8715,10 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind
   projStyle[slot]      = eraShotStyle();
   projRange[slot]      = maxRange || 0;   // v0.57: 0 なら kind ごとの既定射程
   projKnockR[slot]     = knockR || 0;     // v0.59: 着弾点で周囲を押す半径
+  projPierce[slot]     = pierce ? 1 : 0;  // v0.64: 当たっても消えない
+  projHitCd[slot]      = 0;
+  projOrb[slot]        = 0;
+  return slot;   // v0.64: 全方位弾の印を付けたい呼び出し側のために返す
 }
 
 function updateProjectiles(dt) {
@@ -8660,6 +8783,11 @@ function updateProjectiles(dt) {
       continue;
     }
 
+    // v0.64: 貫通弾の連続ヒット待ち
+    if (projHitCd[i] > 0) {
+      projHitCd[i] = Math.max(0, projHitCd[i] - dt);
+      continue;
+    }
     checkProjectileHitBoids(i);
   }
 }
@@ -8709,6 +8837,15 @@ function checkProjectileHitBoids(projIdx) {
       // v0.63: 遅くした通常弾(0/1)だけ +30%。ロケット(3)・ボス重弾(2)・着弾弾(4)は据え置き
       const kindMult = (projKind[projIdx] === 0 || projKind[projIdx] === 1)
         ? NORMAL_SHOT_DAMAGE_MULT : 1;
+      // v0.64: 貫通弾は**消えずに飛び続ける**。連続ヒットで刻みすぎないよう待ちを入れ、
+      // 着弾衝撃（projKnockR）も持たない＝押すのは当たった1体ずつ。
+      if (projPierce[projIdx]) {
+        applyDamageToBoid(i, PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER * kindMult);
+        spawnHitParticles(projWx[projIdx], projWy[projIdx]);
+        if (!boidDowned[i]) applyProjectileKnockback(i, projIdx);
+        projHitCd[projIdx] = PIERCE_HIT_INTERVAL;
+        return;   // 弾は生かしたまま次のフレームへ
+      }
       applyDamageToBoid(i, PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER * kindMult);
       // v0.7: AoE弾（爆撃気球・古代の投石など projectileAoe>0）は着弾点周囲にも被害
       if (projAoe[projIdx] > 0) {
@@ -14565,6 +14702,32 @@ function drawProjectiles() {
       ctx.arc(projWx[i], projWy[i], 1.8, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
+      continue;
+    }
+
+    // v0.64: 全方位弾は文明の弾スタイルではなく**共通の球**で描く。
+    // 遅くて大きい球が回りながら広がる＝「これは別の攻撃」と一目で分かる。
+    if (projOrb[i]) {
+      const pulse = 0.85 + 0.15 * Math.sin(breathTime * 9 + i * 0.7);
+      ctx.save();
+      ctx.globalAlpha = 0.28;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], 11 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], 5.6 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      // 芯の白いリング（回転しているのが分かるよう位相をずらす）
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], 2.6, breathTime * 6 + i, breathTime * 6 + i + Math.PI * 1.3);
+      ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
       continue;
     }
 
