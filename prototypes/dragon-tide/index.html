@@ -440,6 +440,38 @@
   .ch-name { font-size: 14px; font-weight: bold; color: #dce8f6; }
   .ch-desc { font-size: 11px; color: #9fbad6; margin-top: 1px; }
 
+  /* v0.67: 敵図鑑（チャレンジ一覧と同じ全画面オーバーレイの見た目を流用） */
+  #codex-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    display: none; flex-direction: column;
+    padding: 16px 14px 24px; background: rgba(4,6,14,0.96);
+    z-index: 55; pointer-events: auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  #codex-overlay.visible { display: flex; }
+  #codex-overlay .tree-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+  #codex-overlay .tree-title { font-family: -apple-system, BlinkMacSystemFont, serif; font-size: 20px; font-weight: bold; color: #ffe0b0; letter-spacing: 0.12em; text-shadow: 0 0 20px rgba(255,140,40,0.6); }
+  #codex-overlay .tree-crystals { font-family: monospace; font-size: 14px; color: #8cd8ff; margin-left: auto; }
+  #codex-overlay .tree-close { font-size: 20px; color: #ff8888; background: none; border: none; cursor: pointer; padding: 0 6px; }
+  #codex-overlay .tree-hint { font-family: monospace; font-size: 11px; color: #8aa; margin-bottom: 12px; }
+  /* 時代の見出し（この時代から出る敵、の区切り） */
+  .cx-era { font-family: monospace; font-size: 12px; color: #ffd08a; letter-spacing: 0.1em;
+            margin: 14px 0 6px; padding-bottom: 3px; border-bottom: 1px solid #4a3a28; }
+  .cx-era:first-child { margin-top: 2px; }
+  .cx-list { display: flex; flex-direction: column; gap: 7px; }
+  .cx-row { display: flex; align-items: center; gap: 11px; padding: 8px 10px;
+            background: rgba(16,22,36,0.92); border: 1px solid #3a4a66; border-radius: 10px; }
+  .cx-row.elite { border-color: #b06a4a; box-shadow: 0 0 10px rgba(255,90,40,0.20); }
+  .cx-row.knock { border-color: #7ba8c8; }
+  /* 絵は縦横比がばらばら（縦長の塔・横長の車両）なので contain で収める */
+  .cx-thumb { width: 52px; height: 52px; flex: 0 0 52px; display: flex; align-items: center; justify-content: center;
+              background: rgba(0,0,0,0.35); border-radius: 8px; overflow: hidden; }
+  .cx-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; image-rendering: auto; }
+  .cx-body { min-width: 0; flex: 1 1 auto; }
+  .cx-name { font-size: 14px; font-weight: bold; color: #dce8f6; }
+  .cx-tags { font-family: monospace; font-size: 10px; color: #ffb070; margin-top: 1px; }
+  .cx-atk  { font-size: 11px; color: #9fbad6; margin-top: 2px; }
+  .cx-stat { font-family: monospace; font-size: 10px; color: #7d93ab; margin-top: 2px; }
+
   /* v0.25: チャレンジ達成トースト */
   #challenge-toast {
     position: fixed; left: 50%; top: 70px; transform: translateX(-50%) translateY(-12px);
@@ -576,6 +608,7 @@
 
 <!-- v0.25: チャレンジ一覧画面（タイトルから開く） -->
 <div id="challenge-overlay"></div>
+<div id="codex-overlay"></div>
 
 <!-- v0.25: チャレンジ達成トースト -->
 <div id="challenge-toast"></div>
@@ -589,7 +622,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.66.0";
+const GAME_VERSION = "v0.67.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9763,6 +9796,7 @@ const STRINGS = {
   backToTitle: "← もどる",
   openTree: (crystals) => `強化ツリー　🔷${crystals}`,
   openChallenges: (done, total) => `チャレンジ　${done}/${total}`,
+  openCodex: "敵図鑑",
   challengeDone: (name, reward) => `チャレンジ達成: ${name}  +${reward}🔷`,
   continueRun: (stageNum) => `つづきから　STAGE ${stageNum}`,
   cards: {
@@ -11966,6 +12000,150 @@ function renderChallenges() {
   });
 }
 
+// -----------------------------------------------------------------
+// v0.67: 敵図鑑（タイトル → 図鑑）
+// -----------------------------------------------------------------
+// 「絵・名前・出る時代・攻撃方法」を一覧で見られるようにする（Shooter指示）。
+// 後々アンロック式にするが、**今は開発用に全部解放**（CODEX_UNLOCK_ALL）。
+//
+// 表示するデータの出どころ:
+//   絵      … ENEMY_IMAGE_SOURCES（def.sprite があればそちらのキー）
+//   名前    … CODEX_ENEMY_NAMES（ここだけ手書き。デバッグ用の DEBUG_ENEMY_LABELS とは別物）
+//   出る時代… MOVER_SPAWNS_BY_STAGE / BOSS_GARRISON_BY_STAGE から**自動で引く**
+//   攻撃    … def.attack から**自動で組み立てる**（数値がずれないように）
+// 自動で引けないもの（レイダー・財宝馬車・巨獣・分裂体の子）だけ CODEX_SPECIAL_ERA に書く。
+const CODEX_UNLOCK_ALL = true;   // ← アンロック制にするときはここを profile 参照に変える
+
+const CODEX_ENEMY_NAMES = {
+  mammoth: "マンモス", mammoth_lord: "長牙のマンモス", lurker: "潜行者", clubmen: "石打ちの衆",
+  colossus: "コロッサス", gilded_colossus: "黄金の巨像", bullchariot: "牡牛戦車", shieldman: "鏡の盾兵",
+  knights: "騎士団", siegetower: "攻城塔", batteringram: "破城槌", splitter: "分裂体",
+  splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
+  ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
+  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵",
+  miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
+  healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
+  concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
+  behemoth_core: "巨獣（コア）", behemoth_arm: "巨獣の腕",
+  raider: "レイダー", treasure: "財宝馬車",
+};
+
+// 出現テーブルに載らない敵の出どころ（載っているものは自動で引く）
+const CODEX_SPECIAL_ERA = {
+  raider:         "全文明 — 建物が尽きると首都から湧く",
+  treasure:       "全文明 — 1体だけ漂う当たり枠",
+  behemoth_core:  "VI 電気 / VIII 最終",
+  behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
+  splitter_mid:   "分裂体を壊すと出る",
+  splitter_small: "分裂体（中）を壊すと出る",
+};
+
+/** その敵が出る文明を数字（I〜VIII）で並べた文字列にする。 */
+function codexEraLabel(key) {
+  if (CODEX_SPECIAL_ERA[key]) return CODEX_SPECIAL_ERA[key];
+  const eras = [];
+  for (let era = 0; era < STAGE_CONFIGS.length; era++) {
+    const roam = (MOVER_SPAWNS_BY_STAGE[era] ?? []).some(e => e[0] === key);
+    const gar  = (BOSS_GARRISON_BY_STAGE[era] ?? []).some(e => e[0] === key);
+    if (roam || gar) eras.push(CONTINENT_NUMERALS[era] + (roam ? "" : "*"));
+  }
+  if (eras.length === 0) return "—";
+  if (eras.length === STAGE_CONFIGS.length) return "全文明";
+  return eras.join(" ");
+}
+
+/** def.attack から攻撃の説明を組み立てる（数値は定義から直接引くのでずれない）。 */
+function codexAttackLabel(def) {
+  const a = def.attack;
+  if (!a) {
+    if (def.name === "behemoth_arm") return "叩きつけ衝撃波（コアの脇から）";
+    if (def.treasure) return "攻撃しない — 逃げ回る";
+    return "攻撃しない";
+  }
+  const t = a.type;
+  if (t === "shockwave") return `踏鳴らし 半径${a.radius}・押し${a.push ?? SHOCKWAVE_PUSH_DIST}・${a.interval}秒ごと`;
+  if (t === "beam")      return `眼光ビーム ${a.dps}dps・射程${a.range}` + (a.frontArc ? "（正面のみ）" : "");
+  if (t === "fan")       return `${a.pierce ? "貫通弾" : (a.kind === 1 ? "重弾" : "矢")}${a.count}連射 射程${a.range}・${a.interval}秒ごと`;
+  if (t === "broadside") return `舷側砲 ${a.count}連×左右・${a.interval}秒ごと` + (a.pierce ? "（貫通）" : "");
+  if (t === "bomb")      return `爆弾 範囲${a.aoe}・射程${a.range}・${a.interval}秒ごと`;
+  if (t === "hazard")    return `${a.atTarget ? "足元に" : "周囲に"}居座る帯 半径${a.radius}・${a.dps ?? a.damage}dps・${a.life}秒`;
+  if (t === "chain")     return `連鎖電撃 射程${a.range}・密集しているほど痛い`;
+  if (t === "heal")      return `周囲の建物と敵を回復 半径${a.radius}`;
+  if (t === "summon")    return `レイダーを召喚（最大${a.cap}体）`;
+  if (t === "shell")     return `着弾弾${a.count}発 範囲${a.aoe}・射程${a.range}（予告円つき）`;
+  return t;
+}
+
+/** 図鑑に並べる順。出る文明が早い順 → 同じ文明ならHPの軽い順。 */
+function codexEntries() {
+  const firstEra = (key) => {
+    for (let era = 0; era < STAGE_CONFIGS.length; era++) {
+      if ((MOVER_SPAWNS_BY_STAGE[era] ?? []).some(e => e[0] === key)) return era;
+      if ((BOSS_GARRISON_BY_STAGE[era] ?? []).some(e => e[0] === key)) return era;
+    }
+    return 99;   // 出現テーブルに載らない特殊枠は最後
+  };
+  return Object.keys(CODEX_ENEMY_NAMES)
+    .filter(k => MOVER_DEFS[k])
+    .map(k => ({ key: k, def: MOVER_DEFS[k], era: firstEra(k) }))
+    .sort((a, b) => (a.era - b.era) || (a.def.hp - b.def.hp));
+}
+
+const codexOverlayEl = document.getElementById("codex-overlay");
+function openCodex()  { renderCodex(); codexOverlayEl.classList.add("visible"); }
+function closeCodex() { codexOverlayEl.classList.remove("visible"); refreshTitleMenu(); }
+
+function renderCodex() {
+  const entries = codexEntries();
+  let html =
+    `<div class="tree-head">` +
+      `<div class="tree-title">敵図鑑</div>` +
+      `<div class="tree-crystals">${entries.length}種</div>` +
+      `<button class="tree-close">✕</button>` +
+    `</div>` +
+    `<div class="tree-hint">数字は出てくる文明。* は首都の守備隊だけに出る。` +
+      `${CODEX_UNLOCK_ALL ? "（開発中のため全解放）" : ""}</div>` +
+    `<div class="cx-list">`;
+
+  let shownEra = -1;
+  for (const e of entries) {
+    if (e.era !== shownEra) {
+      shownEra = e.era;
+      const head = e.era < STAGE_CONFIGS.length
+        ? `${CONTINENT_NUMERALS[e.era]}. ${STAGE_CONFIGS[e.era].name}`
+        : "特殊枠";
+      html += `</div><div class="cx-era">${head}</div><div class="cx-list">`;
+    }
+    const def = e.def;
+    const spriteKey = def.sprite ?? def.name;
+    const src = ENEMY_IMAGE_SOURCES[spriteKey];
+    const tags = [];
+    if (def.elite) tags.push("エリート");
+    if (def.knockback) tags.push("押してくる");
+    if (def.flying) tags.push("飛行");
+    if (def.packCount) tags.push(`${def.packCount}体の隊`);
+    if (def.shieldArc !== undefined) tags.push("正面を弾く");
+    if (def.submerge) tags.push("潜る");
+    if (def.splitInto) tags.push("分裂する");
+    html +=
+      `<div class="cx-row ${def.elite ? "elite" : ""} ${def.knockback ? "knock" : ""}">` +
+        `<div class="cx-thumb">${src ? `<img src="${src}" alt="">` : "？"}</div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${CODEX_ENEMY_NAMES[e.key]}</div>` +
+          `<div class="cx-tags">${codexEraLabel(e.key)}${tags.length ? " ／ " + tags.join("・") : ""}</div>` +
+          `<div class="cx-atk">${codexAttackLabel(def)}</div>` +
+          `<div class="cx-stat">HP ${def.hp} ／ XP ${def.xp} ／ 卵 ${def.eggDrop ?? 0}</div>` +
+        `</div>` +
+      `</div>`;
+  }
+  html += `</div>`;
+  codexOverlayEl.innerHTML = html;
+  codexOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    closeCodex();
+  });
+}
+
 const titleHintEl = document.getElementById("title-hint");
 const titleMenuEl = document.getElementById("title-menu");
 
@@ -12007,6 +12185,13 @@ function refreshTitleMenu() {
   chBtn.textContent = STRINGS.openChallenges(chRate.done, chRate.total);
   chBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openChallenges(); });
   titleMenuEl.appendChild(chBtn);
+
+  // v0.67: 敵図鑑（絵・名前・出る文明・攻撃方法の一覧）
+  const cxBtn = document.createElement("button");
+  cxBtn.className = "title-btn";
+  cxBtn.textContent = STRINGS.openCodex;
+  cxBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openCodex(); });
+  titleMenuEl.appendChild(cxBtn);
 }
 
 // ---- ラン開始（タイトル → STAGE 1）----
