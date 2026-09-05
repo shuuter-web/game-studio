@@ -471,6 +471,15 @@
   .cx-tags { font-family: monospace; font-size: 10px; color: #ffb070; margin-top: 1px; }
   .cx-atk  { font-size: 11px; color: #9fbad6; margin-top: 2px; }
   .cx-stat { font-family: monospace; font-size: 10px; color: #7d93ab; margin-top: 2px; }
+  /* v0.68: 敵／建物／弾 のタブ */
+  .cx-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .cx-tab { flex: 1 1 0; padding: 8px 4px; font-family: monospace; font-size: 12px;
+            color: #9fbad6; background: rgba(16,22,36,0.92); border: 1px solid #3a4a66;
+            border-radius: 8px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .cx-tab.on { color: #ffe0b0; border-color: #b08a4a; background: rgba(46,34,20,0.92); }
+  /* 弾の見本（drawEraShot が実際に描くのと同じ絵をここに出す） */
+  .cx-shot { width: 52px; height: 52px; flex: 0 0 52px; background: rgba(0,0,0,0.35);
+             border-radius: 8px; }
 
   /* v0.25: チャレンジ達成トースト */
   #challenge-toast {
@@ -622,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.67.0";
+const GAME_VERSION = "v0.68.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -12089,19 +12098,130 @@ function codexEntries() {
     .sort((a, b) => (a.era - b.era) || (a.def.hp - b.def.hp));
 }
 
+// -----------------------------------------------------------------
+// v0.68: 建物と弾のページ
+// -----------------------------------------------------------------
+// 建物側も「絵・名前・出る文明・撃ってくるもの」で揃える。
+// 建物の絵は無彩色のスプライトを街の色でティントして使い回しているので、
+// 図鑑では**代表色でティントせず素のまま**出す（形が分かればよい）。
+const CODEX_EMPLACEMENT_DESC = {
+  trebuchet: "巨岩を1発。一番遅い飛来物で、予告円を見てから退ける",
+  ember:     "足元に燃える輪を置く。弾ではないので避けるのではなく退く",
+  ballista:  "重矢の3連射。線なので横へ抜ければ避けられるが当たると大きく飛ぶ",
+  rocket:    "遅い大弾を5発、扇状に。飛んでくる間に群れを退かせる猶予がある",
+  mortar:    "群れの周りへ3発を散らして落とす。時間差なので割って抜けられる",
+  tesla:     "最寄りの竜から仲間へ飛び移る連鎖電撃。固めているほど痛い",
+  flak:      "小さい炸裂を群れの周囲へ広く撒いて逃げ場を削る",
+  prism:     "首都の極太レーザーの小型版。細いぶん予兆から外れやすい",
+  concussionBattery: "ノックバック弾の斉射。着弾点の周りごと押す",
+};
+
+/** 時代兵器がどの文明に何基置かれるか（STAGE_FEATURES から自動で引く）。 */
+function codexEmplacementEras(key) {
+  if (key === "concussionBattery") {
+    return `全文明 — 首都${CONCUSSION_IN_CAPITAL}・要塞都市に1・格上の街の一部`;
+  }
+  const parts = [];
+  for (let era = 0; era < STAGE_FEATURES.length; era++) {
+    const hit = (STAGE_FEATURES[era].emplacements ?? []).find(e => e[0] === key);
+    if (hit) parts.push(`${CONTINENT_NUMERALS[era]}×${hit[1]}`);
+  }
+  return parts.length ? parts.join(" ") : "—";
+}
+
+// 通常の建物（時代兵器を持たない大多数）。撃ち方は STAGE_CONFIGS の size ごとの設定。
+const CODEX_BUILDING_SIZES = [
+  { size: "small",  label: "小屋・民家",   note: "すぐ壊れて卵が出る育成枠" },
+  { size: "medium", label: "中規模の建物", note: "" },
+  { size: "large",  label: "大型の建物",   note: "重いカタパルト弾を撃つ。時代兵器はこの枠に載る" },
+];
+
+/** 弾の見本を1つ描いた canvas を作って返す（本編と同じ drawEraShot を使う）。 */
+function codexShotCanvas(styleKey, color, scale) {
+  const cv = document.createElement("canvas");
+  cv.width = 104; cv.height = 104;          // DPR2相当。CSSで52pxに縮める
+  cv.className = "cx-shot";
+  const c = cv.getContext("2d");
+  c.scale(2, 2);
+  c.translate(26, 26);
+  drawEraShot(c, styleKey, 0, 0, 0, color, scale, 0);
+  return cv;
+}
+
+// 首都の大技の表示名（内部キーのままだと図鑑で読めないので）
+const CODEX_BOSS_ART_NAMES = {
+  boulders: "巨岩投擲", pillars: "神託の光柱", arrowRain: "矢の雨", volley: "一斉射",
+  carpet: "絨毯爆撃", laser: "極太レーザー", flakStorm: "対空弾幕", prismCross: "十字プリズム",
+};
+
+const CODEX_SHOT_NAMES = {
+  sling: "投石", javelin: "投槍", bolt: "弩の矢", musket: "鉛玉",
+  shell: "榴弾", arc: "放電弾", tracer: "曳光弾", plasma: "プラズマ弾",
+};
+const CODEX_SHOT_DESC = {
+  sling:   "回る不定形の石。一番遅く、見てから避けやすい",
+  javelin: "矢羽根がなく穂先が長い細身",
+  bolt:    "羽根つきの矢。標準の速さ",
+  musket:  "小さい鉛玉に白煙がひと筋。速い",
+  shell:   "黒い弾体に煙の尾",
+  arc:     "青白い芯とぎざぎざの尾",
+  tracer:  "光の線そのもの。一番速い",
+  plasma:  "コロナと残光をまとった光球",
+};
+// 通常弾の描画（drawEraShot）を通らない弾。形は本編の drawProjectiles が直接描いている
+const CODEX_SPECIAL_SHOTS = [
+  { icon: "🟠", name: "ボスの重い光弾", from: "首都",
+    desc: "脈打つ光の玉。当たると位置ごと押し戻される" },
+  { icon: "🚀", name: "ロケット弾", from: "ロケット砲台",
+    desc: "弾体＋噴射炎＋煙の尾。遅いので飛んでくる間に退ける。着弾で範囲被害" },
+  { icon: "🎯", name: "着弾弾", from: "投石機・臼砲台・対空砲・首都の大技",
+    desc: "飛行中は当たらない。落下点に予告円が出て、そこで炸裂する" },
+  { icon: "💥", name: "範囲攻撃の見せ弾", from: "火吹き車・首都の光柱",
+    desc: "当たり判定なし。予告時間ちょうどで着弾し、そこから燃え始める" },
+];
+
 const codexOverlayEl = document.getElementById("codex-overlay");
-function openCodex()  { renderCodex(); codexOverlayEl.classList.add("visible"); }
+let codexTab = "enemy";   // "enemy" | "building" | "shot"
+function openCodex()  { codexTab = "enemy"; renderCodex(); codexOverlayEl.classList.add("visible"); }
 function closeCodex() { codexOverlayEl.classList.remove("visible"); refreshTitleMenu(); }
 
 function renderCodex() {
-  const entries = codexEntries();
+  const tabs = [["enemy", "敵"], ["building", "建物"], ["shot", "弾"]];
   let html =
     `<div class="tree-head">` +
-      `<div class="tree-title">敵図鑑</div>` +
-      `<div class="tree-crystals">${entries.length}種</div>` +
+      `<div class="tree-title">図鑑</div>` +
       `<button class="tree-close">✕</button>` +
     `</div>` +
-    `<div class="tree-hint">数字は出てくる文明。* は首都の守備隊だけに出る。` +
+    `<div class="cx-tabs">` +
+      tabs.map(([id, label]) =>
+        `<button class="cx-tab ${codexTab === id ? "on" : ""}" data-tab="${id}">${label}</button>`).join("") +
+    `</div>`;
+
+  if (codexTab === "building") html += codexBuildingHtml();
+  else if (codexTab === "shot") html += codexShotHtml();
+  else html += codexEnemyHtml();
+
+  codexOverlayEl.innerHTML = html;
+  // 弾のページは canvas を後から差し込む（innerHTML では canvas の中身を渡せない）
+  if (codexTab === "shot") codexFillShotCanvases();
+  codexOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    closeCodex();
+  });
+  for (const b of codexOverlayEl.querySelectorAll(".cx-tab")) {
+    b.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      codexTab = b.getAttribute("data-tab");
+      renderCodex();
+    });
+  }
+}
+
+/** 敵ページ。 */
+function codexEnemyHtml() {
+  const entries = codexEntries();
+  let html =
+    `<div class="tree-hint">${entries.length}種。数字は出てくる文明。* は首都の守備隊だけに出る。` +
       `${CODEX_UNLOCK_ALL ? "（開発中のため全解放）" : ""}</div>` +
     `<div class="cx-list">`;
 
@@ -12137,11 +12257,126 @@ function renderCodex() {
       `</div>`;
   }
   html += `</div>`;
-  codexOverlayEl.innerHTML = html;
-  codexOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
-    e.stopPropagation();
-    closeCodex();
-  });
+  return html;
+}
+
+/** 建物ページ。時代兵器 → 通常の建物 → 首都・城壁 の順。 */
+function codexBuildingHtml() {
+  let html =
+    `<div class="tree-hint">「×N」はその文明に置かれる数。時代兵器は large 建物のいくつかが変化したもの。</div>` +
+    `<div class="cx-era">時代兵器（目印の輪が出る建物）</div><div class="cx-list">`;
+  for (const key of Object.keys(EMPLACEMENT_DEFS)) {
+    const def = EMPLACEMENT_DEFS[key];
+    html +=
+      `<div class="cx-row" style="border-color:${def.ring}">` +
+        `<div class="cx-thumb"><img src="${BUILDING_IMAGE_SOURCES.large}" alt=""></div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${def.label}</div>` +
+          `<div class="cx-tags">${codexEmplacementEras(key)}</div>` +
+          `<div class="cx-atk">${CODEX_EMPLACEMENT_DESC[key] ?? ""}</div>` +
+          `<div class="cx-stat">射程 ${def.range} ／ ${def.interval}秒ごと` +
+            `${def.knockback ? " ／ 押してくる" : ""}</div>` +
+        `</div>` +
+      `</div>`;
+  }
+  html += `</div><div class="cx-era">普通の建物（弾は文明ごとに変わる）</div><div class="cx-list">`;
+  for (const b of CODEX_BUILDING_SIZES) {
+    // 数値は文明でばらつくので、代表として最初と最後の文明を並べる
+    const first = STAGE_CONFIGS[0].buildings[b.size];
+    const last  = STAGE_CONFIGS[STAGE_CONFIGS.length - 1].buildings[b.size];
+    html +=
+      `<div class="cx-row">` +
+        `<div class="cx-thumb"><img src="${BUILDING_IMAGE_SOURCES[b.size]}" alt=""></div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${b.label}</div>` +
+          `<div class="cx-tags">全文明</div>` +
+          `<div class="cx-atk">${b.note || "その文明の通常弾を撃つ"}</div>` +
+          `<div class="cx-stat">射程 ${first.attackRadius}〜${last.attackRadius} ／ ` +
+            `${first.projectileInterval}〜${last.projectileInterval}秒ごと ／ ` +
+            `1度に${first.projectileCount}〜${last.projectileCount}発</div>` +
+        `</div>` +
+      `</div>`;
+  }
+  html += `</div><div class="cx-era">首都と城壁</div><div class="cx-list">` +
+    `<div class="cx-row elite">` +
+      `<div class="cx-thumb"><img src="${ENEMY_IMAGE_SOURCES.citadel}" alt=""></div>` +
+      `<div class="cx-body">` +
+        `<div class="cx-name">首都</div>` +
+        `<div class="cx-tags">全文明 ／ 文明ごとに大技が違う</div>` +
+        `<div class="cx-atk">重い光弾＋反発衝撃波。加えて文明ごとの大技 — ` +
+          `${STAGE_FEATURES.map((f, i) =>
+              CONTINENT_NUMERALS[i] + " " + (CODEX_BOSS_ART_NAMES[f.bossArt] ?? f.bossArt)).join(" ／ ")}</div>` +
+        `<div class="cx-stat">射程 ${BOSS_ATTACK_RADIUS} ／ 衝撃波 半径${BOSS_NOVA_RADIUS}</div>` +
+      `</div>` +
+    `</div>` +
+    `<div class="cx-row">` +
+      `<div class="cx-thumb">🧱</div>` +
+      `<div class="cx-body">` +
+        `<div class="cx-name">城壁</div>` +
+        `<div class="cx-tags">II 以降（首都の周り／一部の町）</div>` +
+        `<div class="cx-atk">攻撃しない。竜が通り抜けられない壁。門から入るか壊す</div>` +
+        `<div class="cx-stat">1枚のHP ${WALL_STAGE_CONFIG[1].hp}〜${WALL_STAGE_CONFIG[WALL_STAGE_CONFIG.length - 1].hp}` +
+          `（町壁はこの0.7倍）</div>` +
+      `</div>` +
+    `</div></div>`;
+  return html;
+}
+
+/** 弾ページ。実際の描画関数で見本を描くので、本編の見た目とずれない。 */
+function codexShotHtml() {
+  let html =
+    `<div class="tree-hint">絵は本編と同じ描画で出している。通常弾は文明ごとに形と速さが変わる。</div>` +
+    `<div class="cx-era">文明ごとの通常弾</div><div class="cx-list">`;
+  for (let i = 0; i < SHOT_STYLES.length; i++) {
+    const st = SHOT_STYLES[i];
+    html +=
+      `<div class="cx-row">` +
+        `<div class="cx-shot-slot" data-style="${st.key}" data-scale="1"></div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${CODEX_SHOT_NAMES[st.key]}</div>` +
+          `<div class="cx-tags">${CONTINENT_NUMERALS[i]}. ${STAGE_CONFIGS[i].name}</div>` +
+          `<div class="cx-atk">${CODEX_SHOT_DESC[st.key]}</div>` +
+          `<div class="cx-stat">速さ ×${st.speedMult.toFixed(2)}（この文明の基準に対して）</div>` +
+        `</div>` +
+      `</div>`;
+  }
+  html += `</div><div class="cx-era">大きさの違う同じ弾</div><div class="cx-list">` +
+    `<div class="cx-row">` +
+      `<div class="cx-shot-slot" data-style="bolt" data-scale="1.55"></div>` +
+      `<div class="cx-body">` +
+        `<div class="cx-name">重弾（カタパルト弾）</div>` +
+        `<div class="cx-tags">大型の建物・首都・押してくる敵</div>` +
+        `<div class="cx-atk">形は同じで一回り大きい。当たると大きく吹き飛ばされる</div>` +
+        `<div class="cx-stat">通常弾の1.55倍で描かれる</div>` +
+      `</div>` +
+    `</div></div>` +
+    `<div class="cx-era">特別な弾</div><div class="cx-list">`;
+  for (const k of CODEX_SPECIAL_SHOTS) {
+    html +=
+      `<div class="cx-row">` +
+        `<div class="cx-thumb" style="font-size:22px">${k.icon}</div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${k.name}</div>` +
+          `<div class="cx-tags">${k.from}</div>` +
+          `<div class="cx-atk">${k.desc}</div>` +
+        `</div>` +
+      `</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+/** 弾ページの見本 canvas を差し込む（innerHTML では canvas の中身を渡せないため後入れ）。 */
+function codexFillShotCanvases() {
+  for (const slot of codexOverlayEl.querySelectorAll(".cx-shot-slot")) {
+    const key = slot.getAttribute("data-style");
+    const sc  = parseFloat(slot.getAttribute("data-scale")) || 1;
+    const st  = SHOT_STYLES.find(x => x.key === key) ?? SHOT_STYLES[2];
+    const era = SHOT_STYLES.indexOf(st);
+    // 弾の色はその文明の large 建物のものを使う（本編で一番よく見る色）
+    const color = (STAGE_CONFIGS[era] ?? STAGE_CONFIGS[2]).buildings.large.projectileColor;
+    slot.replaceWith(codexShotCanvas(key, color, st.size * sc));
+  }
 }
 
 const titleHintEl = document.getElementById("title-hint");
@@ -14809,13 +15044,15 @@ function drawProjectiles() {
     // 弾はラン中ずっと画面を飛び続けるので、ここが「今どの時代に居るか」を語る最大の面積。
     const style = SHOT_STYLES[projStyle[i]] ?? SHOT_STYLES[2];
     // カタパルト弾（large/首都）は一回り大きい＝重い弾だと一目で分かる（従来の大小差を維持）
-    drawEraShot(style.key, projWx[i], projWy[i], angle, color,
+    drawEraShot(ctx, style.key, projWx[i], projWy[i], angle, color,
                 style.size * (projKind[i] === 1 ? 1.55 : 1.0), i);
   }
 }
 
 /**
  * v0.57: 文明ごとの通常弾を1発描く。
+ * v0.68: 描画先 `c` を引数で受け取る（図鑑が別canvasに見本を描くため。本編は ctx を渡す）。
+ * @param {CanvasRenderingContext2D} c  描画先
  * @param {string} key   SHOT_STYLES[].key
  * @param {number} x     ワールド座標X
  * @param {number} y     ワールド座標Y
@@ -14824,7 +15061,8 @@ function drawProjectiles() {
  * @param {number} sc    大きさ倍率（カタパルト弾は 1.55 倍）
  * @param {number} seed  弾ごとの位相ずらし（脈動が揃わないように）
  */
-function drawEraShot(key, x, y, ang, color, sc, seed) {
+function drawEraShot(c, key, x, y, ang, color, sc, seed) {
+  const ctx = c;   // 以下の本体は ctx をそのまま使う（呼び出し側の書き換えを最小にする）
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(ang);
