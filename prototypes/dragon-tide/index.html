@@ -589,7 +589,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.63.0";
+const GAME_VERSION = "v0.66.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -695,6 +695,30 @@ function debugAddDragons(n) {
 }
 
 // プロファイルとラン再開データを消して初回ラン状態に戻す（初回/2回目フローの検証用）。
+/**
+ * v0.65: 全文明（開始時代）を解放する（Shooter指示）。
+ * ラン構成が「1ラン＝1文明」になってから、後半の時代を確認するには
+ * 前の文明を全部クリアする必要があり、動作確認に何十分もかかっていた。
+ *
+ * 解放フラグを立てるだけでは足りない点が2つある:
+ *   - 初回ラン（runsStarted=0）はタイトルのメニュー自体が出ず、
+ *     beginRun も era 0 に固定する（`currentRunIsFirst ? 0 : ...`）ので選べない
+ *   - 大陸選択が開いたままだと、その場では鍵アイコンが消えない
+ * どちらもここで面倒を見る。
+ */
+function debugUnlockAllContinents() {
+  if (!profile) return;
+  profile.unlockedContinents = CONTINENT_DEFS.length;
+  // 「初回ラン」扱いのままだと文明を選べないので、1回遊んだ状態にしておく
+  if (profile.runsStarted <= 0) profile.runsStarted = 1;
+  saveProfile();
+  if (gameState === "title") {
+    refreshTitleMenu();
+    // 大陸選択を開いている最中なら、その場で描き直して鍵を外す
+    if (continentSelecting) showContinentSelect();
+  }
+}
+
 function debugResetProfile() {
   try {
     localStorage.removeItem(PROFILE_KEY);
@@ -851,6 +875,7 @@ const DEBUG_ACTIONS = [
   { label: "🐉 竜 +10",              run: () => debugAddDragons(10) },
   { label: "💠 XP +500",             run: () => { if (gameState === "playing") addXp(500); } },
   { label: "🔷 竜晶 +100",           run: () => { profile.crystals += 100; saveProfile(); } },
+  { label: "🗺 全文明を解放",         run: () => debugUnlockAllContinents() },
   { label: "🗑 再開データ削除",       run: () => { clearRunSave(); refreshTitleMenu(); } },
   { label: "♻ プロファイル初期化",   run: () => debugResetProfile() },
 ];
@@ -866,7 +891,9 @@ function debugStatusLine() {
   const move = moveProfileOverride ? moveProfileOverride : `種:${flockSpecies}`;
   // v0.34.1: 反動は「定義値」か上書き値かを出す（実機で今どの設定か分かるように）
   const rec = debugRecoilOverride === null ? `既定(${atk().recoilDist})` : `${debugRecoilOverride}`;
-  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}` +
+  const cont = (typeof profile !== "undefined" && profile)
+    ? `文明:${unlockedContinentCount()}/${CONTINENT_DEFS.length} ` : "";
+  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}${cont}` +
          `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
          `動き:${move} / 反動:${rec} / ` +
@@ -4841,9 +4868,12 @@ const hazardShots = [];
  * @param {number} tx,ty  着弾点（危険地帯の中心）
  * @param {number} life   飛行時間（＝予告時間）
  */
-function spawnHazardShot(fx, fy, tx, ty, life, color) {
+function spawnHazardShot(fx, fy, tx, ty, life, color, radius) {
   if (hazardShots.length >= MAX_HAZARD_SHOTS) hazardShots.shift();
-  hazardShots.push({ fx, fy, tx, ty, t: 0, life, color });
+  // v0.64: 弾の大きさは**置かれる危険地帯の大きさ**に比例させる（Shooter指示「もっと大きく」）。
+  // 大きい輪ほど大きい塊が飛んでくる＝着弾前に規模が読める。
+  const scale = Math.max(0.9, Math.min(2.1, (radius ?? 110) / 95));
+  hazardShots.push({ fx, fy, tx, ty, t: 0, life, color, scale });
 }
 
 function updateHazardShots(dt) {
@@ -4872,24 +4902,46 @@ function drawHazardShots() {
     const bx = gx + (-dy / len) * lift;
     const by = gy + ( dx / len) * lift;
 
-    ctx.globalAlpha = 0.22;
+    const sc = h.scale ?? 1;
+
+    // 地面の影（弾が高いほど小さく薄い＝高度が読める）
+    ctx.globalAlpha = 0.30 * (1 - 0.5 * Math.sin(p * Math.PI));
     ctx.fillStyle = "#000000";
     ctx.beginPath();
-    ctx.ellipse(gx, gy, 4.5, 2.4, 0, 0, Math.PI * 2);   // 地面の影
+    ctx.ellipse(gx, gy, 9 * sc, 4.5 * sc, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.globalAlpha = 0.30;
+    // 尾: 少し前の位置を3つ、小さく薄く重ねる（飛んでいる向きが読める）
+    for (let k = 1; k <= 3; k++) {
+      const pt = Math.max(0, p - k * 0.045);
+      const tgx = h.fx + (h.tx - h.fx) * pt;
+      const tgy = h.fy + (h.ty - h.fy) * pt;
+      const tl  = Math.sin(pt * Math.PI) * Math.min(70, len * 0.22);
+      ctx.globalAlpha = 0.20 - k * 0.045;
+      ctx.fillStyle = h.color;
+      ctx.beginPath();
+      ctx.arc(tgx + (-dy / len) * tl, tgy + (dx / len) * tl, (12 - k * 2.2) * sc, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 本体: 脈打つ外光 → 芯 → 白いハイライト
+    const pulse = 0.88 + 0.12 * Math.sin(breathTime * 18 + h.fx * 0.01);
+    ctx.globalAlpha = 0.34;
     ctx.fillStyle = h.color;
     ctx.beginPath();
-    ctx.arc(bx, by, 9, 0, Math.PI * 2);                  // 外側のもや
+    ctx.arc(bx, by, 20 * sc * pulse, 0, Math.PI * 2);
     ctx.fill();
-    ctx.globalAlpha = 0.95;
+    ctx.globalAlpha = 0.75;
     ctx.beginPath();
-    ctx.arc(bx, by, 4.2, 0, Math.PI * 2);                // 芯
+    ctx.arc(bx, by, 12 * sc * pulse, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.globalAlpha = 1;
     ctx.beginPath();
-    ctx.arc(bx - 1.2, by - 1.2, 1.6, 0, Math.PI * 2);    // ハイライト
+    ctx.arc(bx, by, 7.5 * sc, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.beginPath();
+    ctx.arc(bx - 2.2 * sc, by - 2.2 * sc, 3.0 * sc, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -4906,7 +4958,7 @@ function spawnHazard(x, y, radius, life, dps, color, growFrom = radius, fromX, f
   if (fromX !== undefined && fromY !== undefined) {
     const fdx = x - fromX, fdy = y - fromY;
     if (fdx * fdx + fdy * fdy > 60 * 60) {
-      spawnHazardShot(fromX, fromY, x, y, HAZARD_WARN_TIME, color);
+      spawnHazardShot(fromX, fromY, x, y, HAZARD_WARN_TIME, color, radius);
     }
   }
   if (hazards.length >= HAZARD_MAX) hazards.shift();
