@@ -65,10 +65,14 @@ function checkDeterministicRandom({ text, lines, fileLabel }, fail) {
   }
 }
 
-/** 参照しているアセットが実在するか（生成漏れ・リネーム漏れの検出） */
+/**
+ * 参照しているアセットが実在するか（生成漏れ・リネーム漏れの検出）。
+ * `../<プロト名>/assets/...` も対象にする。描画だけを差し替えた別バージョンのプロトが、
+ * 7MBのPNGを複製せず元プロトのアセットを参照するため（複製すると更新が二重管理になる）。
+ */
 function checkAssetsExist({ text, dir, fileLabel }, fail) {
   const referenced = new Set(
-    [...text.matchAll(/["'`](assets\/[A-Za-z0-9_\-./]+\.(?:png|jpg|jpeg|webp|svg))["'`]/g)]
+    [...text.matchAll(/["'`]((?:\.\.\/[A-Za-z0-9_\-.]+\/)*assets\/[A-Za-z0-9_\-./]+\.(?:png|jpg|jpeg|webp|svg))["'`]/g)]
       .map((match) => match[1]),
   );
   const missing = [...referenced].filter((rel) => !fs.existsSync(path.join(dir, rel)));
