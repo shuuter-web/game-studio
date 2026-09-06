@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>SKETCH VOXEL — 手描きの島を壊す</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+  body {
+    background: #e9e2d4;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+    color: #2b2620;
+    touch-action: none;
+  }
+  #stage { display: block; width: 100%; height: 100%; }
+
+  .panel {
+    position: fixed;
+    background: rgba(247, 242, 232, 0.88);
+    border: 1.5px solid rgba(43, 38, 32, 0.55);
+    border-radius: 3px;
+    padding: 7px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    /* 手描きの紙に貼った付箋のように、ほんの少し傾ける */
+    box-shadow: 2px 3px 0 rgba(43, 38, 32, 0.18);
+  }
+  #hud { top: 10px; left: 10px; transform: rotate(-0.5deg); }
+  #hud b { font-size: 15px; }
+  #hud .sub { color: #6c645a; font-size: 10.5px; }
+  #fps { top: 10px; right: 10px; transform: rotate(0.4deg); color: #6c645a; }
+
+  #tools {
+    bottom: 12px; left: 50%; transform: translateX(-50%) rotate(0.3deg);
+    display: flex; gap: 6px; align-items: center; padding: 6px;
+  }
+  button {
+    font: inherit; font-size: 12px;
+    background: transparent; color: #2b2620;
+    border: 1.5px solid rgba(43, 38, 32, 0.5);
+    border-radius: 3px;
+    padding: 6px 10px; cursor: pointer; white-space: nowrap;
+    transition: background 0.1s, transform 0.06s;
+  }
+  button:active { transform: translateY(1px); }
+  button.on { background: #2b2620; color: #f5efe3; }
+  #tools .lbl { font-size: 11px; color: #6c645a; padding: 0 2px; }
+
+  #hint {
+    position: fixed; left: 50%; bottom: 62px; transform: translateX(-50%);
+    font-size: 11.5px; color: #6c645a; white-space: nowrap;
+    transition: opacity 0.5s;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<div class="panel" id="hud">
+  <div><b id="h-left">0</b> <span class="sub">ブロック残</span></div>
+  <div class="sub">壊した <span id="h-broken">0</span> ／ 破片 <span id="h-chips">0</span></div>
+  <div class="sub" id="h-boil">線 10コマ/秒</div>
+</div>
+
+<div class="panel" id="fps">FPS <span id="h-fps">--</span></div>
+
+<div class="panel" id="tools">
+  <span class="lbl">範囲</span>
+  <button data-radius="0" class="on">1</button>
+  <button data-radius="1">3</button>
+  <button data-radius="2">5</button>
+  <span class="lbl">|</span>
+  <button id="btn-reset">作り直す</button>
+</div>
+
+<div id="hint">タップで壊す ／ ドラッグで回す ／ ピンチ・ホイールで寄る</div>
+
+<script>
+"use strict";
+
+// -----------------------------------------------------------------
+// SKETCH VOXEL — 手描きストロークで描いた3Dボクセルの島を、タップで壊すサンプル
+//
+// 画像アセットを一切使わず、ボクセルの面と稜線をその場で描いている。
+// **線は常に沸いている（boil）**: ジッターの種に「沸きコマ番号」を混ぜてあるので、
+// 何も操作していなくても線が毎秒 BOIL_FPS 回だけ引き直される。
+// 手描きアニメが線を1コマずつ引き直すのと同じ理屈で、これが紙で描いた感じの正体。
+//
+// 静止画をキャッシュして使い回す最適化は入れていない（入れると線が止まるため）。
+// 代わりに「沸きコマが変わったときだけ島を描き直し、破片は毎フレーム描く」
+// という二段構えにして、線の沸きと動きの滑らかさを両立させている。
+// -----------------------------------------------------------------
+const GAME_VERSION = "v0.1.0";
+
+// -----------------------------------------------------------------
+// 乱数（スタジオ共通ルール）
+//   random()   … 世界の形に影響する乱数（?seed= で再現する対象）
+//   fxRandom() … 見た目だけの乱数
+// -----------------------------------------------------------------
+function makeRandomGenerator(seedValue) {   // mulberry32
+  let state = seedValue >>> 0;
+  return function nextRandom() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hashSeed(text) {
+  let hash = 0x811C9DC5;
+  const source = String(text);
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+let currentSeed = 0;
+let nextLogicRandom = null;
+let nextFxRandom = null;
+function reseedRandom(seed) {
+  currentSeed = typeof seed === "number" ? (seed >>> 0) : hashSeed(seed);
+  nextLogicRandom = makeRandomGenerator(currentSeed);
+  // 演出用は別ストリーム。破片が何個出ようと世界の形の乱数列はずれない
+  nextFxRandom = makeRandomGenerator((currentSeed ^ 0x9E3779B9) >>> 0);
+  return currentSeed;
+}
+function random()   { return nextLogicRandom(); }
+function fxRandom() { return nextFxRandom(); }
+const fixedSeedParam = new URLSearchParams(location.search).get("seed");
+
+/** 線のゆらぎ用ハッシュ。乱数列を消費しないので、破壊の有無で島の形が変わらない。 */
+function hash3(a, b, c) {
+  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1) ^ Math.imul(c | 0, 0x1b873593);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+// -----------------------------------------------------------------
+// 設定
+// -----------------------------------------------------------------
+const BOIL_FPS = 10;          // 線を引き直す毎秒コマ数。ここが「沸き」の速さ
+const GX = 15, GY = 15, GZ = 15;
+const GROUND_Y = 9;           // グリッドのこの段が世界のy=0
+const ISLAND_RADIUS = 6.6;
+
+const PAPER = "#efe8da";
+const INK   = "43,38,32";     // 少し茶を含んだ黒。純黒より紙に馴染む
+
+// マテリアル（0=空）。色は面の向きで陰影をつけて使う
+const MATERIALS = [
+  null,
+  { name: "grass",   color: [126, 172, 86],  hatch: false },
+  { name: "dirt",    color: [176, 133, 83],  hatch: true  },
+  { name: "stone",   color: [154, 158, 162], hatch: true  },
+  { name: "crystal", color: [111, 198, 216], hatch: false },
+];
+const M_GRASS = 1, M_DIRT = 2, M_STONE = 3, M_CRYSTAL = 4;
+
+// 面の向きごとの明るさ。上を最も明るく、下を最も暗くする
+const FACE_SHADE = { top: 1.0, bottom: 0.5, side: 0.78 };
+
+// -----------------------------------------------------------------
+// 立方体の6面（軸と符号から機械的に作る。手で座標を書くと必ずどこかで間違える）
+// -----------------------------------------------------------------
+function edgeTangent(axis, a, b) {
+  // 辺 a→b の「面内での外向き」。この方向の隣の面が続いていれば、そこは折り目ではない
+  for (let ax = 0; ax < 3; ax++) {
+    if (ax === axis) continue;
+    if (a[ax] === b[ax]) {
+      const t = [0, 0, 0];
+      t[ax] = a[ax] === 1 ? 1 : -1;
+      return t;
+    }
+  }
+  return [0, 0, 0];
+}
+function buildCubeFaces() {
+  const faces = [];
+  for (let axis = 0; axis < 3; axis++) {
+    for (const sign of [1, -1]) {
+      const normal = [0, 0, 0];
+      normal[axis] = sign;
+      const u = (axis + 1) % 3, v = (axis + 2) % 3;
+      const quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([a, b]) => {
+        const p = [0, 0, 0];
+        p[axis] = sign === 1 ? 1 : 0;
+        p[u] = a;
+        p[v] = b;
+        return p;
+      });
+      const tangents = quad.map((c, i) => edgeTangent(axis, c, quad[(i + 1) % 4]));
+      faces.push({ axis, sign, normal, quad, tangents });
+    }
+  }
+  return faces;
+}
+const CUBE_FACES = buildCubeFaces();
+
+// -----------------------------------------------------------------
+// 世界
+// -----------------------------------------------------------------
+const cells = new Uint8Array(GX * GY * GZ);
+let solidCount = 0;
+let brokenCount = 0;
+
+function cellIndex(x, y, z) { return (y * GZ + z) * GX + x; }
+function inGrid(x, y, z) { return x >= 0 && y >= 0 && z >= 0 && x < GX && y < GY && z < GZ; }
+function cellAt(x, y, z) { return inGrid(x, y, z) ? cells[cellIndex(x, y, z)] : 0; }
+
+/** 種から決まる2次元のバリューノイズ（島の輪郭と起伏に使う） */
+function makeNoise2D(size) {
+  const lattice = new Float32Array(size * size);
+  for (let i = 0; i < lattice.length; i++) lattice[i] = random();
+  const wrap = (v) => ((v % size) + size) % size;
+  return function noise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const sx = xf * xf * (3 - 2 * xf), sy = yf * yf * (3 - 2 * yf);
+    const at = (ax, ay) => lattice[wrap(ay) * size + wrap(ax)];
+    const a = at(xi, yi), b = at(xi + 1, yi), c = at(xi, yi + 1), d = at(xi + 1, yi + 1);
+    return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
+  };
+}
+
+function generateIsland(seed) {
+  reseedRandom(seed);
+  cells.fill(0);
+  solidCount = 0;
+  brokenCount = 0;
+
+  const noiseEdge = makeNoise2D(8);
+  const noiseTop  = makeNoise2D(8);
+  const noiseVein = makeNoise2D(8);
+  const cx = (GX - 1) / 2, cz = (GZ - 1) / 2;
+
+  for (let x = 0; x < GX; x++) {
+    for (let z = 0; z < GZ; z++) {
+      const dx = x - cx, dz = z - cz;
+      const dist = Math.hypot(dx, dz);
+      // 輪郭をノイズで揺らして、円柱に見えないようにする
+      const radius = ISLAND_RADIUS * (0.78 + noiseEdge(x * 0.32, z * 0.32) * 0.42);
+      if (dist > radius) continue;
+
+      const inner = 1 - dist / radius;                     // 中心ほど1
+      const top    = Math.round(0.6 + noiseTop(x * 0.28, z * 0.28) * 2.6 + inner * 1.8);
+      // 下は中心ほど深く尖らせる＝浮島のシルエット。
+      // inner を2乗するのは、線形だと側面が truncated cone になって「箱」に見えるため。
+      const bottom = -Math.round(inner * inner * 7.6 + noiseTop(x * 0.5, z * 0.5) * 0.9);
+
+      for (let wy = bottom; wy <= top; wy++) {
+        const y = wy + GROUND_Y;
+        if (y < 0 || y >= GY) continue;
+        let material;
+        if (wy === top) material = M_GRASS;
+        else if (wy >= top - 2) material = M_DIRT;
+        else material = M_STONE;
+        // 深い所にだけ結晶の脈を通す。壊す動機になる「当たり」を混ぜる
+        if (wy < top - 3 && noiseVein(x * 0.7, wy * 0.6 + z * 0.15) > 0.79) material = M_CRYSTAL;
+        cells[cellIndex(x, y, z)] = material;
+        solidCount++;
+      }
+    }
+  }
+  rebuildSurface();
+}
+
+// 露出しているセル（6近傍のどれかが空）の一覧。埋まっているセルは描かない
+let surface = new Int32Array(0);
+let surfaceCount = 0;
+function rebuildSurface() {
+  const list = [];
+  for (let y = 0; y < GY; y++) {
+    for (let z = 0; z < GZ; z++) {
+      for (let x = 0; x < GX; x++) {
+        if (!cells[cellIndex(x, y, z)]) continue;
+        if (cellAt(x + 1, y, z) && cellAt(x - 1, y, z) &&
+            cellAt(x, y + 1, z) && cellAt(x, y - 1, z) &&
+            cellAt(x, y, z + 1) && cellAt(x, y, z - 1)) continue;
+        list.push(cellIndex(x, y, z));
+      }
+    }
+  }
+  surface = Int32Array.from(list);
+  surfaceCount = list.length;
+  sortDirty = true;
+}
+
+// -----------------------------------------------------------------
+// カメラと投影
+// -----------------------------------------------------------------
+const camera = { yaw: 0.68, pitch: -0.46, dist: 25, zoom: 1 };
+// 島の重心はy=0より下にあるので、その分だけ見る高さをずらして画面の真ん中に置く
+const CAM_TARGET_Y = -1.6;
+let cameraDirty = true;
+let sortDirty = true;
+
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+let viewW = 0, viewH = 0, dpr = 1, focal = 600;
+
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  viewW = Math.max(1, window.innerWidth);
+  viewH = Math.max(1, window.innerHeight);
+  canvas.width = Math.round(viewW * dpr);
+  canvas.height = Math.round(viewH * dpr);
+  focal = Math.min(viewW, viewH) * 1.35;
+  cameraDirty = true;
+}
+window.addEventListener("resize", resize);
+
+// 投影の作業用。1点ごとにオブジェクトを作ると破壊時にGCが走るので使い回す
+const camBasis = { cy: 1, sy: 0, cp: 1, sp: 0 };
+function updateCamBasis() {
+  camBasis.cy = Math.cos(camera.yaw);
+  camBasis.sy = Math.sin(camera.yaw);
+  camBasis.cp = Math.cos(camera.pitch);
+  camBasis.sp = Math.sin(camera.pitch);
+}
+/** ワールド座標 → 画面座標。戻り値は使い回しの配列に書く */
+const projOut = [0, 0, 0];
+function project(wx, wy, wz) {
+  const wyc = wy - CAM_TARGET_Y;
+  const x1 = wx * camBasis.cy - wz * camBasis.sy;
+  const z1 = wx * camBasis.sy + wz * camBasis.cy;
+  const y2 = wyc * camBasis.cp - z1 * camBasis.sp;
+  const z2 = wyc * camBasis.sp + z1 * camBasis.cp;
+  const depth = z2 + camera.dist;
+  const k = (focal * camera.zoom) / Math.max(0.5, depth);
+  projOut[0] = viewW / 2 + x1 * k;
+  projOut[1] = viewH / 2 - y2 * k;
+  projOut[2] = depth;
+  return projOut;
+}
+/** カメラから見た視線方向（ワールド空間）。面の裏表判定に使う */
+const viewDir = [0, 0, 1];
+function updateViewDir() {
+  viewDir[0] = camBasis.cp * camBasis.sy;
+  viewDir[1] = camBasis.sp;
+  viewDir[2] = camBasis.cp * camBasis.cy;
+}
+/** その向きの面がカメラを向いているか */
+function faceVisible(normal) {
+  return normal[0] * viewDir[0] + normal[1] * viewDir[1] + normal[2] * viewDir[2] < 0;
+}
+
+function cellToWorld(x, y, z, out) {
+  out[0] = x - (GX - 1) / 2;
+  out[1] = y - GROUND_Y;
+  out[2] = z - (GZ - 1) / 2;
+  return out;
+}
+
+// 奥から手前へ描くための並び。カメラが変わったときだけ作り直す
+let drawOrder = new Int32Array(0);
+const _w = [0, 0, 0];
+function sortSurface() {
+  const depths = new Float32Array(surfaceCount);
+  for (let i = 0; i < surfaceCount; i++) {
+    const idx = surface[i];
+    const x = idx % GX;
+    const z = ((idx / GX) | 0) % GZ;
+    const y = (idx / (GX * GZ)) | 0;
+    cellToWorld(x, y, z, _w);
+    depths[i] = project(_w[0] + 0.5, _w[1] + 0.5, _w[2] + 0.5)[2];
+  }
+  const order = Array.from({ length: surfaceCount }, (_, i) => i);
+  order.sort((a, b) => depths[b] - depths[a]);   // 遠い順
+  drawOrder = Int32Array.from(order.map((i) => surface[i]));
+  sortDirty = false;
+}
+
+// -----------------------------------------------------------------
+// 手描きのストローク
+// 沸きコマ番号 boilFrame を種に混ぜているので、同じ線でもコマが変わると引き直される。
+// -----------------------------------------------------------------
+let boilFrame = 0;
+
+function jitter(a, b, salt, amount) {
+  return (hash3(a, b, salt + boilFrame * 7919) - 0.5) * amount;
+}
+
+/**
+ * 1本の線を手で引いたように描く（現在のパスに足すだけ。stroke は呼び出し側でまとめて）。
+ * 中点をずらした二次ベジェにすることで、直線が微妙に反る。
+ */
+function penLine(c, x0, y0, x1, y1, key, amount) {
+  const j = (salt) => jitter(key, salt, 17, amount);
+  const dx = x1 - x0, dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  // 端を少し伸ばす。手描きの線は角でわずかに行き過ぎる
+  const over = Math.min(2.2, len * 0.06) * (0.4 + hash3(key, 3, boilFrame) * 0.8);
+  const ux = dx / len, uy = dy / len;
+  const ax = x0 - ux * over + j(1), ay = y0 - uy * over + j(2);
+  const bx = x1 + ux * over + j(3), by = y1 + uy * over + j(4);
+  const mx = (x0 + x1) / 2 + j(5) * 1.7, my = (y0 + y1) / 2 + j(6) * 1.7;
+  c.moveTo(ax, ay);
+  c.quadraticCurveTo(mx, my, bx, by);
+}
+
+function inkStyle(c, width, alpha) {
+  c.strokeStyle = "rgba(" + INK + "," + alpha + ")";
+  c.lineWidth = width;
+  c.lineCap = "round";
+  c.lineJoin = "round";
+}
+
+// -----------------------------------------------------------------
+// 島の描画
+// -----------------------------------------------------------------
+// タップ判定用に、描いた面の画面座標を控えておく（描いた順＝奥から手前）
+let pickFaces = [];
+
+const _p0 = [0, 0], _p1 = [0, 0], _p2 = [0, 0], _p3 = [0, 0];
+const _quad = [_p0, _p1, _p2, _p3];
+
+function shadeColor(rgbArr, k) {
+  return "rgb(" + Math.round(rgbArr[0] * k) + "," + Math.round(rgbArr[1] * k) + "," + Math.round(rgbArr[2] * k) + ")";
+}
+
+function drawIsland(c) {
+  pickFaces.length = 0;
+  const scale = camera.zoom * focal / camera.dist;   // 画面上の1ブロックのおおよその大きさ
+  // ブロック1個の画面サイズに対する比で決める。絶対pxで決めると寄り引きで印象が変わる
+  const inkWidth = Math.max(1.1, scale * 0.062);
+  const jitterAmount = Math.max(1.1, scale * 0.075);
+
+  for (let i = 0; i < drawOrder.length; i++) {
+    const idx = drawOrder[i];
+    const material = cells[idx];
+    if (!material) continue;                      // 壊された直後で並びが古い場合
+    const x = idx % GX;
+    const z = ((idx / GX) | 0) % GZ;
+    const y = (idx / (GX * GZ)) | 0;
+    cellToWorld(x, y, z, _w);
+    const def = MATERIALS[material];
+
+    for (let f = 0; f < CUBE_FACES.length; f++) {
+      const face = CUBE_FACES[f];
+      const n = face.normal;
+      if (!faceVisible(n)) continue;
+      if (cellAt(x + n[0], y + n[1], z + n[2])) continue;   // 隣が詰まっている面は見えない
+
+      for (let k = 0; k < 4; k++) {
+        const q = face.quad[k];
+        const p = project(_w[0] + q[0], _w[1] + q[1], _w[2] + q[2]);
+        _quad[k][0] = p[0];
+        _quad[k][1] = p[1];
+      }
+
+      // 面の塗り。輪郭よりわずかにずらして「版ズレ」にする
+      const key = idx * 7 + f;
+      const offX = jitter(key, 11, 2, jitterAmount * 1.3);
+      const offY = jitter(key, 12, 3, jitterAmount * 1.3);
+      const shade = n[1] > 0 ? FACE_SHADE.top : (n[1] < 0 ? FACE_SHADE.bottom : FACE_SHADE.side);
+      c.fillStyle = shadeColor(def.color, shade);
+      // ずらしたぶん隣との間に紙が見える隙間ができるので、重心から少し太らせて塗る。
+      // 太らせないと、版ズレではなく「穴が開いている」ように見える。
+      const mx0 = (_quad[0][0] + _quad[1][0] + _quad[2][0] + _quad[3][0]) / 4;
+      const my0 = (_quad[0][1] + _quad[1][1] + _quad[2][1] + _quad[3][1]) / 4;
+      const grow = 1.07;
+      c.beginPath();
+      for (let k = 0; k < 4; k++) {
+        const fx = mx0 + (_quad[k][0] - mx0) * grow + offX;
+        const fy = my0 + (_quad[k][1] - my0) * grow + offY;
+        if (k === 0) c.moveTo(fx, fy); else c.lineTo(fx, fy);
+      }
+      c.closePath();
+      c.fill();
+
+      // 側面には斜線を1〜2本入れる。ベタ塗りより「描いた」感じになる
+      if (def.hatch && n[1] === 0 && scale > 13) {
+        inkStyle(c, inkWidth * 0.5, 0.22);
+        c.beginPath();
+        for (let hstep = 1; hstep <= 2; hstep++) {
+          const t = hstep / 3;
+          const sx0 = _quad[0][0] + (_quad[1][0] - _quad[0][0]) * t;
+          const sy0 = _quad[0][1] + (_quad[1][1] - _quad[0][1]) * t;
+          const sx1 = _quad[3][0] + (_quad[2][0] - _quad[3][0]) * t;
+          const sy1 = _quad[3][1] + (_quad[2][1] - _quad[3][1]) * t;
+          penLine(c, sx0, sy0, sx1, sy1, key * 31 + hstep, jitterAmount * 0.9);
+        }
+        c.stroke();
+      }
+
+      // 稜線。隣の面が平らに続いているかで太さを変える。
+      // 全部同じ太さで引くと方眼紙になり、逆に折り目だけだと積み木に見えない。
+      let boldStarted = false, lightStarted = false;
+      for (let e = 0; e < 4; e++) {
+        const t = face.tangents[e];
+        // 同じ向きの面が隣にも露出していれば「平ら」。そこは薄い線でよい
+        const continues = cellAt(x + t[0], y + t[1], z + t[2]) &&
+                          !cellAt(x + t[0] + n[0], y + t[1] + n[1], z + t[2] + n[2]);
+        const a = _quad[e], b = _quad[(e + 1) % 4];
+        if (continues) {
+          if (!lightStarted) { lightStarted = true; c.beginPath(); }
+          penLine(c, a[0], a[1], b[0], b[1], key * 13 + e, jitterAmount);
+        } else {
+          if (!boldStarted) { boldStarted = true; }
+        }
+      }
+      if (lightStarted) { inkStyle(c, inkWidth * 0.5, 0.26); c.stroke(); }
+      if (boldStarted) {
+        // 折り目・輪郭は2度引き（太い本線＋薄い震え線）で手で描いた線にする
+        for (let pass = 0; pass < 2; pass++) {
+          c.beginPath();
+          for (let e = 0; e < 4; e++) {
+            const t = face.tangents[e];
+            const continues = cellAt(x + t[0], y + t[1], z + t[2]) &&
+                              !cellAt(x + t[0] + n[0], y + t[1] + n[1], z + t[2] + n[2]);
+            if (continues) continue;
+            const a = _quad[e], b = _quad[(e + 1) % 4];
+            penLine(c, a[0], a[1], b[0], b[1], key * 13 + e + pass * 977, jitterAmount * (pass ? 2.1 : 1));
+          }
+          inkStyle(c, pass ? inkWidth * 0.55 : inkWidth, pass ? 0.34 : 0.95);
+          c.stroke();
+        }
+      }
+
+      pickFaces.push({
+        idx, x, y, z,
+        ax: _quad[0][0], ay: _quad[0][1],
+        bx: _quad[1][0], by: _quad[1][1],
+        cx: _quad[2][0], cy: _quad[2][1],
+        dx: _quad[3][0], dy: _quad[3][1],
+      });
+    }
+  }
+}
+
+/** 島の下に手描きの影。空中に浮いているものは影がないと位置が読めない */
+function drawGroundShadow(c) {
+  const p = project(0, -GROUND_Y - 0.4, 0);
+  const r = (focal * camera.zoom / Math.max(1, p[2])) * 7.5;
+  inkStyle(c, Math.max(1, r * 0.02), 0.18);
+  c.beginPath();
+  const steps = 26;
+  for (let i = 0; i < steps; i++) {
+    const a0 = (i / steps) * Math.PI * 2, a1 = ((i + 1) / steps) * Math.PI * 2;
+    penLine(c,
+      p[0] + Math.cos(a0) * r, p[1] + Math.sin(a0) * r * 0.42,
+      p[0] + Math.cos(a1) * r, p[1] + Math.sin(a1) * r * 0.42,
+      90000 + i, r * 0.012);
+  }
+  c.stroke();
+  c.beginPath();
+  for (let i = 0; i < 9; i++) {
+    const t = (i + 0.5) / 9;
+    const w = Math.sqrt(Math.max(0, 1 - (t * 2 - 1) * (t * 2 - 1)));
+    const yy = p[1] - r * 0.42 + t * r * 0.84;
+    penLine(c, p[0] - r * w, yy, p[0] + r * w, yy, 91000 + i, r * 0.02);
+  }
+  inkStyle(c, Math.max(0.8, r * 0.012), 0.10);
+  c.stroke();
+}
+
+// -----------------------------------------------------------------
+// 破片（壊したブロックが飛び散る）
+// -----------------------------------------------------------------
+const CHIP_LIMIT = 130;
+const chips = [];
+
+function spawnChips(wx, wy, wz, material, power) {
+  const count = 2 + Math.floor(fxRandom() * 2);
+  for (let i = 0; i < count; i++) {
+    if (chips.length >= CHIP_LIMIT) chips.shift();
+    const a = fxRandom() * Math.PI * 2;
+    const up = 2.2 + fxRandom() * 3.6;
+    const out = (1.0 + fxRandom() * 2.0) * power;
+    chips.push({
+      x: wx + 0.5 + (fxRandom() - 0.5) * 0.6,
+      y: wy + 0.5 + (fxRandom() - 0.5) * 0.6,
+      z: wz + 0.5 + (fxRandom() - 0.5) * 0.6,
+      vx: Math.cos(a) * out,
+      vy: up,
+      vz: Math.sin(a) * out,
+      size: 0.20 + fxRandom() * 0.26,
+      spin: (fxRandom() - 0.5) * 6,
+      angle: fxRandom() * Math.PI * 2,
+      life: 1,
+      material,
+      key: Math.floor(fxRandom() * 100000),
+    });
+  }
+}
+
+function updateChips(dt) {
+  for (let i = chips.length - 1; i >= 0; i--) {
+    const p = chips[i];
+    p.life -= dt * 1.05;
+    if (p.life <= 0) { chips.splice(i, 1); continue; }
+    p.vy -= 34 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+    p.angle += p.spin * dt;
+    // 浮島なので受け止める地面はない。下に抜けたものは消す
+    if (p.y < -GROUND_Y - 3) { chips.splice(i, 1); }
+  }
+}
+
+function drawChips(c) {
+  if (chips.length === 0) return;
+  const scale = camera.zoom * focal / camera.dist;
+  for (const p of chips) {
+    const def = MATERIALS[p.material] || MATERIALS[M_STONE];
+    const s = p.size;
+    const alpha = Math.min(1, p.life * 2.6);
+    // 破片は小さいので、面は上面と手前2面だけを描いて済ませる
+    for (let f = 0; f < CUBE_FACES.length; f++) {
+      const face = CUBE_FACES[f];
+      if (!faceVisible(face.normal)) continue;
+      const pts = [];
+      for (let k = 0; k < 4; k++) {
+        const q = face.quad[k];
+        // 転がりは、投影前にy軸まわりで回してから配置する
+        const lx = (q[0] - 0.5) * s, ly = (q[1] - 0.5) * s, lz = (q[2] - 0.5) * s;
+        const ca = Math.cos(p.angle), sa = Math.sin(p.angle);
+        const rx = lx * ca - lz * sa, rz = lx * sa + lz * ca;
+        const pr = project(p.x + rx, p.y + ly, p.z + rz);
+        pts.push([pr[0], pr[1]]);
+      }
+      const shade = face.normal[1] > 0 ? FACE_SHADE.top
+                  : (face.normal[1] < 0 ? FACE_SHADE.bottom : FACE_SHADE.side);
+      c.globalAlpha = alpha;
+      c.fillStyle = shadeColor(def.color, shade);
+      c.beginPath();
+      pts.forEach((pt, i) => (i ? c.lineTo(pt[0], pt[1]) : c.moveTo(pt[0], pt[1])));
+      c.closePath();
+      c.fill();
+      c.beginPath();
+      for (let e = 0; e < 4; e++) {
+        const a = pts[e], b = pts[(e + 1) % 4];
+        penLine(c, a[0], a[1], b[0], b[1], p.key * 17 + f * 4 + e, Math.max(0.6, scale * 0.02));
+      }
+      inkStyle(c, Math.max(0.8, scale * 0.022), 0.85);
+      c.stroke();
+    }
+  }
+  c.globalAlpha = 1;
+}
+
+// -----------------------------------------------------------------
+// 当たったときのインク飛沫
+// -----------------------------------------------------------------
+const bursts = [];
+function spawnBurst(sx, sy, power) {
+  bursts.push({ x: sx, y: sy, life: 1, power, key: Math.floor(fxRandom() * 100000) });
+}
+function drawBursts(c, dt) {
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    const b = bursts[i];
+    b.life -= dt * 3.2;
+    if (b.life <= 0) { bursts.splice(i, 1); continue; }
+    const grow = (1 - b.life) * 46 * b.power;
+    const spokes = 9;
+    c.beginPath();
+    for (let s = 0; s < spokes; s++) {
+      const a = (s / spokes) * Math.PI * 2 + hash3(b.key, s, 1) * 0.7;
+      const r0 = grow * (0.45 + hash3(b.key, s, 2) * 0.3);
+      const r1 = r0 + 8 * b.power * (0.5 + hash3(b.key, s, 3) * 0.9);
+      penLine(c, b.x + Math.cos(a) * r0, b.y + Math.sin(a) * r0,
+                 b.x + Math.cos(a) * r1, b.y + Math.sin(a) * r1, b.key + s, 1.6);
+    }
+    inkStyle(c, 2.0 * b.life + 0.6, Math.min(1, b.life * 1.4));
+    c.stroke();
+  }
+}
+
+// -----------------------------------------------------------------
+// 破壊
+// -----------------------------------------------------------------
+let blastRadius = 0;   // 0=1ブロック / 1=3x3 / 2=5x5
+
+function breakAt(x, y, z) {
+  const r = blastRadius;
+  let removed = 0;
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy + dz * dz > (r + 0.35) * (r + 0.35)) continue;
+        const nx = x + dx, ny = y + dy, nz = z + dz;
+        if (!inGrid(nx, ny, nz)) continue;
+        const at = cellIndex(nx, ny, nz);
+        const material = cells[at];
+        if (!material) continue;
+        cells[at] = 0;
+        solidCount--;
+        brokenCount++;
+        removed++;
+        cellToWorld(nx, ny, nz, _w);
+        spawnChips(_w[0], _w[1], _w[2], material, 1 + r * 0.35);
+      }
+    }
+  }
+  if (removed > 0) rebuildSurface();
+  return removed;
+}
+
+/** 画面座標から、いちばん手前に描かれている面を探す */
+function pickFace(sx, sy) {
+  const side = (ax, ay, bx, by) => (bx - ax) * (sy - ay) - (by - ay) * (sx - ax);
+  for (let i = pickFaces.length - 1; i >= 0; i--) {
+    const f = pickFaces[i];
+    const s1 = side(f.ax, f.ay, f.bx, f.by);
+    const s2 = side(f.bx, f.by, f.cx, f.cy);
+    const s3 = side(f.cx, f.cy, f.dx, f.dy);
+    const s4 = side(f.dx, f.dy, f.ax, f.ay);
+    const allPos = s1 >= 0 && s2 >= 0 && s3 >= 0 && s4 >= 0;
+    const allNeg = s1 <= 0 && s2 <= 0 && s3 <= 0 && s4 <= 0;
+    if (allPos || allNeg) return f;
+  }
+  return null;
+}
+
+// -----------------------------------------------------------------
+// 入力（タップ＝壊す／ドラッグ＝回す／ピンチ・ホイール＝寄る）
+// -----------------------------------------------------------------
+const pointers = new Map();
+let dragMoved = 0;
+let lastPinchDist = 0;
+const TAP_SLOP = 9;      // これ以上動いたら「回す」と見なす
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY });
+  if (pointers.size === 1) dragMoved = 0;
+  if (pointers.size === 2) lastPinchDist = pinchDistance();
+});
+
+function pinchDistance() {
+  const list = [...pointers.values()];
+  return Math.hypot(list[0].x - list[1].x, list[0].y - list[1].y);
+}
+
+canvas.addEventListener("pointermove", (e) => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX;
+  p.y = e.clientY;
+
+  if (pointers.size >= 2) {
+    const d = pinchDistance();
+    if (lastPinchDist > 0) {
+      camera.zoom = Math.min(2.6, Math.max(0.5, camera.zoom * (d / lastPinchDist)));
+      cameraDirty = true;
+    }
+    lastPinchDist = d;
+    return;
+  }
+  dragMoved += Math.hypot(dx, dy);
+  if (dragMoved > TAP_SLOP) {
+    camera.yaw += dx * 0.008;
+    camera.pitch = Math.max(-1.35, Math.min(-0.06, camera.pitch + dy * 0.006));
+    cameraDirty = true;
+    hideHint();
+  }
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  const p = pointers.get(e.pointerId);
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) lastPinchDist = 0;
+  if (!p || dragMoved > TAP_SLOP) return;
+  const face = pickFace(p.x, p.y);
+  if (!face) return;
+  if (breakAt(face.x, face.y, face.z) > 0) {
+    spawnBurst(p.x, p.y, 1 + blastRadius * 0.5);
+    hideHint();
+  }
+});
+canvas.addEventListener("pointercancel", (e) => { pointers.delete(e.pointerId); });
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  camera.zoom = Math.min(2.6, Math.max(0.5, camera.zoom * (e.deltaY > 0 ? 0.92 : 1.08)));
+  cameraDirty = true;
+}, { passive: false });
+
+let hintHidden = false;
+function hideHint() {
+  if (hintHidden) return;
+  hintHidden = true;
+  const el = document.getElementById("hint");
+  el.style.opacity = "0";
+}
+
+for (const btn of document.querySelectorAll("#tools button[data-radius]")) {
+  btn.addEventListener("click", () => {
+    blastRadius = Number(btn.dataset.radius);
+    for (const other of document.querySelectorAll("#tools button[data-radius]")) other.classList.remove("on");
+    btn.classList.add("on");
+  });
+}
+document.getElementById("btn-reset").addEventListener("click", () => {
+  chips.length = 0;
+  bursts.length = 0;
+  generateIsland(fixedSeedParam !== null ? fixedSeedParam : ((currentSeed + 1) >>> 0));
+});
+
+// -----------------------------------------------------------------
+// メインループ
+// 線は BOIL_FPS 回/秒で引き直す（＝沸き）。島の描画はそのコマでだけ更新し、
+// 破片と飛沫は毎フレーム描く。こうすると線は沸いたまま動きは滑らかになる。
+// -----------------------------------------------------------------
+const islandLayer = document.createElement("canvas");
+const islandCtx = islandLayer.getContext("2d");
+let layerDirty = true;
+let lastBoilFrame = -1;
+let fpsEma = 0;
+
+function renderIslandLayer() {
+  if (islandLayer.width !== canvas.width || islandLayer.height !== canvas.height) {
+    islandLayer.width = canvas.width;
+    islandLayer.height = canvas.height;
+  }
+  islandCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  islandCtx.clearRect(0, 0, viewW, viewH);
+  drawIsland(islandCtx);
+}
+
+function updateHud() {
+  document.getElementById("h-left").textContent = solidCount;
+  document.getElementById("h-broken").textContent = brokenCount;
+  document.getElementById("h-chips").textContent = chips.length;
+  document.getElementById("h-fps").textContent = fpsEma.toFixed(0);
+}
+
+let lastTime = performance.now();
+let hudTimer = 0;
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  if (dt > 0) fpsEma = fpsEma === 0 ? 1 / dt : fpsEma * 0.92 + (1 / dt) * 0.08;
+
+  const t = now / 1000;
+  const nextBoil = Math.floor(t * BOIL_FPS);
+  if (nextBoil !== lastBoilFrame) {
+    lastBoilFrame = nextBoil;
+    boilFrame = nextBoil;
+    layerDirty = true;          // 線を引き直す＝沸き
+  }
+  if (cameraDirty) {
+    updateCamBasis();
+    updateViewDir();
+    cameraDirty = false;
+    sortDirty = true;
+  }
+  if (sortDirty) { sortSurface(); layerDirty = true; }
+  if (layerDirty) { renderIslandLayer(); layerDirty = false; }
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(islandLayer, 0, 0);
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  updateChips(dt);
+  drawChips(ctx);
+  drawBursts(ctx, dt);
+
+  hudTimer += dt;
+  if (hudTimer > 0.15) { hudTimer = 0; updateHud(); }
+  requestAnimationFrame(frame);
+}
+
+// -----------------------------------------------------------------
+// 起動
+// -----------------------------------------------------------------
+resize();
+generateIsland(fixedSeedParam !== null ? fixedSeedParam : 20260906);
+updateCamBasis();
+updateViewDir();
+sortSurface();
+updateHud();
+document.getElementById("h-boil").textContent = "線 " + BOIL_FPS + "コマ/秒 " + GAME_VERSION;
+requestAnimationFrame(frame);
+
+// 検証用（headlessから叩く）。ゲーム側の状態を触らない読み出しだけにしてある
+function debugState() {
+  return {
+    version: GAME_VERSION,
+    seed: currentSeed,
+    solid: solidCount,
+    broken: brokenCount,
+    chips: chips.length,
+    surface: surfaceCount,
+    faces: pickFaces.length,
+    boilFrame,
+    boilFps: BOIL_FPS,
+    fps: fpsEma,
+  };
+}
+function debugTapCenter() {
+  const face = pickFace(viewW / 2, viewH / 2);
+  if (!face) return 0;
+  return breakAt(face.x, face.y, face.z);
+}
+function debugGetSeed() { return currentSeed; }
+</script>
+</body>
+</html>
