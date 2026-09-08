@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.71.0";
+const GAME_VERSION = "v0.72.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3679,7 +3679,7 @@ function generateStageLayout(stageIndex) {
     // （要塞は最大段階のさらに1段上。段階4になっても普通の街と混ざらない）
     const tier = settlementTier(b, 0);
     const shadeTier = b._fixedTier != null ? tier + 1 : tier;
-    if (shadeTier > 0) b.color = shadeColor(b._baseColor, TIER_SHADE_STEP * shadeTier);
+    if (shadeTier > 0) b.color = shadeBuildingColor(b._baseColor, TIER_SHADE_STEP * shadeTier);
   }
 
   // --- (9) v0.23: 花火要塞 — 倒すと連鎖的に散る"うまみ"建物を各ステージに数棟仕込む ---
@@ -12812,8 +12812,9 @@ function reinforceSettlementForTier(settlement, baseTier) {
   // 要塞は「最大段階のさらに1段上」の濃さにする。そうしないと段階4で
   // 普通の街と同じ色になり、格上であることが見た目で分からなくなる。
   const shadeTier = settlement._fixedTier != null ? tier + 1 : tier;
-  settlement.color = shadeTier > 0 ? shadeColor(settlement._baseColor, TIER_SHADE_STEP * shadeTier)
-                                   : settlement._baseColor;
+  settlement.color = shadeTier > 0
+    ? shadeBuildingColor(settlement._baseColor, TIER_SHADE_STEP * shadeTier)
+    : settlement._baseColor;
 
   const sizeParams = BUILDING_SIZE_PARAMS[settlement.size];
   let hp = randInt(sizeParams.hpMin, sizeParams.hpMax);
@@ -16603,18 +16604,55 @@ function createDragonSprites() {
 // -----------------------------------------------------------------
 // ユーティリティ
 // -----------------------------------------------------------------
-function shadeColor(hex, amount) {
-  // hex は "#rrggbb" 形式
-  let num;
-  try {
-    num = parseInt(hex.replace("#", ""), 16);
-  } catch (_) {
-    return hex;
+/**
+ * 色文字列を [r,g,b] にする。"#rrggbb" と "rgb(r,g,b)" の両方を受ける。
+ * v0.72: **これが読めていなかったのが「建物が真っ黒になる」原因**。
+ * 建物の色は生成時点で既に shadeColor を通っていて "rgb(...)" 形式になっているのに、
+ * 動員段階の色締め（下の shadeBuildingColor）がもう一度 shadeColor に渡していた。
+ * 旧実装は parseInt("rgb(90,48,24)", 16) が NaN になり、(NaN>>16)+amount → 0 に潰れて
+ * **rgb(0,0,0)＝真っ黒**を返していた（try/catch では捕まらない。例外ではなく NaN なので）。
+ * 実測: 格上の街と要塞都市の建物 1300〜2100棟／大陸（全建物の16〜27%）が真っ黒だった。
+ */
+function parseColorRGB(color) {
+  if (typeof color !== "string") return null;
+  const m = color.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+  if (m) return [+m[1], +m[2], +m[3]];
+  const hex = color.replace("#", "");
+  if (/^[0-9a-f]{6}$/i.test(hex)) {
+    const n = parseInt(hex, 16);
+    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
   }
-  const r = Math.min(255, Math.max(0, (num >> 16) + amount));
-  const g = Math.min(255, Math.max(0, ((num >> 8) & 0xff) + amount));
-  const b = Math.min(255, Math.max(0, (num & 0xff) + amount));
+  return null;
+}
+
+function shadeColor(color, amount) {
+  const rgb = parseColorRGB(color);
+  if (!rgb) return color;   // 読めない形式は**そのまま返す**（黒に潰さない）
+  const r = Math.min(255, Math.max(0, rgb[0] + amount));
+  const g = Math.min(255, Math.max(0, rgb[1] + amount));
+  const b = Math.min(255, Math.max(0, rgb[2] + amount));
   return `rgb(${r},${g},${b})`;
+}
+
+// v0.72: 建物の色を締めるときだけ下限を設ける。
+// 建物のスプライトは無彩色を multiply でティントするので、色が暗いほど絵が潰れる。
+// 加算で暗くすると元が暗い色（大型建物の #5a3018 など）は 0 付近まで落ちて
+// 屋根の形すら読めなくなるため、チャンネルごとに下限を入れる。
+// 地面や街道の shadeColor には掛けない（あちらは暗いのが正しい）。
+// 下限は**絶対値ではなく元の色に対する比**にする。絶対値にすると、
+// 元から暗い文明（最終文明の #2a2a2a など）では下限のほうが明るくなってしまい
+// 「格上の街のほうが明るい」と逆転する。比なら、どの文明でも
+// 「普通の建物の約55%の明るさ」に揃う＝暗いが形は読める。
+const BUILDING_SHADE_MIN_RATIO = 0.55;
+const BUILDING_SHADE_MIN_ABS   = 12;    // それでも0には落とさない
+function shadeBuildingColor(color, amount) {
+  const rgb = parseColorRGB(color);
+  if (!rgb) return color;
+  const out = rgb.map((v) => {
+    const floor = Math.max(BUILDING_SHADE_MIN_ABS, Math.round(v * BUILDING_SHADE_MIN_RATIO));
+    return Math.min(255, Math.max(floor, v + amount));
+  });
+  return `rgb(${out[0]},${out[1]},${out[2]})`;
 }
 
 // -----------------------------------------------------------------
