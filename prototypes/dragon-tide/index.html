@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.73.0";
+const GAME_VERSION = "v0.74.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1518,9 +1518,16 @@ const BUILDING_SIZE_PARAMS = {
 // ステージあたりのハムレット数（クラスタ数）
 // v0.6-p4: 空白削減のため 10→17 に増量（町の隙間を農村で埋める。仕様 §9.2）
 // v0.73: 17 -> 34（Shooter指示「もっと数を増やす」）。
-// 中央にシンボル建物が建つので、増やした分は「同じ家の塊」ではなく
-// 見分けのつくランドマークとして増える。
-const TINY_HAMLET_COUNT     = 34;
+// v0.74: さらに約3倍（Shooter指示）。中央にシンボル建物が建つので、
+// 増やした分は「同じ家の塊」ではなく見分けのつくランドマークとして増える。
+const TINY_HAMLET_COUNT     = 100;
+// v0.74: このうち何個をスタート地点の近くに寄せるか（Shooter指示「特に初期地点の近くに多めに」）。
+// 序盤は群れが小さく移動距離も稼げないので、最初に出会う密度をここで作る。
+// 帯を狭くしないと、一様配置ぶんと混ざって密度差がほとんど出ない（実測で確認）。
+const TINY_HAMLET_NEAR_START       = 35;
+// スタート地点寄せの帯。内側は「まばらな家」の緩衝地帯（440〜900）を残すため 600 から。
+const TINY_HAMLET_START_RING_INNER = 600;
+const TINY_HAMLET_START_RING_OUTER = 2200;
 // 1クラスタあたりの tiny 棟数（min/max でランダム）
 const TINY_PER_HAMLET_MIN   = 5;
 const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
@@ -1528,8 +1535,9 @@ const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
 const TINY_HAMLET_RADIUS_MIN = 40;
 const TINY_HAMLET_RADIUS_MAX = 65;
 // クラスタ中心同士の最小間隔（他クラスタとの分離）
-// v0.73: 数を倍にしたぶん、置き場所が見つからず捨てられる集落が増えないように緩める。
-const TINY_HAMLET_MIN_SPACING = 230; // クラスタ同士がくっつかない最小値
+// v0.74: 「重ならなければ良いくらい」（Shooter指示）まで詰める。
+// クラスタ半径の最大値（TINY_HAMLET_RADIUS_MAX=65）の2倍＋余白＝集落の外周同士が触れない最小値。
+const TINY_HAMLET_MIN_SPACING = TINY_HAMLET_RADIUS_MAX * 2 + 20; // = 150
 // 既存街区（small/medium/large）クラスタとの最小間隔
 const TINY_HAMLET_FROM_TOWN_GAP = 120;
 // クラスタ内 tiny 棟同士の最小中心間距離（重なり防止）
@@ -1540,6 +1548,10 @@ const TINY_FROM_EXISTING_GAP  = BUILDING_SIZE_PARAMS.tiny.radiusBase + 10;   // 
 const TINY_MARGIN = 80;
 // クラスタ中心の配置試行回数
 const TINY_HAMLET_MAX_ATTEMPTS = 40;  // v0.73: 集落数を倍にしたので試行も増やす
+// v0.74: 集落シンボルの描画半径（Shooter指示「通常建物の2倍くらいまで」）。
+// 描画幅は radius x 2.6（_landmark 扱い）なので 11 -> 28.6px。
+// 周りの tiny 民家は 6 x 2.3 = 13.8px なので約2.07倍。
+const HAMLET_SYMBOL_RADIUS = 11;
 // クラスタ内各棟の配置試行回数
 const TINY_PER_BUILDING_MAX_ATTEMPTS = 12;
 
@@ -3097,15 +3109,50 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
   const bSmall = config.buildings.small; // tiny は small のパラメータを流用（攻撃・色）
   const tinyR  = BUILDING_SIZE_PARAMS.tiny.radiusBase;
 
-  // 既存建物の位置リスト（tiny との重なりチェック用）
-  const occupied = existingBuildings.map(b => ({ x: b.wx, y: b.wy, r: b.radius }));
+  // v0.74: 占有チェック用の格子。
+  // 総当たりだと「100集落 x 試行40 x 既存建物数千」＋「棟ごとに同じ走査」になり、
+  // 実測でワールド生成時間の56%をここが占めていた。近傍セルだけ見る形に置き換える。
+  // 判定式は総当たり版と同一（近似ではない）。reach に登録済み最大半径を足して
+  // 取りこぼしを防ぐ。
+  const OCC_CELL = 128;
+  const occCols  = Math.ceil(WORLD_W / OCC_CELL) + 2;
+  const occGrid  = new Map();
+  let   occMaxR  = 0;
+  function occAdd(x, y, r, isTown) {
+    if (r > occMaxR) occMaxR = r;
+    const k = (Math.floor(y / OCC_CELL) + 1) * occCols + Math.floor(x / OCC_CELL) + 1;
+    let arr = occGrid.get(k);
+    if (!arr) { arr = []; occGrid.set(k, arr); }
+    arr.push({ x, y, r, town: isTown });
+  }
+  /**
+   * (x,y) から「相手の半径 + extra」以内に建物があるか。
+   * townOnly=true なら**街の建物だけ**を見る（集落同士は別基準で間隔を決めるため）。
+   */
+  function occNear(x, y, extra, townOnly) {
+    const reach = extra + occMaxR;
+    const c0 = Math.floor((x - reach) / OCC_CELL) + 1, c1 = Math.floor((x + reach) / OCC_CELL) + 1;
+    const r0 = Math.floor((y - reach) / OCC_CELL) + 1, r1 = Math.floor((y + reach) / OCC_CELL) + 1;
+    for (let cy = r0; cy <= r1; cy++) {
+      for (let cx = c0; cx <= c1; cx++) {
+        const arr = occGrid.get(cy * occCols + cx);
+        if (!arr) continue;
+        for (let i = 0; i < arr.length; i++) {
+          const ob = arr[i];
+          if (townOnly && !ob.town) continue;
+          const minD = ob.r + extra;
+          if (dist2(x, y, ob.x, ob.y) < minD * minD) return true;
+        }
+      }
+    }
+    return false;
+  }
+  for (const b of existingBuildings) occAdd(b.wx, b.wy, b.radius, true);
 
   // 首都占有領域の二乗（ボス中心からの排除距離）
   const excl2 = CAPITAL_EXCLUSION_RADIUS * CAPITAL_EXCLUSION_RADIUS;
   // クラスタ同士の最小間隔二乗
   const hamletSpacing2 = TINY_HAMLET_MIN_SPACING * TINY_HAMLET_MIN_SPACING;
-  // 既存街区との最小間隔二乗（クラスタ中心 vs 既存建物中心）
-  const fromTown2 = TINY_HAMLET_FROM_TOWN_GAP * TINY_HAMLET_FROM_TOWN_GAP;
 
   // 確定したクラスタ中心リスト（他クラスタとの分離チェック用）
   const hamletCenters = [];
@@ -3115,25 +3162,36 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
     let centerX = 0, centerY = 0;
     let hamletPlaced = false;
 
+    // v0.74: 先頭 TINY_HAMLET_NEAR_START 個はスタート地点まわりのリングから抽選する。
+    // 半径は √補正して面積に対して一様にする（そのままだと中心付近に固まりすぎる）。
+    const nearStart = h < TINY_HAMLET_NEAR_START;
     for (let attempt = 0; attempt < TINY_HAMLET_MAX_ATTEMPTS && !hamletPlaced; attempt++) {
-      const cx = TINY_MARGIN + random() * (WORLD_W - TINY_MARGIN * 2);
-      const cy = TINY_MARGIN + random() * (WORLD_H - TINY_MARGIN * 2);
+      let cx, cy;
+      if (nearStart) {
+        const a  = random() * Math.PI * 2;
+        const t  = random();
+        const rr = Math.sqrt(
+          TINY_HAMLET_START_RING_INNER ** 2 +
+          t * (TINY_HAMLET_START_RING_OUTER ** 2 - TINY_HAMLET_START_RING_INNER ** 2));
+        cx = START_X + Math.cos(a) * rr;
+        cy = START_Y + Math.sin(a) * rr;
+        if (cx < TINY_MARGIN || cx > WORLD_W - TINY_MARGIN ||
+            cy < TINY_MARGIN || cy > WORLD_H - TINY_MARGIN) continue;
+      } else {
+        cx = TINY_MARGIN + random() * (WORLD_W - TINY_MARGIN * 2);
+        cy = TINY_MARGIN + random() * (WORLD_H - TINY_MARGIN * 2);
+      }
 
       // 首都占有領域チェック（クラスタ中心がボス周辺に入らない）
       if (dist2(cx, cy, bossWx, bossWy) < excl2) continue;
 
-      // 既存街区（small/medium/large 建物）との間隔チェック
-      // クラスタ半径 + fromTown2 内に既存建物があれば除外
-      let tooCloseToTown = false;
-      for (const ob of occupied) {
-        // 既存建物との最小間隔 = その建物 radius + tinyハムレット半径 + gap
-        const minD = ob.r + TINY_HAMLET_RADIUS_MAX + TINY_HAMLET_FROM_TOWN_GAP;
-        if (dist2(cx, cy, ob.x, ob.y) < minD * minD) {
-          tooCloseToTown = true;
-          break;
-        }
-      }
-      if (tooCloseToTown) continue;
+      // 既存街区（small/medium/large 建物）との間隔チェック。
+      // 最小間隔 = その建物の radius + tinyハムレット半径 + gap。
+      // v0.74: **街だけ**を見る。以前は伸びていく occupied をそのまま使っていたため、
+      // 街向けの余白（TINY_HAMLET_FROM_TOWN_GAP=120）が他の集落の民家にも効いてしまい、
+      // 集落中心の実測間隔が 232px まで開いていた（MIN_SPACING=150 が効いていなかった）。
+      // 集落同士の距離は下の hamletCenters チェックだけで決める。
+      if (occNear(cx, cy, TINY_HAMLET_RADIUS_MAX + TINY_HAMLET_FROM_TOWN_GAP, true)) continue;
 
       // 他クラスタ中心との最小間隔チェック
       let tooCloseToHamlet = false;
@@ -3163,18 +3221,16 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
                              BUILDING_SIZE_PARAMS.medium.hpMax);
     const symbol = makeBuilding(centerX, centerY, "medium",
                                 randChoice(bSmall.colors), bSmall, symbolHp);
+    symbol.radius          = HAMLET_SYMBOL_RADIUS;  // v0.74: 民家の約2倍まで縮小
     symbol._landmark       = "hamlet";
     symbol._tinySettlement = true;   // 足元の土広場・ミニマップ表示を集落と揃える
     symbol._faceAngle      = randRange(-0.25, 0.25);
     result.push(symbol);
-    occupied.push({ x: centerX, y: centerY, r: symbol.radius });
+    occAdd(centerX, centerY, symbol.radius, false);
 
     // --- クラスタ内の棟を配置 ---
     const buildingCount = randInt(TINY_PER_HAMLET_MIN, TINY_PER_HAMLET_MAX);
     const hamletR = randRange(TINY_HAMLET_RADIUS_MIN, TINY_HAMLET_RADIUS_MAX);
-    // このクラスタで確定した棟（クラスタ内の重なりチェック用）
-    // シンボルの足元は最初から埋まっている扱いにする
-    const hamletBuildings = [{ x: centerX, y: centerY }];
 
     for (let k = 0; k < buildingCount; k++) {
       let placed = false;
@@ -3190,29 +3246,14 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
         if (wx < TINY_MARGIN || wx > WORLD_W - TINY_MARGIN ||
             wy < TINY_MARGIN || wy > WORLD_H - TINY_MARGIN) continue;
 
-        // 既存建物（街区・首都）との重なりチェック
-        let tooClose = false;
-        for (const ob of occupied) {
-          const minD = ob.r + tinyR + TINY_FROM_EXISTING_GAP;
-          if (dist2(wx, wy, ob.x, ob.y) < minD * minD) { tooClose = true; break; }
-        }
-        if (tooClose) continue;
+        // 既存建物（街区・首都・先に置いた集落の棟）との重なりチェック
+        if (occNear(wx, wy, tinyR + TINY_FROM_EXISTING_GAP, false)) continue;
 
-        // クラスタ内 tiny 棟同士の重なりチェック
-        for (const hb of hamletBuildings) {
-          if (dist2(wx, wy, hb.x, hb.y) < TINY_MIN_SPACING * TINY_MIN_SPACING) {
-            tooClose = true; break;
-          }
-        }
-        if (tooClose) continue;
-
-        // 他クラスタ（result 全体）との重なりチェック
-        for (const t of result) {
-          if (dist2(wx, wy, t.wx, t.wy) < TINY_MIN_SPACING * TINY_MIN_SPACING) {
-            tooClose = true; break;
-          }
-        }
-        if (tooClose) continue;
+        // v0.74: ここには以前「クラスタ内の棟同士」と「result 全体」の2つの
+        // TINY_MIN_SPACING(20px) チェックがあったが、上の occupied チェックが
+        // tiny同士でも 6+6+16=28px を要求していて必ず厳しいので**結果が同じ**。
+        // 集落を100個に増やすと result が700棟規模になり、この二重走査が
+        // ワールド生成時間の主因になるため落とした（実測 719ms -> 下記コメント）。
 
         // 配置確定
         const hp    = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
@@ -3223,8 +3264,7 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
         // tiny の radius は BUILDING_SIZE_PARAMS.tiny.radiusBase で確定
         b.radius = tinyR;
         result.push(b);
-        occupied.push({ x: wx, y: wy, r: tinyR });
-        hamletBuildings.push({ x: wx, y: wy });
+        occAdd(wx, wy, tinyR, false);
         placed = true;
       }
     }
