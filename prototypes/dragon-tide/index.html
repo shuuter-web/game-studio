@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.72.0";
+const GAME_VERSION = "v0.73.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1097,6 +1097,10 @@ const EGG_BEARER_RATIO_BASE = 0.18; // 基準割合（密度1倍のときの値�
 // 実効割合は BASE / 密度倍率。密度を上げた分だけ割合を下げて卵の総数を一定に。
 function eggBearerRatio() { return EGG_BEARER_RATIO_BASE / BUILDING_DENSITY_MULT; }
 const EGG_DROP_COUNT   = 1;    // 陥落時に落とす卵の個数
+// v0.73: **通常の街だけ**卵持ちを半分にする（Shooter指示「今の半分くらい」）。
+// 街は建物が数千棟あるので卵の大半をここが供給していた。半分にすることで
+// ミニ集落・道沿い集落を回る意味が相対的に増える（あちらには掛けない）。
+const TOWN_EGG_RATIO_MULT = 0.5;
 
 // -----------------------------------------------------------------
 // 変更2: ダウン/復帰モデル パラメータ
@@ -1513,7 +1517,10 @@ const BUILDING_SIZE_PARAMS = {
 // -----------------------------------------------------------------
 // ステージあたりのハムレット数（クラスタ数）
 // v0.6-p4: 空白削減のため 10→17 に増量（町の隙間を農村で埋める。仕様 §9.2）
-const TINY_HAMLET_COUNT     = 17;
+// v0.73: 17 -> 34（Shooter指示「もっと数を増やす」）。
+// 中央にシンボル建物が建つので、増やした分は「同じ家の塊」ではなく
+// 見分けのつくランドマークとして増える。
+const TINY_HAMLET_COUNT     = 34;
 // 1クラスタあたりの tiny 棟数（min/max でランダム）
 const TINY_PER_HAMLET_MIN   = 5;
 const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
@@ -1521,7 +1528,8 @@ const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
 const TINY_HAMLET_RADIUS_MIN = 40;
 const TINY_HAMLET_RADIUS_MAX = 65;
 // クラスタ中心同士の最小間隔（他クラスタとの分離）
-const TINY_HAMLET_MIN_SPACING = 280; // クラスタ同士がくっつかない最小値
+// v0.73: 数を倍にしたぶん、置き場所が見つからず捨てられる集落が増えないように緩める。
+const TINY_HAMLET_MIN_SPACING = 230; // クラスタ同士がくっつかない最小値
 // 既存街区（small/medium/large）クラスタとの最小間隔
 const TINY_HAMLET_FROM_TOWN_GAP = 120;
 // クラスタ内 tiny 棟同士の最小中心間距離（重なり防止）
@@ -1531,7 +1539,7 @@ const TINY_FROM_EXISTING_GAP  = BUILDING_SIZE_PARAMS.tiny.radiusBase + 10;   // 
 // マップ端からのマージン
 const TINY_MARGIN = 80;
 // クラスタ中心の配置試行回数
-const TINY_HAMLET_MAX_ATTEMPTS = 20;
+const TINY_HAMLET_MAX_ATTEMPTS = 40;  // v0.73: 集落数を倍にしたので試行も増やす
 // クラスタ内各棟の配置試行回数
 const TINY_PER_BUILDING_MAX_ATTEMPTS = 12;
 
@@ -3146,11 +3154,27 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
 
     hamletCenters.push({ x: centerX, y: centerY });
 
+    // --- v0.73: 集落のシンボル（Shooter指示「ミニ集落にもシンボル建物を追加」）---
+    // クラスタ中央に1棟だけ大きめの建物を建てる。町のランドマークと同じ _landmark
+    // 経路に乗せるので絵は文明ごとに切り替わる（e1_hamlet 〜 e8_hamlet）。
+    // 狙いは「民家の塊」を遠目にも見分けられる場所にすること。
+    // 攻撃性能は集落の民家と同じ（bSmall）のままにして、ミニ集落を要塞化しない。
+    const symbolHp = randInt(BUILDING_SIZE_PARAMS.medium.hpMin,
+                             BUILDING_SIZE_PARAMS.medium.hpMax);
+    const symbol = makeBuilding(centerX, centerY, "medium",
+                                randChoice(bSmall.colors), bSmall, symbolHp);
+    symbol._landmark       = "hamlet";
+    symbol._tinySettlement = true;   // 足元の土広場・ミニマップ表示を集落と揃える
+    symbol._faceAngle      = randRange(-0.25, 0.25);
+    result.push(symbol);
+    occupied.push({ x: centerX, y: centerY, r: symbol.radius });
+
     // --- クラスタ内の棟を配置 ---
     const buildingCount = randInt(TINY_PER_HAMLET_MIN, TINY_PER_HAMLET_MAX);
     const hamletR = randRange(TINY_HAMLET_RADIUS_MIN, TINY_HAMLET_RADIUS_MAX);
     // このクラスタで確定した棟（クラスタ内の重なりチェック用）
-    const hamletBuildings = [];
+    // シンボルの足元は最初から埋まっている扱いにする
+    const hamletBuildings = [{ x: centerX, y: centerY }];
 
     for (let k = 0; k < buildingCount; k++) {
       let placed = false;
@@ -5444,6 +5468,11 @@ let nextPackId = 1;
 // 群れの結束・分離パラメータ
 const PACK_COHESION_DIST   = 160;  // 群れ重心からこれ以上離れた個体は重心へ寄せる
 const PACK_SEPARATION_GAP  = 6;    // 同一pack個体間に確保する隙間（半径の和に加算）
+// v0.73: **別のpack同士・単独の敵同士も重ならない**ようにする（Shooter指示）。
+// 「あくまでなるべく」なので同一pack（隊列）より弱い押し出しにして、
+// 進路や隊形そのものは壊さない。完全な非重なりは保証しない。
+const MOVER_SEPARATION_GAP  = 4;    // 別pack同士に確保する隙間
+const MOVER_SEPARATION_PUSH = 0.22; // 別pack同士の押し戻し係数（同一packは0.5＝完全解消）
 
 /** 移動敵1体を生成する（経路生成込み）。 */
 function makeMover(def, randPoint) {
@@ -5915,25 +5944,38 @@ function updateMovers(dt) {
   }
 
   // v0.13: 同一pack内の分離（重なり防止の相互押し出し）。
-  // pack人数は最大8・mover総数も少ないためO(n^2)で十分
+  // v0.73: pack をまたいだ敵同士にも効かせる（Shooter指示「なるべく重ならないように」）。
+  // 同一pack は従来どおり重なりを完全に解消し、別packは弱く押すだけにして、
+  // 隊列の形や進路の読みやすさを壊さない。
+  // 動かない敵（砲台・門・要塞・潜行中の個体）は押されない側に固定する
+  // ＝配置した場所から勝手にずれない。押し戻しはぶつかった側が全部引き受ける。
+  // mover総数は数十のためO(n^2)で十分。
   for (let i = 0; i < movers.length; i++) {
     const a = movers[i];
-    if (!a.alive || a.packId === undefined) continue;
+    if (!a.alive || a.def.part === "arm" || a.submerged) continue;
+    const aMovable = a.def.speed > 0;
     for (let j = i + 1; j < movers.length; j++) {
       const b = movers[j];
-      if (!b.alive || b.packId !== a.packId) continue;
+      if (!b.alive || b.def.part === "arm" || b.submerged) continue;
+      const bMovable = b.def.speed > 0;
+      if (!aMovable && !bMovable) continue;   // 動かない者同士は押し合わない
+      const samePack = a.packId !== undefined && a.packId === b.packId;
+      const minD = a.def.radius + b.def.radius +
+                   (samePack ? PACK_SEPARATION_GAP : MOVER_SEPARATION_GAP);
       const sdx = b.wx - a.wx;
       const sdy = b.wy - a.wy;
-      const minD = a.def.radius + b.def.radius + PACK_SEPARATION_GAP;
       const sd2 = sdx * sdx + sdy * sdy;
-      if (sd2 < minD * minD && sd2 > 0.01) {
-        const sd = Math.sqrt(sd2);
-        const push = (minD - sd) * 0.5;
-        const nx = sdx / sd;
-        const ny = sdy / sd;
-        a.wx -= nx * push; a.wy -= ny * push;
-        b.wx += nx * push; b.wy += ny * push;
-      }
+      if (sd2 >= minD * minD || sd2 <= 0.01) continue;
+      const sd = Math.sqrt(sd2);
+      const overlap = minD - sd;
+      const nx = sdx / sd;
+      const ny = sdy / sd;
+      const strength = samePack ? 0.5 : MOVER_SEPARATION_PUSH;
+      // 片方が動けないなら、動ける側が2倍受け持って押し出す
+      const aShare = aMovable ? (bMovable ? strength : strength * 2) : 0;
+      const bShare = bMovable ? (aMovable ? strength : strength * 2) : 0;
+      if (aShare) { a.wx -= nx * overlap * aShare; a.wy -= ny * overlap * aShare; }
+      if (bShare) { b.wx += nx * overlap * bShare; b.wy += ny * overlap * bShare; }
     }
   }
 
@@ -7150,7 +7192,8 @@ function assignEggBearers(buildings) {
 
   for (const town of towns) {
     // この町での卵持ち数（最低1、実効割合で計算。密度倍率で割って絶対数を一定に）
-    const count = Math.max(1, Math.round(town.length * eggBearerRatio()));
+    // v0.73: 街のぶんだけ TOWN_EGG_RATIO_MULT で半減させる
+    const count = Math.max(1, Math.round(town.length * eggBearerRatio() * TOWN_EGG_RATIO_MULT));
     // シャッフル相当: インデックス配列をランダムに選んでフラグを立てる
     const indices = [];
     for (let i = 0; i < town.length; i++) indices.push(i);
@@ -12142,6 +12185,20 @@ function codexEmplacementEras(key) {
 }
 
 // 通常の建物（時代兵器を持たない大多数）。撃ち方は STAGE_CONFIGS の size ごとの設定。
+// v0.73: 目印になる建物（町のランドマーク＋ミニ集落のシンボル）。
+// 絵は e1_<key> 〜 e8_<key> の8枚あり、図鑑では代表として最初の文明のものを出す。
+const CODEX_LANDMARKS = [
+  { key: "temple",   label: "町の中央（祭祀・行政）", where: "町の広場の中央（偶数番の町）",
+    desc: "その文明の通常弾を撃つ。HPが大型建物の1.3倍あり、町で一番粘る",
+    stat: "巨石環 → 神殿 → 大聖堂 → 市庁舎 → 時計塔 → 公会堂 → 司令部 → モノリス" },
+  { key: "windmill", label: "町の中央（生産・設備）", where: "町の広場の中央（奇数番の町）",
+    desc: "その文明の通常弾を撃つ。HPが大型建物の1.3倍あり、町で一番粘る",
+    stat: "乾燥場 → 穀倉 → 風車 → 石造風車 → 給水塔 → 送電鉄塔 → レーダー → 集光塔" },
+  { key: "hamlet",   label: "ミニ集落のシンボル", where: "野に散らばる小さな集落の中央",
+    desc: "集落の民家と同じ通常弾を撃つ。集落を遠目に見つけるための目印",
+    stat: "祠 → 小神殿 → 礼拝堂 → 井戸屋形 → ポンプ小屋 → 変電小屋 → 前哨 → ビーコン" },
+];
+
 const CODEX_BUILDING_SIZES = [
   { size: "small",  label: "小屋・民家",   note: "すぐ壊れて卵が出る育成枠" },
   { size: "medium", label: "中規模の建物", note: "" },
@@ -12310,6 +12367,22 @@ function codexBuildingHtml() {
         `</div>` +
       `</div>`;
   }
+  // v0.73: 町の中央のランドマークと、ミニ集落のシンボル。
+  // どちらも「攻撃はその文明の通常弾のまま、形だけ文明ごとに変わる目印」なので同じ節にまとめる。
+  html += `</div><div class="cx-era">目印になる建物（形は文明ごとに変わる）</div><div class="cx-list">`;
+  for (const lm of CODEX_LANDMARKS) {
+    html +=
+      `<div class="cx-row">` +
+        `<div class="cx-thumb"><img src="${BUILDING_IMAGE_SOURCES["e1_" + lm.key]}" alt=""></div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${lm.label}</div>` +
+          `<div class="cx-tags">全文明 ／ ${lm.where}</div>` +
+          `<div class="cx-atk">${lm.desc}</div>` +
+          `<div class="cx-stat">${lm.stat}</div>` +
+        `</div>` +
+      `</div>`;
+  }
+
   html += `</div><div class="cx-era">首都と城壁</div><div class="cx-list">` +
     `<div class="cx-row elite">` +
       `<div class="cx-thumb"><img src="${ENEMY_IMAGE_SOURCES.citadel}" alt=""></div>` +
@@ -15798,6 +15871,17 @@ const BUILDING_IMAGE_SOURCES = {
   e7_windmill: "assets/building_e7_windmill.png",
   e8_temple:   "assets/building_e8_temple.png",
   e8_windmill: "assets/building_e8_windmill.png",
+
+  // v0.73: ミニ集落のシンボル（Shooter指示）。町のランドマークより小ぶりな
+  // 「村の目印」＝祠・井戸屋形・変電小屋など。これも文明ごとに建築が変わる。
+  e1_hamlet:   "assets/building_e1_hamlet.png",
+  e2_hamlet:   "assets/building_e2_hamlet.png",
+  e3_hamlet:   "assets/building_e3_hamlet.png",
+  e4_hamlet:   "assets/building_e4_hamlet.png",
+  e5_hamlet:   "assets/building_e5_hamlet.png",
+  e6_hamlet:   "assets/building_e6_hamlet.png",
+  e7_hamlet:   "assets/building_e7_hamlet.png",
+  e8_hamlet:   "assets/building_e8_hamlet.png",
 
   // v0.70: **時代兵器ごとの建築**。どの文明でも同じ絵（機能で1つ）。
   trebuchet:           "assets/building_emp_trebuchet.png",
