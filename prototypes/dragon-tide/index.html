@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.74.0";
+const GAME_VERSION = "v0.75.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1101,6 +1101,25 @@ const EGG_DROP_COUNT   = 1;    // 陥落時に落とす卵の個数
 // 街は建物が数千棟あるので卵の大半をここが供給していた。半分にすることで
 // ミニ集落・道沿い集落を回る意味が相対的に増える（あちらには掛けない）。
 const TOWN_EGG_RATIO_MULT = 0.5;
+// v0.75: **まばらな集落は「二箇所に一つ」くらい卵を持つ**（Shooter指示）。
+// 街と違って1箇所あたり数棟しかないので、棟数に対する割合で配ると
+// 箇所単位ではほとんど出ない（v0.74 実測: ミニ集落100箇所に対して卵は約30個＝3.3箇所に1つ）。
+// 割合ではなく**箇所ごとの抽選**にして、集落を見つけた甲斐があるようにする。
+const HAMLET_EGG_CHANCE = 0.5;
+
+/**
+ * v0.75: 集落1箇所ぶんの棟から、抽選で1棟だけ卵持ちにする。
+ * 卵はできるだけ**民家**に置く（シンボルはHPが民家の5倍あり、
+ * 「ついでに壊したら卵が出た」というテンポにならないため）。
+ * @param {Array} houses  その集落の民家（tiny）
+ * @param {Object|null} symbol  集落のシンボル（民家が1棟も置けなかったときの受け皿）
+ */
+function maybeGiveHamletEgg(houses, symbol) {
+  if (random() >= HAMLET_EGG_CHANCE) return;
+  const pool = houses.length > 0 ? houses : (symbol ? [symbol] : []);
+  if (pool.length === 0) return;
+  pool[Math.floor(random() * pool.length)].isEggBearer = true;
+}
 
 // -----------------------------------------------------------------
 // 変更2: ダウン/復帰モデル パラメータ
@@ -3231,6 +3250,7 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
     // --- クラスタ内の棟を配置 ---
     const buildingCount = randInt(TINY_PER_HAMLET_MIN, TINY_PER_HAMLET_MAX);
     const hamletR = randRange(TINY_HAMLET_RADIUS_MIN, TINY_HAMLET_RADIUS_MAX);
+    const hamletHouses = [];   // v0.75: この集落の民家（卵の抽選対象）
 
     for (let k = 0; k < buildingCount; k++) {
       let placed = false;
@@ -3264,10 +3284,14 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
         // tiny の radius は BUILDING_SIZE_PARAMS.tiny.radiusBase で確定
         b.radius = tinyR;
         result.push(b);
+        hamletHouses.push(b);
         occAdd(wx, wy, tinyR, false);
         placed = true;
       }
     }
+
+    // v0.75: この集落に卵を置くか抽選（棟の割合ではなく**箇所ごと**）
+    maybeGiveHamletEgg(hamletHouses, symbol);
   }
 
   return result;
@@ -3331,6 +3355,7 @@ function generateRoadsideHamlets(existingBuildings, roadEdges, boss, config) {
       // 3〜6棟の民家を道に沿って置く
       const count = randInt(3, 6);
       const faceAngle = Math.atan2(dy, dx) + Math.PI / 2;   // 道に面する向き
+      const roadHouses = [];   // v0.75: この集落の民家（卵の抽選対象）
       for (let k = 0; k < count; k++) {
         const wx = cx + randRange(-36, 36);
         const wy = cy + randRange(-30, 30);
@@ -3345,8 +3370,11 @@ function generateRoadsideHamlets(existingBuildings, roadEdges, boss, config) {
         bld.radius = tinyR;
         bld._faceAngle = faceAngle + randRange(-0.15, 0.15);
         result.push(bld);
+        roadHouses.push(bld);
         occupied.push({ x: wx, y: wy, r: tinyR });
       }
+      // v0.75: 道沿いの集落も1箇所ごとに抽選する
+      maybeGiveHamletEgg(roadHouses, null);
     }
   }
   return result;
@@ -3414,6 +3442,9 @@ function generateStartAreaHouses(existing, config) {
     const hp = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
     const b  = makeBuilding(wx, wy, "tiny", randChoice(bSmall.colors), bSmall, hp);
     b._tinySettlement = true; b.radius = tinyR;
+    // v0.75: ここは1軒がそのまま1箇所。集落と同じ確率で卵を持たせる
+    // （スタート直後に最初に出会う建物なので、序盤の卵の出所になる）。
+    maybeGiveHamletEgg([b], null);
     result.push(b); occupied.push({ x: wx, y: wy, r: tinyR });
     placed++;
   }
@@ -3673,27 +3704,16 @@ function generateStageLayout(stageIndex) {
   // 首都・既存建物との重なりを避けて配置し、最後に result へ追加する。
   // assignEggBearers の後に追加するため、tiny はフォールバック（towns=0）で
   // 全体1町として扱われるが、ここでは全建物確定後に個別に卵持ち割当を補う。
+  // v0.75: 卵持ちは generateTinySettlements の中で**集落1箇所ごとに**決めている
+  // （以前はここで棟数 x eggBearerRatio の割合配りをしていたが、
+  //  1箇所あたり数棟しかない集落では箇所単位でほとんど当たらなかった）。
   const tinyBuildings = generateTinySettlements(result, boss.wx, boss.wy, config);
-  // tiny だけを対象に卵持ちを割当（eggBearerRatio に基づく）
-  const tinyEggCount = Math.max(1, Math.round(tinyBuildings.length * eggBearerRatio()));
-  const tinyIndices  = Array.from({ length: tinyBuildings.length }, (_, i) => i);
-  for (let i = 0; i < tinyEggCount && i < tinyIndices.length; i++) {
-    const j   = i + Math.floor(random() * (tinyIndices.length - i));
-    const tmp = tinyIndices[i]; tinyIndices[i] = tinyIndices[j]; tinyIndices[j] = tmp;
-    tinyBuildings[tinyIndices[i]].isEggBearer = true;
-  }
   for (const b of tinyBuildings) result.push(b);
 
   // --- (4b) v0.11: 道沿いの集落 — 街道のところどころに小さな民家群を置く。
   // 「道があるから人が住む」の地理感＋壊す対象の追加供給。卵割当は tiny と同率。
+  // v0.75: こちらも集落1箇所ごとの抽選（generateRoadsideHamlets の中）。
   const roadsideBuildings = generateRoadsideHamlets(result, townRoadEdges, boss, config);
-  const rsEggCount  = Math.max(1, Math.round(roadsideBuildings.length * eggBearerRatio()));
-  const rsIndices   = Array.from({ length: roadsideBuildings.length }, (_, i) => i);
-  for (let i = 0; i < rsEggCount && i < rsIndices.length; i++) {
-    const j   = i + Math.floor(random() * (rsIndices.length - i));
-    const tmp = rsIndices[i]; rsIndices[i] = rsIndices[j]; rsIndices[j] = tmp;
-    roadsideBuildings[rsIndices[i]].isEggBearer = true;
-  }
   for (const b of roadsideBuildings) result.push(b);
 
   // --- (4c) v0.29: スタート地点周辺の「まばらな家」（街は置かず単独の家を散らす）---
