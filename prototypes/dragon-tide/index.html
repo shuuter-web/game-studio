@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.75.0";
+const GAME_VERSION = "v0.76.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -4277,14 +4277,16 @@ const MOVER_DEFS = {
     color: "#a0703a", glowColor: "#d0a060", moveType: "pingpong",
     attack: { type: "shockwave", interval: 2.4, radius: 90, damage: 3 },
   },
-  // 古代: 歩く神像（コロッサス）— 眼光ビーム（高DPS持続照射）
+  // 古代: 歩く神像（コロッサス）— 太い眼光レーザーの一撃
   colossus: {
     // v0.63: 巨人型。向きは60度刻みでしか変えず、移動は目標方向のまま＝**横歩きする**。
-    // 正面±35度にしかビームが通らないぶん、当たると苛烈（dps 5.0 → 8.5）。
+    // v0.76: 常時照射の細い線をやめ、首都の極太レーザーを細くした一撃に置き換え（Shooter指示）。
+    // 予兆1.3秒のあいだ足を止めて向きも固定するので、線から横へ抜ければ無傷。
     name: "colossus", stepTurn: Math.PI / 3,
     hp: 250, speed: 26, xp: 160, eggDrop: 2, radius: 26,
     color: "#c8a030", glowColor: "#ffe080", moveType: "patrol",
-    attack: { type: "beam", dps: 8.5, range: 240, frontArc: 0.61 },
+    attack: { type: "laser", interval: 3.2, dps: 26, range: 300,
+              width: 48, length: 480, frontArc: 0.61 },
   },
   // 中世: 騎士（v0.13で個体分割）— 単発の矢。8体の隊で湧き、斉射に相当する密度になる
   // （8体合計で旧方陣とほぼ同等: hp192/xp136/卵約2個/矢5本毎秒）
@@ -4554,13 +4556,14 @@ const MOVER_DEFS = {
     attack: { type: "shockwave", interval: 2.2, radius: 175, damage: 7, push: 70 },
   },
 
-  // 2 古代: 黄金の巨像 — コロッサスの上位。長射程の眼光を絶やさない
+  // 2 古代: 黄金の巨像 — コロッサスの上位。より太く・長く・痛いレーザー
   gilded_colossus: {
     name: "gilded_colossus", elite: true, showHpBar: true,
     stepTurn: Math.PI / 3,   // v0.63: 巨人型（コロッサスと同じ踏み替え）
     hp: 1300, speed: 22, xp: 420, eggDrop: 5, radius: 40,
     color: "#e0c040", glowColor: "#fff0a0", moveType: "patrol",
-    attack: { type: "beam", dps: 15.0, range: 320, frontArc: 0.61 },
+    attack: { type: "laser", interval: 2.8, dps: 38, range: 420,
+              width: 60, length: 700, frontArc: 0.61 },
   },
 
   // 3 中世: 攻城塔 — 動く石の塊。矢を面で撒きながらじりじり寄ってくる
@@ -5576,7 +5579,7 @@ function makeMover(def, randPoint) {
       wpIdx: Math.floor(random() * waypoints.length),
       wpDir: 1,                 // pingpong 用の進行方向（1/-1）
       attackTimer: random() * 2.0,
-      beamTargetIdx: -1,        // colossus の照射対象（描画用）
+      laserLock: 0,             // v0.76: レーザーの溜め〜照射のあいだ足を止める残り秒数
       swayPhase: random() * Math.PI * 2,  // v0.9: 生気づけアニメの個体位相
       alive: true,
     };
@@ -5810,7 +5813,15 @@ function updateMovers(dt) {
     // 進む向き。既定は「向いている方向」＝従来と同じ（向きが即座に目標を向くため）
     let moveX = dirX, moveY = dirY;
 
-    if (def.stepTurn) {
+    // v0.76: レーザーの溜め〜照射のあいだは**足を止めて向きも固定**する。
+    // 予兆の線が本体からずれないので「どこを焼くか」が最後まで読める＝避ければ無傷。
+    // 動きにメリハリも出る（歩く → ぴたりと止まって撃つ → また歩く）。
+    const laserLocked = m.laserLock > 0;
+    if (laserLocked) m.laserLock = Math.max(0, m.laserLock - dt);
+
+    if (laserLocked) {
+      // 向きは撃つ瞬間に固定済み。ここでは更新しない
+    } else if (def.stepTurn) {
       // 巨人型: 向きは60度刻み。移動は目標方向のままなので**横歩き・後ずさり**が出る
       const want = Math.atan2(dirY, dirX);
       if (m.faceAngle === undefined) m.faceAngle = Math.round(want / def.stepTurn) * def.stepTurn;
@@ -5835,7 +5846,8 @@ function updateMovers(dt) {
     }
 
     // v0.61: 画面外から来る増援は、群れに近づくまで行軍速度で走る
-    const moveSpeed = def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
+    const moveSpeed = laserLocked ? 0
+      : def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
     m.wx += moveX * moveSpeed * dt;
     m.wy += moveY * moveSpeed * dt;
 
@@ -5857,33 +5869,45 @@ function updateMovers(dt) {
 
     // ---- 攻撃 ----
     const nearestIdx = findNearestAliveBoid(m.wx, m.wy);
-    if (nearestIdx < 0) { m.beamTargetIdx = -1; continue; }
+    if (nearestIdx < 0) continue;
     const ndx = px[nearestIdx] - m.wx;
     const ndy = py[nearestIdx] - m.wy;
     const nearestD2 = ndx * ndx + ndy * ndy;
 
     const atk = def.attack;
-    if (!atk) { m.beamTargetIdx = -1; continue; }   // v0.25.1: 財宝馬車など無攻撃ユニット
-    if (m.submerged) { m.beamTargetIdx = -1; continue; }   // v0.42: 潜行中は撃たない
+    if (!atk) continue;        // v0.25.1: 財宝馬車など無攻撃ユニット
+    if (m.submerged) continue; // v0.42: 潜行中は撃たない
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
     const ferocity = moverStageFerocity(currentStage);
-    if (atk.type === "beam") {
-      // コロッサス: 眼光ビーム（持続照射）
-      // v0.63: atk.frontArc があると**正面の扇の中にいる竜にしか当たらない**。
-      // 向きが60度刻みでしか変わらないので「正面から外れる」が有効な回避になる。
-      // そのぶん dps は上げてある（当てられたら苛烈）。
+    if (atk.type === "laser") {
+      // v0.76: 巨人型のレーザー（Shooter指示「常時照射はやめて極太ビームの細い版を」）。
+      // 首都の大技と同じ spawnLaserStrike を使うので作法も同じ＝**予兆1.3秒 → 照射0.9秒**。
+      // 撃つ瞬間に角度が決まり、以後は動かない（本体も laserLock で止まる）ので、
+      // 線から横へ抜ければ無傷。当たり続ければ dps x 0.9秒ぶん入る＝重い。
+      // v0.63 からの frontArc は据え置き: 正面±35度の外にいる竜には撃たない。
+      // 向きは60度刻みでしか変わらないため、「正面を外し続ける」が有効な回避のまま。
+      if (m.laserLock > 0) continue;          // 照射中は次弾を撃たない
+      m.attackTimer -= dt;
+      if (m.attackTimer > 0) continue;
       let inFront = true;
       if (atk.frontArc !== undefined) {
         const toTarget = Math.atan2(ndy, ndx);
         const face = Math.atan2(m.headingY, m.headingX);
         inFront = Math.abs(wrapAngle(toTarget - face)) < atk.frontArc;
       }
-      if (inFront && nearestD2 < atk.range * atk.range) {
-        m.beamTargetIdx = nearestIdx;
-        applyDamageToBoid(nearestIdx, atk.dps * ferocity * dt);
-      } else {
-        m.beamTargetIdx = -1;
+      if (!inFront || nearestD2 >= atk.range * atk.range) {
+        m.attackTimer = 0.3;   // 撃てないときは短い再チェック
+        continue;
       }
+      m.attackTimer = atk.interval / ferocity;
+      m.laserLock   = LASER_WARN_TIME + LASER_FIRE_TIME;
+      // 撃つ向きへ顔を固定する（予兆の線と本体の向きを一致させる）
+      const lang = Math.atan2(ndy, ndx);
+      m.headingX = Math.cos(lang);
+      m.headingY = Math.sin(lang);
+      m.faceAngle = lang;      // stepTurn 側の基準も合わせる（照射後の向きの飛びを防ぐ）
+      spawnLaserStrike(m.wx, m.wy, lang, atk.width, atk.length,
+                       atk.dps * ferocity, atk.color ?? def.glowColor);
       continue;
     }
 
@@ -6752,7 +6776,7 @@ function updateMoverRams() {
   }
 }
 
-/** 移動敵の描画（本体＋HPバー＋コロッサスの眼光ビーム＋衝撃波リング）。ワールド座標系で呼ぶ。 */
+/** 移動敵の描画（本体＋HPバー＋衝撃波リング）。ワールド座標系で呼ぶ。 */
 function drawMovers() {
   for (const m of movers) {
     if (!m.alive) continue;
@@ -7034,17 +7058,8 @@ function drawMovers() {
       ctx.globalAlpha = 1.0;
     }
 
-    // コロッサスの眼光ビーム（v0.26: 無攻撃ユニット=財宝馬車/巨獣の腕でも例外にならないようガード）
-    if (def.attack && def.attack.type === "beam" && m.beamTargetIdx >= 0 && !boidDead[m.beamTargetIdx]) {
-      ctx.save();
-      ctx.strokeStyle = "rgba(255,64,64,0.65)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(m.wx, m.wy);
-      ctx.lineTo(px[m.beamTargetIdx], py[m.beamTargetIdx]);
-      ctx.stroke();
-      ctx.restore();
-    }
+    // v0.76: 旧「眼光ビーム」（対象へ伸びる細い赤線）の描画はここにあったが、
+    // レーザー一撃に置き換えたので drawLaserStrikes 側に集約した。
   }
 
   // 衝撃波リング（マンモス踏鳴らし・ボスノヴァ共用。色は発生源が指定）
@@ -12186,7 +12201,9 @@ function codexAttackLabel(def) {
   }
   const t = a.type;
   if (t === "shockwave") return `踏鳴らし 半径${a.radius}・押し${a.push ?? SHOCKWAVE_PUSH_DIST}・${a.interval}秒ごと`;
-  if (t === "beam")      return `眼光ビーム ${a.dps}dps・射程${a.range}` + (a.frontArc ? "（正面のみ）" : "");
+  if (t === "laser")     return `眼光レーザー 幅${a.width}・${a.dps}dps・射程${a.range}・${a.interval}秒ごと` +
+                                 `（予兆${LASER_WARN_TIME}秒 → 照射${LASER_FIRE_TIME}秒` +
+                                 (a.frontArc ? "・正面のみ" : "") + "）";
   if (t === "fan")       return `${a.pierce ? "貫通弾" : (a.kind === 1 ? "重弾" : "矢")}${a.count}連射 射程${a.range}・${a.interval}秒ごと`;
   if (t === "broadside") return `舷側砲 ${a.count}連×左右・${a.interval}秒ごと` + (a.pierce ? "（貫通）" : "");
   if (t === "bomb")      return `爆弾 範囲${a.aoe}・射程${a.range}・${a.interval}秒ごと`;
