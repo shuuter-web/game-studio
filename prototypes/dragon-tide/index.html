@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.78.0";
+const GAME_VERSION = "v0.79.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5453,14 +5453,88 @@ function drawEnemyDebugLabels() {
 // 動員段階の建て直し後に作り直し、陥落時だけ差分で消す。
 let townBelfryAlive = new Set();
 let barracksList = [];
+
+// -----------------------------------------------------------------
+// v0.79: 町ごとの陥落（Shooter指示「順番が報われる形に」）
+// -----------------------------------------------------------------
+// 町は1つ90〜120棟あり、大陸に50〜65町ある。最後の数棟を拾いに戻る掃除が
+// 毎回発生していた。一定割合まで落とした町は**残りが撃つのをやめる**ことで、
+// 選んだ順番に対して「この町は終わった」という区切りを付ける。
+// 壊せなくなるわけではない（XPも卵もそのまま出る）＝掃除は自由、危険だけ消える。
+const TOWN_SURRENDER_RATIO = 0.7;
+const townStats = new Map();   // townIndex -> {total, fallen, surrendered, cx, cy}
+const townFallFx = [];         // 陥落の表示 {x, y, life}
+const TOWN_FALL_FX_DURATION = 2.2;
+
 function recomputeTownRoles() {
   townBelfryAlive = new Set();
   barracksList = [];
+  townStats.clear();
+  const metaMap = new Map();
   for (const s of settlements) {
-    if (!s || s.fallen || !s._townRole) continue;
-    if (s._townRole === "belfry" && s._townIndex !== undefined) townBelfryAlive.add(s._townIndex);
-    if (s._townRole === "barracks") barracksList.push(s);
+    if (s && s._townMeta && s._townIndex !== undefined) metaMap.set(s._townIndex, s._townMeta);
   }
+  for (const s of settlements) {
+    if (!s) continue;
+    if (s._townRole && !s.fallen) {
+      if (s._townRole === "belfry" && s._townIndex !== undefined) townBelfryAlive.add(s._townIndex);
+      if (s._townRole === "barracks") barracksList.push(s);
+    }
+    // 城壁は町の棟数に数えない（撃たないので陥落判定に関係しない）
+    if (s._townIndex === undefined || s._isWall || s.isBoss) continue;
+    let st = townStats.get(s._townIndex);
+    if (!st) {
+      const m = metaMap.get(s._townIndex);
+      st = { total: 0, fallen: 0, surrendered: false, cx: m ? m.cx : s.wx, cy: m ? m.cy : s.wy };
+      townStats.set(s._townIndex, st);
+    }
+    st.total++;
+    if (s.fallen) st.fallen++;
+  }
+  // 建て直し後に「もう陥落している町」を取りこぼさない
+  for (const st of townStats.values()) {
+    st.surrendered = st.total > 0 && st.fallen / st.total >= TOWN_SURRENDER_RATIO;
+  }
+}
+
+/** その建物の町が陥落していれば true（＝撃たない）。 */
+function isTownSurrendered(townIndex) {
+  if (townIndex === undefined) return false;
+  const st = townStats.get(townIndex);
+  return !!(st && st.surrendered);
+}
+
+function updateTownFallFx(dt) {
+  for (let i = townFallFx.length - 1; i >= 0; i--) {
+    townFallFx[i].life -= dt;
+    if (townFallFx[i].life <= 0) townFallFx.splice(i, 1);
+  }
+}
+
+/** 陥落の表示。町の中心から立ち上がって消える。カメラ変換の内側で呼ぶ。 */
+function drawTownFallFx() {
+  if (townFallFx.length === 0) return;
+  ctx.save();
+  ctx.textAlign = "center";
+  for (const fx of townFallFx) {
+    const t = 1 - fx.life / TOWN_FALL_FX_DURATION;   // 0→1
+    const rise = 26 * t;
+    const alpha = t < 0.15 ? t / 0.15 : (t > 0.7 ? (1 - t) / 0.3 : 1);
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.font = `bold ${Math.max(10, Math.round(15 / cam.scale))}px monospace`;
+    ctx.lineWidth = Math.max(2, 3 / cam.scale);
+    ctx.strokeStyle = "rgba(0,0,0,0.65)";
+    ctx.strokeText("陥落", fx.x, fx.y - rise);
+    ctx.fillStyle = "#ffe08a";
+    ctx.fillText("陥落", fx.x, fx.y - rise);
+    // 広がる輪（町全体が落ちたことを面で見せる）
+    ctx.globalAlpha = Math.max(0, alpha) * 0.30;
+    ctx.strokeStyle = "#ffe08a";
+    ctx.beginPath();
+    ctx.arc(fx.x, fx.y, 40 + 220 * t, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 // v0.78: 兵舎が出す兵。**文明ごとに明示する**。
@@ -5499,6 +5573,7 @@ function updateBarracks(dt) {
   const r2 = BARRACKS_RANGE * BARRACKS_RANGE;
   for (const b of barracksList) {
     if (b.fallen) continue;
+    if (isTownSurrendered(b._townIndex)) continue;   // v0.79: 陥落した町は兵も出さない
     if (dist2(b.wx, b.wy, c.x, c.y) > r2) continue;
     const interval = barracksIntervalFor(def);
     if (b._barracksTimer === undefined) b._barracksTimer = random() * interval;
@@ -8953,6 +9028,8 @@ function updateSettlementAttacks(dt) {
     const settlement = settlements[s];
     if (!settlement || settlement.fallen) continue;
     if (settlement._noAttack) continue;   // v0.41: 城下の民家は撃たない（弾量を街と同等に保つ）
+    // v0.79: 陥落した町は撃たない（壊せるし報酬も出るが、危険だけ消える）
+    if (isTownSurrendered(settlement._townIndex)) continue;
 
     let inRange = false;
     const atkR2 = settlement.attackRadius * settlement.attackRadius;
@@ -9645,6 +9722,19 @@ function settlementFall(settlementIndex) {
     triggerFlash("rgba(160,224,112,0.12)", 0.18);
   } else if (settlement._townRole === "belfry") {
     townBelfryAlive.delete(settlement._townIndex);
+  }
+
+  // v0.79: 町の陥落判定。城壁とボスは数えない（recomputeTownRoles と同じ基準）。
+  if (settlement._townIndex !== undefined && !settlement._isWall && !settlement.isBoss) {
+    const st = townStats.get(settlement._townIndex);
+    if (st && !st.surrendered) {
+      st.fallen++;
+      if (st.fallen / st.total >= TOWN_SURRENDER_RATIO) {
+        st.surrendered = true;
+        townFallFx.push({ x: st.cx, y: st.cy, life: TOWN_FALL_FX_DURATION });
+        hapticPulse(120);
+      }
+    }
   }
 
   hapticPulse(80);
@@ -14651,6 +14741,7 @@ function render(now) {
   drawTongueFx();            // v0.37.1: 蛙竜の舌（竜の上に描く）
   drawProjectiles();
   drawParticles();
+  drawTownFallFx();     // v0.79: 町の陥落表示（建物の上・竜の下）
   drawAppearEffects();  // 変更2: 竜出現リングエフェクト（ワールド座標系）
   drawDownEffects();    // 変更2(追加): 竜やられリングエフェクト（ワールド座標系）
 
@@ -17166,6 +17257,7 @@ function tick() {
     updateLaserStrikes(wdt);
     updateBarrageQueue(wdt);      // v0.57: 時間差の斉射（矢の雨・絨毯爆撃・対空弾幕）
     updateBarracks(wdt);          // v0.78: 兵舎（群れが近いあいだだけ兵を出す）
+    updateTownFallFx(wdt);        // v0.79: 陥落の表示
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
     updateBossReinforcements(wdt); // v0.58: 首都が兵を出し続ける（取り巻きを倒しても消化試合にしない）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
