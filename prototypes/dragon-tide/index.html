@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.81.0";
+const GAME_VERSION = "v0.82.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -806,7 +806,7 @@ const DEBUG_ENEMY_LABELS = {
   lurker: "🕳潜行者", flamewagon: "🔥火吹き車", miasma: "☁瘴気塔", teslawagon: "⚡雷撃塔車",
   mammoth: "🦣マンモス", colossus: "🗿コロッサス", knights: "⚔騎士団", ironclad: "🚂甲鉄艦",
   balloon: "🎈爆撃気球", raider: "🏹レイダー", warlord: "💀ウォーロード", shockman: "💢衝撃兵",
-  healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車", eggcart: "🥚卵運搬車",
+  healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車",
   behemoth_core: "👹巨獣(腕2本つき)", behemoth_arm: "👹巨獣の腕",
   // v0.57: 文明ごとの看板ユニット
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
@@ -828,7 +828,7 @@ const DEBUG_ENEMY_ORDER = [
   "steamhammer", "repulsor", "concussion", "gravitygun",
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
-  "warlord", "shockman", "healer", "summoner", "treasure", "eggcart", "behemoth_core",
+  "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
 ];
 
 /** 群れのすぐ横に敵を湧かせる。隊（packCount）は隊ごと、巨獣はコア＋腕2本まとめて。 */
@@ -4746,18 +4746,6 @@ const MOVER_DEFS = {
     treasureReward: 40,   // 撃破時の竜晶ボーナス
   },
 
-  // v0.81 卵運搬車: 裏から入ると無防備すぎる（実機判定 2026-09-12）への回答。
-  // 群れが町の裏（卵の区画）に近づくと、**町に残っている卵を積んで逃げ出す**。
-  // 追いつけば積み荷ぜんぶ＋1個、逃げ切られたら**その町の卵は手に入らない**。
-  // ＝裏の易しさを「危険」ではなく「急ぐ理由」に変える（§5-2 の収穫者が不採用に
-  // なったあと、避難民の列で急ぐ理由を作るという方針どおり）。
-  // 積み荷は町の卵を**移し替える**だけなので、大陸の卵の総数は増えない。
-  eggcart: {
-    name: "eggcart", turnRate: 1.5,   // 荷車なので小回りは利かない＝追いつける
-    fleer: true,
-    hp: 70, speed: 72, xp: 60, eggDrop: 0, radius: 16,
-    color: "#c8a878", glowColor: "#ffe08a", moveType: "patrol",
-  },
 };
 
 // ステージ別の出現構成。後半ほど種類と数が増える（Shooterプレイテスト「後半にバリエーション」）
@@ -5550,16 +5538,11 @@ function recomputeTownRoles() {
     if (!st) {
       const m = metaMap.get(s._townIndex);
       st = { total: 0, fallen: 0, surrendered: false, cx: m ? m.cx : s.wx, cy: m ? m.cy : s.wy,
-             // v0.81: 卵運搬車の出どころ（生きている卵持ちの重心）
-             eggCx: 0, eggCy: 0, eggCount: 0, cartSent: false };
+ };
       townStats.set(s._townIndex, st);
     }
     st.total++;
     if (s.fallen) st.fallen++;
-    if (s.isEggBearer && !s.fallen) { st.eggCx += s.wx; st.eggCy += s.wy; st.eggCount++; }
-  }
-  for (const st of townStats.values()) {
-    if (st.eggCount > 0) { st.eggCx /= st.eggCount; st.eggCy /= st.eggCount; }
   }
   // 建て直し後に「もう陥落している町」を取りこぼさない
   for (const st of townStats.values()) {
@@ -5658,51 +5641,7 @@ function drawTownFrontMarkers() {
   ctx.restore();
 }
 
-// -----------------------------------------------------------------
-// v0.81: 卵運搬車（裏から入ったときの「急ぐ理由」）
-// -----------------------------------------------------------------
-const EGGCART_TRIGGER_RANGE = 700;    // 群れがこの距離に入ると逃げ出す
-const EGGCART_ESCAPE_DIST   = 1900;   // 群れからこれだけ離れたら逃げ切り（積み荷は消える）
-const EGGCART_BONUS_EGGS    = 1;      // 追いついたときの上乗せ
-
-function updateEggCarts(dt) {
-  const c = calcFriendlyCentroid();
-
-  // (1) 逃げ出す。1町につき1度だけ
-  const trig2 = EGGCART_TRIGGER_RANGE * EGGCART_TRIGGER_RANGE;
-  for (const [townIndex, st] of townStats) {
-    if (st.cartSent || st.surrendered || st.eggCount <= 0) continue;
-    if (dist2(st.eggCx, st.eggCy, c.x, c.y) > trig2) continue;
-    st.cartSent = true;
-    // 町に残っている卵を車へ積み替える（総数は増やさない）
-    let carried = 0;
-    for (const b of settlements) {
-      if (b && b.isEggBearer && !b.fallen && b._townIndex === townIndex) {
-        b.isEggBearer = false; carried++;
-      }
-    }
-    if (carried <= 0) continue;
-    const def = MOVER_DEFS.eggcart;
-    const cart = makeMover(def, () => ({ x: st.eggCx, y: st.eggCy }));
-    cart.wx = st.eggCx; cart.wy = st.eggCy;
-    cart.maxHp = def.hp; cart.hp = def.hp; cart.xpValue = def.xp;
-    cart._eggCargo = carried + EGGCART_BONUS_EGGS;
-    movers.push(cart);
-    spawnDragonAppearEffect(cart.wx, cart.wy);
-    pushWorldText(st.eggCx, st.eggCy, "卵を運び出した", "#ffd86a");
-  }
-
-  // (2) 逃げ切り。報酬なしで消える
-  const esc2 = EGGCART_ESCAPE_DIST * EGGCART_ESCAPE_DIST;
-  for (const m of movers) {
-    if (!m.alive || !m._eggCargo) continue;
-    if (dist2(m.wx, m.wy, c.x, c.y) < esc2) continue;
-    m.alive = false;
-    pushWorldText(m.wx, m.wy, "逃げられた", "#9aa8b8");
-  }
-}
-
-/** ワールド座標に浮かぶ短い文字。町の陥落・卵運搬車の逃走で共用する。 */
+/** ワールド座標に浮かぶ短い文字。今は町の陥落だけが使う。 */
 function drawWorldTextFx() {
   if (worldTextFx.length === 0) return;
   ctx.save();
@@ -7161,8 +7100,7 @@ function damageMover(m, damage, srcX, srcY) {
     if (m.def.elite) { profile.eliteKills = (profile.eliteKills || 0) + 1; saveProfile(); }
     // v0.8: ステージスケール済みXP（xpValue）。未設定の個体は基礎値
     spawnXpGems(m.wx, m.wy, m.xpValue ?? m.def.xp);
-    // v0.81: 卵運搬車は積み荷ぶん（町から運び出した数＋おまけ）を落とす
-    let eggs = m._eggCargo ?? m.def.eggDrop;
+    let eggs = m.def.eggDrop;
     // v0.8: 確率卵（レイダー用。群れの供給源が完全に絶えないように）
     if (m.def.eggChance && random() < m.def.eggChance) eggs += 1;
     for (let k = 0; k < eggs; k++) {
@@ -12734,14 +12672,13 @@ const CODEX_ENEMY_NAMES = {
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
   behemoth_core: "巨獣（コア）", behemoth_arm: "巨獣の腕",
-  raider: "レイダー", treasure: "財宝馬車", eggcart: "卵運搬車",
+  raider: "レイダー", treasure: "財宝馬車",
 };
 
 // 出現テーブルに載らない敵の出どころ（載っているものは自動で引く）
 const CODEX_SPECIAL_ERA = {
   raider:         "全文明 — 建物が尽きると首都から湧く",
   treasure:       "全文明 — 1体だけ漂う当たり枠",
-  eggcart:        "全文明 — 町の裏に近づくと、その町の卵を積んで逃げ出す",
   behemoth_core:  "VI 電気 / VIII 最終",
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
   splitter_mid:   "分裂体を壊すと出る",
@@ -12767,10 +12704,6 @@ function codexAttackLabel(def) {
   const a = def.attack;
   if (!a) {
     if (def.name === "behemoth_arm") return "叩きつけ衝撃波（コアの脇から）";
-    if (def.name === "eggcart") {
-      return `攻撃しない — 卵を積んで逃げる。追いつけば積み荷ぜんぶ＋${EGGCART_BONUS_EGGS}個、` +
-             `群れから${EGGCART_ESCAPE_DIST}px離されると**卵ごと消える**`;
-    }
     if (def.treasure) return "攻撃しない — 逃げ回る";
     return "攻撃しない";
   }
@@ -14944,7 +14877,6 @@ function render(now) {
   drawSettlementHPBars();
 
   drawEggBearerMarkers(now);
-  drawEggCartMarkers(now);   // v0.81: 卵を積んだ車の目印
   drawEggs();
   drawEmbers();             // v0.10: 燃える建物の火の粉・煙（建物の上・ユニットの下）
   drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
@@ -15251,24 +15183,6 @@ function drawBossHPBar(boss) {
 // cam.scale が小さい（引き画面）でも視認できるよう最低サイズを保証する。
 // fallen になると描画から除外されるので「陥落後に消える」を自動的に満たす。
 // -----------------------------------------------------------------
-/** v0.81: 卵運搬車の上にも同じ金色のオーブを出す（「卵はあの車にある」を同じ記号で読ませる）。 */
-function drawEggCartMarkers(now) {
-  const pulse = 0.4 + 0.6 * (Math.sin(now * 0.001 * Math.PI * 2 / 1.2) * 0.5 + 0.5);
-  const worldR = Math.max(6 / cam.scale, 6);
-  ctx.save();
-  for (const m of movers) {
-    if (!m.alive || !m._eggCargo) continue;
-    const ox = m.wx, oy = m.wy - m.def.radius - 12;
-    ctx.globalAlpha = pulse * 0.35;
-    ctx.fillStyle = "#ffd040";
-    ctx.beginPath(); ctx.arc(ox, oy, worldR * 2.0, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = pulse;
-    ctx.fillStyle = "#ffe9a0";
-    ctx.beginPath(); ctx.arc(ox, oy, worldR, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.restore();
-}
-
 function drawEggBearerMarkers(now) {
   // 明滅周期: 1.2秒サイクル（sin波で 0.4〜1.0 の alpha 範囲）
   const pulse = 0.4 + 0.6 * (Math.sin(now * 0.001 * Math.PI * 2 / 1.2) * 0.5 + 0.5);
@@ -16490,7 +16404,6 @@ const ENEMY_IMAGE_SOURCES = {
   healer:        "assets/mover_healer.png",
   summoner:      "assets/mover_summoner.png",
   treasure:      "assets/mover_treasure.png",
-  eggcart:       "assets/mover_eggcart.png",
   shieldman:     "assets/mover_shieldman.png",
   splitter:      "assets/mover_splitter.png",
   lurker:        "assets/mover_lurker.png",
@@ -16658,8 +16571,6 @@ const ENEMY_SPRITE_META = {
   summoner:       { px: 0.497, py: 0.518, forward: "none", drawScale: 3.34, hover: true },
   teslawagon:     { px: 0.497, py: 0.514, forward: "up", drawScale: 2.48 },
   treasure:       { px: 0.498, py: 0.601, forward: "up", drawScale: 2.28 },
-  // v0.81: 生成された絵は**馬が下**を向いている（前が画像の下）ので forward:"down"
-  eggcart:        { px: 0.505, py: 0.445, forward: "down", drawScale: 1.42 },
   warlord:        { px: 0.497, py: 0.579, forward: "up", drawScale: 1.71 },
   citadel:        { px: 0.498, py: 0.488, forward: "none", drawScale: 3.45 },
   // v0.69: 流用をやめて専用の絵にした18種。
@@ -17507,7 +17418,6 @@ function tick() {
     updateBarrageQueue(wdt);      // v0.57: 時間差の斉射（矢の雨・絨毯爆撃・対空弾幕）
     updateBarracks(wdt);          // v0.78: 兵舎（群れが近いあいだだけ兵を出す）
     updateWorldTextFx(wdt);       // v0.79/81: 陥落・逃走の表示
-    updateEggCarts(wdt);          // v0.81: 卵運搬車（裏から入ると卵が逃げ出す）
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
     updateBossReinforcements(wdt); // v0.58: 首都が兵を出し続ける（取り巻きを倒しても消化試合にしない）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
