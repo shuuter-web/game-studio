@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.79.0";
+const GAME_VERSION = "v0.80.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -903,6 +903,7 @@ function debugWarpToBoss() {
 const DEBUG_ACTIONS = [
   { label: "👾 敵を出す…",           run: () => { debugPage = "enemies"; }, keepOpen: true },
   { label: "🏷 敵の名札",            run: () => { debugShowEnemyLabels = !debugShowEnemyLabels; }, keepOpen: true },
+  { label: "🧭 街の向き",            run: () => { debugShowTownFront = !debugShowTownFront; }, keepOpen: true },
   { label: "🛡 竜を無敵",            run: () => { debugInvincible = !debugInvincible; }, keepOpen: true },
   { label: "☠ 敵を全部消す",         run: () => debugClearEnemies(), keepOpen: true },
   { label: "🌊 堰を決壊させる",       run: () => debugBreakDam() },
@@ -935,7 +936,8 @@ function debugStatusLine() {
   const rec = debugRecoilOverride === null ? `既定(${atk().recoilDist})` : `${debugRecoilOverride}`;
   const cont = (typeof profile !== "undefined" && profile)
     ? `文明:${unlockedContinentCount()}/${CONTINENT_DEFS.length} ` : "";
-  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}${cont}` +
+  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}` +
+         `${debugShowTownFront ? "【街の向きON】 " : ""}${cont}` +
          `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
          `動き:${move} / 反動:${rec} / ` +
@@ -5453,6 +5455,9 @@ function drawEnemyDebugLabels() {
 // 動員段階の建て直し後に作り直し、陥落時だけ差分で消す。
 let townBelfryAlive = new Set();
 let barracksList = [];
+// v0.80: 町の meta 一覧（「街の向き」表示が毎フレーム使う。
+// settlements を毎フレーム走査すると数千棟になるので索引を持つ）。
+let townMetaList = [];
 
 // -----------------------------------------------------------------
 // v0.79: 町ごとの陥落（Shooter指示「順番が報われる形に」）
@@ -5470,9 +5475,13 @@ function recomputeTownRoles() {
   townBelfryAlive = new Set();
   barracksList = [];
   townStats.clear();
+  townMetaList = [];
   const metaMap = new Map();
   for (const s of settlements) {
-    if (s && s._townMeta && s._townIndex !== undefined) metaMap.set(s._townIndex, s._townMeta);
+    if (s && s._townMeta && s._townIndex !== undefined) {
+      metaMap.set(s._townIndex, s._townMeta);
+      townMetaList.push(s._townMeta);
+    }
   }
   for (const s of settlements) {
     if (!s) continue;
@@ -5509,6 +5518,83 @@ function updateTownFallFx(dt) {
     townFallFx[i].life -= dt;
     if (townFallFx[i].life <= 0) townFallFx.splice(i, 1);
   }
+}
+
+// v0.80: 街の向きの**仮表示**（Shooter指示「街の向きがいまいち分からない」）。
+// v0.77 で入れた「表＝城壁と兵器／裏＝畑と卵」が実機で読めているか確かめるための
+// 開発用の目印。デバッグメニュー「🧭 街の向き」で消せる。
+// 仕様が固まったら、この関数ごと外すか、地形側の表現（門・街道の入口など）に置き換える。
+let debugShowTownFront = true;
+const TOWN_FRONT_MARK_COLOR = "#ff8a5c";   // 表＝守りの側
+const TOWN_BACK_MARK_COLOR  = "#8ce07a";   // 裏＝実りの側
+
+function drawTownFrontMarkers() {
+  if (!debugShowTownFront || townMetaList.length === 0) return;
+  const bounds = getViewBoundsWorld(260);
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const fontPx = Math.max(9, Math.round(13 / cam.scale));
+  ctx.font = `bold ${fontPx}px monospace`;
+  for (const m of townMetaList) {
+    if (m.frontAngle === undefined) continue;
+    if (m.cx < bounds.minX || m.cx > bounds.maxX ||
+        m.cy < bounds.minY || m.cy > bounds.maxY) continue;
+    const R = (m.maxExtent ?? m.townR ?? 200);
+    const half = Math.acos(TOWN_FRONT_COS);   // 表とみなす扇（±60度）。判定と同じ値を使う
+
+    // 表の扇（±60度）を塗る＝どの棟が「表」に数えられているかが面で分かる
+    ctx.globalAlpha = 0.10;
+    ctx.fillStyle = TOWN_FRONT_MARK_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(m.cx, m.cy);
+    ctx.arc(m.cx, m.cy, R + 26, m.frontAngle - half, m.frontAngle + half);
+    ctx.closePath();
+    ctx.fill();
+
+    // 裏の扇も薄く（実りの側）
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = TOWN_BACK_MARK_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(m.cx, m.cy);
+    ctx.arc(m.cx, m.cy, R + 26, m.frontAngle + Math.PI - half, m.frontAngle + Math.PI + half);
+    ctx.closePath();
+    ctx.fill();
+
+    // 表を指す矢印（中心から外へ）
+    const ax = Math.cos(m.frontAngle), ay = Math.sin(m.frontAngle);
+    const tipX = m.cx + ax * (R + 46), tipY = m.cy + ay * (R + 46);
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = TOWN_FRONT_MARK_COLOR;
+    ctx.lineWidth = Math.max(2, 3 / cam.scale);
+    ctx.beginPath();
+    ctx.moveTo(m.cx + ax * 20, m.cy + ay * 20);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+    const head = Math.max(9, 13 / cam.scale);
+    ctx.fillStyle = TOWN_FRONT_MARK_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(tipX + ax * head, tipY + ay * head);
+    ctx.lineTo(tipX - ay * head * 0.6, tipY + ax * head * 0.6);
+    ctx.lineTo(tipX + ay * head * 0.6, tipY - ax * head * 0.6);
+    ctx.closePath();
+    ctx.fill();
+
+    // 「表」「裏」の字
+    const label = (text, angle, color) => {
+      const lx = m.cx + Math.cos(angle) * (R + 74);
+      const ly = m.cy + Math.sin(angle) * (R + 74);
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = Math.max(2, 3 / cam.scale);
+      ctx.strokeStyle = "rgba(0,0,0,0.7)";
+      ctx.strokeText(text, lx, ly);
+      ctx.fillStyle = color;
+      ctx.fillText(text, lx, ly);
+    };
+    label("表", m.frontAngle, TOWN_FRONT_MARK_COLOR);
+    label("裏", m.frontAngle + Math.PI, TOWN_BACK_MARK_COLOR);
+  }
+  ctx.restore();
 }
 
 /** 陥落の表示。町の中心から立ち上がって消える。カメラ変換の内側で呼ぶ。 */
@@ -14741,6 +14827,7 @@ function render(now) {
   drawTongueFx();            // v0.37.1: 蛙竜の舌（竜の上に描く）
   drawProjectiles();
   drawParticles();
+  drawTownFrontMarkers();  // v0.80: 街の向きの仮表示（デバッグメニューで消せる）
   drawTownFallFx();     // v0.79: 町の陥落表示（建物の上・竜の下）
   drawAppearEffects();  // 変更2: 竜出現リングエフェクト（ワールド座標系）
   drawDownEffects();    // 変更2(追加): 竜やられリングエフェクト（ワールド座標系）
