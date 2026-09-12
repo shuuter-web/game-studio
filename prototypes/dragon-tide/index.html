@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.80.0";
+const GAME_VERSION = "v0.81.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -806,7 +806,7 @@ const DEBUG_ENEMY_LABELS = {
   lurker: "🕳潜行者", flamewagon: "🔥火吹き車", miasma: "☁瘴気塔", teslawagon: "⚡雷撃塔車",
   mammoth: "🦣マンモス", colossus: "🗿コロッサス", knights: "⚔騎士団", ironclad: "🚂甲鉄艦",
   balloon: "🎈爆撃気球", raider: "🏹レイダー", warlord: "💀ウォーロード", shockman: "💢衝撃兵",
-  healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車",
+  healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車", eggcart: "🥚卵運搬車",
   behemoth_core: "👹巨獣(腕2本つき)", behemoth_arm: "👹巨獣の腕",
   // v0.57: 文明ごとの看板ユニット
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
@@ -828,7 +828,7 @@ const DEBUG_ENEMY_ORDER = [
   "steamhammer", "repulsor", "concussion", "gravitygun",
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
-  "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
+  "warlord", "shockman", "healer", "summoner", "treasure", "eggcart", "behemoth_core",
 ];
 
 /** 群れのすぐ横に敵を湧かせる。隊（packCount）は隊ごと、巨獣はコア＋腕2本まとめて。 */
@@ -3723,7 +3723,31 @@ function generateStageLayout(stageIndex) {
       };
       // 兵舎＝表側の外寄り（守りと同じ側）／穀倉＝裏側の外寄り（畑・卵と同じ側）
       // 鐘楼＝中心寄り（町の真ん中で鳴る。どちらから入っても寄り道になる）
-      const isStrong = pool.some(b => b._fixedTier != null || (b._tierOffset || 0) > 0);
+      const isFortress = pool.some(b => b._fixedTier != null);
+      const isStrong = isFortress || pool.some(b => (b._tierOffset || 0) > 0);
+
+      // v0.81: 前哨堡を**表の扇に散らして**置く。1箇所に固めると横から回れてしまうので、
+      // 表の±60度を等分した位置にいちばん近い棟を取る＝重なった射界で面を作る。
+      const rampartCount = isFortress ? RAMPART_PER_FORTRESS_TOWN
+        : isStrong ? RAMPART_PER_ADVANCED_TOWN : RAMPART_PER_TOWN;
+      const frontPool = scored.filter(x => x.front > TOWN_FRONT_COS);
+      const half = Math.acos(TOWN_FRONT_COS);
+      for (let k = 0; k < rampartCount; k++) {
+        // 扇を rampartCount 等分した中点の角度
+        const want = meta.frontAngle - half + (k + 0.5) * (half * 2 / rampartCount);
+        let pick = null, bestD = Infinity;
+        for (const x of frontPool) {
+          if (x.b._townRole) continue;
+          const a = Math.atan2(x.b.wy - meta.cy, x.b.wx - meta.cx);
+          // 狙いの角度に近く、かつ外寄りの棟ほど良い（外周に並べて射界を稼ぐ）
+          const d = Math.abs(wrapAngle(a - want)) + (1 - x.dist) * 0.5;
+          if (d < bestD) { bestD = d; pick = x.b; }
+        }
+        if (!pick) break;
+        pick._townRole    = "rampart";
+        pick.attackRadius = Math.max(pick.attackRadius, RAMPART_RANGE);
+      }
+
       if (isStrong) {
         const bk = take(x => x.front * 2 + x.dist);
         if (bk) bk._townRole = "barracks";
@@ -4721,6 +4745,19 @@ const MOVER_DEFS = {
     color: "#b08020", glowColor: "#ffd040", moveType: "patrol",
     treasureReward: 40,   // 撃破時の竜晶ボーナス
   },
+
+  // v0.81 卵運搬車: 裏から入ると無防備すぎる（実機判定 2026-09-12）への回答。
+  // 群れが町の裏（卵の区画）に近づくと、**町に残っている卵を積んで逃げ出す**。
+  // 追いつけば積み荷ぜんぶ＋1個、逃げ切られたら**その町の卵は手に入らない**。
+  // ＝裏の易しさを「危険」ではなく「急ぐ理由」に変える（§5-2 の収穫者が不採用に
+  // なったあと、避難民の列で急ぐ理由を作るという方針どおり）。
+  // 積み荷は町の卵を**移し替える**だけなので、大陸の卵の総数は増えない。
+  eggcart: {
+    name: "eggcart", turnRate: 1.5,   // 荷車なので小回りは利かない＝追いつける
+    fleer: true,
+    hp: 70, speed: 72, xp: 60, eggDrop: 0, radius: 16,
+    color: "#c8a878", glowColor: "#ffe08a", moveType: "patrol",
+  },
 };
 
 // ステージ別の出現構成。後半ほど種類と数が増える（Shooterプレイテスト「後半にバリエーション」）
@@ -5006,7 +5043,22 @@ const TOWN_ROLE_DEFS = {
               desc: "壊すと卵がまとめて出る" },
   barracks: { label: "兵舎",  ring: "#ff9a6a",
               desc: "生きている間、近づくと兵を出し続ける" },
+  // v0.81: 表が手強くない（実機判定 2026-09-12）への回答。
+  // 表側に**必ず数基**立ち、その文明の通常弾を扇で連射する＝表から入ると弾幕を抜ける必要がある。
+  // 全方位ではなく群れの方向へ面で撃つ（全方位はボスと街の中央だけ、という v0.64.1 の方針を守る）。
+  rampart:  { label: "前哨堡", ring: "#ff5c5c",
+              desc: "その文明の通常弾を扇で連射する。表側にだけ立つ" },
 };
+// 前哨堡: 1射の弾数／扇の全幅(rad)／発射間隔／射程／1発の威力倍率（数で圧すので1発は弱め）
+const RAMPART_COUNT     = 7;
+const RAMPART_SPREAD    = 0.72;
+const RAMPART_INTERVAL  = 1.2;
+const RAMPART_RANGE     = 430;
+const RAMPART_DMG_MULT  = 0.85;
+// 1町あたりの基数。格上の街・要塞都市ほど厚い
+const RAMPART_PER_TOWN          = 2;
+const RAMPART_PER_ADVANCED_TOWN = 3;
+const RAMPART_PER_FORTRESS_TOWN = 4;
 // 鐘楼が生きている町の発射間隔倍率（1未満＝速く撃つ）
 const BELFRY_INTERVAL_MULT = 0.7;
 // 穀倉を壊したときに出る卵。散らばっている町の卵（1町2〜3個）より明確に多い
@@ -5468,8 +5520,11 @@ let townMetaList = [];
 // 壊せなくなるわけではない（XPも卵もそのまま出る）＝掃除は自由、危険だけ消える。
 const TOWN_SURRENDER_RATIO = 0.7;
 const townStats = new Map();   // townIndex -> {total, fallen, surrendered, cx, cy}
-const townFallFx = [];         // 陥落の表示 {x, y, life}
-const TOWN_FALL_FX_DURATION = 2.2;
+const worldTextFx = [];        // ワールドに浮かぶ文字 {x, y, life, text, color}
+const WORLD_TEXT_FX_DURATION = 2.2;
+function pushWorldText(x, y, text, color) {
+  worldTextFx.push({ x, y, life: WORLD_TEXT_FX_DURATION, text, color });
+}
 
 function recomputeTownRoles() {
   townBelfryAlive = new Set();
@@ -5494,11 +5549,17 @@ function recomputeTownRoles() {
     let st = townStats.get(s._townIndex);
     if (!st) {
       const m = metaMap.get(s._townIndex);
-      st = { total: 0, fallen: 0, surrendered: false, cx: m ? m.cx : s.wx, cy: m ? m.cy : s.wy };
+      st = { total: 0, fallen: 0, surrendered: false, cx: m ? m.cx : s.wx, cy: m ? m.cy : s.wy,
+             // v0.81: 卵運搬車の出どころ（生きている卵持ちの重心）
+             eggCx: 0, eggCy: 0, eggCount: 0, cartSent: false };
       townStats.set(s._townIndex, st);
     }
     st.total++;
     if (s.fallen) st.fallen++;
+    if (s.isEggBearer && !s.fallen) { st.eggCx += s.wx; st.eggCy += s.wy; st.eggCount++; }
+  }
+  for (const st of townStats.values()) {
+    if (st.eggCount > 0) { st.eggCx /= st.eggCount; st.eggCy /= st.eggCount; }
   }
   // 建て直し後に「もう陥落している町」を取りこぼさない
   for (const st of townStats.values()) {
@@ -5513,10 +5574,10 @@ function isTownSurrendered(townIndex) {
   return !!(st && st.surrendered);
 }
 
-function updateTownFallFx(dt) {
-  for (let i = townFallFx.length - 1; i >= 0; i--) {
-    townFallFx[i].life -= dt;
-    if (townFallFx[i].life <= 0) townFallFx.splice(i, 1);
+function updateWorldTextFx(dt) {
+  for (let i = worldTextFx.length - 1; i >= 0; i--) {
+    worldTextFx[i].life -= dt;
+    if (worldTextFx[i].life <= 0) worldTextFx.splice(i, 1);
   }
 }
 
@@ -5597,25 +5658,69 @@ function drawTownFrontMarkers() {
   ctx.restore();
 }
 
-/** 陥落の表示。町の中心から立ち上がって消える。カメラ変換の内側で呼ぶ。 */
-function drawTownFallFx() {
-  if (townFallFx.length === 0) return;
+// -----------------------------------------------------------------
+// v0.81: 卵運搬車（裏から入ったときの「急ぐ理由」）
+// -----------------------------------------------------------------
+const EGGCART_TRIGGER_RANGE = 700;    // 群れがこの距離に入ると逃げ出す
+const EGGCART_ESCAPE_DIST   = 1900;   // 群れからこれだけ離れたら逃げ切り（積み荷は消える）
+const EGGCART_BONUS_EGGS    = 1;      // 追いついたときの上乗せ
+
+function updateEggCarts(dt) {
+  const c = calcFriendlyCentroid();
+
+  // (1) 逃げ出す。1町につき1度だけ
+  const trig2 = EGGCART_TRIGGER_RANGE * EGGCART_TRIGGER_RANGE;
+  for (const [townIndex, st] of townStats) {
+    if (st.cartSent || st.surrendered || st.eggCount <= 0) continue;
+    if (dist2(st.eggCx, st.eggCy, c.x, c.y) > trig2) continue;
+    st.cartSent = true;
+    // 町に残っている卵を車へ積み替える（総数は増やさない）
+    let carried = 0;
+    for (const b of settlements) {
+      if (b && b.isEggBearer && !b.fallen && b._townIndex === townIndex) {
+        b.isEggBearer = false; carried++;
+      }
+    }
+    if (carried <= 0) continue;
+    const def = MOVER_DEFS.eggcart;
+    const cart = makeMover(def, () => ({ x: st.eggCx, y: st.eggCy }));
+    cart.wx = st.eggCx; cart.wy = st.eggCy;
+    cart.maxHp = def.hp; cart.hp = def.hp; cart.xpValue = def.xp;
+    cart._eggCargo = carried + EGGCART_BONUS_EGGS;
+    movers.push(cart);
+    spawnDragonAppearEffect(cart.wx, cart.wy);
+    pushWorldText(st.eggCx, st.eggCy, "卵を運び出した", "#ffd86a");
+  }
+
+  // (2) 逃げ切り。報酬なしで消える
+  const esc2 = EGGCART_ESCAPE_DIST * EGGCART_ESCAPE_DIST;
+  for (const m of movers) {
+    if (!m.alive || !m._eggCargo) continue;
+    if (dist2(m.wx, m.wy, c.x, c.y) < esc2) continue;
+    m.alive = false;
+    pushWorldText(m.wx, m.wy, "逃げられた", "#9aa8b8");
+  }
+}
+
+/** ワールド座標に浮かぶ短い文字。町の陥落・卵運搬車の逃走で共用する。 */
+function drawWorldTextFx() {
+  if (worldTextFx.length === 0) return;
   ctx.save();
   ctx.textAlign = "center";
-  for (const fx of townFallFx) {
-    const t = 1 - fx.life / TOWN_FALL_FX_DURATION;   // 0→1
+  for (const fx of worldTextFx) {
+    const t = 1 - fx.life / WORLD_TEXT_FX_DURATION;   // 0→1
     const rise = 26 * t;
     const alpha = t < 0.15 ? t / 0.15 : (t > 0.7 ? (1 - t) / 0.3 : 1);
     ctx.globalAlpha = Math.max(0, alpha);
     ctx.font = `bold ${Math.max(10, Math.round(15 / cam.scale))}px monospace`;
     ctx.lineWidth = Math.max(2, 3 / cam.scale);
     ctx.strokeStyle = "rgba(0,0,0,0.65)";
-    ctx.strokeText("陥落", fx.x, fx.y - rise);
-    ctx.fillStyle = "#ffe08a";
-    ctx.fillText("陥落", fx.x, fx.y - rise);
+    ctx.strokeText(fx.text, fx.x, fx.y - rise);
+    ctx.fillStyle = fx.color;
+    ctx.fillText(fx.text, fx.x, fx.y - rise);
     // 広がる輪（町全体が落ちたことを面で見せる）
     ctx.globalAlpha = Math.max(0, alpha) * 0.30;
-    ctx.strokeStyle = "#ffe08a";
+    ctx.strokeStyle = fx.color;
     ctx.beginPath();
     ctx.arc(fx.x, fx.y, 40 + 220 * t, 0, Math.PI * 2);
     ctx.stroke();
@@ -7056,7 +7161,8 @@ function damageMover(m, damage, srcX, srcY) {
     if (m.def.elite) { profile.eliteKills = (profile.eliteKills || 0) + 1; saveProfile(); }
     // v0.8: ステージスケール済みXP（xpValue）。未設定の個体は基礎値
     spawnXpGems(m.wx, m.wy, m.xpValue ?? m.def.xp);
-    let eggs = m.def.eggDrop;
+    // v0.81: 卵運搬車は積み荷ぶん（町から運び出した数＋おまけ）を落とす
+    let eggs = m._eggCargo ?? m.def.eggDrop;
     // v0.8: 確率卵（レイダー用。群れの供給源が完全に絶えないように）
     if (m.def.eggChance && random() < m.def.eggChance) eggs += 1;
     for (let k = 0; k < eggs; k++) {
@@ -9140,6 +9246,25 @@ function updateSettlementAttacks(dt) {
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
 
+    // v0.81: 前哨堡は通常弾を「扇で連射」する。狙う向きへ面で撃つので、
+    // 表から入ると弾の壁を抜けることになる（横へ回れば射界から外れる）。
+    if (settlement._townRole === "rampart") {
+      settlement.attackTimer = RAMPART_INTERVAL;
+      const base = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
+      for (let k = 0; k < RAMPART_COUNT; k++) {
+        const off = (k - (RAMPART_COUNT - 1) / 2) * (RAMPART_SPREAD / (RAMPART_COUNT - 1));
+        spawnFanProjectileRaw(
+          settlement.wx, settlement.wy, base + off,
+          settlement.projectileSpeed,
+          settlement.projectileDamage * RAMPART_DMG_MULT,
+          settlement.projectileColor,
+          1,                      // kind=1: 大きめの弾（見えやすさ優先）
+          RAMPART_RANGE + 40,
+        );
+      }
+      continue;
+    }
+
     // v0.57: 時代兵器を持つ建物は通常弾を撃たず、専用の技を出す。
     // ※ targetIdx を使うので、必ずその宣言より後に置くこと
     //   （前に置いて const の TDZ で落ちた。構文チェックでは検出できない）。
@@ -9817,7 +9942,7 @@ function settlementFall(settlementIndex) {
       st.fallen++;
       if (st.fallen / st.total >= TOWN_SURRENDER_RATIO) {
         st.surrendered = true;
-        townFallFx.push({ x: st.cx, y: st.cy, life: TOWN_FALL_FX_DURATION });
+        pushWorldText(st.cx, st.cy, "陥落", "#ffe08a");
         hapticPulse(120);
       }
     }
@@ -12609,13 +12734,14 @@ const CODEX_ENEMY_NAMES = {
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
   behemoth_core: "巨獣（コア）", behemoth_arm: "巨獣の腕",
-  raider: "レイダー", treasure: "財宝馬車",
+  raider: "レイダー", treasure: "財宝馬車", eggcart: "卵運搬車",
 };
 
 // 出現テーブルに載らない敵の出どころ（載っているものは自動で引く）
 const CODEX_SPECIAL_ERA = {
   raider:         "全文明 — 建物が尽きると首都から湧く",
   treasure:       "全文明 — 1体だけ漂う当たり枠",
+  eggcart:        "全文明 — 町の裏に近づくと、その町の卵を積んで逃げ出す",
   behemoth_core:  "VI 電気 / VIII 最終",
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
   splitter_mid:   "分裂体を壊すと出る",
@@ -12641,6 +12767,10 @@ function codexAttackLabel(def) {
   const a = def.attack;
   if (!a) {
     if (def.name === "behemoth_arm") return "叩きつけ衝撃波（コアの脇から）";
+    if (def.name === "eggcart") {
+      return `攻撃しない — 卵を積んで逃げる。追いつけば積み荷ぜんぶ＋${EGGCART_BONUS_EGGS}個、` +
+             `群れから${EGGCART_ESCAPE_DIST}px離されると**卵ごと消える**`;
+    }
     if (def.treasure) return "攻撃しない — 逃げ回る";
     return "攻撃しない";
   }
@@ -12880,12 +13010,17 @@ function codexBuildingHtml() {
         `<div class="cx-thumb"><img src="${BUILDING_IMAGE_SOURCES["role_" + key]}" alt=""></div>` +
         `<div class="cx-body">` +
           `<div class="cx-name">${def.label}</div>` +
-          `<div class="cx-tags">${key === "barracks" ? "格上の街・要塞都市だけ" : "どの町にも1つ"}` +
-            ` ／ ${key === "barracks" ? "町の表側" : key === "granary" ? "町の裏側" : "町の中心寄り"}</div>` +
+          `<div class="cx-tags">${
+              key === "barracks" ? "格上の街・要塞都市だけ" :
+              key === "rampart"  ? `どの町にも${RAMPART_PER_TOWN}基（格上${RAMPART_PER_ADVANCED_TOWN}／要塞${RAMPART_PER_FORTRESS_TOWN}）` :
+                                   "どの町にも1つ"}` +
+            ` ／ ${key === "granary" ? "町の裏側" : key === "belfry" ? "町の中心寄り" : "町の表側"}</div>` +
           `<div class="cx-atk">${def.desc}</div>` +
           `<div class="cx-stat">${
             key === "belfry"   ? `町の発射間隔 ×${BELFRY_INTERVAL_MULT}` :
             key === "granary"  ? `卵 ${GRANARY_EGG_COUNT}個（町に散らばる卵は1町2〜3個）` :
+            key === "rampart"  ? `${RAMPART_COUNT}発の扇・${RAMPART_INTERVAL}秒ごと・射程${RAMPART_RANGE}` +
+                                 `（1発の威力は普通の弾の${Math.round(RAMPART_DMG_MULT * 100)}%）` :
                                  `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(0)]).toFixed(0)}〜` +
                                  `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(5)]).toFixed(0)}秒ごとに1体` +
                                  `（兵の重さで変わる）・同時${BARRACKS_CAP}体まで・射程${BARRACKS_RANGE}`
@@ -13447,6 +13582,10 @@ function reinforceSettlementForTier(settlement, baseTier) {
   // （実測: 段階1に上げたら走査半径が5→4に落ちて投石機の射程が 500→400 になった）。
   const _emp = settlement._emplacement ? EMPLACEMENT_DEFS[settlement._emplacement] : null;
   if (_emp) settlement.attackRadius = Math.max(settlement.attackRadius, _emp.range);
+  // v0.81: 前哨堡も同じ理由で射程を戻さない（段階が上がると近距離武器に化けてしまう）
+  if (settlement._townRole === "rampart") {
+    settlement.attackRadius = Math.max(settlement.attackRadius, RAMPART_RANGE);
+  }
   settlement.projectileInterval = bConfig.projectileInterval;
   settlement.projectileSpeed    = bConfig.projectileSpeed;
   settlement.projectileDamage   = bConfig.projectileDamage * boost.dmg;
@@ -14805,6 +14944,7 @@ function render(now) {
   drawSettlementHPBars();
 
   drawEggBearerMarkers(now);
+  drawEggCartMarkers(now);   // v0.81: 卵を積んだ車の目印
   drawEggs();
   drawEmbers();             // v0.10: 燃える建物の火の粉・煙（建物の上・ユニットの下）
   drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
@@ -14828,7 +14968,7 @@ function render(now) {
   drawProjectiles();
   drawParticles();
   drawTownFrontMarkers();  // v0.80: 街の向きの仮表示（デバッグメニューで消せる）
-  drawTownFallFx();     // v0.79: 町の陥落表示（建物の上・竜の下）
+  drawWorldTextFx();    // v0.79/81: 陥落・逃走の表示（建物の上・竜の下）
   drawAppearEffects();  // 変更2: 竜出現リングエフェクト（ワールド座標系）
   drawDownEffects();    // 変更2(追加): 竜やられリングエフェクト（ワールド座標系）
 
@@ -15111,6 +15251,24 @@ function drawBossHPBar(boss) {
 // cam.scale が小さい（引き画面）でも視認できるよう最低サイズを保証する。
 // fallen になると描画から除外されるので「陥落後に消える」を自動的に満たす。
 // -----------------------------------------------------------------
+/** v0.81: 卵運搬車の上にも同じ金色のオーブを出す（「卵はあの車にある」を同じ記号で読ませる）。 */
+function drawEggCartMarkers(now) {
+  const pulse = 0.4 + 0.6 * (Math.sin(now * 0.001 * Math.PI * 2 / 1.2) * 0.5 + 0.5);
+  const worldR = Math.max(6 / cam.scale, 6);
+  ctx.save();
+  for (const m of movers) {
+    if (!m.alive || !m._eggCargo) continue;
+    const ox = m.wx, oy = m.wy - m.def.radius - 12;
+    ctx.globalAlpha = pulse * 0.35;
+    ctx.fillStyle = "#ffd040";
+    ctx.beginPath(); ctx.arc(ox, oy, worldR * 2.0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = "#ffe9a0";
+    ctx.beginPath(); ctx.arc(ox, oy, worldR, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawEggBearerMarkers(now) {
   // 明滅周期: 1.2秒サイクル（sin波で 0.4〜1.0 の alpha 範囲）
   const pulse = 0.4 + 0.6 * (Math.sin(now * 0.001 * Math.PI * 2 / 1.2) * 0.5 + 0.5);
@@ -16332,6 +16490,7 @@ const ENEMY_IMAGE_SOURCES = {
   healer:        "assets/mover_healer.png",
   summoner:      "assets/mover_summoner.png",
   treasure:      "assets/mover_treasure.png",
+  eggcart:       "assets/mover_eggcart.png",
   shieldman:     "assets/mover_shieldman.png",
   splitter:      "assets/mover_splitter.png",
   lurker:        "assets/mover_lurker.png",
@@ -16451,6 +16610,7 @@ const BUILDING_IMAGE_SOURCES = {
   role_belfry:   "assets/building_role_belfry.png",
   role_granary:  "assets/building_role_granary.png",
   role_barracks: "assets/building_role_barracks.png",
+  role_rampart:  "assets/building_role_rampart.png",
 };
 const buildingImages = {};
 
@@ -16498,6 +16658,8 @@ const ENEMY_SPRITE_META = {
   summoner:       { px: 0.497, py: 0.518, forward: "none", drawScale: 3.34, hover: true },
   teslawagon:     { px: 0.497, py: 0.514, forward: "up", drawScale: 2.48 },
   treasure:       { px: 0.498, py: 0.601, forward: "up", drawScale: 2.28 },
+  // v0.81: 生成された絵は**馬が下**を向いている（前が画像の下）ので forward:"down"
+  eggcart:        { px: 0.505, py: 0.445, forward: "down", drawScale: 1.42 },
   warlord:        { px: 0.497, py: 0.579, forward: "up", drawScale: 1.71 },
   citadel:        { px: 0.498, py: 0.488, forward: "none", drawScale: 3.45 },
   // v0.69: 流用をやめて専用の絵にした18種。
@@ -17344,7 +17506,8 @@ function tick() {
     updateLaserStrikes(wdt);
     updateBarrageQueue(wdt);      // v0.57: 時間差の斉射（矢の雨・絨毯爆撃・対空弾幕）
     updateBarracks(wdt);          // v0.78: 兵舎（群れが近いあいだだけ兵を出す）
-    updateTownFallFx(wdt);        // v0.79: 陥落の表示
+    updateWorldTextFx(wdt);       // v0.79/81: 陥落・逃走の表示
+    updateEggCarts(wdt);          // v0.81: 卵運搬車（裏から入ると卵が逃げ出す）
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
     updateBossReinforcements(wdt); // v0.58: 首都が兵を出し続ける（取り巻きを倒しても消化試合にしない）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
