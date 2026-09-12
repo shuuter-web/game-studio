@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.76.0";
+const GAME_VERSION = "v0.77.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2658,6 +2658,15 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   // v0.11: 大都市（scale 1.7 → 建物約400棟）が収まるよう上限を430へ拡大。
   // 係数も 15→16.5 に上げて敷地に余裕を持たせ、配置成功率（実建物数）を上げる。
   const townR   = Math.max(170, Math.min(430, 16.5 * Math.sqrt(totalCount))); // 町の外縁半径
+
+  // v0.77: 町の**表の向き**（Shooter指示「どの向きから倒すかを緩く選べるように」）。
+  // 表 ＝ 城壁と時代兵器が寄る側／裏 ＝ 畑と卵が寄る側。
+  // どちらから入っても進めるが、払うものが違う:
+  //   表から … 壁と砲台が先。抜けば残りは無防備
+  //   裏から … 卵が先に手に入って早く育つ。ただし砲台は生きたまま射程の内側に入る
+  // 以前も城壁の弧の開始角はランダムだったが、防御の置き場所と揃っていなかったので
+  // 非対称が**ただのノイズ**になっていた。ここで1つの角度に揃える。
+  const frontAngle = randRange(0, Math.PI * 2);
   const RING_R  = PLAZA_R + 58;                                // 環状路の半径
 
   // --- v0.16.1: 町の外形（シルエット）。全部が円だとレイアウトを変えても
@@ -2956,10 +2965,13 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   const fields = [];
   const decor  = [];
   const clusterCount = randInt(1, 3);
-  const clusterBase  = randRange(0, Math.PI * 2);
+  // v0.77: 畑は**裏側**に寄せる（全周に散らすと表裏が読めない）。
+  // 裏の中心から左右に振り分けるので、最大3クラスタでも裏の160度に収まる。
+  const clusterBase  = frontAngle + Math.PI;
   for (let c = 0; c < clusterCount; c++) {
-    // クラスタ方向は等分＋ジッター（クラスタ同士が重ならないように離す）
-    const dirAngle   = clusterBase + c * (Math.PI * 2 / clusterCount) + randRange(-0.35, 0.35);
+    // クラスタ方向は裏を中心に左右へ振り分け＋ジッター
+    const dirAngle   = clusterBase + (c - (clusterCount - 1) / 2) * (Math.PI * 0.45)
+                       + randRange(-0.18, 0.18);
     const fieldAngle = dirAngle + Math.PI / 2 + randRange(-0.12, 0.12);
     const cols = randInt(2, 4);
     const rows = random() < 0.4 ? 2 : 1;
@@ -3047,6 +3059,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     shapeType,    // v0.16.1: 外形（circle/blob/rect）
     outline,      // v0.16.1: 外形ポリゴン（circleはnull）
     maxExtent,    // v0.16.1: 中心からの最大到達半径
+    frontAngle,   // v0.77: 表の向き（城壁・時代兵器がこちら／畑・卵が反対）
     streets,
     ringRadii,    // v0.16: 環状路の半径（radial=1本 / rings=多重 / 他=空）
     gridRoads,    // v0.16: 碁盤目の道路セグメント
@@ -3453,18 +3466,35 @@ function generateStartAreaHouses(existing, config) {
 
 // v0.29: 閉じたポリライン points の「連続する一部区間(約35〜50%)」だけに城壁セグメントを敷く。
 // rect町の outline は長方形なので、自動的に「長方形の壁の一部」になる。
-function placeWallArcAlong(points, hp, out) {
+/**
+ * 輪郭ポリゴンの一部（35〜50%）に城壁を並べる。
+ * v0.77: centerX/centerY/centerAngle を渡すと、その角度を**弧の中心**にする。
+ * ＝城壁が町の「表」に立つ。渡さなければ従来どおりランダムな位置から。
+ */
+function placeWallArcAlong(points, hp, out, centerX, centerY, centerAngle) {
   const n = points.length;
   if (n < 2) return;
   const segLen = [];
+  const cumAt  = [];      // 各頂点までの累積長（角度→弧長の変換に使う）
   let total = 0;
   for (let i = 0; i < n; i++) {
     const a = points[i], b = points[(i + 1) % n];
+    cumAt.push(total);
     segLen.push(Math.hypot(b.x - a.x, b.y - a.y)); total += segLen[i];
   }
   if (total < WALL_SEG_SPACING) return;
   const span  = total * randRange(0.35, 0.5);   // 全部は覆わない（一部だけ）
-  const start = random() * total;
+  let start = random() * total;
+  if (centerAngle !== undefined) {
+    // 指定角に最も近い頂点を探し、そこを弧の中心に据える
+    let bestIdx = 0, bestDiff = Infinity;
+    for (let i = 0; i < n; i++) {
+      const a = Math.atan2(points[i].y - centerY, points[i].x - centerX);
+      const diff = Math.abs(wrapAngle(a - centerAngle));
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    start = (cumAt[bestIdx] - span * 0.5 + total) % total;
+  }
   for (let d = 0; d < span; d += WALL_SEG_SPACING) {
     let t = (start + d) % total, idx = 0;
     while (idx < n && t > segLen[idx]) { t -= segLen[idx]; idx++; }
@@ -3492,7 +3522,7 @@ function generateTownWalls(townMetas, stageIndex) {
       const R = (meta.maxExtent ?? meta.townR ?? 120) + 14;
       for (let i = 0; i < 36; i++) { const a = (i / 36) * Math.PI * 2; perim.push({ x: meta.cx + Math.cos(a) * R, y: meta.cy + Math.sin(a) * R }); }
     }
-    placeWallArcAlong(perim, hp, result);
+    placeWallArcAlong(perim, hp, result, meta.cx, meta.cy, meta.frontAngle);
   }
   return result;
 }
@@ -3635,11 +3665,19 @@ function generateStageLayout(stageIndex) {
   // 建物側にも「その場から退かせる」圧を持たせるための枠（敵の hazard と同じ仕組み）。
   {
     const feat = stageFeatures(stageIndex);
-    const larges = result.filter(b => b.size === "large" && !b.isBoss);
-    for (let i = larges.length - 1; i > 0; i--) {
-      const j = Math.floor(random() * (i + 1));
-      const t = larges[i]; larges[i] = larges[j]; larges[j] = t;
-    }
+    const metaMap = buildTownMetaMap(result);
+    const shuffle = (arr) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1));
+        const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+      }
+      return arr;
+    };
+    // v0.77: 時代兵器は**町の表側**から埋める（Shooter指示）。
+    // 足りなければ従来どおり残りへ回すので、兵器の総数は変わらない。
+    const all = result.filter(b => b.size === "large" && !b.isBoss);
+    const larges = shuffle(all.filter(b => isOnTownFront(b, metaMap)))
+      .concat(shuffle(all.filter(b => !isOnTownFront(b, metaMap))));
     // v0.57: 時代ごとの兵器をテーブル順に割り当てる（同じ建物に2種は付けない）
     let cursor = 0;
     for (const [key, count] of feat.emplacements) {
@@ -3663,13 +3701,20 @@ function generateStageLayout(stageIndex) {
   // 時代ごとの兵器（feat.emplacements）とは別枠なのでどの文明でも出る。
   // 首都建物を含めたいので、capitalBuildings を result に入れた後で回す。
   {
+    const metaMap2 = buildTownMetaMap(result);
     const pickInto = (pool, count) => {
       // 既に時代兵器が付いている建物は避ける（1棟に2種は付けない）
-      const free = pool.filter(b => !b._emplacement && !b.fallen);
-      for (let i = free.length - 1; i > 0; i--) {
-        const j = Math.floor(random() * (i + 1));
-        const t = free[i]; free[i] = free[j]; free[j] = t;
-      }
+      const all = pool.filter(b => !b._emplacement && !b.fallen);
+      const sh = (arr) => {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(random() * (i + 1));
+          const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+        }
+        return arr;
+      };
+      // v0.77: 衝撃砲台も表側優先（時代兵器と同じ側に固めて「表＝守り」を読ませる）
+      const free = sh(all.filter(b => isOnTownFront(b, metaMap2)))
+        .concat(sh(all.filter(b => !isOnTownFront(b, metaMap2))));
       const def = EMPLACEMENT_DEFS.concussionBattery;
       for (let k = 0; k < count && k < free.length; k++) {
         free[k]._emplacement = "concussionBattery";
@@ -7248,6 +7293,28 @@ function generateTerrainObstacles(buildings, boss) {
 // 各町の建物リストから EGG_BEARER_RATIO の割合でランダムに卵持ちを選ぶ。
 // _townMeta を持つ建物が「町の先頭」なので、それを境界として町ごとに分割する。
 // 町ごとに割り当てることで全マップに散らばった配置になる。
+// v0.77: 町ごとの meta（cx/cy/frontAngle）を _townIndex から引けるようにする。
+// meta はその町の先頭建物（ランドマーク）に付いている。
+function buildTownMetaMap(buildings) {
+  const map = new Map();
+  for (const b of buildings) {
+    if (b._townMeta && b._townIndex !== undefined) map.set(b._townIndex, b._townMeta);
+  }
+  return map;
+}
+
+/**
+ * v0.77: その建物が自分の町の「表」側にあるか（表の向き±60度）。
+ * meta が無い建物（首都区画・集落など）は表裏を持たないので false。
+ */
+const TOWN_FRONT_COS = 0.5;   // cos60度。表とみなす扇の広さ
+function isOnTownFront(b, metaMap) {
+  const meta = metaMap.get(b._townIndex);
+  if (!meta || meta.frontAngle === undefined) return false;
+  const a = Math.atan2(b.wy - meta.cy, b.wx - meta.cx);
+  return Math.cos(wrapAngle(a - meta.frontAngle)) > TOWN_FRONT_COS;
+}
+
 function assignEggBearers(buildings) {
   // まず全フラグをリセット
   for (const b of buildings) b.isEggBearer = false;
@@ -7269,10 +7336,31 @@ function assignEggBearers(buildings) {
     // この町での卵持ち数（最低1、実効割合で計算。密度倍率で割って絶対数を一定に）
     // v0.73: 街のぶんだけ TOWN_EGG_RATIO_MULT で半減させる
     const count = Math.max(1, Math.round(town.length * eggBearerRatio() * TOWN_EGG_RATIO_MULT));
-    // シャッフル相当: インデックス配列をランダムに選んでフラグを立てる
+    const meta = town[0] && town[0]._townMeta;
+
+    // v0.77: 卵は**町の裏側の一角にまとめる**（Shooter指示）。
+    // 以前は町の中で一様ランダムだったので、1町2〜3個が数百px散らばり、
+    // 「あの角に卵がある」という読みが立たなかった。総数は変えない。
+    if (meta && meta.frontAngle !== undefined) {
+      const back = meta.frontAngle + Math.PI;
+      // 種になる1棟を選ぶ: 裏向きで、かつ中心から遠いほど良い。
+      // 毎回まったく同じ位置だと型どおりになるので、上位8棟から1つ引く。
+      const scored = town.map((b) => {
+        const a = Math.atan2(b.wy - meta.cy, b.wx - meta.cx);
+        const d = Math.hypot(b.wx - meta.cx, b.wy - meta.cy);
+        return { b, score: Math.cos(wrapAngle(a - back)) * 2 + d / (meta.maxExtent || 1) };
+      }).sort((x, y) => y.score - x.score);
+      const seed = scored[Math.floor(random() * Math.min(8, scored.length))].b;
+      // 種に近い順に count 棟＝隣り合った区画になる
+      const near = town.slice().sort((x, y) =>
+        dist2(x.wx, x.wy, seed.wx, seed.wy) - dist2(y.wx, y.wy, seed.wx, seed.wy));
+      for (let i = 0; i < count && i < near.length; i++) near[i].isEggBearer = true;
+      continue;
+    }
+
+    // meta が無い（首都区画など）ときは従来どおり一様に散らす
     const indices = [];
     for (let i = 0; i < town.length; i++) indices.push(i);
-    // フィッシャー–イェーツで先頭 count 要素だけ選ぶ（部分シャッフル）
     for (let i = 0; i < count; i++) {
       const j = i + Math.floor(random() * (indices.length - i));
       const tmp = indices[i]; indices[i] = indices[j]; indices[j] = tmp;
