@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.83.0";
+const GAME_VERSION = "v0.84.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3746,6 +3746,11 @@ function generateStageLayout(stageIndex) {
         if (!pick) break;
         pick._townRole    = "rampart";
         pick.attackRadius = Math.max(pick.attackRadius, RAMPART_RANGE);
+        // v0.84: 砲口は町の中心から見て**外向き**。絵もこの向きに回す。
+        // 左右反転は向きを壊すので、この建物だけ切る（_noFlip）。
+        pick._rampartAngle = Math.atan2(pick.wy - meta.cy, pick.wx - meta.cx);
+        pick._faceAngle    = pick._rampartAngle + RAMPART_SPRITE_OFFSET;
+        pick._noFlip       = true;
       }
 
       if (isStrong) {
@@ -5035,7 +5040,7 @@ const TOWN_ROLE_DEFS = {
   // 表側に**必ず数基**立ち、その文明の通常弾を扇で連射する＝表から入ると弾幕を抜ける必要がある。
   // 全方位ではなく群れの方向へ面で撃つ（全方位はボスと街の中央だけ、という v0.64.1 の方針を守る）。
   rampart:  { label: "前哨堡", ring: "#ff5c5c",
-              desc: "その文明の通常弾を扇で連射する。表側にだけ立つ" },
+              desc: "砲口の向いた方向にしか撃てない。表側にだけ立ち、外を向いている" },
 };
 // 前哨堡: 1射の弾数／扇の全幅(rad)／発射間隔／射程／1発の威力倍率（数で圧すので1発は弱め）
 const RAMPART_COUNT     = 7;
@@ -5043,6 +5048,12 @@ const RAMPART_SPREAD    = 0.72;
 const RAMPART_INTERVAL  = 1.2;
 const RAMPART_RANGE     = 430;
 const RAMPART_DMG_MULT  = 0.85;
+// v0.84: **砲口の向き**（Shooter指示「攻撃は前方向のある程度限った角度に」）。
+// 各基は町の中心から見て外向きに据え付けられ、その正面±RAMPART_ARC にしか撃てない。
+// ＝表から近づくと複数基に撃たれるが、**抜けて内側に入れば背中を向けられる**。
+// 絵も砲身が見える向きに回すので、どこを狙っているかが見た目で分かる。
+const RAMPART_ARC = 0.70;          // 正面からの許容角（rad。約±40度）
+const RAMPART_SPRITE_OFFSET = Math.PI / 2;   // 絵は砲口が画像の上（-y）向き
 // 1町あたりの基数。格上の街・要塞都市ほど厚い
 const RAMPART_PER_TOWN          = 2;
 const RAMPART_PER_ADVANCED_TOWN = 3;
@@ -8286,6 +8297,11 @@ function buildingSpriteKeyFor(settlement) {
   if (settlement._emplacement && buildingImages[settlement._emplacement]) {
     return settlement._emplacement;
   }
+  // v0.84: 前哨堡だけは**時代ごとの絵**（投槍架→バリスタ→大弩→大砲→…→ビーム砲）
+  if (settlement._townRole === "rampart") {
+    const eraKey = "e" + (currentStage + 1) + "_rampart";
+    if (buildingImages[eraKey]) return eraKey;
+  }
   // v0.78: 役割を持つ建物も機能ごとの専用の絵
   if (settlement._townRole && buildingImages["role_" + settlement._townRole]) {
     return "role_" + settlement._townRole;
@@ -8353,8 +8369,11 @@ function drawSettlementOnLayer(bctx, settlement) {
   } else if (tinted) {
     const drawW = settlement.radius * (settlement._landmark ? 2.6 : 2.3);
     const drawH = drawW * (tinted.height / tinted.width);
-    // 座標由来の決定的な左右反転でタイル感を減らす
-    const flip = (Math.floor(settlement.wx * 7 + settlement.wy * 13) % 2 === 0) ? 1 : -1;
+    // 座標由来の決定的な左右反転でタイル感を減らす。
+    // v0.84: 向きに意味がある建物（前哨堡）は反転すると砲口が逆を向くので切る。
+    const flip = settlement._noFlip
+      ? 1
+      : ((Math.floor(settlement.wx * 7 + settlement.wy * 13) % 2 === 0) ? 1 : -1);
     bctx.save();
     bctx.translate(settlement.wx, settlement.wy);
     // v0.10: 通りに面する向きで建物を回転（有機的な街並みの核）
@@ -9170,8 +9189,14 @@ function updateSettlementAttacks(dt) {
     // v0.81: 前哨堡は通常弾を「扇で連射」する。狙う向きへ面で撃つので、
     // 表から入ると弾の壁を抜けることになる（横へ回れば射界から外れる）。
     if (settlement._townRole === "rampart") {
-      settlement.attackTimer = RAMPART_INTERVAL;
       const base = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
+      // v0.84: 砲口の正面±RAMPART_ARC の外は撃てない。短い間隔で狙い直すだけ。
+      const facing = settlement._rampartAngle ?? base;
+      if (Math.abs(wrapAngle(base - facing)) > RAMPART_ARC) {
+        settlement.attackTimer = 0.3;
+        continue;
+      }
+      settlement.attackTimer = RAMPART_INTERVAL;
       for (let k = 0; k < RAMPART_COUNT; k++) {
         const off = (k - (RAMPART_COUNT - 1) / 2) * (RAMPART_SPREAD / (RAMPART_COUNT - 1));
         spawnFanProjectileRaw(
@@ -12923,7 +12948,8 @@ function codexBuildingHtml() {
     const def = TOWN_ROLE_DEFS[key];
     html +=
       `<div class="cx-row" style="border-color:${def.ring}">` +
-        `<div class="cx-thumb"><img src="${BUILDING_IMAGE_SOURCES["role_" + key]}" alt=""></div>` +
+        `<div class="cx-thumb"><img src="${
+            BUILDING_IMAGE_SOURCES[key === "rampart" ? "e1_rampart" : "role_" + key]}" alt=""></div>` +
         `<div class="cx-body">` +
           `<div class="cx-name">${def.label}</div>` +
           `<div class="cx-tags">${
@@ -12936,6 +12962,7 @@ function codexBuildingHtml() {
             key === "belfry"   ? `町の発射間隔 ×${BELFRY_INTERVAL_MULT}` :
             key === "granary"  ? `卵 ${GRANARY_EGG_COUNT}個（町に散らばる卵は1町2〜3個）` :
             key === "rampart"  ? `${RAMPART_COUNT}発の扇・${RAMPART_INTERVAL}秒ごと・射程${RAMPART_RANGE}` +
+                                 `／**正面±${Math.round(RAMPART_ARC * 180 / Math.PI)}度にしか撃てない**` +
                                  `（1発の威力は普通の弾の${Math.round(RAMPART_DMG_MULT * 100)}%）` :
                                  `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(0)]).toFixed(0)}〜` +
                                  `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(5)]).toFixed(0)}秒ごとに1体` +
@@ -16506,7 +16533,17 @@ const BUILDING_IMAGE_SOURCES = {
   role_belfry:   "assets/building_role_belfry.png",
   role_granary:  "assets/building_role_granary.png",
   role_barracks: "assets/building_role_barracks.png",
-  role_rampart:  "assets/building_role_rampart.png",
+  // v0.84: 前哨堡は**指向性のある絵**（大砲・バリスタ等）に差し替え、時代ごとに用意した。
+  // どれも**砲口が画像の上（-y）を向いている**。描画は _faceAngle で回すので、
+  // 撃つ方向 A に向けるときは _faceAngle = A + π/2 になる（下の RAMPART_SPRITE_OFFSET）。
+  e1_rampart: "assets/building_e1_rampart.png",
+  e2_rampart: "assets/building_e2_rampart.png",
+  e3_rampart: "assets/building_e3_rampart.png",
+  e4_rampart: "assets/building_e4_rampart.png",
+  e5_rampart: "assets/building_e5_rampart.png",
+  e6_rampart: "assets/building_e6_rampart.png",
+  e7_rampart: "assets/building_e7_rampart.png",
+  e8_rampart: "assets/building_e8_rampart.png",
 };
 const buildingImages = {};
 
