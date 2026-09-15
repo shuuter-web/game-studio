@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.70.0";
+const GAME_VERSION = "v0.84.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -903,6 +903,7 @@ function debugWarpToBoss() {
 const DEBUG_ACTIONS = [
   { label: "👾 敵を出す…",           run: () => { debugPage = "enemies"; }, keepOpen: true },
   { label: "🏷 敵の名札",            run: () => { debugShowEnemyLabels = !debugShowEnemyLabels; }, keepOpen: true },
+  { label: "🧭 街の向き",            run: () => { debugShowTownFront = !debugShowTownFront; }, keepOpen: true },
   { label: "🛡 竜を無敵",            run: () => { debugInvincible = !debugInvincible; }, keepOpen: true },
   { label: "☠ 敵を全部消す",         run: () => debugClearEnemies(), keepOpen: true },
   { label: "🌊 堰を決壊させる",       run: () => debugBreakDam() },
@@ -935,7 +936,8 @@ function debugStatusLine() {
   const rec = debugRecoilOverride === null ? `既定(${atk().recoilDist})` : `${debugRecoilOverride}`;
   const cont = (typeof profile !== "undefined" && profile)
     ? `文明:${unlockedContinentCount()}/${CONTINENT_DEFS.length} ` : "";
-  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}${cont}` +
+  return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}` +
+         `${debugShowTownFront ? "【街の向きON】 " : ""}${cont}` +
          `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
          `動き:${move} / 反動:${rec} / ` +
@@ -1097,6 +1099,29 @@ const EGG_BEARER_RATIO_BASE = 0.18; // 基準割合（密度1倍のときの値�
 // 実効割合は BASE / 密度倍率。密度を上げた分だけ割合を下げて卵の総数を一定に。
 function eggBearerRatio() { return EGG_BEARER_RATIO_BASE / BUILDING_DENSITY_MULT; }
 const EGG_DROP_COUNT   = 1;    // 陥落時に落とす卵の個数
+// v0.73: **通常の街だけ**卵持ちを半分にする（Shooter指示「今の半分くらい」）。
+// 街は建物が数千棟あるので卵の大半をここが供給していた。半分にすることで
+// ミニ集落・道沿い集落を回る意味が相対的に増える（あちらには掛けない）。
+const TOWN_EGG_RATIO_MULT = 0.5;
+// v0.75: **まばらな集落は「二箇所に一つ」くらい卵を持つ**（Shooter指示）。
+// 街と違って1箇所あたり数棟しかないので、棟数に対する割合で配ると
+// 箇所単位ではほとんど出ない（v0.74 実測: ミニ集落100箇所に対して卵は約30個＝3.3箇所に1つ）。
+// 割合ではなく**箇所ごとの抽選**にして、集落を見つけた甲斐があるようにする。
+const HAMLET_EGG_CHANCE = 0.5;
+
+/**
+ * v0.75: 集落1箇所ぶんの棟から、抽選で1棟だけ卵持ちにする。
+ * 卵はできるだけ**民家**に置く（シンボルはHPが民家の5倍あり、
+ * 「ついでに壊したら卵が出た」というテンポにならないため）。
+ * @param {Array} houses  その集落の民家（tiny）
+ * @param {Object|null} symbol  集落のシンボル（民家が1棟も置けなかったときの受け皿）
+ */
+function maybeGiveHamletEgg(houses, symbol) {
+  if (random() >= HAMLET_EGG_CHANCE) return;
+  const pool = houses.length > 0 ? houses : (symbol ? [symbol] : []);
+  if (pool.length === 0) return;
+  pool[Math.floor(random() * pool.length)].isEggBearer = true;
+}
 
 // -----------------------------------------------------------------
 // 変更2: ダウン/復帰モデル パラメータ
@@ -1513,7 +1538,17 @@ const BUILDING_SIZE_PARAMS = {
 // -----------------------------------------------------------------
 // ステージあたりのハムレット数（クラスタ数）
 // v0.6-p4: 空白削減のため 10→17 に増量（町の隙間を農村で埋める。仕様 §9.2）
-const TINY_HAMLET_COUNT     = 17;
+// v0.73: 17 -> 34（Shooter指示「もっと数を増やす」）。
+// v0.74: さらに約3倍（Shooter指示）。中央にシンボル建物が建つので、
+// 増やした分は「同じ家の塊」ではなく見分けのつくランドマークとして増える。
+const TINY_HAMLET_COUNT     = 100;
+// v0.74: このうち何個をスタート地点の近くに寄せるか（Shooter指示「特に初期地点の近くに多めに」）。
+// 序盤は群れが小さく移動距離も稼げないので、最初に出会う密度をここで作る。
+// 帯を狭くしないと、一様配置ぶんと混ざって密度差がほとんど出ない（実測で確認）。
+const TINY_HAMLET_NEAR_START       = 35;
+// スタート地点寄せの帯。内側は「まばらな家」の緩衝地帯（440〜900）を残すため 600 から。
+const TINY_HAMLET_START_RING_INNER = 600;
+const TINY_HAMLET_START_RING_OUTER = 2200;
 // 1クラスタあたりの tiny 棟数（min/max でランダム）
 const TINY_PER_HAMLET_MIN   = 5;
 const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
@@ -1521,7 +1556,9 @@ const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
 const TINY_HAMLET_RADIUS_MIN = 40;
 const TINY_HAMLET_RADIUS_MAX = 65;
 // クラスタ中心同士の最小間隔（他クラスタとの分離）
-const TINY_HAMLET_MIN_SPACING = 280; // クラスタ同士がくっつかない最小値
+// v0.74: 「重ならなければ良いくらい」（Shooter指示）まで詰める。
+// クラスタ半径の最大値（TINY_HAMLET_RADIUS_MAX=65）の2倍＋余白＝集落の外周同士が触れない最小値。
+const TINY_HAMLET_MIN_SPACING = TINY_HAMLET_RADIUS_MAX * 2 + 20; // = 150
 // 既存街区（small/medium/large）クラスタとの最小間隔
 const TINY_HAMLET_FROM_TOWN_GAP = 120;
 // クラスタ内 tiny 棟同士の最小中心間距離（重なり防止）
@@ -1531,7 +1568,11 @@ const TINY_FROM_EXISTING_GAP  = BUILDING_SIZE_PARAMS.tiny.radiusBase + 10;   // 
 // マップ端からのマージン
 const TINY_MARGIN = 80;
 // クラスタ中心の配置試行回数
-const TINY_HAMLET_MAX_ATTEMPTS = 20;
+const TINY_HAMLET_MAX_ATTEMPTS = 40;  // v0.73: 集落数を倍にしたので試行も増やす
+// v0.74: 集落シンボルの描画半径（Shooter指示「通常建物の2倍くらいまで」）。
+// 描画幅は radius x 2.6（_landmark 扱い）なので 11 -> 28.6px。
+// 周りの tiny 民家は 6 x 2.3 = 13.8px なので約2.07倍。
+const HAMLET_SYMBOL_RADIUS = 11;
 // クラスタ内各棟の配置試行回数
 const TINY_PER_BUILDING_MAX_ATTEMPTS = 12;
 
@@ -2619,6 +2660,15 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   // v0.11: 大都市（scale 1.7 → 建物約400棟）が収まるよう上限を430へ拡大。
   // 係数も 15→16.5 に上げて敷地に余裕を持たせ、配置成功率（実建物数）を上げる。
   const townR   = Math.max(170, Math.min(430, 16.5 * Math.sqrt(totalCount))); // 町の外縁半径
+
+  // v0.77: 町の**表の向き**（Shooter指示「どの向きから倒すかを緩く選べるように」）。
+  // 表 ＝ 城壁と時代兵器が寄る側／裏 ＝ 畑と卵が寄る側。
+  // どちらから入っても進めるが、払うものが違う:
+  //   表から … 壁と砲台が先。抜けば残りは無防備
+  //   裏から … 卵が先に手に入って早く育つ。ただし砲台は生きたまま射程の内側に入る
+  // 以前も城壁の弧の開始角はランダムだったが、防御の置き場所と揃っていなかったので
+  // 非対称が**ただのノイズ**になっていた。ここで1つの角度に揃える。
+  const frontAngle = randRange(0, Math.PI * 2);
   const RING_R  = PLAZA_R + 58;                                // 環状路の半径
 
   // --- v0.16.1: 町の外形（シルエット）。全部が円だとレイアウトを変えても
@@ -2917,10 +2967,13 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   const fields = [];
   const decor  = [];
   const clusterCount = randInt(1, 3);
-  const clusterBase  = randRange(0, Math.PI * 2);
+  // v0.77: 畑は**裏側**に寄せる（全周に散らすと表裏が読めない）。
+  // 裏の中心から左右に振り分けるので、最大3クラスタでも裏の160度に収まる。
+  const clusterBase  = frontAngle + Math.PI;
   for (let c = 0; c < clusterCount; c++) {
-    // クラスタ方向は等分＋ジッター（クラスタ同士が重ならないように離す）
-    const dirAngle   = clusterBase + c * (Math.PI * 2 / clusterCount) + randRange(-0.35, 0.35);
+    // クラスタ方向は裏を中心に左右へ振り分け＋ジッター
+    const dirAngle   = clusterBase + (c - (clusterCount - 1) / 2) * (Math.PI * 0.45)
+                       + randRange(-0.18, 0.18);
     const fieldAngle = dirAngle + Math.PI / 2 + randRange(-0.12, 0.12);
     const cols = randInt(2, 4);
     const rows = random() < 0.4 ? 2 : 1;
@@ -3008,6 +3061,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     shapeType,    // v0.16.1: 外形（circle/blob/rect）
     outline,      // v0.16.1: 外形ポリゴン（circleはnull）
     maxExtent,    // v0.16.1: 中心からの最大到達半径
+    frontAngle,   // v0.77: 表の向き（城壁・時代兵器がこちら／畑・卵が反対）
     streets,
     ringRadii,    // v0.16: 環状路の半径（radial=1本 / rings=多重 / 他=空）
     gridRoads,    // v0.16: 碁盤目の道路セグメント
@@ -3089,15 +3143,50 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
   const bSmall = config.buildings.small; // tiny は small のパラメータを流用（攻撃・色）
   const tinyR  = BUILDING_SIZE_PARAMS.tiny.radiusBase;
 
-  // 既存建物の位置リスト（tiny との重なりチェック用）
-  const occupied = existingBuildings.map(b => ({ x: b.wx, y: b.wy, r: b.radius }));
+  // v0.74: 占有チェック用の格子。
+  // 総当たりだと「100集落 x 試行40 x 既存建物数千」＋「棟ごとに同じ走査」になり、
+  // 実測でワールド生成時間の56%をここが占めていた。近傍セルだけ見る形に置き換える。
+  // 判定式は総当たり版と同一（近似ではない）。reach に登録済み最大半径を足して
+  // 取りこぼしを防ぐ。
+  const OCC_CELL = 128;
+  const occCols  = Math.ceil(WORLD_W / OCC_CELL) + 2;
+  const occGrid  = new Map();
+  let   occMaxR  = 0;
+  function occAdd(x, y, r, isTown) {
+    if (r > occMaxR) occMaxR = r;
+    const k = (Math.floor(y / OCC_CELL) + 1) * occCols + Math.floor(x / OCC_CELL) + 1;
+    let arr = occGrid.get(k);
+    if (!arr) { arr = []; occGrid.set(k, arr); }
+    arr.push({ x, y, r, town: isTown });
+  }
+  /**
+   * (x,y) から「相手の半径 + extra」以内に建物があるか。
+   * townOnly=true なら**街の建物だけ**を見る（集落同士は別基準で間隔を決めるため）。
+   */
+  function occNear(x, y, extra, townOnly) {
+    const reach = extra + occMaxR;
+    const c0 = Math.floor((x - reach) / OCC_CELL) + 1, c1 = Math.floor((x + reach) / OCC_CELL) + 1;
+    const r0 = Math.floor((y - reach) / OCC_CELL) + 1, r1 = Math.floor((y + reach) / OCC_CELL) + 1;
+    for (let cy = r0; cy <= r1; cy++) {
+      for (let cx = c0; cx <= c1; cx++) {
+        const arr = occGrid.get(cy * occCols + cx);
+        if (!arr) continue;
+        for (let i = 0; i < arr.length; i++) {
+          const ob = arr[i];
+          if (townOnly && !ob.town) continue;
+          const minD = ob.r + extra;
+          if (dist2(x, y, ob.x, ob.y) < minD * minD) return true;
+        }
+      }
+    }
+    return false;
+  }
+  for (const b of existingBuildings) occAdd(b.wx, b.wy, b.radius, true);
 
   // 首都占有領域の二乗（ボス中心からの排除距離）
   const excl2 = CAPITAL_EXCLUSION_RADIUS * CAPITAL_EXCLUSION_RADIUS;
   // クラスタ同士の最小間隔二乗
   const hamletSpacing2 = TINY_HAMLET_MIN_SPACING * TINY_HAMLET_MIN_SPACING;
-  // 既存街区との最小間隔二乗（クラスタ中心 vs 既存建物中心）
-  const fromTown2 = TINY_HAMLET_FROM_TOWN_GAP * TINY_HAMLET_FROM_TOWN_GAP;
 
   // 確定したクラスタ中心リスト（他クラスタとの分離チェック用）
   const hamletCenters = [];
@@ -3107,25 +3196,36 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
     let centerX = 0, centerY = 0;
     let hamletPlaced = false;
 
+    // v0.74: 先頭 TINY_HAMLET_NEAR_START 個はスタート地点まわりのリングから抽選する。
+    // 半径は √補正して面積に対して一様にする（そのままだと中心付近に固まりすぎる）。
+    const nearStart = h < TINY_HAMLET_NEAR_START;
     for (let attempt = 0; attempt < TINY_HAMLET_MAX_ATTEMPTS && !hamletPlaced; attempt++) {
-      const cx = TINY_MARGIN + random() * (WORLD_W - TINY_MARGIN * 2);
-      const cy = TINY_MARGIN + random() * (WORLD_H - TINY_MARGIN * 2);
+      let cx, cy;
+      if (nearStart) {
+        const a  = random() * Math.PI * 2;
+        const t  = random();
+        const rr = Math.sqrt(
+          TINY_HAMLET_START_RING_INNER ** 2 +
+          t * (TINY_HAMLET_START_RING_OUTER ** 2 - TINY_HAMLET_START_RING_INNER ** 2));
+        cx = START_X + Math.cos(a) * rr;
+        cy = START_Y + Math.sin(a) * rr;
+        if (cx < TINY_MARGIN || cx > WORLD_W - TINY_MARGIN ||
+            cy < TINY_MARGIN || cy > WORLD_H - TINY_MARGIN) continue;
+      } else {
+        cx = TINY_MARGIN + random() * (WORLD_W - TINY_MARGIN * 2);
+        cy = TINY_MARGIN + random() * (WORLD_H - TINY_MARGIN * 2);
+      }
 
       // 首都占有領域チェック（クラスタ中心がボス周辺に入らない）
       if (dist2(cx, cy, bossWx, bossWy) < excl2) continue;
 
-      // 既存街区（small/medium/large 建物）との間隔チェック
-      // クラスタ半径 + fromTown2 内に既存建物があれば除外
-      let tooCloseToTown = false;
-      for (const ob of occupied) {
-        // 既存建物との最小間隔 = その建物 radius + tinyハムレット半径 + gap
-        const minD = ob.r + TINY_HAMLET_RADIUS_MAX + TINY_HAMLET_FROM_TOWN_GAP;
-        if (dist2(cx, cy, ob.x, ob.y) < minD * minD) {
-          tooCloseToTown = true;
-          break;
-        }
-      }
-      if (tooCloseToTown) continue;
+      // 既存街区（small/medium/large 建物）との間隔チェック。
+      // 最小間隔 = その建物の radius + tinyハムレット半径 + gap。
+      // v0.74: **街だけ**を見る。以前は伸びていく occupied をそのまま使っていたため、
+      // 街向けの余白（TINY_HAMLET_FROM_TOWN_GAP=120）が他の集落の民家にも効いてしまい、
+      // 集落中心の実測間隔が 232px まで開いていた（MIN_SPACING=150 が効いていなかった）。
+      // 集落同士の距離は下の hamletCenters チェックだけで決める。
+      if (occNear(cx, cy, TINY_HAMLET_RADIUS_MAX + TINY_HAMLET_FROM_TOWN_GAP, true)) continue;
 
       // 他クラスタ中心との最小間隔チェック
       let tooCloseToHamlet = false;
@@ -3146,11 +3246,26 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
 
     hamletCenters.push({ x: centerX, y: centerY });
 
+    // --- v0.73: 集落のシンボル（Shooter指示「ミニ集落にもシンボル建物を追加」）---
+    // クラスタ中央に1棟だけ大きめの建物を建てる。町のランドマークと同じ _landmark
+    // 経路に乗せるので絵は文明ごとに切り替わる（e1_hamlet 〜 e8_hamlet）。
+    // 狙いは「民家の塊」を遠目にも見分けられる場所にすること。
+    // 攻撃性能は集落の民家と同じ（bSmall）のままにして、ミニ集落を要塞化しない。
+    const symbolHp = randInt(BUILDING_SIZE_PARAMS.medium.hpMin,
+                             BUILDING_SIZE_PARAMS.medium.hpMax);
+    const symbol = makeBuilding(centerX, centerY, "medium",
+                                randChoice(bSmall.colors), bSmall, symbolHp);
+    symbol.radius          = HAMLET_SYMBOL_RADIUS;  // v0.74: 民家の約2倍まで縮小
+    symbol._landmark       = "hamlet";
+    symbol._tinySettlement = true;   // 足元の土広場・ミニマップ表示を集落と揃える
+    symbol._faceAngle      = randRange(-0.25, 0.25);
+    result.push(symbol);
+    occAdd(centerX, centerY, symbol.radius, false);
+
     // --- クラスタ内の棟を配置 ---
     const buildingCount = randInt(TINY_PER_HAMLET_MIN, TINY_PER_HAMLET_MAX);
     const hamletR = randRange(TINY_HAMLET_RADIUS_MIN, TINY_HAMLET_RADIUS_MAX);
-    // このクラスタで確定した棟（クラスタ内の重なりチェック用）
-    const hamletBuildings = [];
+    const hamletHouses = [];   // v0.75: この集落の民家（卵の抽選対象）
 
     for (let k = 0; k < buildingCount; k++) {
       let placed = false;
@@ -3166,29 +3281,14 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
         if (wx < TINY_MARGIN || wx > WORLD_W - TINY_MARGIN ||
             wy < TINY_MARGIN || wy > WORLD_H - TINY_MARGIN) continue;
 
-        // 既存建物（街区・首都）との重なりチェック
-        let tooClose = false;
-        for (const ob of occupied) {
-          const minD = ob.r + tinyR + TINY_FROM_EXISTING_GAP;
-          if (dist2(wx, wy, ob.x, ob.y) < minD * minD) { tooClose = true; break; }
-        }
-        if (tooClose) continue;
+        // 既存建物（街区・首都・先に置いた集落の棟）との重なりチェック
+        if (occNear(wx, wy, tinyR + TINY_FROM_EXISTING_GAP, false)) continue;
 
-        // クラスタ内 tiny 棟同士の重なりチェック
-        for (const hb of hamletBuildings) {
-          if (dist2(wx, wy, hb.x, hb.y) < TINY_MIN_SPACING * TINY_MIN_SPACING) {
-            tooClose = true; break;
-          }
-        }
-        if (tooClose) continue;
-
-        // 他クラスタ（result 全体）との重なりチェック
-        for (const t of result) {
-          if (dist2(wx, wy, t.wx, t.wy) < TINY_MIN_SPACING * TINY_MIN_SPACING) {
-            tooClose = true; break;
-          }
-        }
-        if (tooClose) continue;
+        // v0.74: ここには以前「クラスタ内の棟同士」と「result 全体」の2つの
+        // TINY_MIN_SPACING(20px) チェックがあったが、上の occupied チェックが
+        // tiny同士でも 6+6+16=28px を要求していて必ず厳しいので**結果が同じ**。
+        // 集落を100個に増やすと result が700棟規模になり、この二重走査が
+        // ワールド生成時間の主因になるため落とした（実測 719ms -> 下記コメント）。
 
         // 配置確定
         const hp    = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
@@ -3199,11 +3299,14 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
         // tiny の radius は BUILDING_SIZE_PARAMS.tiny.radiusBase で確定
         b.radius = tinyR;
         result.push(b);
-        occupied.push({ x: wx, y: wy, r: tinyR });
-        hamletBuildings.push({ x: wx, y: wy });
+        hamletHouses.push(b);
+        occAdd(wx, wy, tinyR, false);
         placed = true;
       }
     }
+
+    // v0.75: この集落に卵を置くか抽選（棟の割合ではなく**箇所ごと**）
+    maybeGiveHamletEgg(hamletHouses, symbol);
   }
 
   return result;
@@ -3267,6 +3370,7 @@ function generateRoadsideHamlets(existingBuildings, roadEdges, boss, config) {
       // 3〜6棟の民家を道に沿って置く
       const count = randInt(3, 6);
       const faceAngle = Math.atan2(dy, dx) + Math.PI / 2;   // 道に面する向き
+      const roadHouses = [];   // v0.75: この集落の民家（卵の抽選対象）
       for (let k = 0; k < count; k++) {
         const wx = cx + randRange(-36, 36);
         const wy = cy + randRange(-30, 30);
@@ -3281,8 +3385,11 @@ function generateRoadsideHamlets(existingBuildings, roadEdges, boss, config) {
         bld.radius = tinyR;
         bld._faceAngle = faceAngle + randRange(-0.15, 0.15);
         result.push(bld);
+        roadHouses.push(bld);
         occupied.push({ x: wx, y: wy, r: tinyR });
       }
+      // v0.75: 道沿いの集落も1箇所ごとに抽選する
+      maybeGiveHamletEgg(roadHouses, null);
     }
   }
   return result;
@@ -3350,6 +3457,9 @@ function generateStartAreaHouses(existing, config) {
     const hp = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
     const b  = makeBuilding(wx, wy, "tiny", randChoice(bSmall.colors), bSmall, hp);
     b._tinySettlement = true; b.radius = tinyR;
+    // v0.75: ここは1軒がそのまま1箇所。集落と同じ確率で卵を持たせる
+    // （スタート直後に最初に出会う建物なので、序盤の卵の出所になる）。
+    maybeGiveHamletEgg([b], null);
     result.push(b); occupied.push({ x: wx, y: wy, r: tinyR });
     placed++;
   }
@@ -3358,18 +3468,35 @@ function generateStartAreaHouses(existing, config) {
 
 // v0.29: 閉じたポリライン points の「連続する一部区間(約35〜50%)」だけに城壁セグメントを敷く。
 // rect町の outline は長方形なので、自動的に「長方形の壁の一部」になる。
-function placeWallArcAlong(points, hp, out) {
+/**
+ * 輪郭ポリゴンの一部（35〜50%）に城壁を並べる。
+ * v0.77: centerX/centerY/centerAngle を渡すと、その角度を**弧の中心**にする。
+ * ＝城壁が町の「表」に立つ。渡さなければ従来どおりランダムな位置から。
+ */
+function placeWallArcAlong(points, hp, out, centerX, centerY, centerAngle) {
   const n = points.length;
   if (n < 2) return;
   const segLen = [];
+  const cumAt  = [];      // 各頂点までの累積長（角度→弧長の変換に使う）
   let total = 0;
   for (let i = 0; i < n; i++) {
     const a = points[i], b = points[(i + 1) % n];
+    cumAt.push(total);
     segLen.push(Math.hypot(b.x - a.x, b.y - a.y)); total += segLen[i];
   }
   if (total < WALL_SEG_SPACING) return;
   const span  = total * randRange(0.35, 0.5);   // 全部は覆わない（一部だけ）
-  const start = random() * total;
+  let start = random() * total;
+  if (centerAngle !== undefined) {
+    // 指定角に最も近い頂点を探し、そこを弧の中心に据える
+    let bestIdx = 0, bestDiff = Infinity;
+    for (let i = 0; i < n; i++) {
+      const a = Math.atan2(points[i].y - centerY, points[i].x - centerX);
+      const diff = Math.abs(wrapAngle(a - centerAngle));
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    start = (cumAt[bestIdx] - span * 0.5 + total) % total;
+  }
   for (let d = 0; d < span; d += WALL_SEG_SPACING) {
     let t = (start + d) % total, idx = 0;
     while (idx < n && t > segLen[idx]) { t -= segLen[idx]; idx++; }
@@ -3397,7 +3524,7 @@ function generateTownWalls(townMetas, stageIndex) {
       const R = (meta.maxExtent ?? meta.townR ?? 120) + 14;
       for (let i = 0; i < 36; i++) { const a = (i / 36) * Math.PI * 2; perim.push({ x: meta.cx + Math.cos(a) * R, y: meta.cy + Math.sin(a) * R }); }
     }
-    placeWallArcAlong(perim, hp, result);
+    placeWallArcAlong(perim, hp, result, meta.cx, meta.cy, meta.frontAngle);
   }
   return result;
 }
@@ -3540,11 +3667,19 @@ function generateStageLayout(stageIndex) {
   // 建物側にも「その場から退かせる」圧を持たせるための枠（敵の hazard と同じ仕組み）。
   {
     const feat = stageFeatures(stageIndex);
-    const larges = result.filter(b => b.size === "large" && !b.isBoss);
-    for (let i = larges.length - 1; i > 0; i--) {
-      const j = Math.floor(random() * (i + 1));
-      const t = larges[i]; larges[i] = larges[j]; larges[j] = t;
-    }
+    const metaMap = buildTownMetaMap(result);
+    const shuffle = (arr) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1));
+        const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+      }
+      return arr;
+    };
+    // v0.77: 時代兵器は**町の表側**から埋める（Shooter指示）。
+    // 足りなければ従来どおり残りへ回すので、兵器の総数は変わらない。
+    const all = result.filter(b => b.size === "large" && !b.isBoss);
+    const larges = shuffle(all.filter(b => isOnTownFront(b, metaMap)))
+      .concat(shuffle(all.filter(b => !isOnTownFront(b, metaMap))));
     // v0.57: 時代ごとの兵器をテーブル順に割り当てる（同じ建物に2種は付けない）
     let cursor = 0;
     for (const [key, count] of feat.emplacements) {
@@ -3554,6 +3689,78 @@ function generateStageLayout(stageIndex) {
         larges[cursor]._emplacement = key;
         larges[cursor].attackRadius = Math.max(larges[cursor].attackRadius, def.range);
       }
+    }
+  }
+
+  // v0.78: 役割を持つ建物を町ごとに置く。
+  // 普通の町は 鐘楼＋穀倉 の2択、格上の街・要塞都市はそこに兵舎が加わって3択。
+  // 時代兵器が付いた建物には重ねない（1棟1役）。
+  {
+    const metaMap = buildTownMetaMap(result);
+    const byTown = new Map();
+    for (const b of result) {
+      if (b.isBoss || b._isWall || b._emplacement || b._landmark || b._noAttack) continue;
+      if (b.size !== "large" && b.size !== "medium") continue;
+      if (b._townIndex === undefined || !metaMap.has(b._townIndex)) continue;
+      if (!byTown.has(b._townIndex)) byTown.set(b._townIndex, []);
+      byTown.get(b._townIndex).push(b);
+    }
+    for (const [townIndex, pool] of byTown) {
+      const meta = metaMap.get(townIndex);
+      const back = meta.frontAngle + Math.PI;
+      // 表向き/裏向きの度合いを出しておく（-1=裏 〜 +1=表）
+      const scored = pool.map((b) => {
+        const a = Math.atan2(b.wy - meta.cy, b.wx - meta.cx);
+        const d = Math.hypot(b.wx - meta.cx, b.wy - meta.cy) / (meta.maxExtent || 1);
+        return { b, front: Math.cos(wrapAngle(a - meta.frontAngle)), dist: d };
+      });
+      const take = (rank) => {
+        const left = scored.filter(x => !x.b._townRole);
+        if (left.length === 0) return null;
+        left.sort((x, y) => rank(y) - rank(x));
+        // 毎回まったく同じ形にならないよう上位4棟から1つ引く
+        return left[Math.floor(random() * Math.min(4, left.length))].b;
+      };
+      // 兵舎＝表側の外寄り（守りと同じ側）／穀倉＝裏側の外寄り（畑・卵と同じ側）
+      // 鐘楼＝中心寄り（町の真ん中で鳴る。どちらから入っても寄り道になる）
+      const isFortress = pool.some(b => b._fixedTier != null);
+      const isStrong = isFortress || pool.some(b => (b._tierOffset || 0) > 0);
+
+      // v0.81: 前哨堡を**表の扇に散らして**置く。1箇所に固めると横から回れてしまうので、
+      // 表の±60度を等分した位置にいちばん近い棟を取る＝重なった射界で面を作る。
+      const rampartCount = isFortress ? RAMPART_PER_FORTRESS_TOWN
+        : isStrong ? RAMPART_PER_ADVANCED_TOWN : RAMPART_PER_TOWN;
+      const frontPool = scored.filter(x => x.front > TOWN_FRONT_COS);
+      const half = Math.acos(TOWN_FRONT_COS);
+      for (let k = 0; k < rampartCount; k++) {
+        // 扇を rampartCount 等分した中点の角度
+        const want = meta.frontAngle - half + (k + 0.5) * (half * 2 / rampartCount);
+        let pick = null, bestD = Infinity;
+        for (const x of frontPool) {
+          if (x.b._townRole) continue;
+          const a = Math.atan2(x.b.wy - meta.cy, x.b.wx - meta.cx);
+          // 狙いの角度に近く、かつ外寄りの棟ほど良い（外周に並べて射界を稼ぐ）
+          const d = Math.abs(wrapAngle(a - want)) + (1 - x.dist) * 0.5;
+          if (d < bestD) { bestD = d; pick = x.b; }
+        }
+        if (!pick) break;
+        pick._townRole    = "rampart";
+        pick.attackRadius = Math.max(pick.attackRadius, RAMPART_RANGE);
+        // v0.84: 砲口は町の中心から見て**外向き**。絵もこの向きに回す。
+        // 左右反転は向きを壊すので、この建物だけ切る（_noFlip）。
+        pick._rampartAngle = Math.atan2(pick.wy - meta.cy, pick.wx - meta.cx);
+        pick._faceAngle    = pick._rampartAngle + RAMPART_SPRITE_OFFSET;
+        pick._noFlip       = true;
+      }
+
+      if (isStrong) {
+        const bk = take(x => x.front * 2 + x.dist);
+        if (bk) bk._townRole = "barracks";
+      }
+      const gr = take(x => -x.front * 2 + x.dist);
+      if (gr) gr._townRole = "granary";
+      const bl = take(x => -x.dist * 3);
+      if (bl) bl._townRole = "belfry";
     }
   }
 
@@ -3568,13 +3775,20 @@ function generateStageLayout(stageIndex) {
   // 時代ごとの兵器（feat.emplacements）とは別枠なのでどの文明でも出る。
   // 首都建物を含めたいので、capitalBuildings を result に入れた後で回す。
   {
+    const metaMap2 = buildTownMetaMap(result);
     const pickInto = (pool, count) => {
       // 既に時代兵器が付いている建物は避ける（1棟に2種は付けない）
-      const free = pool.filter(b => !b._emplacement && !b.fallen);
-      for (let i = free.length - 1; i > 0; i--) {
-        const j = Math.floor(random() * (i + 1));
-        const t = free[i]; free[i] = free[j]; free[j] = t;
-      }
+      const all = pool.filter(b => !b._emplacement && !b.fallen);
+      const sh = (arr) => {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(random() * (i + 1));
+          const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+        }
+        return arr;
+      };
+      // v0.77: 衝撃砲台も表側優先（時代兵器と同じ側に固めて「表＝守り」を読ませる）
+      const free = sh(all.filter(b => isOnTownFront(b, metaMap2)))
+        .concat(sh(all.filter(b => !isOnTownFront(b, metaMap2))));
       const def = EMPLACEMENT_DEFS.concussionBattery;
       for (let k = 0; k < count && k < free.length; k++) {
         free[k]._emplacement = "concussionBattery";
@@ -3609,27 +3823,16 @@ function generateStageLayout(stageIndex) {
   // 首都・既存建物との重なりを避けて配置し、最後に result へ追加する。
   // assignEggBearers の後に追加するため、tiny はフォールバック（towns=0）で
   // 全体1町として扱われるが、ここでは全建物確定後に個別に卵持ち割当を補う。
+  // v0.75: 卵持ちは generateTinySettlements の中で**集落1箇所ごとに**決めている
+  // （以前はここで棟数 x eggBearerRatio の割合配りをしていたが、
+  //  1箇所あたり数棟しかない集落では箇所単位でほとんど当たらなかった）。
   const tinyBuildings = generateTinySettlements(result, boss.wx, boss.wy, config);
-  // tiny だけを対象に卵持ちを割当（eggBearerRatio に基づく）
-  const tinyEggCount = Math.max(1, Math.round(tinyBuildings.length * eggBearerRatio()));
-  const tinyIndices  = Array.from({ length: tinyBuildings.length }, (_, i) => i);
-  for (let i = 0; i < tinyEggCount && i < tinyIndices.length; i++) {
-    const j   = i + Math.floor(random() * (tinyIndices.length - i));
-    const tmp = tinyIndices[i]; tinyIndices[i] = tinyIndices[j]; tinyIndices[j] = tmp;
-    tinyBuildings[tinyIndices[i]].isEggBearer = true;
-  }
   for (const b of tinyBuildings) result.push(b);
 
   // --- (4b) v0.11: 道沿いの集落 — 街道のところどころに小さな民家群を置く。
   // 「道があるから人が住む」の地理感＋壊す対象の追加供給。卵割当は tiny と同率。
+  // v0.75: こちらも集落1箇所ごとの抽選（generateRoadsideHamlets の中）。
   const roadsideBuildings = generateRoadsideHamlets(result, townRoadEdges, boss, config);
-  const rsEggCount  = Math.max(1, Math.round(roadsideBuildings.length * eggBearerRatio()));
-  const rsIndices   = Array.from({ length: roadsideBuildings.length }, (_, i) => i);
-  for (let i = 0; i < rsEggCount && i < rsIndices.length; i++) {
-    const j   = i + Math.floor(random() * (rsIndices.length - i));
-    const tmp = rsIndices[i]; rsIndices[i] = rsIndices[j]; rsIndices[j] = tmp;
-    roadsideBuildings[rsIndices[i]].isEggBearer = true;
-  }
   for (const b of roadsideBuildings) result.push(b);
 
   // --- (4c) v0.29: スタート地点周辺の「まばらな家」（街は置かず単独の家を散らす）---
@@ -3679,7 +3882,7 @@ function generateStageLayout(stageIndex) {
     // （要塞は最大段階のさらに1段上。段階4になっても普通の街と混ざらない）
     const tier = settlementTier(b, 0);
     const shadeTier = b._fixedTier != null ? tier + 1 : tier;
-    if (shadeTier > 0) b.color = shadeColor(b._baseColor, TIER_SHADE_STEP * shadeTier);
+    if (shadeTier > 0) b.color = shadeBuildingColor(b._baseColor, TIER_SHADE_STEP * shadeTier);
   }
 
   // --- (9) v0.23: 花火要塞 — 倒すと連鎖的に散る"うまみ"建物を各ステージに数棟仕込む ---
@@ -4193,14 +4396,16 @@ const MOVER_DEFS = {
     color: "#a0703a", glowColor: "#d0a060", moveType: "pingpong",
     attack: { type: "shockwave", interval: 2.4, radius: 90, damage: 3 },
   },
-  // 古代: 歩く神像（コロッサス）— 眼光ビーム（高DPS持続照射）
+  // 古代: 歩く神像（コロッサス）— 太い眼光レーザーの一撃
   colossus: {
     // v0.63: 巨人型。向きは60度刻みでしか変えず、移動は目標方向のまま＝**横歩きする**。
-    // 正面±35度にしかビームが通らないぶん、当たると苛烈（dps 5.0 → 8.5）。
+    // v0.76: 常時照射の細い線をやめ、首都の極太レーザーを細くした一撃に置き換え（Shooter指示）。
+    // 予兆1.3秒のあいだ足を止めて向きも固定するので、線から横へ抜ければ無傷。
     name: "colossus", stepTurn: Math.PI / 3,
     hp: 250, speed: 26, xp: 160, eggDrop: 2, radius: 26,
     color: "#c8a030", glowColor: "#ffe080", moveType: "patrol",
-    attack: { type: "beam", dps: 8.5, range: 240, frontArc: 0.61 },
+    attack: { type: "laser", interval: 3.2, dps: 26, range: 300,
+              width: 48, length: 480, frontArc: 0.61 },
   },
   // 中世: 騎士（v0.13で個体分割）— 単発の矢。8体の隊で湧き、斉射に相当する密度になる
   // （8体合計で旧方陣とほぼ同等: hp192/xp136/卵約2個/矢5本毎秒）
@@ -4470,13 +4675,14 @@ const MOVER_DEFS = {
     attack: { type: "shockwave", interval: 2.2, radius: 175, damage: 7, push: 70 },
   },
 
-  // 2 古代: 黄金の巨像 — コロッサスの上位。長射程の眼光を絶やさない
+  // 2 古代: 黄金の巨像 — コロッサスの上位。より太く・長く・痛いレーザー
   gilded_colossus: {
     name: "gilded_colossus", elite: true, showHpBar: true,
     stepTurn: Math.PI / 3,   // v0.63: 巨人型（コロッサスと同じ踏み替え）
     hp: 1300, speed: 22, xp: 420, eggDrop: 5, radius: 40,
     color: "#e0c040", glowColor: "#fff0a0", moveType: "patrol",
-    attack: { type: "beam", dps: 15.0, range: 320, frontArc: 0.61 },
+    attack: { type: "laser", interval: 2.8, dps: 38, range: 420,
+              width: 60, length: 700, frontArc: 0.61 },
   },
 
   // 3 中世: 攻城塔 — 動く石の塊。矢を面で撒きながらじりじり寄ってくる
@@ -4544,6 +4750,7 @@ const MOVER_DEFS = {
     color: "#b08020", glowColor: "#ffd040", moveType: "patrol",
     treasureReward: 40,   // 撃破時の竜晶ボーナス
   },
+
 };
 
 // ステージ別の出現構成。後半ほど種類と数が増える（Shooterプレイテスト「後半にバリエーション」）
@@ -4813,6 +5020,61 @@ const CONCUSSION_BATTERY_KNOCK_R = 58;   // 着弾衝撃の半径（周りの竜
 
 // どこに置くか。**強い街とボス周辺**に限る（Shooter指示）＝
 // 「普通の町を焼いているぶんには出てこないが、格上に踏み込むと押し返される」。
+// -----------------------------------------------------------------
+// v0.78: 役割を持つ建物（Shooter指示「どれから倒すかを緩く選べるように」）
+// -----------------------------------------------------------------
+// 狙いは「強いものから順に」ではなく**払うものが違う3択**を作ること。
+//   鐘楼を先に … その町の弾幕が緩む（楽になる）
+//   穀倉を先に … 卵がまとまって手に入る（早く育つ）
+//   兵舎を先に … 湧き続ける敵が止まる（後腐れを断つ）
+// どれも正解で、群れの規模と残りHPで自然に選択が揺れる。
+// 置き場所は v0.77 の表裏に合わせる（兵舎＝表／穀倉＝裏／鐘楼＝中間）。
+const TOWN_ROLE_DEFS = {
+  belfry:   { label: "鐘楼",  ring: "#ffd86a",
+              desc: "生きている間、その町の建物の発射間隔が短い" },
+  granary:  { label: "穀倉",  ring: "#a8e070",
+              desc: "壊すと卵がまとめて出る" },
+  barracks: { label: "兵舎",  ring: "#ff9a6a",
+              desc: "生きている間、近づくと兵を出し続ける" },
+  // v0.81: 表が手強くない（実機判定 2026-09-12）への回答。
+  // 表側に**必ず数基**立ち、その文明の通常弾を扇で連射する＝表から入ると弾幕を抜ける必要がある。
+  // 全方位ではなく群れの方向へ面で撃つ（全方位はボスと街の中央だけ、という v0.64.1 の方針を守る）。
+  rampart:  { label: "前哨堡", ring: "#ff5c5c",
+              desc: "砲口の向いた方向にしか撃てない。表側にだけ立ち、外を向いている" },
+};
+// 前哨堡: 1射の弾数／扇の全幅(rad)／発射間隔／射程／1発の威力倍率（数で圧すので1発は弱め）
+const RAMPART_COUNT     = 7;
+const RAMPART_SPREAD    = 0.72;
+const RAMPART_INTERVAL  = 1.2;
+const RAMPART_RANGE     = 430;
+const RAMPART_DMG_MULT  = 0.85;
+// v0.84: **砲口の向き**（Shooter指示「攻撃は前方向のある程度限った角度に」）。
+// 各基は町の中心から見て外向きに据え付けられ、その正面±RAMPART_ARC にしか撃てない。
+// ＝表から近づくと複数基に撃たれるが、**抜けて内側に入れば背中を向けられる**。
+// 絵も砲身が見える向きに回すので、どこを狙っているかが見た目で分かる。
+const RAMPART_ARC = 0.70;          // 正面からの許容角（rad。約±40度）
+const RAMPART_SPRITE_OFFSET = Math.PI / 2;   // 絵は砲口が画像の上（-y）向き
+// 1町あたりの基数。格上の街・要塞都市ほど厚い
+const RAMPART_PER_TOWN          = 2;
+const RAMPART_PER_ADVANCED_TOWN = 3;
+const RAMPART_PER_FORTRESS_TOWN = 4;
+// 鐘楼が生きている町の発射間隔倍率（1未満＝速く撃つ）
+const BELFRY_INTERVAL_MULT = 0.7;
+// 穀倉を壊したときに出る卵。散らばっている町の卵（1町2〜3個）より明確に多い
+const GRANARY_EGG_COUNT = 4;
+// 兵舎: 群れがこの距離に入ると兵を出す／出す間隔／1棟あたりの同時上限
+const BARRACKS_RANGE    = 900;
+const BARRACKS_INTERVAL = 6.0;
+const BARRACKS_CAP      = 2;
+// 出す兵のHPで間隔を伸ばす。文明によって顔ぶれの重さが10倍以上違う（騎士hp24〜巨像hp250）ので、
+// 同じ間隔で出すと後半の兵舎だけ桁違いに強くなる。基準HP＝この値で等倍、最大5倍まで遅くなる。
+const BARRACKS_HP_REFERENCE = 60;
+const BARRACKS_MAX_SLOWDOWN = 5;
+function barracksIntervalFor(def) {
+  const k = Math.min(BARRACKS_MAX_SLOWDOWN, Math.max(1, def.hp / BARRACKS_HP_REFERENCE));
+  return BARRACKS_INTERVAL * k;
+}
+
 const CONCUSSION_PER_FORTRESS_TOWN = 1;  // 要塞都市（_fixedTier つき）1町あたり
 const CONCUSSION_PER_ADVANCED_TOWN = 1;  // 格上の街（_tierOffset > 0）1町あたり
 // 格上の街は大陸に15〜20ある（町数×TOWN_ADVANCED_RATIO 0.25）。全部に置くと
@@ -5239,6 +5501,239 @@ function drawEnemyDebugLabels() {
   ctx.restore();
 }
 
+// v0.78: 鐘楼が生きている町（townIndex）と、兵舎の一覧。
+// 毎フレーム全建物（数千棟）を走査しないよう、レイアウト生成時と
+// 動員段階の建て直し後に作り直し、陥落時だけ差分で消す。
+let townBelfryAlive = new Set();
+let barracksList = [];
+// v0.80: 町の meta 一覧（「街の向き」表示が毎フレーム使う。
+// settlements を毎フレーム走査すると数千棟になるので索引を持つ）。
+let townMetaList = [];
+
+// -----------------------------------------------------------------
+// v0.79: 町ごとの陥落（Shooter指示「順番が報われる形に」）
+// -----------------------------------------------------------------
+// 町は1つ90〜120棟あり、大陸に50〜65町ある。最後の数棟を拾いに戻る掃除が
+// 毎回発生していた。一定割合まで落とした町は**残りが撃つのをやめる**ことで、
+// 選んだ順番に対して「この町は終わった」という区切りを付ける。
+// 壊せなくなるわけではない（XPも卵もそのまま出る）＝掃除は自由、危険だけ消える。
+const TOWN_SURRENDER_RATIO = 0.7;
+const townStats = new Map();   // townIndex -> {total, fallen, surrendered, cx, cy}
+const worldTextFx = [];        // ワールドに浮かぶ文字 {x, y, life, text, color}
+const WORLD_TEXT_FX_DURATION = 2.2;
+function pushWorldText(x, y, text, color) {
+  worldTextFx.push({ x, y, life: WORLD_TEXT_FX_DURATION, text, color });
+}
+
+function recomputeTownRoles() {
+  townBelfryAlive = new Set();
+  barracksList = [];
+  townStats.clear();
+  townMetaList = [];
+  const metaMap = new Map();
+  for (const s of settlements) {
+    if (s && s._townMeta && s._townIndex !== undefined) {
+      metaMap.set(s._townIndex, s._townMeta);
+      townMetaList.push(s._townMeta);
+    }
+  }
+  for (const s of settlements) {
+    if (!s) continue;
+    if (s._townRole && !s.fallen) {
+      if (s._townRole === "belfry" && s._townIndex !== undefined) townBelfryAlive.add(s._townIndex);
+      if (s._townRole === "barracks") barracksList.push(s);
+    }
+    // 城壁は町の棟数に数えない（撃たないので陥落判定に関係しない）
+    if (s._townIndex === undefined || s._isWall || s.isBoss) continue;
+    let st = townStats.get(s._townIndex);
+    if (!st) {
+      const m = metaMap.get(s._townIndex);
+      st = { total: 0, fallen: 0, surrendered: false, cx: m ? m.cx : s.wx, cy: m ? m.cy : s.wy,
+ };
+      townStats.set(s._townIndex, st);
+    }
+    st.total++;
+    if (s.fallen) st.fallen++;
+  }
+  // 建て直し後に「もう陥落している町」を取りこぼさない
+  for (const st of townStats.values()) {
+    st.surrendered = st.total > 0 && st.fallen / st.total >= TOWN_SURRENDER_RATIO;
+  }
+}
+
+/** その建物の町が陥落していれば true（＝撃たない）。 */
+function isTownSurrendered(townIndex) {
+  if (townIndex === undefined) return false;
+  const st = townStats.get(townIndex);
+  return !!(st && st.surrendered);
+}
+
+function updateWorldTextFx(dt) {
+  for (let i = worldTextFx.length - 1; i >= 0; i--) {
+    worldTextFx[i].life -= dt;
+    if (worldTextFx[i].life <= 0) worldTextFx.splice(i, 1);
+  }
+}
+
+// v0.80: 街の向きの**仮表示**（Shooter指示「街の向きがいまいち分からない」）。
+// v0.77 で入れた「表＝城壁と兵器／裏＝畑と卵」が実機で読めているか確かめるための
+// 開発用の目印。デバッグメニュー「🧭 街の向き」で消せる。
+// 仕様が固まったら、この関数ごと外すか、地形側の表現（門・街道の入口など）に置き換える。
+let debugShowTownFront = true;
+const TOWN_FRONT_MARK_COLOR = "#ff8a5c";   // 表＝守りの側
+const TOWN_BACK_MARK_COLOR  = "#8ce07a";   // 裏＝実りの側
+
+function drawTownFrontMarkers() {
+  if (!debugShowTownFront || townMetaList.length === 0) return;
+  const bounds = getViewBoundsWorld(260);
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const fontPx = Math.max(9, Math.round(13 / cam.scale));
+  ctx.font = `bold ${fontPx}px monospace`;
+  for (const m of townMetaList) {
+    if (m.frontAngle === undefined) continue;
+    if (m.cx < bounds.minX || m.cx > bounds.maxX ||
+        m.cy < bounds.minY || m.cy > bounds.maxY) continue;
+    const R = (m.maxExtent ?? m.townR ?? 200);
+    const half = Math.acos(TOWN_FRONT_COS);   // 表とみなす扇（±60度）。判定と同じ値を使う
+
+    // 表の扇（±60度）を塗る＝どの棟が「表」に数えられているかが面で分かる
+    ctx.globalAlpha = 0.10;
+    ctx.fillStyle = TOWN_FRONT_MARK_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(m.cx, m.cy);
+    ctx.arc(m.cx, m.cy, R + 26, m.frontAngle - half, m.frontAngle + half);
+    ctx.closePath();
+    ctx.fill();
+
+    // 裏の扇も薄く（実りの側）
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = TOWN_BACK_MARK_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(m.cx, m.cy);
+    ctx.arc(m.cx, m.cy, R + 26, m.frontAngle + Math.PI - half, m.frontAngle + Math.PI + half);
+    ctx.closePath();
+    ctx.fill();
+
+    // 表を指す矢印（中心から外へ）
+    const ax = Math.cos(m.frontAngle), ay = Math.sin(m.frontAngle);
+    const tipX = m.cx + ax * (R + 46), tipY = m.cy + ay * (R + 46);
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = TOWN_FRONT_MARK_COLOR;
+    ctx.lineWidth = Math.max(2, 3 / cam.scale);
+    ctx.beginPath();
+    ctx.moveTo(m.cx + ax * 20, m.cy + ay * 20);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+    const head = Math.max(9, 13 / cam.scale);
+    ctx.fillStyle = TOWN_FRONT_MARK_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(tipX + ax * head, tipY + ay * head);
+    ctx.lineTo(tipX - ay * head * 0.6, tipY + ax * head * 0.6);
+    ctx.lineTo(tipX + ay * head * 0.6, tipY - ax * head * 0.6);
+    ctx.closePath();
+    ctx.fill();
+
+    // 「表」「裏」の字
+    const label = (text, angle, color) => {
+      const lx = m.cx + Math.cos(angle) * (R + 74);
+      const ly = m.cy + Math.sin(angle) * (R + 74);
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = Math.max(2, 3 / cam.scale);
+      ctx.strokeStyle = "rgba(0,0,0,0.7)";
+      ctx.strokeText(text, lx, ly);
+      ctx.fillStyle = color;
+      ctx.fillText(text, lx, ly);
+    };
+    label("表", m.frontAngle, TOWN_FRONT_MARK_COLOR);
+    label("裏", m.frontAngle + Math.PI, TOWN_BACK_MARK_COLOR);
+  }
+  ctx.restore();
+}
+
+/** ワールド座標に浮かぶ短い文字。今は町の陥落だけが使う。 */
+function drawWorldTextFx() {
+  if (worldTextFx.length === 0) return;
+  ctx.save();
+  ctx.textAlign = "center";
+  for (const fx of worldTextFx) {
+    const t = 1 - fx.life / WORLD_TEXT_FX_DURATION;   // 0→1
+    const rise = 26 * t;
+    const alpha = t < 0.15 ? t / 0.15 : (t > 0.7 ? (1 - t) / 0.3 : 1);
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.font = `bold ${Math.max(10, Math.round(15 / cam.scale))}px monospace`;
+    ctx.lineWidth = Math.max(2, 3 / cam.scale);
+    ctx.strokeStyle = "rgba(0,0,0,0.65)";
+    ctx.strokeText(fx.text, fx.x, fx.y - rise);
+    ctx.fillStyle = fx.color;
+    ctx.fillText(fx.text, fx.x, fx.y - rise);
+    // 広がる輪（町全体が落ちたことを面で見せる）
+    ctx.globalAlpha = Math.max(0, alpha) * 0.30;
+    ctx.strokeStyle = fx.color;
+    ctx.beginPath();
+    ctx.arc(fx.x, fx.y, 40 + 220 * t, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// v0.78: 兵舎が出す兵。**文明ごとに明示する**。
+// 最初は「その文明の顔ぶれのうち一番軽いもの」を自動で選ぶ実装にしたが、
+// 実測したら石器時代はマンモス・電気時代は爆撃気球が兵舎から出てきた。
+// 「隊（packCount持ち）を優先」に直しても石器＝マンモス（隊3）・電気＝コロッサスのままで、
+// **兵舎から出て筋が通る顔ぶれは数値では選べない**と分かったので表にした。
+// 出すのは隊のうち1体だけ（8体の騎士隊がまるごと湧くと兵舎1棟が強すぎる）。
+// **どれもその文明の顔ぶれ（MOVER_SPAWNS_BY_STAGE）の中から選んである**（外から借りない）。
+const BARRACKS_UNIT_BY_STAGE = [
+  "clubmen",    // I    石器: 石打ちの衆 (hp60)
+  "shieldman",  // II   古代: 盾兵 (hp90)
+  "knights",    // III  中世: 騎士 (hp24)
+  "grenadiers", // IV   近世: 擲弾兵 (hp55)
+  "knights",    // V    産業: 兵士 (hp24)
+  "colossus",   // VI   電気: 巨像 (hp250) — この文明の顔ぶれに軽い歩兵が居ない
+  "knights",    // VII  大戦: 兵士 (hp24)
+  "shieldman",  // VIII 未来: 盾兵 (hp90)
+];
+function barracksUnitFor(stageIdx) {
+  const key = BARRACKS_UNIT_BY_STAGE[stageIdx];
+  return MOVER_DEFS[key] ? key : null;
+}
+
+/**
+ * v0.78: 兵舎。群れが近づいている間だけ兵を出し続ける。
+ * 遠くの町が無人で兵を量産しないよう距離で門を閉じ、1棟あたりの同時数も抑える
+ * （壊す価値はあるが、放置しても雪だるまにはならない）。
+ */
+function updateBarracks(dt) {
+  if (barracksList.length === 0) return;
+  const key = barracksUnitFor(currentStage);
+  if (!key) return;
+  const def = MOVER_DEFS[key];
+  const c = calcFriendlyCentroid();
+  const r2 = BARRACKS_RANGE * BARRACKS_RANGE;
+  for (const b of barracksList) {
+    if (b.fallen) continue;
+    if (isTownSurrendered(b._townIndex)) continue;   // v0.79: 陥落した町は兵も出さない
+    if (dist2(b.wx, b.wy, c.x, c.y) > r2) continue;
+    const interval = barracksIntervalFor(def);
+    if (b._barracksTimer === undefined) b._barracksTimer = random() * interval;
+    b._barracksTimer -= dt;
+    if (b._barracksTimer > 0) continue;
+    b._barracksTimer = interval;
+    let mine = 0;
+    for (const m of movers) if (m.alive && m._fromBarracks === b) mine++;
+    if (mine >= BARRACKS_CAP) continue;
+    const mv = makeMover(def, () => ({ x: b.wx, y: b.wy }));
+    mv.wx = b.wx + (random() - 0.5) * 50;
+    mv.wy = b.wy + (random() - 0.5) * 50;
+    mv.xpValue = def.xp;
+    mv._fromBarracks = b;
+    movers.push(mv);
+    spawnDragonAppearEffect(mv.wx, mv.wy);
+  }
+}
+
 /**
  * 時代兵器を持つ建物の目印。脈打つ輪で「ここは普通の建物ではない」と予告する。
  * ライブ描画（建物レイヤーはキャッシュなのでここには置けない）。
@@ -5247,7 +5742,23 @@ function drawEnemyDebugLabels() {
 function drawEmplacements() {
   ctx.save();
   for (const s of settlements) {
-    if (!s || !s._emplacement || s.fallen) continue;
+    if (!s || s.fallen) continue;
+    // v0.78: 役割を持つ建物（鐘楼・穀倉・兵舎）も同じ作法で輪を出す。
+    // 絵だけだと町の中で埋もれるので、「ここは普通の建物ではない」を輪で予告する。
+    if (!s._emplacement && s._townRole) {
+      const rdef = TOWN_ROLE_DEFS[s._townRole];
+      if (rdef) {
+        const rp = 0.5 + 0.5 * Math.sin(breathTime * 2.2 + s.wx * 0.01);
+        ctx.globalAlpha = 0.22 + 0.30 * rp;
+        ctx.strokeStyle = rdef.ring;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(s.wx, s.wy, s.radius + 5 + rp * 3, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      continue;
+    }
+    if (!s._emplacement) continue;
     const def = EMPLACEMENT_DEFS[s._emplacement];
     if (!def) continue;
     const pulse = 0.5 + 0.5 * Math.sin(breathTime * 3 + s.wx * 0.01);
@@ -5444,6 +5955,11 @@ let nextPackId = 1;
 // 群れの結束・分離パラメータ
 const PACK_COHESION_DIST   = 160;  // 群れ重心からこれ以上離れた個体は重心へ寄せる
 const PACK_SEPARATION_GAP  = 6;    // 同一pack個体間に確保する隙間（半径の和に加算）
+// v0.73: **別のpack同士・単独の敵同士も重ならない**ようにする（Shooter指示）。
+// 「あくまでなるべく」なので同一pack（隊列）より弱い押し出しにして、
+// 進路や隊形そのものは壊さない。完全な非重なりは保証しない。
+const MOVER_SEPARATION_GAP  = 4;    // 別pack同士に確保する隙間
+const MOVER_SEPARATION_PUSH = 0.22; // 別pack同士の押し戻し係数（同一packは0.5＝完全解消）
 
 /** 移動敵1体を生成する（経路生成込み）。 */
 function makeMover(def, randPoint) {
@@ -5487,7 +6003,7 @@ function makeMover(def, randPoint) {
       wpIdx: Math.floor(random() * waypoints.length),
       wpDir: 1,                 // pingpong 用の進行方向（1/-1）
       attackTimer: random() * 2.0,
-      beamTargetIdx: -1,        // colossus の照射対象（描画用）
+      laserLock: 0,             // v0.76: レーザーの溜め〜照射のあいだ足を止める残り秒数
       swayPhase: random() * Math.PI * 2,  // v0.9: 生気づけアニメの個体位相
       alive: true,
     };
@@ -5721,7 +6237,15 @@ function updateMovers(dt) {
     // 進む向き。既定は「向いている方向」＝従来と同じ（向きが即座に目標を向くため）
     let moveX = dirX, moveY = dirY;
 
-    if (def.stepTurn) {
+    // v0.76: レーザーの溜め〜照射のあいだは**足を止めて向きも固定**する。
+    // 予兆の線が本体からずれないので「どこを焼くか」が最後まで読める＝避ければ無傷。
+    // 動きにメリハリも出る（歩く → ぴたりと止まって撃つ → また歩く）。
+    const laserLocked = m.laserLock > 0;
+    if (laserLocked) m.laserLock = Math.max(0, m.laserLock - dt);
+
+    if (laserLocked) {
+      // 向きは撃つ瞬間に固定済み。ここでは更新しない
+    } else if (def.stepTurn) {
       // 巨人型: 向きは60度刻み。移動は目標方向のままなので**横歩き・後ずさり**が出る
       const want = Math.atan2(dirY, dirX);
       if (m.faceAngle === undefined) m.faceAngle = Math.round(want / def.stepTurn) * def.stepTurn;
@@ -5746,7 +6270,8 @@ function updateMovers(dt) {
     }
 
     // v0.61: 画面外から来る増援は、群れに近づくまで行軍速度で走る
-    const moveSpeed = def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
+    const moveSpeed = laserLocked ? 0
+      : def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
     m.wx += moveX * moveSpeed * dt;
     m.wy += moveY * moveSpeed * dt;
 
@@ -5768,33 +6293,45 @@ function updateMovers(dt) {
 
     // ---- 攻撃 ----
     const nearestIdx = findNearestAliveBoid(m.wx, m.wy);
-    if (nearestIdx < 0) { m.beamTargetIdx = -1; continue; }
+    if (nearestIdx < 0) continue;
     const ndx = px[nearestIdx] - m.wx;
     const ndy = py[nearestIdx] - m.wy;
     const nearestD2 = ndx * ndx + ndy * ndy;
 
     const atk = def.attack;
-    if (!atk) { m.beamTargetIdx = -1; continue; }   // v0.25.1: 財宝馬車など無攻撃ユニット
-    if (m.submerged) { m.beamTargetIdx = -1; continue; }   // v0.42: 潜行中は撃たない
+    if (!atk) continue;        // v0.25.1: 財宝馬車など無攻撃ユニット
+    if (m.submerged) continue; // v0.42: 潜行中は撃たない
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
     const ferocity = moverStageFerocity(currentStage);
-    if (atk.type === "beam") {
-      // コロッサス: 眼光ビーム（持続照射）
-      // v0.63: atk.frontArc があると**正面の扇の中にいる竜にしか当たらない**。
-      // 向きが60度刻みでしか変わらないので「正面から外れる」が有効な回避になる。
-      // そのぶん dps は上げてある（当てられたら苛烈）。
+    if (atk.type === "laser") {
+      // v0.76: 巨人型のレーザー（Shooter指示「常時照射はやめて極太ビームの細い版を」）。
+      // 首都の大技と同じ spawnLaserStrike を使うので作法も同じ＝**予兆1.3秒 → 照射0.9秒**。
+      // 撃つ瞬間に角度が決まり、以後は動かない（本体も laserLock で止まる）ので、
+      // 線から横へ抜ければ無傷。当たり続ければ dps x 0.9秒ぶん入る＝重い。
+      // v0.63 からの frontArc は据え置き: 正面±35度の外にいる竜には撃たない。
+      // 向きは60度刻みでしか変わらないため、「正面を外し続ける」が有効な回避のまま。
+      if (m.laserLock > 0) continue;          // 照射中は次弾を撃たない
+      m.attackTimer -= dt;
+      if (m.attackTimer > 0) continue;
       let inFront = true;
       if (atk.frontArc !== undefined) {
         const toTarget = Math.atan2(ndy, ndx);
         const face = Math.atan2(m.headingY, m.headingX);
         inFront = Math.abs(wrapAngle(toTarget - face)) < atk.frontArc;
       }
-      if (inFront && nearestD2 < atk.range * atk.range) {
-        m.beamTargetIdx = nearestIdx;
-        applyDamageToBoid(nearestIdx, atk.dps * ferocity * dt);
-      } else {
-        m.beamTargetIdx = -1;
+      if (!inFront || nearestD2 >= atk.range * atk.range) {
+        m.attackTimer = 0.3;   // 撃てないときは短い再チェック
+        continue;
       }
+      m.attackTimer = atk.interval / ferocity;
+      m.laserLock   = LASER_WARN_TIME + LASER_FIRE_TIME;
+      // 撃つ向きへ顔を固定する（予兆の線と本体の向きを一致させる）
+      const lang = Math.atan2(ndy, ndx);
+      m.headingX = Math.cos(lang);
+      m.headingY = Math.sin(lang);
+      m.faceAngle = lang;      // stepTurn 側の基準も合わせる（照射後の向きの飛びを防ぐ）
+      spawnLaserStrike(m.wx, m.wy, lang, atk.width, atk.length,
+                       atk.dps * ferocity, atk.color ?? def.glowColor);
       continue;
     }
 
@@ -5915,25 +6452,38 @@ function updateMovers(dt) {
   }
 
   // v0.13: 同一pack内の分離（重なり防止の相互押し出し）。
-  // pack人数は最大8・mover総数も少ないためO(n^2)で十分
+  // v0.73: pack をまたいだ敵同士にも効かせる（Shooter指示「なるべく重ならないように」）。
+  // 同一pack は従来どおり重なりを完全に解消し、別packは弱く押すだけにして、
+  // 隊列の形や進路の読みやすさを壊さない。
+  // 動かない敵（砲台・門・要塞・潜行中の個体）は押されない側に固定する
+  // ＝配置した場所から勝手にずれない。押し戻しはぶつかった側が全部引き受ける。
+  // mover総数は数十のためO(n^2)で十分。
   for (let i = 0; i < movers.length; i++) {
     const a = movers[i];
-    if (!a.alive || a.packId === undefined) continue;
+    if (!a.alive || a.def.part === "arm" || a.submerged) continue;
+    const aMovable = a.def.speed > 0;
     for (let j = i + 1; j < movers.length; j++) {
       const b = movers[j];
-      if (!b.alive || b.packId !== a.packId) continue;
+      if (!b.alive || b.def.part === "arm" || b.submerged) continue;
+      const bMovable = b.def.speed > 0;
+      if (!aMovable && !bMovable) continue;   // 動かない者同士は押し合わない
+      const samePack = a.packId !== undefined && a.packId === b.packId;
+      const minD = a.def.radius + b.def.radius +
+                   (samePack ? PACK_SEPARATION_GAP : MOVER_SEPARATION_GAP);
       const sdx = b.wx - a.wx;
       const sdy = b.wy - a.wy;
-      const minD = a.def.radius + b.def.radius + PACK_SEPARATION_GAP;
       const sd2 = sdx * sdx + sdy * sdy;
-      if (sd2 < minD * minD && sd2 > 0.01) {
-        const sd = Math.sqrt(sd2);
-        const push = (minD - sd) * 0.5;
-        const nx = sdx / sd;
-        const ny = sdy / sd;
-        a.wx -= nx * push; a.wy -= ny * push;
-        b.wx += nx * push; b.wy += ny * push;
-      }
+      if (sd2 >= minD * minD || sd2 <= 0.01) continue;
+      const sd = Math.sqrt(sd2);
+      const overlap = minD - sd;
+      const nx = sdx / sd;
+      const ny = sdy / sd;
+      const strength = samePack ? 0.5 : MOVER_SEPARATION_PUSH;
+      // 片方が動けないなら、動ける側が2倍受け持って押し出す
+      const aShare = aMovable ? (bMovable ? strength : strength * 2) : 0;
+      const bShare = bMovable ? (aMovable ? strength : strength * 2) : 0;
+      if (aShare) { a.wx -= nx * overlap * aShare; a.wy -= ny * overlap * aShare; }
+      if (bShare) { b.wx += nx * overlap * bShare; b.wy += ny * overlap * bShare; }
     }
   }
 
@@ -6650,7 +7200,7 @@ function updateMoverRams() {
   }
 }
 
-/** 移動敵の描画（本体＋HPバー＋コロッサスの眼光ビーム＋衝撃波リング）。ワールド座標系で呼ぶ。 */
+/** 移動敵の描画（本体＋HPバー＋衝撃波リング）。ワールド座標系で呼ぶ。 */
 function drawMovers() {
   for (const m of movers) {
     if (!m.alive) continue;
@@ -6932,17 +7482,8 @@ function drawMovers() {
       ctx.globalAlpha = 1.0;
     }
 
-    // コロッサスの眼光ビーム（v0.26: 無攻撃ユニット=財宝馬車/巨獣の腕でも例外にならないようガード）
-    if (def.attack && def.attack.type === "beam" && m.beamTargetIdx >= 0 && !boidDead[m.beamTargetIdx]) {
-      ctx.save();
-      ctx.strokeStyle = "rgba(255,64,64,0.65)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(m.wx, m.wy);
-      ctx.lineTo(px[m.beamTargetIdx], py[m.beamTargetIdx]);
-      ctx.stroke();
-      ctx.restore();
-    }
+    // v0.76: 旧「眼光ビーム」（対象へ伸びる細い赤線）の描画はここにあったが、
+    // レーザー一撃に置き換えたので drawLaserStrikes 側に集約した。
   }
 
   // 衝撃波リング（マンモス踏鳴らし・ボスノヴァ共用。色は発生源が指定）
@@ -7131,6 +7672,28 @@ function generateTerrainObstacles(buildings, boss) {
 // 各町の建物リストから EGG_BEARER_RATIO の割合でランダムに卵持ちを選ぶ。
 // _townMeta を持つ建物が「町の先頭」なので、それを境界として町ごとに分割する。
 // 町ごとに割り当てることで全マップに散らばった配置になる。
+// v0.77: 町ごとの meta（cx/cy/frontAngle）を _townIndex から引けるようにする。
+// meta はその町の先頭建物（ランドマーク）に付いている。
+function buildTownMetaMap(buildings) {
+  const map = new Map();
+  for (const b of buildings) {
+    if (b._townMeta && b._townIndex !== undefined) map.set(b._townIndex, b._townMeta);
+  }
+  return map;
+}
+
+/**
+ * v0.77: その建物が自分の町の「表」側にあるか（表の向き±60度）。
+ * meta が無い建物（首都区画・集落など）は表裏を持たないので false。
+ */
+const TOWN_FRONT_COS = 0.5;   // cos60度。表とみなす扇の広さ
+function isOnTownFront(b, metaMap) {
+  const meta = metaMap.get(b._townIndex);
+  if (!meta || meta.frontAngle === undefined) return false;
+  const a = Math.atan2(b.wy - meta.cy, b.wx - meta.cx);
+  return Math.cos(wrapAngle(a - meta.frontAngle)) > TOWN_FRONT_COS;
+}
+
 function assignEggBearers(buildings) {
   // まず全フラグをリセット
   for (const b of buildings) b.isEggBearer = false;
@@ -7150,11 +7713,16 @@ function assignEggBearers(buildings) {
 
   for (const town of towns) {
     // この町での卵持ち数（最低1、実効割合で計算。密度倍率で割って絶対数を一定に）
-    const count = Math.max(1, Math.round(town.length * eggBearerRatio()));
+    // v0.73: 街のぶんだけ TOWN_EGG_RATIO_MULT で半減させる
+    const count = Math.max(1, Math.round(town.length * eggBearerRatio() * TOWN_EGG_RATIO_MULT));
+
+    // v0.77 で「町の裏側の一角にまとめる」に変えたが、v0.83 で**一様ランダムに戻した**
+    // （Shooter判定「町の中での卵の位置はランダムに戻して。街に前後があること自体は良い」）。
+    // 街の表裏（城壁・時代兵器・前哨堡は表／畑と穀倉は裏）はそのまま残す。
+    // 戻したのは**散らばっている卵持ちの位置だけ**。
     // シャッフル相当: インデックス配列をランダムに選んでフラグを立てる
     const indices = [];
     for (let i = 0; i < town.length; i++) indices.push(i);
-    // フィッシャー–イェーツで先頭 count 要素だけ選ぶ（部分シャッフル）
     for (let i = 0; i < count; i++) {
       const j = i + Math.floor(random() * (indices.length - i));
       const tmp = indices[i]; indices[i] = indices[j]; indices[j] = tmp;
@@ -7729,7 +8297,20 @@ function buildingSpriteKeyFor(settlement) {
   if (settlement._emplacement && buildingImages[settlement._emplacement]) {
     return settlement._emplacement;
   }
-  if (settlement._landmark) return settlement._landmark;  // v0.10: temple / windmill
+  // v0.84: 前哨堡だけは**時代ごとの絵**（投槍架→バリスタ→大弩→大砲→…→ビーム砲）
+  if (settlement._townRole === "rampart") {
+    const eraKey = "e" + (currentStage + 1) + "_rampart";
+    if (buildingImages[eraKey]) return eraKey;
+  }
+  // v0.78: 役割を持つ建物も機能ごとの専用の絵
+  if (settlement._townRole && buildingImages["role_" + settlement._townRole]) {
+    return "role_" + settlement._townRole;
+  }
+  // v0.10: temple / windmill。v0.71: その文明の絵があればそちらを使う
+  if (settlement._landmark) {
+    const lmKey = "e" + (currentStage + 1) + "_" + settlement._landmark;
+    return buildingImages[lmKey] ? lmKey : settlement._landmark;
+  }
   let size = null;
   switch (settlement.size) {
     case "tiny":
@@ -7788,8 +8369,11 @@ function drawSettlementOnLayer(bctx, settlement) {
   } else if (tinted) {
     const drawW = settlement.radius * (settlement._landmark ? 2.6 : 2.3);
     const drawH = drawW * (tinted.height / tinted.width);
-    // 座標由来の決定的な左右反転でタイル感を減らす
-    const flip = (Math.floor(settlement.wx * 7 + settlement.wy * 13) % 2 === 0) ? 1 : -1;
+    // 座標由来の決定的な左右反転でタイル感を減らす。
+    // v0.84: 向きに意味がある建物（前哨堡）は反転すると砲口が逆を向くので切る。
+    const flip = settlement._noFlip
+      ? 1
+      : ((Math.floor(settlement.wx * 7 + settlement.wy * 13) % 2 === 0) ? 1 : -1);
     bctx.save();
     bctx.translate(settlement.wx, settlement.wy);
     // v0.10: 通りに面する向きで建物を回転（有機的な街並みの核）
@@ -8576,6 +9160,8 @@ function updateSettlementAttacks(dt) {
     const settlement = settlements[s];
     if (!settlement || settlement.fallen) continue;
     if (settlement._noAttack) continue;   // v0.41: 城下の民家は撃たない（弾量を街と同等に保つ）
+    // v0.79: 陥落した町は撃たない（壊せるし報酬も出るが、危険だけ消える）
+    if (isTownSurrendered(settlement._townIndex)) continue;
 
     let inRange = false;
     const atkR2 = settlement.attackRadius * settlement.attackRadius;
@@ -8591,12 +9177,39 @@ function updateSettlementAttacks(dt) {
     if (settlement.attackTimer > 0) continue;
     // 通常建物: 発射頻度を大幅に下げる（×4倍の間隔 = たまに飛ぶ「雰囲気」として残す）
     // ボス: projectileInterval をそのまま使う（定数で設定した高頻度を活かす）
+    // v0.78: 鐘楼が生きている町は発射間隔が短い（鐘楼を先に落とすと弾幕が緩む）
     settlement.attackTimer = settlement.isBoss
       ? settlement.projectileInterval
-      : settlement.projectileInterval * 4.0;
+      : settlement.projectileInterval * 4.0 *
+        (townBelfryAlive.has(settlement._townIndex) ? BELFRY_INTERVAL_MULT : 1);
 
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
+
+    // v0.81: 前哨堡は通常弾を「扇で連射」する。狙う向きへ面で撃つので、
+    // 表から入ると弾の壁を抜けることになる（横へ回れば射界から外れる）。
+    if (settlement._townRole === "rampart") {
+      const base = calcAngleToTarget(settlement.wx, settlement.wy, targetIdx);
+      // v0.84: 砲口の正面±RAMPART_ARC の外は撃てない。短い間隔で狙い直すだけ。
+      const facing = settlement._rampartAngle ?? base;
+      if (Math.abs(wrapAngle(base - facing)) > RAMPART_ARC) {
+        settlement.attackTimer = 0.3;
+        continue;
+      }
+      settlement.attackTimer = RAMPART_INTERVAL;
+      for (let k = 0; k < RAMPART_COUNT; k++) {
+        const off = (k - (RAMPART_COUNT - 1) / 2) * (RAMPART_SPREAD / (RAMPART_COUNT - 1));
+        spawnFanProjectileRaw(
+          settlement.wx, settlement.wy, base + off,
+          settlement.projectileSpeed,
+          settlement.projectileDamage * RAMPART_DMG_MULT,
+          settlement.projectileColor,
+          1,                      // kind=1: 大きめの弾（見えやすさ優先）
+          RAMPART_RANGE + 40,
+        );
+      }
+      continue;
+    }
 
     // v0.57: 時代兵器を持つ建物は通常弾を撃たず、専用の技を出す。
     // ※ targetIdx を使うので、必ずその宣言より後に置くこと
@@ -9253,6 +9866,31 @@ function settlementFall(settlementIndex) {
       const angle = random() * Math.PI * 2;
       const r = settlement.radius + 10 + random() * 40;
       spawnEgg(settlement.wx + Math.cos(angle) * r, settlement.wy + Math.sin(angle) * r);
+    }
+  }
+
+  // v0.78: 役割を持つ建物。穀倉は卵をまとめて吐き、鐘楼は町の加速を解く。
+  if (settlement._townRole === "granary") {
+    for (let k = 0; k < GRANARY_EGG_COUNT; k++) {
+      const angle = (k / GRANARY_EGG_COUNT) * Math.PI * 2 + random() * 0.5;
+      const r = settlement.radius + 16 + random() * 34;
+      spawnEgg(settlement.wx + Math.cos(angle) * r, settlement.wy + Math.sin(angle) * r);
+    }
+    triggerFlash("rgba(160,224,112,0.12)", 0.18);
+  } else if (settlement._townRole === "belfry") {
+    townBelfryAlive.delete(settlement._townIndex);
+  }
+
+  // v0.79: 町の陥落判定。城壁とボスは数えない（recomputeTownRoles と同じ基準）。
+  if (settlement._townIndex !== undefined && !settlement._isWall && !settlement.isBoss) {
+    const st = townStats.get(settlement._townIndex);
+    if (st && !st.surrendered) {
+      st.fallen++;
+      if (st.fallen / st.total >= TOWN_SURRENDER_RATIO) {
+        st.surrendered = true;
+        pushWorldText(st.cx, st.cy, "陥落", "#ffe08a");
+        hapticPulse(120);
+      }
     }
   }
 
@@ -12079,7 +12717,9 @@ function codexAttackLabel(def) {
   }
   const t = a.type;
   if (t === "shockwave") return `踏鳴らし 半径${a.radius}・押し${a.push ?? SHOCKWAVE_PUSH_DIST}・${a.interval}秒ごと`;
-  if (t === "beam")      return `眼光ビーム ${a.dps}dps・射程${a.range}` + (a.frontArc ? "（正面のみ）" : "");
+  if (t === "laser")     return `眼光レーザー 幅${a.width}・${a.dps}dps・射程${a.range}・${a.interval}秒ごと` +
+                                 `（予兆${LASER_WARN_TIME}秒 → 照射${LASER_FIRE_TIME}秒` +
+                                 (a.frontArc ? "・正面のみ" : "") + "）";
   if (t === "fan")       return `${a.pierce ? "貫通弾" : (a.kind === 1 ? "重弾" : "矢")}${a.count}連射 射程${a.range}・${a.interval}秒ごと`;
   if (t === "broadside") return `舷側砲 ${a.count}連×左右・${a.interval}秒ごと` + (a.pierce ? "（貫通）" : "");
   if (t === "bomb")      return `爆弾 範囲${a.aoe}・射程${a.range}・${a.interval}秒ごと`;
@@ -12138,6 +12778,20 @@ function codexEmplacementEras(key) {
 }
 
 // 通常の建物（時代兵器を持たない大多数）。撃ち方は STAGE_CONFIGS の size ごとの設定。
+// v0.73: 目印になる建物（町のランドマーク＋ミニ集落のシンボル）。
+// 絵は e1_<key> 〜 e8_<key> の8枚あり、図鑑では代表として最初の文明のものを出す。
+const CODEX_LANDMARKS = [
+  { key: "temple",   label: "町の中央（祭祀・行政）", where: "町の広場の中央（偶数番の町）",
+    desc: "その文明の通常弾を撃つ。HPが大型建物の1.3倍あり、町で一番粘る",
+    stat: "巨石環 → 神殿 → 大聖堂 → 市庁舎 → 時計塔 → 公会堂 → 司令部 → モノリス" },
+  { key: "windmill", label: "町の中央（生産・設備）", where: "町の広場の中央（奇数番の町）",
+    desc: "その文明の通常弾を撃つ。HPが大型建物の1.3倍あり、町で一番粘る",
+    stat: "乾燥場 → 穀倉 → 風車 → 石造風車 → 給水塔 → 送電鉄塔 → レーダー → 集光塔" },
+  { key: "hamlet",   label: "ミニ集落のシンボル", where: "野に散らばる小さな集落の中央",
+    desc: "集落の民家と同じ通常弾を撃つ。集落を遠目に見つけるための目印",
+    stat: "祠 → 小神殿 → 礼拝堂 → 井戸屋形 → ポンプ小屋 → 変電小屋 → 前哨 → ビーコン" },
+];
+
 const CODEX_BUILDING_SIZES = [
   { size: "small",  label: "小屋・民家",   note: "すぐ壊れて卵が出る育成枠" },
   { size: "medium", label: "中規模の建物", note: "" },
@@ -12288,6 +12942,36 @@ function codexBuildingHtml() {
         `</div>` +
       `</div>`;
   }
+  // v0.78: 役割を持つ建物。どれを先に壊すかで払うものが変わる枠。
+  html += `</div><div class="cx-era">役割を持つ建物（どれから壊すかを選ぶ）</div><div class="cx-list">`;
+  for (const key of Object.keys(TOWN_ROLE_DEFS)) {
+    const def = TOWN_ROLE_DEFS[key];
+    html +=
+      `<div class="cx-row" style="border-color:${def.ring}">` +
+        `<div class="cx-thumb"><img src="${
+            BUILDING_IMAGE_SOURCES[key === "rampart" ? "e1_rampart" : "role_" + key]}" alt=""></div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${def.label}</div>` +
+          `<div class="cx-tags">${
+              key === "barracks" ? "格上の街・要塞都市だけ" :
+              key === "rampart"  ? `どの町にも${RAMPART_PER_TOWN}基（格上${RAMPART_PER_ADVANCED_TOWN}／要塞${RAMPART_PER_FORTRESS_TOWN}）` :
+                                   "どの町にも1つ"}` +
+            ` ／ ${key === "granary" ? "町の裏側" : key === "belfry" ? "町の中心寄り" : "町の表側"}</div>` +
+          `<div class="cx-atk">${def.desc}</div>` +
+          `<div class="cx-stat">${
+            key === "belfry"   ? `町の発射間隔 ×${BELFRY_INTERVAL_MULT}` :
+            key === "granary"  ? `卵 ${GRANARY_EGG_COUNT}個（町に散らばる卵は1町2〜3個）` :
+            key === "rampart"  ? `${RAMPART_COUNT}発の扇・${RAMPART_INTERVAL}秒ごと・射程${RAMPART_RANGE}` +
+                                 `／**正面±${Math.round(RAMPART_ARC * 180 / Math.PI)}度にしか撃てない**` +
+                                 `（1発の威力は普通の弾の${Math.round(RAMPART_DMG_MULT * 100)}%）` :
+                                 `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(0)]).toFixed(0)}〜` +
+                                 `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(5)]).toFixed(0)}秒ごとに1体` +
+                                 `（兵の重さで変わる）・同時${BARRACKS_CAP}体まで・射程${BARRACKS_RANGE}`
+          }</div>` +
+        `</div>` +
+      `</div>`;
+  }
+
   html += `</div><div class="cx-era">普通の建物（弾は文明ごとに変わる）</div><div class="cx-list">`;
   for (const b of CODEX_BUILDING_SIZES) {
     // 数値は文明でばらつくので、代表として最初と最後の文明を並べる
@@ -12306,6 +12990,22 @@ function codexBuildingHtml() {
         `</div>` +
       `</div>`;
   }
+  // v0.73: 町の中央のランドマークと、ミニ集落のシンボル。
+  // どちらも「攻撃はその文明の通常弾のまま、形だけ文明ごとに変わる目印」なので同じ節にまとめる。
+  html += `</div><div class="cx-era">目印になる建物（形は文明ごとに変わる）</div><div class="cx-list">`;
+  for (const lm of CODEX_LANDMARKS) {
+    html +=
+      `<div class="cx-row">` +
+        `<div class="cx-thumb"><img src="${BUILDING_IMAGE_SOURCES["e1_" + lm.key]}" alt=""></div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${lm.label}</div>` +
+          `<div class="cx-tags">全文明 ／ ${lm.where}</div>` +
+          `<div class="cx-atk">${lm.desc}</div>` +
+          `<div class="cx-stat">${lm.stat}</div>` +
+        `</div>` +
+      `</div>`;
+  }
+
   html += `</div><div class="cx-era">首都と城壁</div><div class="cx-list">` +
     `<div class="cx-row elite">` +
       `<div class="cx-thumb"><img src="${ENEMY_IMAGE_SOURCES.citadel}" alt=""></div>` +
@@ -12808,8 +13508,9 @@ function reinforceSettlementForTier(settlement, baseTier) {
   // 要塞は「最大段階のさらに1段上」の濃さにする。そうしないと段階4で
   // 普通の街と同じ色になり、格上であることが見た目で分からなくなる。
   const shadeTier = settlement._fixedTier != null ? tier + 1 : tier;
-  settlement.color = shadeTier > 0 ? shadeColor(settlement._baseColor, TIER_SHADE_STEP * shadeTier)
-                                   : settlement._baseColor;
+  settlement.color = shadeTier > 0
+    ? shadeBuildingColor(settlement._baseColor, TIER_SHADE_STEP * shadeTier)
+    : settlement._baseColor;
 
   const sizeParams = BUILDING_SIZE_PARAMS[settlement.size];
   let hp = randInt(sizeParams.hpMin, sizeParams.hpMax);
@@ -12824,6 +13525,10 @@ function reinforceSettlementForTier(settlement, baseTier) {
   // （実測: 段階1に上げたら走査半径が5→4に落ちて投石機の射程が 500→400 になった）。
   const _emp = settlement._emplacement ? EMPLACEMENT_DEFS[settlement._emplacement] : null;
   if (_emp) settlement.attackRadius = Math.max(settlement.attackRadius, _emp.range);
+  // v0.81: 前哨堡も同じ理由で射程を戻さない（段階が上がると近距離武器に化けてしまう）
+  if (settlement._townRole === "rampart") {
+    settlement.attackRadius = Math.max(settlement.attackRadius, RAMPART_RANGE);
+  }
   settlement.projectileInterval = bConfig.projectileInterval;
   settlement.projectileSpeed    = bConfig.projectileSpeed;
   settlement.projectileDamage   = bConfig.projectileDamage * boost.dmg;
@@ -12906,6 +13611,9 @@ function advanceTier() {
   // (4) 動く敵の部隊を増やす。時代は同じなので顔ぶれは変わらず、部隊数だけ増える
   movers = generateMovers(currentStage, settlements.find(s => s.isBoss), nextTier);
 
+  // v0.78: 建て直しで鐘楼・兵舎が復活しうるので、役割の一覧を作り直す
+  recomputeTownRoles();
+
   // (5) 前の段階の残り火・進行中の演出を持ち越さない
   resetFires();
   hazards.length = 0;
@@ -12979,6 +13687,7 @@ function loadStageWorld(stageIdx) {
   resetFires();                 // v0.10: 前ステージの炎を消す
 
   settlements = generateStageLayout(stageIdx);
+  recomputeTownRoles();   // v0.78: 役割を持つ建物（鐘楼・兵舎）の索引を作る
   rebuildBuildingGrid();
   buildingLayerDirty = true;
   minimapBaseDirty = true;
@@ -13045,6 +13754,7 @@ function returnToTitle() {
   resetFires();                 // v0.10: タイトルへ戻る際も炎を消す
 
   settlements = generateStageLayout(0);
+  recomputeTownRoles();   // v0.78: 役割を持つ建物（鐘楼・兵舎）の索引を作る
   rebuildBuildingGrid();
   buildingLayerDirty = true;
   minimapBaseDirty = true;
@@ -14199,6 +14909,8 @@ function render(now) {
   drawTongueFx();            // v0.37.1: 蛙竜の舌（竜の上に描く）
   drawProjectiles();
   drawParticles();
+  drawTownFrontMarkers();  // v0.80: 街の向きの仮表示（デバッグメニューで消せる）
+  drawWorldTextFx();    // v0.79/81: 陥落・逃走の表示（建物の上・竜の下）
   drawAppearEffects();  // 変更2: 竜出現リングエフェクト（ワールド座標系）
   drawDownEffects();    // 変更2(追加): 竜やられリングエフェクト（ワールド座標系）
 
@@ -15774,6 +16486,37 @@ const BUILDING_IMAGE_SOURCES = {
   e8_medium: "assets/building_e8_medium.png",
   e8_large:  "assets/building_e8_large.png",
 
+  // v0.71: 町の中央のランドマークも時代ごと（Shooter指示）。
+  // temple 側＝祭祀・行政の中心、windmill 側＝生産・設備の中心、という役割は据え置きで、
+  // 建築だけ文明ごとに置き換える（巨石環→神殿→大聖堂→市庁舎→時計塔→公会堂→司令部→モノリス）。
+  e1_temple:   "assets/building_e1_temple.png",
+  e1_windmill: "assets/building_e1_windmill.png",
+  e2_temple:   "assets/building_e2_temple.png",
+  e2_windmill: "assets/building_e2_windmill.png",
+  e3_temple:   "assets/building_e3_temple.png",
+  e3_windmill: "assets/building_e3_windmill.png",
+  e4_temple:   "assets/building_e4_temple.png",
+  e4_windmill: "assets/building_e4_windmill.png",
+  e5_temple:   "assets/building_e5_temple.png",
+  e5_windmill: "assets/building_e5_windmill.png",
+  e6_temple:   "assets/building_e6_temple.png",
+  e6_windmill: "assets/building_e6_windmill.png",
+  e7_temple:   "assets/building_e7_temple.png",
+  e7_windmill: "assets/building_e7_windmill.png",
+  e8_temple:   "assets/building_e8_temple.png",
+  e8_windmill: "assets/building_e8_windmill.png",
+
+  // v0.73: ミニ集落のシンボル（Shooter指示）。町のランドマークより小ぶりな
+  // 「村の目印」＝祠・井戸屋形・変電小屋など。これも文明ごとに建築が変わる。
+  e1_hamlet:   "assets/building_e1_hamlet.png",
+  e2_hamlet:   "assets/building_e2_hamlet.png",
+  e3_hamlet:   "assets/building_e3_hamlet.png",
+  e4_hamlet:   "assets/building_e4_hamlet.png",
+  e5_hamlet:   "assets/building_e5_hamlet.png",
+  e6_hamlet:   "assets/building_e6_hamlet.png",
+  e7_hamlet:   "assets/building_e7_hamlet.png",
+  e8_hamlet:   "assets/building_e8_hamlet.png",
+
   // v0.70: **時代兵器ごとの建築**。どの文明でも同じ絵（機能で1つ）。
   trebuchet:           "assets/building_emp_trebuchet.png",
   ember:               "assets/building_emp_ember.png",
@@ -15784,6 +16527,23 @@ const BUILDING_IMAGE_SOURCES = {
   flak:                "assets/building_emp_flak.png",
   prism:               "assets/building_emp_prism.png",
   concussionBattery:   "assets/building_emp_concussion.png",
+
+  // v0.78: **役割を持つ建物**（Shooter指示「どれから倒すかを選べるように」）。
+  // 時代ごとではなく**機能ごとに1枚**（時代兵器と同じ扱い）。
+  role_belfry:   "assets/building_role_belfry.png",
+  role_granary:  "assets/building_role_granary.png",
+  role_barracks: "assets/building_role_barracks.png",
+  // v0.84: 前哨堡は**指向性のある絵**（大砲・バリスタ等）に差し替え、時代ごとに用意した。
+  // どれも**砲口が画像の上（-y）を向いている**。描画は _faceAngle で回すので、
+  // 撃つ方向 A に向けるときは _faceAngle = A + π/2 になる（下の RAMPART_SPRITE_OFFSET）。
+  e1_rampart: "assets/building_e1_rampart.png",
+  e2_rampart: "assets/building_e2_rampart.png",
+  e3_rampart: "assets/building_e3_rampart.png",
+  e4_rampart: "assets/building_e4_rampart.png",
+  e5_rampart: "assets/building_e5_rampart.png",
+  e6_rampart: "assets/building_e6_rampart.png",
+  e7_rampart: "assets/building_e7_rampart.png",
+  e8_rampart: "assets/building_e8_rampart.png",
 };
 const buildingImages = {};
 
@@ -16579,18 +17339,55 @@ function createDragonSprites() {
 // -----------------------------------------------------------------
 // ユーティリティ
 // -----------------------------------------------------------------
-function shadeColor(hex, amount) {
-  // hex は "#rrggbb" 形式
-  let num;
-  try {
-    num = parseInt(hex.replace("#", ""), 16);
-  } catch (_) {
-    return hex;
+/**
+ * 色文字列を [r,g,b] にする。"#rrggbb" と "rgb(r,g,b)" の両方を受ける。
+ * v0.72: **これが読めていなかったのが「建物が真っ黒になる」原因**。
+ * 建物の色は生成時点で既に shadeColor を通っていて "rgb(...)" 形式になっているのに、
+ * 動員段階の色締め（下の shadeBuildingColor）がもう一度 shadeColor に渡していた。
+ * 旧実装は parseInt("rgb(90,48,24)", 16) が NaN になり、(NaN>>16)+amount → 0 に潰れて
+ * **rgb(0,0,0)＝真っ黒**を返していた（try/catch では捕まらない。例外ではなく NaN なので）。
+ * 実測: 格上の街と要塞都市の建物 1300〜2100棟／大陸（全建物の16〜27%）が真っ黒だった。
+ */
+function parseColorRGB(color) {
+  if (typeof color !== "string") return null;
+  const m = color.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+  if (m) return [+m[1], +m[2], +m[3]];
+  const hex = color.replace("#", "");
+  if (/^[0-9a-f]{6}$/i.test(hex)) {
+    const n = parseInt(hex, 16);
+    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
   }
-  const r = Math.min(255, Math.max(0, (num >> 16) + amount));
-  const g = Math.min(255, Math.max(0, ((num >> 8) & 0xff) + amount));
-  const b = Math.min(255, Math.max(0, (num & 0xff) + amount));
+  return null;
+}
+
+function shadeColor(color, amount) {
+  const rgb = parseColorRGB(color);
+  if (!rgb) return color;   // 読めない形式は**そのまま返す**（黒に潰さない）
+  const r = Math.min(255, Math.max(0, rgb[0] + amount));
+  const g = Math.min(255, Math.max(0, rgb[1] + amount));
+  const b = Math.min(255, Math.max(0, rgb[2] + amount));
   return `rgb(${r},${g},${b})`;
+}
+
+// v0.72: 建物の色を締めるときだけ下限を設ける。
+// 建物のスプライトは無彩色を multiply でティントするので、色が暗いほど絵が潰れる。
+// 加算で暗くすると元が暗い色（大型建物の #5a3018 など）は 0 付近まで落ちて
+// 屋根の形すら読めなくなるため、チャンネルごとに下限を入れる。
+// 地面や街道の shadeColor には掛けない（あちらは暗いのが正しい）。
+// 下限は**絶対値ではなく元の色に対する比**にする。絶対値にすると、
+// 元から暗い文明（最終文明の #2a2a2a など）では下限のほうが明るくなってしまい
+// 「格上の街のほうが明るい」と逆転する。比なら、どの文明でも
+// 「普通の建物の約55%の明るさ」に揃う＝暗いが形は読める。
+const BUILDING_SHADE_MIN_RATIO = 0.55;
+const BUILDING_SHADE_MIN_ABS   = 12;    // それでも0には落とさない
+function shadeBuildingColor(color, amount) {
+  const rgb = parseColorRGB(color);
+  if (!rgb) return color;
+  const out = rgb.map((v) => {
+    const floor = Math.max(BUILDING_SHADE_MIN_ABS, Math.round(v * BUILDING_SHADE_MIN_RATIO));
+    return Math.min(255, Math.max(floor, v + amount));
+  });
+  return `rgb(${out[0]},${out[1]},${out[2]})`;
 }
 
 // -----------------------------------------------------------------
@@ -16602,6 +17399,10 @@ function tick() {
   const now  = performance.now();
   let dtMs   = now - lastTickTs;
   if (dtMs > BASE_CFG.maxDtMs) dtMs = BASE_CFG.maxDtMs;
+  // v0.78: 負のdtを弾く。実プレイでは performance.now が単調なので起きないが、
+  // 計測用に時計を差し替えると起きる。breathTime が負に転がると
+  // (breathTime % 1) が負になり、押してくる敵の標識が arc(半径が負) で落ちる。
+  if (dtMs < 0) dtMs = 0;
   lastTickTs = now;
   const dt   = dtMs / 1000;
 
@@ -16635,6 +17436,8 @@ function tick() {
     updateBossArt(wdt);           // v0.57: 首都の大技（文明ごとに技が変わる・予兆つき）
     updateLaserStrikes(wdt);
     updateBarrageQueue(wdt);      // v0.57: 時間差の斉射（矢の雨・絨毯爆撃・対空弾幕）
+    updateBarracks(wdt);          // v0.78: 兵舎（群れが近いあいだだけ兵を出す）
+    updateWorldTextFx(wdt);       // v0.79/81: 陥落・逃走の表示
     updateRaiderSpawns(wdt);      // v0.8: 建物枯渇時のレイダー湧き（詰み防止）
     updateBossReinforcements(wdt); // v0.58: 首都が兵を出し続ける（取り巻きを倒しても消化試合にしない）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
@@ -16698,6 +17501,7 @@ async function boot() {
   createDragonSprites();
   createBuildingLayer();
   settlements = generateStageLayout(0);
+  recomputeTownRoles();   // v0.78: 役割を持つ建物（鐘楼・兵舎）の索引を作る
   rebuildBuildingGrid();
   rebuildGroundLayer();   // v0.11.3: 地面レイヤーの初回生成
   rebuildBuildingLayer();
