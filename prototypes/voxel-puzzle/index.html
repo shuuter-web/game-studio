@@ -26,6 +26,8 @@
     letter-spacing: 0.02em;
     /* 手描きの紙に貼った付箋のように、ほんの少し傾ける */
     box-shadow: 2px 3px 0 rgba(43, 38, 32, 0.18);
+    /* 一覧を指でスクロールするとき、文字が選択されてしまわないように */
+    user-select: none; -webkit-user-select: none;
   }
   #hud { top: 10px; left: 10px; transform: rotate(-0.5deg); min-width: 150px; }
   #hud .title { font-size: 14px; font-weight: 700; margin-bottom: 2px; }
@@ -49,11 +51,26 @@
   #legend {
     bottom: 12px; left: 10px; max-width: min(360px, calc(100vw - 20px));
     transform: rotate(0.3deg); font-size: 11px; line-height: 1.45;
+    /* お菓子が増えるほど背が伸びて盤面を隠してしまうので、パネル全体にも上限を置く */
+    max-height: min(38vh, 380px);
+    display: flex; flex-direction: column;
   }
-  #legend .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
+  #legend .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; flex: none; }
   #legend .head b { font-size: 12px; }
   #legend .hint { color: #6c645a; margin-bottom: 4px; }
+  #legend .body { display: flex; flex-direction: column; min-height: 0; }
   #legend.closed .body { display: none; }
+  /* 溢れるのはお菓子の一覧だけ。見出しと操作の説明は常に見えている */
+  #l-items {
+    overflow-y: auto; min-height: 0;
+    max-height: min(24vh, 220px);
+    /* body が touch-action:none なので、指でのスクロールを明示的に許可する。
+       contain で、端まで来たときに後ろのページへスクロールが抜けないようにする */
+    touch-action: pan-y; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* 続きがあることを下端のぼかしで示す（スクロールバーの出ない端末向け） */
+  #l-items.scrollable { mask-image: linear-gradient(to bottom, #000 calc(100% - 14px), transparent); }
   #legend .item { display: flex; gap: 6px; align-items: baseline; }
   #legend .sw {
     display: inline-block; width: 11px; height: 11px; flex: none;
@@ -137,7 +154,7 @@
 // 描画は voxel-sketch のもの（線は常に沸いている：毎秒 BOIL_FPS 回すべて引き直す）。
 // ルール側が返す「波」を 1 つずつ時間差で見せることで、連鎖が目で追えるようにしている。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.2.0";
+const GAME_VERSION = "v0.2.1";
 const Core = window.PuzzleCore;
 const LEVELS = window.PuzzleLevels;
 const T = Core.T;
@@ -315,7 +332,11 @@ function resize() {
   canvas.width = Math.round(viewW * dpr);
   canvas.height = Math.round(viewH * dpr);
   focal = Math.min(viewW, viewH) * 1.35;
+  boardCenterY = viewH / 2;
+  bandTop = 0;
+  bandBottom = viewH;
   cameraDirty = true;
+  requestAnimationFrame(measureBand);
 }
 window.addEventListener("resize", resize);
 
@@ -326,6 +347,66 @@ function updateCamBasis() {
   camBasis.cp = Math.cos(camera.pitch);
   camBasis.sp = Math.sin(camera.pitch);
 }
+// -----------------------------------------------------------------
+// 盤面の置き場所
+// 上の HUD と下の説明パネルに挟まれた「空き」を測り、その中に収まるよう縮めて中央に置く。
+// 画面上の固定割合（0.46 など）で描いていると、説明が長いステージや背の低い画面で
+// パネルの下に潜ってしまう。測ってから決める。
+// -----------------------------------------------------------------
+const FIT_MARGIN = 0.94;        // 空きに対してどれだけ余白を残すか
+let boardCenterY = 0;           // 空きの中心（画面px）
+let boardFit = 1;               // 空きに収めるための倍率。ピンチの zoom とは別に掛ける
+let boardOffsetY = 0;           // 収めたあとに中央へ寄せるずれ
+let bandTop = 0, bandBottom = 0;
+
+/** HUD とパネルの位置を測る。DOM を読むので、レイアウトが変わったときだけ呼ぶ */
+function measureBand() {
+  const hud = document.getElementById("hud").getBoundingClientRect();
+  const legend = document.getElementById("legend").getBoundingClientRect();
+  bandTop = hud.bottom + 8;
+  bandBottom = Math.min(viewH, legend.top) - 8;
+  if (bandBottom <= bandTop) { bandTop = 0; bandBottom = viewH; }
+  boardCenterY = (bandTop + bandBottom) / 2;
+  cameraDirty = true;
+}
+
+/** 中心からのずれだけを出す投影（倍率・寄せを掛ける前。yaw は引数で差し替える） */
+const _rawOut = [0, 0];
+function projectRaw(wx, wy, wz, cy, sy) {
+  const wyc = wy - camTargetY;
+  const x1 = wx * cy - wz * sy;
+  const z1 = wx * sy + wz * cy;
+  const y2 = wyc * camBasis.cp - z1 * camBasis.sp;
+  const z2 = wyc * camBasis.sp + z1 * camBasis.cp;
+  const k = focal / Math.max(0.5, z2 + camera.dist);
+  _rawOut[0] = x1 * k;
+  _rawOut[1] = -y2 * k;
+  return _rawOut;
+}
+
+/**
+ * 空きに収まる倍率と寄せを決める。
+ * yaw は一周ぶんサンプルして最大の広がりで合わせる（回している最中に大きさが変わらないように）。
+ */
+function updateBoardFit() {
+  let minY = Infinity, maxY = -Infinity, maxX = 0;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const cy = Math.cos(a), sy = Math.sin(a);
+    for (let c = 0; c < 8; c++) {
+      const p = projectRaw((c & 1 ? 0.5 : -0.5) * GX, (c & 2 ? GY : 0), (c & 4 ? 0.5 : -0.5) * GZ, cy, sy);
+      if (p[1] < minY) minY = p[1];
+      if (p[1] > maxY) maxY = p[1];
+      maxX = Math.max(maxX, Math.abs(p[0]));
+    }
+  }
+  const extentH = Math.max(1, maxY - minY);
+  const extentW = Math.max(1, maxX * 2);
+  const bandH = Math.max(80, bandBottom - bandTop);
+  boardFit = Math.min(1, (bandH * FIT_MARGIN) / extentH, (viewW * FIT_MARGIN) / extentW);
+  boardOffsetY = -((minY + maxY) / 2) * boardFit;
+}
+
 const projOut = [0, 0, 0];
 function project(wx, wy, wz) {
   const wyc = wy - camTargetY;
@@ -334,10 +415,9 @@ function project(wx, wy, wz) {
   const y2 = wyc * camBasis.cp - z1 * camBasis.sp;
   const z2 = wyc * camBasis.sp + z1 * camBasis.cp;
   const depth = z2 + camera.dist;
-  const k = (focal * camera.zoom) / Math.max(0.5, depth);
+  const k = (focal * camera.zoom * boardFit) / Math.max(0.5, depth);
   projOut[0] = viewW / 2 + x1 * k;
-  // 縦長画面では下に説明パネルが乗るので、盤面はやや上に置く
-  projOut[1] = viewH * (viewH > viewW ? 0.46 : 0.5) - y2 * k;
+  projOut[1] = boardCenterY + boardOffsetY - y2 * k;
   projOut[2] = depth;
   return projOut;
 }
@@ -991,6 +1071,12 @@ function loadLevel(index) {
     row.append(sw, nm, rl);
     items.appendChild(row);
   }
+  items.scrollTop = 0;
+  // レイアウト確定後でないと高さが出ないので、次のフレームで判定する
+  requestAnimationFrame(() => {
+    items.classList.toggle("scrollable", items.scrollHeight > items.clientHeight + 1);
+    measureBand();
+  });
   document.getElementById("btn-prev").disabled = levelIndex === 0;
   document.getElementById("btn-next").disabled = levelIndex >= LEVELS.length - 1 || levelIndex + 1 > unlocked;
   updateHud();
@@ -1202,6 +1288,7 @@ document.getElementById("btn-legend").addEventListener("click", (e) => {
   const el = document.getElementById("legend");
   el.classList.toggle("closed");
   e.target.textContent = el.classList.contains("closed") ? "説明" : "閉じる";
+  requestAnimationFrame(measureBand);
 });
 
 // -----------------------------------------------------------------
@@ -1242,6 +1329,7 @@ function frame(now) {
   if (cameraDirty) {
     updateCamBasis();
     updateViewDir();
+    updateBoardFit();
     cameraDirty = false;
     sortDirty = true;
   }
@@ -1285,6 +1373,33 @@ function debugTap(x, y, z) {
   return playTap(idx, s[0], s[1]);
 }
 /** そのセルの、いま見えている面の中心（実タップの検証用。セル中心だと手前の隣に遮られる） */
+function debugLayout() {
+  const legend = document.getElementById("legend").getBoundingClientRect();
+  const items = document.getElementById("l-items");
+  return {
+    viewH, boardCenterY, boardFit, boardOffsetY, bandTop, bandBottom,
+    legendTop: legend.top, legendHeight: legend.height,
+    itemsScroll: items.scrollHeight, itemsClient: items.clientHeight,
+    scrollable: items.classList.contains("scrollable"),
+  };
+}
+
+/**
+ * お菓子が描かれている範囲（上端・下端、CSSピクセル）。パネルに隠れていないかの判定に使う。
+ * 閾値を 128 にしてあるのは、薄い床の枠やマス目（α 0.045〜0.28）を拾わないため。
+ */
+function debugInkBounds() {
+  const w = boardLayer.width, h = boardLayer.height;
+  const data = boardCtx.getImageData(0, 0, w, h).data;
+  let top = -1, bottom = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x += 2) {
+      if (data[(y * w + x) * 4 + 3] > 128) { if (top < 0) top = y; bottom = y; break; }
+    }
+  }
+  return top < 0 ? null : { top: top / dpr, bottom: bottom / dpr };
+}
+
 function debugScreenOf(x, y, z) {
   const idx = cellIndex(x, y, z);
   for (let i = pickFaces.length - 1; i >= 0; i--) {
@@ -1296,6 +1411,8 @@ function debugScreenOf(x, y, z) {
 function debugLoadLevel(n) { loadLevel(n); }
 function debugGetSeed() { return currentSeed; }
 window.debugState = debugState;
+window.debugLayout = debugLayout;
+window.debugInkBounds = debugInkBounds;
 window.debugTap = debugTap;
 window.debugScreenOf = debugScreenOf;
 window.debugLoadLevel = debugLoadLevel;
