@@ -31,27 +31,34 @@
     LINE_X: 14,  // 貫き石：その軸の一直線を全部壊す
     LINE_Y: 15,
     LINE_Z: 16,
-    WEED: 17,    // 除草石：壊すと苔・苔石・卵が全部壊れる
+    WEED: 17,    // ブラックコーヒー：飲むとクリーム・しぼり袋・シュークリームが全部消える
+    SPICY: 18,   // とうがらしチョコ：食べると辛くて水を飲む＝1ターン余分に過ぎる
+    CHOCO: 19,   // とけたチョコ：毎ターン、下が空いていれば下へ、ふさがっていれば横へ、たれを1つ出す
+    DRIP: 20,    // チョコだれ：チョコが出したもの。増えはしない
   };
 
+  // お菓子の魔女の家。壊す＝食べる、1タップ＝ひとくち
   const INFO = {
-    [T.PLAIN]:  { char: "#", name: "土",     rule: "ふつうのブロック。" },
-    [T.HARD]:   { char: "H", name: "石",     rule: "2回当てないと壊れない。" },
-    [T.ARMOR]:  { char: "X", name: "鉄",     rule: "タップでは壊せない。爆弾・貫き・範囲に巻き込む。" },
-    [T.MOSS]:   { char: "M", name: "苔",     rule: "毎ターン、隣に苔石を1つ増やす。" },
-    [T.LEAF]:   { char: "m", name: "苔石",   rule: "苔が増やしたもの。増えはしない。" },
-    [T.EGG]:    { char: "E", name: "卵",     rule: "3ターン経つと苔になる。" },
-    [T.SPLIT]:  { char: "S", name: "分裂石", rule: "タップで壊すと土2つに分裂。連鎖で壊せば分裂しない。" },
-    [T.BOMB]:   { char: "B", name: "爆弾",   rule: "壊れると周り3×3×3を巻き込む。" },
-    [T.ICE]:    { char: "I", name: "氷",     rule: "隣が壊れると割れる。氷づたいに伝わる。" },
-    [T.RED]:    { char: "r", name: "共鳴・赤", rule: "壊すと同じ色が全部壊れる。" },
-    [T.BLUE]:   { char: "b", name: "共鳴・青", rule: "壊すと同じ色が全部壊れる。" },
-    [T.YELLOW]: { char: "y", name: "共鳴・黄", rule: "壊すと同じ色が全部壊れる。" },
-    [T.AMP]:    { char: "+", name: "拡げ石", rule: "次のタップの範囲が1段広がる（3×3×3→5×5×5）。" },
-    [T.LINE_X]: { char: "=", name: "貫き石", rule: "矢印の向きに一直線、全部壊す。" },
-    [T.LINE_Y]: { char: "|", name: "貫き石", rule: "矢印の向きに一直線、全部壊す。" },
-    [T.LINE_Z]: { char: "/", name: "貫き石", rule: "矢印の向きに一直線、全部壊す。" },
-    [T.WEED]:   { char: "W", name: "除草石", rule: "壊すと苔・苔石・卵が全部壊れる。" },
+    [T.PLAIN]:  { char: "#", name: "クッキー",       rule: "ふつうのお菓子。ひとくちで食べられる。" },
+    [T.HARD]:   { char: "H", name: "飴",             rule: "硬い。2回かじらないと食べられない。" },
+    [T.ARMOR]:  { char: "X", name: "キャラメル",     rule: "歯にくっつくので直接はかじれない。パチパチ・ポッキー・大口に巻き込む。" },
+    [T.MOSS]:   { char: "M", name: "しぼり袋",       rule: "毎ターン、隣にクリームを1つしぼり出す。" },
+    [T.LEAF]:   { char: "m", name: "クリーム",       rule: "しぼり袋が出したもの。増えはしない。" },
+    [T.EGG]:    { char: "E", name: "シュークリーム", rule: "3ターン経つと破裂して、しぼり袋になる。" },
+    [T.SPLIT]:  { char: "S", name: "マシュマロ",     rule: "かじると2つにちぎれてクッキーが増える。連鎖で食べればちぎれない。" },
+    [T.BOMB]:   { char: "B", name: "パチパチキャンディ", rule: "口の中で弾けて、周り3×3×3をいっしょに食べる。" },
+    [T.ICE]:    { char: "I", name: "ウエハース",     rule: "隣が食べられると崩れる。ウエハースづたいに伝わる。" },
+    [T.RED]:    { char: "r", name: "いちごグミ",     rule: "1つ食べると、同じ味のグミが全部なくなる。" },
+    [T.BLUE]:   { char: "b", name: "ソーダグミ",     rule: "1つ食べると、同じ味のグミが全部なくなる。" },
+    [T.YELLOW]: { char: "y", name: "レモングミ",     rule: "1つ食べると、同じ味のグミが全部なくなる。" },
+    [T.AMP]:    { char: "+", name: "大口アメ",       rule: "なめると次のひとくちが大きくなる（3×3×3、2つ同時なら5×5×5）。" },
+    [T.LINE_X]: { char: "=", name: "ポッキー",       rule: "矢印の向きに一直線、全部食べる。" },
+    [T.LINE_Y]: { char: "|", name: "ポッキー",       rule: "矢印の向きに一直線、全部食べる。" },
+    [T.LINE_Z]: { char: "/", name: "ポッキー",       rule: "矢印の向きに一直線、全部食べる。" },
+    [T.WEED]:   { char: "W", name: "ブラックコーヒー", rule: "飲むと、クリーム・しぼり袋・シュークリームが全部消える。" },
+    [T.SPICY]:  { char: "P", name: "とうがらしチョコ", rule: "辛い！ 食べると水を飲むあいだに1ターン余分に過ぎる。" },
+    [T.CHOCO]:  { char: "C", name: "とけたチョコ",   rule: "毎ターン、下が空いていれば下へ、ふさがっていれば横へ、チョコだれを1つ出す。" },
+    [T.DRIP]:   { char: "c", name: "チョコだれ",     rule: "とけたチョコが出したもの。増えはしない。" },
   };
   const CHAR_TO_TYPE = { ".": T.EMPTY };
   for (const key of Object.keys(INFO)) CHAR_TO_TYPE[INFO[key].char] = Number(key);
@@ -60,7 +67,7 @@
   const MAX_BONUS = 2;        // 拡げ石の重ねがけ上限（5×5×5）
   const NEIGHBORS6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 
-  function isPlant(type) { return type === T.MOSS || type === T.LEAF || type === T.EGG; }
+  function isPlant(type) { return type === T.MOSS || type === T.LEAF || type === T.EGG; }   // コーヒーで消える「クリーム系」
   function isColor(type) { return type === T.RED || type === T.BLUE || type === T.YELLOW; }
 
   // -----------------------------------------------------------------
@@ -88,6 +95,7 @@
       level, gx, gy, gz, cells, aux, rng,
       blocks, turn: 0, limit: level.limit,
       bonus: 0,           // 次のタップの範囲の広がり（0=1個、1=3×3×3、2=5×5×5）
+      skips: 0,           // とうがらしで失うターン（このターンの終わりに消費）
       status: "play",
       totalBroken: 0,
     };
@@ -111,14 +119,16 @@
   function cellAt(state, x, y, z) { return inGrid(state, x, y, z) ? state.cells[index(state, x, y, z)] : 0; }
 
   /**
-   * 露出している（6近傍のどこかが空いている）セルだけがタップできる。
-   * y=0 の下は床（紙）なので空きと見なさない。床がないと、1段の盤面は全部が
-   * 裏からタップできてしまい「囲って隠す」設計が成り立たない。
+   * 上か横が空いているセルだけがかじれる（下からはかじれない）。
+   * 家は床に置いてあって外から食べる、という物理の話でもあるが、実際には
+   * カメラが水平より下を向けないので下の面はそもそも画面に出ない。ルール側を画面に合わせた。
+   * 副作用として「下だけ空いている」ブロックは、たれる・しぼり出す先はあるのにかじれない。
+   * 増えるお菓子を見せるステージはこれで作る。
    */
   function isExposed(state, idx) {
     const [x, y, z] = coords(state, idx);
     for (const [dx, dy, dz] of NEIGHBORS6) {
-      if (y + dy < 0) continue;                                   // 床
+      if (dy < 0) continue;                                       // 下からはかじれない
       if (!cellAt(state, x + dx, y + dy, z + dz)) return true;
     }
     return false;
@@ -132,6 +142,58 @@
     const list = [];
     for (let idx = 0; idx < state.cells.length; idx++) if (canTap(state, idx)) list.push(idx);
     return list;
+  }
+
+  function emptyNeighbors(state, x, y, z, dirs) {
+    const list = [];
+    for (const [dx, dy, dz] of dirs) {
+      if (inGrid(state, x + dx, y + dy, z + dz) && !state.cells[index(state, x + dx, y + dy, z + dz)]) {
+        list.push(index(state, x + dx, y + dy, z + dz));
+      }
+    }
+    return list;
+  }
+  const SIDEWAYS4 = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+
+  /** 世界が1ターン進む：しぼり袋がクリームを出し、チョコがたれ、シュークリームのカウントが減る */
+  function advanceWorld(state, turnEnd) {
+    // しぼり袋（この時点でしぼり袋だったものだけ。破裂したばかりのものは次のターンから）
+    const mosses = [], chocos = [];
+    for (let i = 0; i < state.cells.length; i++) {
+      if (state.cells[i] === T.MOSS) mosses.push(i);
+      else if (state.cells[i] === T.CHOCO) chocos.push(i);
+    }
+    for (const at of mosses) {
+      const [x, y, z] = coords(state, at);
+      const empties = emptyNeighbors(state, x, y, z, NEIGHBORS6);
+      if (empties.length === 0) continue;
+      const pick = empties[Math.floor(state.rng() * empties.length)];
+      state.cells[pick] = T.LEAF;
+      state.blocks++;
+      turnEnd.grown.push({ idx: pick, type: T.LEAF, from: at });
+    }
+    // とけたチョコ：下が空いていれば必ず下へ（読める）。床か下がふさがっていれば横のどこか
+    for (const at of chocos) {
+      const [x, y, z] = coords(state, at);
+      let pick = -1;
+      if (y > 0 && !state.cells[index(state, x, y - 1, z)]) pick = index(state, x, y - 1, z);
+      else {
+        const empties = emptyNeighbors(state, x, y, z, SIDEWAYS4);
+        if (empties.length) pick = empties[Math.floor(state.rng() * empties.length)];
+      }
+      if (pick < 0) continue;
+      state.cells[pick] = T.DRIP;
+      state.blocks++;
+      turnEnd.grown.push({ idx: pick, type: T.DRIP, from: at });
+    }
+    for (let i = 0; i < state.cells.length; i++) {
+      if (state.cells[i] !== T.EGG) continue;
+      state.aux[i]--;
+      if (state.aux[i] === 0) {
+        state.cells[i] = T.MOSS;
+        turnEnd.hatched.push(i);
+      }
+    }
   }
 
   // -----------------------------------------------------------------
@@ -200,6 +262,8 @@
           for (let i = 0; i < state.cells.length; i++) if (isPlant(state.cells[i])) next.add(i);
         } else if (type === T.AMP) {
           state.bonus = Math.min(MAX_BONUS, state.bonus + 1);
+        } else if (type === T.SPICY) {
+          state.skips++;
         } else if (type === T.SPLIT && cause === "tap") {
           // 分裂：空いている隣に土を2つ。どこに出るかは乱数（シードで再現する）
           const empties = [];
@@ -232,37 +296,20 @@
       cause = "chain";
     }
 
-    // ターン終了
+    // ターン終了。とうがらしを食べた分だけ、世界が余分に進む（食べる側は動けない）
     state.turn++;
-    const turnEnd = { hatched: [], grown: [] };
+    const turnEnd = { hatched: [], grown: [], extraTurns: 0 };
     if (state.blocks === 0) {
       state.status = "clear";
     } else {
-      // 苔が増える（この時点で苔だったものだけ。孵ったばかりの苔は次のターンから）
-      const mosses = [];
-      for (let i = 0; i < state.cells.length; i++) if (state.cells[i] === T.MOSS) mosses.push(i);
-      for (const at of mosses) {
-        const [x, y, z] = coords(state, at);
-        const empties = [];
-        for (const [dx, dy, dz] of NEIGHBORS6) {
-          if (inGrid(state, x + dx, y + dy, z + dz) && !state.cells[index(state, x + dx, y + dy, z + dz)]) {
-            empties.push(index(state, x + dx, y + dy, z + dz));
-          }
-        }
-        if (empties.length === 0) continue;
-        const pick = empties[Math.floor(state.rng() * empties.length)];
-        state.cells[pick] = T.LEAF;
-        state.blocks++;
-        turnEnd.grown.push({ idx: pick, type: T.LEAF, from: at });
+      advanceWorld(state, turnEnd);
+      while (state.skips > 0 && state.blocks > 0) {
+        state.skips--;
+        state.turn++;
+        turnEnd.extraTurns++;
+        advanceWorld(state, turnEnd);
       }
-      for (let i = 0; i < state.cells.length; i++) {
-        if (state.cells[i] !== T.EGG) continue;
-        state.aux[i]--;
-        if (state.aux[i] === 0) {
-          state.cells[i] = T.MOSS;
-          turnEnd.hatched.push(i);
-        }
-      }
+      state.skips = 0;
       if (state.turn >= state.limit) state.status = "fail";
     }
     return { ok: true, waves, turnEnd, status: state.status };
@@ -275,9 +322,10 @@
       const type = CHAR_TO_TYPE[ch];
       if (type) found.add(type);
     }
-    // 卵は苔になるので、卵があれば苔の説明も出す
+    // シュークリームはしぼり袋になるので、あればしぼり袋とクリームの説明も出す
     if (found.has(T.EGG)) found.add(T.MOSS);
     if (found.has(T.MOSS)) found.add(T.LEAF);
+    if (found.has(T.CHOCO)) found.add(T.DRIP);
     return [...found].sort((a, b) => a - b);
   }
 

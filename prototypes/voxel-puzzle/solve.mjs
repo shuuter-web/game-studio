@@ -61,7 +61,7 @@ function solve(level, width) {
         if (seen.has(key)) continue;
         seen.add(key);
         const child = { state, rngCount: rng.cursor, path: [...node.path, idx] };
-        if (state.status === "clear") return { taps: depth, path: child.path };
+        if (state.status === "clear") return { taps: state.turn, path: child.path };   // turn にはとうがらしで失った分も入る
         candidates.push(child);
       }
     }
