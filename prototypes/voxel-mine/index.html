@@ -1,0 +1,1663 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>掘り島 — HORI-SHIMA</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+  body {
+    background: #e9e2d4;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+    color: #2b2620;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { display: block; width: 100%; height: 100%; }
+
+  .panel {
+    position: fixed;
+    background: rgba(247, 242, 232, 0.9);
+    border: 1.5px solid rgba(43, 38, 32, 0.55);
+    border-radius: 3px;
+    padding: 7px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    /* 手描きの紙に貼った付箋のように、ほんの少し傾ける */
+    box-shadow: 2px 3px 0 rgba(43, 38, 32, 0.18);
+  }
+  #hud { top: 10px; left: 10px; transform: rotate(-0.5deg); max-width: 60vw; }
+  #hud b { font-size: 15px; }
+  .sub { color: #6c645a; font-size: 10.5px; }
+  #h-combo { color: #b4552e; font-weight: bold; min-height: 1.5em; }
+
+  #inv { top: 10px; right: 10px; transform: rotate(0.4deg); min-width: 84px; }
+  #inv .row { display: flex; align-items: center; gap: 6px; line-height: 1.45; }
+  #inv .sw { width: 10px; height: 10px; border: 1.2px solid rgba(43,38,32,0.7); border-radius: 2px; flex: none; }
+  #inv .nm { color: #6c645a; font-size: 10.5px; width: 2.2em; }
+  #inv .ct { font-weight: bold; text-align: right; flex: 1; transition: transform 0.08s; }
+  #inv .ct.bump { transform: scale(1.35); color: #b4552e; }
+
+  #tools {
+    bottom: 12px; left: 50%; transform: translateX(-50%) rotate(0.3deg);
+    display: flex; gap: 6px; align-items: center; padding: 6px;
+  }
+  button {
+    font: inherit; font-size: 12px;
+    background: transparent; color: #2b2620;
+    border: 1.5px solid rgba(43, 38, 32, 0.5);
+    border-radius: 3px;
+    padding: 7px 11px; cursor: pointer; white-space: nowrap;
+    transition: background 0.1s, transform 0.06s;
+  }
+  button:active { transform: translateY(1px); }
+  button.on { background: #2b2620; color: #f5efe3; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.attn { border-color: #b4552e; color: #b4552e; box-shadow: 0 0 0 2px rgba(180,85,46,0.18); }
+
+  #hint {
+    position: fixed; left: 50%; bottom: 66px; transform: translateX(-50%);
+    font-size: 11.5px; color: #6c645a; white-space: nowrap;
+    transition: opacity 0.5s;
+  }
+
+  /* 工房（クラフト）シート */
+  #craft {
+    position: fixed; left: 50%; bottom: 0; transform: translateX(-50%);
+    width: min(440px, 100vw); max-height: 78vh; overflow-y: auto;
+    background: rgba(247, 242, 232, 0.97);
+    border: 1.5px solid rgba(43, 38, 32, 0.6); border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    padding: 10px 12px 14px;
+    font-size: 12px; line-height: 1.5;
+    box-shadow: 0 -3px 0 rgba(43, 38, 32, 0.15);
+    transition: transform 0.18s ease-out;
+  }
+  #craft.hidden { transform: translateX(-50%) translateY(110%); }
+  #craft h2 { font-size: 14px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  #craft h2 button { padding: 3px 9px; font-size: 11px; }
+  .up { border-top: 1px dashed rgba(43,38,32,0.35); padding: 8px 0; display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
+  .up .t { font-weight: bold; }
+  .up .d { color: #6c645a; font-size: 10.5px; grid-column: 1; }
+  .up .c { grid-column: 1; font-size: 11px; display: flex; flex-wrap: wrap; gap: 3px 10px; }
+  .up .c .ng { color: #b4552e; }
+  .up .c .ok { color: #4d7c46; }
+  .up button { grid-column: 2; grid-row: 1 / span 3; padding: 9px 12px; }
+  .up.maxed { opacity: 0.55; }
+  #craft .stats { border-top: 1px dashed rgba(43,38,32,0.35); padding-top: 8px; margin-top: 4px; color: #6c645a; font-size: 10.5px; display: flex; justify-content: space-between; align-items: center; }
+  #craft .stats button { padding: 3px 8px; font-size: 10.5px; }
+</style>
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<div class="panel" id="hud">
+  <div><b id="h-island">島 No.1</b> <span class="sub" id="h-left"></span></div>
+  <div class="sub" id="h-pick"></div>
+  <div id="h-combo"></div>
+</div>
+
+<div class="panel" id="inv"></div>
+
+<div class="panel" id="tools">
+  <button id="btn-craft">工房</button>
+  <button id="btn-next">次の島へ</button>
+  <button id="btn-sound">音</button>
+</div>
+
+<div id="hint">タップで掘る ／ ドラッグで回す ／ ピンチ・ホイールで寄る</div>
+
+<div id="craft" class="hidden">
+  <h2><span>工房 <span class="sub" id="c-ver"></span></span><button id="btn-craft-close">とじる</button></h2>
+  <div id="c-list"></div>
+  <div class="stats"><span id="c-stats"></span><button id="btn-reset">はじめから</button></div>
+</div>
+
+<script>
+"use strict";
+
+// -----------------------------------------------------------------
+// 掘り島 — HORI-SHIMA
+//
+// SKETCH VOXEL（prototypes/voxel-sketch）の手描きボクセル描画を土台にした、採掘＆クラフト。
+//
+//   ・島は番号ごとにシードから生成され、番号が進むほど大きく・深く・素材が濃くなる
+//     （PS-049 の実測「島が固定だと消費の加速に供給が追いつかずランが崩れる」への答え）
+//   ・採掘能力は4系統：つるはしの段階（硬さのゲート）／打撃力／範囲／鉱脈連鎖
+//   ・素材の行き先は工房だけ（素材は湧かない。クラフトが唯一の消費先）
+//   ・「気持ちよさ」は、ひび→割れの手応え、連鎖の時間差、コンボ、音程の上昇、揺れ、破片で作る
+//
+// 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
+// -----------------------------------------------------------------
+const GAME_VERSION = "v0.1.0";
+const SAVE_KEY_PREFIX = "voxel-mine:save:";
+
+// -----------------------------------------------------------------
+// 乱数（スタジオ共通ルール）
+//   random()   … 世界の形に影響する乱数（?seed= で再現する対象）
+//   fxRandom() … 見た目・音だけの乱数
+// -----------------------------------------------------------------
+function makeRandomGenerator(seedValue) {   // mulberry32
+  let state = seedValue >>> 0;
+  return function nextRandom() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hashSeed(text) {
+  let hash = 0x811C9DC5;
+  const source = String(text);
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+let nextLogicRandom = makeRandomGenerator(1);
+let nextFxRandom = makeRandomGenerator(2);
+function reseedLogic(seed) {
+  nextLogicRandom = makeRandomGenerator(seed >>> 0);
+}
+function random()   { return nextLogicRandom(); }
+function fxRandom() { return nextFxRandom(); }
+
+/** 線のゆらぎ用ハッシュ。乱数列を消費しないので、描画の有無で世界の形が変わらない。 */
+function hash3(a, b, c) {
+  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1) ^ Math.imul(c | 0, 0x1b873593);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+const urlParams = new URLSearchParams(location.search);
+const DEFAULT_WORLD_SEED = 20260917;
+// 世界の種。?seed= で固定。島 n の種は worldSeed と n から決まるので、同じ世界なら同じ島が並ぶ
+const worldSeed = urlParams.get("seed") !== null
+  ? (/^\d+$/.test(urlParams.get("seed")) ? Number(urlParams.get("seed")) >>> 0 : hashSeed(urlParams.get("seed")))
+  : DEFAULT_WORLD_SEED;
+function islandSeed(level) { return hashSeed(worldSeed + ":" + level); }
+
+// -----------------------------------------------------------------
+// 設定・バランス（本制作では data/ に切り出す）
+// -----------------------------------------------------------------
+const BOIL_FPS = 10;          // 線を引き直す毎秒コマ数（沸き）
+const PAPER = "#efe8da";
+const INK   = "43,38,32";
+const FACE_SHADE = { top: 1.0, bottom: 0.5, side: 0.78 };
+
+// 素材。tier=掘るのに必要なつるはしの段階、hp=割れるまでの累積ダメージ、drop=手に入る素材ID
+// minLevel=この島番号から出る。pitch=割れたときの音の高さ
+const MATERIALS = [
+  null,
+  { id: "grass",    name: "草",   color: [126, 172, 86],  hatch: false, tier: 0, hp: 1, drop: "dirt",     ore: false, minLevel: 1, pitch: 196 },
+  { id: "dirt",     name: "土",   color: [176, 133, 83],  hatch: true,  tier: 0, hp: 1, drop: "dirt",     ore: false, minLevel: 1, pitch: 220 },
+  { id: "stone",    name: "石",   color: [154, 158, 162], hatch: true,  tier: 0, hp: 2, drop: "stone",    ore: false, minLevel: 1, pitch: 330 },
+  { id: "copper",   name: "銅",   color: [200, 122, 70],  hatch: true,  tier: 1, hp: 3, drop: "copper",   ore: true,  minLevel: 1, pitch: 392 },
+  { id: "crystal",  name: "結晶", color: [111, 198, 216], hatch: false, tier: 1, hp: 3, drop: "crystal",  ore: true,  minLevel: 2, pitch: 659 },
+  { id: "iron",     name: "鉄",   color: [122, 132, 156], hatch: true,  tier: 2, hp: 4, drop: "iron",     ore: true,  minLevel: 3, pitch: 440 },
+  { id: "gold",     name: "金",   color: [232, 192, 72],  hatch: false, tier: 3, hp: 5, drop: "gold",     ore: true,  minLevel: 4, pitch: 523 },
+  { id: "obsidian", name: "黒曜", color: [66, 60, 74],    hatch: true,  tier: 3, hp: 7, drop: "obsidian", ore: false, minLevel: 5, pitch: 262 },
+  { id: "starcore", name: "星核", color: [236, 116, 190], hatch: false, tier: 4, hp: 9, drop: "starcore", ore: true,  minLevel: 6, pitch: 880 },
+];
+const M_GRASS = 1, M_DIRT = 2, M_STONE = 3, M_COPPER = 4, M_CRYSTAL = 5, M_IRON = 6, M_GOLD = 7, M_OBSIDIAN = 8, M_STARCORE = 9;
+const MATERIAL_BY_ID = {};
+MATERIALS.forEach((m, i) => { if (m) MATERIAL_BY_ID[m.id] = i; });
+// 在庫の並び（草は土として手に入る）
+const INVENTORY_ORDER = ["dirt", "stone", "copper", "crystal", "iron", "gold", "obsidian", "starcore"];
+
+// つるはし。tier がそのまま「掘れる素材の tier の上限」
+const PICKAXES = [
+  { name: "素手",           power: 1, cost: null },
+  { name: "石のつるはし",   power: 2, cost: { stone: 25, dirt: 15 } },
+  { name: "銅のつるはし",   power: 3, cost: { copper: 10, stone: 40 } },
+  { name: "鉄のつるはし",   power: 4, cost: { iron: 12, copper: 15, crystal: 6 } },
+  { name: "黒曜のつるはし", power: 6, cost: { obsidian: 8, iron: 20, gold: 6 } },
+  { name: "星のつるはし",   power: 8, cost: { starcore: 3, obsidian: 12, gold: 12 } },
+];
+// 範囲（一撃で削る球の半径）。0=1個、1=3幅、2=5幅、3=7幅
+const RANGE_LEVELS = [
+  { radius: 0, cost: null },
+  { radius: 1, cost: { crystal: 8, stone: 60 } },
+  { radius: 2, cost: { iron: 25, crystal: 20, gold: 5 } },
+  { radius: 3, cost: { obsidian: 20, starcore: 2 } },
+];
+// 鉱脈連鎖（鉱石を割ると、つながった同じ鉱石が続けて割れる最大数）
+const CHAIN_LEVELS = [
+  { count: 0,  cost: null },
+  { count: 3,  cost: { copper: 8, stone: 30 } },
+  { count: 6,  cost: { iron: 10, crystal: 10 } },
+  { count: 12, cost: { gold: 8, iron: 30 } },
+  { count: 24, cost: { obsidian: 12, gold: 15 } },
+  { count: 48, cost: { starcore: 4, obsidian: 30 } },
+];
+// 打撃力（+1ずつ、上限なし）。段階ごとに要求素材が上がり、同じ段階の中では1.6倍ずつ
+const POWER_COST_BRACKETS = [
+  { material: "stone",    base: 30 },
+  { material: "copper",   base: 12 },
+  { material: "crystal",  base: 10 },
+  { material: "iron",     base: 12 },
+  { material: "gold",     base: 8 },
+  { material: "obsidian", base: 8 },
+  { material: "starcore", base: 3 },
+];
+const POWER_LEVELS_PER_BRACKET = 2;
+const POWER_COST_GROWTH = 1.6;
+const POWER_COST_GROWTH_ENDLESS = 1.3;   // 最後の段階に入ってからの伸び
+function powerUpgradeCost(nextLevel) {
+  const index = nextLevel - 1;
+  const bracketIndex = Math.min(POWER_COST_BRACKETS.length - 1, Math.floor(index / POWER_LEVELS_PER_BRACKET));
+  const bracket = POWER_COST_BRACKETS[bracketIndex];
+  const firstOfLast = (POWER_COST_BRACKETS.length - 1) * POWER_LEVELS_PER_BRACKET;
+  const step = index >= firstOfLast ? index - firstOfLast : index % POWER_LEVELS_PER_BRACKET;
+  const growth = index >= firstOfLast ? POWER_COST_GROWTH_ENDLESS : POWER_COST_GROWTH;
+  return { [bracket.material]: Math.round(bracket.base * Math.pow(growth, step)) };
+}
+
+// 島の育ち方（島番号 L に対して）
+const ISLAND = {
+  baseRadius: 6.6, radiusPerLevel: 0.7, radiusMaxBonus: 7.5,
+  baseDepth: 7.6,  depthPerLevel: 1.1,  depthMaxBonus: 11,
+  veinThreshold: 0.80, veinThresholdPerLevel: 0.012, veinThresholdMin: 0.62,  // 進むほど鉱脈が太い
+  topNoise: 2.6, topInner: 1.8,
+  dirtLayers: 1,                       // 草の下、土が何段あるか
+  // 芯らしさ(0=表面,1=ど真ん中)で鉱脈の中身が変わる。境界は oreBlur ぶんハッシュで揺らす（帯が輪切りに見えないように）
+  bands: { gold: 0.70, iron: 0.48, crystal: 0.26 },
+  oreBlur: 0.25,
+  obsidianCore: 0.78,                  // ここより芯側は黒曜の殻
+  starCore: 0.88, starVein: 0.45,      // 殻の内側で、脈の濃いところだけ星核
+  coreInnerPower: 0.6, coreVerticalPower: 0.5,
+};
+// コンボ：前の破壊からこの秒数以内の破壊で続く。10ごとに取れる量が1倍ずつ増える（上限3倍）
+const COMBO = { window: 1.1, perMultiplier: 10, maxMultiplier: 3 };
+const CHAIN_STEP_SECONDS = 0.055;     // 連鎖の時間差。ダダダッと続く速さ
+const CHIP_LIMIT = 220;
+const FLOAT_LIMIT = 40;
+const SHAKE_PER_BLOCK = 0.35, SHAKE_MAX = 7;
+
+// -----------------------------------------------------------------
+// 立方体の6面（軸と符号から機械的に作る）
+// -----------------------------------------------------------------
+function edgeTangent(axis, a, b) {
+  for (let ax = 0; ax < 3; ax++) {
+    if (ax === axis) continue;
+    if (a[ax] === b[ax]) {
+      const t = [0, 0, 0];
+      t[ax] = a[ax] === 1 ? 1 : -1;
+      return t;
+    }
+  }
+  return [0, 0, 0];
+}
+function buildCubeFaces() {
+  const faces = [];
+  for (let axis = 0; axis < 3; axis++) {
+    for (const sign of [1, -1]) {
+      const normal = [0, 0, 0];
+      normal[axis] = sign;
+      const u = (axis + 1) % 3, v = (axis + 2) % 3;
+      const quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([a, b]) => {
+        const p = [0, 0, 0];
+        p[axis] = sign === 1 ? 1 : 0;
+        p[u] = a;
+        p[v] = b;
+        return p;
+      });
+      const tangents = quad.map((c, i) => edgeTangent(axis, c, quad[(i + 1) % 4]));
+      faces.push({ axis, sign, normal, quad, tangents });
+    }
+  }
+  return faces;
+}
+const CUBE_FACES = buildCubeFaces();
+const NEIGHBORS6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
+// -----------------------------------------------------------------
+// 世界（グリッドの大きさは島ごとに変わる）
+// -----------------------------------------------------------------
+let GX = 1, GY = 1, GZ = 1;
+let GROUND_Y = 0;            // グリッドのこの段が世界の y=0（島の頂上付近）
+let cells = new Uint8Array(1);
+let damage = new Uint8Array(1);   // 累積ダメージ。割れると0に戻る
+let solidCount = 0;
+let islandLevel = 1;
+let islandRadius = ISLAND.baseRadius;
+
+function cellIndex(x, y, z) { return (y * GZ + z) * GX + x; }
+function inGrid(x, y, z) { return x >= 0 && y >= 0 && z >= 0 && x < GX && y < GY && z < GZ; }
+function cellAt(x, y, z) { return inGrid(x, y, z) ? cells[cellIndex(x, y, z)] : 0; }
+function indexToXYZ(idx, out) {
+  out[0] = idx % GX;
+  out[2] = ((idx / GX) | 0) % GZ;
+  out[1] = (idx / (GX * GZ)) | 0;
+  return out;
+}
+
+/** 種から決まる2次元のバリューノイズ */
+function makeNoise2D(size) {
+  const lattice = new Float32Array(size * size);
+  for (let i = 0; i < lattice.length; i++) lattice[i] = random();
+  const wrap = (v) => ((v % size) + size) % size;
+  return function noise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const sx = xf * xf * (3 - 2 * xf), sy = yf * yf * (3 - 2 * yf);
+    const at = (ax, ay) => lattice[wrap(ay) * size + wrap(ax)];
+    const a = at(xi, yi), b = at(xi + 1, yi), c = at(xi, yi + 1), d = at(xi + 1, yi + 1);
+    return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
+  };
+}
+
+/**
+ * 島の「芯らしさ」(0=表面付近, 1=ど真ん中) と鉱脈ノイズから素材を決める。
+ * 深い＝下ではなく「芯」にしているのは、浮島は底面が丸見えで、下から叩けば深層に届いてしまうため。
+ * 芯に置けば、必ず外側を掘り進めないと手が届かない。
+ */
+function pickMaterial(level, coreness, vein, isTop, nearTop, blur) {
+  if (isTop) return M_GRASS;
+  if (nearTop) return M_DIRT;
+  const available = (m) => MATERIALS[m].minLevel <= level;
+  // 芯の殻：黒曜の帯。星核はその内側にだけ現れる
+  if (coreness > ISLAND.obsidianCore && available(M_OBSIDIAN)) {
+    if (coreness > ISLAND.starCore && available(M_STARCORE) && vein > ISLAND.starVein) return M_STARCORE;
+    return M_OBSIDIAN;
+  }
+  const threshold = Math.max(ISLAND.veinThresholdMin, ISLAND.veinThreshold - (level - 1) * ISLAND.veinThresholdPerLevel);
+  if (vein < threshold) return M_STONE;
+  // 鉱脈の中身は芯らしさで決まる。出ない島番号なら、ひとつ手前の鉱石に落とす
+  const band = coreness + (blur - 0.5) * ISLAND.oreBlur;
+  let ore;
+  if (band > ISLAND.bands.gold) ore = M_GOLD;
+  else if (band > ISLAND.bands.iron) ore = M_IRON;
+  else if (band > ISLAND.bands.crystal) ore = M_CRYSTAL;
+  else ore = M_COPPER;
+  const fallback = [M_GOLD, M_IRON, M_CRYSTAL, M_COPPER];
+  let i = fallback.indexOf(ore);
+  while (i < fallback.length && !available(fallback[i])) i++;
+  return i < fallback.length ? fallback[i] : M_STONE;
+}
+
+function generateIsland(level) {
+  islandLevel = level;
+  reseedLogic(islandSeed(level));
+  const bonus = Math.min(ISLAND.radiusMaxBonus, (level - 1) * ISLAND.radiusPerLevel);
+  islandRadius = ISLAND.baseRadius + bonus;
+  const depth = ISLAND.baseDepth + Math.min(ISLAND.depthMaxBonus, (level - 1) * ISLAND.depthPerLevel);
+  // 輪郭ノイズで半径は最大1.2倍まで膨らむ。1周り余白を持つ
+  GX = GZ = Math.ceil(islandRadius * 1.2) * 2 + 3;
+  const topMax = Math.ceil(0.6 + ISLAND.topNoise + ISLAND.topInner) + 1;
+  GY = topMax + Math.ceil(depth + 1) + 2;
+  GROUND_Y = Math.ceil(depth + 1) + 1;
+  cells = new Uint8Array(GX * GY * GZ);
+  damage = new Uint8Array(GX * GY * GZ);
+  solidCount = 0;
+
+  const noiseEdge = makeNoise2D(8);
+  const noiseTop  = makeNoise2D(8);
+  const noiseVeinA = makeNoise2D(8);
+  const noiseVeinB = makeNoise2D(8);
+  const cx = (GX - 1) / 2, cz = (GZ - 1) / 2;
+
+  for (let x = 0; x < GX; x++) {
+    for (let z = 0; z < GZ; z++) {
+      const dx = x - cx, dz = z - cz;
+      const dist = Math.hypot(dx, dz);
+      const radius = islandRadius * (0.78 + noiseEdge(x * 0.32, z * 0.32) * 0.42);
+      if (dist > radius) continue;
+
+      const inner = 1 - dist / radius;
+      const top    = Math.round(0.6 + noiseTop(x * 0.28, z * 0.28) * ISLAND.topNoise + inner * ISLAND.topInner);
+      // 下は中心ほど深く尖らせる＝浮島のシルエット
+      const bottom = -Math.round(inner * inner * depth + noiseTop(x * 0.5, z * 0.5) * 0.9);
+
+      for (let wy = bottom; wy <= top; wy++) {
+        const y = wy + GROUND_Y;
+        if (y < 0 || y >= GY) continue;
+        // 縦方向の芯らしさ：上面と底面のどちらからも遠いほど1
+        const span = Math.max(1, top - bottom);
+        const vertical = 1 - Math.abs((wy - bottom) / span * 2 - 1);
+        const coreness = Math.pow(inner, ISLAND.coreInnerPower) * Math.pow(vertical, ISLAND.coreVerticalPower);
+        // 鉱脈は2枚のノイズを別の向きで切って、細長い脈になるようにする
+        const vein = Math.max(noiseVeinA(x * 0.7, wy * 0.6 + z * 0.15), noiseVeinB(z * 0.7 + wy * 0.3, x * 0.4));
+        const blur = hash3(x, y, z * 131 + level);
+        cells[cellIndex(x, y, z)] = pickMaterial(level, coreness, vein, wy === top, wy >= top - ISLAND.dirtLayers, blur);
+        solidCount++;
+      }
+    }
+  }
+  rebuildSurface();
+}
+
+// 露出しているセル（6近傍のどれかが空）の一覧
+let surface = new Int32Array(0);
+let surfaceCount = 0;
+function rebuildSurface() {
+  const list = [];
+  for (let y = 0; y < GY; y++) {
+    for (let z = 0; z < GZ; z++) {
+      for (let x = 0; x < GX; x++) {
+        if (!cells[cellIndex(x, y, z)]) continue;
+        if (cellAt(x + 1, y, z) && cellAt(x - 1, y, z) &&
+            cellAt(x, y + 1, z) && cellAt(x, y - 1, z) &&
+            cellAt(x, y, z + 1) && cellAt(x, y, z - 1)) continue;
+        list.push(cellIndex(x, y, z));
+      }
+    }
+  }
+  surface = Int32Array.from(list);
+  surfaceCount = list.length;
+  sortDirty = true;
+}
+
+/** 今のつるはしで掘れる残りブロック数（HUD用） */
+function countMineable() {
+  let n = 0;
+  const tier = pickaxeTier();
+  for (let i = 0; i < cells.length; i++) {
+    const m = cells[i];
+    if (m && MATERIALS[m].tier <= tier) n++;
+  }
+  return n;
+}
+
+// -----------------------------------------------------------------
+// プレイヤー（保存対象）
+// -----------------------------------------------------------------
+const player = {
+  pickaxe: 0,           // PICKAXES の添字
+  power: 0,             // 打撃力の追加レベル
+  range: 0,             // RANGE_LEVELS の添字
+  chain: 0,             // CHAIN_LEVELS の添字
+  inventory: {},        // 素材ID → 個数
+  seen: {},             // 一度でも手に入れた素材ID（在庫欄の表示に使う）
+  stats: { mined: 0, taps: 0, maxCombo: 0, islands: 1, crafted: 0 },
+  soundOn: true,
+};
+function pickaxeTier() { return player.pickaxe; }
+function hitPower() { return PICKAXES[player.pickaxe].power + player.power; }
+function rangeRadius() { return RANGE_LEVELS[player.range].radius; }
+function chainCount() { return CHAIN_LEVELS[player.chain].count; }
+function have(id) { return player.inventory[id] || 0; }
+function canAfford(cost) {
+  if (!cost) return false;
+  return Object.keys(cost).every((id) => have(id) >= cost[id]);
+}
+function spend(cost) {
+  for (const id of Object.keys(cost)) player.inventory[id] = have(id) - cost[id];
+}
+
+// -----------------------------------------------------------------
+// カメラと投影
+// -----------------------------------------------------------------
+const camera = { yaw: 0.68, pitch: -0.46, dist: 25, zoom: 1 };
+let camTargetY = -1.6;
+let cameraDirty = true;
+let sortDirty = true;
+
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+let viewW = 0, viewH = 0, dpr = 1, focal = 600;
+
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  viewW = Math.max(1, window.innerWidth);
+  viewH = Math.max(1, window.innerHeight);
+  canvas.width = Math.round(viewW * dpr);
+  canvas.height = Math.round(viewH * dpr);
+  focal = Math.min(viewW, viewH) * 1.35;
+  cameraDirty = true;
+}
+window.addEventListener("resize", resize);
+
+/** 島の大きさに合わせて引く。島が育っても画面に収まるように */
+function fitCameraToIsland() {
+  // 輪郭ノイズで半径は最大1.2倍。横幅の 92% に収まる距離と、寄りすぎない距離の大きい方
+  const halfWidthWorld = islandRadius * 1.2;
+  const fitWidth = halfWidthWorld * focal / (viewW * 0.46);
+  camera.dist = Math.max(16 + islandRadius * 1.35, fitWidth);
+  camera.zoom = 1;
+  camTargetY = -1.6 - (islandRadius - ISLAND.baseRadius) * 0.35;
+  cameraDirty = true;
+}
+
+const camBasis = { cy: 1, sy: 0, cp: 1, sp: 0 };
+function updateCamBasis() {
+  camBasis.cy = Math.cos(camera.yaw);
+  camBasis.sy = Math.sin(camera.yaw);
+  camBasis.cp = Math.cos(camera.pitch);
+  camBasis.sp = Math.sin(camera.pitch);
+}
+const projOut = [0, 0, 0];
+function project(wx, wy, wz) {
+  const wyc = wy - camTargetY;
+  const x1 = wx * camBasis.cy - wz * camBasis.sy;
+  const z1 = wx * camBasis.sy + wz * camBasis.cy;
+  const y2 = wyc * camBasis.cp - z1 * camBasis.sp;
+  const z2 = wyc * camBasis.sp + z1 * camBasis.cp;
+  const depth = z2 + camera.dist;
+  const k = (focal * camera.zoom) / Math.max(0.5, depth);
+  projOut[0] = viewW / 2 + x1 * k;
+  projOut[1] = viewH / 2 - y2 * k;
+  projOut[2] = depth;
+  return projOut;
+}
+const viewDir = [0, 0, 1];
+function updateViewDir() {
+  viewDir[0] = camBasis.cp * camBasis.sy;
+  viewDir[1] = camBasis.sp;
+  viewDir[2] = camBasis.cp * camBasis.cy;
+}
+function faceVisible(normal) {
+  return normal[0] * viewDir[0] + normal[1] * viewDir[1] + normal[2] * viewDir[2] < 0;
+}
+function cellToWorld(x, y, z, out) {
+  out[0] = x - (GX - 1) / 2;
+  out[1] = y - GROUND_Y;
+  out[2] = z - (GZ - 1) / 2;
+  return out;
+}
+
+let drawOrder = new Int32Array(0);
+const _w = [0, 0, 0];
+const _xyz = [0, 0, 0];
+function sortSurface() {
+  const depths = new Float32Array(surfaceCount);
+  for (let i = 0; i < surfaceCount; i++) {
+    indexToXYZ(surface[i], _xyz);
+    cellToWorld(_xyz[0], _xyz[1], _xyz[2], _w);
+    depths[i] = project(_w[0] + 0.5, _w[1] + 0.5, _w[2] + 0.5)[2];
+  }
+  const order = Array.from({ length: surfaceCount }, (_, i) => i);
+  order.sort((a, b) => depths[b] - depths[a]);
+  drawOrder = Int32Array.from(order.map((i) => surface[i]));
+  sortDirty = false;
+}
+
+// -----------------------------------------------------------------
+// 手描きのストローク（沸きコマ番号を種に混ぜる）
+// -----------------------------------------------------------------
+let boilFrame = 0;
+function jitter(a, b, salt, amount) {
+  return (hash3(a, b, salt + boilFrame * 7919) - 0.5) * amount;
+}
+function penLine(c, x0, y0, x1, y1, key, amount) {
+  const j = (salt) => jitter(key, salt, 17, amount);
+  const dx = x1 - x0, dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const over = Math.min(2.2, len * 0.06) * (0.4 + hash3(key, 3, boilFrame) * 0.8);
+  const ux = dx / len, uy = dy / len;
+  const ax = x0 - ux * over + j(1), ay = y0 - uy * over + j(2);
+  const bx = x1 + ux * over + j(3), by = y1 + uy * over + j(4);
+  const mx = (x0 + x1) / 2 + j(5) * 1.7, my = (y0 + y1) / 2 + j(6) * 1.7;
+  c.moveTo(ax, ay);
+  c.quadraticCurveTo(mx, my, bx, by);
+}
+function inkStyle(c, width, alpha) {
+  c.strokeStyle = "rgba(" + INK + "," + alpha + ")";
+  c.lineWidth = width;
+  c.lineCap = "round";
+  c.lineJoin = "round";
+}
+function shadeColor(rgbArr, k) {
+  return "rgb(" + Math.round(rgbArr[0] * k) + "," + Math.round(rgbArr[1] * k) + "," + Math.round(rgbArr[2] * k) + ")";
+}
+
+// -----------------------------------------------------------------
+// 島の描画
+// -----------------------------------------------------------------
+let pickFaces = [];
+const _p0 = [0, 0], _p1 = [0, 0], _p2 = [0, 0], _p3 = [0, 0];
+const _quad = [_p0, _p1, _p2, _p3];
+
+function drawIsland(c) {
+  pickFaces.length = 0;
+  const scale = camera.zoom * focal / camera.dist;
+  const inkWidth = Math.max(1.1, scale * 0.062);
+  const jitterAmount = Math.max(1.1, scale * 0.075);
+  const tier = pickaxeTier();
+
+  for (let i = 0; i < drawOrder.length; i++) {
+    const idx = drawOrder[i];
+    const material = cells[idx];
+    if (!material) continue;
+    indexToXYZ(idx, _xyz);
+    const x = _xyz[0], y = _xyz[1], z = _xyz[2];
+    cellToWorld(x, y, z, _w);
+    const def = MATERIALS[material];
+    const locked = def.tier > tier;
+    const crack = damage[idx] > 0 ? damage[idx] / def.hp : 0;
+
+    for (let f = 0; f < CUBE_FACES.length; f++) {
+      const face = CUBE_FACES[f];
+      const n = face.normal;
+      if (!faceVisible(n)) continue;
+      if (cellAt(x + n[0], y + n[1], z + n[2])) continue;
+
+      for (let k = 0; k < 4; k++) {
+        const q = face.quad[k];
+        const p = project(_w[0] + q[0], _w[1] + q[1], _w[2] + q[2]);
+        _quad[k][0] = p[0];
+        _quad[k][1] = p[1];
+      }
+
+      const key = idx * 7 + f;
+      const offX = jitter(key, 11, 2, jitterAmount * 1.3);
+      const offY = jitter(key, 12, 3, jitterAmount * 1.3);
+      const shade = n[1] > 0 ? FACE_SHADE.top : (n[1] < 0 ? FACE_SHADE.bottom : FACE_SHADE.side);
+      c.fillStyle = shadeColor(def.color, shade);
+      const mx0 = (_quad[0][0] + _quad[1][0] + _quad[2][0] + _quad[3][0]) / 4;
+      const my0 = (_quad[0][1] + _quad[1][1] + _quad[2][1] + _quad[3][1]) / 4;
+      const grow = 1.07;
+      c.beginPath();
+      for (let k = 0; k < 4; k++) {
+        const fx = mx0 + (_quad[k][0] - mx0) * grow + offX;
+        const fy = my0 + (_quad[k][1] - my0) * grow + offY;
+        if (k === 0) c.moveTo(fx, fy); else c.lineTo(fx, fy);
+      }
+      c.closePath();
+      c.fill();
+
+      // 側面の斜線
+      if (def.hatch && n[1] === 0 && scale > 13) {
+        inkStyle(c, inkWidth * 0.5, 0.22);
+        c.beginPath();
+        for (let hstep = 1; hstep <= 2; hstep++) {
+          const t = hstep / 3;
+          const sx0 = _quad[0][0] + (_quad[1][0] - _quad[0][0]) * t;
+          const sy0 = _quad[0][1] + (_quad[1][1] - _quad[0][1]) * t;
+          const sx1 = _quad[3][0] + (_quad[2][0] - _quad[3][0]) * t;
+          const sy1 = _quad[3][1] + (_quad[2][1] - _quad[3][1]) * t;
+          penLine(c, sx0, sy0, sx1, sy1, key * 31 + hstep, jitterAmount * 0.9);
+        }
+        c.stroke();
+      }
+
+      // 鉱石は面の真ん中に菱形の粒。素材の色だけでは「石の仲間」に見えてしまうため
+      if (def.ore && scale > 11) {
+        const r = scale * 0.16;
+        c.beginPath();
+        const ex = mx0 + offX * 0.5, ey = my0 + offY * 0.5;
+        penLine(c, ex - r, ey, ex, ey - r, key * 41 + 1, jitterAmount * 0.6);
+        penLine(c, ex, ey - r, ex + r, ey, key * 41 + 2, jitterAmount * 0.6);
+        penLine(c, ex + r, ey, ex, ey + r, key * 41 + 3, jitterAmount * 0.6);
+        penLine(c, ex, ey + r, ex - r, ey, key * 41 + 4, jitterAmount * 0.6);
+        inkStyle(c, inkWidth * 0.6, 0.55);
+        c.stroke();
+      }
+      // まだ掘れない素材には、面に小さな「×」を薄く入れる（叩く前に硬いと分かる）
+      if (locked && scale > 11) {
+        const r = scale * 0.1;
+        const ex = mx0 + scale * 0.28, ey = my0 - scale * 0.28;
+        c.beginPath();
+        penLine(c, ex - r, ey - r, ex + r, ey + r, key * 43 + 1, jitterAmount * 0.5);
+        penLine(c, ex + r, ey - r, ex - r, ey + r, key * 43 + 2, jitterAmount * 0.5);
+        inkStyle(c, inkWidth * 0.55, 0.45);
+        c.stroke();
+      }
+
+      // ひび。ダメージの割合に応じて中心から縁へ向かう折れ線を増やす
+      if (crack > 0) {
+        const lines = Math.min(4, 1 + Math.floor(crack * 3.2));
+        c.beginPath();
+        for (let l = 0; l < lines; l++) {
+          const edge = (hash3(idx, l, 5) * 4) | 0;
+          const t = hash3(idx, l, 6);
+          const a = _quad[edge], b = _quad[(edge + 1) % 4];
+          const tx = a[0] + (b[0] - a[0]) * t, ty = a[1] + (b[1] - a[1]) * t;
+          const midx = (mx0 + tx) / 2 + (hash3(idx, l, 7) - 0.5) * scale * 0.3;
+          const midy = (my0 + ty) / 2 + (hash3(idx, l, 8) - 0.5) * scale * 0.3;
+          penLine(c, mx0 + offX * 0.3, my0 + offY * 0.3, midx, midy, key * 47 + l * 2, jitterAmount * 0.5);
+          penLine(c, midx, midy, tx, ty, key * 47 + l * 2 + 1, jitterAmount * 0.5);
+        }
+        inkStyle(c, inkWidth * (0.6 + crack * 0.5), 0.6 + crack * 0.3);
+        c.stroke();
+      }
+
+      // 稜線。隣の面が平らに続いているかで太さを変える
+      let boldStarted = false, lightStarted = false;
+      for (let e = 0; e < 4; e++) {
+        const t = face.tangents[e];
+        const continues = cellAt(x + t[0], y + t[1], z + t[2]) &&
+                          !cellAt(x + t[0] + n[0], y + t[1] + n[1], z + t[2] + n[2]);
+        const a = _quad[e], b = _quad[(e + 1) % 4];
+        if (continues) {
+          if (!lightStarted) { lightStarted = true; c.beginPath(); }
+          penLine(c, a[0], a[1], b[0], b[1], key * 13 + e, jitterAmount);
+        } else {
+          boldStarted = true;
+        }
+      }
+      if (lightStarted) { inkStyle(c, inkWidth * 0.5, 0.26); c.stroke(); }
+      if (boldStarted) {
+        for (let pass = 0; pass < 2; pass++) {
+          c.beginPath();
+          for (let e = 0; e < 4; e++) {
+            const t = face.tangents[e];
+            const continues = cellAt(x + t[0], y + t[1], z + t[2]) &&
+                              !cellAt(x + t[0] + n[0], y + t[1] + n[1], z + t[2] + n[2]);
+            if (continues) continue;
+            const a = _quad[e], b = _quad[(e + 1) % 4];
+            penLine(c, a[0], a[1], b[0], b[1], key * 13 + e + pass * 977, jitterAmount * (pass ? 2.1 : 1));
+          }
+          inkStyle(c, pass ? inkWidth * 0.55 : inkWidth, pass ? 0.34 : 0.95);
+          c.stroke();
+        }
+      }
+
+      pickFaces.push({
+        idx, x, y, z,
+        ax: _quad[0][0], ay: _quad[0][1],
+        bx: _quad[1][0], by: _quad[1][1],
+        cx: _quad[2][0], cy: _quad[2][1],
+        dx: _quad[3][0], dy: _quad[3][1],
+      });
+    }
+  }
+}
+
+/** 島の下に手描きの影 */
+function drawGroundShadow(c) {
+  const p = project(0, -GROUND_Y - 0.4, 0);
+  const r = (focal * camera.zoom / Math.max(1, p[2])) * islandRadius * 1.15;
+  inkStyle(c, Math.max(1, r * 0.02), 0.18);
+  c.beginPath();
+  const steps = 26;
+  for (let i = 0; i < steps; i++) {
+    const a0 = (i / steps) * Math.PI * 2, a1 = ((i + 1) / steps) * Math.PI * 2;
+    penLine(c,
+      p[0] + Math.cos(a0) * r, p[1] + Math.sin(a0) * r * 0.42,
+      p[0] + Math.cos(a1) * r, p[1] + Math.sin(a1) * r * 0.42,
+      90000 + i, r * 0.012);
+  }
+  c.stroke();
+  c.beginPath();
+  for (let i = 0; i < 9; i++) {
+    const t = (i + 0.5) / 9;
+    const w = Math.sqrt(Math.max(0, 1 - (t * 2 - 1) * (t * 2 - 1)));
+    const yy = p[1] - r * 0.42 + t * r * 0.84;
+    penLine(c, p[0] - r * w, yy, p[0] + r * w, yy, 91000 + i, r * 0.02);
+  }
+  inkStyle(c, Math.max(0.8, r * 0.012), 0.10);
+  c.stroke();
+}
+
+// -----------------------------------------------------------------
+// 破片
+// -----------------------------------------------------------------
+const chips = [];
+function spawnChips(wx, wy, wz, material, power) {
+  const count = 2 + Math.floor(fxRandom() * 2);
+  for (let i = 0; i < count; i++) {
+    if (chips.length >= CHIP_LIMIT) chips.shift();
+    const a = fxRandom() * Math.PI * 2;
+    const up = 2.2 + fxRandom() * 3.6;
+    const out = (1.0 + fxRandom() * 2.0) * power;
+    chips.push({
+      x: wx + 0.5 + (fxRandom() - 0.5) * 0.6,
+      y: wy + 0.5 + (fxRandom() - 0.5) * 0.6,
+      z: wz + 0.5 + (fxRandom() - 0.5) * 0.6,
+      vx: Math.cos(a) * out, vy: up, vz: Math.sin(a) * out,
+      size: 0.20 + fxRandom() * 0.26,
+      spin: (fxRandom() - 0.5) * 6,
+      angle: fxRandom() * Math.PI * 2,
+      life: 1, material,
+      key: Math.floor(fxRandom() * 100000),
+    });
+  }
+}
+function updateChips(dt) {
+  for (let i = chips.length - 1; i >= 0; i--) {
+    const p = chips[i];
+    p.life -= dt * 1.05;
+    if (p.life <= 0) { chips.splice(i, 1); continue; }
+    p.vy -= 34 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+    p.angle += p.spin * dt;
+    if (p.y < -GROUND_Y - 3) { chips.splice(i, 1); }
+  }
+}
+function drawChips(c) {
+  if (chips.length === 0) return;
+  const scale = camera.zoom * focal / camera.dist;
+  for (const p of chips) {
+    const def = MATERIALS[p.material] || MATERIALS[M_STONE];
+    const s = p.size;
+    const alpha = Math.min(1, p.life * 2.6);
+    for (let f = 0; f < CUBE_FACES.length; f++) {
+      const face = CUBE_FACES[f];
+      if (!faceVisible(face.normal)) continue;
+      const pts = [];
+      for (let k = 0; k < 4; k++) {
+        const q = face.quad[k];
+        const lx = (q[0] - 0.5) * s, ly = (q[1] - 0.5) * s, lz = (q[2] - 0.5) * s;
+        const ca = Math.cos(p.angle), sa = Math.sin(p.angle);
+        const rx = lx * ca - lz * sa, rz = lx * sa + lz * ca;
+        const pr = project(p.x + rx, p.y + ly, p.z + rz);
+        pts.push([pr[0], pr[1]]);
+      }
+      const shade = face.normal[1] > 0 ? FACE_SHADE.top
+                  : (face.normal[1] < 0 ? FACE_SHADE.bottom : FACE_SHADE.side);
+      c.globalAlpha = alpha;
+      c.fillStyle = shadeColor(def.color, shade);
+      c.beginPath();
+      pts.forEach((pt, i) => (i ? c.lineTo(pt[0], pt[1]) : c.moveTo(pt[0], pt[1])));
+      c.closePath();
+      c.fill();
+      c.beginPath();
+      for (let e = 0; e < 4; e++) {
+        const a = pts[e], b = pts[(e + 1) % 4];
+        penLine(c, a[0], a[1], b[0], b[1], p.key * 17 + f * 4 + e, Math.max(0.6, scale * 0.02));
+      }
+      inkStyle(c, Math.max(0.8, scale * 0.022), 0.85);
+      c.stroke();
+    }
+  }
+  c.globalAlpha = 1;
+}
+
+// -----------------------------------------------------------------
+// 当たったときのインク飛沫と、手に入った素材の浮き文字
+// -----------------------------------------------------------------
+const bursts = [];
+function spawnBurst(sx, sy, power, cross) {
+  bursts.push({ x: sx, y: sy, life: 1, power, cross, key: Math.floor(fxRandom() * 100000) });
+}
+function drawBursts(c, dt) {
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    const b = bursts[i];
+    b.life -= dt * 3.2;
+    if (b.life <= 0) { bursts.splice(i, 1); continue; }
+    c.beginPath();
+    if (b.cross) {
+      // 硬くて歯が立たない：飛沫ではなく「×」が弾く
+      const r = 10 + (1 - b.life) * 8;
+      penLine(c, b.x - r, b.y - r, b.x + r, b.y + r, b.key, 1.5);
+      penLine(c, b.x + r, b.y - r, b.x - r, b.y + r, b.key + 1, 1.5);
+      inkStyle(c, 2.4 * b.life + 0.8, Math.min(1, b.life * 1.6));
+      c.stroke();
+      continue;
+    }
+    const grow = (1 - b.life) * 46 * b.power;
+    const spokes = 9;
+    for (let s = 0; s < spokes; s++) {
+      const a = (s / spokes) * Math.PI * 2 + hash3(b.key, s, 1) * 0.7;
+      const r0 = grow * (0.45 + hash3(b.key, s, 2) * 0.3);
+      const r1 = r0 + 8 * b.power * (0.5 + hash3(b.key, s, 3) * 0.9);
+      penLine(c, b.x + Math.cos(a) * r0, b.y + Math.sin(a) * r0,
+                 b.x + Math.cos(a) * r1, b.y + Math.sin(a) * r1, b.key + s, 1.6);
+    }
+    inkStyle(c, 2.0 * b.life + 0.6, Math.min(1, b.life * 1.4));
+    c.stroke();
+  }
+}
+
+const floats = [];
+function spawnFloat(sx, sy, text, color, size) {
+  if (floats.length >= FLOAT_LIMIT) floats.shift();
+  floats.push({ x: sx, y: sy, text, color: color || "#2b2620", size: size || 13, life: 1,
+                tilt: (fxRandom() - 0.5) * 0.12, drift: (fxRandom() - 0.5) * 14 });
+}
+function drawFloats(c, dt) {
+  for (let i = floats.length - 1; i >= 0; i--) {
+    const f = floats[i];
+    f.life -= dt * 1.1;
+    if (f.life <= 0) { floats.splice(i, 1); continue; }
+    const t = 1 - f.life;
+    c.save();
+    c.translate(f.x + f.drift * t, f.y - 38 * t);
+    c.rotate(f.tilt);
+    c.globalAlpha = Math.min(1, f.life * 2.2);
+    c.font = "bold " + (f.size * (1 + Math.min(0.25, t * 1.4))) + "px ui-monospace, Menlo, monospace";
+    c.textAlign = "center";
+    c.textBaseline = "middle";
+    c.lineWidth = 3;
+    c.strokeStyle = PAPER;
+    c.strokeText(f.text, 0, 0);
+    c.fillStyle = f.color;
+    c.fillText(f.text, 0, 0);
+    c.restore();
+  }
+  c.globalAlpha = 1;
+}
+
+// 画面の揺れ。壊した量に比例して、減衰する
+let shakeAmp = 0;
+function addShake(amount) { shakeAmp = Math.min(SHAKE_MAX, shakeAmp + amount); }
+
+// -----------------------------------------------------------------
+// 音（アセットなし。WebAudio で合成）
+// 音程は素材ごとに違い、コンボと連鎖で少しずつ上がる。「上がっていく」ことが快感の芯
+// -----------------------------------------------------------------
+let audioCtx = null;
+let masterGain = null;
+function ensureAudio() {
+  if (!player.soundOn) return null;
+  try {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      audioCtx = new AC();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.45;
+      masterGain.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  } catch (error) {
+    return null;
+  }
+}
+function playTone(freq, seconds, type, gain, delay) {
+  const ac = ensureAudio();
+  if (!ac) return;
+  const t0 = ac.currentTime + (delay || 0);
+  const osc = ac.createOscillator();
+  const g = ac.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq * 0.6), t0 + seconds);
+  g.gain.setValueAtTime(gain, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + seconds);
+  osc.connect(g);
+  g.connect(masterGain);
+  osc.start(t0);
+  osc.stop(t0 + seconds + 0.02);
+}
+let noiseBuffer = null;
+function playNoise(seconds, gain, delay, highpass) {
+  const ac = ensureAudio();
+  if (!ac) return;
+  if (!noiseBuffer) {
+    noiseBuffer = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = fxRandom() * 2 - 1;
+  }
+  const t0 = ac.currentTime + (delay || 0);
+  const src = ac.createBufferSource();
+  src.buffer = noiseBuffer;
+  const filter = ac.createBiquadFilter();
+  filter.type = highpass ? "highpass" : "lowpass";
+  filter.frequency.value = highpass ? 2400 : 900;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(gain, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + seconds);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(masterGain);
+  src.start(t0);
+  src.stop(t0 + seconds + 0.02);
+}
+function soundBreak(material, comboIndex, chainStep, delay) {
+  const def = MATERIALS[material];
+  const rise = Math.pow(2, (Math.min(24, comboIndex) * 0.5 + chainStep * 1) / 12);   // 半音ずつ上がる
+  playTone(def.pitch * rise, 0.16, def.ore ? "triangle" : "sine", 0.22, delay);
+  playNoise(0.07, 0.18, delay, false);
+}
+function soundHit() {
+  playTone(140, 0.07, "sine", 0.16, 0);
+  playNoise(0.05, 0.14, 0, false);
+}
+function soundLocked() {
+  playTone(1900, 0.09, "square", 0.05, 0);
+  playNoise(0.04, 0.08, 0, true);
+}
+function soundCraft() {
+  [523, 659, 784, 1047].forEach((f, i) => playTone(f, 0.28, "triangle", 0.14, i * 0.07));
+}
+function soundIsland() {
+  [392, 523, 659].forEach((f, i) => playTone(f, 0.4, "sine", 0.12, i * 0.1));
+}
+
+// -----------------------------------------------------------------
+// 採掘
+// -----------------------------------------------------------------
+let combo = 0;
+let comboMultiplier = 1;
+let lastBreakTime = -Infinity;
+let nowSeconds = 0;
+const pendingBreaks = [];   // 鉱脈連鎖で、時間差で割れる予定のセル
+const tapGain = {};         // 1タップぶんの獲得を合算して浮き文字にする
+
+function comboMultiplierFor(count) {
+  return Math.min(COMBO.maxMultiplier, 1 + Math.floor(count / COMBO.perMultiplier));
+}
+function registerBreak() {
+  if (nowSeconds - lastBreakTime <= COMBO.window) combo++;
+  else combo = 1;
+  lastBreakTime = nowSeconds;
+  comboMultiplier = comboMultiplierFor(combo);
+  if (combo > player.stats.maxCombo) player.stats.maxCombo = combo;
+}
+function gainMaterial(dropId, amount) {
+  player.inventory[dropId] = have(dropId) + amount;
+  player.seen[dropId] = true;
+  tapGain[dropId] = (tapGain[dropId] || 0) + amount;
+  bumpInventory(dropId);
+}
+
+/** セルを1つ割る（獲得・破片・音・連鎖の予約）。rebuildSurface は呼び出し側でまとめる */
+function breakCell(idx, chainStep) {
+  const material = cells[idx];
+  if (!material) return false;
+  const def = MATERIALS[material];
+  cells[idx] = 0;
+  damage[idx] = 0;
+  solidCount--;
+  player.stats.mined++;
+  registerBreak();
+  gainMaterial(def.drop, comboMultiplier);
+  indexToXYZ(idx, _xyz);
+  cellToWorld(_xyz[0], _xyz[1], _xyz[2], _w);
+  spawnChips(_w[0], _w[1], _w[2], material, 1 + rangeRadius() * 0.35);
+  soundBreak(material, combo, chainStep, 0);
+  addShake(SHAKE_PER_BLOCK * (def.ore ? 1.6 : 1));
+  if (chainStep > 0) {
+    const p = project(_w[0] + 0.5, _w[1] + 0.5, _w[2] + 0.5);
+    spawnFloat(p[0], p[1], "+" + comboMultiplier + " " + def.name, "rgb(" + def.color.join(",") + ")", 12);
+  }
+  if (def.ore && chainCount() > 0) scheduleVein(idx, material);
+  return true;
+}
+
+/** つながった同じ鉱石を、近い順に時間差で割る予定に入れる */
+function scheduleVein(startIdx, material) {
+  const budget = chainCount();
+  const visited = new Set([startIdx]);
+  for (const p of pendingBreaks) visited.add(p.idx);
+  const queue = [startIdx];
+  let found = 0;
+  while (queue.length > 0 && found < budget) {
+    const cur = queue.shift();
+    indexToXYZ(cur, _xyz);
+    for (const d of NEIGHBORS6) {
+      const nx = _xyz[0] + d[0], ny = _xyz[1] + d[1], nz = _xyz[2] + d[2];
+      if (!inGrid(nx, ny, nz)) continue;
+      const n = cellIndex(nx, ny, nz);
+      if (cells[n] !== material || visited.has(n)) continue;
+      visited.add(n);
+      found++;
+      pendingBreaks.push({ idx: n, material, due: nowSeconds + CHAIN_STEP_SECONDS * found, step: found });
+      queue.push(n);
+      if (found >= budget) break;
+    }
+  }
+}
+function processPendingBreaks() {
+  if (pendingBreaks.length === 0) return;
+  let changed = false;
+  for (let i = 0; i < pendingBreaks.length; i++) {
+    const p = pendingBreaks[i];
+    if (p.due > nowSeconds) continue;
+    pendingBreaks.splice(i, 1);
+    i--;
+    if (cells[p.idx] !== p.material) continue;
+    // 連鎖の中で伸びた連鎖は、予定を上書きせず末尾に足すだけにする（budget は scheduleVein が見る）
+    breakCell(p.idx, p.step);
+    changed = true;
+  }
+  if (changed) { rebuildSurface(); flushTapGain(null); markDirty(); }
+}
+
+/** 1タップの獲得をまとめて浮き文字にする */
+function flushTapGain(screenPos) {
+  const parts = [];
+  for (const id of INVENTORY_ORDER) {
+    if (tapGain[id]) parts.push("+" + tapGain[id] + " " + MATERIALS[MATERIAL_BY_ID[id]].name);
+    delete tapGain[id];
+  }
+  if (parts.length === 0 || !screenPos) return;
+  spawnFloat(screenPos[0], screenPos[1] - 14, parts.join("  "), "#2b2620", 14);
+  if (comboMultiplier > 1) spawnFloat(screenPos[0], screenPos[1] - 34, "×" + comboMultiplier, "#b4552e", 15);
+}
+
+/**
+ * タップで掘る。中心のブロックが掘れない硬さなら何も起きない（×）。
+ * 範囲内の掘れるブロックすべてに打撃力ぶんのダメージを入れ、hp を超えたものが割れる。
+ */
+function mineAt(x, y, z, sx, sy) {
+  const centerIdx = cellIndex(x, y, z);
+  const centerMaterial = cells[centerIdx];
+  if (!centerMaterial) return { broken: 0, locked: false };
+  const tier = pickaxeTier();
+  const centerDef = MATERIALS[centerMaterial];
+  player.stats.taps++;
+  if (centerDef.tier > tier) {
+    spawnBurst(sx, sy, 1, true);
+    spawnFloat(sx, sy - 18, centerDef.name + "：" + PICKAXES[centerDef.tier].name + "が要る", "#b4552e", 12);
+    soundLocked();
+    combo = 0;
+    comboMultiplier = 1;
+    return { broken: 0, locked: true };
+  }
+  const r = rangeRadius();
+  const power = hitPower();
+  let broken = 0, hit = 0;
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy + dz * dz > (r + 0.35) * (r + 0.35)) continue;
+        const nx = x + dx, ny = y + dy, nz = z + dz;
+        if (!inGrid(nx, ny, nz)) continue;
+        const at = cellIndex(nx, ny, nz);
+        const material = cells[at];
+        if (!material) continue;
+        const def = MATERIALS[material];
+        if (def.tier > tier) continue;
+        hit++;
+        const dealt = Math.min(255, damage[at] + power);
+        if (dealt >= def.hp) {
+          if (breakCell(at, 0)) broken++;
+        } else {
+          damage[at] = dealt;
+        }
+      }
+    }
+  }
+  if (broken > 0) {
+    rebuildSurface();
+    spawnBurst(sx, sy, 1 + r * 0.5, false);
+    flushTapGain([sx, sy]);
+  } else if (hit > 0) {
+    // 割れなかった：ひびが入る手応え
+    soundHit();
+    addShake(0.6);
+    spawnBurst(sx, sy, 0.45, false);
+    if (nowSeconds - lastBreakTime > COMBO.window) { combo = 0; comboMultiplier = 1; }
+  }
+  markDirty();
+  return { broken, locked: false };
+}
+
+/** 画面座標から、いちばん手前に描かれている面を探す */
+function pickFace(sx, sy) {
+  const side = (ax, ay, bx, by) => (bx - ax) * (sy - ay) - (by - ay) * (sx - ax);
+  for (let i = pickFaces.length - 1; i >= 0; i--) {
+    const f = pickFaces[i];
+    const s1 = side(f.ax, f.ay, f.bx, f.by);
+    const s2 = side(f.bx, f.by, f.cx, f.cy);
+    const s3 = side(f.cx, f.cy, f.dx, f.dy);
+    const s4 = side(f.dx, f.dy, f.ax, f.ay);
+    const allPos = s1 >= 0 && s2 >= 0 && s3 >= 0 && s4 >= 0;
+    const allNeg = s1 <= 0 && s2 <= 0 && s3 <= 0 && s4 <= 0;
+    if (allPos || allNeg) return f;
+  }
+  return null;
+}
+
+// -----------------------------------------------------------------
+// クラフト（工房）
+// -----------------------------------------------------------------
+const UPGRADE_LINES = [
+  {
+    id: "pickaxe", name: "つるはし",
+    level: () => player.pickaxe,
+    maxLevel: PICKAXES.length - 1,
+    cost: (next) => PICKAXES[next].cost,
+    describe: (cur, next) => {
+      const unlocks = MATERIALS.filter((m) => m && m.tier === next).map((m) => m.name);
+      return PICKAXES[cur].name + " → " + PICKAXES[next].name + "（打撃 " + PICKAXES[next].power + "）" +
+        (unlocks.length ? "  掘れるようになる: " + unlocks.join("・") : "");
+    },
+    maxedText: () => PICKAXES[player.pickaxe].name + "（最上位）",
+    apply: () => { player.pickaxe++; },
+  },
+  {
+    id: "power", name: "打撃力",
+    level: () => player.power,
+    maxLevel: Infinity,
+    cost: (next) => powerUpgradeCost(next),
+    describe: (cur, next) => "一撃のダメージ " + hitPower() + " → " + (hitPower() + 1) + "（Lv" + next + "）",
+    apply: () => { player.power++; },
+  },
+  {
+    id: "range", name: "範囲",
+    level: () => player.range,
+    maxLevel: RANGE_LEVELS.length - 1,
+    cost: (next) => RANGE_LEVELS[next].cost,
+    describe: (cur, next) => "一撃で削る幅 " + (RANGE_LEVELS[cur].radius * 2 + 1) + " → " + (RANGE_LEVELS[next].radius * 2 + 1),
+    maxedText: () => "幅 " + (rangeRadius() * 2 + 1) + "（最大）",
+    apply: () => { player.range++; },
+  },
+  {
+    id: "chain", name: "鉱脈連鎖",
+    level: () => player.chain,
+    maxLevel: CHAIN_LEVELS.length - 1,
+    cost: (next) => CHAIN_LEVELS[next].cost,
+    describe: (cur, next) => "鉱石を割ると、つながった同じ鉱石が続けて " + CHAIN_LEVELS[cur].count + " → " + CHAIN_LEVELS[next].count + " 個割れる",
+    maxedText: () => "連鎖 " + chainCount() + "（最大）",
+    apply: () => { player.chain++; },
+  },
+];
+
+function craft(lineId) {
+  const line = UPGRADE_LINES.find((l) => l.id === lineId);
+  if (!line) return false;
+  const cur = line.level();
+  if (cur >= line.maxLevel) return false;
+  const cost = line.cost(cur + 1);
+  if (!canAfford(cost)) return false;
+  spend(cost);
+  line.apply();
+  player.stats.crafted++;
+  soundCraft();
+  renderInventory();
+  renderCraft();
+  updateHud();
+  markDirty();     // つるはしが変わると「×」印が消えるので島を描き直す
+  scheduleSave();
+  return true;
+}
+
+function costHtml(cost) {
+  return Object.keys(cost).map((id) => {
+    const def = MATERIALS[MATERIAL_BY_ID[id]];
+    const ok = have(id) >= cost[id];
+    return '<span class="' + (ok ? "ok" : "ng") + '">' + def.name + " " + have(id) + "/" + cost[id] + "</span>";
+  }).join("");
+}
+function renderCraft() {
+  const list = document.getElementById("c-list");
+  let html = "";
+  for (const line of UPGRADE_LINES) {
+    const cur = line.level();
+    if (cur >= line.maxLevel) {
+      html += '<div class="up maxed"><div class="t">' + line.name + '</div><div class="d">' + line.maxedText() + '</div><div class="c"></div><button disabled>MAX</button></div>';
+      continue;
+    }
+    const cost = line.cost(cur + 1);
+    const ok = canAfford(cost);
+    html += '<div class="up"><div class="t">' + line.name + ' <span class="sub">Lv' + cur + '</span></div>' +
+      '<div class="d">' + line.describe(cur, cur + 1) + '</div>' +
+      '<div class="c">' + costHtml(cost) + '</div>' +
+      '<button data-craft="' + line.id + '"' + (ok ? "" : " disabled") + '>作る</button></div>';
+  }
+  list.innerHTML = html;
+  for (const btn of list.querySelectorAll("button[data-craft]")) {
+    btn.addEventListener("click", () => craft(btn.dataset.craft));
+  }
+  const s = player.stats;
+  document.getElementById("c-stats").textContent =
+    "掘った " + s.mined + " ／ 最大コンボ " + s.maxCombo + " ／ 島 " + s.islands + " ／ 工房 " + s.crafted + "回";
+  // 作れるものがあれば、工房ボタンに印をつける
+  const anyAffordable = UPGRADE_LINES.some((l) => l.level() < l.maxLevel && canAfford(l.cost(l.level() + 1)));
+  document.getElementById("btn-craft").classList.toggle("attn", anyAffordable);
+}
+
+// -----------------------------------------------------------------
+// HUD・在庫
+// -----------------------------------------------------------------
+function renderInventory() {
+  const el = document.getElementById("inv");
+  let html = "";
+  for (const id of INVENTORY_ORDER) {
+    if (!player.seen[id]) continue;
+    const def = MATERIALS[MATERIAL_BY_ID[id]];
+    html += '<div class="row"><span class="sw" style="background: rgb(' + def.color.join(",") + ')"></span>' +
+      '<span class="nm">' + def.name + '</span><span class="ct" data-inv="' + id + '">' + have(id) + '</span></div>';
+  }
+  if (html === "") html = '<div class="sub">まだ何も持っていない</div>';
+  el.innerHTML = html;
+}
+const bumpTimers = {};
+function bumpInventory(id) {
+  const el = document.querySelector('#inv .ct[data-inv="' + id + '"]');
+  if (!el) { renderInventory(); return; }
+  el.textContent = have(id);
+  el.classList.add("bump");
+  clearTimeout(bumpTimers[id]);
+  bumpTimers[id] = setTimeout(() => el.classList.remove("bump"), 90);
+}
+let mineableCache = 0;
+function updateHud() {
+  mineableCache = countMineable();
+  document.getElementById("h-island").textContent = "島 No." + islandLevel;
+  document.getElementById("h-left").textContent = "掘れる " + mineableCache + " / " + solidCount;
+  document.getElementById("h-pick").textContent =
+    PICKAXES[player.pickaxe].name + " ／ 打撃" + hitPower() + " ／ 幅" + (rangeRadius() * 2 + 1) + " ／ 連鎖" + chainCount();
+  const next = document.getElementById("btn-next");
+  next.classList.toggle("attn", mineableCache === 0);
+}
+function updateComboHud() {
+  const el = document.getElementById("h-combo");
+  if (combo >= 2 && nowSeconds - lastBreakTime <= COMBO.window) {
+    el.textContent = "COMBO " + combo + (comboMultiplier > 1 ? "  ×" + comboMultiplier : "");
+  } else {
+    el.textContent = "";
+  }
+}
+
+// -----------------------------------------------------------------
+// 保存（localStorage。世界の種ごとに別スロット）
+// -----------------------------------------------------------------
+function bytesToBase64(bytes) {
+  let s = "";
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  return btoa(s);
+}
+function base64ToBytes(text) {
+  const s = atob(text);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+function saveKey() { return SAVE_KEY_PREFIX + worldSeed; }
+function saveGame() {
+  const data = {
+    version: 1, gameVersion: GAME_VERSION, worldSeed,
+    player,
+    island: { level: islandLevel, gx: GX, gy: GY, gz: GZ, groundY: GROUND_Y, radius: islandRadius,
+              cells: bytesToBase64(cells), damage: bytesToBase64(damage) },
+    camera: { yaw: camera.yaw, pitch: camera.pitch, dist: camera.dist, zoom: camera.zoom, targetY: camTargetY },
+  };
+  try { localStorage.setItem(saveKey(), JSON.stringify(data)); } catch (error) { /* 容量超過などは無視 */ }
+}
+let saveTimer = 0;
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveGame, 400);
+}
+function loadGame() {
+  let raw = null;
+  try { raw = localStorage.getItem(saveKey()); } catch (error) { return false; }
+  if (!raw) return false;
+  let data;
+  try { data = JSON.parse(raw); } catch (error) { return false; }
+  if (!data || data.version !== 1 || !data.island) return false;
+  Object.assign(player, data.player);
+  player.stats = Object.assign({ mined: 0, taps: 0, maxCombo: 0, islands: 1, crafted: 0 }, data.player.stats || {});
+  player.inventory = data.player.inventory || {};
+  player.seen = data.player.seen || {};
+  const isl = data.island;
+  islandLevel = isl.level;
+  GX = isl.gx; GY = isl.gy; GZ = isl.gz; GROUND_Y = isl.groundY; islandRadius = isl.radius;
+  cells = base64ToBytes(isl.cells);
+  damage = base64ToBytes(isl.damage);
+  if (cells.length !== GX * GY * GZ || damage.length !== cells.length) return false;
+  solidCount = 0;
+  for (let i = 0; i < cells.length; i++) if (cells[i]) solidCount++;
+  rebuildSurface();
+  if (data.camera) {
+    camera.yaw = data.camera.yaw; camera.pitch = data.camera.pitch;
+    camera.dist = data.camera.dist; camera.zoom = data.camera.zoom;
+    camTargetY = data.camera.targetY;
+  }
+  cameraDirty = true;
+  return true;
+}
+function resetGame() {
+  try { localStorage.removeItem(saveKey()); } catch (error) { /* 無視 */ }
+  Object.assign(player, { pickaxe: 0, power: 0, range: 0, chain: 0, inventory: {}, seen: {},
+                          stats: { mined: 0, taps: 0, maxCombo: 0, islands: 1, crafted: 0 } });
+  startIsland(1);
+}
+
+// -----------------------------------------------------------------
+// 島を渡る
+// -----------------------------------------------------------------
+function startIsland(level) {
+  chips.length = 0;
+  bursts.length = 0;
+  floats.length = 0;
+  pendingBreaks.length = 0;
+  combo = 0;
+  comboMultiplier = 1;
+  generateIsland(level);
+  fitCameraToIsland();
+  renderInventory();
+  renderCraft();
+  updateHud();
+  markDirty();
+  scheduleSave();
+}
+function nextIsland() {
+  player.stats.islands++;
+  startIsland(islandLevel + 1);
+  soundIsland();
+  spawnFloat(viewW / 2, viewH * 0.3, "島 No." + islandLevel, "#2b2620", 20);
+  hideHint();
+}
+
+// -----------------------------------------------------------------
+// 入力（タップ＝掘る／ドラッグ＝回す／ピンチ・ホイール＝寄る）
+// -----------------------------------------------------------------
+const pointers = new Map();
+let dragMoved = 0;
+let lastPinchDist = 0;
+const TAP_SLOP = 9;
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY });
+  if (pointers.size === 1) dragMoved = 0;
+  if (pointers.size === 2) lastPinchDist = pinchDistance();
+  ensureAudio();
+});
+function pinchDistance() {
+  const list = [...pointers.values()];
+  return Math.hypot(list[0].x - list[1].x, list[0].y - list[1].y);
+}
+canvas.addEventListener("pointermove", (e) => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX;
+  p.y = e.clientY;
+  if (pointers.size >= 2) {
+    const d = pinchDistance();
+    if (lastPinchDist > 0) {
+      camera.zoom = Math.min(2.6, Math.max(0.5, camera.zoom * (d / lastPinchDist)));
+      cameraDirty = true;
+    }
+    lastPinchDist = d;
+    return;
+  }
+  dragMoved += Math.hypot(dx, dy);
+  if (dragMoved > TAP_SLOP) {
+    camera.yaw += dx * 0.008;
+    camera.pitch = Math.max(-1.35, Math.min(1.2, camera.pitch + dy * 0.006));
+    cameraDirty = true;
+    hideHint();
+  }
+});
+canvas.addEventListener("pointerup", (e) => {
+  const p = pointers.get(e.pointerId);
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) lastPinchDist = 0;
+  if (!p || dragMoved > TAP_SLOP) { if (dragMoved > TAP_SLOP) scheduleSave(); return; }
+  tapAt(p.x, p.y);
+});
+canvas.addEventListener("pointercancel", (e) => { pointers.delete(e.pointerId); });
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  camera.zoom = Math.min(2.6, Math.max(0.5, camera.zoom * (e.deltaY > 0 ? 0.92 : 1.08)));
+  cameraDirty = true;
+}, { passive: false });
+
+function tapAt(sx, sy) {
+  closeCraft();
+  const face = pickFace(sx, sy);
+  if (!face) return null;
+  const result = mineAt(face.x, face.y, face.z, sx, sy);
+  if (result.broken > 0 || result.locked) hideHint();
+  updateHud();
+  scheduleSave();
+  return result;
+}
+
+let hintHidden = false;
+function hideHint() {
+  if (hintHidden) return;
+  hintHidden = true;
+  document.getElementById("hint").style.opacity = "0";
+}
+
+const craftEl = document.getElementById("craft");
+function openCraft() { renderCraft(); craftEl.classList.remove("hidden"); }
+function closeCraft() { craftEl.classList.add("hidden"); }
+document.getElementById("btn-craft").addEventListener("click", () => {
+  ensureAudio();
+  if (craftEl.classList.contains("hidden")) openCraft(); else closeCraft();
+});
+document.getElementById("btn-craft-close").addEventListener("click", closeCraft);
+document.getElementById("btn-next").addEventListener("click", () => {
+  ensureAudio();
+  if (mineableCache > 0 && !window.confirm("まだ掘れるブロックが " + mineableCache + " 個あります。次の島へ渡りますか？（この島には戻れません）")) return;
+  closeCraft();
+  nextIsland();
+});
+document.getElementById("btn-sound").addEventListener("click", () => {
+  player.soundOn = !player.soundOn;
+  updateSoundButton();
+  if (player.soundOn) { ensureAudio(); playTone(660, 0.12, "sine", 0.1, 0); }
+  scheduleSave();
+});
+function updateSoundButton() {
+  document.getElementById("btn-sound").classList.toggle("on", player.soundOn);
+}
+document.getElementById("btn-reset").addEventListener("click", () => {
+  if (!window.confirm("最初からやり直しますか？ 素材・つるはし・島はすべて消えます。")) return;
+  closeCraft();
+  resetGame();
+});
+
+// -----------------------------------------------------------------
+// メインループ（沸き：島は BOIL_FPS 回/秒で描き直し、破片や文字は毎フレーム）
+// -----------------------------------------------------------------
+const islandLayer = document.createElement("canvas");
+const islandCtx = islandLayer.getContext("2d");
+let layerDirty = true;
+let lastBoilFrame = -1;
+let fpsEma = 0;
+function markDirty() { layerDirty = true; sortDirty = true; }
+
+function renderIslandLayer() {
+  if (islandLayer.width !== canvas.width || islandLayer.height !== canvas.height) {
+    islandLayer.width = canvas.width;
+    islandLayer.height = canvas.height;
+  }
+  islandCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  islandCtx.clearRect(0, 0, viewW, viewH);
+  drawGroundShadow(islandCtx);
+  drawIsland(islandCtx);
+}
+
+let lastTime = performance.now();
+let hudTimer = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  nowSeconds = now / 1000;
+  if (dt > 0) fpsEma = fpsEma === 0 ? 1 / dt : fpsEma * 0.92 + (1 / dt) * 0.08;
+
+  processPendingBreaks();
+
+  const nextBoil = Math.floor(nowSeconds * BOIL_FPS);
+  if (nextBoil !== lastBoilFrame) {
+    lastBoilFrame = nextBoil;
+    boilFrame = nextBoil;
+    layerDirty = true;
+  }
+  if (cameraDirty) {
+    updateCamBasis();
+    updateViewDir();
+    cameraDirty = false;
+    sortDirty = true;
+  }
+  if (sortDirty) { sortSurface(); layerDirty = true; }
+  if (layerDirty) { renderIslandLayer(); layerDirty = false; }
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // 揺れ：島のレイヤーごと数pxずらす。減衰は速め（余韻が長いと酔う）
+  let shx = 0, shy = 0;
+  if (shakeAmp > 0.05) {
+    shx = (fxRandom() - 0.5) * 2 * shakeAmp;
+    shy = (fxRandom() - 0.5) * 2 * shakeAmp;
+    shakeAmp *= Math.pow(0.001, dt);
+  } else {
+    shakeAmp = 0;
+  }
+  ctx.drawImage(islandLayer, Math.round(shx * dpr), Math.round(shy * dpr));
+
+  ctx.setTransform(dpr, 0, 0, dpr, shx * dpr, shy * dpr);
+  updateChips(dt);
+  drawChips(ctx);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawBursts(ctx, dt);
+  drawFloats(ctx, dt);
+
+  hudTimer += dt;
+  if (hudTimer > 0.1) { hudTimer = 0; updateComboHud(); }
+  requestAnimationFrame(frame);
+}
+
+// -----------------------------------------------------------------
+// 起動
+// -----------------------------------------------------------------
+resize();
+const freshStart = urlParams.get("fresh") !== null;
+if (freshStart || !loadGame()) {
+  generateIsland(1);
+  fitCameraToIsland();
+}
+updateCamBasis();
+updateViewDir();
+sortSurface();
+renderInventory();
+renderCraft();
+updateHud();
+updateSoundButton();
+document.getElementById("c-ver").textContent = GAME_VERSION + " seed " + worldSeed;
+window.addEventListener("beforeunload", saveGame);
+requestAnimationFrame(frame);
+
+// -----------------------------------------------------------------
+// 検証用（headless から叩く）
+// -----------------------------------------------------------------
+function debugState() {
+  const counts = {};
+  for (let i = 0; i < cells.length; i++) if (cells[i]) counts[MATERIALS[cells[i]].id] = (counts[MATERIALS[cells[i]].id] || 0) + 1;
+  return {
+    version: GAME_VERSION, worldSeed, islandLevel, grid: [GX, GY, GZ],
+    solid: solidCount, mineable: countMineable(), counts,
+    surface: surfaceCount, faces: pickFaces.length,
+    chips: chips.length, floats: floats.length, pending: pendingBreaks.length,
+    combo, comboMultiplier,
+    player: JSON.parse(JSON.stringify(player)),
+    power: hitPower(), range: rangeRadius(), chain: chainCount(),
+    fps: fpsEma, boilFrame,
+  };
+}
+function debugTapAt(sx, sy) { return tapAt(sx, sy); }
+function debugTapCenter() { return tapAt(viewW / 2, viewH / 2); }
+/** 画面内で条件に合う面（素材ID指定など）を1つ探す。無ければ null */
+function debugFindFace(materialId) {
+  const want = materialId ? MATERIAL_BY_ID[materialId] : 0;
+  for (let i = pickFaces.length - 1; i >= 0; i--) {
+    const f = pickFaces[i];
+    if (want && cells[f.idx] !== want) continue;
+    const cx = (f.ax + f.bx + f.cx + f.dx) / 4, cy = (f.ay + f.by + f.cy + f.dy) / 4;
+    if (pickFace(cx, cy) !== f) continue;   // 手前の別の面に隠れていないこと
+    return { x: cx, y: cy, idx: f.idx, material: MATERIALS[cells[f.idx]].id };
+  }
+  return null;
+}
+function debugGrant(materialId, amount) { player.inventory[materialId] = have(materialId) + amount; player.seen[materialId] = true; renderInventory(); renderCraft(); }
+function debugCraft(lineId) { return craft(lineId); }
+function debugNextIsland() { nextIsland(); return debugState(); }
+function debugSave() { saveGame(); return localStorage.getItem(saveKey()) !== null; }
+function debugSetTime(seconds) { nowSeconds = seconds; }
+</script>
+</body>
+</html>
