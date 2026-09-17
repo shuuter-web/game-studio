@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.84.0";
+const GAME_VERSION = "v0.85.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9375,6 +9375,9 @@ function updateProjectiles(dt) {
       continue;
     }
 
+    // v0.85: 呑竜の周りに来た通常弾だけを吸い込む（建物に当たる判定より先）
+    if (tryDeflectAbsorb(i)) { projActive[i] = 0; continue; }
+
     checkProjectileHitBoids(i);
   }
 }
@@ -9447,6 +9450,8 @@ function checkProjectileHitBoids(projIdx) {
 function applyProjectileKnockback(boidIdx, projIdx) {
   // v0.6-p2: 緋竜（MELEE）はノックバック無効（突っ込み続ける。仕様 §6.4）
   if (flockWeapon === "melee") return;
+  // v0.85: 巌竜も押されない（重さが役割なので、弾でよろけたら噰）
+  if (boidSpecial[boidIdx] === SPECIAL_HEAVY) return;
 
   const pvx    = projVx[projIdx];
   const pvy    = projVy[projIdx];
@@ -9517,6 +9522,7 @@ function updateBeamAttacks(dt) {
   for (let i = 0; i < N; i++) {
     // 変更2: ダウン中はブレスを吐かない
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
 
     buildingGridQueryRadius(px[i], py[i], cellRadius, _buildingNeighbourBuf);
 
@@ -9635,7 +9641,8 @@ function updateCollisionAttacks(dt) {
       if (!s || s.fallen) continue;
 
       // 衝突判定: ドラゴン半径6px + 建物半径 の合計以内に入ったら衝突
-      const collideR = s.radius + 6;
+      // v0.85: 巌竜は体が大きいので当たりもその分広げる（見た目と判定を一致させる）
+      const collideR = s.radius + 6 * boidBodyScale(i);
       const dx = s.wx - px[i];
       const dy = s.wy - py[i];
       if (dx * dx + dy * dy > collideR * collideR) continue;
@@ -9644,17 +9651,23 @@ function updateCollisionAttacks(dt) {
 
       // 建物にダメージ（ブレスより大きい単発ダメージ）
       // v0.6-p2: 緋竜（MELEE）は体当たりが主武装（威力約3倍・クールダウン短縮。仕様 §6.4）
+      // v0.85: 巌竜は体当たりが唯一の攻撃手段なので、通常の8や緋竜の25とは別格の威力を持つ
+      const isHeavy = boidSpecial[i] === SPECIAL_HEAVY;
       const isMelee = flockWeapon === "melee";
-      s.hp -= isMelee
-        ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
-        : COLLISION_DAMAGE;
+      s.hp -= isHeavy
+        ? effHeavyDamage()
+        : isMelee
+          ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
+          : COLLISION_DAMAGE;
 
       // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）。
       // v0.33: 攻撃の fireStun（硬直）が長ければそちらを使う
       // ＝爪撃（緋竜）は当たった後にぐっと重く止まる。v0.34: 攻撃側から引く。
-      boidHitStopTimer[i]    = Math.max(HITSTOP_DURATION, atk().fireStun);
+      // v0.85: 巌竜は止まらない（ヒットストップを受けずに轢進むのが見せ場）
+      if (!isHeavy) boidHitStopTimer[i] = Math.max(HITSTOP_DURATION, atk().fireStun);
       // クールダウンをセットして同じ建物への連続ヒットを防ぐ
-      boidCollisionCooldown[i] = isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
+      boidCollisionCooldown[i] = isHeavy ? HEAVY_RAM_COOLDOWN
+                               : isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
 
       // 強めのパーティクル（破片が飛ぶ）
       spawnCollisionParticles(s.wx, s.wy);
@@ -9662,6 +9675,11 @@ function updateCollisionAttacks(dt) {
       if (isMelee) {
         spawnMeleeImpactFx(s.wx, s.wy, Math.atan2(vy[i], vx[i]));
         triggerShake(2.2, 0.09);
+      }
+      // v0.85: 巌竜の一撃は「押し潰した」と読めるよう衝撃波と揺れを出す
+      if (isHeavy) {
+        emitShockwave(s.wx, s.wy, 34 * boidBodyScale(i), 0, 26);
+        triggerShake(3.2, 0.11);
       }
 
       // 振動フィードバック（15ms）
@@ -9995,6 +10013,27 @@ let boidCollisionCooldown;
 let boidDowned;
 let boidDownTimer;
 let boidReviveTimer;
+// v0.85: 特殊個体の種別。実装本体は下部の「特殊個体」モジュールにあるが、
+// CARD_DEFS の初期化子が specialJoin でこれを参照するので定数だけ先に置く。
+const SPECIAL_NONE    = 0;
+const SPECIAL_BEACON  = 1;
+const SPECIAL_HEAVY   = 2;
+const SPECIAL_DEFLECT = 3;
+
+const SPECIAL_DEFS = {
+  [SPECIAL_BEACON]:  { key: "beacon",  name: "灯竜", color: "#ffd36b", hpMult: 1.5 },
+  [SPECIAL_HEAVY]:   { key: "heavy",   name: "巌竜", color: "#b9a68c", hpMult: 3.0 },
+  [SPECIAL_DEFLECT]: { key: "deflect", name: "呑竜", color: "#9fd8ff", hpMult: 2.0 },
+};
+
+// 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
+// boidSpecialAngle = 灯竜の光条の向き / boidSpecialStock = 呑竜の溜め弾数 /
+// boidSpecialTimer = 汎用タイマー / boidSpecialCd = 呑竜のクールダウン。
+let boidSpecial;
+let boidSpecialAngle;
+let boidSpecialStock;
+let boidSpecialTimer;
+let boidSpecialCd;
 
 // 変更4: 竜のHP を10倍（3 → 30）にして群れが簡単に壊滅しなくなる
 const BOID_MAX_HP   = 30;
@@ -10030,6 +10069,12 @@ function initBoids() {
   boidDowned            = new Uint8Array(MAX_BOIDS);
   boidDownTimer         = new Float32Array(MAX_BOIDS);
   boidReviveTimer       = new Float32Array(MAX_BOIDS);
+  // v0.85: 特殊個体
+  boidSpecial           = new Uint8Array(MAX_BOIDS);
+  boidSpecialAngle      = new Float32Array(MAX_BOIDS);
+  boidSpecialStock      = new Float32Array(MAX_BOIDS);
+  boidSpecialTimer      = new Float32Array(MAX_BOIDS);
+  boidSpecialCd         = new Float32Array(MAX_BOIDS);
   // v0.6-p2: 射撃タイマー（BULLET/MISSILE共用）
   boidFireTimer         = new Float32Array(MAX_BOIDS);
   // 尻尾角度履歴リングバッファ（TAIL_SEGS個前までの進行角度）
@@ -10098,7 +10143,9 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
   // N を初期数に戻し、全スロットを dead でリセットしてから有効分を起こす。
   // v0.19: 2回目以降のラン開始は初期1体（塊魂的にゼロから積み上げる）。
   // ステージ間リセットは既定の BOIDS_INITIAL。範囲は 1..MAX_BOIDS にクランプ。
-  N = Math.max(1, Math.min(MAX_BOIDS, initialCount | 0));
+  // v0.85: 加入済みの特殊個体はスロット1以降に入るので、その分だけ N を下限として確保する
+  N = Math.max(1, 1 + runSpecials.length, Math.min(MAX_BOIDS, initialCount | 0));
+  N = Math.min(MAX_BOIDS, N);
 
   // v0.7: 強化カードが持ち越されるため、HPは実効最大値（硬鱗・種族補正込み）で初期化する
   const maxHpNow = effBoidMaxHp();
@@ -10115,6 +10162,11 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     boidDowned[i]            = 0;
     boidDownTimer[i]         = 0;
     boidReviveTimer[i]       = 0;
+    boidSpecial[i]           = SPECIAL_NONE;
+    boidSpecialAngle[i]      = 0;
+    boidSpecialStock[i]      = 0;
+    boidSpecialTimer[i]      = 0;
+    boidSpecialCd[i]         = 0;
     boidFireTimer[i]         = random() * currentFireInterval(); // 射撃をばらけさせる
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = 0;
@@ -10133,6 +10185,10 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = ang;
   }
+
+  // v0.85: 加入済みの特殊個体をスロット1以降へ割り当て直す（HPもここで強化分込みになる）
+  applyRunSpecials();
+  clearSpecialBolts();
 
   // v0.22: 母竜だけ恒常ツリーの motherHp 倍率ぶん最大HPを引き上げる
   if (N > MOTHER_DRAGON_IDX) boidHp[MOTHER_DRAGON_IDX] = effBoidMaxHpFor(MOTHER_DRAGON_IDX);
@@ -10481,6 +10537,15 @@ const STRINGS = {
     mbreath_unlock: { name: "母なる吐息", desc: "母竜が周期的に特大ブレスを放つ" },
     mbreath_dmg: { name: "母竜の吐息", desc: "母竜ブレスの威力 +30%" },
     mbreath_rate: { name: "母竜の鼓動", desc: "母竜ブレスの発動が速くなる（-18%間隔）" },
+    sp_beacon:  { name: "灯竜",       desc: "回る光条を持つ特殊個体が加わる" },
+    sp_heavy:   { name: "巌竜",       desc: "体当たりで建物を砕く巨体の特殊個体が加わる" },
+    sp_deflect: { name: "呑竜",       desc: "周囲の弾を吸って撃ち返す特殊個体が加わる" },
+    sp_beacon_len:     { name: "遠く届く灯", desc: "灯竜の光条が +25% 長くなる" },
+    sp_beacon_dmg:     { name: "白熱の灯",   desc: "灯竜の光条の威力 +30%" },
+    sp_heavy_dmg:      { name: "砕く角",     desc: "巌竜の体当たり威力 +35%" },
+    sp_heavy_size:     { name: "肥える巌",   desc: "巌竜が +15% 大きくなる（当たりも広い）" },
+    sp_deflect_cap:    { name: "大食らい",   desc: "呑竜が溜められる弾 +4" },
+    sp_deflect_range:  { name: "引き込む渦", desc: "呑竜の吸引範囲 +30%" },
   },
 };
 
@@ -10559,6 +10624,18 @@ const CARD_DEFS = [
   { id: "mbreath_unlock", icon: "\u{1F308}", rarity: "star", max: 1, motherUnlock: true },
   { id: "mbreath_dmg",  icon: "\u{1F432}", rarity: "rare", max: 5, mother: true },
   { id: "mbreath_rate", icon: "\u{1F493}", rarity: "rare", max: 4, mother: true },
+  // E. 特殊個体（v0.85）。specialJoin は「1匹加入させる★カード」で、
+  // 連れ歩ける数（effSpecialSlots）に達したらプールから消える。
+  // specialOf の強化カードは「その種類を連れているときだけ」出る（空振りを作らない）。
+  { id: "sp_beacon",  icon: "\u{1F526}", rarity: "star", max: 3, specialJoin: SPECIAL_BEACON },
+  { id: "sp_heavy",   icon: "\u{1FAA8}", rarity: "star", max: 3, specialJoin: SPECIAL_HEAVY },
+  { id: "sp_deflect", icon: "\u{1F300}", rarity: "star", max: 3, specialJoin: SPECIAL_DEFLECT },
+  { id: "sp_beacon_len",    icon: "\u{1F4CF}", rarity: "rare", max: 3, specialOf: SPECIAL_BEACON },
+  { id: "sp_beacon_dmg",    icon: "\u2728",    rarity: "rare", max: 4, specialOf: SPECIAL_BEACON },
+  { id: "sp_heavy_dmg",     icon: "\u{1F4A2}", rarity: "rare", max: 4, specialOf: SPECIAL_HEAVY },
+  { id: "sp_heavy_size",    icon: "\u{1F411}", rarity: "rare", max: 3, specialOf: SPECIAL_HEAVY },
+  { id: "sp_deflect_cap",   icon: "\u{1F373}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
+  { id: "sp_deflect_range", icon: "\u{1F30A}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
@@ -10583,6 +10660,8 @@ function defaultPermaBuff() {
     // v0.30: 母竜ライン。母竜ブレスは常時発動（解禁フラグ廃止）なので、ツリーは全て乗算の底上げ。
     // motherRate は発動間隔の倍率（<1 で高頻度化）。
     motherHp: 1, motherDmg: 1, motherRate: 1,
+    // v0.85: 特殊個体ライン。specialSlots は加算（同時に連れ歩ける数）、specialDmg は乗算。
+    specialSlots: 0, specialDmg: 1,
   };
 }
 let permaBuff = defaultPermaBuff();
@@ -10613,7 +10692,12 @@ function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
 // v0.6-p2: 緋竜（MELEE）は個体HP +50%（仕様 §6.4）
 function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1); }
 // v0.22: 個体別の最大HP。母竜だけ恒常ツリーの motherHp 倍率が乗る。
-function effBoidMaxHpFor(i) { return effBoidMaxHp() * (isMotherDragon(i) ? permaBuff.motherHp : 1); }
+// v0.85: 特殊個体は役割ごとのHP倍率を持つ（巌竜は轢進む前提なので 3 倍）。
+function effBoidMaxHpFor(i) {
+  const spDef = boidSpecial && SPECIAL_DEFS[boidSpecial[i]];
+  const spMult = spDef ? spDef.hpMult : 1;
+  return effBoidMaxHp() * (isMotherDragon(i) ? permaBuff.motherHp : 1) * spMult;
+}
 
 // ---- カード取得時の即時効果（倍率系は eff* で都度参照するため不要）----
 function applyCardImmediate(cardId) {
@@ -10640,6 +10724,10 @@ function applyCardImmediate(cardId) {
     convertFlock("crimson");
   } else if (cardId === "orb") {
     addXp(150);
+  } else {
+    // v0.85: 特殊個体の加入カードは、その場で群れに1匹加える
+    const joinDef = CARD_DEFS.find(d => d.id === cardId && d.specialJoin);
+    if (joinDef) addRunSpecial(joinDef.specialJoin);
   }
 }
 
@@ -10669,6 +10757,10 @@ function resetProgression() {
   tierSlowmoTimer = 0;
   evolutionChosen = false;   // v0.14: 新しいランでは再び最初のレベルアップで竜種を選ぶ
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
+  // v0.85: 加入済みの特殊個体もランごとにゼロへ（カードと同じ寿命）
+  runSpecials.length = 0;
+  if (boidSpecial) boidSpecial.fill(SPECIAL_NONE);
+  clearSpecialBolts();
   // 竜種も火竜に戻る（新しいランはビルドをゼロから組み直す）
   setFlockSpecies("fire");
   if (boidFireTimer) boidFireTimer.fill(0);
@@ -10859,6 +10951,10 @@ function buildLevelUpCards() {
     if (upCount(def.id) >= def.max) return false;
     // v0.31: 母竜ブレスの強化はラン中に「母なる吐息」を引いた後だけ出す（空振りカードを作らない）
     if (def.mother && !isMotherBreathUnlocked()) return false;
+    // v0.85: 特殊個体の加入は枠が空いているときだけ。
+    // 強化はその種類を実際に連れているときだけ出す。
+    if (def.specialJoin && runSpecials.length >= effSpecialSlots()) return false;
+    if (def.specialOf && !runSpecials.includes(def.specialOf)) return false;
     // 武器強化カードは現在の武器タイプにのみ出現
     if (def.weapon && def.weapon !== flockWeapon) return false;
     // ★進化は最初のレベルアップ専用（上の分岐でのみ出る）
@@ -11172,6 +11268,7 @@ function updateBulletAttacks(dt) {
 
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -11194,6 +11291,7 @@ function updateMissileAttacks(dt) {
 
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -11488,6 +11586,487 @@ function updateMotherBreath(dt) {
   if (hits > 0) { triggerFlash("rgba(255,180,60,0.22)", 0.14); hapticPulse(40); }
 }
 
+
+// =================================================================
+// v0.85: 特殊個体（ラン中に加入する「役割持ちの1匹」）
+//
+// 母竜（スロット0固定）とは別に、ラン中の★カードで **群れに1匹ずつ加わる**
+// 特別な竜。恒常ツリーで枠が増えるまでは同時に SPECIAL_SLOTS_BASE 体まで。
+//
+//   灯竜（beacon） : 自分の周りをゆっくり回る光条。触れたものが焼ける。
+//                    進行方向を向いている間は回転が遅く、後ろ向きでは速い
+//                    ＝直進すると前で粘り、旋回すると薙ぎ払いになる。
+//   巌竜（heavy）  : ブレスを撃たない。体当たりだけで建物を砕く。大きく・硬く・
+//                    ノックバックもヒットストップも受けずに轢き進む。
+//   呑竜（deflect）: 自分の周り 70px に来た通常弾だけを吸い込んで溜める。
+//                    満杯になると 1.5 秒後に前方へ束にして撃ち返し、
+//                    その後 3 秒は吸えない（＝弾幕そのものは無効化しない）。
+//
+// 設計メモ: 効果は必ず「画面を見ただけで何が起きたか分かる」形にしている
+// （回る光条／巨体が建物を潰す／弾が吸われて球が育つ）。
+// ダウン中は母竜と同じく能力ごと消える。
+// =================================================================
+// 同時に連れ歩ける特殊個体の数（恒常ツリー「特殊個体の枠」で増える）
+const SPECIAL_SLOTS_BASE = 3;
+function effSpecialSlots() { return SPECIAL_SLOTS_BASE + permaBuff.specialSlots; }
+
+// ---- 灯竜 ----
+const BEACON_LENGTH   = 150;   // 光条の長さ（px）
+const BEACON_WIDTH    = 13;    // 光条の半幅（当たり判定）
+const BEACON_DPS      = 18;    // 光条に触れている間の毎秒ダメージ
+// v0.85: 前後の差を強くしすぎると「前を向いたまま止まって見える」。
+// 0.35/2.20 では1回転 5.3〜5.7秒で、旋回中は進行方向に捕まり続けて
+// 実質静止していたので下限を引き上げた（1回転 3.6〜3.8秒。実測済み）。
+// 前で粘る性質（直進で前を焚く）は 2.8 倍の差として残す。
+const BEACON_SPIN_MIN = 1.00;  // 進行方向を向いているときの角速度（rad/s・遅い＝前で粘る）
+const BEACON_SPIN_MAX = 2.80;  // 真後ろを向いているときの角速度（rad/s・速い）
+
+// ---- 巌竜 ----
+const HEAVY_SCALE        = 1.5;   // 基本の体格倍率（さらにレベルで育つ）
+const HEAVY_GROWTH       = 0.04;  // レベルごとの体格増分
+const HEAVY_GROWTH_MAX   = 0.60;  // 体格成長の上限
+const HEAVY_RAM_DAMAGE   = 60;    // 体当たり1発のダメージ（通常8／緋竜25）
+const HEAVY_RAM_COOLDOWN = 0.40;  // 体当たりの再発動間隔
+const HEAVY_MOVER_CD     = 0.50;  // 移動敵を轢く間隔（建物とは別タイマー）
+
+// ---- 呑竜 ----
+const DEFLECT_RADIUS   = 70;    // 弾を吸い込む半径（群れ全体ではなく「この1匹の周り」だけ）
+const DEFLECT_CAPACITY = 10;    // 溜められる弾数。満杯の間は吸わない
+const DEFLECT_HOLD     = 1.5;   // 満杯から撃ち返すまでの溜め時間
+const DEFLECT_COOLDOWN = 3.0;   // 撃ち返した後、吸えない時間
+const DEFLECT_BOLT_DMG = 20;    // 撃ち返す弾1発のダメージ
+const DEFLECT_BOLT_SPD = 430;   // 撃ち返す弾の速度（px/s）
+const DEFLECT_FAN      = 0.36;  // 撃ち返す扇の半角（rad）
+
+// ---- ラン中カードによる強化（都度計算。ステージリセットでは消えない）----
+function effBeaconLength()  { return BEACON_LENGTH * (1 + 0.25 * upCount("sp_beacon_len")); }
+function effBeaconDps()     { return BEACON_DPS * (1 + 0.30 * upCount("sp_beacon_dmg")) * permaBuff.specialDmg; }
+function effHeavyDamage()   { return HEAVY_RAM_DAMAGE * (1 + 0.35 * upCount("sp_heavy_dmg")) * permaBuff.specialDmg; }
+function effHeavyScale()    {
+  const grow = 1 + Math.min(HEAVY_GROWTH * (playerLevel - 1), HEAVY_GROWTH_MAX);
+  return HEAVY_SCALE * grow * (1 + 0.15 * upCount("sp_heavy_size"));
+}
+function effDeflectRadius() { return DEFLECT_RADIUS * (1 + 0.30 * upCount("sp_deflect_range")); }
+function effDeflectCap()    { return DEFLECT_CAPACITY + 4 * upCount("sp_deflect_cap"); }
+function effDeflectDmg()    { return DEFLECT_BOLT_DMG * permaBuff.specialDmg; }
+
+// ---- ラン内で加入済みの特殊個体（種別の配列。ステージをまたいで持ち越す）----
+let runSpecials = [];
+
+/** 移動敵の当たり半径。実体は def 側にある（m.radius は存在しない）。 */
+function moverRadiusOf(m) { return (m.def && m.def.radius) || 10; }
+
+/** その個体が「今この瞬間に能力を発揮しているか」。ダウン中・死亡中は false。 */
+function isSpecialActive(i) {
+  return i < N && boidSpecial[i] !== SPECIAL_NONE && !boidDead[i] && !boidDowned[i];
+}
+
+/** 描画・当たり判定に使う体格倍率（母竜の成長と巌竜の巨体を一本化）。 */
+function boidBodyScale(i) {
+  if (boidSpecial[i] === SPECIAL_HEAVY && !boidDowned[i] && !boidDead[i]) return effHeavyScale();
+  if (isMotherDragon(i) && isMotherActive()) return motherBodyScale();
+  return 1;
+}
+
+/**
+ * 特殊個体を1匹加入させる（★カードから呼ぶ）。
+ * 空きスロットがあれば新しい竜として増やし、群れ上限に達していれば
+ * 既存の通常個体（母竜以外）を1匹だけ転じる。どちらも群れの数は減らない。
+ */
+function addRunSpecial(kind) {
+  let idx = -1;
+  if (N < MAX_BOIDS) {
+    idx = N;
+    N++;
+    const c = calcFriendlyCentroid();
+    const a = random() * Math.PI * 2;
+    const r = 24 + random() * 36;
+    px[idx] = c.x + Math.cos(a) * r;
+    py[idx] = c.y + Math.sin(a) * r;
+    const va = random() * Math.PI * 2;
+    vx[idx] = Math.cos(va) * mv().minSpeed;
+    vy[idx] = Math.sin(va) * mv().minSpeed;
+    boidDead[idx]        = 0;
+    boidDowned[idx]      = 0;
+    boidFadeTimer[idx]   = 0;
+    boidReviveTimer[idx] = 0;
+    boidDownTimer[idx]   = 0;
+    const base = idx * TAIL_SEGS;
+    for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = va;
+    spawnDragonAppearEffect(px[idx], py[idx]);
+  } else {
+    // 満員: 母竜と既存の特殊個体を避けて1匹を転じる
+    for (let i = 1; i < N; i++) {
+      if (!boidDead[i] && !boidDowned[i] && boidSpecial[i] === SPECIAL_NONE) { idx = i; break; }
+    }
+    if (idx < 0) return;
+  }
+  runSpecials.push(kind);
+  markSpecial(idx, kind);
+  const def = SPECIAL_DEFS[kind];
+  pushWorldText(px[idx], py[idx] - 24, def.name + " 加入", def.color);
+  triggerFlash("rgba(255,220,150,0.30)", 0.16);
+  hapticPulse(50);
+}
+
+/** スロットを特殊個体に設定し、HPと内部状態を初期化する。 */
+function markSpecial(idx, kind) {
+  boidSpecial[idx]      = kind;
+  boidSpecialAngle[idx] = Math.atan2(vy[idx], vx[idx]);
+  boidSpecialStock[idx] = 0;
+  boidSpecialTimer[idx] = 0;
+  boidSpecialCd[idx]    = 0;
+  boidHp[idx]           = effBoidMaxHpFor(idx);
+}
+
+/**
+ * ステージ開始時に、加入済みの特殊個体をスロット1以降へ割り当て直す。
+ * resetBoidsForStageStart が N と全フラグを初期化した後に呼ぶ。
+ */
+function applyRunSpecials() {
+  for (let i = 0; i < MAX_BOIDS; i++) boidSpecial[i] = SPECIAL_NONE;
+  for (let k = 0; k < runSpecials.length; k++) {
+    const idx = 1 + k;                 // スロット0は母竜なので1から詰める
+    if (idx >= N) break;               // N は呼び出し側で十分に確保済み
+    markSpecial(idx, runSpecials[k]);
+  }
+}
+
+// ---- 特殊個体が撃つ弾（呑竜の撃ち返し）----
+// 自軍の氷弾・ミサイルとは独立した軽量プール。見た目も別物にして
+// 「吸った弾がそのまま返っている」ことが読めるようにする。
+const MAX_SBOLT = 200;
+const sboltX      = new Float32Array(MAX_SBOLT);
+const sboltY      = new Float32Array(MAX_SBOLT);
+const sboltVx     = new Float32Array(MAX_SBOLT);
+const sboltVy     = new Float32Array(MAX_SBOLT);
+const sboltLife   = new Float32Array(MAX_SBOLT);
+const sboltDmg    = new Float32Array(MAX_SBOLT);
+const sboltActive = new Uint8Array(MAX_SBOLT);
+const SBOLT_LIFE = 1.1;
+
+function spawnSpecialBolt(x, y, angle, speed, damage) {
+  for (let i = 0; i < MAX_SBOLT; i++) {
+    if (sboltActive[i]) continue;
+    sboltActive[i] = 1;
+    sboltX[i]    = x;
+    sboltY[i]    = y;
+    sboltVx[i]   = Math.cos(angle) * speed;
+    sboltVy[i]   = Math.sin(angle) * speed;
+    sboltLife[i] = SBOLT_LIFE;
+    sboltDmg[i]  = damage;
+    return;
+  }
+}
+
+function clearSpecialBolts() { sboltActive.fill(0); }
+
+const _sboltBuf = [];
+function updateSpecialBolts(dt) {
+  for (let i = 0; i < MAX_SBOLT; i++) {
+    if (!sboltActive[i]) continue;
+    sboltLife[i] -= dt;
+    if (sboltLife[i] <= 0) { sboltActive[i] = 0; continue; }
+    sboltX[i] += sboltVx[i] * dt;
+    sboltY[i] += sboltVy[i] * dt;
+    if (sboltX[i] < -40 || sboltX[i] > WORLD_W + 40 || sboltY[i] < -40 || sboltY[i] > WORLD_H + 40) {
+      sboltActive[i] = 0;
+      continue;
+    }
+    // 建物（近傍セルのみ）
+    let consumed = false;
+    buildingGridQueryRadius(sboltX[i], sboltY[i], 1, _sboltBuf);
+    for (const sIdx of _sboltBuf) {
+      const s = settlements[sIdx];
+      if (!s || s.fallen) continue;
+      const dx = s.wx - sboltX[i], dy = s.wy - sboltY[i];
+      const rr = s.radius + 4;
+      if (dx * dx + dy * dy > rr * rr) continue;
+      damageBuilding(sIdx, sboltDmg[i]);
+      spawnHitParticles(sboltX[i], sboltY[i]);
+      consumed = true;
+      break;
+    }
+    if (consumed) { sboltActive[i] = 0; continue; }
+    // 移動敵
+    for (const m of movers) {
+      if (!m.alive) continue;
+      const dx = m.wx - sboltX[i], dy = m.wy - sboltY[i];
+      const rr = moverRadiusOf(m) + 4;
+      if (dx * dx + dy * dy > rr * rr) continue;
+      damageMover(m, sboltDmg[i], sboltX[i], sboltY[i]);
+      spawnHitParticles(sboltX[i], sboltY[i]);
+      consumed = true;
+      break;
+    }
+    if (consumed) sboltActive[i] = 0;
+  }
+}
+
+// ---- 毎フレームの更新 ----
+const _specialBuf = [];
+const deflectSlots = [];   // 呑竜のスロット番号（updateSpecials で毎フレーム作り直す）
+
+function updateSpecials(dt) {
+  // 呑竜のスロットを先に集め直す。tryDeflectAbsorb は弾1発ごとに呼ばれるので、
+  // 群れ全体（最大150）を走査させると 弾900 x 150 になってしまう。
+  deflectSlots.length = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidSpecial[i] === SPECIAL_DEFLECT) deflectSlots.push(i);
+  }
+  if (gameState !== "playing") return;
+  for (let i = 0; i < N; i++) {
+    const kind = boidSpecial[i];
+    if (kind === SPECIAL_NONE) continue;
+    if (boidDead[i] || boidDowned[i]) {
+      // ダウン中は能力ごと消える（溜めた弾も失う）
+      boidSpecialStock[i] = 0;
+      boidSpecialTimer[i] = 0;
+      continue;
+    }
+    if (kind === SPECIAL_BEACON)       updateBeaconDragon(i, dt);
+    else if (kind === SPECIAL_HEAVY)   updateHeavyDragon(i, dt);
+    else if (kind === SPECIAL_DEFLECT) updateDeflectDragon(i, dt);
+  }
+  updateSpecialBolts(dt);
+}
+
+/**
+ * 灯竜: 光条を回しながら、触れた建物と移動敵を焼く。
+ * 角速度は「進行方向からどれだけずれているか」で決まる（前で遅く、後ろで速い）。
+ */
+function updateBeaconDragon(i, dt) {
+  const heading = Math.atan2(vy[i], vx[i]);
+  const diff    = Math.abs(wrapAngle(heading - boidSpecialAngle[i])) / Math.PI;  // 0=前 1=後
+  const spin    = BEACON_SPIN_MIN + (BEACON_SPIN_MAX - BEACON_SPIN_MIN) * diff;
+  boidSpecialAngle[i] = wrapAngle(boidSpecialAngle[i] + spin * dt);
+
+  const len = effBeaconLength();
+  const dmg = effBeaconDps() * dt;
+  const a   = boidSpecialAngle[i];
+  const ca  = Math.cos(a), sa = Math.sin(a);
+  const ox  = px[i], oy = py[i];
+
+  const cell = Math.max(1, Math.ceil(len / BUILDING_GRID_CELL));
+  buildingGridQueryRadius(ox, oy, cell, _specialBuf);
+  for (const sIdx of _specialBuf) {
+    const s = settlements[sIdx];
+    if (!s || s.fallen) continue;
+    const dx = s.wx - ox, dy = s.wy - oy;
+    const t  = dx * ca + dy * sa;                 // 光条に沿った距離
+    if (t < -s.radius || t > len + s.radius) continue;
+    if (Math.abs(-dx * sa + dy * ca) > BEACON_WIDTH + s.radius) continue;   // 光条からの横ずれ
+    damageBuilding(sIdx, dmg);
+    if (fxRandom() < 0.08) spawnHitParticles(s.wx, s.wy);
+  }
+  for (const m of movers) {
+    if (!m.alive) continue;
+    const mr = moverRadiusOf(m);
+    const dx = m.wx - ox, dy = m.wy - oy;
+    const t  = dx * ca + dy * sa;
+    if (t < -mr || t > len + mr) continue;
+    if (Math.abs(-dx * sa + dy * ca) > BEACON_WIDTH + mr) continue;
+    damageMover(m, dmg, ox, oy);
+  }
+}
+
+/** 巌竜: 建物への体当たりは updateCollisionAttacks 側で処理。ここは移動敵を轢く分。 */
+function updateHeavyDragon(i, dt) {
+  if (boidSpecialTimer[i] > 0) { boidSpecialTimer[i] = Math.max(0, boidSpecialTimer[i] - dt); return; }
+  const reach = 10 * effHeavyScale();
+  for (const m of movers) {
+    if (!m.alive) continue;
+    const mr = moverRadiusOf(m) + reach;
+    const dx = m.wx - px[i], dy = m.wy - py[i];
+    if (dx * dx + dy * dy > mr * mr) continue;
+    damageMover(m, effHeavyDamage(), px[i], py[i]);
+    spawnCollisionParticles(m.wx, m.wy);
+    boidSpecialTimer[i] = HEAVY_MOVER_CD;
+    triggerShake(1.8, 0.07);
+    return;
+  }
+}
+
+/** 呑竜: 溜めと撃ち返しの状態機械。吸い込み自体は updateProjectiles 側から呼ばれる。 */
+function updateDeflectDragon(i, dt) {
+  if (boidSpecialCd[i] > 0) {                     // 撃ち返し直後のクールダウン
+    boidSpecialCd[i] = Math.max(0, boidSpecialCd[i] - dt);
+    return;
+  }
+  if (boidSpecialStock[i] < effDeflectCap()) return;
+  boidSpecialTimer[i] += dt;                      // 満杯になってからの溜め
+  if (boidSpecialTimer[i] < DEFLECT_HOLD) return;
+
+  const count = Math.round(boidSpecialStock[i]);
+  const base  = Math.atan2(vy[i], vx[i]);
+  const dmg   = effDeflectDmg();
+  for (let k = 0; k < count; k++) {
+    const off = count > 1 ? (k / (count - 1) - 0.5) * 2 * DEFLECT_FAN : 0;
+    spawnSpecialBolt(px[i], py[i], base + off, DEFLECT_BOLT_SPD, dmg);
+  }
+  boidSpecialStock[i] = 0;
+  boidSpecialTimer[i] = 0;
+  boidSpecialCd[i]    = DEFLECT_COOLDOWN;
+  triggerFlash("rgba(150,215,255,0.20)", 0.12);
+  hapticPulse(35);
+}
+
+/**
+ * 敵弾を呑竜が吸い込めるか判定する（updateProjectiles から毎フレーム1回）。
+ * 吸えるのは通常弾（kind 0=矢 / 1=カタパルト弾）だけ。レーザー・着弾弾・
+ * ロケット・ボス重弾は対象外なので、避ける種類の攻撃はそのまま残る。
+ * @returns {boolean} 吸い込んだら true（弾はそこで消える）
+ */
+function tryDeflectAbsorb(projIdx) {
+  const kind = projKind[projIdx];
+  if (kind !== 0 && kind !== 1) return false;
+  if (deflectSlots.length === 0) return false;
+  const cap = effDeflectCap();
+  const r   = effDeflectRadius();
+  const r2  = r * r;
+  for (const i of deflectSlots) {
+    if (boidSpecial[i] !== SPECIAL_DEFLECT) continue;   // 集めた後に変わっていた場合の保険
+    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidSpecialCd[i] > 0) continue;              // クールダウン中は吸わない
+    if (boidSpecialStock[i] >= cap) continue;        // 満杯なら吸わない
+    const dx = projWx[projIdx] - px[i], dy = projWy[projIdx] - py[i];
+    if (dx * dx + dy * dy > r2) continue;
+    boidSpecialStock[i] += 1;
+    spawnHitParticles(projWx[projIdx], projWy[projIdx]);
+    return true;
+  }
+  return false;
+}
+
+// ---- 描画 ----
+
+/** 竜より下のレイヤー: 灯竜の光条と、特殊個体の足元リング。 */
+function drawSpecialUnder() {
+  for (let i = 0; i < N; i++) {
+    const kind = boidSpecial[i];
+    if (kind === SPECIAL_NONE) continue;
+    if (boidDead[i] || boidDowned[i]) continue;
+    const def = SPECIAL_DEFS[kind];
+
+    // 足元リング: 群れの中からこの1匹を見つけられるようにする目印
+    const rr = 11 * boidBodyScale(i);
+    ctx.save();
+    ctx.globalAlpha = 0.45 + 0.15 * Math.sin(breathTime * 3 + i);
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.arc(px[i], py[i], rr, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+
+    if (kind === SPECIAL_BEACON)  drawBeaconBeam(i);
+    if (kind === SPECIAL_DEFLECT) drawDeflectField(i, def.color);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** 灯竜の光条。加算合成で「光っている棒」に見せる（先端に向けて細く・薄く）。 */
+function drawBeaconBeam(i) {
+  const len = effBeaconLength();
+  ctx.save();
+  ctx.translate(px[i], py[i]);
+  ctx.rotate(boidSpecialAngle[i]);
+  ctx.globalCompositeOperation = "lighter";
+  // 外側のにじみ
+  const grad = ctx.createLinearGradient(0, 0, len, 0);
+  grad.addColorStop(0,    "rgba(255,225,150,0.55)");
+  grad.addColorStop(0.65, "rgba(255,190,90,0.28)");
+  grad.addColorStop(1,    "rgba(255,150,60,0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.moveTo(0, -BEACON_WIDTH);
+  ctx.lineTo(len, -BEACON_WIDTH * 0.45);
+  ctx.lineTo(len,  BEACON_WIDTH * 0.45);
+  ctx.lineTo(0,    BEACON_WIDTH);
+  ctx.closePath();
+  ctx.fill();
+  // 芯
+  const core = ctx.createLinearGradient(0, 0, len, 0);
+  core.addColorStop(0, "rgba(255,255,235,0.95)");
+  core.addColorStop(1, "rgba(255,220,140,0)");
+  ctx.fillStyle = core;
+  ctx.fillRect(0, -2.0, len, 4.0);
+  ctx.restore();
+  ctx.globalCompositeOperation = "source-over";
+}
+
+/** 呑竜の吸引域。吸える間だけ輪が出る（クールダウン中は消える＝吸えないことが分かる）。 */
+function drawDeflectField(i, color) {
+  if (boidSpecialCd[i] > 0) return;
+  const r = effDeflectRadius();
+  ctx.save();
+  ctx.globalAlpha = 0.16 + 0.10 * Math.sin(breathTime * 2.2 + i);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.setLineDash([6, 7]);
+  ctx.lineDashOffset = -breathTime * 22;
+  ctx.beginPath();
+  ctx.arc(px[i], py[i], r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/** 竜より上のレイヤー: 呑竜が溜めている弾（周回する球）。数が見えることが肝。 */
+function drawSpecialOver() {
+  for (let i = 0; i < N; i++) {
+    if (boidSpecial[i] !== SPECIAL_DEFLECT) continue;
+    if (boidDead[i] || boidDowned[i]) continue;
+    const stock = Math.round(boidSpecialStock[i]);
+    if (stock <= 0) continue;
+    const full  = stock >= effDeflectCap();
+    const orbit = 16 + 5 * Math.min(1, stock / 12);
+    const spin  = breathTime * (full ? 4.5 : 1.8);
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (let k = 0; k < stock; k++) {
+      const a  = spin + (k / stock) * Math.PI * 2;
+      const ox = px[i] + Math.cos(a) * orbit;
+      const oy = py[i] + Math.sin(a) * orbit;
+      ctx.fillStyle = full ? "rgba(210,240,255,0.95)" : "rgba(150,210,255,0.80)";
+      ctx.beginPath();
+      ctx.arc(ox, oy, full ? 3.0 : 2.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalCompositeOperation = "source-over";
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** 呑竜が撃ち返した弾。吸った弾が返っていると読めるよう、尾を引く白青の粒で描く。 */
+function drawSpecialBolts() {
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineCap = "round";
+  for (let i = 0; i < MAX_SBOLT; i++) {
+    if (!sboltActive[i]) continue;
+    const sx = (sboltX[i] - cam.x) * cam.scale + viewW * 0.5;
+    const sy = (sboltY[i] - cam.y) * cam.scale + viewH * 0.5;
+    if (sx < -40 || sx > viewW + 40 || sy < -40 || sy > viewH + 40) continue;
+    const sp = Math.sqrt(sboltVx[i] * sboltVx[i] + sboltVy[i] * sboltVy[i]) || 1;
+    const nx = sboltVx[i] / sp, ny = sboltVy[i] / sp;
+    ctx.strokeStyle = "rgba(140,205,255,0.55)";
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.moveTo(sboltX[i] - nx * 13, sboltY[i] - ny * 13);
+    ctx.lineTo(sboltX[i], sboltY[i]);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(235,250,255,0.95)";
+    ctx.beginPath();
+    ctx.arc(sboltX[i], sboltY[i], 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+}
+
 // =================================================================
 // v0.35: Ⅱ群＋ガーゴイルの攻撃4種
 // 既存部品（findNearestBuilding / damageBuilding / damageMover /
@@ -11531,6 +12110,7 @@ function updateBladeAttacks(dt) {
   const r2     = range * range;
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -11582,6 +12162,7 @@ function updateScatterAttacks(dt) {
   const cell  = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -11617,6 +12198,7 @@ function updateSatelliteAttacks(dt) {
   const hitR = SAT_HIT_R * effWeaponRangeMult("satellite");
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     for (let k = 0; k < SAT_COUNT; k++) {
       satellitePos(i, k, _satPos);
       damageInRadius(_satPos.x, _satPos.y, hitR, dmg);
@@ -11656,6 +12238,7 @@ function updateDivebombAttacks(dt) {
   const inter  = DIVE_INTERVAL * effFireIntervalMult("divebomb");
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -11686,6 +12269,7 @@ function updateBombDrops(dt) {
   const inter  = BOMB_INTERVAL * effFireIntervalMult("bomb");
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
     // 炸裂したとき当たるものが今この場所にあるか（空振りでは落とさない＝他武器と同じ作法）
@@ -11763,6 +12347,7 @@ function updateTongueAttacks(dt) {
 
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
@@ -11856,6 +12441,7 @@ function updateWeaponAttacks(dt) {
   updateBombFuses(dt);   // 投下済みの爆弾は竜種が変わっても炸裂させきる
 
   updateMotherBreath(dt);   // v0.22: 母竜の署名ブレス（v0.31: ラン中に「母なる吐息」を引いた時のみ）
+  updateSpecials(dt);       // v0.85: 特殊個体（灯竜の光条・巌竜の轢き・呑竜の溜め）
   updateDragonProjectiles(dt);
 }
 
@@ -12430,6 +13016,10 @@ function awardCrystals(n) {
 // フラット火力(weaponDmg)は属性を作らず大群ラインに散らす（属性相性は導入しない）。
 // 母竜(mother)ラインは Phase 5 で追加予定。
 const TREE_DEFS = [
+  // ── 特殊個体（v0.85。加入はラン中の★カードなので、ツリーは「何体連れて歩けるか」と底上げだけ）──
+  { id: "sp_slot1", cat: "special", name: "変わり者の座", desc: "特殊個体の枠 +1", cost: 130, prereq: [],            effect: { type: "specialSlots", value: 1 } },
+  { id: "sp_slot2", cat: "special", name: "異端の群れ", desc: "特殊個体の枠 +1", cost: 240, prereq: ["sp_slot1"], effect: { type: "specialSlots", value: 1 } },
+  { id: "sp_power", cat: "special", name: "役割の覚醒", desc: "特殊個体の威力 +25%", cost: 110, prereq: [],      effect: { type: "specialDmg",   value: 1.25 } },
   // ── 母竜（味方側の"ボス"を育てる）──
   // v0.31: 母竜ブレスの解禁はラン中★カード「母なる吐息」に移したため、このノードは
   // 「解禁」ではなく**引けた時の発動間隔の底上げ**に役割変更。
@@ -12458,6 +13048,7 @@ const TREE_DEFS = [
   { id: "eco_gain",     cat: "bounty", name: "竜晶の嗅覚",  desc: "竜晶獲得 +25%",          cost: 70,  prereq: [],               effect: { type: "crystalGain", value: 1.25 } },
 ];
 const TREE_CATEGORIES = [
+  { id: "special", label: "特殊個体" },
   { id: "mother",  label: "母竜" },
   { id: "swarm",   label: "大群" },
   { id: "resil",   label: "不屈" },
@@ -12481,7 +13072,7 @@ function recomputePermaBuff() {
     const st = profile.tree[node.id];
     if (!st || !st.unlocked || !st.enabled) continue;
     const e = node.effect;
-    if (e.type === "startFlock" || e.type === "flockCap") b[e.type] += e.value;
+    if (e.type === "startFlock" || e.type === "flockCap" || e.type === "specialSlots") b[e.type] += e.value;
     else b[e.type] *= e.value;
   }
   permaBuff = b;
@@ -14902,7 +15493,10 @@ function render(now) {
   drawEmplacements();        // v0.57: 時代兵器の目印（輪の色で種類が分かる）
   drawSlashFx();             // v0.8: 緋竜の斬閃 / v0.35: 隼竜の刃翼（銀）
   drawBombs();               // v0.37.1: 爆竜の投下済み爆弾（竜より下＝地面にある）
+  drawSpecialUnder();        // v0.85: 灯竜の光条と特殊個体の足元リング（竜の下）
   drawBoids();
+  drawSpecialOver();         // v0.85: 呑竜が溜めている弾（竜の上）
+  drawSpecialBolts();        // v0.85: 呑竜が撃ち返した弾
   drawSatellites();          // v0.35: 蜂竜の衛星蜂（竜の上に描く）
   drawChainFx();             // v0.43: 連鎖電撃（竜の上に描く）
   drawEnemyDebugLabels();    // v0.44: デバッグ「敵の名札」（既定OFF）
@@ -15501,7 +16095,8 @@ function drawBoids() {
     const angle = Math.atan2(vy[i], vx[i]);
     // v0.18: 母竜だけレベルに応じて体格が育つ（尻尾・本体の描画に一律適用）。
     // 母竜がダウン中（＝母竜ナシ）は成長を適用せず通常サイズで描く。
-    const unitScale = (isMotherDragon(i) && isMotherActive()) ? motherBodyScale() : 1;
+    // v0.85: 母竜の成長と巌竜の巨体を boidBodyScale に一本化（当たり判定と共通）
+    const unitScale = boidBodyScale(i);
 
     // ---- 羽ばたきフレーム選択 ----
     // breathTime（毎フレーム dt 加算済み）に個体ごとの位相オフセットを加算
