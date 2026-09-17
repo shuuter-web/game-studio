@@ -1447,6 +1447,86 @@ UFO と鬼火の**アセット**はカテゴリD（無翼・`forward:"none"`・�
   スクロールのドラッグと衝突するため。
 - **専用カード**：`CARD_DEFS` の `weapon:` フィルタを `species:` に拡張（未着手）。
 
+### 2-1aa. 特殊個体（v0.85）
+
+Shooter 指示。「ラン中の強化として、母竜とは別の役割持ちを群れに加える」。
+**ラン開始時に選ぶのは竜種だけ**（既にある）。特殊個体は**ラン中に引いて加入**させる。
+総称は「特殊個体」（「母」を共通名にしない、という指示）。
+
+#### 決めたこと
+
+| 項目 | 決定 |
+|---|---|
+| 加入 | ラン中の★カード。1枚で1匹加わる（群れの数は減らない） |
+| 同時加入数 | **初期3体**。恒常ツリー「変わり者の座 / 異端の群れ」で +1 ずつ |
+| 枠が満杯 | 加入カードはプールから消える。強化カードは**連れている種類のぶんだけ**出る |
+| ステージ遷移 | 持ち越す（スロット1以降に割り当て直す）。ランをまたぐと消える |
+| ダウン中 | 母竜と同じく能力ごと消える（呑竜は溜めた弾も失う） |
+| 名前 | 灯竜（beacon）／巌竜（heavy）／呑竜（deflect） |
+
+#### 3種
+
+**灯竜** — 自分の周りを回る光条（長さ150px）。触れたものが焼ける。
+角速度は「進行方向からのずれ」で決まり、前を向いている間は遅く、後ろ向きでは速い
+＝**直進すると前で粘り、旋回すると薙ぎ払いになる**。なぞる線の形が攻撃の形になる枠。
+
+**巌竜** — **遠隔攻撃を一切持たない**。体当たりだけで建物を砕く。体格1.5倍＋レベル成長、
+HP3倍、ノックバックもヒットストップも受けない。塊魂の柱に直結する枠。
+
+**呑竜** — 自分の周り70pxに来た**通常弾（矢・カタパルト弾）だけ**を吸って溜める。
+満杯（10発）から1.5秒後に前方へ束にして撃ち返し、その後3秒は吸えない。
+レーザー・着弾弾・ロケット・ボス重弾は**吸えない**ので、避ける種類の攻撃はそのまま残る。
+
+#### 実測（seed 固定・プレビュー）
+
+| 測ったこと | 結果 |
+|---|---|
+| 灯竜の1回転（自由飛行） | 0.35/2.20 rad/s で **5.31秒** → 1.00/2.80 rad/s で **3.76秒**（採用） |
+| 灯竜の1回転（街の中で旋回中） | 5.65秒 → **3.61秒** |
+| 灯竜の与ダメージ | **25.3 dps**（街の中。複数棟を同時に薙ぐため基礎18より高い） |
+| 巌竜の与ダメージ | **62.3 dps** / 8秒で16棟破壊。同条件の通常個体は 16.0 dps / 3棟 |
+| 巌竜の遠隔攻撃 | ブレス射程内（68px）に置いて **8秒で0ダメージ**（通常個体は同条件で1棟破壊） |
+| 呑竜の吸い込み率 | 群れ34体を街に密集させて **17.1%**（吸12発 / 竜に着弾58発） |
+| 呑竜の周期 | 16秒で3回発射（0→10→発射→クールダウン3秒→0→10…）が安定して回った |
+| 負荷 | 特殊個体8体＋弾200発の最悪ケースで **0.32 ms/frame**（弾は実運用で20〜40発） |
+
+**灯竜の回転は最初 0.35/2.20 rad/s で作ったが、旋回中は進行方向に捕まり続けて実質静止して見えた**
+（ピン留め計測で1回転10.5秒）。「回る光条」という読み取りが壊れるので下限を引き上げた。
+前で粘る性質は 2.8 倍の差として残している。
+
+#### 実装の差し込み口
+
+- 種別と定数: `SPECIAL_NONE/BEACON/HEAVY/DEFLECT`、`SPECIAL_DEFS`（名前・色・HP倍率）。
+  **`CARD_DEFS` の初期化子が `specialJoin: SPECIAL_BEACON` を参照するので、
+  この定数ブロックだけは boid 配列の宣言と同じ位置（CARD_DEFS より前）に置いてある**（TDZ 対策）。
+- 状態: `boidSpecial` / `boidSpecialAngle`（光条の向き）/ `boidSpecialStock`（溜め弾数）/
+  `boidSpecialTimer` / `boidSpecialCd`。ラン内の加入履歴は `runSpecials`。
+- 加入: `addRunSpecial(kind)` → 空きがあれば新しい竜として増やし、満員なら通常個体を1匹転じる。
+  ステージ開始の再配置は `applyRunSpecials()`（`resetBoidsForStageStart` の末尾）。
+- 更新: `updateSpecials(dt)`（`updateWeaponAttacks` の末尾）→ `updateBeaconDragon` /
+  `updateHeavyDragon` / `updateDeflectDragon`。弾は `sbolt*` プール＋`updateSpecialBolts`。
+- 吸い込み: `tryDeflectAbsorb(projIdx)` を `updateProjectiles` の当たり判定の直前で呼ぶ。
+  **弾1発ごとに呼ばれるので群れ全体を走査させない**（`deflectSlots` を毎フレーム作り直して
+  呑竜のスロットだけ見る。弾900×群れ150 を避けるため）。
+- 遠隔攻撃の除外: 各武器ループの先頭に `if (boidSpecial[i] === SPECIAL_HEAVY) continue;`。
+  **`updateCollisionAttacks` には入れない**（巌竜はそこを通る必要がある）。
+- 体格: `boidBodyScale(i)` に母竜の成長と巌竜の巨体を一本化。描画と衝突半径の両方がこれを使う。
+- 描画: `drawSpecialUnder`（光条・足元リング・吸引域）→ `drawBoids` →
+  `drawSpecialOver`（溜め弾の周回球）→ `drawSpecialBolts`（撃ち返した弾）。
+- 移動敵の半径は **`m.def.radius`**（`m.radius` は存在しない）。`moverRadiusOf(m)` を用意した。
+
+#### 残した調整つまみ
+
+灯竜: `BEACON_DPS 18` / `BEACON_LENGTH 150` / `BEACON_SPIN_MIN 1.00` / `MAX 2.80`。
+巌竜: `HEAVY_RAM_DAMAGE 60` / `HEAVY_RAM_COOLDOWN 0.40` / `HEAVY_SCALE 1.5`。
+呑竜: `DEFLECT_RADIUS 70` / `CAPACITY 10` / `HOLD 1.5` / `COOLDOWN 3.0` / `BOLT_DMG 20`。
+枠: `SPECIAL_SLOTS_BASE 3`。ツリー: 枠 +1 が 130/240 竜晶、威力 +25% が 110 竜晶。
+
+**巌竜が 62 dps と3種で一番高いのは、遠隔攻撃をまるごと捨てていて
+1棟ずつ物理的に触りに行く必要があるため**。灯竜と呑竜は通常のブレスを撃ち続ける。
+
+---
+
 ---
 
 ## 3. 未着手のアイディア（着手順は未定）
@@ -1659,6 +1739,7 @@ UFO と鬼火の**アセット**はカテゴリD（無翼・`forward:"none"`・�
 | ラン中強化 | `CARD_DEFS`／文言は `STRINGS.cards`／抽選は `buildLevelUpCards`／取得は `chooseCard`＋`applyCardImmediate` |
 | 効果の適用ハブ | `eff*` 関数群。恒常バフは `permaBuff` が合流 |
 | 恒常ツリー | `TREE_DEFS`／`recomputePermaBuff`／`purchaseTreeNode`／UIは `renderTree` |
+| 特殊個体（v0.85） | 種別は `SPECIAL_DEFS`／加入は `addRunSpecial`／更新は `updateSpecials`／描画は `drawSpecialUnder` と `drawSpecialOver`。カードの出分けは `specialJoin` / `specialOf` |
 | チャレンジ | `CHALLENGE_DEFS`／`evaluateChallenges`／UIは `renderChallenges` |
 | 敵 | `MOVER_DEFS`／`MOVER_SPAWNS_BY_STAGE`／`updateMovers`／`damageMover`／ラッシュは `updateEnemyRush` |
 | ステージ生成 | `generateStageLayout`／`placeTownCenters`／`generateTownWalls`／`START_TOWN_CLEAR` |
