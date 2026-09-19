@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.86.1";
+const GAME_VERSION = "v0.87.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1357,7 +1357,9 @@ const SPECIES_DEFS = {
   fire:    { ja: "火竜", en: "Fire Dragon",    icon: "\u{1F525}", color: "#ff8c28", element: "fire",    attack: "flamebreath", desc: "近距離に炎を吐き続ける。標準の動き", move: {} },
   ice:     { ja: "氷竜", en: "Ice Dragon",     icon: "❄️",       color: "#a0e8ff", element: "ice",     attack: "icelance",    desc: "遠くまで届く氷の槍。標準の動き", move: {} },
   shadow:  { ja: "影竜", en: "Shadow Dragon",  icon: "\u{1F311}", color: "#c080ff", element: "shadow",  attack: "shadowbolt",  desc: "追尾して爆ぜる影の弾。標準の動き", move: {} },
-  crimson: { ja: "緋竜", en: "Crimson Dragon", icon: "\u{1F43E}", color: "#ff4030", element: "crimson", attack: "rend",        desc: "体当たりで斬り裂く。標準の動き", move: {} },
+  // v0.87: 緋竜は体当たりが主武装なので、突進の伸びも一番大きい
+  crimson: { ja: "緋竜", en: "Crimson Dragon", icon: "\u{1F43E}", color: "#ff4030", element: "crimson", attack: "rend",        desc: "体当たりで斬り裂く。標準の動き", move: {},
+             charge: { damageMult: 4.2, reachBonus: 30, knockback: 240, fxScale: 1.2 } },
 
   // ---- v0.35: Ⅱ群（軽量機動）＋ガーゴイル ----
   // 動きの違いが操作の手触りを変えるかを実機で判定するための4種。
@@ -1385,6 +1387,8 @@ const SPECIES_DEFS = {
     attack: "divebomb",
     desc: "真下を石の衝撃で叩く。加速は鋭いが旋回は重い",
     move: { maxSpeed: 150, minSpeed: 50, accel: 480, turnRate: 1.4, leaderSpeed: 190, pathEndMode: "wander" },
+    // v0.87: 重い種なので、乗れば強いが溜まるのは遅い。弾き飛ばしは最大級
+    charge: { rampSeconds: 2.8, damageMult: 3.4, knockback: 320, fxScale: 1.15 },
   },
 
   // ---- v0.37: Ⅲ群（極端枠）----
@@ -1405,6 +1409,9 @@ const SPECIES_DEFS = {
     },
     // v0.46: 円盤なので**尻尾を描かず、進行方向も向かない**（代わりにゆっくり自転する）。
     // 「尻尾のある同じ動きの竜が見たい」という要望は彗星竜が担う。
+    // v0.87: minSpeed === maxSpeed なので**常に全速**。あとは向きが揃うかだけなので
+    // 突進に入りやすすぎる。しきい値を上げ、溜まりを遅くして釣り合いを取る
+    charge: { enterSpeedFrac: 0.998, exitSpeedFrac: 0.992, rampSeconds: 3.0, damageMult: 2.2 },
     noTail: true,
     spin: 0.9,        // 自転の角速度 rad/s
   },
@@ -1516,6 +1523,265 @@ function mv() {
 function sp() { return SPECIES_DEFS[flockSpecies] || SPECIES_DEFS.fire; }
 /** 現在の攻撃定義（反動・硬直はここから引く）。 */
 function atk() { return ATTACK_DEFS[sp().attack] || ATTACK_DEFS.flamebreath; }
+
+
+// =================================================================
+// v0.87: 突進（charge）— 群れ全体が「揃って最高速で飛んでいる」ときだけ入る状態
+//
+// 発動条件は **群れの重心速度 / 実効最高速度** がしきい値以上であること。
+// 重心速度は個体速度の"平均ベクトル"なので、全員が最高速でも向きがばらけていれば
+// 小さくなる。つまりこの条件は「速さ」ではなく **速さ×揃い方** を同時に要求する。
+// （flockMetrics の整列度が1に近くないと物理的に到達できない。§v0.86）
+//
+// 状態を維持すると chargeRamp 秒かけて溜まり、威力・当たり範囲・エフェクトが大きくなる。
+// 抜けても溜めは chargeDecay 秒かけて戻るだけなので、一瞬の乱れで積み上げが消えない。
+//
+// しきい値・溜め時間・伸び幅はすべて **竜種ごとに上書きでき、強化でも動く**:
+//   竜種 … SPECIES_DEFS[x].charge（CHARGE_PROFILE_DEFAULT への部分上書き）
+//   強化 … eff* 関数（ラン中カード upgradeCounts ＋ 恒常ツリー permaBuff）
+// =================================================================
+const CHARGE_PROFILE_DEFAULT = {
+  // 突進に入る重心速度。実効最高速度（竜種の maxSpeed × 速度強化）に対する割合。
+  enterSpeedFrac: 0.995,
+  // 突進が切れる割合。**入りと同値にすると境界で毎フレーム点滅する**ので必ず少し下に取る。
+  exitSpeedFrac:  0.985,
+  // 溜めが最大に達するまでの秒数。
+  rampSeconds:    2.0,
+  // 突進が切れた後、溜めが0へ戻るまでの秒数。0 にすると即リセット。
+  decaySeconds:   0.5,
+  // 最大溜めのときの直接攻撃（体当たり）の威力倍率。1 で「上がらない」。
+  damageMult:     3.0,
+  // 最大溜めのときに直接攻撃の当たり半径へ足す距離（px）。倍率ではなく加算なのは、
+  // 建物半径が 6〜28px とばらつくため、倍率だと大きい建物ほど効きすぎるから。
+  reachBonus:     22,
+  // 最大溜めのときに移動敵を弾き飛ばす初速（px/s）。0 でノックバック無し。
+  knockback:      190,
+  // エフェクトの大きさ倍率（竜種ごとの見た目調整用。当たり判定には影響しない）。
+  fxScale:        1.0,
+  // true の間、突進中の体当たりではヒットストップ（個体の一瞬の停止）を受けない。
+  //
+  // **既定は false（＝従来通り止まる）**。一度 true にしたが、その根拠にした
+  // 「ヒットストップで突進が切れる」は誤りだった。
+  // ヒットストップは **位置更新だけを飛ばし、速度ベクトルは維持する**（simStep の
+  // `if (boidHitStopped[i] > 0) continue;` は操舵ごと飛ばす）ので、
+  // 重心速度（= vx/vy の平均）は落ちない。
+  // 実測: 4回の街貫通しで true/false どちらも**街の中での維持率 100%**。
+  // 破壊数も 74/91（true）対 91/64（false）で有意差なし。
+  // 誤判断の原因: 最初の計測で竜を建物の周りにピン留めして速度を 16ms ごとに
+  // 上書きしていたため、シム側の操舵と争って向きが散っていただけだった。
+  plowThrough:    false,
+};
+
+/** 有効な突進プロファイル（竜種の上書きを合成）。mv() と同じくキーが変わったときだけ作る。 */
+let _chgCache = null, _chgKey = "";
+function chg() {
+  if (flockSpecies !== _chgKey) {
+    _chgKey = flockSpecies;
+    const ov = SPECIES_DEFS[flockSpecies] && SPECIES_DEFS[flockSpecies].charge;
+    _chgCache = Object.assign({}, CHARGE_PROFILE_DEFAULT, ov || {});
+  }
+  return _chgCache;
+}
+
+// ---- 強化による調整（ラン中カード＋恒常ツリー）----
+// しきい値は「下げるほど入りやすい」ので減算。下げすぎると常時突進になるため下限を置く。
+const CHARGE_ENTER_FRAC_MIN = 0.90;
+function effChargeEnterFrac() {
+  const base = chg().enterSpeedFrac - 0.010 * upCount("charge_ease") - permaBuff.chargeEase;
+  return Math.max(CHARGE_ENTER_FRAC_MIN, base);
+}
+/** 抜けるしきい値は入りとの差（ヒステリシス幅）を保ったまま一緒に下がる。 */
+function effChargeExitFrac() {
+  const gap = Math.max(0.002, chg().enterSpeedFrac - chg().exitSpeedFrac);
+  return Math.max(0, effChargeEnterFrac() - gap);
+}
+function effChargeRampSeconds() {
+  return Math.max(0.1, chg().rampSeconds * Math.pow(0.80, upCount("charge_ramp")) * permaBuff.chargeRamp);
+}
+function effChargeDamageMult() {
+  // 「最大時に何倍か」を強化で伸ばす。1 を基準に超過分だけを増やす（1倍が上がらないの意味を保つ）
+  const over = (chg().damageMult - 1) * (1 + 0.35 * upCount("charge_dmg")) * permaBuff.chargeDmg;
+  return 1 + over;
+}
+function effChargeReachBonus() {
+  return chg().reachBonus * (1 + 0.30 * upCount("charge_reach"));
+}
+function effChargeKnockback() {
+  return chg().knockback * (1 + 0.30 * upCount("charge_dmg"));
+}
+
+// ---- 状態 ----
+let chargeActive = false;   // 今このフレームで突進しているか
+let chargeHold   = 0;       // 溜まっている秒数（0 .. effChargeRampSeconds()）
+let chargeLevel  = 0;       // 溜め具合 0..1。エフェクトの大きさと伸び幅の補間に使う
+let chargeSpeedFrac = 0;    // 重心速度 / 実効最高速度。デバッグ表示と調整用
+let chargePeakLevel = 0;    // このランで到達した最大の溜め（調整の当たりを付けるため）
+
+function resetCharge() {
+  chargeActive = false;
+  chargeHold = 0;
+  chargeLevel = 0;
+  chargeSpeedFrac = 0;
+}
+
+/**
+ * simStep の末尾（updateFlockMetrics の直後）で毎フレーム呼ぶ。
+ * flockMetrics.speed が確定していることが前提。
+ */
+function updateCharge(dt) {
+  const ramp = effChargeRampSeconds();
+
+  // 実効最高速度は **速度強化込み**（_simSpeedMult = effSpeedMult()）で見る。
+  // ここを素の maxSpeed にすると「疾風の翼」を取っただけで常時突進になってしまう。
+  const maxSp = (mv().maxSpeed || 1) * (_simSpeedMult || 1);
+  chargeSpeedFrac = maxSp > 0 ? flockMetrics.speed / maxSp : 0;
+
+  if (gameState !== "playing" || flockMetrics.count === 0) {
+    chargeActive = false;
+  } else if (chargeActive) {
+    if (chargeSpeedFrac < effChargeExitFrac()) chargeActive = false;
+  } else if (chargeSpeedFrac >= effChargeEnterFrac()) {
+    chargeActive = true;
+    onChargeEnter();
+  }
+
+  if (chargeActive) {
+    chargeHold = Math.min(ramp, chargeHold + dt);
+  } else if (chargeHold > 0) {
+    // 溜めは「切れた瞬間に消える」のではなく decaySeconds で戻す。
+    // 一瞬の乱れ（建物にぶつかって減速など）で積み上げが全部飛ぶと操作感が理不尽になる。
+    const dec = chg().decaySeconds;
+    chargeHold = dec > 0 ? Math.max(0, chargeHold - dt * (ramp / dec)) : 0;
+  }
+  chargeLevel = ramp > 0 ? Math.min(1, chargeHold / ramp) : (chargeActive ? 1 : 0);
+  if (chargeActive && chargeLevel > chargePeakLevel) chargePeakLevel = chargeLevel;
+}
+
+/** 突進に入った瞬間の合図。入ったことが分からないと条件を狙えない。 */
+function onChargeEnter() {
+  triggerFlash("rgba(180, 225, 255, 0.18)", 0.12);
+  hapticPulse(25);
+}
+
+// ---- 実際に効かせる量（溜めで 1 → 最大 へ補間）----
+// 倍率が効くのは **突進中だけ**。溜めが残っていても状態が切れていれば素の値に戻る
+// （エフェクトだけは chargeLevel で余韻を残す）。
+function chargeDamageMultNow() {
+  return chargeActive ? 1 + (effChargeDamageMult() - 1) * chargeLevel : 1;
+}
+function chargeReachBonusNow() {
+  return chargeActive ? effChargeReachBonus() * chargeLevel : 0;
+}
+function chargeKnockbackNow() {
+  return chargeActive ? effChargeKnockback() * chargeLevel : 0;
+}
+
+/** 移動敵を弾き飛ばす（突進中の体当たりから呼ぶ）。減衰する速度チャネルに積む。 */
+function applyMoverKnockback(m, fromX, fromY, speed) {
+  if (speed <= 0 || !m.alive) return;
+  // 動かない敵（設置物・巨獣の腕など）は押さない。押すと配置の意味が壊れる
+  if (!m.def || !m.def.speed) return;
+  const dx = m.wx - fromX, dy = m.wy - fromY;
+  const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+  // 重い敵ほど飛びにくい（HPを質量の代わりに使う。専用の質量値は持たせない）
+  const mass = Math.max(1, (m.def.hp || 20) / 20);
+  const v = speed / Math.sqrt(mass);
+  m.knockVx = (m.knockVx || 0) + (dx / d) * v;
+  m.knockVy = (m.knockVy || 0) + (dy / d) * v;
+
+  // **積み上がりの上限**。updateMoverRams は射程内の竜が全員それぞれ体当たりするので、
+  // 上限が無いと群れ37体が同じフレームで押して 1体あたりの37倍の速度になる
+  // （実測: 3秒で 9,676px 吹き飛んだ。1体ぶんの想定は数十px）。
+  // 1発ぶんの MOVER_KNOCK_STACK_CAP 倍で頭打ちにして、
+  // 「大群で押すほうが速いが、青天井ではない」に収める。
+  const cap = v * MOVER_KNOCK_STACK_CAP;
+  const kmag = Math.sqrt(m.knockVx * m.knockVx + m.knockVy * m.knockVy);
+  if (kmag > cap) {
+    m.knockVx = m.knockVx / kmag * cap;
+    m.knockVy = m.knockVy / kmag * cap;
+  }
+}
+
+// 1発ぶんのノックバック速度の何倍まで積み上がれるか。
+const MOVER_KNOCK_STACK_CAP = 1.8;
+
+// ノックバックの減衰率（1秒あたり e^-K で減る）。竜のキック（KICK_DECAY_PER_SEC）と同じ考え方。
+const MOVER_KNOCK_DECAY_PER_SEC = 4.5;
+
+// -----------------------------------------------------------------
+// 突進エフェクト
+// -----------------------------------------------------------------
+// 見た目の方針: 「群れ全体が1つの塊になって突っ込んでいる」ことが2秒で読めること。
+//   ① 個体ごとの尾を引く線   … 全員が同じ向きに走っていることが分かる
+//   ② 群れの先端の弧         … どこが"穂先"なのかが分かる
+//   ③ 重心から後ろへ流れる線 … 速さが分かる
+// すべて chargeLevel と fxScale で大きさが変わる。
+const CHARGE_FX_STREAK_LEN = 26;   // 最大溜めでの個体の尾の長さ（px）
+const CHARGE_FX_ARC_AHEAD  = 34;   // 群れの先端の弧を重心から前へ置く距離（px）
+const CHARGE_FX_SPEEDLINES = 9;    // 後ろへ流れる線の本数
+
+function drawChargeFx() {
+  if (chargeLevel <= 0.01) return;
+  const lv = chargeLevel;
+  const fxs = chg().fxScale;
+  const m = flockMetrics;
+  const hx = Math.cos(m.heading), hy = Math.sin(m.heading);
+  // 突進が切れて余韻だけのときは薄くする（効いていないのに派手だと嘘になる）
+  const liveAlpha = chargeActive ? 1 : 0.45;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineCap = "round";
+
+  // ① 個体ごとの尾
+  const streak = CHARGE_FX_STREAK_LEN * lv * fxs;
+  ctx.strokeStyle = `rgba(150, 215, 255, ${(0.20 + 0.45 * lv) * liveAlpha})`;
+  ctx.lineWidth = 2.0 + 2.0 * lv;
+  ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]) || 1;
+    ctx.moveTo(px[i], py[i]);
+    ctx.lineTo(px[i] - (vx[i] / sp) * streak, py[i] - (vy[i] / sp) * streak);
+  }
+  ctx.stroke();
+
+  // ③ 重心から後ろへ流れる線（本数は固定・長さと濃さが溜めで伸びる）
+  const backLen = (30 + 90 * lv) * fxs;
+  const spanLat = Math.max(20, m.spreadLat) * 1.1;
+  ctx.strokeStyle = `rgba(190, 235, 255, ${(0.10 + 0.22 * lv) * liveAlpha})`;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  for (let k = 0; k < CHARGE_FX_SPEEDLINES; k++) {
+    const t = (k / (CHARGE_FX_SPEEDLINES - 1) - 0.5) * 2;      // -1..1
+    const ox = -hy * t * spanLat, oy = hx * t * spanLat;
+    const jitter = 0.55 + 0.45 * Math.abs(Math.sin(breathTime * 6 + k * 1.7));
+    ctx.moveTo(m.cx + ox - hx * 10, m.cy + oy - hy * 10);
+    ctx.lineTo(m.cx + ox - hx * backLen * jitter, m.cy + oy - hy * backLen * jitter);
+  }
+  ctx.stroke();
+
+  // ② 群れの先端の弧（穂先）
+  const arcR = (Math.max(26, m.spreadLat) + CHARGE_FX_ARC_AHEAD * lv) * fxs;
+  const ax = m.cx + hx * (m.spreadLong * 0.6 + CHARGE_FX_ARC_AHEAD * lv * fxs);
+  const ay = m.cy + hy * (m.spreadLong * 0.6 + CHARGE_FX_ARC_AHEAD * lv * fxs);
+  const half = 0.55 + 0.35 * lv;
+  ctx.strokeStyle = `rgba(255, 240, 200, ${(0.30 + 0.55 * lv) * liveAlpha})`;
+  ctx.lineWidth = 2.5 + 5.0 * lv;
+  ctx.beginPath();
+  ctx.arc(ax, ay, arcR, m.heading - half, m.heading + half);
+  ctx.stroke();
+  // 穂先の芯（溜めが進むほど白く太くなる）
+  ctx.strokeStyle = `rgba(255, 255, 255, ${(0.10 + 0.40 * lv) * liveAlpha})`;
+  ctx.lineWidth = 1.2 + 2.2 * lv;
+  ctx.beginPath();
+  ctx.arc(ax, ay, arcR, m.heading - half * 0.55, m.heading + half * 0.55);
+  ctx.stroke();
+
+  ctx.restore();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+}
 
 // -----------------------------------------------------------------
 // ステージ定義
@@ -6278,6 +6544,17 @@ function updateMovers(dt) {
     m.wx += moveX * moveSpeed * dt;
     m.wy += moveY * moveSpeed * dt;
 
+    // v0.87: 突進のノックバック。操舵とは別の「減衰する外力」として乗せるので、
+    // 押されながらも元の経路へ戻ろうとする（ワープしたように見えない）。
+    if (m.knockVx || m.knockVy) {
+      m.wx += m.knockVx * dt;
+      m.wy += m.knockVy * dt;
+      const kd = Math.exp(-MOVER_KNOCK_DECAY_PER_SEC * dt);
+      m.knockVx *= kd;
+      m.knockVy *= kd;
+      if (Math.abs(m.knockVx) < 1 && Math.abs(m.knockVy) < 1) { m.knockVx = 0; m.knockVy = 0; }
+    }
+
     // 地形（岩山）は移動敵も回り込む（押し出しスライド）。飛行ユニットは無視。
     // v0.17.1: 湖は単なる背景（当たり判定なし）にしたので押し出し対象から除外
     if (def.flying) { /* 気球は地形を飛び越える */ } else
@@ -7176,11 +7453,15 @@ function damageMover(m, damage, srcX, srcY) {
 function updateMoverRams() {
   if (movers.length === 0) return;
   const isMelee = flockWeapon === "melee";
-  const ramDamage = isMelee ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee") : COLLISION_DAMAGE;
+  // v0.87: 突進中は威力と届く範囲が伸び、さらに動く敵を弾き飛ばす。
+  const ramDamage = (isMelee ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee") : COLLISION_DAMAGE)
+                  * chargeDamageMultNow();
+  const ramReach  = chargeReachBonusNow();
+  const ramKnock  = chargeKnockbackNow();
 
   for (const m of movers) {
     if (!m.alive) continue;
-    const hitR = m.def.radius + 6;
+    const hitR = m.def.radius + 6 + ramReach;
     const hitR2 = hitR * hitR;
     for (let i = 0; i < N; i++) {
       if (boidDead[i] || boidDowned[i]) continue;
@@ -7189,7 +7470,10 @@ function updateMoverRams() {
       const dy = m.wy - py[i];
       if (dx * dx + dy * dy > hitR2) continue;
       damageMover(m, ramDamage, px[i], py[i]);
-      boidHitStopTimer[i]      = HITSTOP_DURATION;
+      if (ramKnock > 0) applyMoverKnockback(m, px[i], py[i], ramKnock);
+      // v0.87: 突進中は止まらない。轢きながら進むのが突進の見せ場なので、
+      // ここでヒットストップを入れると敵の列で群れが減速し、自分で突進を解除してしまう
+      boidHitStopTimer[i]      = (chargeActive && chg().plowThrough) ? 0 : HITSTOP_DURATION;
       boidCollisionCooldown[i] = isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
       spawnCollisionParticles(m.wx, m.wy);
       // v0.8: 緋竜の斬閃演出（移動敵への体当たりも派手に）
@@ -9645,7 +9929,8 @@ function updateCollisionAttacks(dt) {
 
       // 衝突判定: ドラゴン半径6px + 建物半径 の合計以内に入ったら衝突
       // v0.85: 巌竜は体が大きいので当たりもその分広げる（見た目と判定を一致させる）
-      const collideR = s.radius + 6 * boidBodyScale(i);
+      // v0.87: 突進中は届く範囲が伸びる（溜めに比例）
+      const collideR = s.radius + 6 * boidBodyScale(i) + chargeReachBonusNow();
       const dx = s.wx - px[i];
       const dy = s.wy - py[i];
       if (dx * dx + dy * dy > collideR * collideR) continue;
@@ -9657,17 +9942,21 @@ function updateCollisionAttacks(dt) {
       // v0.85: 巌竜は体当たりが唯一の攻撃手段なので、通常の8や緋竜の25とは別格の威力を持つ
       const isHeavy = boidSpecial[i] === SPECIAL_HEAVY;
       const isMelee = flockWeapon === "melee";
-      s.hp -= isHeavy
+      // v0.87: 突進中は直接攻撃の威力が上がる（溜めに比例）
+      s.hp -= (isHeavy
         ? effHeavyDamage()
         : isMelee
           ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
-          : COLLISION_DAMAGE;
+          : COLLISION_DAMAGE) * chargeDamageMultNow();
 
       // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）。
       // v0.33: 攻撃の fireStun（硬直）が長ければそちらを使う
       // ＝爪撃（緋竜）は当たった後にぐっと重く止まる。v0.34: 攻撃側から引く。
       // v0.85: 巌竜は止まらない（ヒットストップを受けずに轢進むのが見せ場）
-      if (!isHeavy) boidHitStopTimer[i] = Math.max(HITSTOP_DURATION, atk().fireStun);
+      // v0.87: 突進中も同じ。ここで凍らせると群れが減速し、自分の攻撃で突進が切れる
+      if (!isHeavy && !(chargeActive && chg().plowThrough)) {
+        boidHitStopTimer[i] = Math.max(HITSTOP_DURATION, atk().fireStun);
+      }
       // クールダウンをセットして同じ建物への連続ヒットを防ぐ
       boidCollisionCooldown[i] = isHeavy ? HEAVY_RAM_COOLDOWN
                                : isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
@@ -10549,6 +10838,10 @@ const STRINGS = {
     sp_heavy_size:     { name: "肥える巌",   desc: "巌竜が +15% 大きくなる（当たりも広い）" },
     sp_deflect_cap:    { name: "大食らい",   desc: "呑竜が溜められる弾 +4" },
     sp_deflect_range:  { name: "引き込む渦", desc: "呑竜の吸引範囲 +30%" },
+    charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
+    charge_reach: { name: "突進の角", desc: "突進中の体当たりの届く範囲 +30%" },
+    charge_ramp:  { name: "風に乗る", desc: "突進が溜まるのが 20% 速くなる" },
+    charge_ease:  { name: "群れの息", desc: "突進に入る速度が -1%" },
   },
 };
 
@@ -10639,6 +10932,11 @@ const CARD_DEFS = [
   { id: "sp_heavy_size",    icon: "\u{1F411}", rarity: "rare", max: 3, specialOf: SPECIAL_HEAVY },
   { id: "sp_deflect_cap",   icon: "\u{1F373}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
   { id: "sp_deflect_range", icon: "\u{1F30A}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
+  // F. 突進（v0.87）。発動条件は群れ全体の動きなので、竜種を問わず出る。
+  { id: "charge_dmg",   icon: "\u{1F4A5}", rarity: "rare",   max: 4 },
+  { id: "charge_reach", icon: "\u{1F300}", rarity: "common", max: 3 },
+  { id: "charge_ramp",  icon: "\u{1F4A8}", rarity: "rare",   max: 3 },
+  { id: "charge_ease",  icon: "\u{1FAB6}", rarity: "common", max: 3 },
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
@@ -10665,6 +10963,9 @@ function defaultPermaBuff() {
     motherHp: 1, motherDmg: 1, motherRate: 1,
     // v0.85: 特殊個体ライン。specialSlots は加算（同時に連れ歩ける数）、specialDmg は乗算。
     specialSlots: 0, specialDmg: 1,
+    // v0.87: 突進ライン。chargeEase はしきい値からの**減算**（下げるほど入りやすい）、
+    // chargeDmg は伸び幅の乗算、chargeRamp は溜まるまでの秒数の乗算（<1で速い）。
+    chargeEase: 0, chargeDmg: 1, chargeRamp: 1,
   };
 }
 let permaBuff = defaultPermaBuff();
@@ -10764,6 +11065,8 @@ function resetProgression() {
   runSpecials.length = 0;
   if (boidSpecial) boidSpecial.fill(SPECIAL_NONE);
   clearSpecialBolts();
+  resetCharge();          // v0.87: 突進の溜めもランごとにゼロへ
+  chargePeakLevel = 0;
   // 竜種も火竜に戻る（新しいランはビルドをゼロから組み直す）
   setFlockSpecies("fire");
   if (boidFireTimer) boidFireTimer.fill(0);
@@ -13019,6 +13322,10 @@ function awardCrystals(n) {
 // フラット火力(weaponDmg)は属性を作らず大群ラインに散らす（属性相性は導入しない）。
 // 母竜(mother)ラインは Phase 5 で追加予定。
 const TREE_DEFS = [
+  // ── 突進（v0.87。発動条件を緩めるか、乗ったときの伸びを大きくするか）──
+  { id: "chg_ease",  cat: "charge", name: "風を読む", desc: "突進に入る速度が -1.5%",   cost: 90,  prereq: [],           effect: { type: "chargeEase", value: 0.015 } },
+  { id: "chg_power", cat: "charge", name: "穿つ群れ", desc: "突進の伸び幅 +30%",       cost: 130, prereq: [],           effect: { type: "chargeDmg",  value: 1.30 } },
+  { id: "chg_ramp",  cat: "charge", name: "加速の術", desc: "溜まるのが 20% 速くなる", cost: 150, prereq: ["chg_ease"], effect: { type: "chargeRamp", value: 0.80 } },
   // ── 特殊個体（v0.85。加入はラン中の★カードなので、ツリーは「何体連れて歩けるか」と底上げだけ）──
   { id: "sp_slot1", cat: "special", name: "変わり者の座", desc: "特殊個体の枠 +1", cost: 130, prereq: [],            effect: { type: "specialSlots", value: 1 } },
   { id: "sp_slot2", cat: "special", name: "異端の群れ", desc: "特殊個体の枠 +1", cost: 240, prereq: ["sp_slot1"], effect: { type: "specialSlots", value: 1 } },
@@ -13051,6 +13358,7 @@ const TREE_DEFS = [
   { id: "eco_gain",     cat: "bounty", name: "竜晶の嗅覚",  desc: "竜晶獲得 +25%",          cost: 70,  prereq: [],               effect: { type: "crystalGain", value: 1.25 } },
 ];
 const TREE_CATEGORIES = [
+  { id: "charge",  label: "突進" },
   { id: "special", label: "特殊個体" },
   { id: "mother",  label: "母竜" },
   { id: "swarm",   label: "大群" },
@@ -13075,7 +13383,8 @@ function recomputePermaBuff() {
     const st = profile.tree[node.id];
     if (!st || !st.unlocked || !st.enabled) continue;
     const e = node.effect;
-    if (e.type === "startFlock" || e.type === "flockCap" || e.type === "specialSlots") b[e.type] += e.value;
+    if (e.type === "startFlock" || e.type === "flockCap" || e.type === "specialSlots" ||
+        e.type === "chargeEase") b[e.type] += e.value;
     else b[e.type] *= e.value;
   }
   permaBuff = b;
@@ -14925,6 +15234,12 @@ function drawFlockMetricsPanel() {
     ["旋回度",   s.swirl.toFixed(2)],
     ["最近接",   `平均 ${s.nnMean.toFixed(1)}  最小 ${m.nnMin.toFixed(1)} px`],
     ["速さのばらつき", `±${m.speedSd.toFixed(0)} px/s`],
+    // v0.87: この2行が突進のしきい値を詰めるための本体。
+    // 速度比がしきい値に届いているかを目で見て判断する
+    ["速度比",   `${(chargeSpeedFrac * 100).toFixed(1)}% / 入 ${(effChargeEnterFrac() * 100).toFixed(1)}%`],
+    ["突進",     chargeActive
+       ? `ON  溜め ${(chargeLevel * 100).toFixed(0)}%  ×${chargeDamageMultNow().toFixed(2)}`
+       : `OFF 溜め ${(chargeLevel * 100).toFixed(0)}%  最高${(chargePeakLevel * 100).toFixed(0)}%`],
   ];
 
   // y=96 は左上のHUD（#hud-left は x8..72 / y0..88 を占める）の真下。
@@ -14935,7 +15250,7 @@ function drawFlockMetricsPanel() {
 
   ctx.save();
   ctx.fillStyle = "rgba(6, 12, 20, 0.72)";
-  ctx.strokeStyle = "rgba(120, 230, 255, 0.45)";
+  ctx.strokeStyle = chargeActive ? "rgba(255, 230, 150, 0.95)" : "rgba(120, 230, 255, 0.45)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.rect(x, y, w, h);
@@ -15404,6 +15719,7 @@ function simStep(dt) {
   // simStep は playing 以外（title / クリア演出）でも毎フレーム通るため。
   // 最近接距離はこの上で作った空間ハッシュをそのまま使う。
   updateFlockMetrics(dt);
+  updateCharge(dt);      // v0.87: 突進の発動判定と溜め（重心速度が確定した後でないと判定できない）
 }
 
 // -----------------------------------------------------------------
@@ -15820,6 +16136,7 @@ function render(now) {
   drawEmplacements();        // v0.57: 時代兵器の目印（輪の色で種類が分かる）
   drawSlashFx();             // v0.8: 緋竜の斬閃 / v0.35: 隼竜の刃翼（銀）
   drawBombs();               // v0.37.1: 爆竜の投下済み爆弾（竜より下＝地面にある）
+  drawChargeFx();            // v0.87: 突進（尾・穂先の弧・速度線）。竜より下に敷く
   drawSpecialUnder();        // v0.85: 灯竜の光条と特殊個体の足元リング（竜の下）
   drawBoids();
   drawSpecialOver();         // v0.85: 呑竜が溜めている弾（竜の上）
