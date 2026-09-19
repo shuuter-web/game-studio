@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.87.1";
+const GAME_VERSION = "v0.88.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1663,6 +1663,83 @@ function onChargeEnter() {
   hapticPulse(25);
 }
 
+
+// -----------------------------------------------------------------
+// v0.88: 突進が乗った一撃の専用ヒットエフェクト
+//
+// 通常の体当たり（spawnCollisionParticles）と**見分けられること**が目的。
+// 破片が飛ぶだけでは「突進が効いた」が伝わらないので、
+// **進行方向に開く衝撃波の弧**＋**放射状の裂け線**で「押し潰した」形にする。
+// 大きさは溜め（chargeLevel）に比例するので、溜まっているほど一撃が重く見える。
+// -----------------------------------------------------------------
+const MAX_CHARGE_HIT_FX  = 40;     // 群れが一斉に当たると同フレームに大量に出るので上限を置く
+const CHARGE_HIT_FX_LIFE = 0.26;   // 寿命（秒）
+const CHARGE_HIT_SPOKES  = 5;      // 放射状の裂け線の本数
+const chargeHitFx = [];            // {x, y, angle, level, born}
+
+/**
+ * 突進が乗った体当たりが当たったときに呼ぶ。
+ * @param {number} angle 打ち込んだ向き（竜の進行方向）
+ */
+function spawnChargeHitFx(x, y, angle) {
+  chargeHitFx.push({ x, y, angle, level: chargeLevel, born: performance.now() });
+  if (chargeHitFx.length > MAX_CHARGE_HIT_FX) {
+    chargeHitFx.splice(0, chargeHitFx.length - MAX_CHARGE_HIT_FX);
+  }
+}
+
+/** 竜の**上**に描く（衝撃は当たった面で起きるので、竜に隠れると意味がない）。 */
+function drawChargeHitFx() {
+  if (chargeHitFx.length === 0) return;
+  const now = performance.now();
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineCap = "round";
+  for (let i = chargeHitFx.length - 1; i >= 0; i--) {
+    const f = chargeHitFx[i];
+    const t = (now - f.born) / 1000 / CHARGE_HIT_FX_LIFE;
+    if (t >= 1) { chargeHitFx.splice(i, 1); continue; }
+    const fade = 1 - t;
+    const lv   = 0.35 + 0.65 * f.level;        // 溜めが浅くても最低限は見える
+    const r    = (7 + 26 * t) * lv;            // 広がる衝撃波
+    const ca   = Math.cos(f.angle), sa = Math.sin(f.angle);
+
+    // 進行方向に開く弧（押し潰した面）
+    const half = 1.05 - 0.35 * t;
+    ctx.strokeStyle = `rgba(255, 236, 190, ${0.85 * fade * lv})`;
+    ctx.lineWidth = (4.5 - 3.0 * t) * lv;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, r, f.angle - half, f.angle + half);
+    ctx.stroke();
+
+    // 放射状の裂け線（当たった点から前方へ拡がる）
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.70 * fade * lv})`;
+    ctx.lineWidth = (2.2 - 1.4 * t) * lv;
+    ctx.beginPath();
+    for (let k = 0; k < CHARGE_HIT_SPOKES; k++) {
+      const off = (k / (CHARGE_HIT_SPOKES - 1) - 0.5) * 2 * half;
+      const a = f.angle + off;
+      const r0 = r * 0.35, r1 = r * (1.15 + 0.25 * Math.abs(off));
+      ctx.moveTo(f.x + Math.cos(a) * r0, f.y + Math.sin(a) * r0);
+      ctx.lineTo(f.x + Math.cos(a) * r1, f.y + Math.sin(a) * r1);
+    }
+    ctx.stroke();
+
+    // 当たった瞬間の白い点（最初の半分だけ）
+    if (t < 0.5) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${(1 - t * 2) * 0.9 * lv})`;
+      ctx.beginPath();
+      ctx.arc(f.x + ca * 2, f.y + sa * 2, (3.5 - 2.5 * t) * lv, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+}
+
+function clearChargeHitFx() { chargeHitFx.length = 0; }
+
 // ---- 実際に効かせる量（溜めで 1 → 最大 へ補間）----
 // 倍率が効くのは **突進中だけ**。溜めが残っていても状態が切れていれば素の値に戻る
 // （エフェクトだけは chargeLevel で余韻を残す）。
@@ -1711,21 +1788,22 @@ const MOVER_KNOCK_DECAY_PER_SEC = 4.5;
 // -----------------------------------------------------------------
 // 突進エフェクト
 // -----------------------------------------------------------------
-// 見た目の方針: 「群れ全体が1つの塊になって突っ込んでいる」ことが2秒で読めること。
-//   ① 個体ごとの尾を引く線   … 全員が同じ向きに走っていることが分かる
-//   ② 群れの先端の弧         … どこが"穂先"なのかが分かる
-//   ③ 重心から後ろへ流れる線 … 速さが分かる
+// v0.88: 群れ単位の弧と速度線は廃止した。
+// 重心に描く図形は竜と紐づかないので**デバッグ表示に見える**（Shooterからそう問われた）。
+// 代わりにすべてを**個体に紐づける**:
+//   ① 個体ごとの尾を引く線 … 全員が同じ向きに走っていることが分かる
+//   ② 個体ごとの衢波（bow wave） … 竜1匹ずつが空気を押している絵。
+//      40体分が並ぶので、群れ全体としては衆波の壁に見える
 // すべて chargeLevel と fxScale で大きさが変わる。
 const CHARGE_FX_STREAK_LEN = 26;   // 最大溜めでの個体の尾の長さ（px）
-const CHARGE_FX_ARC_AHEAD  = 34;   // 群れの先端の弧を重心から前へ置く距離（px）
-const CHARGE_FX_SPEEDLINES = 9;    // 後ろへ流れる線の本数
+const CHARGE_BOW_R0        = 9;    // 衢波の半径（溜め 0 のとき。px）
+const CHARGE_BOW_R1        = 11;   // 溜めが最大のときに足される半径（px）
+const CHARGE_BOW_ARC       = 0.95; // 衢波の半角（rad）
 
 function drawChargeFx() {
   if (chargeLevel <= 0.01) return;
   const lv = chargeLevel;
   const fxs = chg().fxScale;
-  const m = flockMetrics;
-  const hx = Math.cos(m.heading), hy = Math.sin(m.heading);
   // 突進が切れて余韻だけのときは薄くする（効いていないのに派手だと嘘になる）
   const liveAlpha = chargeActive ? 1 : 0.45;
 
@@ -1746,36 +1824,40 @@ function drawChargeFx() {
   }
   ctx.stroke();
 
-  // ③ 重心から後ろへ流れる線（本数は固定・長さと濃さが溜めで伸びる）
-  const backLen = (30 + 90 * lv) * fxs;
-  const spanLat = Math.max(20, m.spreadLat) * 1.1;
-  ctx.strokeStyle = `rgba(190, 235, 255, ${(0.10 + 0.22 * lv) * liveAlpha})`;
-  ctx.lineWidth = 1.4;
+  // ② 個体ごとの衢波。進行方向の少し前に弧を置くので、
+  //    竜のスプライトを覆わずに「押しのけている」絵になる。
+  const bowR = (CHARGE_BOW_R0 + CHARGE_BOW_R1 * lv) * fxs;
+  const half = CHARGE_BOW_ARC * (0.72 + 0.28 * lv);
+  // 外側（柔らかいにわみ）
+  ctx.strokeStyle = `rgba(190, 235, 255, ${(0.16 + 0.34 * lv) * liveAlpha})`;
+  ctx.lineWidth = 3.0 + 4.0 * lv;
   ctx.beginPath();
-  for (let k = 0; k < CHARGE_FX_SPEEDLINES; k++) {
-    const t = (k / (CHARGE_FX_SPEEDLINES - 1) - 0.5) * 2;      // -1..1
-    const ox = -hy * t * spanLat, oy = hx * t * spanLat;
-    const jitter = 0.55 + 0.45 * Math.abs(Math.sin(breathTime * 6 + k * 1.7));
-    ctx.moveTo(m.cx + ox - hx * 10, m.cy + oy - hy * 10);
-    ctx.lineTo(m.cx + ox - hx * backLen * jitter, m.cy + oy - hy * backLen * jitter);
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+    if (sp < 1) continue;
+    const a = Math.atan2(vy[i], vx[i]);
+    const cx2 = px[i] + (vx[i] / sp) * bowR * 0.30;
+    const cy2 = py[i] + (vy[i] / sp) * bowR * 0.30;
+    ctx.moveTo(cx2 + Math.cos(a - half) * bowR, cy2 + Math.sin(a - half) * bowR);
+    ctx.arc(cx2, cy2, bowR, a - half, a + half);
   }
   ctx.stroke();
-
-  // ② 群れの先端の弧（穂先）
-  const arcR = (Math.max(26, m.spreadLat) + CHARGE_FX_ARC_AHEAD * lv) * fxs;
-  const ax = m.cx + hx * (m.spreadLong * 0.6 + CHARGE_FX_ARC_AHEAD * lv * fxs);
-  const ay = m.cy + hy * (m.spreadLong * 0.6 + CHARGE_FX_ARC_AHEAD * lv * fxs);
-  const half = 0.55 + 0.35 * lv;
-  ctx.strokeStyle = `rgba(255, 240, 200, ${(0.30 + 0.55 * lv) * liveAlpha})`;
-  ctx.lineWidth = 2.5 + 5.0 * lv;
+  // 内側（明るい芯。溜めが進むほど白く太くなる）
+  ctx.strokeStyle = `rgba(255, 255, 255, ${(0.14 + 0.46 * lv) * liveAlpha})`;
+  ctx.lineWidth = 1.0 + 2.0 * lv;
   ctx.beginPath();
-  ctx.arc(ax, ay, arcR, m.heading - half, m.heading + half);
-  ctx.stroke();
-  // 穂先の芯（溜めが進むほど白く太くなる）
-  ctx.strokeStyle = `rgba(255, 255, 255, ${(0.10 + 0.40 * lv) * liveAlpha})`;
-  ctx.lineWidth = 1.2 + 2.2 * lv;
-  ctx.beginPath();
-  ctx.arc(ax, ay, arcR, m.heading - half * 0.55, m.heading + half * 0.55);
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+    if (sp < 1) continue;
+    const a = Math.atan2(vy[i], vx[i]);
+    const cx2 = px[i] + (vx[i] / sp) * bowR * 0.30;
+    const cy2 = py[i] + (vy[i] / sp) * bowR * 0.30;
+    const h2 = half * 0.6;
+    ctx.moveTo(cx2 + Math.cos(a - h2) * bowR, cy2 + Math.sin(a - h2) * bowR);
+    ctx.arc(cx2, cy2, bowR, a - h2, a + h2);
+  }
   ctx.stroke();
 
   ctx.restore();
@@ -7476,6 +7558,11 @@ function updateMoverRams() {
       boidHitStopTimer[i]      = (chargeActive && chg().plowThrough) ? 0 : HITSTOP_DURATION;
       boidCollisionCooldown[i] = isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
       spawnCollisionParticles(m.wx, m.wy);
+      // v0.88: 突進が乗った一撃の専用エフェクト（弾き飛ばしと対になる見せ場）
+      if (chargeActive) {
+        spawnChargeHitFx(m.wx, m.wy, Math.atan2(vy[i], vx[i]));
+        triggerShake(1.6 + 1.6 * chargeLevel, 0.08);
+      }
       // v0.8: 緋竜の斬閃演出（移動敵への体当たりも派手に）
       if (isMelee) {
         spawnMeleeImpactFx(m.wx, m.wy, Math.atan2(vy[i], vx[i]));
@@ -9963,6 +10050,8 @@ function updateCollisionAttacks(dt) {
 
       // 強めのパーティクル（破片が飛ぶ）
       spawnCollisionParticles(s.wx, s.wy);
+      // v0.88: 突進が乗っている一撃は専用の衝撃エフェクトにする（通常の体当たりと見分ける）
+      if (chargeActive) spawnChargeHitFx(s.wx, s.wy, Math.atan2(vy[i], vx[i]));
       // v0.8: 緋竜は深紅の斬閃＋火花＋画面シェイクで一撃の重さを出す
       if (isMelee) {
         spawnMeleeImpactFx(s.wx, s.wy, Math.atan2(vy[i], vx[i]));
@@ -11067,6 +11156,7 @@ function resetProgression() {
   clearSpecialBolts();
   resetCharge();          // v0.87: 突進の溜めもランごとにゼロへ
   chargePeakLevel = 0;
+  clearChargeHitFx();
   // 竜種も火竜に戻る（新しいランはビルドをゼロから組み直す）
   setFlockSpecies("fire");
   if (boidFireTimer) boidFireTimer.fill(0);
@@ -16139,6 +16229,7 @@ function render(now) {
   drawChargeFx();            // v0.87: 突進（尾・穂先の弧・速度線）。竜より下に敷く
   drawSpecialUnder();        // v0.85: 灯竜の光条と特殊個体の足元リング（竜の下）
   drawBoids();
+  drawChargeHitFx();         // v0.88: 突進が乗った一撃の衝撃（当たった面なので竜の上）
   drawSpecialOver();         // v0.85: 呑竜が溜めている弾（竜の上）
   drawSpecialBolts();        // v0.85: 呑竜が撃ち返した弾
   drawSatellites();          // v0.35: 蜂竜の衛星蜂（竜の上に描く）
