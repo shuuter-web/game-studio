@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.85.0";
+const GAME_VERSION = "v0.86.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -904,6 +904,7 @@ const DEBUG_ACTIONS = [
   { label: "👾 敵を出す…",           run: () => { debugPage = "enemies"; }, keepOpen: true },
   { label: "🏷 敵の名札",            run: () => { debugShowEnemyLabels = !debugShowEnemyLabels; }, keepOpen: true },
   { label: "🧭 街の向き",            run: () => { debugShowTownFront = !debugShowTownFront; }, keepOpen: true },
+  { label: "📊 群れの計測",          run: () => { debugShowFlockMetrics = !debugShowFlockMetrics; }, keepOpen: true },
   { label: "🛡 竜を無敵",            run: () => { debugInvincible = !debugInvincible; }, keepOpen: true },
   { label: "☠ 敵を全部消す",         run: () => debugClearEnemies(), keepOpen: true },
   { label: "🌊 堰を決壊させる",       run: () => debugBreakDam() },
@@ -937,7 +938,8 @@ function debugStatusLine() {
   const cont = (typeof profile !== "undefined" && profile)
     ? `文明:${unlockedContinentCount()}/${CONTINENT_DEFS.length} ` : "";
   return `${debugInvincible ? "【無敵ON】 " : ""}${debugShowEnemyLabels ? "【名札ON】 " : ""}` +
-         `${debugShowTownFront ? "【街の向きON】 " : ""}${cont}` +
+         `${debugShowTownFront ? "【街の向きON】 " : ""}` +
+         `${debugShowFlockMetrics ? "【群れ計測ON】 " : ""}${cont}` +
          `state:${gameState} / stage:${stg} / Lv.${lv} / 竜:${flock} / ` +
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
          `動き:${move} / 反動:${rec} / ` +
@@ -14660,6 +14662,325 @@ function calcFriendlyCentroid() {
   return { x: cx / count, y: cy / count };
 }
 
+
+// =================================================================
+// v0.86: 群れの計測（flockMetrics）
+//
+// 「群れ全体が今どう動いているか」を毎フレーム1組の数値にする。
+// 新しい攻撃要素（群れの形・揃い方・回り方を条件にするもの）を作るときの土台。
+// simStep の末尾で必ず更新されるので、どの状態（playing/title/クリア演出）でも値は生きている。
+//
+// 用語:
+//   重心速度   = 個体速度の平均。位置の差分ではなく平均速度を使うのは、
+//                卵で竜が増えた瞬間やダウン復帰で**母集団が変わると差分が飛ぶ**ため。
+//   整列度     = 速度の「向きだけ」を平均した長さ（0..1）。Vicsek の秩序変数。
+//                1 = 全員が同じ方向、0 = てんでばらばら。**速さは関係しない**。
+//   旋回度     = 重心から見た各個体の外向きベクトルと進行方向の外積の平均（-1..1）。
+//                +1 = 全員が重心のまわりを反時計回り、0 = 回っていない。
+//                整列度と組で「突っ込んでいる」と「渦を巻いている」を区別できる。
+//   広がり     = 重心からの距離のRMS（px）。σ なので、だいたい7割がこの円の内側。
+//
+// 負荷（150体・実測）: O(n) の2周だけなら 0.022ms/frame。
+// 最近接距離を含めると 0.18ms/frame になるので、そこだけ表示中限定にしている。
+//   縦横       = 進行方向の広がり / 横方向の広がり。>1 で槍、<1 で壁。
+// =================================================================
+const flockMetrics = {
+  count: 0,          // 生存（ダウン中を除く）個体数
+  cx: 0, cy: 0,      // 重心（ワールド座標）
+  vx: 0, vy: 0,      // 重心の速度ベクトル（px/s）
+  speed: 0,          // 重心の速さ（px/s）
+  heading: 0,        // 重心の進行方向（rad）
+  turnRate: 0,       // 重心の向きの変化率（rad/s。+が反時計回り）
+  spread: 0,         // 広がり = 重心からの距離のRMS（px）
+  spreadLong: 0,     // 進行方向の広がり（px）
+  spreadLat: 0,      // 横方向の広がり（px）
+  aspect: 1,         // spreadLong / spreadLat（>1で縦長＝槍、<1で横長＝壁）
+  radiusMax: 0,      // 最も外れている個体までの距離（px）
+  polar: 0,          // 整列度 0..1
+  swirl: 0,          // 旋回度 -1..1
+  speedSd: 0,        // 個体の速さのばらつき（標準偏差・px/s）
+  nnMean: 0,         // 平均最近接距離（px）。密度の目安
+  nnMin: 0,          // 最も詰まっている2体の距離（px）
+};
+
+// 表示用のならし（生の値は1フレームごとに跳ねるので読めない）。
+// FLOCK_METRIC_EMA_TAU 秒の時定数で寄せる。ゲームロジックから使うときは生の値を見ること。
+const FLOCK_METRIC_EMA_TAU = 0.18;
+const flockMetricsSmooth = { speed: 0, spread: 0, polar: 0, swirl: 0, aspect: 1, nnMean: 0, turnRate: 0 };
+
+// 進行方向。止まっているフレームでは前回の向きを保つ（0/0 で atan2 が暴れないように）
+let _flockHeadingHold = 0;
+
+function updateFlockMetrics(dt) {
+  const m = flockMetrics;
+
+  // ---- 1周目: 重心と平均速度 ----
+  let cx = 0, cy = 0, svx = 0, svy = 0, n = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    cx += px[i]; cy += py[i];
+    svx += vx[i]; svy += vy[i];
+    n++;
+  }
+  m.count = n;
+  if (n === 0) {
+    m.speed = 0; m.spread = 0; m.polar = 0; m.swirl = 0; m.nnMean = 0; m.nnMin = 0;
+    m.spreadLong = 0; m.spreadLat = 0; m.aspect = 1; m.radiusMax = 0; m.speedSd = 0;
+    return;
+  }
+  cx /= n; cy /= n; svx /= n; svy /= n;
+  m.cx = cx; m.cy = cy; m.vx = svx; m.vy = svy;
+  m.speed = Math.sqrt(svx * svx + svy * svy);
+
+  const prevHeading = m.heading;
+  if (m.speed > 0.5) { m.heading = Math.atan2(svy, svx); _flockHeadingHold = m.heading; }
+  else m.heading = _flockHeadingHold;
+  // 向きの変化率。dt=0（停止フレーム）では前回値を保つ
+  if (dt > 0) m.turnRate = wrapAngle(m.heading - prevHeading) / dt;
+
+  const hx = Math.cos(m.heading), hy = Math.sin(m.heading);
+
+  // ---- 2周目: 広がり・整列度・旋回度・速さのばらつき ----
+  let sumR2 = 0, sumLong2 = 0, sumLat2 = 0, maxR2 = 0;
+  let uvx = 0, uvy = 0, swirlSum = 0, swirlN = 0;
+  let sumSp = 0, sumSp2 = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const rx = px[i] - cx, ry = py[i] - cy;
+    const r2 = rx * rx + ry * ry;
+    sumR2 += r2;
+    if (r2 > maxR2) maxR2 = r2;
+    const along = rx * hx + ry * hy;          // 進行方向の成分
+    const lat   = -rx * hy + ry * hx;         // 横方向の成分
+    sumLong2 += along * along;
+    sumLat2  += lat * lat;
+
+    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+    sumSp += sp; sumSp2 += sp * sp;
+    if (sp > 0.0001) {
+      const nvx = vx[i] / sp, nvy = vy[i] / sp;
+      uvx += nvx; uvy += nvy;                 // 整列度: 単位速度ベクトルの平均
+      if (r2 > 1) {                           // 重心に重なっている個体は回転を定義できない
+        const rr = Math.sqrt(r2);
+        swirlSum += (rx / rr) * nvy - (ry / rr) * nvx;   // 外向き × 進行方向
+        swirlN++;
+      }
+    }
+  }
+  m.spread     = Math.sqrt(sumR2 / n);
+  m.spreadLong = Math.sqrt(sumLong2 / n);
+  m.spreadLat  = Math.sqrt(sumLat2 / n);
+  m.aspect     = m.spreadLat > 0.01 ? m.spreadLong / m.spreadLat : 1;
+  m.radiusMax  = Math.sqrt(maxR2);
+  m.polar      = Math.sqrt(uvx * uvx + uvy * uvy) / n;
+  m.swirl      = swirlN > 0 ? swirlSum / swirlN : 0;
+  const meanSp = sumSp / n;
+  m.speedSd    = Math.sqrt(Math.max(0, sumSp2 / n - meanSp * meanSp));
+
+  // 最近接距離だけは表示中にしか計算しない。
+  // 150体で測ると ここまでの O(n) の2周が 0.022ms なのに対し、
+  // 最近接距離は 0.159ms（全体の88%）を占める。
+  // これだけは読むための数値で、ゲーム側からは使わない前提。
+  if (debugShowFlockMetrics) updateFlockNearestNeighbour();
+  else { m.nnMean = 0; m.nnMin = 0; }
+
+  // ---- 表示用のならし ----
+  const k = dt > 0 ? Math.min(1, dt / FLOCK_METRIC_EMA_TAU) : 0;
+  const s = flockMetricsSmooth;
+  s.speed    += (m.speed    - s.speed)    * k;
+  s.spread   += (m.spread   - s.spread)   * k;
+  s.polar    += (m.polar    - s.polar)    * k;
+  s.swirl    += (m.swirl    - s.swirl)    * k;
+  s.aspect   += (m.aspect   - s.aspect)   * k;
+  s.nnMean   += (m.nnMean   - s.nnMean)   * k;
+  s.turnRate += (m.turnRate - s.turnRate) * k;
+}
+
+// 最近接距離。素直に書くと O(n^2)（150体で22500回）なので、
+// **simStep が毎フレーム作る群れの空間ハッシュ**を流用して 3x3 セルだけ見る。
+// グリッドは位置更新の**前**の座標で作られているが、1フレームの移動は数pxなので
+// セル幅 55px の 3x3 窓（165px）から真の最近接がこぼれることはない。
+// 窓の中に誰もいない個体（群れから外れている）だけ全走査に落として値を正しく保つ。
+const _nnBuf = [];
+function updateFlockNearestNeighbour() {
+  const m = flockMetrics;
+  const cell = BASE_CFG.perception;
+  let sum = 0, cnt = 0, globalMin = Infinity;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    gridQuery(px[i], py[i], cell, _nnBuf);
+    let best = Infinity;
+    for (const j of _nnBuf) {
+      if (j === i || boidDead[j] || boidDowned[j]) continue;
+      const dx = px[j] - px[i], dy = py[j] - py[i];
+      const d2 = dx * dx + dy * dy;
+      if (d2 < best) best = d2;
+    }
+    if (best === Infinity) {
+      // はぐれ個体のみ全走査（滅多に起きないので合計コストは小さい）
+      for (let j = 0; j < N; j++) {
+        if (j === i || boidDead[j] || boidDowned[j]) continue;
+        const dx = px[j] - px[i], dy = py[j] - py[i];
+        const d2 = dx * dx + dy * dy;
+        if (d2 < best) best = d2;
+      }
+    }
+    if (best === Infinity) continue;          // 生存個体が自分1体だけ
+    const d = Math.sqrt(best);
+    sum += d; cnt++;
+    if (d < globalMin) globalMin = d;
+  }
+  m.nnMean = cnt > 0 ? sum / cnt : 0;
+  m.nnMin  = globalMin === Infinity ? 0 : globalMin;
+}
+
+// -----------------------------------------------------------------
+// デバッグ表示
+// -----------------------------------------------------------------
+let debugShowFlockMetrics = true;
+
+/** ワールド座標: 重心の十字・速度の矢印・広がりの楕円。カメラ変換の内側で呼ぶ。 */
+function drawFlockMetricsWorld() {
+  if (!debugShowFlockMetrics) return;
+  const m = flockMetrics;
+  if (m.count === 0) return;
+
+  const hx = Math.cos(m.heading), hy = Math.sin(m.heading);
+
+  ctx.save();
+
+  // 広がりの楕円（進行方向 = 長軸側に描くので、槍か壁かが形で分かる）
+  ctx.strokeStyle = "rgba(120, 230, 255, 0.55)";
+  ctx.lineWidth = 1.4;
+  ctx.setLineDash([7, 6]);
+  ctx.beginPath();
+  ctx.ellipse(m.cx, m.cy, Math.max(4, m.spreadLong), Math.max(4, m.spreadLat), m.heading, 0, Math.PI * 2);
+  ctx.stroke();
+  // 最も外れている個体までの円（薄く）
+  ctx.globalAlpha = 0.35;
+  ctx.setLineDash([3, 9]);
+  ctx.beginPath();
+  ctx.arc(m.cx, m.cy, Math.max(4, m.radiusMax), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+
+  // 重心の十字
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(m.cx - 9, m.cy); ctx.lineTo(m.cx + 9, m.cy);
+  ctx.moveTo(m.cx, m.cy - 9); ctx.lineTo(m.cx, m.cy + 9);
+  ctx.stroke();
+
+  // 速度の矢印（長さは速さに比例。maxSpeed で 90px になるよう正規化）
+  const maxSp = mv().maxSpeed || 160;
+  const len = 18 + 72 * Math.min(1.4, m.speed / maxSp);
+  const tipX = m.cx + hx * len, tipY = m.cy + hy * len;
+  ctx.strokeStyle = "rgba(255, 210, 90, 0.95)";
+  ctx.lineWidth = 3;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(m.cx, m.cy); ctx.lineTo(tipX, tipY);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255, 210, 90, 0.95)";
+  ctx.beginPath();
+  ctx.moveTo(tipX + hx * 9, tipY + hy * 9);
+  ctx.lineTo(tipX - hy * 6, tipY + hx * 6);
+  ctx.lineTo(tipX + hy * 6, tipY - hx * 6);
+  ctx.closePath();
+  ctx.fill();
+
+  // 旋回度の弧（回っているときだけ。向きが符号で分かる）
+  if (Math.abs(flockMetricsSmooth.swirl) > 0.12) {
+    const sw = flockMetricsSmooth.swirl;
+    const r  = Math.max(12, m.spread);
+    const a0 = m.heading;
+    const a1 = a0 + Math.sign(sw) * Math.min(Math.PI * 1.6, Math.abs(sw) * Math.PI * 1.6);
+    ctx.strokeStyle = sw > 0 ? "rgba(140, 255, 170, 0.9)" : "rgba(255, 150, 200, 0.9)";
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.arc(m.cx, m.cy, r, a0, a1, sw < 0);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/** スクリーン座標: 数値パネル。カメラ変換の外（ctx.restore の後）で呼ぶ。 */
+function drawFlockMetricsPanel() {
+  if (!debugShowFlockMetrics) return;
+  const m = flockMetrics;
+  const s = flockMetricsSmooth;
+  const deg = (m.heading * 180 / Math.PI + 360) % 360;
+
+  const rows = [
+    ["重心速度", `${s.speed.toFixed(0)} px/s  ${deg.toFixed(0)}°`],
+    ["旋回",     `${(s.turnRate * 180 / Math.PI).toFixed(0)} °/s`],
+    ["広がり",   `σ ${s.spread.toFixed(0)}  max ${m.radiusMax.toFixed(0)} px`],
+    ["縦横",     `${s.aspect.toFixed(2)}  (縦${m.spreadLong.toFixed(0)} / 横${m.spreadLat.toFixed(0)})`],
+    ["整列度",   s.polar.toFixed(2)],
+    ["旋回度",   s.swirl.toFixed(2)],
+    ["最近接",   `平均 ${s.nnMean.toFixed(1)}  最小 ${m.nnMin.toFixed(1)} px`],
+    ["速さのばらつき", `±${m.speedSd.toFixed(0)} px/s`],
+  ];
+
+  // y=96 は左上のHUD（#hud-left は x8..72 / y0..88 を占める）の真下。
+  // パネルは canvas に描くが HUD は DOM なので、重なると HUD に隠される。
+  const x = 8, y = 96, w = 224, lh = 15, pad = 7;
+  const barBlock = 20;   // 末尾の整列度・旋回度バーの分
+  const h = pad * 2 + 14 + rows.length * lh + barBlock;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(6, 12, 20, 0.72)";
+  ctx.strokeStyle = "rgba(120, 230, 255, 0.45)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = "bold 10px ui-monospace, Menlo, Consolas, monospace";
+  ctx.fillStyle = "rgba(120, 230, 255, 0.95)";
+  ctx.textBaseline = "top";
+  ctx.fillText(`FLOCK METRICS  n=${m.count}`, x + pad, y + pad);
+
+  ctx.font = "10px ui-monospace, Menlo, Consolas, monospace";
+  let ry = y + pad + 15;
+  for (const [label, value] of rows) {
+    ctx.fillStyle = "rgba(190, 205, 220, 0.85)";
+    ctx.fillText(label, x + pad, ry);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.fillText(value, x + pad + 84, ry);
+    ry += lh;
+  }
+
+  // 整列度と旋回度はバーでも出す（0..1 / -1..1 の読み取りは数字より棒が速い）
+  const barX = x + pad, barW = w - pad * 2;
+  drawMetricBar(barX, ry + 3, barW, 4, s.polar, 0, 1, "rgba(120,230,255,0.9)");
+  drawMetricBar(barX, ry + 11, barW, 4, s.swirl, -1, 1,
+                s.swirl > 0 ? "rgba(140,255,170,0.9)" : "rgba(255,150,200,0.9)");
+  ctx.restore();
+}
+
+/** パネル内の小さな横棒。min..max を枠、value を塗りで示す（0 が中央の場合も扱う）。 */
+function drawMetricBar(x, y, w, h, value, min, max, color) {
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillRect(x, y, w, h);
+  const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  ctx.fillStyle = color;
+  if (min < 0) {
+    const mid = x + w * (-min / (max - min));
+    const px2 = x + w * t;
+    ctx.fillRect(Math.min(mid, px2), y, Math.abs(px2 - mid), h);
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.fillRect(mid - 0.5, y - 1, 1, h + 2);
+  } else {
+    ctx.fillRect(x, y, w * t, h);
+  }
+}
+
 // -----------------------------------------------------------------
 // 消滅フェードタイマー更新 + 変更2: ダウンタイマー更新・復帰処理
 // -----------------------------------------------------------------
@@ -15077,6 +15398,11 @@ function simStep(dt) {
     else if (ny > WORLD_H - 10) { ny = WORLD_H - 10; vy[i] = -Math.abs(vy[i]) * 0.5; boidKickY[i] = 0; }
     px[i] = nx; py[i] = ny;
   }
+
+  // v0.86: 群れの計測。ここで呼ぶのは、位置と速度が確定した直後であり、
+  // simStep は playing 以外（title / クリア演出）でも毎フレーム通るため。
+  // 最近接距離はこの上で作った空間ハッシュをそのまま使う。
+  updateFlockMetrics(dt);
 }
 
 // -----------------------------------------------------------------
@@ -15512,11 +15838,13 @@ function render(now) {
   // これでドラゴンが実際に追う経路と一致し、地面に固定されたまま流れる。
   drawTrail(now);
   drawVectorAim();           // v0.38: 爆竜の進路矢印（ワールド座標）
+  drawFlockMetricsWorld();   // v0.86: 群れの重心・速度矢印・広がりの楼円（デバッグ）
 
   ctx.restore();
 
   // 指先リングはスクリーン座標（指の現在位置）なのでカメラ変換の外で描く。
   drawTouchRing();
+  drawFlockMetricsPanel();   // v0.86: 計測値の数字パネル（スクリーン座標）
   drawFlash();
 }
 
