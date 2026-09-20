@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.98.5";
+const GAME_VERSION = "v0.98.6";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9855,11 +9855,7 @@ function updateProjectiles(dt) {
     // arrow  (kind=0): ARROW_MAX_RANGE=250px（短い射程、近づかないと当たらない）
     const tdx      = projWx[i] - projStartWx[i];
     const tdy      = projWy[i] - projStartWy[i];
-    const maxRange = projRange[i] > 0  ? projRange[i]          // v0.57: 個別指定（首都の一斉射など）
-                   : projKind[i] === 3 ? ROCKET_MAX_RANGE      // v0.48: ロケットは遅い代わりに長射程
-                   : projKind[i] === 2 ? BOSS_SHOT_MAX_RANGE
-                   : projKind[i] === 1 ? PROJECTILE_MAX_RANGE
-                   : ARROW_MAX_RANGE;
+    const maxRange = projMaxRange(i);
     if (tdx * tdx + tdy * tdy > maxRange * maxRange) {
       projActive[i] = 0;
       continue;
@@ -17671,6 +17667,19 @@ function drawBoids() {
 }
 
 /**
+ * v0.98.6: この弾の最大射程。**更新と描画の両方から引く**。
+ * 描画側は「発射から消滅までのどこにいるか」を出すのに使うので、
+ * 消える距離を判定している式と同じものを見ていないと意味がない。
+ */
+function projMaxRange(i) {
+  return projRange[i] > 0  ? projRange[i]          // v0.57: 個別指定（首都の一斉射など）
+       : projKind[i] === 3 ? ROCKET_MAX_RANGE      // v0.48: ロケットは遅い代わりに長射程
+       : projKind[i] === 2 ? BOSS_SHOT_MAX_RANGE
+       : projKind[i] === 1 ? PROJECTILE_MAX_RANGE
+       : ARROW_MAX_RANGE;
+}
+
+/**
  * 変更3: 投射物を「カタパルトの大きな矢（ボルト）」として描画する。
  * 進行方向へ向いた太めのシャフト + 先端の三角鏃 + 末尾の小さな矢羽根（フレッチング）。
  * 進行方向は速度ベクトル (projVx, projVy) から算出してキャンバスを回転させる。
@@ -17805,8 +17814,11 @@ function drawProjectiles() {
     // 弾はラン中ずっと画面を飛び続けるので、ここが「今どの時代に居るか」を語る最大の面積。
     const style = SHOT_STYLES[projStyle[i]] ?? SHOT_STYLES[2];
     // カタパルト弾（large/首都）は一回り大きい＝重い弾だと一目で分かる（従来の大小差を維持）
+    // v0.98.6: 首振り用に「発射から最大射程までのどこにいるか」を渡す。
+    const sdx = projWx[i] - projStartWx[i], sdy = projWy[i] - projStartWy[i];
+    const lifeFrac = Math.sqrt(sdx * sdx + sdy * sdy) / (projMaxRange(i) || 1);
     drawEraShot(ctx, style.key, projWx[i], projWy[i], angle, color,
-                style.size * (projKind[i] === 1 ? 1.55 : 1.0), i);
+                style.size * (projKind[i] === 1 ? 1.55 : 1.0), i, lifeFrac);
   }
 }
 
@@ -17852,14 +17864,15 @@ const SHOT_TINT_CACHE_MAX = 48;
 const SHOT_LEN_JITTER  = 0.10;   // 全長のばらつき（±10%）
 const SHOT_TILT_JITTER = 0.12;   // 進行方向からの傾き（±0.12rad ≈ ±7度）
 // 飛行中の首振り。
-// v0.98.5: 振る速さを rad/s ではなく**周期（秒）**で持つ。
-// 実測した飛行時間（発射から消滅まで）に合わせて
-// **一生で約2周**になる値を入れる／旧値は投槍2.7周・弩4.1周で振りすぎだった。
-//   投槍（古代）  攻撃半径を横切るのに 2.1〜2.9秒
-//   弩（中世）    同 1.9〜2.1秒（弾が速い分短い）
+// v0.98.6: **時間ではなく「飛んだ距離」で振る**。
+// 位相は 進んだ距離 / 最大射程 （0〜1）にするので、
+// 弾速も射程も時代も無関係に**最大射程まで飛んでちょうど TURNS 周**になる。
+// 途中で竜に当たった弾はその分だけ少なく振る（いつ当たるかは制御できないので、
+// 時間を基準にすると弾速の違いがそのまま振りの多さに出てしまう）。
+const SHOT_WOBBLE_TURNS = 2.0;
 const SHOT_WOBBLE = {
-  javelin: { periodSec: 1.30, amp: 0.10  },
-  bolt:    { periodSec: 1.00, amp: 0.045 },
+  javelin: { amp: 0.10  },
+  bolt:    { amp: 0.045 },
 };
 
 /** スロット番号から 0..1 の値を 2つ作る（決定的・乱数不使用）。 */
@@ -17918,8 +17931,9 @@ function shotTinted(key, color) {
  * @param {string} color ステージ設定の弾色（時代のテーマ色を保つ）
  * @param {number} sc    大きさ倍率（カタパルト弾は 1.55 倍）
  * @param {number} seed  弾ごとの位相ずらし（脈動が揃わないように）
+ * @param {number} lifeFrac 発射から最大射程までの進捗 0〜1（首振りに使う。見本は 0）
  */
-function drawEraShot(c, key, x, y, ang, color, sc, seed) {
+function drawEraShot(c, key, x, y, ang, color, sc, seed, lifeFrac) {
   const ctx = c;   // 以下の本体は ctx をそのまま使う（呼び出し側の書き換えを最小にする）
   ctx.save();
   ctx.translate(x, y);
@@ -17936,7 +17950,8 @@ function drawEraShot(c, key, x, y, ang, color, sc, seed) {
     // 回転の中心は穂先の付け根（原点）なので、振るのは主に矢尻側になる。
     const v   = shotVariant(seed);
     const wob = SHOT_WOBBLE[key];
-    ctx.rotate(v.tilt + (wob ? Math.sin(breathTime * (Math.PI * 2 / wob.periodSec) + seed) * wob.amp : 0));
+    const phase = (lifeFrac || 0) * Math.PI * 2 * SHOT_WOBBLE_TURNS;
+    ctx.rotate(v.tilt + (wob ? Math.sin(phase + seed) * wob.amp : 0));
     const len = (g.front + g.back) * sc * v.lenMult;
     const h   = len * (shotImg.height / shotImg.width);
     ctx.drawImage(shotImg, -g.back * sc * v.lenMult, -h / 2, len, h);
