@@ -1,176 +1,249 @@
-// -----------------------------------------------------------------
-// 掘り島 の headless 検証。AIの目視ではなく機械で採点する。
-//
-//   node prototypes/voxel-mine/verify.mjs
-//
-// Playwright はグローバル（/opt/node22/lib/node_modules）か node_modules のどちらかから読む。
-// -----------------------------------------------------------------
-import { createRequire } from "node:module";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
+// Run: node prototypes/voxel-mine/verify.mjs
+// Optional: PLAYWRIGHT_MODULE_PATH, PLAYWRIGHT_EXECUTABLE_PATH, VOXEL_ARTIFACT_DIR.
+import { createRequire } from 'node:module';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 function loadPlaywright() {
-  const candidates = ["playwright", "/opt/node22/lib/node_modules/playwright"];
-  for (const c of candidates) {
-    try { return require(c); } catch (error) { /* 次の候補 */ }
+  for (const candidate of [process.env.PLAYWRIGHT_MODULE_PATH, 'playwright', '/opt/node22/lib/node_modules/playwright'].filter(Boolean)) {
+    try { return require(candidate); } catch { /* Try next installed runtime. */ }
   }
-  throw new Error("playwright が見つからない");
+  throw new Error('Install playwright or set PLAYWRIGHT_MODULE_PATH.');
 }
 const { chromium } = loadPlaywright();
-
-const failures = [];
-function check(name, ok, detail) {
-  console.log((ok ? "  ok  " : "  NG  ") + name + (detail !== undefined ? "  … " + detail : ""));
-  if (!ok) failures.push(name);
+const browser = await chromium.launch({ ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : {}) });
+const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+const failures = [], errors = [];
+page.on('pageerror', error => errors.push(error.message));
+page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+page.on('requestfailed', request => errors.push(request.url()));
+page.on('dialog', dialog => dialog.accept());
+function check(name, condition, detail = '') {
+  console.log(`${condition ? 'PASS' : 'FAIL'} ${name} ${detail}`);
+  if (!condition) failures.push(name);
 }
-
-const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
-const errors = [];
-page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
-page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text()); });
-page.on("requestfailed", (r) => errors.push("request: " + r.url()));
-
-const url = pathToFileURL(path.join(here, "index.html")).href + "?seed=777&fresh=1";
-await page.goto(url);
-await page.waitForTimeout(600);
-
-const s0 = await page.evaluate(() => debugState());
-check("例外・エラーが0", errors.length === 0, errors.join(" | "));
-check("島1が生成される（ブロック数）", s0.solid > 400, s0.solid);
-check("面が描かれている", s0.faces > 300, s0.faces);
-check("島1に銅があり、鉄は無い", s0.counts.copper > 0 && !s0.counts.iron, JSON.stringify(s0.counts));
-check("素手では石・土・草だけ掘れる", s0.mineable === s0.solid - (s0.counts.copper || 0), s0.mineable + " / " + s0.solid);
-
-// タップで掘る：石は打撃1に対し hp2 なので、1回目はひび・2回目で割れる
-let stoneFace = await page.evaluate(() => debugFindFace("stone"));
-if (!stoneFace) {
-  // 上面は草。少し回して側面の石を出す
-  await page.evaluate(() => { camera.pitch = -0.1; cameraDirty = true; });
-  await page.waitForTimeout(200);
-  stoneFace = await page.evaluate(() => debugFindFace("stone"));
+const state = () => page.evaluate(() => debugState());
+const url = pathToFileURL(path.join(here, 'index.html')).href + '?seed=777&fresh=1';
+const artifactDirectory = path.resolve(process.env.VOXEL_ARTIFACT_DIR || path.join(here, '../../artifacts/voxel-mine'));
+await mkdir(artifactDirectory, { recursive: true });
+async function fresh() {
+  await page.goto(url);
+  await page.evaluate(() => { resetGame(); debugSave(); });
+  await page.reload();
+  await page.waitForFunction(() => typeof debugDepart === 'function');
 }
-check("石の面が見つかる", !!stoneFace, JSON.stringify(stoneFace));
-const hit1 = await page.evaluate(({ x, y }) => debugTapAt(x, y), stoneFace);
-const afterHit1 = await page.evaluate(() => debugState());
-check("石は1回目で割れない（ひび）", hit1.broken === 0 && afterHit1.solid === s0.solid, JSON.stringify(hit1));
-await page.waitForTimeout(150);
-const hit2 = await page.evaluate(({ x, y }) => debugTapAt(x, y), stoneFace);
-const afterHit2 = await page.evaluate(() => debugState());
-check("石は2回目で割れる", hit2.broken === 1 && afterHit2.solid === s0.solid - 1, JSON.stringify(hit2));
-check("石が在庫に入る", afterHit2.player.inventory.stone === 1, JSON.stringify(afterHit2.player.inventory));
-check("破片が出る", afterHit2.chips > 0, afterHit2.chips);
-
-// 銅は素手では掘れない（×）
-await page.evaluate(() => { camera.pitch = -0.46; cameraDirty = true; });
-await page.waitForTimeout(200);
-let copperFace = await page.evaluate(() => debugFindFace("copper"));
-for (let turn = 0; turn < 12 && !copperFace; turn++) {
-  await page.evaluate(() => { camera.yaw += 0.5; camera.pitch = -0.2 - (camera.yaw % 1) * 0.6; cameraDirty = true; });
-  await page.waitForTimeout(120);
-  copperFace = await page.evaluate(() => debugFindFace("copper"));
+// Small deterministic fixtures isolate edge cases from camera occlusion and world generation.
+async function fixture({ material = 'copper', count = 6, fuel = 10, pickaxe = 2, chain = 1, range = 0 } = {}) {
+  await fresh();
+  await page.evaluate(options => {
+    debugDepart(1);
+    cells.fill(0); damage.fill(0); pendingBreaks.length = 0;
+    for (let x = 2; x < options.count + 2; x++) cells[cellIndex(x, 2, 2)] = MATERIAL_BY_ID[options.material];
+    solidCount = options.count;
+    Object.assign(player, { pickaxe: options.pickaxe, chain: options.chain, range: options.range, power: 0, inventory: {} });
+    expedition.fuel = options.fuel;
+    rebuildSurface();
+  }, { material, count, fuel, pickaxe, chain, range });
 }
-check("銅の面が見つかる", !!copperFace);
-if (copperFace) {
-  const lockedHit = await page.evaluate(({ x, y }) => debugTapAt(x, y), copperFace);
-  const afterLocked = await page.evaluate(() => debugState());
-  check("素手で銅を叩いても割れない（×）", lockedHit.locked && afterLocked.solid === afterHit2.solid, JSON.stringify(lockedHit));
+const hit = () => page.evaluate(() => mineAt(2, 2, 2, 195, 422));
+const settle = () => page.evaluate(() => { nowSeconds += 10000; processPendingBreaks(); });
+async function checkLayout(label) {
+  const layout = await page.evaluate(() => {
+    const visibleButtons = [...document.querySelectorAll('button')].filter(button => {
+      const rect = button.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight;
+    });
+    return { overflow: document.documentElement.scrollWidth > innerWidth,
+      clipped: visibleButtons.filter(button => { const rect = button.getBoundingClientRect(); return rect.left < 0 || rect.right > innerWidth; }).map(button => button.textContent) };
+  });
+  check(`${label}: no horizontal overflow or clipped controls`, !layout.overflow && layout.clipped.length === 0, JSON.stringify(layout));
 }
+try {
+  await fresh();
+  const normalSentinel = 'verification normal-slot sentinel';
+  await page.evaluate(value => localStorage.setItem(SAVE_KEY_PREFIX + worldSeed, value), normalSentinel);
+  await page.reload();
+  await page.evaluate(() => debugSave());
+  check('Fresh sandbox does not overwrite normal save slot', await page.evaluate(value => localStorage.getItem(SAVE_KEY_PREFIX + worldSeed) === value, normalSentinel));
+  await page.evaluate(() => localStorage.removeItem(SAVE_KEY_PREFIX + worldSeed));
+  let current = await state();
+  check('New game starts at base with only island 1 unlocked', current.expedition.phase === 'base' && JSON.stringify(current.unlocks) === '[1]');
+  check('Initial fuel capacity is 60', current.capacity === 60);
+  check('Locked and invalid destinations cannot be entered', await page.evaluate(() => [2, 0, 7, -1, 1.5].every(id => !debugDepart(id))));
+  check('Insufficient materials cannot craft', await page.evaluate(() => !debugCraft('pickaxe') && !debugCraft('fuel') && !debugCraft('route')));
+  const baseBefore = await state();
+  await page.evaluate(() => debugTapAt(195, 422));
+  check('Base tapping does not consume fuel', (await state()).expedition.fuel === baseBefore.expedition.fuel);
+  await page.screenshot({ path: path.join(artifactDirectory, 'mobile-base.png'), fullPage: true });
+  await checkLayout('Mobile base');
 
-// 工房：素材が足りないと作れない／足りれば作れる
-const craftNo = await page.evaluate(() => debugCraft("pickaxe"));
-check("素材不足では作れない", craftNo === false);
-await page.evaluate(() => { debugGrant("stone", 25); debugGrant("dirt", 15); });
-const craftYes = await page.evaluate(() => debugCraft("pickaxe"));
-const afterCraft = await page.evaluate(() => debugState());
-check("石のつるはしが作れる", craftYes === true && afterCraft.player.pickaxe === 1 && afterCraft.power === 2, JSON.stringify(afterCraft.player));
-check("作ると素材が減る", afterCraft.player.inventory.stone === 1, afterCraft.player.inventory.stone);
-check("石のつるはしで銅が掘れる数に入る", afterCraft.mineable === afterCraft.solid, afterCraft.mineable + " / " + afterCraft.solid);
+  // Exercise an actual departure button and a canvas pointer event.
+  await page.locator('[data-depart="1"]').click();
+  await page.waitForFunction(() => debugState().faces > 300);
+  current = await state();
+  const originalCells = await page.evaluate(() => Array.from(cells));
+  check('Departure creates island 1 and refills fuel', current.expedition.phase === 'exploring' && current.expedition.fuel === 60 && current.solid > 400);
+  check('Island 1 renders copper but no iron', current.faces > 300 && current.counts.copper > 0 && !current.counts.iron);
+  const grass = await page.evaluate(() => debugFindFace('grass'));
+  check('Visible grass can be targeted', !!grass);
+  if (grass) {
+    await page.mouse.click(grass.x, grass.y);
+    const after = await state();
+    check('Real canvas tap mines and consumes one turn', after.solid < current.solid && after.expedition.fuel === 59 && after.expedition.turns === 1);
+  }
+  const beforeUi = await state();
+  await page.locator('#btn-sound').click();
+  await page.mouse.move(170, 420); await page.mouse.down(); await page.mouse.move(230, 440, { steps: 5 }); await page.mouse.up();
+  await page.evaluate(() => debugTapAt(-100, -100));
+  const afterUi = await state();
+  check('Sound, rotation and misses are free', afterUi.expedition.fuel === beforeUi.expedition.fuel);
+  check('Crafting and repeat departure blocked during expedition', await page.evaluate(() => { debugGrant('stone', 1000); debugGrant('dirt', 1000); return !debugCraft('fuel') && !debugCraft('route') && !debugCraft('pickaxe') && !debugDepart(1); }));
+  await page.screenshot({ path: path.join(artifactDirectory, 'mobile-expedition.png'), fullPage: true });
+  await checkLayout('Mobile expedition');
+  const inventoryBeforeReturn = (await state()).player.inventory;
+  await page.locator('#btn-next').click();
+  check('Manual return preserves inventory', (await state()).expedition.phase === 'base' && JSON.stringify((await state()).player.inventory) === JSON.stringify(inventoryBeforeReturn));
+  await page.evaluate(() => debugDepart(1));
+  check('Same-seed revisit regenerates exact island and refills for free', await page.evaluate(expected => JSON.stringify(Array.from(cells)) === JSON.stringify(expected) && expedition.fuel === debugState().capacity, originalCells));
+  await page.evaluate(() => debugReturn());
+  const capacityBefore = (await state()).capacity;
+  check('Fuel upgrade is craftable at base', await page.evaluate(() => debugCraft('fuel')));
+  check('Fuel upgrade increases capacity', (await state()).capacity > capacityBefore);
+  await page.evaluate(() => debugDepart(1));
+  check('Departure uses upgraded capacity', (await state()).expedition.fuel === (await state()).capacity);
 
-// 連鎖：銅の脈をつるはし＋連鎖Lv1で割ると、時間差で続けて割れる
-await page.evaluate(() => { debugGrant("copper", 8); debugGrant("stone", 30); });
-const craftChain = await page.evaluate(() => debugCraft("chain"));
-check("鉱脈連鎖Lv1が作れる", craftChain === true);
-copperFace = await page.evaluate(() => debugFindFace("copper"));
-if (copperFace) {
-  const before = await page.evaluate(() => debugState());
-  // 銅 hp3・打撃2 → 2回で割れる
-  await page.evaluate(({ x, y }) => debugTapAt(x, y), copperFace);
-  await page.waitForTimeout(80);
-  const r = await page.evaluate(({ x, y }) => debugTapAt(x, y), copperFace);
-  const mid = await page.evaluate(() => debugState());
-  await page.waitForTimeout(500);
-  const after = await page.evaluate(() => debugState());
-  const chainBroken = (before.counts.copper || 0) - (after.counts.copper || 0);
-  check("銅が割れて連鎖が予約される", r.broken === 1 && (mid.pending > 0 || chainBroken > 1), "pending=" + mid.pending + " broken=" + chainBroken);
-  check("連鎖が処理されて銅が続けて減る", chainBroken >= 2 && after.pending === 0, "copper -" + chainBroken);
+  await fixture({ material: 'stone', count: 1, pickaxe: 0, chain: 0 });
+  let result = await hit();
+  check('Partial hit spends one fuel without breaking stone', result.broken === 0 && (await state()).expedition.fuel === 9 && (await state()).solid === 1);
+  await page.evaluate(() => debugSave());
+  await page.reload();
+  check('Reload preserves partial damage, fuel and turn', await page.evaluate(() => damage[cellIndex(2, 2, 2)] === 1 && expedition.fuel === 9 && expedition.turns === 1));
+  result = await hit();
+  check('Second hit breaks saved damaged stone', result.broken === 1 && (await state()).player.inventory.stone === 1 && (await state()).expedition.fuel === 8);
+  await fixture({ pickaxe: 0, chain: 0 });
+  result = await hit();
+  check('Hardlocked copper is free', result.locked && (await state()).expedition.fuel === 10 && (await state()).solid === 6);
+
+  await fixture({ material: 'dirt', count: 3, chain: 0, range: 1 });
+  result = await hit();
+  check('Range mining breaks multiple cells for one fuel', result.broken > 1 && (await state()).expedition.fuel === 9);
+
+  await fixture();
+  result = await hit();
+  current = await state();
+  check('Copper fixture queues exactly three chain cells', result.broken === 1 && current.pending === 3);
+  const guard = await page.evaluate(() => {
+    const before = debugState(); mineAt(7, 2, 2, 195, 422); const after = debugState();
+    return before.expedition.fuel === after.expedition.fuel && before.solid === after.solid;
+  });
+  check('Repeated action cannot overlap pending chain', guard);
+  await settle();
+  current = await state();
+  check('Chain respects budget and costs no extra fuel', current.solid === 2 && current.pending === 0 && current.expedition.fuel === 9);
+  const chainReward = current.player.inventory.copper;
+  const chainCombo = current.combo;
+
+  // Delay within the legal save window so navigation cannot finish the chain first.
+  await fixture();
+  await page.evaluate(() => { mineAt(2, 2, 2, 195, 422); for (const item of pendingBreaks) item.due += 1; debugSave(); });
+  const pendingBefore = await state();
+  await page.reload();
+  const pendingAfter = await state();
+  check('Reload preserves queued chain and spent fuel', pendingAfter.pending === pendingBefore.pending && pendingAfter.expedition.fuel === 9 && pendingAfter.solid === pendingBefore.solid);
+  await settle();
+  check('Reloaded chain grants exactly the uninterrupted reward', (await state()).player.inventory.copper === chainReward && (await state()).pending === 0);
+  await page.evaluate(() => debugSave()); await page.reload();
+  check('Reload does not duplicate chain rewards', (await state()).player.inventory.copper === chainReward);
+
+  await fixture({ fuel: 1 });
+  await page.evaluate(() => { mineAt(2, 2, 2, 195, 422); for (const item of pendingBreaks) item.due += 1; debugSave(); });
+  await page.reload();
+  check('Zero-fuel reload preserves final chain before automatic return', (await state()).expedition.fuel === 0 && (await state()).pending === 3);
+  await settle();
+  current = await state();
+  check('Final fuel action returns with every chain reward', current.expedition.phase === 'base' && current.pending === 0 && current.player.inventory.copper === chainReward);
+  await fixture();
+  await page.evaluate(() => { mineAt(2, 2, 2, 195, 422); debugReturn(); });
+  await settle();
+  current = await state();
+  check('Manual return during chain retains every reward', current.expedition.phase === 'base' && current.pending === 0 && current.player.inventory.copper === chainReward);
+  await fixture();
+  await page.evaluate(() => { nowSeconds += 10000; mineAt(2, 2, 2, 195, 422); });
+  await settle();
+  check('Thinking time does not change action combo or reward', (await state()).combo === chainCombo && (await state()).player.inventory.copper === chainReward);
+
+  // Multiple ore chains must pay the same bonus regardless of frame batching.
+  const mixedRewards = await page.evaluate(() => {
+    const outcomes = [];
+    for (const stepped of [false, true]) {
+      pendingBreaks.length = 0; cells.fill(0); damage.fill(0);
+      Object.assign(expedition, { phase: 'exploring', fuel: 10, returnRequested: false, haul: {} });
+      player.inventory = {}; combo = 7; comboMultiplier = 1; solidCount = 4;
+      const start = nowSeconds;
+      const entries = [
+        { x: 2, material: M_COPPER, delay: 1 }, { x: 3, material: M_COPPER, delay: 2 },
+        { x: 4, material: M_CRYSTAL, delay: 1 }, { x: 5, material: M_CRYSTAL, delay: 2 },
+      ];
+      for (const entry of entries) {
+        const idx = cellIndex(entry.x, 2, 2); cells[idx] = entry.material;
+        pendingBreaks.push({ idx, material: entry.material, due: start + entry.delay, step: 1 });
+      }
+      if (stepped) { nowSeconds = start + 1; processPendingBreaks(); }
+      nowSeconds = start + 2; processPendingBreaks();
+      outcomes.push({ copper: have('copper'), crystal: have('crystal') });
+    }
+    return outcomes;
+  });
+  check('Mixed-chain rewards are independent of frame batching', JSON.stringify(mixedRewards[0]) === JSON.stringify(mixedRewards[1]), JSON.stringify(mixedRewards));
+
+  await fresh();
+  await page.evaluate(() => { for (const id of INVENTORY_ORDER) debugGrant(id, 100000); });
+  for (let id = 2; id <= 6; id++) {
+    const before = await state();
+    const crafted = await page.evaluate(() => debugCraft('route'));
+    current = await state();
+    check(`Route upgrade unlocks only island ${id}`, crafted && current.unlocks.length === id && current.unlocks.at(-1) === id && before.unlocks.length === id - 1);
+  }
+  check('Route at maximum cannot be crafted', await page.evaluate(() => !debugCraft('route')));
+  await page.evaluate(() => debugDepart(6));
+  current = await state();
+  check('Island 6 retains all late-game resources', ['iron', 'gold', 'obsidian', 'starcore'].every(id => current.counts[id] > 0));
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: path.join(artifactDirectory, 'desktop-island6.png'), fullPage: true });
+  await checkLayout('Desktop expedition');
+  await page.evaluate(() => {
+    player.pickaxe = 3; player.range = 1; player.chain = 2; player.power = 2;
+    debugSave();
+    const legacy = JSON.parse(localStorage.getItem(saveKey()));
+    legacy.version = 1;
+    for (const key of Object.keys(legacy)) if (!['version', 'gameVersion', 'worldSeed', 'player', 'island', 'camera'].includes(key)) delete legacy[key];
+    for (const key of Object.keys(legacy.player)) if (!['pickaxe', 'range', 'chain', 'power', 'inventory', 'seen', 'stats'].includes(key)) delete legacy.player[key];
+    window.removeEventListener('beforeunload', saveGame);
+    localStorage.setItem(saveKey(), JSON.stringify(legacy));
+  });
+  const legacyInventory = (await state()).player.inventory;
+  await page.reload(); current = await state();
+  check('Legacy v1 migration preserves equipment and inventory', current.player.pickaxe === 3 && current.player.range === 1 && current.player.chain === 2 && current.player.power === 2 && JSON.stringify(current.player.inventory) === JSON.stringify(legacyInventory));
+  check('Legacy reached island remains unlocked at base', current.unlocks.includes(6) && current.expedition.phase === 'base');
+  await page.evaluate(() => { window.removeEventListener('beforeunload', saveGame); localStorage.setItem(saveKey(), JSON.stringify({ version: 2, island: { cells: 'invalid!' }, player: {} })); });
+  await page.reload();
+  check('Malformed save falls back to playable base', (await state()).expedition.phase === 'base' && (await state()).unlocks.includes(1));
+  for (const seed of [0, 1, 777, 12345]) {
+    await page.goto(pathToFileURL(path.join(here, 'index.html')).href + `?seed=${seed}&fresh=1`);
+    const generation = await page.evaluate(() => {
+      const definingMaterials = ['copper', 'crystal', 'iron', 'gold', 'obsidian', 'starcore'];
+      return definingMaterials.map((material, index) => { generateIsland(index + 1); return { island: index + 1, material, count: debugState().counts[material] || 0 }; });
+    });
+    check(`Seed ${seed}: every destination contains its defining resource`, generation.every(item => item.count > 0), JSON.stringify(generation));
+  }
+  check('No runtime or resource errors', errors.length === 0, errors.join(' | '));
+} catch (error) {
+  failures.push(error.stack || error.message);
+} finally {
+  await browser.close();
 }
-
-// 範囲：Lv1（幅3）で1タップに複数割れる
-await page.evaluate(() => { debugGrant("crystal", 8); debugGrant("stone", 60); });
-const craftRange = await page.evaluate(() => debugCraft("range"));
-check("範囲Lv1が作れる", craftRange === true);
-await page.evaluate(() => { camera.pitch = -0.9; cameraDirty = true; });
-await page.waitForTimeout(200);
-const grassFace = await page.evaluate(() => debugFindFace("grass"));
-if (grassFace) {
-  const rr = await page.evaluate(({ x, y }) => debugTapAt(x, y), grassFace);
-  check("幅3で草・土がまとめて割れる", rr.broken >= 4, rr.broken);
-}
-
-// コンボ：短い間隔で割ると数が増える
-await page.evaluate(() => { for (let i = 0; i < 8; i++) { const f = debugFindFace("dirt") || debugFindFace("grass"); if (f) debugTapAt(f.x, f.y); } });
-const comboState = await page.evaluate(() => debugState());
-check("連打でコンボが乗る", comboState.combo >= 4 && comboState.player.stats.maxCombo >= 4, "combo=" + comboState.combo);
-
-// 保存 → 再読込 で状態が戻る
-await page.evaluate(() => debugSave());
-const beforeReload = await page.evaluate(() => debugState());
-await page.goto(pathToFileURL(path.join(here, "index.html")).href + "?seed=777");
-await page.waitForTimeout(500);
-const afterReload = await page.evaluate(() => debugState());
-check("再読込で在庫・つるはし・島が戻る",
-  afterReload.solid === beforeReload.solid && afterReload.player.pickaxe === beforeReload.player.pickaxe &&
-  JSON.stringify(afterReload.player.inventory) === JSON.stringify(beforeReload.player.inventory),
-  afterReload.solid + " vs " + beforeReload.solid);
-
-// 次の島：番号が進み、大きく・深くなり、新しい素材が出る
-page.removeAllListeners("dialog");
-page.on("dialog", (d) => d.accept());
-const island2 = await page.evaluate(() => debugNextIsland());
-check("島2が生成される", island2.islandLevel === 2 && island2.solid > s0.solid, island2.solid + " > " + s0.solid);
-check("島2で結晶が出る", island2.counts.crystal > 0, JSON.stringify(island2.counts));
-for (let i = 3; i <= 6; i++) await page.evaluate(() => debugNextIsland());
-const island6 = await page.evaluate(() => debugState());
-check("島6で鉄・金・黒曜・星核が出る",
-  island6.counts.iron > 0 && island6.counts.gold > 0 && island6.counts.obsidian > 0 && island6.counts.starcore > 0,
-  JSON.stringify(island6.counts));
-check("島6は島1よりずっと大きい", island6.solid > s0.solid * 2.5, island6.solid + " vs " + s0.solid);
-check("島が決定的（同じ種で同じ島）", true);
-
-// 大きい島の描画コスト（1回の島レイヤー描画にかかる時間）
-const drawMs = await page.evaluate(() => {
-  const t0 = performance.now();
-  for (let i = 0; i < 5; i++) { boilFrame++; renderIslandLayer(); }
-  return (performance.now() - t0) / 5;
-});
-check("島6の描画が1回 25ms 未満（沸き10Hzに間に合う）", drawMs < 25, drawMs.toFixed(2) + "ms, faces=" + island6.faces);
-
-// 決定性：同じ種の島1を2回作って同じ内容か
-const same = await page.evaluate(() => {
-  generateIsland(1); const a = Array.from(cells).join(",");
-  generateIsland(1); const b = Array.from(cells).join(",");
-  return a === b;
-});
-check("同じ種で同じ島になる", same);
-
-check("最後まで例外・エラーが0", errors.length === 0, errors.join(" | "));
-await browser.close();
-
-if (failures.length > 0) {
-  console.error("\n検証失敗: " + failures.length + " 件\n  - " + failures.join("\n  - "));
-  process.exit(1);
-}
-console.log("\n検証通過");
+console.log(`Screenshots: ${artifactDirectory}`);
+if (failures.length) { console.error(failures.join('\n')); process.exitCode = 1; }
+else console.log('All expedition regressions passed.');
