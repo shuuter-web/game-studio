@@ -2176,8 +2176,54 @@ knights / clubmen / mammoth_lord / bullchariot / gilded_colossus / batteringram 
 牡牛戦車の角と破城槌の衝角も同じく画像の下側にある。
 
 **つまりこれは向きの設定ミスというより、[[dragon-tide-is-top-down]] に反する絵が8枚混じっていた**という話。
-`forward:"down"` は暫定の埋め合わせで、**本筋は8枚を真俯瞰で描き直すこと**（未着手）。
-描き直したら `forward` を `"up"` に戻す。
+**v0.97 で絵から描き直した（下記）ので、`forward` は全部 `"up"` に戻してある。**
+
+### 2-1aj. 8種を真俯瞰で描き直す（v0.97）
+
+Shooter 指示「今のうちに絵から直しておきますか」。v0.96 の暫定対応を本筋に置き換えた。
+
+#### 生成プロンプトの穴
+
+`tools/gen_enemy_sprite.sh` には元から `Top-down view seen from directly above` と書いてあった。
+**それでも正面の立ち絵が返ってくる。** 建物スプライト（§2-1t）で踏んだのと同じ穴。
+「俯瞰で」と言うだけでは足りず、**見えてはいけないものを名指しする**必要がある。
+
+```
+STRICT OVERHEAD MAP VIEW. The camera is a bird directly above, looking straight DOWN.
+You see ONLY the TOP surfaces: the top of the head, the shoulders, the back, the roof.
+You must NOT see the face, the eyes, the chest, the belly, or any front-facing surface.
+No perspective, no side faces, nothing seen in elevation.
+This is NOT a character portrait and NOT a front view.
+```
+
+この文言で1体試したところ一発で真俯瞰（馬の頭とたてがみを上から見た騎士）になった。
+
+#### 前後の指定も明示が要る
+
+8体中2体（破城槌・衝撃兵）は俯瞰にはなったが**前後が逆**（衝角と頭が画像の下）だった。
+`The forward direction points toward the TOP` だけでは足りず、
+**その敵の一番前にある部位を名指しして「それを画像の上に置け」**と書いたら直った。
+
+```
+The iron ram head must be at the TOP of the image and the rear of the cart at the BOTTOM.
+Its low horned head is at the very TOP of the image, the spined tail is at the BOTTOM.
+```
+
+#### 手順
+
+1. `tools/gen_sprite_batch.sh` で生成（`name|aspect|forward|desc` の4体ずつ）
+2. 生成直後は 440〜960px と大きいので、**長辺320px以下へ PIL で縮小**（旧絵も 160〜320px だった）
+3. 縮小後のアルファ重心で px/py を取り直し、drawScale も再計算
+4. `ENEMY_SPRITE_META` を書き換え、`forward` を全部 `"up"` へ
+5. 実機で 8体を横一列に並べて全部右へ進ませ、絵の前が右を向くことを目で確認
+
+`gilded_colossus` の `hover: true` はバッチ出力に含まれないので手で戻した。
+
+#### 落とし穴
+
+メタを正規表現の**後方参照**（`\1`）で置き換えたら、キー名が消えて
+`ironclad: {...},{...}` のように**違う行に連結**された（構文エラーで検知）。
+行単位の素直な置換に切り替えて解決。**メタの一括書き換えに後方参照を使わないこと。**
 
 ---
 

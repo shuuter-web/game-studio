@@ -9,7 +9,11 @@ PY=/c/Users/syuta/AppData/Local/Programs/Python/Python311/python.exe
 OUT="$(pwd)/prototypes/dragon-tide/assets"
 TMP="${SPRITE_TMP:-/c/tmp/dt-sprites}"; mkdir -p "$TMP"
 
-PROMPT="Top-down view seen from directly above, orthographic. Flat cel-shaded illustration style, bold clean silhouette, thick dark ink outlines, high contrast, no painterly texture. Solid flat pure green background (#00FF00) for chroma key removal, no ground, no shadow, no other objects. IMPORTANT: the subject is drawn occupying only the middle 65 percent of the image, with a WIDE EMPTY GREEN BORDER on all four sides. Nothing may touch the image edges. The subject faces toward the TOP of the image. $DESC"
+# v0.97: 建物スプライトと同じ落とし穴を踏んだので文言を強めた。
+# 旧プロンプトは "Top-down view seen from directly above" だけだったが、
+# 実際には**正面を向いた立ち絵**が返ってくる（顔・胸が見える）。
+# 「顔・胸・正面を見せるな」「見えるのは頭頂と背中だけ」と明言しないと直らない。
+PROMPT="STRICT OVERHEAD MAP VIEW. The camera is a bird directly above, looking straight DOWN at the ground. You see ONLY the TOP surfaces: the top of the head, the shoulders, the back, the roof. You must NOT see the face, the eyes, the chest, the belly, or any front-facing surface. No perspective, no side faces, nothing seen in elevation. This is NOT a character portrait and NOT a front view. Flat cel-shaded illustration style, bold clean silhouette, thick dark ink outlines, high contrast, no painterly texture. Solid flat pure green background (#00FF00) for chroma key removal, no ground, no shadow, no other objects. IMPORTANT: the subject is drawn occupying only the middle 65 percent of the image, with a WIDE EMPTY GREEN BORDER on all four sides. Nothing may touch the image edges. The forward direction of the subject (the way it walks or drives) points toward the TOP of the image. $DESC"
 
 export GEMINI_API_KEY=$(powershell -Command "[System.Environment]::GetEnvironmentVariable('GEMINI_API_KEY','User')" | tr -d '\r')
 export PYTHONIOENCODING=utf-8
