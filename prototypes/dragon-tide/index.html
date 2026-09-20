@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.88.0";
+const GAME_VERSION = "v0.89.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1388,7 +1388,8 @@ const SPECIES_DEFS = {
     desc: "真下を石の衝撃で叩く。加速は鋭いが旋回は重い",
     move: { maxSpeed: 150, minSpeed: 50, accel: 480, turnRate: 1.4, leaderSpeed: 190, pathEndMode: "wander" },
     // v0.87: 重い種なので、乗れば強いが溜まるのは遅い。弾き飛ばしは最大級
-    charge: { rampSeconds: 2.8, damageMult: 3.4, knockback: 320, fxScale: 1.15 },
+    // 石の竜なので素で軽減を持つ＝**この種だけは最初から衝角波が盾の形**になる
+    charge: { rampSeconds: 2.8, damageMult: 3.4, knockback: 320, fxScale: 1.15, damageReduction: 0.15 },
   },
 
   // ---- v0.37: Ⅲ群（極端枠）----
@@ -1556,6 +1557,10 @@ const CHARGE_PROFILE_DEFAULT = {
   reachBonus:     22,
   // 最大溜めのときに移動敵を弾き飛ばす初速（px/s）。0 でノックバック無し。
   knockback:      190,
+  // 突進中の被ダメージ軽減（0～1。0.25 で 25% カット）。既定は 0 ＝ **強化で手に入れる効果**。
+  // 0 より大きいと衝角波の形が変わる（尖った「〉」→ 丸い弧）ので、
+  // 画面を見れば軽減が乗っているかどうかが分かる。
+  damageReduction: 0,
   // エフェクトの大きさ倍率（竜種ごとの見た目調整用。当たり判定には影響しない）。
   fxScale:        1.0,
   // true の間、突進中の体当たりではヒットストップ（個体の一瞬の停止）を受けない。
@@ -1609,6 +1614,15 @@ function effChargeReachBonus() {
 function effChargeKnockback() {
   return chg().knockback * (1 + 0.30 * upCount("charge_dmg"));
 }
+// 突進中の被ダメージ軽減。上限を置くのは、100% にすると
+// 「突進していれば絶対に落ちない」になって弾幕を避ける意味が消えるため。
+const CHARGE_GUARD_MAX = 0.75;
+function effChargeDamageReduction() {
+  const r = chg().damageReduction + 0.15 * upCount("charge_guard") + permaBuff.chargeGuard;
+  return Math.max(0, Math.min(CHARGE_GUARD_MAX, r));
+}
+/** 軽減が一切無いか（衝角波を尖った形で描くかの判定に使う）。 */
+function hasChargeGuard() { return effChargeDamageReduction() > 0; }
 
 // ---- 状態 ----
 let chargeActive = false;   // 今このフレームで突進しているか
@@ -1752,6 +1766,10 @@ function chargeReachBonusNow() {
 function chargeKnockbackNow() {
   return chargeActive ? effChargeKnockback() * chargeLevel : 0;
 }
+/** 今この瞬間の被ダメージ軽減率。他の伸びと同じく溜めに比例する。 */
+function chargeDamageReductionNow() {
+  return chargeActive ? effChargeDamageReduction() * chargeLevel : 0;
+}
 
 /** 移動敵を弾き飛ばす（突進中の体当たりから呼ぶ）。減衰する速度チャネルに積む。 */
 function applyMoverKnockback(m, fromX, fromY, speed) {
@@ -1798,7 +1816,10 @@ const MOVER_KNOCK_DECAY_PER_SEC = 4.5;
 const CHARGE_FX_STREAK_LEN = 26;   // 最大溜めでの個体の尾の長さ（px）
 const CHARGE_BOW_R0        = 9;    // 衢波の半径（溜め 0 のとき。px）
 const CHARGE_BOW_R1        = 11;   // 溜めが最大のときに足される半径（px）
-const CHARGE_BOW_ARC       = 0.95; // 衢波の半角（rad）
+const CHARGE_BOW_ARC       = 0.95; // 丸い弧（軽減あり）の半角（rad）
+// v0.89: 軽減が無いときの「〉」の開き具合（rad）。
+// 先端から腕をこの角度だけ後ろへ振る。大きいほど寝た（＝鋭い）形になる。
+const CHARGE_CHEVRON_SWEEP = 2.25;
 
 function drawChargeFx() {
   if (chargeLevel <= 0.01) return;
@@ -1824,10 +1845,36 @@ function drawChargeFx() {
   }
   ctx.stroke();
 
-  // ② 個体ごとの衢波。進行方向の少し前に弧を置くので、
+  // ② 個体ごとの衢波。進行方向の少し前に置くので、
   //    竜のスプライトを覆わずに「押しのけている」絵になる。
-  const bowR = (CHARGE_BOW_R0 + CHARGE_BOW_R1 * lv) * fxs;
-  const half = CHARGE_BOW_ARC * (0.72 + 0.28 * lv);
+  //
+  // v0.89: **形が軽減の有無を兵ねる**。
+  //   軽減あり（charge_guard 系を取っている）… 丸い弧。守っているのでバリアで良い
+  //   軽減なし（既定）                   … 尖った「〉」。貫くだけで守らないことが形で分かる
+  const bowR   = (CHARGE_BOW_R0 + CHARGE_BOW_R1 * lv) * fxs;
+  const guard  = hasChargeGuard();
+  const half   = CHARGE_BOW_ARC * (0.72 + 0.28 * lv);
+  const sweep  = CHARGE_CHEVRON_SWEEP;
+
+  // 1本の形をパスに積む（外側・内側で同じものを縮尺を変えて使う）
+  const addShape = (a, cx2, cy2, r, scale) => {
+    if (guard) {
+      const h = half * scale;
+      ctx.moveTo(cx2 + Math.cos(a - h) * r, cy2 + Math.sin(a - h) * r);
+      ctx.arc(cx2, cy2, r, a - h, a + h);
+    } else {
+      // 先端を前へ出して、両腕を sweep だけ後ろへ振る＝「〉」
+      const h = sweep * (0.82 + 0.18 * scale);
+      ctx.moveTo(cx2 + Math.cos(a - h) * r * 0.92, cy2 + Math.sin(a - h) * r * 0.92);
+      ctx.lineTo(cx2 + Math.cos(a) * r * 1.18, cy2 + Math.sin(a) * r * 1.18);
+      ctx.lineTo(cx2 + Math.cos(a + h) * r * 0.92, cy2 + Math.sin(a + h) * r * 0.92);
+    }
+  };
+
+  // 尖った形は先端を死なせないようマイター継ぎにする
+  ctx.lineJoin = guard ? "round" : "miter";
+  ctx.lineCap  = guard ? "round" : "butt";
+
   // 外側（柔らかいにわみ）
   ctx.strokeStyle = `rgba(190, 235, 255, ${(0.16 + 0.34 * lv) * liveAlpha})`;
   ctx.lineWidth = 3.0 + 4.0 * lv;
@@ -1837,10 +1884,7 @@ function drawChargeFx() {
     const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
     if (sp < 1) continue;
     const a = Math.atan2(vy[i], vx[i]);
-    const cx2 = px[i] + (vx[i] / sp) * bowR * 0.30;
-    const cy2 = py[i] + (vy[i] / sp) * bowR * 0.30;
-    ctx.moveTo(cx2 + Math.cos(a - half) * bowR, cy2 + Math.sin(a - half) * bowR);
-    ctx.arc(cx2, cy2, bowR, a - half, a + half);
+    addShape(a, px[i] + (vx[i] / sp) * bowR * 0.30, py[i] + (vy[i] / sp) * bowR * 0.30, bowR, 1);
   }
   ctx.stroke();
   // 内側（明るい芯。溜めが進むほど白く太くなる）
@@ -1852,11 +1896,7 @@ function drawChargeFx() {
     const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
     if (sp < 1) continue;
     const a = Math.atan2(vy[i], vx[i]);
-    const cx2 = px[i] + (vx[i] / sp) * bowR * 0.30;
-    const cy2 = py[i] + (vy[i] / sp) * bowR * 0.30;
-    const h2 = half * 0.6;
-    ctx.moveTo(cx2 + Math.cos(a - h2) * bowR, cy2 + Math.sin(a - h2) * bowR);
-    ctx.arc(cx2, cy2, bowR, a - h2, a + h2);
+    addShape(a, px[i] + (vx[i] / sp) * bowR * 0.30, py[i] + (vy[i] / sp) * bowR * 0.30, bowR, 0.6);
   }
   ctx.stroke();
 
@@ -10931,6 +10971,7 @@ const STRINGS = {
     charge_reach: { name: "突進の角", desc: "突進中の体当たりの届く範囲 +30%" },
     charge_ramp:  { name: "風に乗る", desc: "突進が溜まるのが 20% 速くなる" },
     charge_ease:  { name: "群れの息", desc: "突進に入る速度が -1%" },
+    charge_guard: { name: "衝角の壁", desc: "突進中の被ダメージ -15%（衝角波が盾の形になる）" },
   },
 };
 
@@ -11026,6 +11067,7 @@ const CARD_DEFS = [
   { id: "charge_reach", icon: "\u{1F300}", rarity: "common", max: 3 },
   { id: "charge_ramp",  icon: "\u{1F4A8}", rarity: "rare",   max: 3 },
   { id: "charge_ease",  icon: "\u{1FAB6}", rarity: "common", max: 3 },
+  { id: "charge_guard", icon: "\u{1F6E1}️", rarity: "rare", max: 3 },
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
@@ -11055,6 +11097,8 @@ function defaultPermaBuff() {
     // v0.87: 突進ライン。chargeEase はしきい値からの**減算**（下げるほど入りやすい）、
     // chargeDmg は伸び幅の乗算、chargeRamp は溜まるまでの秒数の乗算（<1で速い）。
     chargeEase: 0, chargeDmg: 1, chargeRamp: 1,
+    // v0.89: 突進中の被ダメージ軽減（加算。0.15 で 15%カット）。
+    chargeGuard: 0,
   };
 }
 let permaBuff = defaultPermaBuff();
@@ -13416,6 +13460,7 @@ const TREE_DEFS = [
   { id: "chg_ease",  cat: "charge", name: "風を読む", desc: "突進に入る速度が -1.5%",   cost: 90,  prereq: [],           effect: { type: "chargeEase", value: 0.015 } },
   { id: "chg_power", cat: "charge", name: "穿つ群れ", desc: "突進の伸び幅 +30%",       cost: 130, prereq: [],           effect: { type: "chargeDmg",  value: 1.30 } },
   { id: "chg_ramp",  cat: "charge", name: "加速の術", desc: "溜まるのが 20% 速くなる", cost: 150, prereq: ["chg_ease"], effect: { type: "chargeRamp", value: 0.80 } },
+  { id: "chg_guard", cat: "charge", name: "風の鎧", desc: "突進中の被ダメージ -15%", cost: 140, prereq: [],           effect: { type: "chargeGuard", value: 0.15 } },
   // ── 特殊個体（v0.85。加入はラン中の★カードなので、ツリーは「何体連れて歩けるか」と底上げだけ）──
   { id: "sp_slot1", cat: "special", name: "変わり者の座", desc: "特殊個体の枠 +1", cost: 130, prereq: [],            effect: { type: "specialSlots", value: 1 } },
   { id: "sp_slot2", cat: "special", name: "異端の群れ", desc: "特殊個体の枠 +1", cost: 240, prereq: ["sp_slot1"], effect: { type: "specialSlots", value: 1 } },
@@ -13474,7 +13519,7 @@ function recomputePermaBuff() {
     if (!st || !st.unlocked || !st.enabled) continue;
     const e = node.effect;
     if (e.type === "startFlock" || e.type === "flockCap" || e.type === "specialSlots" ||
-        e.type === "chargeEase") b[e.type] += e.value;
+        e.type === "chargeEase" || e.type === "chargeGuard") b[e.type] += e.value;
     else b[e.type] *= e.value;
   }
   permaBuff = b;
@@ -15330,6 +15375,9 @@ function drawFlockMetricsPanel() {
     ["突進",     chargeActive
        ? `ON  溜め ${(chargeLevel * 100).toFixed(0)}%  ×${chargeDamageMultNow().toFixed(2)}`
        : `OFF 溜め ${(chargeLevel * 100).toFixed(0)}%  最高${(chargePeakLevel * 100).toFixed(0)}%`],
+    ["被ダメ軽減", hasChargeGuard()
+       ? `-${(chargeDamageReductionNow() * 100).toFixed(0)}%  (最大 -${(effChargeDamageReduction() * 100).toFixed(0)}%)`
+       : "なし（衝角波は尖った形）"],
   ];
 
   // y=96 は左上のHUD（#hud-left は x8..72 / y0..88 を占める）の真下。
@@ -15437,7 +15485,8 @@ function applyDamageToBoid(boidIndex, damage) {
   if (boidDead[boidIndex] || boidDowned[boidIndex]) return;
   if (debugInvincible) return;   // v0.44: デバッグ「竜を無敵」中は落ちない（敵の観察用）
   // v0.6: 「竜鱗共鳴」カードで被ダメージ軽減
-  boidHp[boidIndex] -= damage * effDmgTakenMult();
+  // v0.89: 突進中の軽減（強化で手に入れたときだけ）。溜めに比例する。
+  boidHp[boidIndex] -= damage * effDmgTakenMult() * (1 - chargeDamageReductionNow());
   if (boidHp[boidIndex] <= 0) {
     // 変更2: 消滅ではなくダウン状態へ移行（恒久喪失なし）
     // v0.6: 「再生の潮」カードで復帰時間短縮
