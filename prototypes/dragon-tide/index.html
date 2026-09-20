@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.98.0";
+const GAME_VERSION = "v0.98.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -17810,6 +17810,55 @@ function drawProjectiles() {
   }
 }
 
+// -----------------------------------------------------------------
+// v0.98.1: 弾のラスター画像（まずは投槍と弩の2種だけ）
+// -----------------------------------------------------------------
+// 画像は「穂先が画像の右を向いて横たわり」。
+// front/back はベクター版と**全く同じ寸法**（原点から穂先まで / 原点から矢尻まで、論理px）。
+// ここを合わせておくと、当たり判定や進行感が変わらず見た目だけが差し替わる。
+const SHOT_IMAGE_SOURCES = {
+  javelin: "assets/shot_javelin.png",
+  bolt:    "assets/shot_bolt.png",
+};
+const SHOT_IMAGE_GEO = {
+  javelin: { front: 7, back: 15 },
+  bolt:    { front: 4, back: 12 },
+};
+// 画像は色が焼き付くが、弾の色には**どの規模の建物か**が乗っている
+// （小集落 #c0a060 … ボス #ff6020）。その情報を死なせないため、
+// source-atop で薄く色を乗せた複本を作って使う（色ごとにキャッシュ）。
+const SHOT_TINT_ALPHA = 0.30;
+const shotImages = {};
+const shotTintCache = new Map();
+const SHOT_TINT_CACHE_MAX = 48;
+
+/** key の弾を color で薄く染めた canvas。画像が無ければ null。 */
+function shotTinted(key, color) {
+  const img = shotImages[key];
+  if (!img) return null;
+  const ck = key + "|" + color;
+  let cv = shotTintCache.get(ck);
+  if (cv) {
+    shotTintCache.delete(ck);
+    shotTintCache.set(ck, cv);
+    return cv;
+  }
+  cv = document.createElement("canvas");
+  cv.width  = img.naturalWidth;
+  cv.height = img.naturalHeight;
+  const c = cv.getContext("2d");
+  c.drawImage(img, 0, 0);
+  c.globalCompositeOperation = "source-atop";
+  c.globalAlpha = SHOT_TINT_ALPHA;
+  c.fillStyle = color;
+  c.fillRect(0, 0, cv.width, cv.height);
+  shotTintCache.set(ck, cv);
+  while (shotTintCache.size > SHOT_TINT_CACHE_MAX) {
+    shotTintCache.delete(shotTintCache.keys().next().value);
+  }
+  return cv;
+}
+
 /**
  * v0.57: 文明ごとの通常弾を1発描く。
  * v0.68: 描画先 `c` を引数で受け取る（図鑑が別canvasに見本を描くため。本編は ctx を渡す）。
@@ -17828,6 +17877,20 @@ function drawEraShot(c, key, x, y, ang, color, sc, seed) {
   ctx.translate(x, y);
   ctx.rotate(ang);
   ctx.lineCap = "round";
+
+  // v0.98.1: 画像を持っている弾はそちらを描いて終わり。
+  // 高さは画像の縦横比に任せる（引き伸ばして太らせない）ので、
+  // **絵の側を短太く作る**ことで実寸での読めるさを出している。
+  const shotImg = SHOT_IMAGE_GEO[key] ? shotTinted(key, color) : null;
+  if (shotImg) {
+    const g   = SHOT_IMAGE_GEO[key];
+    const len = (g.front + g.back) * sc;
+    const h   = len * (shotImg.height / shotImg.width);
+    ctx.drawImage(shotImg, -g.back * sc, -h / 2, len, h);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    return;
+  }
 
   if (key === "sling") {
     // 石器: 投石。**回転する不定形の石**（進行方向と無関係に回るのが石らしさ）
@@ -18969,11 +19032,15 @@ function preloadDragonImages() {
     loadOne(BUILDING_IMAGE_SOURCES[size], (img) => { buildingImages[size] = img; }));
   const groundTask = loadOne(GROUND_TILE_SOURCE, (img) => { groundTileImage = img; });
 
+  // v0.98.1: 弾のラスター画像（読めなければその弾だけベクター描画のまま）
+  const shotTasks = Object.keys(SHOT_IMAGE_SOURCES).map((key) =>
+    loadOne(SHOT_IMAGE_SOURCES[key], (img) => { shotImages[key] = img; }));
+
   // v0.17: 地形・自然物スプライト（岩・湖・畑・森）
   const terrainTasks = Object.keys(TERRAIN_IMAGE_SOURCES).map((name) =>
     loadOne(TERRAIN_IMAGE_SOURCES[name], (img) => { terrainImages[name] = img; }));
 
-  return Promise.all([...tasks, ...enemyTasks, ...buildingTasks, groundTask, ...terrainTasks]).then(() => {
+  return Promise.all([...tasks, ...enemyTasks, ...buildingTasks, groundTask, ...terrainTasks, ...shotTasks]).then(() => {
     // dragonImagesLoaded は竜画像のみで判定（敵画像の失敗と切り離す）
     // v0.35.2: 竜画像が「1枚も欠けていない」かの目安。実際の描画方式は
     // renderDragonFrame が属性ごとに判定するので、ここが false でも
