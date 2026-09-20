@@ -1713,10 +1713,19 @@ Shooter 指示。v0.87〜0.90 は最初から常に有効だったが、
 取得すると 3 秒で溜め 100% ・×3.00 になり、強化カード5枚がプールに現れる。
 次のランでは解禁がリセットされる（`resetProgression` が upgradeCounts を消す）。
 
-**承知しておく帰結**: 恒常ツリーの突進ライン4ノード（計 510 竜晶）は、
-**★カードを引けないランでは一切効かない賻け**になる。
-母竜ラインが v0.31 で同じ変更を受けているので前例はあるが、
-気になるならツリー側を「解禁確率を上げる」や「初回から解禁済みにする」に変えられる。
+**v0.92: 上の賻けを埋めるノードを足した**（Shooter指示）。
+恒常ツリー「踏み出す足」（`chg_unlock`・260 竜晶）を買うと、
+**ラン開始時から突進が使える**（★カード不要）。
+`permaBuff.chargeStart > 0` を `isChargeUnlocked()` が見る。乗算ではなく**加算**で持つ
+（乗算の初期値 1 は真になってしまうため）。
+解禁済みのときは★カードをプールに出さない（`chargeUnlock && isChargeUnlocked()`）。
+
+実測: 未購入は解禁 false でプールに `charge_unlock` のみ。購入後は解禁 true で
+強化カード5枚に入れ替わる。ノードを OFF にすると元に戻る。
+
+なお、残り4ノード（計 510 竜晶）は依然として「引けた時の底上げ」のまま。
+**`chg_unlock` を残り4ノードの prereq にすれば賻けを完全に消せる**が、
+今回は指示の範囲外なのでやっていない（変えるなら prereq に1語足すだけ）。
 
 #### 調整できるもの
 
@@ -1918,6 +1927,33 @@ Shooter 指示。「今は全員最初から360度。竜種の個性として初
 **専用の表示は付けていない。** ブレスが前方へ出ることそのものが表示になっている
 （後ろの建物が燃えないことで伝わる）。調整用に計測パネルへ「ブレス角」の行を足した。
 初見で角度が読めないようなら、扇の薄い目印を足すか検討する。
+
+---
+
+### 2-1ae. 図鑑に「特殊個体」タブ（v0.92）
+
+Shooter 指示。敵・建物・弾に続く4つ目のタブ。
+
+特殊個体は**専用の絵を持たない**（普通の竜＋エフェクトなので）。
+そこで弾のページと同じく **canvas を後入れして特徴的な形を描く**（`codexSpecialCanvas`）。
+
+| 竜 | 描いている形 |
+|---|---|
+| 灯竜 | 中心から伸びる金の光条（先ほど細く薄くなるグラデーション） |
+| 巌竜 | 他の2種より明らかに大きい丸＋砕けた破片 |
+| 呑竜 | 吸引の破線の輪＋周回する溜め弾 |
+
+数値は定数から直接引いている（`BEACON_LENGTH` / `HEAVY_RAM_DAMAGE` / `DEFLECT_RADIUS` など）ので、
+バランスを触れば図鑑も自動で追従する。
+
+末尾に「覚えておくこと」として2件だけ補足を置いた。
+**巌竜は遠隔攻撃を持たない**ことと、**呑竜は弾幕を消せない**こと（実測17%）。
+どちらも遊んでいて誤解しやすく、誤解したままだと選択を誤る類なので明示する。
+
+#### ついでに直した表示の不具合
+
+図鑑の本文に `**強調**` と書いてある箇所が、HTML なので**アスタリスクがそのまま出ていた**。
+v0.68 の建物ページから残っていたもの。`<b>` に置き換えて4箇所直した（3箇所は既存、1箇所は今回追加分）。
 
 ---
 
@@ -2137,6 +2173,7 @@ Shooter 指示。「今は全員最初から360度。竜種の個性として初
 | 群れの計測（v0.86） | `flockMetrics`（生の値）／`flockMetricsSmooth`（表示用のならし）。更新は `updateFlockMetrics`（simStep 末尾）。表示は `drawFlockMetricsWorld` / `drawFlockMetricsPanel` |
 | 突進（v0.87） | パラメータは `CHARGE_PROFILE_DEFAULT` ＋ 竜種の `charge:`（引くのは `chg()`）。判定は `updateCharge`（simStep 末尾）、効かせるのは `chargeDamageMultNow` / `chargeReachBonusNow` / `chargeKnockbackNow`。強化は `effCharge*`。見た目は `drawChargeFx` |
 | ブレスの角度（v0.90） | 竜種の `breathArcDeg`（無記入＝360＝除外）。判定は `isInBreathArc`、現在値は `effBreathArcDeg`。`findNearestBuilding` の第6・7引数に boidIdx / halfArc を渡すと角度を見る |
+| 図鑑（v0.67〜0.92） | タブは `renderCodex` の `tabs` 配列。中身は `codexEnemyHtml` / `codexBuildingHtml` / `codexShotHtml` / `codexSpecialHtml`。絵の無いものは canvas を後入れする（`codexFill*Canvases`）。**本文は HTML なので `**` は太字にならない。`<b>` を使う** |
 | チャレンジ | `CHALLENGE_DEFS`／`evaluateChallenges`／UIは `renderChallenges` |
 | 敵 | `MOVER_DEFS`／`MOVER_SPAWNS_BY_STAGE`／`updateMovers`／`damageMover`／ラッシュは `updateEnemyRush` |
 | ステージ生成 | `generateStageLayout`／`placeTownCenters`／`generateTownWalls`／`START_TOWN_CLEAR` |

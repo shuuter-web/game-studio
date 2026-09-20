@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.91.0";
+const GAME_VERSION = "v0.92.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1681,7 +1681,10 @@ function hasChargeGuard() { return effChargeDamageReduction() > 0; }
  * v0.91: このランで突進を解禁済みか（★カード「一斉突撃」の取得有無）。
  * v0.87〜0.90 は最初から常に有効だった。母竜ブレス（`isMotherBreathUnlocked`）と同じ作り。
  */
-function isChargeUnlocked() { return upCount("charge_unlock") > 0; }
+function isChargeUnlocked() {
+  // v0.92: 恒常ツリー「踏み出す足」を買っていれば、ラン開始時から解禁済み。
+  return upCount("charge_unlock") > 0 || permaBuff.chargeStart > 0;
+}
 
 // ---- 状態 ----
 let chargeActive = false;   // 今このフレームで突進しているか
@@ -11186,6 +11189,8 @@ function defaultPermaBuff() {
     // v0.87: 突進ライン。chargeEase はしきい値からの**減算**（下げるほど入りやすい）、
     // chargeDmg は伸び幅の乗算、chargeRamp は溜まるまでの秒数の乗算（<1で速い）。
     chargeEase: 0, chargeDmg: 1, chargeRamp: 1,
+    // v0.92: >0 で「ラン開始時に突進が解禁済み」。加算で扱う（乗算だと1が真になってしまう）。
+    chargeStart: 0,
     // v0.89: 突進中の被ダメージ軽減（加算。0.15 で 15%カット）。
     chargeGuard: 0,
   };
@@ -11482,6 +11487,8 @@ function buildLevelUpCards() {
     if (def.mother && !isMotherBreathUnlocked()) return false;
     // v0.91: 突進の強化は解禁後だけ（空振りカードを作らない）
     if (def.charge && !isChargeUnlocked()) return false;
+    // v0.92: ツリーで既に解禁しているなら解禁★カードは出さない
+    if (def.chargeUnlock && isChargeUnlocked()) return false;
     // v0.85: 特殊個体の加入は枠が空いているときだけ。
     // 強化はその種類を実際に連れているときだけ出す。
     if (def.specialJoin && runSpecials.length >= effSpecialSlots()) return false;
@@ -13560,6 +13567,7 @@ const TREE_DEFS = [
   // v0.91: 突進自体がラン中の★カード解禁になったので、この4ノードは
   // 母竜ラインと同じく**「引けた時の底上げ」**に役割が変わっている。
   // 引けないランでは効かないので、母竜ライン（§2-1z 参照）と同じ賻けになる。
+  { id: "chg_unlock", cat: "charge", name: "踏み出す足", desc: "ラン開始時から突進が使える（★カード不要）", cost: 260, prereq: [], effect: { type: "chargeStart", value: 1 } },
   { id: "chg_ease",  cat: "charge", name: "風を読む", desc: "突進に入る速度が -1.5%",   cost: 90,  prereq: [],           effect: { type: "chargeEase", value: 0.015 } },
   { id: "chg_power", cat: "charge", name: "穿つ群れ", desc: "突進の伸び幅 +30%",       cost: 130, prereq: [],           effect: { type: "chargeDmg",  value: 1.30 } },
   { id: "chg_ramp",  cat: "charge", name: "加速の術", desc: "溜まるのが 20% 速くなる", cost: 150, prereq: ["chg_ease"], effect: { type: "chargeRamp", value: 0.80 } },
@@ -13622,7 +13630,8 @@ function recomputePermaBuff() {
     if (!st || !st.unlocked || !st.enabled) continue;
     const e = node.effect;
     if (e.type === "startFlock" || e.type === "flockCap" || e.type === "specialSlots" ||
-        e.type === "chargeEase" || e.type === "chargeGuard") b[e.type] += e.value;
+        e.type === "chargeEase" || e.type === "chargeGuard" ||
+        e.type === "chargeStart") b[e.type] += e.value;
     else b[e.type] *= e.value;
   }
   permaBuff = b;
@@ -13984,12 +13993,12 @@ const CODEX_SPECIAL_SHOTS = [
 ];
 
 const codexOverlayEl = document.getElementById("codex-overlay");
-let codexTab = "enemy";   // "enemy" | "building" | "shot"
+let codexTab = "enemy";   // "enemy" | "building" | "shot" | "special"
 function openCodex()  { codexTab = "enemy"; renderCodex(); codexOverlayEl.classList.add("visible"); }
 function closeCodex() { codexOverlayEl.classList.remove("visible"); refreshTitleMenu(); }
 
 function renderCodex() {
-  const tabs = [["enemy", "敵"], ["building", "建物"], ["shot", "弾"]];
+  const tabs = [["enemy", "敵"], ["building", "建物"], ["shot", "弾"], ["special", "特殊個体"]];
   let html =
     `<div class="tree-head">` +
       `<div class="tree-title">図鑑</div>` +
@@ -14002,11 +14011,13 @@ function renderCodex() {
 
   if (codexTab === "building") html += codexBuildingHtml();
   else if (codexTab === "shot") html += codexShotHtml();
+  else if (codexTab === "special") html += codexSpecialHtml();
   else html += codexEnemyHtml();
 
   codexOverlayEl.innerHTML = html;
   // 弾のページは canvas を後から差し込む（innerHTML では canvas の中身を渡せない）
   if (codexTab === "shot") codexFillShotCanvases();
+  if (codexTab === "special") codexFillSpecialCanvases();
   codexOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
     e.stopPropagation();
     closeCodex();
@@ -14067,7 +14078,7 @@ function codexEnemyHtml() {
 function codexBuildingHtml() {
   let html =
     `<div class="tree-hint">「×N」はその文明に置かれる数。時代兵器は large 建物のいくつかが変化したもの。` +
-      `普通の建物は**文明ごとに建築が変わる**（絵は石器時代のもの）。</div>` +
+      `普通の建物は<b>文明ごとに建築が変わる</b>（絵は石器時代のもの）。</div>` +
     `<div class="cx-era">時代兵器（目印の輪が出る建物）</div><div class="cx-list">`;
   for (const key of Object.keys(EMPLACEMENT_DEFS)) {
     const def = EMPLACEMENT_DEFS[key];
@@ -14103,7 +14114,7 @@ function codexBuildingHtml() {
             key === "belfry"   ? `町の発射間隔 ×${BELFRY_INTERVAL_MULT}` :
             key === "granary"  ? `卵 ${GRANARY_EGG_COUNT}個（町に散らばる卵は1町2〜3個）` :
             key === "rampart"  ? `${RAMPART_COUNT}発の扇・${RAMPART_INTERVAL}秒ごと・射程${RAMPART_RANGE}` +
-                                 `／**正面±${Math.round(RAMPART_ARC * 180 / Math.PI)}度にしか撃てない**` +
+                                 `／<b>正面±${Math.round(RAMPART_ARC * 180 / Math.PI)}度にしか撃てない</b>` +
                                  `（1発の威力は普通の弾の${Math.round(RAMPART_DMG_MULT * 100)}%）` :
                                  `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(0)]).toFixed(0)}〜` +
                                  `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(5)]).toFixed(0)}秒ごとに1体` +
@@ -14214,6 +14225,151 @@ function codexShotHtml() {
   }
   html += `</div>`;
   return html;
+}
+
+
+// -----------------------------------------------------------------
+// v0.92: 図鑑「特殊個体」ページ。
+// 敵や建物と違って専用の絵が無い（普通の竜＋エフェクトだから）ので、
+// 弾のページと同じく <b>canvas を後入れして特徴的な形を描く</b>。
+// -----------------------------------------------------------------
+const CODEX_SPECIAL_ORDER = [SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT];
+
+function codexSpecialHtml() {
+  let html =
+    `<div class="tree-hint">ラン中の★カードで群れに1匹ずつ加わる。` +
+      `同時に連れ歩けるのは${SPECIAL_SLOTS_BASE}体まで（恒常ツリーで増やせる）。` +
+      `ダウン中は能力ごと消える。</div>` +
+    `<div class="cx-list">`;
+  for (const kind of CODEX_SPECIAL_ORDER) {
+    const d = SPECIAL_DEFS[kind];
+    html +=
+      `<div class="cx-row" style="border-color:${d.color}">` +
+        `<div class="cx-sp-slot" data-kind="${kind}"></div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name" style="color:${d.color}">${d.name}</div>` +
+          `<div class="cx-tags">${CODEX_SPECIAL_TAG[kind]}</div>` +
+          `<div class="cx-atk">${CODEX_SPECIAL_DESC[kind]}</div>` +
+          `<div class="cx-stat">${CODEX_SPECIAL_STAT[kind]()}</div>` +
+        `</div>` +
+      `</div>`;
+  }
+  html += `</div>`;
+  // 竜種ごとの差を持つのは巌竜だけなので、そこだけ補足を出す
+  html += `<div class="cx-era">覚えておくこと</div><div class="cx-list">` +
+    `<div class="cx-row"><div class="cx-thumb" style="font-size:22px">⚠️</div><div class="cx-body">` +
+      `<div class="cx-name">巌竜は遠隔攻撃を持たない</div>` +
+      `<div class="cx-atk">ブレスも弾も撃たず、体当たりだけで戦う。その代わり HP が3倍で、` +
+        `ノックバックもヒットストップも受けない。</div>` +
+    `</div></div>` +
+    `<div class="cx-row"><div class="cx-thumb" style="font-size:22px">\u{1F4A7}</div><div class="cx-body">` +
+      `<div class="cx-name">呑竜は弾幕を消せない</div>` +
+      `<div class="cx-atk">吸えるのは<b>その1匹の周りだけ</b>で、対象も普通の弾（矢・カタパルト弾）に限る。` +
+        `レーザー・着弾弾・ロケット・ボスの重弾は吸えない。` +
+        `実測で、群れ34体を街に密集させて吸えたのは全体の17%。</div>` +
+    `</div></div></div>`;
+  return html;
+}
+
+const CODEX_SPECIAL_TAG = {
+  [SPECIAL_BEACON]:  "★灯竜／向きを選ばない削り役",
+  [SPECIAL_HEAVY]:   "★巌竜／遠隔攻撃なしの体当たり専門",
+  [SPECIAL_DEFLECT]: "★呑竜／弾幕の濃い街で強い",
+};
+const CODEX_SPECIAL_DESC = {
+  [SPECIAL_BEACON]:
+    "自分の周りを回る光条を持つ。触れた建物と敵が焼ける。" +
+    "進行方向を向いている間は回転が遅く、後ろ向きでは速い＝直進すると前で粘り、旋回すると薙ぎ払いになる。",
+  [SPECIAL_HEAVY]:
+    "ブレスを撃たず、体当たりだけで建物を砕く。レベルと共に大きくなる。",
+  [SPECIAL_DEFLECT]:
+    "周囲に来た通常弾を吸って溜める。満杯になると少し間を置いて前方へ束にして撃ち返す。" +
+    "撃った後はしばらく吸えない。",
+};
+const CODEX_SPECIAL_STAT = {
+  [SPECIAL_BEACON]: () =>
+    `長さ ${BEACON_LENGTH}px ／ 毎秒 ${BEACON_DPS} ダメージ ／ 1回転に約 3.6秒 ／ HP ×${SPECIAL_DEFS[SPECIAL_BEACON].hpMult}`,
+  [SPECIAL_HEAVY]: () =>
+    `体当たり ${HEAVY_RAM_DAMAGE}（普通${COLLISION_DAMAGE}・緋竜${MELEE_COLLISION_DAMAGE}）／ ${HEAVY_RAM_COOLDOWN}秒ごと ／ ` +
+    `体格 ×${HEAVY_SCALE}（レベルで最大 ×${(HEAVY_SCALE * (1 + HEAVY_GROWTH_MAX)).toFixed(2)}）／ HP ×${SPECIAL_DEFS[SPECIAL_HEAVY].hpMult}`,
+  [SPECIAL_DEFLECT]: () =>
+    `吸引半径 ${DEFLECT_RADIUS}px ／ ${DEFLECT_CAPACITY}発で満杯 ／ 満杯から ${DEFLECT_HOLD}秒で発射 ／ ` +
+    `発射後 ${DEFLECT_COOLDOWN}秒は吸えない ／ 1発 ${DEFLECT_BOLT_DMG} ／ HP ×${SPECIAL_DEFS[SPECIAL_DEFLECT].hpMult}`,
+};
+
+/** 見本の canvas（innerHTML では canvas の中身を渡せないので後入れ）。 */
+function codexFillSpecialCanvases() {
+  for (const slot of codexOverlayEl.querySelectorAll(".cx-sp-slot")) {
+    const kind = parseInt(slot.getAttribute("data-kind"), 10);
+    slot.replaceWith(codexSpecialCanvas(kind));
+  }
+}
+
+/** 特殊個体の「形」を 52px 角で描く。本編のエフェクトと同じ見た目に寄せる。 */
+function codexSpecialCanvas(kind) {
+  const cv = document.createElement("canvas");
+  cv.width = 104; cv.height = 104;   // DPR2相当。CSSで52pxに縮める
+  cv.className = "cx-shot";
+  const c = cv.getContext("2d");
+  c.scale(2, 2);
+  c.translate(26, 26);
+  const def = SPECIAL_DEFS[kind];
+
+  // 共通: 足元リング（本編で群れから見つけるための目印）
+  c.strokeStyle = def.color;
+  c.lineWidth = 1.4;
+  c.globalAlpha = 0.55;
+  c.beginPath();
+  c.arc(0, 0, kind === SPECIAL_HEAVY ? 13 : 9, 0, Math.PI * 2);
+  c.stroke();
+  c.globalAlpha = 1;
+
+  if (kind === SPECIAL_BEACON) {
+    // 回る光条（右上へ伸ばして、先端ほど細く薄く）
+    c.save();
+    c.rotate(-0.5);
+    const g = c.createLinearGradient(0, 0, 22, 0);
+    g.addColorStop(0, "rgba(255,225,150,0.95)");
+    g.addColorStop(1, "rgba(255,150,60,0)");
+    c.fillStyle = g;
+    c.beginPath();
+    c.moveTo(0, -3.4); c.lineTo(22, -1.5); c.lineTo(22, 1.5); c.lineTo(0, 3.4);
+    c.closePath(); c.fill();
+    c.restore();
+    c.fillStyle = "#ffe7a8";
+    c.beginPath(); c.arc(0, 0, 3.6, 0, Math.PI * 2); c.fill();
+  } else if (kind === SPECIAL_HEAVY) {
+    // 巨体（他の2種より明らかに大きい丸）と砕けた破片
+    c.fillStyle = "rgba(185,166,140,0.85)";
+    c.beginPath(); c.arc(0, 0, 9.5, 0, Math.PI * 2); c.fill();
+    c.fillStyle = "rgba(255,255,255,0.28)";
+    c.beginPath(); c.arc(-2.6, -2.6, 3.4, 0, Math.PI * 2); c.fill();
+    c.fillStyle = "rgba(210,190,160,0.9)";
+    for (let k = 0; k < 5; k++) {
+      const a = 0.5 + k * 1.15;
+      c.beginPath();
+      c.arc(Math.cos(a) * 16, Math.sin(a) * 16, 1.6, 0, Math.PI * 2);
+      c.fill();
+    }
+  } else {
+    // 吸引の破線の輪と、周回する溜め弾
+    c.strokeStyle = def.color;
+    c.globalAlpha = 0.45;
+    c.setLineDash([3, 3.5]);
+    c.beginPath(); c.arc(0, 0, 19, 0, Math.PI * 2); c.stroke();
+    c.setLineDash([]);
+    c.globalAlpha = 1;
+    c.fillStyle = "rgba(210,240,255,0.95)";
+    for (let k = 0; k < 7; k++) {
+      const a = k / 7 * Math.PI * 2;
+      c.beginPath();
+      c.arc(Math.cos(a) * 13, Math.sin(a) * 13, 2.0, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.fillStyle = "#cfe9ff";
+    c.beginPath(); c.arc(0, 0, 3.4, 0, Math.PI * 2); c.fill();
+  }
+  return cv;
 }
 
 /** 弾ページの見本 canvas を差し込む（innerHTML では canvas の中身を渡せないため後入れ）。 */
