@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.90.2";
+const GAME_VERSION = "v0.91.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1677,6 +1677,12 @@ function effChargeDamageReduction() {
 /** 軽減が一切無いか（衝角波を尖った形で描くかの判定に使う）。 */
 function hasChargeGuard() { return effChargeDamageReduction() > 0; }
 
+/**
+ * v0.91: このランで突進を解禁済みか（★カード「一斉突撃」の取得有無）。
+ * v0.87〜0.90 は最初から常に有効だった。母竜ブレス（`isMotherBreathUnlocked`）と同じ作り。
+ */
+function isChargeUnlocked() { return upCount("charge_unlock") > 0; }
+
 // ---- 状態 ----
 let chargeActive = false;   // 今このフレームで突進しているか
 let chargeHold   = 0;       // 溜まっている秒数（0 .. effChargeRampSeconds()）
@@ -1703,6 +1709,14 @@ function updateCharge(dt) {
   const maxSp = (mv().maxSpeed || 1) * (_simSpeedMult || 1);
   chargeSpeedFrac = maxSp > 0 ? flockMetrics.speed / maxSp : 0;
 
+  // v0.91: 未解禁の間は溜めごと止める（速度比の計算だけは続ける。
+  // パネルで「あとどれだけで入るか」を見せたいため）
+  if (!isChargeUnlocked()) {
+    chargeActive = false;
+    chargeHold = 0;
+    chargeLevel = 0;
+    return;
+  }
   if (gameState !== "playing" || flockMetrics.count === 0) {
     chargeActive = false;
   } else if (chargeActive) {
@@ -11036,6 +11050,7 @@ const STRINGS = {
     sp_heavy_size:     { name: "肥える巌",   desc: "巌竜が +15% 大きくなる（当たりも広い）" },
     sp_deflect_cap:    { name: "大食らい",   desc: "呑竜が溜められる弾 +4" },
     sp_deflect_range:  { name: "引き込む渦", desc: "呑竜の吸引範囲 +30%" },
+    charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
     charge_reach: { name: "突進の角", desc: "突進中の体当たりの届く範囲 +30%" },
     charge_ramp:  { name: "風に乗る", desc: "突進が溜まるのが 20% 速くなる" },
@@ -11133,11 +11148,13 @@ const CARD_DEFS = [
   { id: "sp_deflect_cap",   icon: "\u{1F373}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
   { id: "sp_deflect_range", icon: "\u{1F30A}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
   // F. 突進（v0.87）。発動条件は群れ全体の動きなので、竜種を問わず出る。
-  { id: "charge_dmg",   icon: "\u{1F4A5}", rarity: "rare",   max: 4 },
-  { id: "charge_reach", icon: "\u{1F300}", rarity: "common", max: 3 },
-  { id: "charge_ramp",  icon: "\u{1F4A8}", rarity: "rare",   max: 3 },
-  { id: "charge_ease",  icon: "\u{1FAB6}", rarity: "common", max: 3 },
-  { id: "charge_guard", icon: "\u{1F6E1}️", rarity: "rare", max: 3 },
+  // v0.91: chargeUnlock がラン内の解禁スイッチ。charge:true の5枚はこれを取った後のみプールに乗る。
+  { id: "charge_unlock", icon: "\u{1F3C7}", rarity: "star", max: 1, chargeUnlock: true },
+  { id: "charge_dmg",   icon: "\u{1F4A5}", rarity: "rare",   max: 4, charge: true },
+  { id: "charge_reach", icon: "\u{1F300}", rarity: "common", max: 3, charge: true },
+  { id: "charge_ramp",  icon: "\u{1F4A8}", rarity: "rare",   max: 3, charge: true },
+  { id: "charge_ease",  icon: "\u{1FAB6}", rarity: "common", max: 3, charge: true },
+  { id: "charge_guard", icon: "\u{1F6E1}️", rarity: "rare", max: 3, charge: true },
   // v0.90: 攻撃可能角度を広げる。**既に全方位な竜種では空振りになる**のでプールに乗せない。
   { id: "breath_arc",   icon: "\u{1F4D0}", rarity: "common", max: 4, needsBreathArc: true },
 ];
@@ -11463,6 +11480,8 @@ function buildLevelUpCards() {
     if (upCount(def.id) >= def.max) return false;
     // v0.31: 母竜ブレスの強化はラン中に「母なる吐息」を引いた後だけ出す（空振りカードを作らない）
     if (def.mother && !isMotherBreathUnlocked()) return false;
+    // v0.91: 突進の強化は解禁後だけ（空振りカードを作らない）
+    if (def.charge && !isChargeUnlocked()) return false;
     // v0.85: 特殊個体の加入は枠が空いているときだけ。
     // 強化はその種類を実際に連れているときだけ出す。
     if (def.specialJoin && runSpecials.length >= effSpecialSlots()) return false;
@@ -13538,6 +13557,9 @@ function awardCrystals(n) {
 // 母竜(mother)ラインは Phase 5 で追加予定。
 const TREE_DEFS = [
   // ── 突進（v0.87。発動条件を緩めるか、乗ったときの伸びを大きくするか）──
+  // v0.91: 突進自体がラン中の★カード解禁になったので、この4ノードは
+  // 母竜ラインと同じく**「引けた時の底上げ」**に役割が変わっている。
+  // 引けないランでは効かないので、母竜ライン（§2-1z 参照）と同じ賻けになる。
   { id: "chg_ease",  cat: "charge", name: "風を読む", desc: "突進に入る速度が -1.5%",   cost: 90,  prereq: [],           effect: { type: "chargeEase", value: 0.015 } },
   { id: "chg_power", cat: "charge", name: "穿つ群れ", desc: "突進の伸び幅 +30%",       cost: 130, prereq: [],           effect: { type: "chargeDmg",  value: 1.30 } },
   { id: "chg_ramp",  cat: "charge", name: "加速の術", desc: "溜まるのが 20% 速くなる", cost: 150, prereq: ["chg_ease"], effect: { type: "chargeRamp", value: 0.80 } },
@@ -15453,15 +15475,19 @@ function drawFlockMetricsPanel() {
     // v0.87: この2行が突進のしきい値を詰めるための本体。
     // 速度比がしきい値に届いているかを目で見て判断する
     ["速度比",   `${(chargeSpeedFrac * 100).toFixed(1)}% / 入 ${(effChargeEnterFrac() * 100).toFixed(1)}%`],
-    ["突進",     chargeActive
-       ? `ON  溜め ${(chargeLevel * 100).toFixed(0)}%  ×${chargeDamageMultNow().toFixed(2)}`
-       : `OFF 溜め ${(chargeLevel * 100).toFixed(0)}%  最高${(chargePeakLevel * 100).toFixed(0)}%`],
+    ["突進",     !isChargeUnlocked()
+       ? "未解禁（★一斉突撃）"
+       : chargeActive
+         ? `ON  溜め ${(chargeLevel * 100).toFixed(0)}%  ×${chargeDamageMultNow().toFixed(2)}`
+         : `OFF 溜め ${(chargeLevel * 100).toFixed(0)}%  最高${(chargePeakLevel * 100).toFixed(0)}%`],
     ["ブレス角", effBreathArcDeg() >= BREATH_ARC_FULL_DEG
        ? "全方位（制限なし）"
        : `${effBreathArcDeg().toFixed(0)}°  (初期 ${sp().breathArcDeg}°)`],
-    ["被ダメ軽減", hasChargeGuard()
-       ? `-${(chargeDamageReductionNow() * 100).toFixed(0)}%  (最大 -${(effChargeDamageReduction() * 100).toFixed(0)}%)`
-       : "なし（衝角波は尖った形）"],
+    ["被ダメ軽減", !isChargeUnlocked()
+       ? "—"
+       : hasChargeGuard()
+         ? `-${(chargeDamageReductionNow() * 100).toFixed(0)}%  (最大 -${(effChargeDamageReduction() * 100).toFixed(0)}%)`
+         : "なし（衝角波は尖った形）"],
   ];
 
   // y=96 は左上のHUD（#hud-left は x8..72 / y0..88 を占める）の真下。
