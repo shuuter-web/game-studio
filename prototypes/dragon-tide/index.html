@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.94.2";
+const GAME_VERSION = "v0.95.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10537,12 +10537,15 @@ const SPECIAL_DEFLECT = 3;
 // 以前はスロット0固定で**常に居て、レベルで体格だけ育っていた**。
 // 今は★カードで加入させる═引けないランには育つ竜が居ない。
 const SPECIAL_RAINBOW = 4;
+// v0.95: 機竜。初速0から加速する大きなロケットを扇状に連射する（Shooter指示）。
+const SPECIAL_MECHA   = 5;
 
 const SPECIAL_DEFS = {
   [SPECIAL_BEACON]:  { key: "beacon",  name: "灯竜", color: "#ffd36b", hpMult: 1.5 },
   [SPECIAL_HEAVY]:   { key: "heavy",   name: "巌竜", color: "#b9a68c", hpMult: 3.0 },
   [SPECIAL_DEFLECT]: { key: "deflect", name: "呑竜", color: "#9fd8ff", hpMult: 2.0 },
   [SPECIAL_RAINBOW]: { key: "rainbow", name: "虹竜", color: "#f0a8ff", hpMult: 2.5 },
+  [SPECIAL_MECHA]:   { key: "mecha",   name: "機竜", color: "#ff7a4d", hpMult: 2.0 },
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -10553,6 +10556,8 @@ let boidSpecialAngle;
 let boidSpecialStock;
 let boidSpecialTimer;
 let boidSpecialCd;
+// v0.95: 機竜の「今の一連射で何発撃つか」。扇の割り付けに使う。
+let boidSpecialTotal;
 
 // 変更4: 竜のHP を10倍（3 → 30）にして群れが簡単に壊滅しなくなる
 const BOID_MAX_HP   = 30;
@@ -10594,6 +10599,7 @@ function initBoids() {
   boidSpecialStock      = new Float32Array(MAX_BOIDS);
   boidSpecialTimer      = new Float32Array(MAX_BOIDS);
   boidSpecialCd         = new Float32Array(MAX_BOIDS);
+  boidSpecialTotal      = new Float32Array(MAX_BOIDS);
   // v0.6-p2: 射撃タイマー（BULLET/MISSILE共用）
   boidFireTimer         = new Float32Array(MAX_BOIDS);
   // 尻尾角度履歴リングバッファ（TAIL_SEGS個前までの進行角度）
@@ -10686,6 +10692,7 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     boidSpecialStock[i]      = 0;
     boidSpecialTimer[i]      = 0;
     boidSpecialCd[i]         = 0;
+    boidSpecialTotal[i]      = 0;
     boidFireTimer[i]         = random() * currentFireInterval(); // 射撃をばらけさせる
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = 0;
@@ -10708,6 +10715,7 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
   // v0.85: 加入済みの特殊個体をスロット1以降へ割り当て直す（HPもここで強化分込みになる）
   applyRunSpecials();
   clearSpecialBolts();
+  clearMechaRockets();
 
   // v0.93: 母竜（虹竜）の HP は applyRunSpecials → markSpecial がもう入れているので、
   // ここでスロット0を特別扱いする必要はない。
@@ -11065,6 +11073,9 @@ const STRINGS = {
     sp_heavy_size:     { name: "肥える巌",   desc: "巌竜が +15% 大きくなる（当たりも広い）" },
     sp_deflect_cap:    { name: "大食らい",   desc: "呑竜が溜められる弾 +8" },
     sp_deflect_range:  { name: "引き込む渦", desc: "呑竜の吸引範囲 +30%" },
+    sp_mecha:          { name: "機竜",       desc: "加速するロケットを扇状に連射する特殊個体が加わる" },
+    sp_mecha_count:    { name: "多連装填", desc: "機竜の発射数 +2（最大10）" },
+    sp_mecha_dmg:      { name: "弾頭強化", desc: "機竜の爆発威力 +30%" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
     charge_reach: { name: "突進の角", desc: "突進中の体当たりの届く範囲 +30%" },
@@ -11164,6 +11175,9 @@ const CARD_DEFS = [
   { id: "sp_heavy_size",    icon: "\u{1F411}", rarity: "rare", max: 3, specialOf: SPECIAL_HEAVY },
   { id: "sp_deflect_cap",   icon: "\u{1F373}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
   { id: "sp_deflect_range", icon: "\u{1F30A}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
+  { id: "sp_mecha",         icon: "\u{1F680}", rarity: "star", max: 3, specialJoin: SPECIAL_MECHA },
+  { id: "sp_mecha_count",   icon: "\u{1F38B}", rarity: "rare", max: 4, specialOf: SPECIAL_MECHA },
+  { id: "sp_mecha_dmg",     icon: "\u{1F4A2}", rarity: "rare", max: 4, specialOf: SPECIAL_MECHA },
   // F. 突進（v0.87）。発動条件は群れ全体の動きなので、竜種を問わず出る。
   // v0.91: chargeUnlock がラン内の解禁スイッチ。charge:true の5枚はこれを取った後のみプールに乗る。
   { id: "charge_unlock", icon: "\u{1F3C7}", rarity: "star", max: 1, chargeUnlock: true },
@@ -11306,6 +11320,7 @@ function resetProgression() {
   runSpecials.length = 0;
   if (boidSpecial) boidSpecial.fill(SPECIAL_NONE);
   clearSpecialBolts();
+  clearMechaRockets();
   resetCharge();          // v0.87: 突進の溜めもランごとにゼロへ
   chargePeakLevel = 0;
   clearChargeHitFx();
@@ -12285,6 +12300,7 @@ function markSpecial(idx, kind) {
   boidSpecialStock[idx] = 0;
   boidSpecialTimer[idx] = 0;
   boidSpecialCd[idx]    = 0;
+  boidSpecialTotal[idx] = 0;
   boidHp[idx]           = effBoidMaxHpFor(idx);
 }
 
@@ -12388,16 +12404,19 @@ function updateSpecials(dt) {
     const kind = boidSpecial[i];
     if (kind === SPECIAL_NONE) continue;
     if (boidDead[i] || boidDowned[i]) {
-      // ダウン中は能力ごと消える（溜めた弾も失う）
+      // ダウン中は能力ごと消える（溜めた弾も失うし、一連射も打ち切る）
       boidSpecialStock[i] = 0;
       boidSpecialTimer[i] = 0;
+      boidSpecialTotal[i] = 0;
       continue;
     }
     if (kind === SPECIAL_BEACON)       updateBeaconDragon(i, dt);
     else if (kind === SPECIAL_HEAVY)   updateHeavyDragon(i, dt);
     else if (kind === SPECIAL_DEFLECT) updateDeflectDragon(i, dt);
+    else if (kind === SPECIAL_MECHA)   updateMechaDragon(i, dt);
   }
   updateSpecialBolts(dt);
+  updateMechaRockets(dt);   // v0.95: 飛んでいるロケットは機竜が落ちても進む
 }
 
 /**
@@ -12478,6 +12497,201 @@ function updateDeflectDragon(i, dt) {
   boidSpecialCd[i]    = DEFLECT_COOLDOWN;
   triggerFlash("rgba(150,215,255,0.20)", 0.12);
   hapticPulse(35);
+}
+
+
+// -----------------------------------------------------------------
+// v0.95: 機竜（mecha）
+//
+// 初速 0 から加速する大きなロケットを扇状に連射する。
+//   - 発射頻度は虹竜と同じ（MOTHER_BREATH_INTERVAL）
+//   - 誘導なし。撃った向きにまっすぐ進むだけ
+//   - 着弾したら爆発範囲攻撃
+//   - **同時発射ではなく** MECHA_SALVO_GAP 秒ごとに1発ずつ。
+//     扇を端から端へなぞるので、扇が「開いていく」絵になる。
+//
+// 初速0なので発射直後は竜の目の前に滞留し、後から伸びていく。
+// この「遅れて届く」間が他の特殊個体と一番違うところ。
+// -----------------------------------------------------------------
+const MECHA_SALVO_BASE = 3;     // 基礎の発射数
+const MECHA_SALVO_MAX  = 10;    // 上限（Shooter指示）
+const MECHA_SALVO_GAP  = 0.30;  // 1発ごとの間隔（秒）
+const MECHA_FAN        = 0.62;  // 扇の半角（rad。約35度）
+const MECHA_ACCEL      = 300;   // 加速度 px/s^2（初速0から）
+const MECHA_MAX_SPEED  = 520;   // 最高速 px/s
+const MECHA_LIFE       = 3.2;   // 寿命（秒）。何にも当たらなければここで自爆
+const MECHA_DAMAGE     = 70;    // 爆発のダメージ
+const MECHA_BLAST_R    = 72;    // 爆発半径
+const MECHA_HIT_R      = 10;    // 弾体の当たり半径（これに触れたら爆発）
+
+function effMechaInterval() {
+  // 発射頻度は虹竜と同じ。特殊個体の共通強化（ツリー）は威力側にだけかける。
+  return MOTHER_BREATH_INTERVAL;
+}
+function effMechaSalvo() {
+  return Math.min(MECHA_SALVO_MAX, MECHA_SALVO_BASE + 2 * upCount("sp_mecha_count"));
+}
+function effMechaDamage() {
+  return MECHA_DAMAGE * (1 + 0.30 * upCount("sp_mecha_dmg")) * permaBuff.specialDmg;
+}
+
+/** 機竜: 一連射中なら GAP ごとに1発、そうでなければ次の一連射を待つ。 */
+function updateMechaDragon(i, dt) {
+  if (boidSpecialStock[i] > 0) {
+    boidSpecialTimer[i] -= dt;
+    if (boidSpecialTimer[i] > 0) return;
+    const total = Math.max(1, Math.round(boidSpecialTotal[i]));
+    const k     = total - Math.round(boidSpecialStock[i]);   // 0 から順に
+    // 扇を端から端へなぞる（1発のときは真正面）
+    const off   = total > 1 ? (k / (total - 1) - 0.5) * 2 * MECHA_FAN : 0;
+    const head  = Math.atan2(vy[i], vx[i]);
+    spawnMechaRocket(px[i], py[i], head + off, effMechaDamage());
+    boidSpecialStock[i] -= 1;
+    boidSpecialTimer[i]  = MECHA_SALVO_GAP;
+    hapticPulse(12);
+    return;
+  }
+  boidSpecialCd[i] -= dt;
+  if (boidSpecialCd[i] > 0) return;
+  boidSpecialCd[i]    = effMechaInterval();
+  boidSpecialTotal[i] = effMechaSalvo();
+  boidSpecialStock[i] = boidSpecialTotal[i];
+  boidSpecialTimer[i] = 0;   // 1発目はすぐ出す
+}
+
+// ---- ロケットのプール ----
+// 直進しかしないので、速度ベクトルではなく「向き＋速さ」で持つ。
+const MAX_MROCKET = 80;
+const mrocketX      = new Float32Array(MAX_MROCKET);
+const mrocketY      = new Float32Array(MAX_MROCKET);
+const mrocketAngle  = new Float32Array(MAX_MROCKET);
+const mrocketSpeed  = new Float32Array(MAX_MROCKET);
+const mrocketAge    = new Float32Array(MAX_MROCKET);
+const mrocketDmg    = new Float32Array(MAX_MROCKET);
+const mrocketActive = new Uint8Array(MAX_MROCKET);
+
+function spawnMechaRocket(x, y, angle, damage) {
+  for (let i = 0; i < MAX_MROCKET; i++) {
+    if (mrocketActive[i]) continue;
+    mrocketActive[i] = 1;
+    mrocketX[i]     = x;
+    mrocketY[i]     = y;
+    mrocketAngle[i] = angle;
+    mrocketSpeed[i] = 0;            // 初速0（Shooter指示）
+    mrocketAge[i]   = 0;
+    mrocketDmg[i]   = damage;
+    return;
+  }
+}
+
+function clearMechaRockets() { mrocketActive.fill(0); }
+
+/** 爆発させてスロットを返す。 */
+function detonateMechaRocket(i) {
+  const x = mrocketX[i], y = mrocketY[i];
+  mrocketActive[i] = 0;
+  damageInRadius(x, y, MECHA_BLAST_R, mrocketDmg[i]);
+  emitShockwave(x, y, MECHA_BLAST_R, 0, 0);   // 押しは入れない（群れを散らさないため）
+  spawnCollisionParticles(x, y);
+  triggerShake(2.4, 0.09);
+}
+
+const _mrocketBuf = [];
+function updateMechaRockets(dt) {
+  for (let i = 0; i < MAX_MROCKET; i++) {
+    if (!mrocketActive[i]) continue;
+    mrocketAge[i] += dt;
+    if (mrocketAge[i] >= MECHA_LIFE) { detonateMechaRocket(i); continue; }
+
+    // 初速0から加速して最高速で頭打ち
+    mrocketSpeed[i] = Math.min(MECHA_MAX_SPEED, mrocketSpeed[i] + MECHA_ACCEL * dt);
+    const ca = Math.cos(mrocketAngle[i]), sa = Math.sin(mrocketAngle[i]);
+    mrocketX[i] += ca * mrocketSpeed[i] * dt;
+    mrocketY[i] += sa * mrocketSpeed[i] * dt;
+
+    if (mrocketX[i] < -60 || mrocketX[i] > WORLD_W + 60 ||
+        mrocketY[i] < -60 || mrocketY[i] > WORLD_H + 60) { mrocketActive[i] = 0; continue; }
+
+    // 建物（近傍セルのみ）
+    let hit = false;
+    buildingGridQueryRadius(mrocketX[i], mrocketY[i], 1, _mrocketBuf);
+    for (const sIdx of _mrocketBuf) {
+      const s = settlements[sIdx];
+      if (!s || s.fallen) continue;
+      const dx = s.wx - mrocketX[i], dy = s.wy - mrocketY[i];
+      const rr = s.radius + MECHA_HIT_R;
+      if (dx * dx + dy * dy > rr * rr) continue;
+      hit = true; break;
+    }
+    if (!hit) {
+      for (const m of movers) {
+        if (!m.alive) continue;
+        const dx = m.wx - mrocketX[i], dy = m.wy - mrocketY[i];
+        const rr = moverRadiusOf(m) + MECHA_HIT_R;
+        if (dx * dx + dy * dy > rr * rr) continue;
+        hit = true; break;
+      }
+    }
+    if (hit) detonateMechaRocket(i);
+  }
+}
+
+/** ロケットの描画。速さに応じて噴射炎が伸びる═加速していることが目で分かる。 */
+function drawMechaRockets() {
+  ctx.save();
+  ctx.lineCap = "round";
+  for (let i = 0; i < MAX_MROCKET; i++) {
+    if (!mrocketActive[i]) continue;
+    const sx = (mrocketX[i] - cam.x) * cam.scale + viewW * 0.5;
+    const sy = (mrocketY[i] - cam.y) * cam.scale + viewH * 0.5;
+    if (sx < -80 || sx > viewW + 80 || sy < -80 || sy > viewH + 80) continue;
+    const t = mrocketSpeed[i] / MECHA_MAX_SPEED;          // 0..1
+    ctx.save();
+    ctx.translate(mrocketX[i], mrocketY[i]);
+    ctx.rotate(mrocketAngle[i]);
+    // 噴射炎（後ろへ伸びる。加速するほど長く）
+    ctx.globalCompositeOperation = "lighter";
+    const flame = 8 + 34 * t;
+    const g = ctx.createLinearGradient(-6, 0, -6 - flame, 0);
+    g.addColorStop(0, "rgba(255,220,140,0.95)");
+    g.addColorStop(0.45, "rgba(255,120,60,0.55)");
+    g.addColorStop(1, "rgba(255,60,30,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(-6, -3.4);
+    ctx.lineTo(-6 - flame, -1.2);
+    ctx.lineTo(-6 - flame, 1.2);
+    ctx.lineTo(-6, 3.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+    // 弾体
+    ctx.fillStyle = "#c9d4de";
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(-2, -4.0);
+    ctx.lineTo(-6, -3.0);
+    ctx.lineTo(-6, 3.0);
+    ctx.lineTo(-2, 4.0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "#ff7a4d";
+    ctx.beginPath();
+    ctx.moveTo(9, 0); ctx.lineTo(2.5, -2.4); ctx.lineTo(2.5, 2.4);
+    ctx.closePath();
+    ctx.fill();
+    // 尾翼
+    ctx.fillStyle = "#8d9aa6";
+    ctx.beginPath();
+    ctx.moveTo(-2, -4.0); ctx.lineTo(-5, -6.4); ctx.lineTo(-6, -3.0);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-2, 4.0); ctx.lineTo(-5, 6.4); ctx.lineTo(-6, 3.0);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 /**
@@ -14259,7 +14473,7 @@ function codexShotHtml() {
 // 敵や建物と違って専用の絵が無い（普通の竜＋エフェクトだから）ので、
 // 弾のページと同じく <b>canvas を後入れして特徴的な形を描く</b>。
 // -----------------------------------------------------------------
-const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT];
+const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA];
 
 function codexSpecialHtml() {
   let html =
@@ -14302,6 +14516,7 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_HEAVY]:   "★巌竜／遠隔攻撃なしの体当たり専門",
   [SPECIAL_DEFLECT]: "★呑竜／弾幕の濃い街で強い",
   [SPECIAL_RAINBOW]: "★虹竜／群れの長。レベルと共に体格が育つ",
+  [SPECIAL_MECHA]:   "★機竜／遅れて届く遠距離の爆発",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_BEACON]:
@@ -14315,6 +14530,11 @@ const CODEX_SPECIAL_DESC = {
   [SPECIAL_RAINBOW]:
     "周期的に、周囲の建物と敵をまとめて虹色の線で薙ぎ払う。" +
     "レベルが上がるとこの1匹だけ体格が育つので、群れの中で一目で分かる。",
+  [SPECIAL_MECHA]:
+    "初速 0 から加速する大きなロケットを扇状に連射する。誘導は無く、撃った向きにまっすぐ進む。" +
+    "着弾したところで爆発して周囲ごと巻き込む。" +
+    "<b>同時には撃たない</b>。扇を端から端へなぞるように1発ずつ出すので、" +
+    "扇が開いていく途中で群れが向きを変えれば、その分だけ散らばる。",
 };
 const CODEX_SPECIAL_STAT = {
   [SPECIAL_BEACON]: () =>
@@ -14325,6 +14545,11 @@ const CODEX_SPECIAL_STAT = {
   [SPECIAL_DEFLECT]: () =>
     `吸引半径 ${DEFLECT_RADIUS}px ／ ${DEFLECT_CAPACITY}発で満杯 ／ 満杯から ${DEFLECT_HOLD}秒で発射 ／ ` +
     `発射後 ${DEFLECT_COOLDOWN}秒は吸えない ／ 1発 ${DEFLECT_BOLT_DMG} ／ HP ×${SPECIAL_DEFS[SPECIAL_DEFLECT].hpMult}`,
+  [SPECIAL_MECHA]: () =>
+    `${MOTHER_BREATH_INTERVAL}秒ごとに ${MECHA_SALVO_BASE} 発（強化で最大 ${MECHA_SALVO_MAX} 発） ／ ` +
+    `${MECHA_SALVO_GAP}秒ごとに1発 ／ 扇の幅 ±${Math.round(MECHA_FAN * 180 / Math.PI)}度 ／ ` +
+    `初速0 → 最高 ${MECHA_MAX_SPEED}px/s（加速 ${MECHA_ACCEL}） ／ ` +
+    `爆発 ${MECHA_DAMAGE} ・半径 ${MECHA_BLAST_R}px ／ HP ×${SPECIAL_DEFS[SPECIAL_MECHA].hpMult}`,
   [SPECIAL_RAINBOW]: () =>
     `${MOTHER_BREATH_INTERVAL}秒ごと ／ 半径 ${MOTHER_BREATH_RANGE}px の最大 ${MOTHER_BREATH_TARGETS} 体 ／ ` +
     `1発 ${MOTHER_BREATH_DAMAGE} ／ 体格はレベルごと +${Math.round(MOTHER_DRAGON.growthPerLevel * 100)}%（最大 +${Math.round(MOTHER_DRAGON.growthMax * 100)}%） ／ ` +
@@ -14348,6 +14573,28 @@ function codexSpecialCanvas(kind) {
   c.scale(2, 2);
   c.translate(26, 26);
   const def = SPECIAL_DEFS[kind];
+
+  if (kind === SPECIAL_MECHA) {
+    // 扇状に飛んでいくロケット（長さを変えて「順に出ている」ことを示す）
+    for (let k = 0; k < 5; k++) {
+      const a = -0.62 + k * 0.31;
+      const len = 9 + k * 3.4;
+      c.strokeStyle = "rgba(255,150,90,0.85)";
+      c.lineWidth = 2.0;
+      c.lineCap = "round";
+      c.beginPath();
+      c.moveTo(Math.cos(a) * 4, Math.sin(a) * 4);
+      c.lineTo(Math.cos(a) * len, Math.sin(a) * len);
+      c.stroke();
+      c.fillStyle = "#e6eef5";
+      c.beginPath();
+      c.arc(Math.cos(a) * len, Math.sin(a) * len, 2.0, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.fillStyle = "#ff7a4d";
+    c.beginPath(); c.arc(0, 0, 3.8, 0, Math.PI * 2); c.fill();
+    return cv;
+  }
 
   if (kind === SPECIAL_RAINBOW) {
     // 虹色の放射線（本編のブレスの残像と同じ色の使い方）
@@ -16665,6 +16912,7 @@ function render(now) {
   drawChargeHitFx();         // v0.88: 突進が乗った一撃の衝撃（当たった面なので竜の上）
   drawSpecialOver();         // v0.85: 呑竜が溜めている弾（竜の上）
   drawSpecialBolts();        // v0.85: 呑竜が撃ち返した弾
+  drawMechaRockets();        // v0.95: 機竜のロケット
   drawSatellites();          // v0.35: 蜂竜の衛星蜂（竜の上に描く）
   drawChainFx();             // v0.43: 連鎖電撃（竜の上に描く）
   drawEnemyDebugLabels();    // v0.44: デバッグ「敵の名札」（既定OFF）
