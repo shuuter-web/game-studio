@@ -1760,7 +1760,17 @@ Shooter から「これはデバッグ表示ですか、それともエフェク
 | あり（`charge_guard` 系を取っている） | 丸い弧 | 守っている |
 | なし（既定） | 尖った「〉」 | 貫くだけで守らない |
 
-尖った形は `lineJoin: miter` / `lineCap: butt` で先端を死なせない。開き具合は `CHARGE_CHEVRON_SWEEP = 2.25` rad。
+尖った形は `lineJoin: miter` / `lineCap: butt` で先端を死なせない。
+
+**v0.89.1: 先端の内角を直接持つ形に直した。** v0.89.0 は「腕を何度後ろへ振るか」（`CHARGE_CHEVRON_SWEEP = 2.25`）で指定していたが、その形だと先端の内角が実際には **44度** になり、腕が竜の上まで巻いていた（Shooter指摘）。指定と見た目が一致しない形だったのが原因。
+
+| | 値 |
+|---|---|
+| `CHARGE_CHEVRON_ANGLE` | 2.356 rad（**135度**・先端の内角） |
+| `CHARGE_CHEVRON_TIP` | 0.90（先端を bowR の何倍前へ置くか） |
+| `CHARGE_CHEVRON_ARM` | 1.15（腕の長さの bowR 比） |
+
+腕の後方成分は `armLen × cos(67.5°) ≈ 0.38 × armLen` なので、腕の末端も竜の中心より前に残る。実測では溜め0% で 6.8px 前、溜め100% で 15.2px 前。
 
 突進ヒット（`spawnChargeHitFx` / `drawChargeHitFx`）は**通常の体当たり（`spawnCollisionParticles`）と
 見分けられること**が目的。破片が飛ぶだけでは「突進が効いた」が伝わらないので、
