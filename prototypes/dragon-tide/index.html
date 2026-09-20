@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.98.3";
+const GAME_VERSION = "v0.98.4";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -17840,6 +17840,34 @@ const shotImages = {};
 const shotTintCache = new Map();
 const SHOT_TINT_CACHE_MAX = 48;
 
+// v0.98.4: 弾ごとの個体差と、飛行中の揺れ。
+// 矢がチープに見えていた原因は解像度ではなく**全弾が完全に同じ形だった**ことなので、
+// 絵を差し替えただけでは判を押したような並びは残る。
+// **見た目だけ**の変形で、当たり判定と速度には一切触らない。
+//
+// 乱数は使えない（毎フレーム呼ばれるので引くたびに形が暴れる）ので、
+// 弾スロット番号のハッシュから決定的に作る。スロットは使い回されるので
+// 厳密には「弾ごと」ではなく「スロットごと」だが、900枠あるので
+// 続けて飛んでいる弾が同じ変形になることはまず無い。
+const SHOT_LEN_JITTER  = 0.10;   // 全長のばらつき（±10%）
+const SHOT_TILT_JITTER = 0.12;   // 進行方向からの傾き（±0.12rad ≈ ±7度）
+// 飛行中の首振り。投槍はゆっくり大きく、弩は速く小さく
+// （弩の矢は短く重いので安定して飛ぶ）。
+const SHOT_WOBBLE = {
+  javelin: { rate: 6.5,  amp: 0.10  },
+  bolt:    { rate: 13.0, amp: 0.045 },
+};
+
+/** スロット番号から 0..1 の値を 2つ作る（決定的・乱数不使用）。 */
+function shotVariant(seed) {
+  const f1 = Math.sin(seed * 12.9898) * 43758.5453;
+  const f2 = Math.sin(seed * 78.233 + 1.7) * 27183.1;
+  return {
+    lenMult: 1 + (f1 - Math.floor(f1) - 0.5) * 2 * SHOT_LEN_JITTER,
+    tilt:        (f2 - Math.floor(f2) - 0.5) * 2 * SHOT_TILT_JITTER,
+  };
+}
+
 /** 色を t の割合だけ白へ寄せる（t=0 そのまま / t=1 白）。 */
 function lightenColor(color, t) {
   const rgb = parseColorRGB(color);
@@ -17900,9 +17928,14 @@ function drawEraShot(c, key, x, y, ang, color, sc, seed) {
   const shotImg = SHOT_IMAGE_GEO[key] ? shotTinted(key, color) : null;
   if (shotImg) {
     const g   = SHOT_IMAGE_GEO[key];
-    const len = (g.front + g.back) * sc;
+    // v0.98.4: 個体差（全長と傾き）＋飛行中の首振り。
+    // 回転の中心は穂先の付け根（原点）なので、振るのは主に矢尻側になる。
+    const v   = shotVariant(seed);
+    const wob = SHOT_WOBBLE[key];
+    ctx.rotate(v.tilt + (wob ? Math.sin(breathTime * wob.rate + seed) * wob.amp : 0));
+    const len = (g.front + g.back) * sc * v.lenMult;
     const h   = len * (shotImg.height / shotImg.width);
-    ctx.drawImage(shotImg, -g.back * sc, -h / 2, len, h);
+    ctx.drawImage(shotImg, -g.back * sc * v.lenMult, -h / 2, len, h);
     ctx.globalAlpha = 1;
     ctx.restore();
     return;
