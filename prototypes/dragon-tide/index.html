@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.89.2";
+const GAME_VERSION = "v0.90.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1354,9 +1354,13 @@ function effRecoilDist() {
 // 属性名が攻撃を表しており、動きに差が無いので操作感の違いに説明が要らない状態にする。
 // 詳細は docs/gdd/dragon-tide-species.md。
 const SPECIES_DEFS = {
-  fire:    { ja: "火竜", en: "Fire Dragon",    icon: "\u{1F525}", color: "#ff8c28", element: "fire",    attack: "flamebreath", desc: "近距離に炎を吐き続ける。標準の動き", move: {} },
-  ice:     { ja: "氷竜", en: "Ice Dragon",     icon: "❄️",       color: "#a0e8ff", element: "ice",     attack: "icelance",    desc: "遠くまで届く氷の槍。標準の動き", move: {} },
-  shadow:  { ja: "影竜", en: "Shadow Dragon",  icon: "\u{1F311}", color: "#c080ff", element: "shadow",  attack: "shadowbolt",  desc: "追尾して爆ぜる影の弾。標準の動き", move: {} },
+  // v0.90: breathArcDeg = 前方の攻撃可能角度（合計度数）。無記入は 360＝全方位。
+  // 火竜は「目の前を焚く」種なので最も狭い。群れを向けないと当たらない。
+  fire:    { ja: "火竜", en: "Fire Dragon",    icon: "\u{1F525}", color: "#ff8c28", element: "fire",    attack: "flamebreath", desc: "近距離に炎を吐き続ける。標準の動き", move: {}, breathArcDeg: 30 },
+  // 氷竜は射程が長いが槍を「置く」種なので、火竜より少しだけ広い
+  ice:     { ja: "氷竜", en: "Ice Dragon",     icon: "❄️",       color: "#a0e8ff", element: "ice",     attack: "icelance",    desc: "遠くまで届く氷の槍。標準の動き", move: {}, breathArcDeg: 70 },
+  // 影竜は弾が追尾する＝向きを合わせる必要が薄いので、最初から広い
+  shadow:  { ja: "影竜", en: "Shadow Dragon",  icon: "\u{1F311}", color: "#c080ff", element: "shadow",  attack: "shadowbolt",  desc: "追尾して爆ぜる影の弾。標準の動き", move: {}, breathArcDeg: 150 },
   // v0.87: 緋竜は体当たりが主武装なので、突進の伸びも一番大きい
   crimson: { ja: "緋竜", en: "Crimson Dragon", icon: "\u{1F43E}", color: "#ff4030", element: "crimson", attack: "rend",        desc: "体当たりで斬り裂く。標準の動き", move: {},
              charge: { damageMult: 4.2, reachBonus: 30, knockback: 240, fxScale: 1.2 } },
@@ -1374,6 +1378,7 @@ const SPECIES_DEFS = {
     ja: "燕竜", en: "Swallow Dragon", icon: "\u{1FAB6}", color: "#9fe0c4", element: "swallow",
     attack: "featherscatter",
     desc: "羽根を3方向へ散らす。最速だがやや大回り",
+    breathArcDeg: 90,   // v0.90: 散弾は元々前へ広がるので、狙える範囲も中間くらい
     move: { maxSpeed: 200, minSpeed: 80, accel: 380, turnRate: 2.8, leaderSpeed: 250, pathEndMode: "straight" },
   },
   hornet: {   // 旋回半径 53。最も小回り
@@ -1419,6 +1424,7 @@ const SPECIES_DEFS = {
   comet: {    // v0.45: UFO と**動きは完全に同一**。違うのは名前・見た目・攻撃だけ。
     ja: "彗星竜", en: "Comet Dragon", icon: "\u2604\uFE0F", color: "#ffe9a0", element: "comet",
     attack: "stardust",
+    breathArcDeg: 90,   // v0.90: 燕竜と同じ散弾なので同じ幅
     desc: "星屑を撒きながら線をなぞる。旋回も加速もロスなしの等速。長い尾を引く",
     // 実機判定（2026-08-21）:「UFO のしなる尻尾が、群れて旋回しているときの見た目が良い」。
     // UFO は今後 円盤の専用スプライト（尻尾なし）になる予定なので、
@@ -1524,6 +1530,48 @@ function mv() {
 function sp() { return SPECIES_DEFS[flockSpecies] || SPECIES_DEFS.fire; }
 /** 現在の攻撃定義（反動・硬直はここから引く）。 */
 function atk() { return ATTACK_DEFS[sp().attack] || ATTACK_DEFS.flamebreath; }
+
+// =================================================================
+// v0.90: ブレスの攻撃可能角度（breath arc）
+//
+// v0.89 までは全員が全方位に撫でていた。ここを**竜種の個性**にし、
+// ラン中の強化で広げられるようにする。
+// 狭い種は「群れを敵に向ける」操作が要る、広い種は向きを気にせずに済む。
+//
+// 値は **前方の合計角度（度）**。360 で全方位（従来通り）。
+// SPECIES_DEFS に `breathArcDeg` が無い竜種は 360 扱い＝**別枠の竜種は除外**。
+// 除外しているのは:
+//   緋竜（体当たりのみ）/ 隼竜（刃翼は元々前方扇）/ 蜂竜（衛星は照準しない）/
+//   ガーゴイル・爆竜・惑竜（真下へ落とす）/ 蛙竜（舌は元々真っすぐ）/
+//   UFO（**進行方向を向かない**ので、向きに依存する制限をかけても画面から読めない）
+// =================================================================
+const BREATH_ARC_FULL_DEG = 360;   // この値以上は「制限なし」として判定ごと飛ばす
+const BREATH_ARC_PER_CARD = 40;    // ラン中カード「見渡す顱」1枚あたりの拡大（度）
+
+/** 現在の攻撃可能角度（合計度数）。竜種の初期値＋強化。 */
+function effBreathArcDeg() {
+  const base = sp().breathArcDeg;
+  if (base === undefined || base >= BREATH_ARC_FULL_DEG) return BREATH_ARC_FULL_DEG;
+  return Math.min(BREATH_ARC_FULL_DEG, base + BREATH_ARC_PER_CARD * upCount("breath_arc"));
+}
+/** 判定に使う半角（rad）。π 以上なら全方位。 */
+function breathArcHalf() { return effBreathArcDeg() * Math.PI / 360; }
+
+/**
+ * 個体 i から見て、目標がブレスの角度の内側か。
+ * halfArc はループの外で breathArcHalf() を 1 回だけ計算して渡す。
+ * いまの向きは**速度ベクトル**（竜のスプライトの向きと同じ）。
+ * ほぼ止まっている個体は向きが定まらないので制限しない。
+ */
+function isInBreathArc(i, tx, ty, halfArc) {
+  if (halfArc >= Math.PI) return true;
+  const sp2 = vx[i] * vx[i] + vy[i] * vy[i];
+  if (sp2 < 1) return true;
+  const head = Math.atan2(vy[i], vx[i]);
+  const to   = Math.atan2(ty - py[i], tx - px[i]);
+  return Math.abs(wrapAngle(to - head)) <= halfArc;
+}
+
 
 
 // =================================================================
@@ -9941,6 +9989,7 @@ function updateBeamAttacks(dt) {
   const BREATH_R2  = effRange * effRange;
   const maxTargets = Math.min(BREATH_MAX_TARGETS, effBeamTargets());
   const damageThisFrame = BREATH_DAMAGE_PER_SEC * effWeaponDmgMult("beam") * dt;
+  const arcHalf = breathArcHalf();   // v0.90: 攻撃可能角度の半角（ループ外で1回）
   // 射程延伸で 100px（グリッドセル）を超えたら近傍クエリの走査半径も広げる
   const cellRadius = Math.max(1, Math.ceil(effRange / BUILDING_GRID_CELL));
 
@@ -9961,6 +10010,7 @@ function updateBeamAttacks(dt) {
       const dy = settlement.wy - py[i];
       const d2 = dx * dx + dy * dy;
       if (d2 >= BREATH_R2) continue;
+      if (!isInBreathArc(i, settlement.wx, settlement.wy, arcHalf)) continue;   // v0.90
 
       let insertAt = _breathTargetBuf.length;
       for (let t = 0; t < _breathTargetBuf.length; t++) {
@@ -9979,7 +10029,9 @@ function updateBeamAttacks(dt) {
         const mdx = m.wx - px[i];
         const mdy = m.wy - py[i];
         const md2 = mdx * mdx + mdy * mdy;
-        if (md2 < nearestMoverD2) { nearestMoverD2 = md2; nearestMover = m; }
+        if (md2 >= nearestMoverD2) continue;
+        if (!isInBreathArc(i, m.wx, m.wy, arcHalf)) continue;   // v0.90
+        nearestMoverD2 = md2; nearestMover = m;
       }
       if (nearestMover) {
         damageMover(nearestMover, damageThisFrame, px[i], py[i]);
@@ -10984,6 +11036,7 @@ const STRINGS = {
     charge_ramp:  { name: "風に乗る", desc: "突進が溜まるのが 20% 速くなる" },
     charge_ease:  { name: "群れの息", desc: "突進に入る速度が -1%" },
     charge_guard: { name: "衝角の壁", desc: "突進中の被ダメージ -15%（衝角波が盾の形になる）" },
+    breath_arc:   { name: "見渡す顱", desc: "ブレスを撃てる角度 +40°" },
   },
 };
 
@@ -11080,6 +11133,8 @@ const CARD_DEFS = [
   { id: "charge_ramp",  icon: "\u{1F4A8}", rarity: "rare",   max: 3 },
   { id: "charge_ease",  icon: "\u{1FAB6}", rarity: "common", max: 3 },
   { id: "charge_guard", icon: "\u{1F6E1}️", rarity: "rare", max: 3 },
+  // v0.90: 攻撃可能角度を広げる。**既に全方位な竜種では空振りになる**のでプールに乗せない。
+  { id: "breath_arc",   icon: "\u{1F4D0}", rarity: "common", max: 4, needsBreathArc: true },
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
@@ -11407,6 +11462,8 @@ function buildLevelUpCards() {
     // 強化はその種類を実際に連れているときだけ出す。
     if (def.specialJoin && runSpecials.length >= effSpecialSlots()) return false;
     if (def.specialOf && !runSpecials.includes(def.specialOf)) return false;
+    // v0.90: 角度拡大は「制限を持っていて、まだ 360° に達していない」ときだけ
+    if (def.needsBreathArc && effBreathArcDeg() >= BREATH_ARC_FULL_DEG) return false;
     // 武器強化カードは現在の武器タイプにのみ出現
     if (def.weapon && def.weapon !== flockWeapon) return false;
     // ★進化は最初のレベルアップ専用（上の分岐でのみ出る）
@@ -11696,10 +11753,12 @@ const _dprojNeighbourBuf = [];
  * @param {boolean} excludeWalls  true のとき城壁を対象外にする
  *   （ミサイルは壁を飛び越える＝壁を狙えないため。弾丸は壁を狙える＝攻城槌）
  */
-function findNearestBuilding(wx, wy, maxDist, cellRadius, excludeWalls) {
+function findNearestBuilding(wx, wy, maxDist, cellRadius, excludeWalls, boidIdx, halfArc) {
   buildingGridQueryRadius(wx, wy, cellRadius, _dprojNeighbourBuf);
   let best = -1;
   let bestD2 = maxDist * maxDist;
+  // v0.90: boidIdx/halfArc を渡さなければ従来通り全方位（飛行中の弾の再ロックなど）。
+  const arcOn = boidIdx !== undefined && halfArc !== undefined && halfArc < Math.PI;
   for (const sIdx of _dprojNeighbourBuf) {
     const s = settlements[sIdx];
     if (!s || s.fallen) continue;
@@ -11707,7 +11766,9 @@ function findNearestBuilding(wx, wy, maxDist, cellRadius, excludeWalls) {
     const dx = s.wx - wx;
     const dy = s.wy - wy;
     const d2 = dx * dx + dy * dy;
-    if (d2 < bestD2) { bestD2 = d2; best = sIdx; }
+    if (d2 >= bestD2) continue;
+    if (arcOn && !isInBreathArc(boidIdx, s.wx, s.wy, halfArc)) continue;
+    bestD2 = d2; best = sIdx;
   }
   return best;
 }
@@ -11717,6 +11778,7 @@ function updateBulletAttacks(dt) {
   const range      = BULLET_RANGE * effWeaponRangeMult("bullet");
   const interval   = BULLET_INTERVAL * effFireIntervalMult("bullet");
   const cellRadius = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
+  const arcHalf    = breathArcHalf();   // v0.90
 
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
@@ -11724,7 +11786,7 @@ function updateBulletAttacks(dt) {
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
-    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius, false);
+    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius, false, i, arcHalf);
     if (targetIdx < 0) continue; // 射程内に標的なし: タイマーは0のまま待機（見つけ次第撃つ）
 
     boidFireTimer[i] = interval;
@@ -11740,6 +11802,7 @@ function updateMissileAttacks(dt) {
   const range      = MISSILE_RANGE * effWeaponRangeMult("missile");
   const interval   = MISSILE_INTERVAL * effFireIntervalMult("missile");
   const cellRadius = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
+  const arcHalf    = breathArcHalf();   // v0.90
 
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
@@ -11748,7 +11811,7 @@ function updateMissileAttacks(dt) {
     if (boidFireTimer[i] > 0) continue;
 
     // v0.6-p3: ミサイルは城壁を狙わない（壁越しに内部の建物をロックする）
-    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius, true);
+    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius, true, i, arcHalf);
     if (targetIdx < 0) continue;
 
     boidFireTimer[i] = interval;
@@ -12612,13 +12675,14 @@ function updateScatterAttacks(dt) {
   const range = BULLET_RANGE * effWeaponRangeMult("scatter");
   const inter = SCATTER_INTERVAL * effFireIntervalMult("scatter");
   const cell  = Math.max(1, Math.ceil(range / BUILDING_GRID_CELL));
+  const arcHalf = breathArcHalf();   // v0.90
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
-    const targetIdx = findNearestBuilding(px[i], py[i], range, cell, false);
+    const targetIdx = findNearestBuilding(px[i], py[i], range, cell, false, i, arcHalf);
     if (targetIdx < 0) continue;
     boidFireTimer[i] = inter;
     const t = settlements[targetIdx];
@@ -15387,6 +15451,9 @@ function drawFlockMetricsPanel() {
     ["突進",     chargeActive
        ? `ON  溜め ${(chargeLevel * 100).toFixed(0)}%  ×${chargeDamageMultNow().toFixed(2)}`
        : `OFF 溜め ${(chargeLevel * 100).toFixed(0)}%  最高${(chargePeakLevel * 100).toFixed(0)}%`],
+    ["ブレス角", effBreathArcDeg() >= BREATH_ARC_FULL_DEG
+       ? "全方位（制限なし）"
+       : `${effBreathArcDeg().toFixed(0)}°  (初期 ${sp().breathArcDeg}°)`],
     ["被ダメ軽減", hasChargeGuard()
        ? `-${(chargeDamageReductionNow() * 100).toFixed(0)}%  (最大 -${(effChargeDamageReduction() * 100).toFixed(0)}%)`
        : "なし（衝角波は尖った形）"],
