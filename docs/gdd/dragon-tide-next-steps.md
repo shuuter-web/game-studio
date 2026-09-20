@@ -2234,6 +2234,63 @@ Its low horned head is at the very TOP of the image, the spined tail is at the B
 
 ---
 
+### 2-1ak. 特殊個体に専用の絵を与える（v0.98）
+
+Shooter 指示「特殊個体の竜たちも専用画像を持つようにしたい」。
+
+#### 何をしたか
+
+**群れの竜種の絵を上書きする**方式にした。火竜のランでも氷竜のランでも、
+灯竜は常に灯竜の姿で出る。足元リングだけでは群れの中で見失うのが理由。
+
+| 特殊個体 | 絵の要点（小さく描いても読める特徴） |
+|---|---|
+| 灯竜 | 背中に**光る灯火の結晶**を載せた金の竜 |
+| 巌竜 | 岩板に覆われた**丸く分厚い**シルエット。頭も脚も短い |
+| 呑竜 | 頭の大半が**巨大な口**。真上から喉の奥まで見える |
+| 虹竜 | 玉虫色の鱗と**結晶の冠**。細身で気高い |
+| 機竜 | 鉄板とリベット。背中に**ロケットの筒**が2本 |
+
+竜種と同じカテゴリA（body + wing×1）なので**描画経路は完全に共通**。
+`DRAGON_PART_SPRITES` に5件足し、`getSpecialSprites(kind)` を新設して
+`drawBoids` のスプライト選択を差し替えただけで済んでいる。
+`SPECIAL_DEFS[].key` がそのまま `DRAGON_PART_SPRITES` のキーになっている。
+
+#### 一緒に直したところ
+
+- **尻尾の色**: 胴体だけ差し替えると尻尾が群れの竜種の色のまま残り、
+  胴と尾が別の生き物に見える。`DRAGON_ELEMENT_COLORS` に5色足して個体ごとに引く。
+- **円盤（UFO）の群れ**: 円盤は尻尾を持たず自転するが、**特殊個体は普通の竜なので
+  尻尾を引き進行方向を向く**。`speciesNoTail` の判定に「特殊個体は除く」を足した。
+- **スプライトキャッシュ 3 → 8**: 同時に要る列が「群れの竜種＋跳躍ポーズ＋特殊個体3体」で
+  最大5列になる。3 のままだと LRU が毎回落ちて**毎フレーム16コマ焼き直す**。
+  実測で 6秒間の再生成 0 回・62fps を確認した。
+- **図鑑**: 中心の丸を実物のスプライトに差し替え（鼻先を上に向けて一覧で向きを揃える）。
+  能力を表す形（光条・吸引の輪・ロケットの扇）はそのまま周りに残す。
+
+#### 生成の実務
+
+`tools/gen_dragon_sprite.sh <species> "<体>" "<翼>"` がそのまま使えた。
+竜の型（真俯瞰・鼻先を上・尻尾なし・片翼のみ）は既に通っている型なので**5種とも1発**。
+v0.97 の敵スプライトと違い「前後が逆」も出ていない。
+生成後は長辺320pxへ縮小 →`tools/sprite_meta.py` で実測、が従来どおりの手順。
+
+**`shoulder` の y だけは自動値を使えない個体がある。** 自動推定は
+「内容の上55%で最も幅の広い行」を肩とみなすが、灯竜（角）・虹竜（冠）・呑竜（大口）は
+**頭が肩より広い**ので、そのままだと翼が頭から生える。
+幅のプロファイルを5%刻みで出して前脚の行を目で選んだ（灯竜 y=150 / 呑竜 y=160 / 虹竜 y=185）。
+巌竜と機竜は自動値どおり（最も広い行が実際に肩＝甲羅の縁・ロケット架）。
+
+`wingDrawW` はツールが 30 を吐くが、**採用は 25**（v0.46 で詰めた値。30 だと翼が2割大きい）。
+
+#### 承知しておくこと
+
+画像10枚で **729KB 増**（竜13種で1.7MBだったので約4割増）。
+`preloadDragonImages` は起動時に全部読むので、特殊個体を1体も引かないランでも払うコスト。
+遅延ロードにはしていない（スプライト生成が同期で画像を要求するため）。
+
+---
+
 ---
 
 ## 3. 未着手のアイディア（着手順は未定）
@@ -2451,6 +2508,7 @@ Its low horned head is at the very TOP of the image, the spined tail is at the B
 | 突進（v0.87） | パラメータは `CHARGE_PROFILE_DEFAULT` ＋ 竜種の `charge:`（引くのは `chg()`）。判定は `updateCharge`（simStep 末尾）、効かせるのは `chargeDamageMultNow` / `chargeReachBonusNow` / `chargeKnockbackNow`。強化は `effCharge*`。見た目は `drawChargeFx` |
 | ブレスの角度（v0.90） | 竜種の `breathArcDeg`（無記入＝360＝除外）。判定は `isInBreathArc`、現在値は `effBreathArcDeg`。`findNearestBuilding` の第6・7引数に boidIdx / halfArc を渡すと角度を見る |
 | 図鑑（v0.67〜0.92） | タブは `renderCodex` の `tabs` 配列。中身は `codexEnemyHtml` / `codexBuildingHtml` / `codexShotHtml` / `codexSpecialHtml`。絵の無いものは canvas を後入れする（`codexFill*Canvases`）。**本文は HTML なので `**` は太字にならない。`<b>` を使う** |
+| 特殊個体の絵（v0.98） | `DRAGON_PART_SPRITES` の beacon/heavy/deflect/rainbow/mecha。取り出しは `getSpecialSprites`、差し替えは `drawBoids` の sprite 選択。図鑑側は `codexDrawSpecialDragon` |
 | 動員段階（v0.56〜0.94） | 強さは `POWER_TIER_BOOST`、物量は `TIER_MOVER_MULT`。段階上げは `advanceTier`、再建の選び方は `rebuildRuinsForTier`（**街単位で丸ごと**）。演出とテキストは `triggerTierAdvance` |
 | チャレンジ | `CHALLENGE_DEFS`／`evaluateChallenges`／UIは `renderChallenges` |
 | 敵 | `MOVER_DEFS`／`MOVER_SPAWNS_BY_STAGE`／`updateMovers`／`damageMover`／ラッシュは `updateEnemyRush` |

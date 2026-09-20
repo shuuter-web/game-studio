@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.97.1";
+const GAME_VERSION = "v0.98.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -14470,8 +14470,9 @@ function codexShotHtml() {
 
 // -----------------------------------------------------------------
 // v0.92: 図鑑「特殊個体」ページ。
-// 敵や建物と違って専用の絵が無い（普通の竜＋エフェクトだから）ので、
-// 弾のページと同じく <b>canvas を後入れして特徴的な形を描く</b>。
+// v0.98: 特殊個体にも専用の絵ができたので、canvas に**本編と同じスプライト**を
+// 置いた上で、その周りに能力を表す形（光条・吸引の輪・ロケット）を描く。
+// canvas を後入れするのは innerHTML では中身を渡せないため（弾のページと同じ手）。
 // -----------------------------------------------------------------
 const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA];
 
@@ -14564,6 +14565,22 @@ function codexFillSpecialCanvases() {
   }
 }
 
+/**
+ * v0.98: 図鑑の中心に実物の竜を置く。
+ * 専用絵ができるまでは単なる丸を置いていたが、
+ * 本編で見る姿と図鑑の絵が一致していないと見分けの手掛かりにならない。
+ * 一覧で向きを揃えるため、ここだけ鼻先を**上**へ向ける。
+ */
+function codexDrawSpecialDragon(c, kind, box) {
+  const frames = getSpecialSprites(kind);
+  if (!frames || !frames.length) return;
+  const img = frames[0];
+  c.save();
+  c.rotate(-Math.PI / 2);
+  c.drawImage(img, 0, 0, img.width, img.height, -box / 2, -box / 2, box, box);
+  c.restore();
+}
+
 /** 特殊個体の「形」を 52px 角で描く。本編のエフェクトと同じ見た目に寄せる。 */
 function codexSpecialCanvas(kind) {
   const cv = document.createElement("canvas");
@@ -14591,8 +14608,7 @@ function codexSpecialCanvas(kind) {
       c.arc(Math.cos(a) * len, Math.sin(a) * len, 2.0, 0, Math.PI * 2);
       c.fill();
     }
-    c.fillStyle = "#ff7a4d";
-    c.beginPath(); c.arc(0, 0, 3.8, 0, Math.PI * 2); c.fill();
+    codexDrawSpecialDragon(c, kind, 44);
     return cv;
   }
 
@@ -14608,8 +14624,7 @@ function codexSpecialCanvas(kind) {
       c.lineTo(Math.cos(a) * 21, Math.sin(a) * 21);
       c.stroke();
     }
-    c.fillStyle = "#ffffff";
-    c.beginPath(); c.arc(0, 0, 4.2, 0, Math.PI * 2); c.fill();
+    codexDrawSpecialDragon(c, kind, 44);
     return cv;
   }
 
@@ -14634,14 +14649,11 @@ function codexSpecialCanvas(kind) {
     c.moveTo(0, -3.4); c.lineTo(22, -1.5); c.lineTo(22, 1.5); c.lineTo(0, 3.4);
     c.closePath(); c.fill();
     c.restore();
-    c.fillStyle = "#ffe7a8";
-    c.beginPath(); c.arc(0, 0, 3.6, 0, Math.PI * 2); c.fill();
+    codexDrawSpecialDragon(c, kind, 44);
   } else if (kind === SPECIAL_HEAVY) {
     // 巨体（他の2種より明らかに大きい丸）と砕けた破片
-    c.fillStyle = "rgba(185,166,140,0.85)";
-    c.beginPath(); c.arc(0, 0, 9.5, 0, Math.PI * 2); c.fill();
-    c.fillStyle = "rgba(255,255,255,0.28)";
-    c.beginPath(); c.arc(-2.6, -2.6, 3.4, 0, Math.PI * 2); c.fill();
+    // 巌竜だけ大きく描く（本編でも体格が大きいのが特徴）
+    codexDrawSpecialDragon(c, kind, 56);
     c.fillStyle = "rgba(210,190,160,0.9)";
     for (let k = 0; k < 5; k++) {
       const a = 0.5 + k * 1.15;
@@ -14664,8 +14676,7 @@ function codexSpecialCanvas(kind) {
       c.arc(Math.cos(a) * 13, Math.sin(a) * 13, 2.0, 0, Math.PI * 2);
       c.fill();
     }
-    c.fillStyle = "#cfe9ff";
-    c.beginPath(); c.arc(0, 0, 3.4, 0, Math.PI * 2); c.fill();
+    codexDrawSpecialDragon(c, kind, 44);
   }
   return cv;
 }
@@ -17474,7 +17485,7 @@ function drawBoids() {
   const partsKeyNow   = dragonPartsKey(element);
   const hasAirPose    = !!(partsKeyNow && DRAGON_PART_SPRITES[partsKeyNow].bodyAir);
   const spritesAir    = hasAirPose ? getSpeciesSprites(flockSpecies, "air") : null;
-  const palette       = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
+  const paletteFlock  = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
   if (!sprites || sprites.length === 0) return;
@@ -17484,7 +17495,9 @@ function drawBoids() {
   // これにより尻尾は遅れて柔らかくしなる（生の履歴シフトのカクつきを排除）。
   // ヒットストップ中は vx/vy が凍結されるので尻尾はゆっくりまっすぐに落ち着く。
   const speciesNoTail = !!sp().noTail;   // v0.46: 円盤（UFO）は尻尾を持たない
-  for (let i = 0; i < N && !speciesNoTail; i++) {
+  // v0.98: 円盤（尾無し）の群れでも、専用絵を持つ特殊個体は尾を引くので履歴を回す
+  for (let i = 0; i < N; i++) {
+    if (speciesNoTail && boidSpecial[i] === SPECIAL_NONE) continue;
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
     // 変更2: ダウン中でフェード完了かつ復帰フェードイン未開始は更新不要
     if (boidDowned[i] && boidFadeTimer[i] <= 0 && boidReviveTimer[i] <= 0) continue;
@@ -17529,7 +17542,16 @@ function drawBoids() {
     const tNorm     = (Math.sin(phase) * 0.5 + 0.5);
     const frameIdx  = Math.floor(tNorm * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
     // 滞空している蛙竜は「後脚を伸ばした」ポーズへ差し替える＝跳ぶたびに脚が動いて見える
-    const sprite    = (spritesAir && boidHopAir[i] > 0.15) ? spritesAir[frameIdx] : sprites[frameIdx];
+    // v0.98: 特殊個体は**群れの竜種の絵を上書きして**専用スプライトで描く。
+    // 足元リングだけだと群れの中で見失うので、本体ごと差し替える。
+    const spKind    = boidSpecial[i];
+    const spSprites = spKind !== SPECIAL_NONE ? getSpecialSprites(spKind) : null;
+    const sprite    = spSprites ? spSprites[frameIdx]
+                    : (spritesAir && boidHopAir[i] > 0.15) ? spritesAir[frameIdx] : sprites[frameIdx];
+    // 尾は毎フレーム描くので、胴体を差し替えたら尾の色も合わせる
+    const palette   = spSprites
+      ? (DRAGON_ELEMENT_COLORS[SPECIAL_DEFS[spKind].key] ?? paletteFlock)
+      : paletteFlock;
 
     // ---- 尻尾（動的描画）----
     // 進行方向後方に TAIL_SEGS セグメントをカーブさせる。
@@ -17563,7 +17585,7 @@ function drawBoids() {
     // 時間ベースの微小揺れ（個体ごとに位相をずらす）
     const wobble = Math.sin(breathTime * 1.5 + BOID_FLAP_PHASE[i] * Math.PI * 2) * TAIL_WOBBLE;
 
-    for (let s = 0; s < (speciesNoTail ? 0 : TAIL_SEGS); s++) {
+    for (let s = 0; s < (speciesNoTail && !spSprites ? 0 : TAIL_SEGS); s++) {
       // s番目のセグメントは「s個前の角度履歴」の逆方向（後方）を使う
       // 旋回差：現在角度と履歴角度の差をセグメント方向に加える
       const histAngle  = boidAngleHistory[base + Math.min(s, TAIL_SEGS - 1)];
@@ -17617,7 +17639,7 @@ function drawBoids() {
     ctx.globalAlpha = alpha;
     ctx.translate(wx, wy);
     // v0.46: 円盤は進行方向を向かない（向く顔が無い）。代わりに一定速度で自転させる。
-    ctx.rotate(speciesNoTail && sp().spin
+    ctx.rotate(speciesNoTail && sp().spin && !spSprites
       ? breathTime * sp().spin + BOID_FLAP_PHASE[i] * Math.PI * 2
       : angle);
     if (unitScale !== 1) ctx.scale(unitScale, unitScale);  // v0.15: リーダーの体格成長
@@ -18376,6 +18398,15 @@ const DRAGON_ELEMENT_COLORS = {
   bomber:   { body: "rgba(216, 160, 90, 1.0)",  wing: "rgba(150, 100, 45, 1.0)",  rim: "rgba(90, 60, 25, 0.0)" },
   wayward:  { body: "rgba(180, 154, 232, 1.0)", wing: "rgba(120, 96, 175, 1.0)",  rim: "rgba(70, 55, 110, 0.0)" },
   frog:     { body: "rgba(140, 224, 90, 1.0)",  wing: "rgba(80, 160, 60, 1.0)",   rim: "rgba(40, 90, 30, 0.0)" },
+
+  // v0.98: 特殊個体の配色。尾尾は毎フレーム描くので、
+  // 専用絵と色がさもしいと胴体と尾が別の生き物に見える。
+  // SPECIAL_DEFS[].color と揃えてある（足元リングと同じ色）。
+  beacon:   { body: "rgba(255, 211, 107, 1.0)", wing: "rgba(214, 160, 50, 1.0)",  rim: "rgba(130, 95, 20, 0.0)" },
+  heavy:    { body: "rgba(185, 166, 140, 1.0)", wing: "rgba(140, 124, 102, 1.0)", rim: "rgba(85, 74, 60, 0.0)" },
+  deflect:  { body: "rgba(159, 216, 255, 1.0)", wing: "rgba(100, 165, 215, 1.0)", rim: "rgba(50, 95, 135, 0.0)" },
+  rainbow:  { body: "rgba(240, 168, 255, 1.0)", wing: "rgba(180, 150, 240, 1.0)", rim: "rgba(110, 85, 150, 0.0)" },
+  mecha:    { body: "rgba(255, 122, 77, 1.0)",  wing: "rgba(150, 158, 168, 1.0)", rim: "rgba(80, 86, 94, 0.0)" },
 };
 
 // プリレンダ設定
@@ -18811,6 +18842,58 @@ const DRAGON_PART_SPRITES = {
     wingAnchor: { x: 317, y: 66.1 },
     bodyDrawH: 27,
     wingDrawW: 15,   // v0.47.1: 蛙なので翼は小さく（実機判定「翼はもっと小さく」）
+  },
+  // ---------------------------------------------------------------
+  // v0.98: 特殊個体の専用絵。群れの竜種に関わらず**この絵で上書きされる**。
+  // 竜種と同じカテゴリA（body + wing×1）なので描画経路は共通。
+  // 値は tools/sprite_meta.py の実測値。shoulder の y だけは手で選んでいる
+  // （自動推定は「上半分で最も幅の広い行」を拾うので、
+  //   角・冠・大口が肩より広い個体だと**翼が頭から生える**）。
+  // ---------------------------------------------------------------
+  beacon: {
+    body: "assets/dragon_beacon_body.png",
+    wing: "assets/dragon_beacon_wing.png",
+    bodyPivot:  { cx: 60.0, cy: 170.2, w: 121, h: 320 },
+    shoulder:   { left: { x: 14.6, y: 150 }, right: { x: 105.4, y: 150 } },
+    wingAnchor: { x: 317, y: 63.4 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  heavy: {
+    body: "assets/dragon_heavy_body.png",
+    wing: "assets/dragon_heavy_wing.png",
+    bodyPivot:  { cx: 117.2, cy: 174.0, w: 236, h: 320 },
+    shoulder:   { left: { x: 21.0, y: 141 }, right: { x: 213.4, y: 141 } },
+    wingAnchor: { x: 317, y: 77.7 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  deflect: {
+    body: "assets/dragon_deflect_body.png",
+    wing: "assets/dragon_deflect_wing.png",
+    bodyPivot:  { cx: 99.5, cy: 154.9, w: 200, h: 320 },
+    shoulder:   { left: { x: 38.6, y: 160 }, right: { x: 160.4, y: 160 } },
+    wingAnchor: { x: 317, y: 67.6 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  rainbow: {
+    body: "assets/dragon_rainbow_body.png",
+    wing: "assets/dragon_rainbow_wing.png",
+    bodyPivot:  { cx: 73.0, cy: 168.2, w: 147, h: 320 },
+    shoulder:   { left: { x: 35.2, y: 185 }, right: { x: 110.8, y: 185 } },
+    wingAnchor: { x: 316, y: 58.4 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  mecha: {
+    body: "assets/dragon_mecha_body.png",
+    wing: "assets/dragon_mecha_wing.png",
+    bodyPivot:  { cx: 78.0, cy: 171.9, w: 157, h: 320 },
+    shoulder:   { left: { x: 16.7, y: 140 }, right: { x: 139.3, y: 140 } },
+    wingAnchor: { x: 317, y: 76.1 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
   },
   // UFO だけは**円盤1枚**（sprites.md のカテゴリD）。翼を持たないので wing を書かない。
   // drawPartSeparatedDragon は wing が無ければ胴体だけを描く。
@@ -19329,7 +19412,10 @@ function buildElementSprites(element, variant) {
 // （将来の混成群れ・味方の増援など）に対応できない。
 // そこで **種IDキーの簡易LRU** にして、上限を超えたら古いものから捨てる。
 const spriteCache = new Map();      // speciesId -> フレーム配列
-const SPRITE_CACHE_MAX = 3;         // 同時保持数。1固定にはしない（暫定値・実機で調整）
+// v0.98: 3 → 8。特殊個体が専用スプライトを持ったので、
+// 同時に必要な列が「群れの竜種 + 跳躍ポーズ + 特殊個体最大3体」＝最大5列になる。
+// 3 のままだと**毎フレーム16コマを作り直す**（LRUが毎回落ちる）。
+const SPRITE_CACHE_MAX = 8;
 
 /**
  * 竜種のスプライト列を返す。
@@ -19350,6 +19436,29 @@ function getSpeciesSprites(speciesId, variant) {
   spriteCache.set(cacheKey, frames);
   while (spriteCache.size > SPRITE_CACHE_MAX) {
     spriteCache.delete(spriteCache.keys().next().value);   // 最古から破棄
+  }
+  return frames;
+}
+
+/**
+ * v0.98: 特殊個体のスプライト列。
+ * 竜種と同じ spriteCache に「sp:<key>」で相乗りする（LRU も共通）。
+ * SPECIAL_DEFS[].key がそのまま DRAGON_PART_SPRITES のキーになっている。
+ */
+function getSpecialSprites(kind) {
+  const def = SPECIAL_DEFS[kind];
+  if (!def) return null;
+  const cacheKey = "sp:" + def.key;
+  let frames = spriteCache.get(cacheKey);
+  if (frames) {
+    spriteCache.delete(cacheKey);
+    spriteCache.set(cacheKey, frames);
+    return frames;
+  }
+  frames = buildElementSprites(def.key);
+  spriteCache.set(cacheKey, frames);
+  while (spriteCache.size > SPRITE_CACHE_MAX) {
+    spriteCache.delete(spriteCache.keys().next().value);
   }
   return frames;
 }
