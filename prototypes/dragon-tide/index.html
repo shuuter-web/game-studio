@@ -707,7 +707,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.99.4";
+const GAME_VERSION = "v0.99.5";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -18898,7 +18898,7 @@ const MINIMAP_FALLEN_COLOR = "#3a3a3a";   // 陥落した建物
 const MINIMAP_SELF_COLOR   = "#9ff4ff";   // 自分の群れ
 // ボスは時代ごとの glowColor を使っていたが、橙系の時代だと敵色と見分けにくい。
 // ミニマップでは**敵・ボス・自分の3色が常に違う**ことを優先して固定色にする。
-const MINIMAP_BOSS_COLOR   = "#ffd23f";   // ボス（時代によらず固定）
+const MINIMAP_BOSS_COLOR   = "#ff2f2f";   // ボス（時代によらず固定の赤）
 
 // ミニマップ基底の焼き直しは建物が壊れるたびに要求されるが、全建物走査が
 // 5000棟超で 1.6ms かかる（大陸サイズ）。ドットの更新が数フレーム遅れても
@@ -18912,6 +18912,11 @@ let minimapBaseLastBuilt = -Infinity;
 let minimapBaseCanvas = null;
 let minimapBaseCtx    = null;
 let minimapBaseDirty  = true;
+// v0.99.5: ボスは基底に焼かず、**毎フレーム一番上に描く**。
+// 基底に焼くと、同じループで後から出てくる建物のドットに上書きされて埋もれていた
+// （settlements の並び順は地形生成の都合で決まるので、ボスが最後とは限らない）。
+// 全建物走査は基底の焼き直しでしか行わないので、その時にボスの位置を控えておく。
+let minimapBosses = [];
 
 function rebuildMinimapBase() {
   if (!minimapBaseCanvas) {
@@ -18928,39 +18933,15 @@ function rebuildMinimapBase() {
   const scaleX = MINIMAP_W / WORLD_W;
   const scaleY = MINIMAP_H / WORLD_H;
 
+  const bosses = [];
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
     const mx = settlement.wx * scaleX;
     const my = settlement.wy * scaleY;
 
     if (settlement.isBoss) {
-      // ボス集落: 目立つ大きなダイヤモンドマーカー（陥落後は暗く）
-      const bossR = settlement.fallen ? 3 : 5;
-      const glowColor = MINIMAP_BOSS_COLOR;
-      if (!settlement.fallen) {
-        // 外グロー
-        minimapCtx.fillStyle = glowColor;
-        minimapCtx.globalAlpha = 0.35;
-        minimapCtx.beginPath();
-        minimapCtx.arc(mx, my, bossR * 2.0, 0, Math.PI * 2);
-        minimapCtx.fill();
-        minimapCtx.globalAlpha = 1.0;
-      }
-      // ダイヤモンド（回転した正方形）
-      minimapCtx.fillStyle = settlement.fallen ? MINIMAP_FALLEN_COLOR : glowColor;
-      minimapCtx.beginPath();
-      minimapCtx.moveTo(mx,         my - bossR);
-      minimapCtx.lineTo(mx + bossR, my);
-      minimapCtx.lineTo(mx,         my + bossR);
-      minimapCtx.lineTo(mx - bossR, my);
-      minimapCtx.closePath();
-      minimapCtx.fill();
-      // 輪郭
-      if (!settlement.fallen) {
-        minimapCtx.strokeStyle = "#ffffff";
-        minimapCtx.lineWidth   = 0.8;
-        minimapCtx.stroke();
-      }
+      // v0.99.5: ここでは描かない。位置を控えて drawMinimap で最前面に描く。
+      bosses.push({ mx, my, fallen: !!settlement.fallen });
     } else {
       // 通常建物
       // v0.49: ワールドが広がるとドットが相対的に太くなって町が潰れるため、
@@ -18974,7 +18955,43 @@ function rebuildMinimapBase() {
     }
   }
 
+  minimapBosses = bosses;
   minimapBaseDirty = false;
+}
+
+/** ミニマップのボス印。**他の何にも隠れないよう一番上で描く**。 */
+function drawMinimapBoss(c) {
+  for (const b of minimapBosses) {
+    if (b.fallen) {
+      c.fillStyle = MINIMAP_FALLEN_COLOR;
+      c.beginPath();
+      c.moveTo(b.mx, b.my - 3); c.lineTo(b.mx + 3, b.my);
+      c.lineTo(b.mx, b.my + 3); c.lineTo(b.mx - 3, b.my);
+      c.closePath();
+      c.fill();
+      continue;
+    }
+    // ① 大きな半透明の暈（どのあたりが本丸かを面で示す）
+    c.fillStyle = MINIMAP_BOSS_COLOR;
+    c.globalAlpha = 0.28;
+    c.beginPath();
+    c.arc(b.mx, b.my, 10, 0, Math.PI * 2);
+    c.fill();
+    c.globalAlpha = 1;
+    // ② 暗い縁。街のドットの上に来ても輪郭が沈まないようにする
+    c.fillStyle = "rgba(0,0,0,0.55)";
+    c.beginPath();
+    c.arc(b.mx, b.my, 4.6, 0, Math.PI * 2);
+    c.fill();
+    // ③ はっきりした赤い点。**これが本体**（暈だけだと埋もれる）
+    c.fillStyle = MINIMAP_BOSS_COLOR;
+    c.beginPath();
+    c.arc(b.mx, b.my, 3.4, 0, Math.PI * 2);
+    c.fill();
+    c.strokeStyle = "#ffffff";
+    c.lineWidth = 0.9;
+    c.stroke();
+  }
 }
 
 function drawMinimap() {
@@ -19001,6 +19018,9 @@ function drawMinimap() {
     minimapCtx.arc(mmx, mmy, 2.2, 0, Math.PI * 2);
   }
   minimapCtx.fill();
+
+  // v0.99.5: ボスは建物と移動敵の**後**に描く（何にも隠れない）
+  drawMinimapBoss(minimapCtx);
 
   // v0.99.4: 自分の群れ。**ミニマップで一番目立つものにする**。
   // 暗い縁 → 光の暈 → 芯、の3枚重ねで、敵色の上でも街の塊の上でも浮く。
