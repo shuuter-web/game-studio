@@ -441,13 +441,31 @@
   .ch-desc { font-size: 11px; color: #9fbad6; margin-top: 1px; }
 
   /* v0.67: 敵図鑑（チャレンジ一覧と同じ全画面オーバーレイの見た目を流用） */
-  #codex-overlay {
+  /* v0.99.1: オプション画面は図鑑と同じ体裁（別物に見せる理由がない） */
+  #codex-overlay, #options-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     display: none; flex-direction: column;
     padding: 16px 14px 24px; background: rgba(4,6,14,0.96);
     z-index: 55; pointer-events: auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
-  #codex-overlay.visible { display: flex; }
+  #codex-overlay.visible, #options-overlay.visible { display: flex; }
+  #options-overlay .tree-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+  #options-overlay .tree-title { font-family: -apple-system, BlinkMacSystemFont, serif; font-size: 20px; font-weight: bold; color: #ffe0b0; letter-spacing: 0.12em; text-shadow: 0 0 20px rgba(255,140,40,0.6); }
+  #options-overlay .tree-close { font-size: 20px; color: #ff8888; background: none; border: none; cursor: pointer; padding: 0 6px; }
+  #options-overlay .tree-hint { font-family: monospace; font-size: 11px; color: #8aa; margin-bottom: 12px; }
+  /* 1行1項目。右端のスイッチを押すと切り替わる */
+  .op-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+            background: rgba(20,24,38,0.9); border: 1px solid #3a4258; border-radius: 10px; cursor: pointer; }
+  .op-row:active { background: rgba(32,38,58,0.95); }
+  .op-body { flex: 1; min-width: 0; }
+  .op-name { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; color: #e8eef8; }
+  .op-desc { font-family: monospace; font-size: 11px; color: #8aa; margin-top: 3px; line-height: 1.5; }
+  .op-switch { flex: none; width: 46px; height: 26px; border-radius: 13px; position: relative;
+               background: #3a4258; transition: background 0.15s; }
+  .op-switch.on { background: #4adf80; }
+  .op-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+                      border-radius: 50%; background: #e8eef8; transition: left 0.15s; }
+  .op-switch.on::after { left: 23px; }
   #codex-overlay .tree-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
   #codex-overlay .tree-title { font-family: -apple-system, BlinkMacSystemFont, serif; font-size: 20px; font-weight: bold; color: #ffe0b0; letter-spacing: 0.12em; text-shadow: 0 0 20px rgba(255,140,40,0.6); }
   #codex-overlay .tree-crystals { font-family: monospace; font-size: 14px; color: #8cd8ff; margin-left: auto; }
@@ -618,6 +636,7 @@
 <!-- v0.25: チャレンジ一覧画面（タイトルから開く） -->
 <div id="challenge-overlay"></div>
 <div id="codex-overlay"></div>
+<div id="options-overlay"></div>
 
 <!-- v0.25: チャレンジ達成トースト -->
 <div id="challenge-toast"></div>
@@ -631,7 +650,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.99.0";
+const GAME_VERSION = "v0.99.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -797,9 +816,6 @@ function debugCycleRecoil() {
 //   ② 名前ラベル: 全ての敵に名前とHPを出す（見分けがつかない問題の解消）
 //   ③ 竜を無敵: 群れが落ちないので敵の動きだけを観察できる
 let debugShowEnemyLabels = false;
-// v0.99: 敵へのダメージを数字で出す（まずは本編に入れる想定なので既定ON）。
-// デバッグ表示に落とすならここを false にするだけ。
-let debugShowDamageNumbers = true;
 let debugInvincible      = false;
 let debugPage            = "main";   // "main" | "enemies"
 
@@ -908,7 +924,7 @@ const DEBUG_ACTIONS = [
   { label: "🏷 敵の名札",            run: () => { debugShowEnemyLabels = !debugShowEnemyLabels; }, keepOpen: true },
   { label: "🧭 街の向き",            run: () => { debugShowTownFront = !debugShowTownFront; }, keepOpen: true },
   { label: "📊 群れの計測",          run: () => { debugShowFlockMetrics = !debugShowFlockMetrics; }, keepOpen: true },
-  { label: "🔢 ダメージ数字",        run: () => { debugShowDamageNumbers = !debugShowDamageNumbers; if (!debugShowDamageNumbers) clearDamageNumbers(); }, keepOpen: true },
+  { label: "🔢 ダメージ数字",        run: () => { optSet("damageNumbers", !optDamageNumbers()); if (!optDamageNumbers()) clearDamageNumbers(); }, keepOpen: true },
   { label: "🛡 竜を無敵",            run: () => { debugInvincible = !debugInvincible; }, keepOpen: true },
   { label: "☠ 敵を全部消す",         run: () => debugClearEnemies(), keepOpen: true },
   { label: "🌊 堰を決壊させる",       run: () => debugBreakDam() },
@@ -7614,7 +7630,7 @@ function clearDamageNumbers() {
  * @param {number} amount 与えたダメージ（端数可。表示時に丸める）
  */
 function reportDamage(target, wx, wy, amount) {
-  if (!debugShowDamageNumbers) return;
+  if (!optDamageNumbers()) return;
   if (!(amount > 0) || !target) return;
 
   // 画面外の敵には出さない。プールを「今見えている敵」に使い切るため。
@@ -7669,7 +7685,7 @@ function updateDamageNumbers(dt) {
 
 /** ワールド座標系で描く（カメラ変換の内側）。敵の少し上に浮かせる。 */
 function drawDamageNumbers() {
-  if (!debugShowDamageNumbers) return;
+  if (!optDamageNumbers()) return;
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -11164,6 +11180,7 @@ const STRINGS = {
   openTree: (crystals) => `強化ツリー　🔷${crystals}`,
   openChallenges: (done, total) => `チャレンジ　${done}/${total}`,
   openCodex: "図鑑",
+  openOptions: "オプション",
   challengeDone: (name, reward) => `チャレンジ達成: ${name}  +${reward}🔷`,
   continueRun: (stageNum) => `つづきから　STAGE ${stageNum}`,
   cards: {
@@ -13811,6 +13828,9 @@ function defaultProfile() {
     fireworksDestroyed: 0, // 花火要塞の累計破壊数
     // v0.55: 解放済みの大陸（開始時代）の数。1 = 大陸I のみ。クリアで1つ増える。
     unlockedContinents: 1,
+    // v0.99.1: 遊び方の好みで切り替える設定。**既定値はここが唯一の定義**。
+    // 増やすときは OPTION_DEFS にも1行足す（画面はそれを見て作られる）。
+    options: { damageNumbers: true },
   };
 }
 
@@ -13840,6 +13860,8 @@ function loadProfile() {
     p.best = Object.assign({ timeMs: 0, kills: 0 }, p.best || {});
     p.challenges = p.challenges || {};
     p.tree = p.tree || {};
+    // v0.99.1: 設定は項目が増えても古いプロファイルが壊れないよう既定で補完する
+    p.options = Object.assign(defaultProfile().options, p.options || {});
   }
   p.version = PROFILE_VERSION;
   return p;
@@ -14363,6 +14385,74 @@ const CODEX_SPECIAL_SHOTS = [
     desc: "当たり判定なし。予告時間ちょうどで着弾し、そこから燃え始める" },
 ];
 
+// -----------------------------------------------------------------
+// v0.99.1: オプション画面
+// -----------------------------------------------------------------
+// 設定は profile.options に持って localStorage に残す。
+// **項目を増やすときはこの配列に1行足すだけ**（画面も保存もここから作られる）。
+const OPTION_DEFS = [
+  {
+    key:  "damageNumbers",
+    name: "ダメージ数字",
+    desc: "敵に与えたダメージを敵の位置に表示する。同じ敵への連続ダメージは少しの間まとめて数える。",
+  },
+];
+
+/** 設定値を読む（プロファイルがまだ無い瞬間でも落ちないようにする）。 */
+function optGet(key) {
+  const o = profile && profile.options;
+  return o ? !!o[key] : true;
+}
+function optSet(key, value) {
+  if (!profile.options) profile.options = {};
+  profile.options[key] = !!value;
+  saveProfile();
+}
+/** ダメージ数字を出すか。描画と計上の両方がここを見る。 */
+function optDamageNumbers() { return optGet("damageNumbers"); }
+
+const optionsOverlayEl = document.getElementById("options-overlay");
+function openOptions()  { renderOptions(); optionsOverlayEl.classList.add("visible"); }
+function closeOptions() { optionsOverlayEl.classList.remove("visible"); refreshTitleMenu(); }
+
+function renderOptions() {
+  let html =
+    `<div class="tree-head">` +
+      `<div class="tree-title">オプション</div>` +
+      `<button class="tree-close">✕</button>` +
+    `</div>` +
+    `<div class="tree-hint">設定はこの端末に保存される。ランの途中でも切り替えてよい。</div>` +
+    `<div class="cx-list">`;
+  for (const def of OPTION_DEFS) {
+    const on = optGet(def.key);
+    html +=
+      `<div class="op-row" data-key="${def.key}">` +
+        `<div class="op-body">` +
+          `<div class="op-name">${def.name}</div>` +
+          `<div class="op-desc">${def.desc}</div>` +
+        `</div>` +
+        `<div class="op-switch ${on ? "on" : ""}"></div>` +
+      `</div>`;
+  }
+  html += `</div>`;
+  optionsOverlayEl.innerHTML = html;
+
+  optionsOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    closeOptions();
+  });
+  for (const row of optionsOverlayEl.querySelectorAll(".op-row")) {
+    row.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      const key = row.getAttribute("data-key");
+      optSet(key, !optGet(key));
+      // 消したときは出ている数字も畳む（次に点けたとき古いのが残らない）
+      if (key === "damageNumbers" && !optGet(key)) clearDamageNumbers();
+      renderOptions();
+    });
+  }
+}
+
 const codexOverlayEl = document.getElementById("codex-overlay");
 let codexTab = "enemy";   // "enemy" | "building" | "shot" | "special"
 function openCodex()  { codexTab = "enemy"; renderCodex(); codexOverlayEl.classList.add("visible"); }
@@ -14873,6 +14963,13 @@ function refreshTitleMenu() {
   cxBtn.textContent = STRINGS.openCodex;
   cxBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openCodex(); });
   titleMenuEl.appendChild(cxBtn);
+
+  // v0.99.1: オプション
+  const opBtn = document.createElement("button");
+  opBtn.className = "title-btn";
+  opBtn.textContent = STRINGS.openOptions;
+  opBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openOptions(); });
+  titleMenuEl.appendChild(opBtn);
 }
 
 // ---- ラン開始（タイトル → STAGE 1）----
