@@ -1764,17 +1764,35 @@ function isChargeUnlocked() {
 }
 
 // ---- 状態 ----
-let chargeActive = false;   // 今このフレームで突進しているか
-let chargeHold   = 0;       // 溜まっている秒数（0 .. effChargeRampSeconds()）
-let chargeLevel  = 0;       // 溜め具合 0..1。エフェクトの大きさと伸び幅の補間に使う
+// v0.99.2: **入口は群れ・持続は個体**。
+// 突進に入る条件は従来どおり群れの重心速度で見る（`chargeActive`）が、
+// 群れの条件が切れたとき全員まとめて解除するのをやめ、
+// **自分の速さが残っている個体は突進を続ける**ようにした。
+//
+// 街に突っ込むと個体の速度分布は**はっきり二山に割れる**（実測・群れ28体）:
+//   最高速の98.5%以上 … 72%（まだ飛んでいる）
+//   80%未満          … 23%（建物に当たって止まっている）
+//   その間           … 6%
+// 一方その瞬間の重心速度比は 32%。つまり**まだ全速で飛んでいる7割が、
+// 止まった2割のせいで突進を失っていた**。ここを個体で見るようにする。
+let chargeActive = false;   // 群れの条件（入口）を満たしているか
+let chargeLevel  = 0;       // 突進中の個体の平均の溜め 0..1（HUDと全体FXの代表値）
+let chargeCount  = 0;       // 今まさに突進している個体数
 let chargeSpeedFrac = 0;    // 重心速度 / 実効最高速度。デバッグ表示と調整用
 let chargePeakLevel = 0;    // このランで到達した最大の溜め（調整の当たりを付けるため）
 
 function resetCharge() {
   chargeActive = false;
-  chargeHold = 0;
   chargeLevel = 0;
+  chargeCount = 0;
   chargeSpeedFrac = 0;
+  if (boidChargeOn) { boidChargeOn.fill(0); boidChargeHold.fill(0); }
+}
+
+/** 個体 i の溜め 0..1。 */
+function boidChargeLevelOf(i) {
+  const ramp = effChargeRampSeconds();
+  return ramp > 0 ? Math.min(1, boidChargeHold[i] / ramp) : (boidChargeOn[i] ? 1 : 0);
 }
 
 /**
@@ -1792,9 +1810,7 @@ function updateCharge(dt) {
   // v0.91: 未解禁の間は溜めごと止める（速度比の計算だけは続ける。
   // パネルで「あとどれだけで入るか」を見せたいため）
   if (!isChargeUnlocked()) {
-    chargeActive = false;
-    chargeHold = 0;
-    chargeLevel = 0;
+    resetCharge();
     return;
   }
   if (gameState !== "playing" || flockMetrics.count === 0) {
@@ -1806,16 +1822,36 @@ function updateCharge(dt) {
     onChargeEnter();
   }
 
-  if (chargeActive) {
-    chargeHold = Math.min(ramp, chargeHold + dt);
-  } else if (chargeHold > 0) {
-    // 溜めは「切れた瞬間に消える」のではなく decaySeconds で戻す。
-    // 一瞬の乱れ（建物にぶつかって減速など）で積み上げが全部飛ぶと操作感が理不尽になる。
-    const dec = chg().decaySeconds;
-    chargeHold = dec > 0 ? Math.max(0, chargeHold - dt * (ramp / dec)) : 0;
+  // ---- ここから個体ごと ----
+  // 群れの条件が立っている間は全員が突進。切れたら「自分の速さ」で残るかが決まる。
+  // **再点火は群れ側だけ**（止まった個体が自分だけ復帰することはない）＝入口は従来のまま。
+  const exitFrac = effChargeExitFrac();
+  const dec = chg().decaySeconds;
+  let sum = 0;
+  chargeCount = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) { boidChargeOn[i] = 0; boidChargeHold[i] = 0; continue; }
+    let on = 0;
+    if (chargeActive) {
+      on = 1;
+    } else if (boidChargeOn[i]) {
+      const ownFrac = maxSp > 0 ? Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]) / maxSp : 0;
+      on = ownFrac >= exitFrac ? 1 : 0;
+    }
+    boidChargeOn[i] = on;
+    if (on) {
+      boidChargeHold[i] = Math.min(ramp, boidChargeHold[i] + dt);
+      chargeCount++;
+      sum += ramp > 0 ? boidChargeHold[i] / ramp : 1;
+    } else if (boidChargeHold[i] > 0) {
+      // 溜めは「切れた瞬間に消える」のではなく decaySeconds で戻す。
+      // 一瞬の乱れで積み上げが全部飛ぶと操作感が理不尽になる（余韻のFXもここで出る）。
+      boidChargeHold[i] = dec > 0 ? Math.max(0, boidChargeHold[i] - dt * (ramp / dec)) : 0;
+    }
   }
-  chargeLevel = ramp > 0 ? Math.min(1, chargeHold / ramp) : (chargeActive ? 1 : 0);
-  if (chargeActive && chargeLevel > chargePeakLevel) chargePeakLevel = chargeLevel;
+  // 代表値: 突進している個体の平均の溜め。HUDと全体FXの濃さに使う。
+  chargeLevel = chargeCount > 0 ? sum / chargeCount : 0;
+  if (chargeCount > 0 && chargeLevel > chargePeakLevel) chargePeakLevel = chargeLevel;
 }
 
 /** 突進に入った瞬間の合図。入ったことが分からないと条件を狙えない。 */
@@ -1842,8 +1878,8 @@ const chargeHitFx = [];            // {x, y, angle, level, born}
  * 突進が乗った体当たりが当たったときに呼ぶ。
  * @param {number} angle 打ち込んだ向き（竜の進行方向）
  */
-function spawnChargeHitFx(x, y, angle) {
-  chargeHitFx.push({ x, y, angle, level: chargeLevel, born: performance.now() });
+function spawnChargeHitFx(x, y, angle, level) {
+  chargeHitFx.push({ x, y, angle, level: level ?? chargeLevel, born: performance.now() });
   if (chargeHitFx.length > MAX_CHARGE_HIT_FX) {
     chargeHitFx.splice(0, chargeHitFx.length - MAX_CHARGE_HIT_FX);
   }
@@ -1904,18 +1940,23 @@ function clearChargeHitFx() { chargeHitFx.length = 0; }
 // ---- 実際に効かせる量（溜めで 1 → 最大 へ補間）----
 // 倍率が効くのは **突進中だけ**。溜めが残っていても状態が切れていれば素の値に戻る
 // （エフェクトだけは chargeLevel で余韻を残す）。
-function chargeDamageMultNow() {
-  return chargeActive ? 1 + (effChargeDamageMult() - 1) * chargeLevel : 1;
+// v0.99.2: **個体ごと**に引く。群れが条件を外れても、まだ飛んでいる個体には乗り続ける。
+function chargeDamageMultFor(i) {
+  return boidChargeOn[i] ? 1 + (effChargeDamageMult() - 1) * boidChargeLevelOf(i) : 1;
 }
-function chargeReachBonusNow() {
-  return chargeActive ? effChargeReachBonus() * chargeLevel : 0;
+function chargeReachBonusFor(i) {
+  return boidChargeOn[i] ? effChargeReachBonus() * boidChargeLevelOf(i) : 0;
 }
-function chargeKnockbackNow() {
-  return chargeActive ? effChargeKnockback() * chargeLevel : 0;
+function chargeKnockbackFor(i) {
+  return boidChargeOn[i] ? effChargeKnockback() * boidChargeLevelOf(i) : 0;
 }
 /** 今この瞬間の被ダメージ軽減率。他の伸びと同じく溜めに比例する。 */
+function chargeDamageReductionFor(i) {
+  return boidChargeOn[i] ? effChargeDamageReduction() * boidChargeLevelOf(i) : 0;
+}
+/** HUD用: 代表値（突進している個体の平均）で見た軽減率。 */
 function chargeDamageReductionNow() {
-  return chargeActive ? effChargeDamageReduction() * chargeLevel : 0;
+  return chargeCount > 0 ? effChargeDamageReduction() * chargeLevel : 0;
 }
 
 /** 移動敵を弾き飛ばす（突進中の体当たりから呼ぶ）。減衰する速度チャネルに積む。 */
@@ -1975,11 +2016,13 @@ const CHARGE_CHEVRON_ARM   = 1.15;   // 腕の長さ（bowR 比）
 const CHARGE_CHEVRON_WIDTH = 0.85;
 
 function drawChargeFx() {
-  if (chargeLevel <= 0.01) return;
-  const lv = chargeLevel;
+  // v0.99.2: 個体ごとに出す。突進していない竜には尾も衝波も付けない
+  // （どの竜が乗っているかが見えないと、個体で持続する意味が伝わらない）。
+  if (chargeLevel <= 0.01 && chargeCount === 0) return;
+  const lv = Math.max(chargeLevel, 0.02);
   const fxs = chg().fxScale;
   // 突進が切れて余韻だけのときは薄くする（効いていないのに派手だと嘘になる）
-  const liveAlpha = chargeActive ? 1 : 0.45;
+  const liveAlpha = chargeCount > 0 ? 1 : 0.45;
 
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
@@ -1992,9 +2035,11 @@ function drawChargeFx() {
   ctx.beginPath();
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
+    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
     const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]) || 1;
+    const myStreak = CHARGE_FX_STREAK_LEN * boidChargeLevelOf(i) * fxs;
     ctx.moveTo(px[i], py[i]);
-    ctx.lineTo(px[i] - (vx[i] / sp) * streak, py[i] - (vy[i] / sp) * streak);
+    ctx.lineTo(px[i] - (vx[i] / sp) * myStreak, py[i] - (vy[i] / sp) * myStreak);
   }
   ctx.stroke();
 
@@ -2040,6 +2085,7 @@ function drawChargeFx() {
   ctx.beginPath();
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
+    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
     const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
     if (sp < 1) continue;
     const a = Math.atan2(vy[i], vx[i]);
@@ -2052,6 +2098,7 @@ function drawChargeFx() {
   ctx.beginPath();
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
+    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
     const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
     if (sp < 1) continue;
     const a = Math.atan2(vy[i], vx[i]);
@@ -7868,14 +7915,14 @@ function updateMoverRams() {
   if (movers.length === 0) return;
   const isMelee = flockWeapon === "melee";
   // v0.87: 突進中は威力と届く範囲が伸び、さらに動く敵を弾き飛ばす。
-  const ramDamage = (isMelee ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee") : COLLISION_DAMAGE)
-                  * chargeDamageMultNow();
-  const ramReach  = chargeReachBonusNow();
-  const ramKnock  = chargeKnockbackNow();
+  // v0.99.2: 突進は個体ごとになったので、威力も届く範囲も**その竜のぶん**を引く。
+  const baseRam = isMelee ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee") : COLLISION_DAMAGE;
+  // 当たり判定の探索半径だけは最大値で取り、実際の判定は個体ごとに絞る
+  const maxReach = effChargeReachBonus();
 
   for (const m of movers) {
     if (!m.alive) continue;
-    const hitR = m.def.radius + 6 + ramReach;
+    const hitR = m.def.radius + 6 + maxReach;
     const hitR2 = hitR * hitR;
     for (let i = 0; i < N; i++) {
       if (boidDead[i] || boidDowned[i]) continue;
@@ -7883,17 +7930,22 @@ function updateMoverRams() {
       const dx = m.wx - px[i];
       const dy = m.wy - py[i];
       if (dx * dx + dy * dy > hitR2) continue;
+      const ramReach = chargeReachBonusFor(i);
+      const myR = m.def.radius + 6 + ramReach;
+      if (dx * dx + dy * dy > myR * myR) continue;
+      const ramDamage = baseRam * chargeDamageMultFor(i);
+      const ramKnock  = chargeKnockbackFor(i);
       damageMover(m, ramDamage, px[i], py[i]);
       if (ramKnock > 0) applyMoverKnockback(m, px[i], py[i], ramKnock);
       // v0.87: 突進中は止まらない。轢きながら進むのが突進の見せ場なので、
       // ここでヒットストップを入れると敵の列で群れが減速し、自分で突進を解除してしまう
-      boidHitStopTimer[i]      = (chargeActive && chg().plowThrough) ? 0 : HITSTOP_DURATION;
+      boidHitStopTimer[i]      = (boidChargeOn[i] && chg().plowThrough) ? 0 : HITSTOP_DURATION;
       boidCollisionCooldown[i] = isMelee ? MELEE_COLLISION_COOLDOWN : COLLISION_COOLDOWN;
       spawnCollisionParticles(m.wx, m.wy);
       // v0.88: 突進が乗った一撃の専用エフェクト（弾き飛ばしと対になる見せ場）
-      if (chargeActive) {
-        spawnChargeHitFx(m.wx, m.wy, Math.atan2(vy[i], vx[i]));
-        triggerShake(1.6 + 1.6 * chargeLevel, 0.08);
+      if (boidChargeOn[i]) {
+        spawnChargeHitFx(m.wx, m.wy, Math.atan2(vy[i], vx[i]), boidChargeLevelOf(i));
+        triggerShake(1.6 + 1.6 * boidChargeLevelOf(i), 0.08);
       }
       // v0.8: 緋竜の斬閃演出（移動敵への体当たりも派手に）
       if (isMelee) {
@@ -10350,7 +10402,7 @@ function updateCollisionAttacks(dt) {
       // 衝突判定: ドラゴン半径6px + 建物半径 の合計以内に入ったら衝突
       // v0.85: 巌竜は体が大きいので当たりもその分広げる（見た目と判定を一致させる）
       // v0.87: 突進中は届く範囲が伸びる（溜めに比例）
-      const collideR = s.radius + 6 * boidBodyScale(i) + chargeReachBonusNow();
+      const collideR = s.radius + 6 * boidBodyScale(i) + chargeReachBonusFor(i);
       const dx = s.wx - px[i];
       const dy = s.wy - py[i];
       if (dx * dx + dy * dy > collideR * collideR) continue;
@@ -10367,7 +10419,7 @@ function updateCollisionAttacks(dt) {
         ? effHeavyDamage()
         : isMelee
           ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
-          : COLLISION_DAMAGE) * chargeDamageMultNow();
+          : COLLISION_DAMAGE) * chargeDamageMultFor(i);
       s.hp -= collisionDmg;
       reportDamage(s, s.wx, s.wy, collisionDmg);
 
@@ -10376,7 +10428,7 @@ function updateCollisionAttacks(dt) {
       // ＝爪撃（緋竜）は当たった後にぐっと重く止まる。v0.34: 攻撃側から引く。
       // v0.85: 巌竜は止まらない（ヒットストップを受けずに轢進むのが見せ場）
       // v0.87: 突進中も同じ。ここで凍らせると群れが減速し、自分の攻撃で突進が切れる
-      if (!isHeavy && !(chargeActive && chg().plowThrough)) {
+      if (!isHeavy && !(boidChargeOn[i] && chg().plowThrough)) {
         boidHitStopTimer[i] = Math.max(HITSTOP_DURATION, atk().fireStun);
       }
       // クールダウンをセットして同じ建物への連続ヒットを防ぐ
@@ -10386,7 +10438,7 @@ function updateCollisionAttacks(dt) {
       // 強めのパーティクル（破片が飛ぶ）
       spawnCollisionParticles(s.wx, s.wy);
       // v0.88: 突進が乗っている一撃は専用の衝撃エフェクトにする（通常の体当たりと見分ける）
-      if (chargeActive) spawnChargeHitFx(s.wx, s.wy, Math.atan2(vy[i], vx[i]));
+      if (boidChargeOn[i]) spawnChargeHitFx(s.wx, s.wy, Math.atan2(vy[i], vx[i]), boidChargeLevelOf(i));
       // v0.8: 緋竜は深紅の斬閃＋火花＋画面シェイクで一撃の重さを出す
       if (isMelee) {
         spawnMeleeImpactFx(s.wx, s.wy, Math.atan2(vy[i], vx[i]));
@@ -10760,6 +10812,9 @@ let boidSpecialTimer;
 let boidSpecialCd;
 // v0.95: 機竜の「今の一連射で何発撃つか」。扇の割り付けに使う。
 let boidSpecialTotal;
+// v0.99.2: 突進の個体状態。入口は群れで決まるが、持続は個体ごと。
+let boidChargeOn;     // 1 = この竜は今まさに突進している
+let boidChargeHold;   // 溜まっている秒数（0 .. effChargeRampSeconds()）
 
 // 変更4: 竜のHP を10倍（3 → 30）にして群れが簡単に壊滅しなくなる
 const BOID_MAX_HP   = 30;
@@ -10802,6 +10857,9 @@ function initBoids() {
   boidSpecialTimer      = new Float32Array(MAX_BOIDS);
   boidSpecialCd         = new Float32Array(MAX_BOIDS);
   boidSpecialTotal      = new Float32Array(MAX_BOIDS);
+  // v0.99.2: 突進の個体状態
+  boidChargeOn          = new Uint8Array(MAX_BOIDS);
+  boidChargeHold        = new Float32Array(MAX_BOIDS);
   // v0.6-p2: 射撃タイマー（BULLET/MISSILE共用）
   boidFireTimer         = new Float32Array(MAX_BOIDS);
   // 尻尾角度履歴リングバッファ（TAIL_SEGS個前までの進行角度）
@@ -16527,9 +16585,10 @@ function drawFlockMetricsPanel() {
     ["速度比",   `${(chargeSpeedFrac * 100).toFixed(1)}% / 入 ${(effChargeEnterFrac() * 100).toFixed(1)}%`],
     ["突進",     !isChargeUnlocked()
        ? "未解禁（★一斉突撃）"
-       : chargeActive
-         ? `ON  溜め ${(chargeLevel * 100).toFixed(0)}%  ×${chargeDamageMultNow().toFixed(2)}`
-         : `OFF 溜め ${(chargeLevel * 100).toFixed(0)}%  最高${(chargePeakLevel * 100).toFixed(0)}%`],
+       : chargeCount > 0
+         ? `${chargeActive ? "群れON" : "個体のみ"} ${chargeCount}/${countAliveBoids()}体  ` +
+           `溜め ${(chargeLevel * 100).toFixed(0)}%  ×${(1 + (effChargeDamageMult() - 1) * chargeLevel).toFixed(2)}`
+         : `OFF 最高${(chargePeakLevel * 100).toFixed(0)}%`],
     ["ブレス角", effBreathArcDeg() >= BREATH_ARC_FULL_DEG
        ? "全方位（制限なし）"
        : `${effBreathArcDeg().toFixed(0)}°  (初期 ${sp().breathArcDeg}°)`],
@@ -16548,7 +16607,7 @@ function drawFlockMetricsPanel() {
 
   ctx.save();
   ctx.fillStyle = "rgba(6, 12, 20, 0.72)";
-  ctx.strokeStyle = chargeActive ? "rgba(255, 230, 150, 0.95)" : "rgba(120, 230, 255, 0.45)";
+  ctx.strokeStyle = chargeCount > 0 ? "rgba(255, 230, 150, 0.95)" : "rgba(120, 230, 255, 0.45)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.rect(x, y, w, h);
@@ -16646,7 +16705,7 @@ function applyDamageToBoid(boidIndex, damage) {
   if (debugInvincible) return;   // v0.44: デバッグ「竜を無敵」中は落ちない（敵の観察用）
   // v0.6: 「竜鱗共鳴」カードで被ダメージ軽減
   // v0.89: 突進中の軽減（強化で手に入れたときだけ）。溜めに比例する。
-  boidHp[boidIndex] -= damage * effDmgTakenMult() * (1 - chargeDamageReductionNow());
+  boidHp[boidIndex] -= damage * effDmgTakenMult() * (1 - chargeDamageReductionFor(boidIndex));
   if (boidHp[boidIndex] <= 0) {
     // 変更2: 消滅ではなくダウン状態へ移行（恒久喪失なし）
     // v0.6: 「再生の潮」カードで復帰時間短縮
