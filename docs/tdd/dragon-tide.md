@@ -1,5 +1,8 @@
 # TDD: 竜潮 / Dragon Tide（本制作）
 
+> **入口は [dragon-tide-overview.md](../gdd/dragon-tide-overview.md)（総括・実装 v0.99.3 準拠）。**
+> 本文書はその配下の個別資料。準拠バージョンと現状の差は総括の §0 を参照。
+
 - 著者: tech-lead
 - 日付: 2026-06-04
 - 対象: `projects/dragon-tide/`（新規）

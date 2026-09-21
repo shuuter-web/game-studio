@@ -1,5 +1,8 @@
 # 竜潮 / Dragon Tide — v0.6 仕様案「Rising Tide」
 
+> **入口は [dragon-tide-overview.md](dragon-tide-overview.md)（総括・実装 v0.99.3 準拠）。**
+> 本文書はその配下の個別資料。準拠バージョンと現状の差は総括の §0 を参照。
+
 > **Specification Draft v0.6.1（実装前レビュー用）**
 > 2026-07-03 / 起案: Shooter 指示 → 仕様詰め: Claude
 > 上位文書: `docs/gdd/dragon-tide.md` v0.3

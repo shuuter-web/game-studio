@@ -1,5 +1,8 @@
 # Dragon Tide — ラン構成「1ラン＝1文明 / 時代はフレーバー、強化は動員段階」
 
+> **入口は [dragon-tide-overview.md](dragon-tide-overview.md)（総括・実装 v0.99.3 準拠）。**
+> 本文書はその配下の個別資料。準拠バージョンと現状の差は総括の §0 を参照。
+
 > ステータス: v0.56.0 で確定 / 起案 2026-08-29 / 大幅改訂 2026-08-31
 > 関連: [dragon-tide.md](dragon-tide.md)（GDD本体） /
 > [dragon-tide-meta.md](dragon-tide-meta.md)（メタ進行） /

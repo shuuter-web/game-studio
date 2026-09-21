@@ -1,5 +1,8 @@
 # 竜潮 / Dragon Tide
 
+> **入口は [dragon-tide-overview.md](dragon-tide-overview.md)（総括・実装 v0.99.3 準拠）。**
+> 本文書はその配下の個別資料。準拠バージョンと現状の差は総括の §0 を参照。
+
 > **Game Design Document v0.3**
 > 2026-06-21 / game-designer: Claude
 > 参考フレームワーク: Jesse Schell『The Art of Game Design』(Elemental Tetrad / MDA / Interest Curve / Flow / The Toy)

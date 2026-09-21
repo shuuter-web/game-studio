@@ -1,5 +1,8 @@
 # Dragon Tide — System Design Document
 
+> **入口は [dragon-tide-overview.md](../gdd/dragon-tide-overview.md)（総括・実装 v0.99.3 準拠）。**
+> 本文書はその配下の個別資料。準拠バージョンと現状の差は総括の §0 を参照。
+
 > バージョン: 1.0.0  
 > 担当: system-designer  
 > 日付: 2026-06-04  
