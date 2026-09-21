@@ -707,7 +707,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.99.3";
+const GAME_VERSION = "v0.99.4";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -18887,6 +18887,19 @@ const MINIMAP_H = 90;
 // これが無いとワールドを広げるほど町のドットが重なって一枚の色面になる。
 const MINIMAP_DOT_SCALE = (MINIMAP_W / WORLD_W) / (80 / 4800);
 
+// v0.99.4: **ミニマップは色を3つしか使わない**。
+// それまでは建物が街ごとの色（橙〜赤〜茶の十数色）、移動敵が敵種ごとの glowColor、
+// そこへ白いリングまで足していたので、自分の白い点（半径2）が
+// **白リング付きの移動敵（半径2.2）より目立たない**状態だった。
+// ミニマップの仕事は「自分がどこに居るか」と「どこが敵地か」の2つだけなので、
+// 敵はボス以外を1色に潰し、白は自分にだけ使う。
+const MINIMAP_ENEMY_COLOR  = "#c2673f";   // 敵（建物・移動敵とも）
+const MINIMAP_FALLEN_COLOR = "#3a3a3a";   // 陥落した建物
+const MINIMAP_SELF_COLOR   = "#9ff4ff";   // 自分の群れ
+// ボスは時代ごとの glowColor を使っていたが、橙系の時代だと敵色と見分けにくい。
+// ミニマップでは**敵・ボス・自分の3色が常に違う**ことを優先して固定色にする。
+const MINIMAP_BOSS_COLOR   = "#ffd23f";   // ボス（時代によらず固定）
+
 // ミニマップ基底の焼き直しは建物が壊れるたびに要求されるが、全建物走査が
 // 5000棟超で 1.6ms かかる（大陸サイズ）。ドットの更新が数フレーム遅れても
 // 見た目には分からないので、破壊が続く間は間引く。
@@ -18923,7 +18936,7 @@ function rebuildMinimapBase() {
     if (settlement.isBoss) {
       // ボス集落: 目立つ大きなダイヤモンドマーカー（陥落後は暗く）
       const bossR = settlement.fallen ? 3 : 5;
-      const glowColor = settlement._bossGlowColor ?? settlement.color;
+      const glowColor = MINIMAP_BOSS_COLOR;
       if (!settlement.fallen) {
         // 外グロー
         minimapCtx.fillStyle = glowColor;
@@ -18934,7 +18947,7 @@ function rebuildMinimapBase() {
         minimapCtx.globalAlpha = 1.0;
       }
       // ダイヤモンド（回転した正方形）
-      minimapCtx.fillStyle = settlement.fallen ? "#333" : glowColor;
+      minimapCtx.fillStyle = settlement.fallen ? MINIMAP_FALLEN_COLOR : glowColor;
       minimapCtx.beginPath();
       minimapCtx.moveTo(mx,         my - bossR);
       minimapCtx.lineTo(mx + bossR, my);
@@ -18954,7 +18967,7 @@ function rebuildMinimapBase() {
       // 基準ワールド（4800×3600 / ミニマップ80×60）との比で縮める。
       const dotR = MINIMAP_DOT_SCALE *
         (settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : (settlement.size === "tiny" ? 1.0 : 1.5)));
-      minimapCtx.fillStyle = settlement.fallen ? "#333" : settlement.color;
+      minimapCtx.fillStyle = settlement.fallen ? MINIMAP_FALLEN_COLOR : MINIMAP_ENEMY_COLOR;
       minimapCtx.beginPath();
       minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
       minimapCtx.fill();
@@ -18976,27 +18989,40 @@ function drawMinimap() {
   const scaleX = MINIMAP_W / WORLD_W;
   const scaleY = MINIMAP_H / WORLD_H;
 
-  // v0.6-p4: 移動敵（専用色・白リング付きで建物と区別）
+  // v0.99.4: 移動敵も敵色ひとつ。建物との区別は**大きさ**だけで付ける
+  // （白いリングは自分の印と competing していたのでやめた）。
+  minimapCtx.fillStyle = MINIMAP_ENEMY_COLOR;
+  minimapCtx.beginPath();
   for (const m of movers) {
     if (!m.alive) continue;
     const mmx = m.wx * scaleX;
     const mmy = m.wy * scaleY;
-    minimapCtx.fillStyle = m.def.glowColor;
-    minimapCtx.beginPath();
+    minimapCtx.moveTo(mmx + 2.2, mmy);
     minimapCtx.arc(mmx, mmy, 2.2, 0, Math.PI * 2);
-    minimapCtx.fill();
-    minimapCtx.strokeStyle = "rgba(255,255,255,0.85)";
-    minimapCtx.lineWidth = 0.6;
-    minimapCtx.stroke();
   }
+  minimapCtx.fill();
 
+  // v0.99.4: 自分の群れ。**ミニマップで一番目立つものにする**。
+  // 暗い縁 → 光の暈 → 芯、の3枚重ねで、敵色の上でも街の塊の上でも浮く。
   const centroid = calcFriendlyCentroid();
   const mx = centroid.x * scaleX;
   const my = centroid.y * scaleY;
-  minimapCtx.fillStyle = "rgba(255,255,255,0.9)";
+  minimapCtx.fillStyle = "rgba(0,0,0,0.55)";
   minimapCtx.beginPath();
-  minimapCtx.arc(mx, my, 2, 0, Math.PI * 2);
+  minimapCtx.arc(mx, my, 5.0, 0, Math.PI * 2);
   minimapCtx.fill();
+  minimapCtx.fillStyle = MINIMAP_SELF_COLOR;
+  minimapCtx.globalAlpha = 0.35;
+  minimapCtx.beginPath();
+  minimapCtx.arc(mx, my, 4.2, 0, Math.PI * 2);
+  minimapCtx.fill();
+  minimapCtx.globalAlpha = 1;
+  minimapCtx.beginPath();
+  minimapCtx.arc(mx, my, 2.4, 0, Math.PI * 2);
+  minimapCtx.fill();
+  minimapCtx.strokeStyle = "#ffffff";
+  minimapCtx.lineWidth = 0.8;
+  minimapCtx.stroke();
 
   // ズームスケールを考慮した視野矩形: cam.scale が小さいほど広い範囲が見える
   const vpWorldW  = viewW / cam.scale;
@@ -19005,8 +19031,8 @@ function drawMinimap() {
   const vpTop     = (cam.y - vpWorldH * 0.5) * scaleY;
   const vpWidth   = vpWorldW * scaleX;
   const vpHeight  = vpWorldH * scaleY;
-  minimapCtx.strokeStyle = "rgba(120,200,255,0.25)";
-  minimapCtx.lineWidth   = 0.5;
+  minimapCtx.strokeStyle = "rgba(159,244,255,0.55)";
+  minimapCtx.lineWidth   = 0.6;
   minimapCtx.strokeRect(vpLeft, vpTop, vpWidth, vpHeight);
 }
 
