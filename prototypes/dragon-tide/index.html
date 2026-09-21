@@ -631,7 +631,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.98.8";
+const GAME_VERSION = "v0.99.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -797,6 +797,9 @@ function debugCycleRecoil() {
 //   ② 名前ラベル: 全ての敵に名前とHPを出す（見分けがつかない問題の解消）
 //   ③ 竜を無敵: 群れが落ちないので敵の動きだけを観察できる
 let debugShowEnemyLabels = false;
+// v0.99: 敵へのダメージを数字で出す（まずは本編に入れる想定なので既定ON）。
+// デバッグ表示に落とすならここを false にするだけ。
+let debugShowDamageNumbers = true;
 let debugInvincible      = false;
 let debugPage            = "main";   // "main" | "enemies"
 
@@ -905,6 +908,7 @@ const DEBUG_ACTIONS = [
   { label: "🏷 敵の名札",            run: () => { debugShowEnemyLabels = !debugShowEnemyLabels; }, keepOpen: true },
   { label: "🧭 街の向き",            run: () => { debugShowTownFront = !debugShowTownFront; }, keepOpen: true },
   { label: "📊 群れの計測",          run: () => { debugShowFlockMetrics = !debugShowFlockMetrics; }, keepOpen: true },
+  { label: "🔢 ダメージ数字",        run: () => { debugShowDamageNumbers = !debugShowDamageNumbers; if (!debugShowDamageNumbers) clearDamageNumbers(); }, keepOpen: true },
   { label: "🛡 竜を無敵",            run: () => { debugInvincible = !debugInvincible; }, keepOpen: true },
   { label: "☠ 敵を全部消す",         run: () => debugClearEnemies(), keepOpen: true },
   { label: "🌊 堰を決壊させる",       run: () => debugBreakDam() },
@@ -5869,6 +5873,7 @@ function updateFlood(dt) {
       if (bx * bx + by * by > DAM_FLOOD_BAND * DAM_FLOOD_BAND) continue;
       floodWave.hit.add(sIdx);
       b.hp -= DAM_FLOOD_DAMAGE;
+      reportDamage(b, b.wx, b.wy, DAM_FLOOD_DAMAGE);
       if (b.hp <= 0) settlementFall(sIdx);
     }
     // 水しぶき（先端の左右へ）
@@ -7569,6 +7574,130 @@ function updateRaiderSpawns(dt) {
  * 渡さない攻撃は「どこから来たか分からない」＝盾は働かない（＝素通しにはしない）ので、
  * 呼び出し側は可能な限り攻撃者の座標を渡すこと。
  */
+// -----------------------------------------------------------------
+// v0.99: 敵に与えたダメージを敵の位置に数字で出す
+// -----------------------------------------------------------------
+// **1ヒット1個は出せない。** この game は群れ30〜150体が街を同時に齧るので、
+// ブレスのような持続ダメージは毎フレーム・全個体ぶん発生する。そのまま出すと
+// 画面が数字で埋まり、プールも一瞬で溢れる。
+// そこで**相手ごとに短い窓で合算**する。同じ敵への追加ダメージは、その敵の
+// 生きている数字が DMG_NUM_MERGE 秒より若ければそこに足し込む。
+// 結果として「殴られ続けている敵の上で数字が膨らんでいき、離すと流れて消える」。
+//
+// 対象は敵だけ（建物・移動敵）。竜の被ダメージは出さない。
+const DMG_NUM_MAX   = 96;    // 同時表示の上限。溢れたら**一番古いもの**を捨てる
+const DMG_NUM_LIFE  = 1.25;  // 1個の表示時間（秒）
+const DMG_NUM_MERGE = 0.90;  // この秒数までは同じ敵への追加を合算する
+const DMG_NUM_RISE  = 22;    // 上へ流れる速さ（論理px/秒）
+const DMG_NUM_FONT  = 11;    // 文字の基準サイズ（論理px）
+const DMG_NUM_BIG   = 40;    // これ以上は「大きい一撃」として色と大きさを変える
+
+const dmgNumX      = new Float32Array(DMG_NUM_MAX);
+const dmgNumY      = new Float32Array(DMG_NUM_MAX);
+const dmgNumVal    = new Float32Array(DMG_NUM_MAX);
+const dmgNumAge    = new Float32Array(DMG_NUM_MAX);
+const dmgNumDrift  = new Float32Array(DMG_NUM_MAX);   // 横へのずれ（重なり防止）
+const dmgNumActive = new Uint8Array(DMG_NUM_MAX);
+const dmgNumTarget = new Array(DMG_NUM_MAX).fill(null);
+let   dmgNumCursor = 0;   // 空きを探す開始位置（毎回0から舐めない）
+
+function clearDamageNumbers() {
+  dmgNumActive.fill(0);
+  for (let i = 0; i < DMG_NUM_MAX; i++) dmgNumTarget[i] = null;
+}
+
+/**
+ * 敵にダメージが入ったことを報告する。**表示だけ**。ゲーム状態は触らない。
+ * @param {object} target 建物か移動敵のオブジェクト（合算のキーに使う）
+ * @param {number} wx ワールド座標X（敵の位置）
+ * @param {number} wy ワールド座標Y
+ * @param {number} amount 与えたダメージ（端数可。表示時に丸める）
+ */
+function reportDamage(target, wx, wy, amount) {
+  if (!debugShowDamageNumbers) return;
+  if (!(amount > 0) || !target) return;
+
+  // 画面外の敵には出さない。プールを「今見えている敵」に使い切るため。
+  const sx = (wx - cam.x) * cam.scale + viewW * 0.5;
+  const sy = (wy - cam.y) * cam.scale + viewH * 0.5;
+  if (sx < -60 || sx > viewW + 60 || sy < -60 || sy > viewH + 60) return;
+
+  // 同じ敵の「若い」数字があれば足し込む（持続ダメージが1個にまとまる）
+  const slot = target._dmgSlot;
+  if (slot !== undefined && dmgNumActive[slot] && dmgNumTarget[slot] === target &&
+      dmgNumAge[slot] < DMG_NUM_MERGE) {
+    dmgNumVal[slot] += amount;
+    dmgNumX[slot] = wx;               // 移動敵に追従させる
+    dmgNumY[slot] = wy;
+    return;
+  }
+
+  // 空きを探す。無ければ一番古いものを置き換える。
+  let free = -1;
+  for (let k = 0; k < DMG_NUM_MAX; k++) {
+    const i = (dmgNumCursor + k) % DMG_NUM_MAX;
+    if (!dmgNumActive[i]) { free = i; break; }
+  }
+  if (free < 0) {
+    let oldest = 0;
+    for (let i = 1; i < DMG_NUM_MAX; i++) if (dmgNumAge[i] > dmgNumAge[oldest]) oldest = i;
+    free = oldest;
+  }
+  dmgNumCursor = (free + 1) % DMG_NUM_MAX;
+
+  dmgNumActive[free] = 1;
+  dmgNumTarget[free] = target;
+  dmgNumX[free]      = wx;
+  dmgNumY[free]      = wy;
+  dmgNumVal[free]    = amount;
+  dmgNumAge[free]    = 0;
+  // 同じ敵に続けて出るとき真上に重なるので、出るたびに左右へ振る
+  dmgNumDrift[free]  = (fxRandom() - 0.5) * 14;
+  target._dmgSlot    = free;
+}
+
+function updateDamageNumbers(dt) {
+  for (let i = 0; i < DMG_NUM_MAX; i++) {
+    if (!dmgNumActive[i]) continue;
+    dmgNumAge[i] += dt;
+    if (dmgNumAge[i] >= DMG_NUM_LIFE) {
+      dmgNumActive[i] = 0;
+      dmgNumTarget[i] = null;
+    }
+  }
+}
+
+/** ワールド座標系で描く（カメラ変換の内側）。敵の少し上に浮かせる。 */
+function drawDamageNumbers() {
+  if (!debugShowDamageNumbers) return;
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  for (let i = 0; i < DMG_NUM_MAX; i++) {
+    if (!dmgNumActive[i]) continue;
+    const n = Math.round(dmgNumVal[i]);
+    if (n < 1) continue;                     // 端数だけの間は出さない
+    const t    = dmgNumAge[i] / DMG_NUM_LIFE;   // 0..1
+    // 出た瞬間だけ少し大きい（弾んで出る）
+    const pop  = t < 0.14 ? 1 + (1 - t / 0.14) * 0.35 : 1;
+    const big  = n >= DMG_NUM_BIG;
+    const size = DMG_NUM_FONT * (big ? 1.35 : 1) * pop;
+    // 後半でフェード
+    ctx.globalAlpha = t < 0.6 ? 1 : 1 - (t - 0.6) / 0.4;
+    ctx.font = `bold ${size}px "Segoe UI", system-ui, sans-serif`;
+    const x = dmgNumX[i] + dmgNumDrift[i] * t;
+    const y = dmgNumY[i] - 10 - DMG_NUM_RISE * t;
+    ctx.lineWidth   = Math.max(2, size * 0.30);
+    ctx.strokeStyle = "rgba(0,0,0,0.85)";
+    ctx.strokeText(n, x, y);
+    ctx.fillStyle   = big ? "#ffd05a" : "#ffffff";
+    ctx.fillText(n, x, y);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 function damageMover(m, damage, srcX, srcY) {
   if (!m.alive) return;
   // v0.42: 潜行中は無敵（浮上した時だけ殴れる）
@@ -7594,6 +7723,7 @@ function damageMover(m, damage, srcX, srcY) {
     }
   }
   m.hp -= damage;
+  reportDamage(m, m.wx, m.wy, damage);
   if (m.hp <= 0) {
     m.alive = false;
     m.hp = 0;
@@ -10072,6 +10202,7 @@ function updateBeamAttacks(dt) {
 
       // ダメージ適用
       settlement.hp -= damageThisFrame;
+      reportDamage(settlement, settlement.wx, settlement.wy, damageThisFrame);
 
       // ヒットパーティクル（0.2秒間引き）
       settlement._breathParticleTimer -= dt;
@@ -10159,11 +10290,13 @@ function updateCollisionAttacks(dt) {
       const isHeavy = boidSpecial[i] === SPECIAL_HEAVY;
       const isMelee = flockWeapon === "melee";
       // v0.87: 突進中は直接攻撃の威力が上がる（溜めに比例）
-      s.hp -= (isHeavy
+      const collisionDmg = (isHeavy
         ? effHeavyDamage()
         : isMelee
           ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
           : COLLISION_DAMAGE) * chargeDamageMultNow();
+      s.hp -= collisionDmg;
+      reportDamage(s, s.wx, s.wy, collisionDmg);
 
       // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）。
       // v0.33: 攻撃の fireStun（硬直）が長ければそちらを使う
@@ -11324,6 +11457,7 @@ function resetProgression() {
   setFlockSpecies("fire");
   if (boidFireTimer) boidFireTimer.fill(0);
   clearDragonProjectiles();
+  clearDamageNumbers();   // v0.99: 前の場面の数字を残さない
   // 表示中のカードとスローを畳む
   dismissLevelUpCards();
   updateHUDWeapon();
@@ -11726,6 +11860,7 @@ function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
   settlement.hp -= damage;
+  reportDamage(settlement, settlement.wx, settlement.wy, damage);
   if (settlement.hp <= 0 && !settlement.fallen) {
     settlementFall(settlementIdx);
     buildingLayerDirty = true;
@@ -12140,6 +12275,7 @@ function updateMotherBreath(dt) {
     const s = settlements[tg.sIdx];
     if (s.fallen) continue;
     s.hp -= dmg;
+    reportDamage(s, s.wx, s.wy, dmg);
     spawnHitParticles(s.wx, s.wy);
     pushMotherBreathFx(mx, my, s.wx, s.wy, (hits * 60) % 360);   // 虹色に色相をずらす
     if (s.hp <= 0 && !s.fallen) { settlementFall(tg.sIdx); buildingLayerDirty = true; }
@@ -15352,6 +15488,7 @@ function loadStageWorld(stageIdx) {
   motherBreathFx.length = 0;
   clearXpGems();
   clearDragonProjectiles();
+  clearDamageNumbers();   // v0.99: 前の場面の数字を残さない
   resetFires();                 // v0.10: 前ステージの炎を消す
 
   settlements = generateStageLayout(stageIdx);
@@ -16495,6 +16632,7 @@ function simStep(dt) {
   // simStep は playing 以外（title / クリア演出）でも毎フレーム通るため。
   // 最近接距離はこの上で作った空間ハッシュをそのまま使う。
   updateFlockMetrics(dt);
+  updateDamageNumbers(dt);   // v0.99: ダメージ数字の寿命管理
   updateCharge(dt);      // v0.87: 突進の発動判定と溜め（重心速度が確定した後でないと判定できない）
 }
 
@@ -16935,6 +17073,7 @@ function render(now) {
   drawTrail(now);
   drawVectorAim();           // v0.38: 爆竜の進路矢印（ワールド座標）
   drawFlockMetricsWorld();   // v0.86: 群れの重心・速度矢印・広がりの楼円（デバッグ）
+  drawDamageNumbers();       // v0.99: 敵に入ったダメージの数字（一番上）
 
   ctx.restore();
 
