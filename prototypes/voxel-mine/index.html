@@ -165,7 +165,7 @@
     </details>
     <div id="return-summary" hidden></div>
     <section class="port-section"><h2>航路図 <span class="sub" id="port-capacity"></span></h2><div id="destinations"></div>
-      <p class="sub" style="margin-top:10px;line-height:1.8">ここに記されたのは、漂流島を探すための航路。巨大浮島へ直接乗り込む航路ではありません。<br>土や石を掘って発見、生き物をタップで捕獲。採掘・捕獲で作業燃料1を使います。<br>黒い水は出航時に無料で満タン。タンク容量が滞在できる長さを決めます。帰還用燃料は別に確保済み。</p></section>
+      <p class="sub" style="margin-top:10px;line-height:1.8">ここに記されたのは、漂流島を探すための航路。巨大浮島へ直接乗り込む航路ではありません。<br>土や石を掘って発見、生き物を捕獲、木をタップで伐採。どの作業も燃料1を使います。<br>黒い水は出航時に無料で満タン。タンク容量が滞在できる長さを決めます。帰還用燃料は別に確保済み。</p></section>
     <section class="port-section"><h2>積み荷とコイン</h2><div id="port-inventory"></div><button id="btn-sell-all">換金品をすべて売却</button></section>
     <details class="lore-book" id="discovery-notes"><summary>発見物の覚え書き</summary><div id="discovery-notes-content"></div></details>
     <section class="port-section"><h2>飛空艇と採掘道具の工房</h2><div id="port-workshop"></div></section>
@@ -198,7 +198,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.3.1";
+const GAME_VERSION = "v0.4.0";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -279,6 +279,7 @@ MATERIALS.forEach((m, i) => { if (m) MATERIAL_BY_ID[m.id] = i; });
 // 地形と所持品を分け、発見物の来歴は表示専用のデータとして扱う。
 const ITEMS = Object.fromEntries(MATERIALS.filter((material) => material && material.tier > 0).map((material) => [material.id, { name: material.name, color: material.color, saleValue: 0 }]));
 Object.assign(ITEMS, {
+  timber: { name: "浮島の木材", color: [159, 112, 67], saleValue: 12 },
   scrap: { name: "工作部品", color: [146, 135, 110], saleValue: 0 },
   ancientCoin: { name: "古代貨幣", color: [208, 167, 68], saleValue: 10 },
   amber: { name: "空色琥珀", color: [102, 183, 198], saleValue: 25 },
@@ -299,11 +300,13 @@ const ITEM_FLAVOR = {
   beetle: "宝石コガネの抜け殻。主のいない小さな殻にも、居住浮島では値段が付く。",
 };
 for (const [id, flavor] of Object.entries(ITEM_FLAVOR)) ITEMS[id].flavor = flavor;
-const INVENTORY_ORDER = ["scrap", "copper", "crystal", "iron", "gold", "obsidian", "starcore", "ancientCoin", "amber", "bird", "beetle"];
+const INVENTORY_ORDER = ["scrap", "copper", "crystal", "iron", "gold", "obsidian", "starcore", "ancientCoin", "amber", "bird", "beetle", "timber"];
 const DISCOVERY_TABLE = [{ threshold: 0.65, id: null }, { threshold: 0.88, id: "scrap" }, { threshold: 0.97, id: "ancientCoin" }, { threshold: 1, id: "amber" }];
 const CREATURE_CONFIG = { count: 4, kinds: ["bird", "beetle"], radius: 18, height: 0.6, minimumSpacing: 2 };
 let tripSerial = 0;
 const creatures = [];
+const TREE_CONFIG = { count: 6, minimumSpacing: 2.5, timberYield: 2, trunkHeight: 1.5, crownHeight: 1.7, crownWidth: 1.5, hitRadius: 18 };
+const trees = [];
 function itemDefinition(id) { return id === "coins" ? { name: "コイン", color: [208, 167, 68], saleValue: 0 } : ITEMS[id]; }
 const FUEL_LEVELS = [
   { capacity: 60, cost: null },
@@ -319,7 +322,7 @@ const DESTINATIONS = [
   { id: 5, name: "黒曜の高島", description: "硬い黒曜の殻", flavor: "黒い岩肌を見せる漂流島。切り離される前には、どんな景色の一部だったのか。", cost: { gold: 6, iron: 20 } },
   { id: 6, name: "星核の果て", description: "最深部の星核", flavor: "星核を秘めた小島が流れる空域。手の中の石も、巨大な浮島のほんの欠片だ。", cost: { obsidian: 8, gold: 10 } },
 ];
-const expedition = { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0 };
+const expedition = { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0, treesChopped: 0 };
 function fuelCapacity() { return FUEL_LEVELS[expedition.fuelLevel].capacity; }
 
 // つるはし。tier がそのまま「掘れる素材の tier の上限」
@@ -733,11 +736,15 @@ function shadeColor(rgbArr, k) {
 // 島の描画
 // -----------------------------------------------------------------
 let pickFaces = [];
+let propPickFaces = [];
 const _p0 = [0, 0], _p1 = [0, 0], _p2 = [0, 0], _p3 = [0, 0];
 const _quad = [_p0, _p1, _p2, _p3];
 
 function drawIsland(c) {
   pickFaces.length = 0;
+  propPickFaces.length = 0;
+  const props = buildPropFaces();
+  let propIndex = 0;
   const scale = camera.zoom * focal / camera.dist;
   const inkWidth = Math.max(1.1, scale * 0.062);
   const jitterAmount = Math.max(1.1, scale * 0.075);
@@ -750,6 +757,8 @@ function drawIsland(c) {
     indexToXYZ(idx, _xyz);
     const x = _xyz[0], y = _xyz[1], z = _xyz[2];
     cellToWorld(x, y, z, _w);
+    const cellDepth = project(_w[0] + 0.5, _w[1] + 0.5, _w[2] + 0.5)[2];
+    while (propIndex < props.length && props[propIndex].depth >= cellDepth) drawPropFace(c, props[propIndex++]);
     const def = MATERIALS[material];
     const locked = def.tier > tier;
     const crack = damage[idx] > 0 ? damage[idx] / def.hp : 0;
@@ -872,7 +881,7 @@ function drawIsland(c) {
       }
 
       pickFaces.push({
-        idx, x, y, z,
+        idx, x, y, z, depth: project(_w[0] + 0.5 + n[0] * 0.5, _w[1] + 0.5 + n[1] * 0.5, _w[2] + 0.5 + n[2] * 0.5)[2],
         ax: _quad[0][0], ay: _quad[0][1],
         bx: _quad[1][0], by: _quad[1][1],
         cx: _quad[2][0], cy: _quad[2][1],
@@ -880,6 +889,7 @@ function drawIsland(c) {
       });
     }
   }
+  while (propIndex < props.length) drawPropFace(c, props[propIndex++]);
 }
 
 /** 島の下に手描きの影 */
@@ -1200,6 +1210,7 @@ function placeCreatures() {
   }
 }
 function relocateCreatures() {
+  for (const tree of trees) if (!tree.chopped && !cells[tree.cellIndex]) tree.fallen = true;
   for (const creature of creatures) {
     if (creature.captured || creature.escaped || cells[creature.cellIndex]) continue;
     indexToXYZ(creature.cellIndex, _xyz);
@@ -1213,6 +1224,91 @@ function relocateCreatures() {
     }
     if (ground < 0) creature.escaped = true; else creature.cellIndex = ground;
   }
+}
+function placeTrees() {
+  trees.length = 0;
+  const candidates = groundCandidates().filter((index) => cells[index] === M_GRASS);
+  candidates.sort((left, right) => hash3(left, islandLevel, worldSeed) - hash3(right, islandLevel, worldSeed));
+  for (const index of candidates) {
+    const position = []; indexToXYZ(index, position);
+    if ([...trees, ...creatures].some((entry) => { const other = []; indexToXYZ(entry.cellIndex, other); return Math.hypot(position[0] - other[0], position[2] - other[2]) < TREE_CONFIG.minimumSpacing; })) continue;
+    trees.push({ id: trees.length, cellIndex: index, chopped: false, fallen: false });
+    if (trees.length === TREE_CONFIG.count) break;
+  }
+}
+function addPropBox(faces, entity, origin, box, part) {
+  const [x, y, z, width, height, depth, color] = box;
+  for (let index = 0; index < CUBE_FACES.length; index++) {
+    const face = CUBE_FACES[index];
+    if (!faceVisible(face.normal)) continue;
+    const vertices = face.quad.map((vertex) => [...project(origin[0] + x + vertex[0] * width, origin[1] + y + vertex[1] * height, origin[2] + z + vertex[2] * depth)]);
+    const shade = face.normal[1] > 0 ? 1 : face.normal[2] ? 0.72 : 0.86;
+    faces.push({ entity, vertices, color: shadeColor(color, shade), depth: vertices.reduce((sum, vertex) => sum + vertex[2], 0) / vertices.length, key: entity.id * 1009 + part * 31 + index + (entity.type === "tree" ? 100000 : 200000) });
+  }
+}
+function creatureBoxes(kind) {
+  const body = ITEMS[kind].color, dark = [62, 66, 49], orange = [200, 121, 48];
+  if (kind === "bird") return [
+    [-.35,.18,-.27,.7,.55,.54,body], [.1,.58,-.22,.4,.4,.44,body], [.5,.67,-.11,.22,.14,.22,orange],
+    [-.27,.36,-.36,.48,.2,.14,[190,150,63]], [-.27,.36,.22,.48,.2,.14,[190,150,63]], [-.58,.31,-.2,.27,.18,.4,body],
+    [.12,.73,-.235,.09,.09,.025,dark], [.12,.73,.21,.09,.09,.025,dark], [-.12,0,-.21,.1,.2,.08,orange], [-.12,0,.13,.1,.2,.08,orange],
+  ];
+  const boxes = [[-.42,.12,-.32,.72,.35,.64,body], [.25,.12,-.23,.28,.25,.46,dark], [-.36,.47,-.025,.59,.025,.05,dark]];
+  for (const side of [-1, 1]) for (const x of [-.3, 0, .3]) boxes.push([x,.05,side < 0 ? -.49 : .26,.09,.09,.23,dark]);
+  return boxes;
+}
+function buildPropFaces() {
+  if (expedition.phase !== "exploring") return [];
+  const faces = [];
+  const entities = [...trees.filter((tree) => !tree.chopped && !tree.fallen).map((tree) => ({ ...tree, type: "tree" })), ...creatures.filter((creature) => !creature.captured && !creature.escaped).map((creature) => ({ ...creature, type: "creature" }))];
+  for (const entity of entities) {
+    if (!cells[entity.cellIndex]) continue;
+    const position = [], origin = []; indexToXYZ(entity.cellIndex, position);
+    if (cellAt(position[0], position[1] + 1, position[2])) continue;
+    cellToWorld(...position, origin); origin[0] += .5; origin[1] += 1; origin[2] += .5;
+    const boxes = entity.type === "tree" ? [[-.16,0,-.16,.32,TREE_CONFIG.trunkHeight,.32,[142,101,64]], [-.75,1.1,-.75,TREE_CONFIG.crownWidth,1.1,TREE_CONFIG.crownWidth,[99,151,81]], [-.5,2,-.5,1,.8,1,[133,175,92]]] : creatureBoxes(entity.kind);
+    boxes.forEach((box, part) => addPropBox(faces, entity, origin, box, part));
+  }
+  return faces.sort((left, right) => right.depth - left.depth);
+}
+function drawPropFace(context, face) {
+  const vertices = face.vertices;
+  context.fillStyle = face.color; context.beginPath();
+  vertices.forEach((vertex, index) => { if (index === 0) context.moveTo(vertex[0], vertex[1]); else context.lineTo(vertex[0], vertex[1]); });
+  context.closePath(); context.fill();
+  const scale = focal * camera.zoom / face.depth;
+  for (let pass = 0; pass < 2; pass++) {
+    context.beginPath();
+    vertices.forEach((vertex, index) => { const next = vertices[(index + 1) % vertices.length]; penLine(context, vertex[0], vertex[1], next[0], next[1], face.key * 7 + index + pass * 97, Math.max(.45, scale * .045) * (pass ? 1.7 : 1)); });
+    inkStyle(context, Math.max(.8, scale * .05) * (pass ? .6 : 1), pass ? .3 : .85); context.stroke();
+  }
+  propPickFaces.push(face);
+}
+function pointInProp(face, x, y) {
+  const signs = face.vertices.map((vertex, index) => { const next = face.vertices[(index + 1) % face.vertices.length]; return (next[0] - vertex[0]) * (y - vertex[1]) - (next[1] - vertex[1]) * (x - vertex[0]); });
+  return signs.every((value) => value >= 0) || signs.every((value) => value <= 0);
+}
+function visiblePropAt(x, y) {
+  const terrain = pickFace(x, y);
+  return propPickFaces.filter((face) => pointInProp(face, x, y) && (!terrain || face.depth < terrain.depth)).sort((left, right) => left.depth - right.depth)[0] || null;
+}
+function treeProjection(tree) {
+  if (tree.chopped || tree.fallen || !cells[tree.cellIndex]) return null;
+  for (const face of propPickFaces) {
+    if (face.entity.type !== "tree" || face.entity.id !== tree.id) continue;
+    const x = face.vertices.reduce((total, vertex) => total + vertex[0], 0) / 4, y = face.vertices.reduce((total, vertex) => total + vertex[1], 0) / 4;
+    const visible = visiblePropAt(x, y);
+    if (visible?.entity.type === "tree" && visible.entity.id === tree.id && x >= 0 && x <= viewW && y >= 0 && y <= viewH) return { id: tree.id, x, y, depth: visible.depth };
+  }
+  return null;
+}
+function chopTree(id) {
+  const tree = trees.find((entry) => entry.id === id);
+  if (!canBeginAction() || !tree) return false;
+  const point = treeProjection(tree); if (!point) return false;
+  beginAction(); tree.chopped = true; expedition.treesChopped++;
+  gainMaterial("timber", TREE_CONFIG.timberYield); flushTapGain([point.x, point.y]); soundHit(); addShake(1.5);
+  markDirty(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
 }
 function creatureProjection(creature) {
   if (creature.captured || creature.escaped || !cells[creature.cellIndex]) return null;
@@ -1230,23 +1326,9 @@ function creatureProjection(creature) {
     if (project(_w[0] + 0.5, _w[1] + 0.5, _w[2] + 0.5)[2] < projected[2]) return null;
   }
   if (projected[0] < 0 || projected[0] > viewW || projected[1] < 0 || projected[1] > viewH) return null;
+  const prop = visiblePropAt(projected[0], projected[1]);
+  if (prop && (prop.entity.type !== "creature" || prop.entity.id !== creature.id) && prop.depth < projected[2]) return null;
   return { id: creature.id, x: projected[0], y: projected[1], depth: projected[2] };
-}
-function drawCreatures(context) {
-  if (expedition.phase !== "exploring") return;
-  for (const creature of creatures) {
-    const point = creatureProjection(creature);
-    if (!point) continue;
-    context.save(); context.translate(point.x, point.y);
-    context.fillStyle = "rgb(" + ITEMS[creature.kind].color.join(",") + ")";
-    context.strokeStyle = "#403a2e"; context.lineWidth = 1.7;
-    context.beginPath(); context.ellipse(0, 0, 10, creature.kind === "bird" ? 8 : 11, 0, 0, Math.PI * 2); context.fill(); context.stroke();
-    context.beginPath();
-    if (creature.kind === "bird") { context.moveTo(-3, 0); context.quadraticCurveTo(3, 8, 7, 0); context.moveTo(9, -3); context.lineTo(15, 0); context.lineTo(9, 2); }
-    else { context.moveTo(0, -10); context.lineTo(0, 10); for (const side of [-1, 1]) for (const y of [-5, 2, 8]) { context.moveTo(side * 8, y); context.lineTo(side * 14, y + 4); } }
-    context.stroke(); context.fillStyle = "#403a2e"; context.fillRect(3, -5, 2, 2);
-    context.restore();
-  }
 }
 function captureCreature(id) {
   const creature = creatures.find((entry) => entry.id === id);
@@ -1255,7 +1337,7 @@ function captureCreature(id) {
   if (!point) return false;
   beginAction(); creature.captured = true; expedition.captures++;
   gainMaterial(creature.kind, 1); flushTapGain([point.x, point.y]); soundCraft();
-  checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
+  markDirty(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
 }
 function estimatedSaleValue(inventory) { return INVENTORY_ORDER.reduce((total, id) => total + (inventory[id] || 0) * ITEMS[id].saleValue, 0); }
 function sellAllTreasure() {
@@ -1606,7 +1688,7 @@ function base64ToBytes(text) {
 function saveKey() { return SAVE_KEY_PREFIX + worldSeed + (urlParams.has("fresh") ? ":fresh:" + urlParams.get("fresh") : ""); }
 function saveGame() {
   const data = {
-    version: 3, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures,
+    version: 4, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
     expedition, combo,
     pending: pendingBreaks.map((entry) => ({ ...entry, due: Math.max(0, entry.due - nowSeconds) })),
     player,
@@ -1636,6 +1718,7 @@ function loadGame() {
   Object.assign(expedition, validated.expedition);
   tripSerial = validated.tripSerial;
   creatures.splice(0, creatures.length, ...validated.creatures);
+  trees.splice(0, trees.length, ...validated.trees);
   if (data.version === 1) { generateIsland(Math.min(DESTINATIONS.length, isl.level)); fitCameraToIsland(); return true; }
   islandLevel = isl.level;
   GX = isl.gx; GY = isl.gy; GZ = isl.gz; GROUND_Y = isl.groundY; islandRadius = isl.radius;
@@ -1659,8 +1742,8 @@ function resetGame() {
   try { localStorage.removeItem(saveKey()); } catch (error) { /* 無視 */ }
   Object.assign(player, { coins: 0, pickaxe: 0, power: 0, range: 0, chain: 0, inventory: {}, seen: {},
                           stats: { mined: 0, taps: 0, maxCombo: 0, islands: 1, crafted: 0 } });
-  Object.assign(expedition, { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0 });
-  tripSerial = 0; creatures.length = 0;
+  Object.assign(expedition, { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0, treesChopped: 0 });
+  tripSerial = 0; creatures.length = 0; trees.length = 0;
   startIsland(1);
   renderBase();
   saveGame();
@@ -1676,7 +1759,7 @@ function migrateResources(resources) {
   return result;
 }
 function validateSave(data) {
-  if (!data || ![1, 2, 3].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
+  if (!data || ![1, 2, 3, 4].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
   const savedPlayer = data.player, island = data.island;
   if (!validInteger(savedPlayer.pickaxe, PICKAXES.length - 1) || !validInteger(savedPlayer.power, 1000000) || !validInteger(savedPlayer.range, RANGE_LEVELS.length - 1) || !validInteger(savedPlayer.chain, CHAIN_LEVELS.length - 1)) return null;
   if (!validResources(savedPlayer.inventory, data.version < 3) || !savedPlayer.stats || !["mined", "taps", "maxCombo", "islands", "crafted"].every((key) => validInteger(savedPlayer.stats[key]))) return null;
@@ -1685,11 +1768,11 @@ function validateSave(data) {
   const restoredCells = base64ToBytes(island.cells), restoredDamage = base64ToBytes(island.damage);
   if (restoredCells.length !== island.gx * island.gy * island.gz || restoredDamage.length !== restoredCells.length || restoredCells.some((material) => material >= MATERIALS.length)) return null;
   const inventory = migrateResources(savedPlayer.inventory);
-  if (!validResources(inventory) || data.version === 3 && !validInteger(savedPlayer.coins)) return null;
+  if (!validResources(inventory) || data.version >= 3 && !validInteger(savedPlayer.coins)) return null;
   const seen = Object.fromEntries(INVENTORY_ORDER.filter((id) => savedPlayer.seen?.[id] || inventory[id] > 0).map((id) => [id, true]));
-  const restoredPlayer = { coins: data.version === 3 ? savedPlayer.coins : 0, pickaxe: savedPlayer.pickaxe, power: savedPlayer.power, range: savedPlayer.range, chain: savedPlayer.chain, inventory, seen, stats: savedPlayer.stats, soundOn: savedPlayer.soundOn !== false };
-  const tripDefaults = { returnReason: "manual", blocksDestroyed: 0, captures: 0 };
-  if (data.version === 1) return { player: restoredPlayer, tripSerial: 0, creatures: [], expedition: { ...tripDefaults, phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: Math.min(DESTINATIONS.length, island.level) - 1, haul: {}, returnRequested: false } };
+  const restoredPlayer = { coins: data.version >= 3 ? savedPlayer.coins : 0, pickaxe: savedPlayer.pickaxe, power: savedPlayer.power, range: savedPlayer.range, chain: savedPlayer.chain, inventory, seen, stats: savedPlayer.stats, soundOn: savedPlayer.soundOn !== false };
+  const tripDefaults = { returnReason: "manual", blocksDestroyed: 0, captures: 0, treesChopped: 0 };
+  if (data.version === 1) return { player: restoredPlayer, tripSerial: 0, creatures: [], trees: [], expedition: { ...tripDefaults, phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: Math.min(DESTINATIONS.length, island.level) - 1, haul: {}, returnRequested: false } };
   const savedExpedition = data.expedition ? { ...tripDefaults, ...data.expedition } : null;
   if (!savedExpedition || !["base", "exploring", "result"].includes(savedExpedition.phase) || !validInteger(savedExpedition.fuelLevel, FUEL_LEVELS.length - 1) || !validInteger(savedExpedition.routeLevel, DESTINATIONS.length - 1)) return null;
   if (island.level > savedExpedition.routeLevel + 1 || !validInteger(savedExpedition.fuel, FUEL_LEVELS[savedExpedition.fuelLevel].capacity) || !validInteger(savedExpedition.turns) || !validResources(savedExpedition.haul, data.version < 3) || typeof savedExpedition.returnRequested !== "boolean" || !validInteger(data.combo)) return null;
@@ -1699,8 +1782,10 @@ function validateSave(data) {
   if (new Set(data.pending.map((entry) => entry.idx)).size !== data.pending.length || (savedExpedition.phase !== "exploring" && (data.pending.length || savedExpedition.returnRequested))) return null;
   if (data.camera && (![data.camera.yaw, data.camera.pitch, data.camera.dist, data.camera.zoom, data.camera.targetY].every(Number.isFinite) || data.camera.dist <= 0 || data.camera.zoom <= 0)) return null;
   const restoredCreatures = data.version < 3 ? [] : data.creatures;
-  if (data.version === 3 && (!validInteger(data.tripSerial) || !Array.isArray(restoredCreatures) || restoredCreatures.length > CREATURE_CONFIG.count || !restoredCreatures.every((creature) => validInteger(creature.id) && CREATURE_CONFIG.kinds.includes(creature.kind) && validInteger(creature.cellIndex, restoredCells.length - 1) && typeof creature.captured === "boolean" && typeof creature.escaped === "boolean") || new Set(restoredCreatures.map((creature) => creature.id)).size !== restoredCreatures.length)) return null;
-  return { player: restoredPlayer, expedition: savedExpedition, cells: restoredCells, damage: restoredDamage, pending: data.pending, tripSerial: data.version < 3 ? 0 : data.tripSerial, creatures: restoredCreatures };
+  if (data.version >= 3 && (!validInteger(data.tripSerial) || !Array.isArray(restoredCreatures) || restoredCreatures.length > CREATURE_CONFIG.count || !restoredCreatures.every((creature) => validInteger(creature.id) && CREATURE_CONFIG.kinds.includes(creature.kind) && validInteger(creature.cellIndex, restoredCells.length - 1) && typeof creature.captured === "boolean" && typeof creature.escaped === "boolean") || new Set(restoredCreatures.map((creature) => creature.id)).size !== restoredCreatures.length)) return null;
+  const restoredTrees = data.version < 4 ? [] : data.trees;
+  if (!Array.isArray(restoredTrees) || restoredTrees.length > TREE_CONFIG.count || !restoredTrees.every((tree) => validInteger(tree.id) && validInteger(tree.cellIndex, restoredCells.length - 1) && typeof tree.chopped === "boolean" && typeof tree.fallen === "boolean") || new Set(restoredTrees.map((tree) => tree.id)).size !== restoredTrees.length || !validInteger(savedExpedition.treesChopped)) return null;
+  return { player: restoredPlayer, expedition: savedExpedition, cells: restoredCells, damage: restoredDamage, pending: data.pending, tripSerial: data.version < 3 ? 0 : data.tripSerial, creatures: restoredCreatures, trees: restoredTrees };
 }
 
 // -----------------------------------------------------------------
@@ -1726,12 +1811,13 @@ function nextIsland() {
 }
 function depart(destinationId) {
   if (expedition.phase !== "base" || !Number.isInteger(destinationId) || destinationId < 1 || destinationId > expedition.routeLevel + 1) return false;
-  Object.assign(expedition, { phase: "exploring", fuel: fuelCapacity(), turns: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0 });
+  Object.assign(expedition, { phase: "exploring", fuel: fuelCapacity(), turns: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0, treesChopped: 0 });
   tripSerial++;
   player.stats.islands = Math.max(player.stats.islands, destinationId);
   closeCraft();
   startIsland(destinationId);
   placeCreatures();
+  placeTrees();
   renderBase();
   soundIsland();
   saveGame();
@@ -1805,7 +1891,7 @@ function renderResult() {
   renderFlavorNotes("result-notes-content", discovered, "");
   const reason = { manual: "任意帰還", fuel: "作業燃料を使い切りました", cleared: "島の採掘完了" }[expedition.returnReason];
   const list = (treasure) => INVENTORY_ORDER.filter((id) => expedition.haul[id] && Boolean(ITEMS[id].saleValue) === treasure).map((id) => ITEMS[id].name + " ×" + expedition.haul[id]).join("・") || "なし";
-  document.getElementById("result-details").textContent = DESTINATIONS[islandLevel - 1].name + " ─ " + reason + "\n使用燃料 " + expedition.turns + " ／ 残り " + expedition.fuel + "\n破壊ブロック " + expedition.blocksDestroyed + " ／ 捕獲 " + expedition.captures + "\n\n強化素材\n" + list(false) + "\n\n換金品\n" + list(true) + "\n売却見込額：" + estimatedSaleValue(expedition.haul) + " コイン\n\n積み荷は回収済み。港で換金品を売却できます。";
+  document.getElementById("result-details").textContent = DESTINATIONS[islandLevel - 1].name + " ─ " + reason + "\n使用燃料 " + expedition.turns + " ／ 残り " + expedition.fuel + "\n破壊ブロック " + expedition.blocksDestroyed + " ／ 捕獲 " + expedition.captures + " ／ 伐採 " + expedition.treesChopped + "\n\n強化素材\n" + list(false) + "\n\n換金品\n" + list(true) + "\n売却見込額：" + estimatedSaleValue(expedition.haul) + " コイン\n\n積み荷は回収済み。港で換金品を売却できます。";
 }
 function acknowledgeResult() {
   if (expedition.phase !== "result") return false;
@@ -1870,6 +1956,9 @@ canvas.addEventListener("wheel", (e) => {
 
 function tapAt(sx, sy) {
   if (expedition.phase !== "exploring" || !craftEl.classList.contains("hidden")) return { broken: 0, locked: false };
+  const prop = visiblePropAt(sx, sy);
+  if (prop?.entity.type === "creature") return { broken: 0, locked: false, captured: captureCreature(prop.entity.id) };
+  if (prop?.entity.type === "tree") return { broken: 0, locked: false, chopped: chopTree(prop.entity.id) };
   const target = creatures.map((creature) => creatureProjection(creature)).filter((point) => point && Math.hypot(point.x - sx, point.y - sy) <= CREATURE_CONFIG.radius).sort((left, right) => left.depth - right.depth)[0];
   if (target) return { broken: 0, locked: false, captured: captureCreature(target.id) };
   closeCraft();
@@ -1986,7 +2075,7 @@ function frame(now) {
   updateChips(dt);
   drawChips(ctx);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  drawCreatures(ctx);
+  // 生き物と木は島と同じ奥行き順で描画する。
   drawBursts(ctx, dt);
   drawFloats(ctx, dt);
 
@@ -2030,7 +2119,7 @@ function debugState() {
     chips: chips.length, floats: floats.length, pending: pendingBreaks.length,
     combo, comboMultiplier,
     player: JSON.parse(JSON.stringify(player)),
-    creatures: JSON.parse(JSON.stringify(creatures)), tripSerial,
+    creatures: JSON.parse(JSON.stringify(creatures)), trees: JSON.parse(JSON.stringify(trees)), tripSerial,
     expedition: JSON.parse(JSON.stringify(expedition)), capacity: fuelCapacity(),
     destinations: DESTINATIONS, unlocks: DESTINATIONS.filter((destination) => destination.id <= expedition.routeLevel + 1).map((destination) => destination.id),
     power: hitPower(), range: rangeRadius(), chain: chainCount(),
@@ -2055,6 +2144,8 @@ function debugGrant(materialId, amount) { if (materialId === "coins") player.coi
 function debugDepart(destinationId) { return depart(destinationId); }
 function debugReturn() { return requestReturn(); }
 function debugCapture(id) { return captureCreature(id); }
+function debugChop(id) { return chopTree(id); }
+function debugFindTree() { return trees.map(treeProjection).find(Boolean) || null; }
 function debugFindCreature() { return creatures.map(creatureProjection).find(Boolean) || null; }
 function debugAcknowledgeResult() { return acknowledgeResult(); }
 function debugSellAll() { return sellAllTreasure(); }

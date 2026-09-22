@@ -39,7 +39,7 @@ async function fixture({ material = 'copper', count = 6, fuel = 10, pickaxe = 2,
   await fresh();
   await page.evaluate(options => {
     debugDepart(1);
-    cells.fill(0); damage.fill(0); pendingBreaks.length = 0; creatures.length = 0;
+    cells.fill(0); damage.fill(0); pendingBreaks.length = 0; creatures.length = 0; trees.length = 0;
     for (let x = 2; x < options.count + 2; x++) cells[cellIndex(x, 2, 2)] = MATERIAL_BY_ID[options.material];
     solidCount = options.count;
     Object.assign(player, { pickaxe: options.pickaxe, chain: options.chain, range: options.range, power: 0, inventory: {} });
@@ -381,6 +381,50 @@ try {
   await page.evaluate(() => { window.removeEventListener('beforeunload', saveGame); localStorage.setItem(saveKey(), JSON.stringify({ version: 2, island: { cells: 'invalid!' }, player: {} })); });
   await page.reload();
   check('Malformed save falls back to playable base', (await state()).expedition.phase === 'base' && (await state()).unlocks.includes(1));
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await fresh(); await page.evaluate(() => debugDepart(1));
+  await page.waitForFunction(() => debugFindTree() !== null);
+  const treesBefore = await state();
+  const visibleTree = await page.evaluate(() => debugFindTree());
+  const timberYield = await page.evaluate(() => TREE_CONFIG.timberYield);
+  check('Trees grow on the starting island before mining', treesBefore.trees.length > 0 && treesBefore.trees.some(tree => !tree.chopped && !tree.fallen));
+  await page.screenshot({ path: path.join(artifactDirectory, 'mobile-trees.png'), fullPage: true });
+  await page.mouse.click(visibleTree.x, visibleTree.y);
+  const treeChopped = await state();
+  check('Canvas chop spends one fuel and adds timber to expedition haul', treeChopped.expedition.fuel === treesBefore.expedition.fuel - 1 && treeChopped.player.inventory.timber === timberYield && treeChopped.expedition.haul.timber === timberYield && treeChopped.trees.find(tree => tree.id === visibleTree.id).chopped);
+  const choppedInventory = JSON.stringify(treeChopped.player.inventory);
+  await page.evaluate(id => { debugChop(id); debugSave(); }, visibleTree.id);
+  check('Repeated chop cannot award timber twice', JSON.stringify((await state()).player.inventory) === choppedInventory);
+  await page.reload();
+  check('Chopped tree and timber survive reload', (await state()).trees.find(tree => tree.id === visibleTree.id).chopped && JSON.stringify((await state()).player.inventory) === choppedInventory);
+  await page.evaluate(() => { debugReturn(); debugAcknowledgeResult(); });
+  const timberSale = await page.evaluate(() => ITEMS.timber.saleValue);
+  const beforeTimberSale = (await state()).player.coins;
+  await page.evaluate(() => debugSellAll());
+  check('Port sale converts timber to coins', timberSale > 0 && (await state()).player.coins === beforeTimberSale + timberSale * timberYield && !(await state()).player.inventory.timber);
+
+  await fresh(); await page.evaluate(() => debugDepart(1));
+  await page.waitForFunction(() => debugFindTree() !== null);
+  const treeLayoutA = JSON.stringify((await state()).trees.map(tree => tree.cellIndex));
+  await fresh(); await page.evaluate(() => debugDepart(1));
+  const treeLayoutB = JSON.stringify((await state()).trees.map(tree => tree.cellIndex));
+  check('Tree placement repeats for the same seed and trip', treeLayoutA === treeLayoutB);
+  await page.evaluate(() => { expedition.fuel = 1; debugChop(debugFindTree().id); });
+  check('Last-fuel chop records timber before result', (await state()).expedition.phase === 'result' && (await state()).expedition.haul.timber === timberYield);
+
+  await fresh(); await page.evaluate(() => {
+    debugDepart(1); player.coins = 37; debugSave();
+    const legacy = JSON.parse(localStorage.getItem(saveKey()));
+    legacy.version = 3; delete legacy.trees; delete legacy.expedition.treesChopped;
+    window.removeEventListener('beforeunload', saveGame);
+    localStorage.setItem(saveKey(), JSON.stringify(legacy));
+  });
+  await page.reload();
+  check('V3 active expedition preserves coins and starts without trees', (await state()).expedition.phase === 'exploring' && (await state()).player.coins === 37 && (await state()).trees.length === 0);
+  await page.evaluate(() => { debugReturn(); debugAcknowledgeResult(); debugDepart(1); });
+  check('Migrated save receives trees on its next departure', (await state()).trees.length > 0);
+
   for (const seed of [0, 1, 777, 12345]) {
     await page.goto(pathToFileURL(path.join(here, 'index.html')).href + `?seed=${seed}&fresh=1`);
     const generation = await page.evaluate(() => {
