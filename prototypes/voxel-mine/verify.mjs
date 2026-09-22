@@ -129,6 +129,16 @@ try {
     return { firstFaces: first.length, changed: JSON.stringify(first.map(face => face.vertices)) !== JSON.stringify(second.map(face => face.vertices)), stable: JSON.stringify({ creatures, expedition, inventory: player.inventory }) === before };
   });
   check('Rounded creature meshes have two distinct visual poses without changing game state', animation.firstFaces > 60 && animation.changed && animation.stable, JSON.stringify(animation));
+  const silhouette = await page.evaluate(() => {
+    const previousYaw = camera.yaw;
+    const styles = () => buildPropFaces().filter(face => face.entity.type === 'creature').map(face => [face.key, face.edgeStyles]);
+    const first = styles();
+    camera.yaw += .9; updateCamBasis(); updateViewDir();
+    const rotated = styles();
+    camera.yaw = previousYaw; updateCamBasis(); updateViewDir();
+    return { thick: first.flatMap(face => face[1]).filter(style => style === 2).length, thin: first.flatMap(face => face[1]).filter(style => style === 1).length, changed: JSON.stringify(first) !== JSON.stringify(rotated) };
+  });
+  check('Creature outer lines are bold, internal lines thin, and change with camera', silhouette.thick > 0 && silhouette.thin > 0 && silhouette.changed, JSON.stringify(silhouette));
   await page.screenshot({ path: path.join(artifactDirectory, 'mobile-creatures.png'), fullPage: true });
   const visibleCreature = await page.evaluate(() => debugFindCreature());
   await page.mouse.click(visibleCreature.x, visibleCreature.y);
@@ -143,6 +153,9 @@ try {
   await page.evaluate(() => debugReturn());
   const resultState = await state();
   check('Capture return opens populated result', resultState.expedition.phase === 'result' && resultState.expedition.captures === 1 && resultState.expedition.turns === 1);
+  await page.locator('#btn-result-debug').click();
+  check('Result debug menu opens', await page.locator('#debug-panel').isVisible());
+  await page.locator('#btn-debug-close').click();
   await page.screenshot({ path: path.join(artifactDirectory, 'mobile-result.png'), fullPage: true });
   await checkLayout('Mobile result');
   await page.evaluate(() => debugSave()); await page.reload();
@@ -394,11 +407,11 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 });
   await fresh(); await page.evaluate(() => debugDepart(1));
-  await page.waitForFunction(() => debugFindTree() !== null);
+  await page.waitForFunction(() => debugFindTree('sapling') !== null);
   const treesBefore = await state();
-  const visibleTree = await page.evaluate(() => debugFindTree());
-  const timberYield = await page.evaluate(() => TREE_CONFIG.timberYield);
-  check('Trees grow on the starting island before mining', treesBefore.trees.length > 0 && treesBefore.trees.some(tree => !tree.chopped && !tree.fallen));
+  const visibleTree = await page.evaluate(() => debugFindTree('sapling'));
+  const timberYield = await page.evaluate(() => TREE_CONFIG.saplingTimberYield);
+  check('Young and large trees grow separately on the starting island', treesBefore.trees.filter(tree => tree.kind === 'sapling').length === 6 && treesBefore.trees.filter(tree => tree.kind === 'large').length === 2);
   await page.screenshot({ path: path.join(artifactDirectory, 'mobile-trees.png'), fullPage: true });
   await page.mouse.click(visibleTree.x, visibleTree.y);
   const treeChopped = await state();
@@ -415,11 +428,23 @@ try {
   check('Port sale converts timber to coins', timberSale > 0 && (await state()).player.coins === beforeTimberSale + timberSale * timberYield && !(await state()).player.inventory.timber);
 
   await fresh(); await page.evaluate(() => debugDepart(1));
-  await page.waitForFunction(() => debugFindTree() !== null);
-  const treeLayoutA = JSON.stringify((await state()).trees.map(tree => tree.cellIndex));
+  await page.waitForFunction(() => debugFindTree('large') !== null);
+  const largeTree = await page.evaluate(() => debugFindTree('large'));
+  const largeTimberYield = await page.evaluate(() => TREE_CONFIG.largeTimberYield);
+  const beforeLargeChop = await state();
+  await page.screenshot({ path: path.join(artifactDirectory, 'mobile-large-tree.png'), fullPage: true });
+  await page.mouse.click(largeTree.x, largeTree.y);
+  const afterLargeChop = await state();
+  check('Canvas chop of a block-built large tree yields extra timber for one fuel', afterLargeChop.expedition.fuel === beforeLargeChop.expedition.fuel - 1 && afterLargeChop.player.inventory.timber === largeTimberYield && afterLargeChop.trees.find(tree => tree.id === largeTree.id).chopped && largeTimberYield > timberYield);
+  await page.evaluate(() => debugSave()); await page.reload();
+  check('Chopped large tree stays gone after reload', (await state()).trees.find(tree => tree.id === largeTree.id).chopped && (await state()).player.inventory.timber === largeTimberYield);
+
   await fresh(); await page.evaluate(() => debugDepart(1));
   await page.waitForFunction(() => debugFindTree() !== null);
-  const treeLayoutB = JSON.stringify((await state()).trees.map(tree => tree.cellIndex));
+  const treeLayoutA = JSON.stringify((await state()).trees.map(tree => [tree.kind, tree.cellIndex]));
+  await fresh(); await page.evaluate(() => debugDepart(1));
+  await page.waitForFunction(() => debugFindTree() !== null);
+  const treeLayoutB = JSON.stringify((await state()).trees.map(tree => [tree.kind, tree.cellIndex]));
   check('Tree placement repeats for the same seed and trip', treeLayoutA === treeLayoutB);
   await page.evaluate(() => { expedition.fuel = 1; debugChop(debugFindTree().id); });
   check('Last-fuel chop records timber before result', (await state()).expedition.phase === 'result' && (await state()).expedition.haul.timber === timberYield);
@@ -447,15 +472,47 @@ try {
   await page.evaluate(() => { debugReturn(); debugAcknowledgeResult(); debugDepart(1); });
   check('Migrated save also grows trees on its next departure', (await state()).trees.length > 0);
 
+  await fresh(); await page.evaluate(() => debugDepart(1));
+  await page.waitForFunction(() => debugFindTree('sapling') !== null);
+  await page.evaluate(() => {
+    debugChop(debugFindTree('sapling').id); debugSave();
+    const legacy = JSON.parse(localStorage.getItem(saveKey()));
+    legacy.version = 4;
+    legacy.trees = legacy.trees.filter(tree => tree.kind === 'sapling').map(({ kind, ...tree }) => tree);
+    window.removeEventListener('beforeunload', saveGame);
+    localStorage.setItem(saveKey(), JSON.stringify(legacy));
+  });
+  await page.reload();
+  check('V4 trees migrate as young trees and add large trees without restoring chopped wood', (await state()).trees.filter(tree => tree.kind === 'sapling').length === 6 && (await state()).trees.filter(tree => tree.kind === 'large').length === 2 && (await state()).trees.some(tree => tree.kind === 'sapling' && tree.chopped) && (await state()).player.inventory.timber === timberYield);
+
   for (const seed of [0, 1, 777, 12345]) {
     await page.goto(pathToFileURL(path.join(here, 'index.html')).href + `?seed=${seed}&fresh=1`);
     const generation = await page.evaluate(() => {
       const definingMaterials = ['copper', 'crystal', 'iron', 'gold', 'obsidian', 'starcore'];
-      return definingMaterials.map((material, index) => { generateIsland(index + 1); placeCreatures(); placeTrees(); return { island: index + 1, material, count: debugState().counts[material] || 0, trees: trees.length }; });
+      return definingMaterials.map((material, index) => { generateIsland(index + 1); placeCreatures(); placeTrees(); return { island: index + 1, material, count: debugState().counts[material] || 0, youngTrees: trees.filter(tree => tree.kind === 'sapling').length, largeTrees: trees.filter(tree => tree.kind === 'large').length }; });
     });
     check(`Seed ${seed}: every destination contains its defining resource`, generation.every(item => item.count > 0), JSON.stringify(generation));
-    check(`Seed ${seed}: every destination grows several trees`, generation.every(item => item.trees >= 3), JSON.stringify(generation.map(item => ({ island: item.island, trees: item.trees }))));
+    check(`Seed ${seed}: every destination grows young and large trees`, generation.every(item => item.youngTrees >= 3 && item.largeTrees >= 1), JSON.stringify(generation.map(item => ({ island: item.island, youngTrees: item.youngTrees, largeTrees: item.largeTrees }))));
   }
+  await fresh();
+  await page.locator('#port-debug').click();
+  check('Port debug menu names current save slot', await page.locator('#debug-panel').isVisible() && (await page.locator('#debug-slot').textContent()).includes('777') && (await page.locator('#debug-slot').textContent()).includes('独立テスト枠'));
+  await page.screenshot({ path: path.join(artifactDirectory, 'mobile-debug-menu.png'), fullPage: true });
+  await page.locator('#btn-debug-close').click();
+  const normalSaveSentinel = 'other slot must survive debug reset';
+  await page.evaluate(value => {
+    localStorage.setItem(SAVE_KEY_PREFIX + worldSeed, value);
+    debugGrant('scrap', 9); player.coins = 41; debugDepart(1); debugSave();
+  }, normalSaveSentinel);
+  await page.locator('#btn-debug').click();
+  check('Expedition debug menu opens without spending fuel', await page.locator('#debug-panel').isVisible() && (await state()).expedition.fuel === 60);
+  await page.locator('#btn-debug-reset').click();
+  current = await state();
+  check('Debug reset clears current save and returns to initial port', current.expedition.phase === 'base' && current.player.coins === 0 && Object.keys(current.player.inventory).length === 0 && current.expedition.routeLevel === 0 && current.tripSerial === 0);
+  check('Debug reset leaves another save slot intact', await page.evaluate(value => localStorage.getItem(SAVE_KEY_PREFIX + worldSeed) === value, normalSaveSentinel));
+  await page.reload();
+  check('Debug reset persists after reload', (await state()).expedition.phase === 'base' && (await state()).player.coins === 0 && (await state()).tripSerial === 0);
+  await page.evaluate(() => localStorage.removeItem(SAVE_KEY_PREFIX + worldSeed));
   check('No runtime or resource errors', errors.length === 0, errors.join(' | '));
 } catch (error) {
   failures.push(error.stack || error.message);

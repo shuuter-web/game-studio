@@ -124,6 +124,14 @@
   #result .port-sheet { max-width:540px; border:2px solid #8c795e; padding:24px; background:#f9f2e2; }
   #result-details { white-space:pre-line; line-height:2; margin:24px 0; }
   #btn-result-base { width:100%; background:#435e58; color:#fff8e7; }
+  #btn-result-debug { width:100%; margin-top:8px; }
+  #debug-panel { position:fixed; inset:0; z-index:12; display:grid; place-items:center; padding:18px; background:rgba(43,38,32,.46); }
+  #debug-panel[hidden] { display:none; }
+  .debug-card { width:min(400px,100%); padding:20px; border:2px solid #8c795e; background:#f9f2e2; box-shadow:5px 6px 0 rgba(43,38,32,.22); }
+  .debug-card h2 { font-size:17px; margin-bottom:10px; }
+  .debug-card p { font-size:12px; line-height:1.8; margin:10px 0; }
+  .debug-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+  #btn-debug-reset { border-color:#943f29; color:#943f29; }
   @media (max-width: 420px) { .airship { width: 135px; height: 90px; } .port-head h1 { font-size: 23px; } #base { padding: 18px 12px 28px; } }
 </style>
 </head>
@@ -144,6 +152,7 @@
   <button id="btn-craft">工房</button>
   <button id="btn-next">次の島へ</button>
   <button id="btn-sound">音</button>
+  <button id="btn-debug">デバッグ</button>
 </div>
 
 <div id="hint">タップで採掘・捕獲 ／ ドラッグで回転</div>
@@ -169,17 +178,18 @@
     <section class="port-section"><h2>積み荷とコイン</h2><div id="port-inventory"></div><button id="btn-sell-all">換金品をすべて売却</button></section>
     <details class="lore-book" id="discovery-notes"><summary>発見物の覚え書き</summary><div id="discovery-notes-content"></div></details>
     <section class="port-section"><h2>飛空艇と採掘道具の工房</h2><div id="port-workshop"></div></section>
-    <div class="port-section"><button id="port-sound">音</button> <button id="port-reset">はじめから</button></div>
+    <div class="port-section"><button id="port-sound">音</button> <button id="port-debug">デバッグ</button></div>
     <p class="sub" id="port-version" style="margin-top:18px"></p>
   </div>
 </section>
-<section id="result" hidden aria-label="遠征リザルト"><div class="port-sheet"><div class="port-label">EXPEDITION REPORT</div><h1>遠征の記録</h1><div id="result-details"></div><details class="lore-book" id="result-notes"><summary>積み荷の覚え書き</summary><div id="result-notes-content"></div></details><button id="btn-result-base">港へ戻る</button></div></section>
+<section id="result" hidden aria-label="遠征リザルト"><div class="port-sheet"><div class="port-label">EXPEDITION REPORT</div><h1>遠征の記録</h1><div id="result-details"></div><details class="lore-book" id="result-notes"><summary>積み荷の覚え書き</summary><div id="result-notes-content"></div></details><button id="btn-result-base">港へ戻る</button><button id="btn-result-debug">デバッグ</button></div></section>
+<section id="debug-panel" hidden role="dialog" aria-modal="true" aria-label="デバッグメニュー"><div class="debug-card"><div class="port-label">DEBUG MENU</div><h2>デバッグ</h2><p id="debug-slot"></p><p>このセーブ枠の所持品・強化・航路・遠征記録を初期状態に戻せます。</p><div class="debug-actions"><button id="btn-debug-reset">セーブデータを初期化</button><button id="btn-debug-close">閉じる</button></div></div></section>
 <div id="save-warning" role="status" hidden>保存できません。空き容量やブラウザの保存設定を確認してください。</div>
 
 <div id="craft" class="hidden">
   <h2><span>工房 <span class="sub" id="c-ver"></span></span><button id="btn-craft-close">とじる</button></h2>
   <div id="c-list"></div>
-  <div class="stats"><span id="c-stats"></span><button id="btn-reset">はじめから</button></div>
+  <div class="stats"><span id="c-stats"></span></div>
 </div>
 
 <script>
@@ -198,7 +208,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.4.1";
+const GAME_VERSION = "v0.5.0";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -305,7 +315,7 @@ const DISCOVERY_TABLE = [{ threshold: 0.65, id: null }, { threshold: 0.88, id: "
 const CREATURE_CONFIG = { count: 4, kinds: ["bird", "beetle"], radius: 18, height: 0.6, minimumSpacing: 2 };
 let tripSerial = 0;
 const creatures = [];
-const TREE_CONFIG = { count: 6, minimumSpacing: 2.5, timberYield: 2, trunkHeight: 1.5, crownHeight: 1.7, crownWidth: 1.5, hitRadius: 18 };
+const TREE_CONFIG = { saplingCount: 6, largeCount: 2, minimumSpacing: 2.5, saplingTimberYield: 2, largeTimberYield: 6, trunkHeight: 1.5, crownHeight: 1.7, crownWidth: 1.5, hitRadius: 18 };
 const trees = [];
 function itemDefinition(id) { return id === "coins" ? { name: "コイン", color: [208, 167, 68], saleValue: 0 } : ITEMS[id]; }
 const FUEL_LEVELS = [
@@ -1227,46 +1237,93 @@ function relocateCreatures() {
 }
 function placeTrees() {
   trees.length = 0;
+  placeTreeKind("sapling", TREE_CONFIG.saplingCount);
+  placeTreeKind("large", TREE_CONFIG.largeCount);
+}
+function placeTreeKind(kind, count) {
   const candidates = groundCandidates().filter((index) => cells[index] === M_GRASS || cells[index] === M_DIRT);
-  candidates.sort((left, right) => (cells[right] === M_GRASS) - (cells[left] === M_GRASS) || hash3(left, islandLevel, worldSeed) - hash3(right, islandLevel, worldSeed));
+  const placementSeed = kind === "sapling" ? worldSeed : hashSeed(worldSeed + ":large-tree");
+  candidates.sort((left, right) => (cells[right] === M_GRASS) - (cells[left] === M_GRASS) || hash3(left, islandLevel, placementSeed) - hash3(right, islandLevel, placementSeed));
   // 草地が狭い島でも本数を確保し、生き物の足場だけは共有しない。
   for (const spacing of [TREE_CONFIG.minimumSpacing, 1.5, 0]) {
     for (const index of candidates) {
       if (trees.some((tree) => tree.cellIndex === index) || creatures.some((creature) => !creature.captured && !creature.escaped && creature.cellIndex === index)) continue;
       const position = []; indexToXYZ(index, position);
       if ([...trees, ...creatures].some((entry) => { const other = []; indexToXYZ(entry.cellIndex, other); return Math.hypot(position[0] - other[0], position[2] - other[2]) < spacing; })) continue;
-      trees.push({ id: trees.length, cellIndex: index, chopped: false, fallen: false });
-      if (trees.length === TREE_CONFIG.count) return;
+      trees.push({ id: trees.length, kind, cellIndex: index, chopped: false, fallen: false });
+      if (trees.filter((tree) => tree.kind === kind).length === count) return;
     }
   }
 }
+function treeBoxes(kind) {
+  if (kind === "sapling") return [[-.16,0,-.16,.32,TREE_CONFIG.trunkHeight,.32,[142,101,64]], [-.75,1.1,-.75,TREE_CONFIG.crownWidth,1.1,TREE_CONFIG.crownWidth,[99,151,81]], [-.5,2,-.5,1,.8,1,[133,175,92]]];
+  const boxes = [];
+  const wood = [139,91,53], leaf = [91,146,70];
+  for (let y = 0; y < 3; y++) boxes.push([-.5,y,-.5,1,1,1,wood]);
+  for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) boxes.push([x - .5,3,z - .5,1,1,1,leaf]);
+  for (const [x,z] of [[0,0],[-1,0],[1,0],[0,-1],[0,1]]) boxes.push([x - .5,4,z - .5,1,1,1,leaf]);
+  return boxes;
+}
 const CREATURE_MESH_SCALE = 1.4;
+function finishCreaturePartEdges(faces, firstFace) {
+  const edges = new Map();
+  for (let faceIndex = firstFace; faceIndex < faces.length; faceIndex++) {
+    const face = faces[faceIndex];
+    face.edgeStyles = [];
+    for (let edgeIndex = 0; edgeIndex < face.worldVertices.length; edgeIndex++) {
+      const first = face.worldVertices[edgeIndex].map((value) => Math.round(value * 10000)).join(",");
+      const second = face.worldVertices[(edgeIndex + 1) % face.worldVertices.length].map((value) => Math.round(value * 10000)).join(",");
+      const key = first < second ? first + ":" + second : second + ":" + first;
+      face.edgeStyles.push(key);
+      const edge = edges.get(key);
+      if (edge) edge.count++; else edges.set(key, { count: first === second ? 2 : 1, drawn: false });
+    }
+  }
+  for (let faceIndex = firstFace; faceIndex < faces.length; faceIndex++) {
+    const face = faces[faceIndex];
+    face.edgeStyles = face.edgeStyles.map((key) => {
+      const edge = edges.get(key);
+      if (edge.drawn) return 0;
+      edge.drawn = true;
+      return edge.count === 1 ? 2 : 1;
+    });
+    delete face.worldVertices;
+  }
+}
 function addPropBox(faces, entity, origin, box, part) {
   const [x, y, z, width, height, depth, color] = box;
   const meshScale = entity.type === "creature" ? CREATURE_MESH_SCALE : 1;
+  const firstFace = faces.length;
   for (let index = 0; index < CUBE_FACES.length; index++) {
     const face = CUBE_FACES[index];
     if (!faceVisible(face.normal)) continue;
-    const vertices = face.quad.map((vertex) => [...project(origin[0] + (x + vertex[0] * width) * meshScale, origin[1] + (y + vertex[1] * height) * meshScale, origin[2] + (z + vertex[2] * depth) * meshScale)]);
+    const worldVertices = face.quad.map((vertex) => [origin[0] + (x + vertex[0] * width) * meshScale, origin[1] + (y + vertex[1] * height) * meshScale, origin[2] + (z + vertex[2] * depth) * meshScale]);
+    const vertices = worldVertices.map((vertex) => [...project(...vertex)]);
     const shade = face.normal[1] > 0 ? 1 : face.normal[2] ? 0.72 : 0.86;
-    faces.push({ entity, vertices, color: shadeColor(color, shade), depth: vertices.reduce((sum, vertex) => sum + vertex[2], 0) / vertices.length, key: entity.id * 1009 + part * 31 + index + (entity.type === "tree" ? 100000 : 200000) });
+    const propFace = { entity, vertices, color: shadeColor(color, shade), depth: vertices.reduce((sum, vertex) => sum + vertex[2], 0) / vertices.length, key: entity.id * 1009 + part * 31 + index + (entity.type === "tree" ? 100000 : 200000) };
+    if (entity.type === "creature") propFace.worldVertices = worldVertices;
+    faces.push(propFace);
   }
+  if (entity.type === "creature") finishCreaturePartEdges(faces, firstFace);
 }
 function addPropEllipsoid(faces, entity, origin, oval, part) {
   const [x, y, z, width, height, depth, color] = oval;
   const meshScale = CREATURE_MESH_SCALE;
   const center = [origin[0] + (x + width / 2) * meshScale, origin[1] + (y + height / 2) * meshScale, origin[2] + (z + depth / 2) * meshScale];
   const rings = 5, sides = 8;
+  const firstFace = faces.length;
   for (let ring = 0; ring < rings; ring++) for (let side = 0; side < sides; side++) {
     const a0 = -Math.PI / 2 + Math.PI * ring / rings, a1 = -Math.PI / 2 + Math.PI * (ring + 1) / rings;
     const b0 = Math.PI * 2 * side / sides, b1 = Math.PI * 2 * (side + 1) / sides;
     const midA = (a0 + a1) / 2, midB = (b0 + b1) / 2;
     const normal = [Math.cos(midA) * Math.cos(midB), Math.sin(midA), Math.cos(midA) * Math.sin(midB)];
     if (!faceVisible(normal)) continue;
-    const vertices = [[a0,b0],[a0,b1],[a1,b1],[a1,b0]].map(([a,b]) => [...project(center[0] + Math.cos(a) * Math.cos(b) * width * meshScale / 2, center[1] + Math.sin(a) * height * meshScale / 2, center[2] + Math.cos(a) * Math.sin(b) * depth * meshScale / 2)]);
+    const worldVertices = [[a0,b0],[a0,b1],[a1,b1],[a1,b0]].map(([a,b]) => [center[0] + Math.cos(a) * Math.cos(b) * width * meshScale / 2, center[1] + Math.sin(a) * height * meshScale / 2, center[2] + Math.cos(a) * Math.sin(b) * depth * meshScale / 2]);
+    const vertices = worldVertices.map((vertex) => [...project(...vertex)]);
     const shade = .7 + Math.max(0, normal[1]) * .28 + Math.max(0, normal[2]) * .08;
-    faces.push({ entity, vertices, color: shadeColor(color, shade), depth: vertices.reduce((sum, vertex) => sum + vertex[2], 0) / vertices.length, key: entity.id * 1009 + part * 53 + ring * sides + side + 300000 });
+    faces.push({ entity, vertices, worldVertices, color: shadeColor(color, shade), depth: vertices.reduce((sum, vertex) => sum + vertex[2], 0) / vertices.length, key: entity.id * 1009 + part * 53 + ring * sides + side + 300000 });
   }
+  finishCreaturePartEdges(faces, firstFace);
 }
 function creatureBoxes(kind, pose) {
   const body = ITEMS[kind].color, dark = [62, 66, 49], orange = [200, 121, 48];
@@ -1295,7 +1352,7 @@ function buildPropFaces() {
     if (cellAt(position[0], position[1] + 1, position[2])) continue;
     cellToWorld(...position, origin); origin[0] += .5; origin[1] += 1; origin[2] += .5;
     const pose = Math.floor(boilFrame / 4) % 2;
-    const boxes = entity.type === "tree" ? [[-.16,0,-.16,.32,TREE_CONFIG.trunkHeight,.32,[142,101,64]], [-.75,1.1,-.75,TREE_CONFIG.crownWidth,1.1,TREE_CONFIG.crownWidth,[99,151,81]], [-.5,2,-.5,1,.8,1,[133,175,92]]] : creatureBoxes(entity.kind, pose);
+    const boxes = entity.type === "tree" ? treeBoxes(entity.kind) : creatureBoxes(entity.kind, pose);
     boxes.forEach((box, part) => addPropBox(faces, entity, origin, box, part));
     if (entity.type === "creature") creatureEllipsoids(entity.kind, pose).forEach((oval, part) => addPropEllipsoid(faces, entity, origin, oval, part + 30));
   }
@@ -1307,6 +1364,20 @@ function drawPropFace(context, face) {
   vertices.forEach((vertex, index) => { if (index === 0) context.moveTo(vertex[0], vertex[1]); else context.lineTo(vertex[0], vertex[1]); });
   context.closePath(); context.fill();
   const scale = focal * camera.zoom / face.depth;
+  if (face.edgeStyles) {
+    for (let style = 1; style <= 2; style++) {
+      context.beginPath();
+      vertices.forEach((vertex, index) => {
+        if (face.edgeStyles[index] !== style) return;
+        const next = vertices[(index + 1) % vertices.length];
+        penLine(context, vertex[0], vertex[1], next[0], next[1], face.key * 7 + index, Math.max(.3, scale * (style === 2 ? .045 : .015)));
+      });
+      inkStyle(context, Math.max(style === 2 ? 1 : .45, scale * (style === 2 ? .085 : .022)), style === 2 ? .86 : .24);
+      context.stroke();
+    }
+    propPickFaces.push(face);
+    return;
+  }
   for (let pass = 0; pass < 2; pass++) {
     context.beginPath();
     vertices.forEach((vertex, index) => { const next = vertices[(index + 1) % vertices.length]; penLine(context, vertex[0], vertex[1], next[0], next[1], face.key * 7 + index + pass * 97, Math.max(.45, scale * .045) * (pass ? 1.7 : 1)); });
@@ -1337,7 +1408,7 @@ function chopTree(id) {
   if (!canBeginAction() || !tree) return false;
   const point = treeProjection(tree); if (!point) return false;
   beginAction(); tree.chopped = true; expedition.treesChopped++;
-  gainMaterial("timber", TREE_CONFIG.timberYield); flushTapGain([point.x, point.y]); soundHit(); addShake(1.5);
+  gainMaterial("timber", tree.kind === "large" ? TREE_CONFIG.largeTimberYield : TREE_CONFIG.saplingTimberYield); flushTapGain([point.x, point.y]); soundHit(); addShake(1.5);
   markDirty(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
 }
 function creatureProjection(creature) {
@@ -1718,7 +1789,7 @@ function base64ToBytes(text) {
 function saveKey() { return SAVE_KEY_PREFIX + worldSeed + (urlParams.has("fresh") ? ":fresh:" + urlParams.get("fresh") : ""); }
 function saveGame() {
   const data = {
-    version: 4, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
+    version: 5, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
     expedition, combo,
     pending: pendingBreaks.map((entry) => ({ ...entry, due: Math.max(0, entry.due - nowSeconds) })),
     player,
@@ -1762,6 +1833,7 @@ function loadGame() {
   rebuildSurface();
   // 旧版から継続した遠征は木が空のまま保存され得る。未伐採なら現在の地形に補う。
   if (expedition.phase === "exploring" && trees.length === 0 && expedition.treesChopped === 0) placeTrees();
+  else if (expedition.phase === "exploring" && data.version < 5) placeTreeKind("large", TREE_CONFIG.largeCount);
   if (data.camera) {
     camera.yaw = data.camera.yaw; camera.pitch = data.camera.pitch;
     camera.dist = data.camera.dist; camera.zoom = data.camera.zoom;
@@ -1791,7 +1863,7 @@ function migrateResources(resources) {
   return result;
 }
 function validateSave(data) {
-  if (!data || ![1, 2, 3, 4].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
+  if (!data || ![1, 2, 3, 4, 5].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
   const savedPlayer = data.player, island = data.island;
   if (!validInteger(savedPlayer.pickaxe, PICKAXES.length - 1) || !validInteger(savedPlayer.power, 1000000) || !validInteger(savedPlayer.range, RANGE_LEVELS.length - 1) || !validInteger(savedPlayer.chain, CHAIN_LEVELS.length - 1)) return null;
   if (!validResources(savedPlayer.inventory, data.version < 3) || !savedPlayer.stats || !["mined", "taps", "maxCombo", "islands", "crafted"].every((key) => validInteger(savedPlayer.stats[key]))) return null;
@@ -1816,8 +1888,9 @@ function validateSave(data) {
   const restoredCreatures = data.version < 3 ? [] : data.creatures;
   if (data.version >= 3 && (!validInteger(data.tripSerial) || !Array.isArray(restoredCreatures) || restoredCreatures.length > CREATURE_CONFIG.count || !restoredCreatures.every((creature) => validInteger(creature.id) && CREATURE_CONFIG.kinds.includes(creature.kind) && validInteger(creature.cellIndex, restoredCells.length - 1) && typeof creature.captured === "boolean" && typeof creature.escaped === "boolean") || new Set(restoredCreatures.map((creature) => creature.id)).size !== restoredCreatures.length)) return null;
   const restoredTrees = data.version < 4 ? [] : data.trees;
-  if (!Array.isArray(restoredTrees) || restoredTrees.length > TREE_CONFIG.count || !restoredTrees.every((tree) => validInteger(tree.id) && validInteger(tree.cellIndex, restoredCells.length - 1) && typeof tree.chopped === "boolean" && typeof tree.fallen === "boolean") || new Set(restoredTrees.map((tree) => tree.id)).size !== restoredTrees.length || !validInteger(savedExpedition.treesChopped)) return null;
-  return { player: restoredPlayer, expedition: savedExpedition, cells: restoredCells, damage: restoredDamage, pending: data.pending, tripSerial: data.version < 3 ? 0 : data.tripSerial, creatures: restoredCreatures, trees: restoredTrees };
+  if (!Array.isArray(restoredTrees) || restoredTrees.length > TREE_CONFIG.saplingCount + TREE_CONFIG.largeCount || !restoredTrees.every((tree) => validInteger(tree.id) && validInteger(tree.cellIndex, restoredCells.length - 1) && typeof tree.chopped === "boolean" && typeof tree.fallen === "boolean" && (data.version < 5 || ["sapling", "large"].includes(tree.kind))) || new Set(restoredTrees.map((tree) => tree.id)).size !== restoredTrees.length || !validInteger(savedExpedition.treesChopped)) return null;
+  const migratedTrees = restoredTrees.map((tree) => ({ ...tree, kind: data.version < 5 ? "sapling" : tree.kind }));
+  return { player: restoredPlayer, expedition: savedExpedition, cells: restoredCells, damage: restoredDamage, pending: data.pending, tripSerial: data.version < 3 ? 0 : data.tripSerial, creatures: restoredCreatures, trees: migratedTrees };
 }
 
 // -----------------------------------------------------------------
@@ -2034,11 +2107,23 @@ function updateSoundButton() {
   document.getElementById("port-sound").textContent = player.soundOn ? "音：ON" : "音：OFF";
 }
 document.getElementById("port-sound").addEventListener("click", () => document.getElementById("btn-sound").click());
-document.getElementById("port-reset").addEventListener("click", () => document.getElementById("btn-reset").click());
+const debugPanel = document.getElementById("debug-panel");
+function openDebugMenu() {
+  const slot = urlParams.has("fresh") ? "独立テスト枠 " + urlParams.get("fresh") : "通常枠";
+  document.getElementById("debug-slot").textContent = "対象：世界の種 " + worldSeed + " ／ " + slot;
+  debugPanel.hidden = false;
+  document.getElementById("btn-debug-close").focus();
+}
+function closeDebugMenu() { debugPanel.hidden = true; }
+for (const id of ["btn-debug", "port-debug", "btn-result-debug"]) document.getElementById(id).addEventListener("click", openDebugMenu);
+document.getElementById("btn-debug-close").addEventListener("click", closeDebugMenu);
+debugPanel.addEventListener("click", (event) => { if (event.target === debugPanel) closeDebugMenu(); });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !debugPanel.hidden) closeDebugMenu(); });
 document.getElementById("btn-result-base").addEventListener("click", acknowledgeResult);
 document.getElementById("btn-sell-all").addEventListener("click", sellAllTreasure);
-document.getElementById("btn-reset").addEventListener("click", () => {
-  if (!window.confirm("最初からやり直しますか？ 素材・つるはし・島はすべて消えます。")) return;
+document.getElementById("btn-debug-reset").addEventListener("click", () => {
+  if (!window.confirm(document.getElementById("debug-slot").textContent + " のセーブデータを初期化しますか？")) return;
+  closeDebugMenu();
   closeCraft();
   resetGame();
 });
@@ -2177,7 +2262,7 @@ function debugDepart(destinationId) { return depart(destinationId); }
 function debugReturn() { return requestReturn(); }
 function debugCapture(id) { return captureCreature(id); }
 function debugChop(id) { return chopTree(id); }
-function debugFindTree() { return trees.map(treeProjection).find(Boolean) || null; }
+function debugFindTree(kind) { return trees.filter((tree) => !kind || tree.kind === kind).map(treeProjection).find(Boolean) || null; }
 function debugFindCreature() { return creatures.map(creatureProjection).find(Boolean) || null; }
 function debugAcknowledgeResult() { return acknowledgeResult(); }
 function debugSellAll() { return sellAllTreasure(); }
