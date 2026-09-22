@@ -506,6 +506,14 @@
     z-index: 55; pointer-events: auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
   #codex-overlay.visible, #options-overlay.visible { display: flex; }
+  /* v0.99.8: 時代クリアの★評価。リザルトの一番上に大きく出す */
+  .result-stars { font-size: 30px; letter-spacing: 4px; color: #ffd23f;
+                  text-shadow: 0 0 16px rgba(255,190,60,0.7); margin-bottom: 2px; }
+  .result-rank  { font-family: monospace; font-size: 13px; color: #ffe0b0; margin-bottom: 10px; }
+  .result-best  { color: #8cf0a0; }
+  /* 時代選択に出す小さな★ */
+  .era-stars    { font-size: 12px; color: #ffd23f; letter-spacing: 1px; }
+  .era-stars-none { font-size: 12px; color: #6b7280; letter-spacing: 1px; }
   #options-overlay .tree-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
   #options-overlay .tree-title { font-family: -apple-system, BlinkMacSystemFont, serif; font-size: 20px; font-weight: bold; color: #ffe0b0; letter-spacing: 0.12em; text-shadow: 0 0 20px rgba(255,140,40,0.6); }
   #options-overlay .tree-close { font-size: 20px; color: #ff8888; background: none; border: none; cursor: pointer; padding: 0 6px; }
@@ -707,7 +715,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.99.7";
+const GAME_VERSION = "v0.99.8";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -13993,6 +14001,8 @@ function defaultProfile() {
     // v0.99.1: 遊び方の好みで切り替える設定。**既定値はここが唯一の定義**。
     // 増やすときは OPTION_DEFS にも1行足す（画面はそれを見て作られる）。
     options: { damageNumbers: true },
+    // v0.99.8: 時代ごとのクリア評価（★1〜5）の自己ベスト。key = 時代の添字。
+    eraStars: {},
   };
 }
 
@@ -14024,6 +14034,7 @@ function loadProfile() {
     p.tree = p.tree || {};
     // v0.99.1: 設定は項目が増えても古いプロファイルが壊れないよう既定で補完する
     p.options = Object.assign(defaultProfile().options, p.options || {});
+    p.eraStars = p.eraStars || {};
   }
   p.version = PROFILE_VERSION;
   return p;
@@ -15439,7 +15450,11 @@ function showContinentSelect() {
     btn.className = "upgrade-card card-span-2" + (isLocked ? " card-locked" : " rarity-star");
     btn.innerHTML =
       `<span class="card-icon">${isLocked ? "🔒" : "🏙"}</span>` +
-      `<span><div class="card-name">${CONTINENT_NUMERALS[i]}. ${c.name}</div>` +
+      `<span><div class="card-name">${CONTINENT_NUMERALS[i]}. ${c.name}` +
+      // v0.99.8: 自己ベストの★を名前の横に出す。どの時代をやり込んだかが一目で分かる
+      `${isLocked ? "" : (eraBestStars(c.era) > 0
+          ? ` <span class="era-stars">${starsText(eraBestStars(c.era))}</span>`
+          : ` <span class="era-stars-none">${starsText(0)}</span>`)}</div>` +
       `<div class="card-desc">${isLocked ? STRINGS.continentLocked(CONTINENT_NUMERALS[i - 1] || "I")
                                           : c.subtitle}</div>` +
       `${isLocked ? "" : `<div class="card-desc" style="opacity:0.7">${STRINGS.continentToughness(toughness)}</div>`}</span>`;
@@ -15647,10 +15662,58 @@ function triggerStageClear() {
   triggerTierAdvance();
 }
 
+// -----------------------------------------------------------------
+// v0.99.8: 時代クリアの★評価（Shooter指示）
+// -----------------------------------------------------------------
+// **どれだけ相手を追い込んでから本丸を落としたか**を評価にする。
+// 群れを育てずに首都へ直行すれば★1、動員を重ねさせてから落とすほど星が増え、
+// 街を一つ残らず潰してボスを最強モードに入れてから落とすのが最高評価。
+//   ★1 平時のまま撃破       （powerTier 0）
+//   ★2 動員まで進めてから    （powerTier 1）
+//   ★3 総力戦まで進めてから  （powerTier 2）
+//   ★4 決戦まで進めてから    （powerTier 3）
+//   ★5 完全壊滅（ボス最強モードでの撃破）
+const CLEAR_STARS_MAX = 5;
+
+/** 今この瞬間にボスを落としたら何★か。 */
+function clearStars() {
+  if (bossEnraged) return CLEAR_STARS_MAX;
+  return Math.min(CLEAR_STARS_MAX - 1, 1 + clampTier(powerTier));
+}
+
+/** ★n の呼び名。 */
+function clearRankName(stars) {
+  if (stars >= CLEAR_STARS_MAX) return "完全壊滅";
+  return `${TIER_NAMES[stars - 1] ?? "平時"}で制圧`;
+}
+
+/** ★★★☆☆ の文字列。 */
+function starsText(stars) {
+  return "★".repeat(Math.max(0, stars)) + "☆".repeat(Math.max(0, CLEAR_STARS_MAX - stars));
+}
+
+/** 時代 era の自己ベスト★（未クリアは 0）。 */
+function eraBestStars(era) {
+  const v = profile.eraStars ? profile.eraStars[era] : 0;
+  return typeof v === "number" ? v : 0;
+}
+
+/** 自己ベストを更新する。更新したら true。 */
+function recordEraStars(era, stars) {
+  if (!profile.eraStars) profile.eraStars = {};
+  if (stars <= eraBestStars(era)) return false;
+  profile.eraStars[era] = stars;
+  saveProfile();
+  return true;
+}
+
 // ---- 全制覇（STAGE 4 ボス撃破）→ リザルト表示 ----
 function triggerAllClear() {
   gameState = "all-clear";
   const runTimeMs = performance.now() - runStartTime;
+  // v0.99.8: 評価は**ボスが落ちた瞬間の状態**で決まる。後で powerTier を触られる前に取る。
+  const stars = clearStars();
+  const starsBest = recordEraStars(runEra, stars);
   saveBestRecord(runTimeMs, runKills);
   profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
   // v0.55: この大陸をクリアしたら次の大陸（開始時代）を解放する
@@ -15664,6 +15727,9 @@ function triggerAllClear() {
   overlayEl.classList.add("visible");
   overlayTitle.textContent = STRINGS.resultTitle;
   resultStatsEl.innerHTML =
+    `<div class="result-stars">${starsText(stars)}</div>` +
+    `<div class="result-rank">${clearRankName(stars)}` +
+      `${starsBest ? ' <span class="result-best">自己ベスト更新</span>' : ""}</div>` +
     `${STRINGS.statTime}: <span class="stat-value">${formatRunTime(runTimeMs)}</span><br>` +
     `${STRINGS.statKills}: <span class="stat-value">${runKills}</span><br>` +
     `${STRINGS.statFlock}: <span class="stat-value">${runMaxFlock}</span><br>` +
