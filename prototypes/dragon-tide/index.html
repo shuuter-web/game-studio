@@ -707,7 +707,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.99.6";
+const GAME_VERSION = "v0.99.7";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2141,10 +2141,11 @@ const TINY_HAMLET_COUNT     = 100;
 // v0.74: このうち何個をスタート地点の近くに寄せるか（Shooter指示「特に初期地点の近くに多めに」）。
 // 序盤は群れが小さく移動距離も稼げないので、最初に出会う密度をここで作る。
 // 帯を狭くしないと、一様配置ぶんと混ざって密度差がほとんど出ない（実測で確認）。
-const TINY_HAMLET_NEAR_START       = 35;
+// v0.99.7: 空白帯を広げたので、その中を埋める極小集落も増やす（35 → 55）。
+const TINY_HAMLET_NEAR_START       = 55;
 // スタート地点寄せの帯。内側は「まばらな家」の緩衝地帯（440〜900）を残すため 600 から。
 const TINY_HAMLET_START_RING_INNER = 600;
-const TINY_HAMLET_START_RING_OUTER = 2200;
+const TINY_HAMLET_START_RING_OUTER = 2050;   // v0.99.7: START_TOWN_CLEAR の内側に収める
 // 1クラスタあたりの tiny 棟数（min/max でランダム）
 const TINY_PER_HAMLET_MIN   = 5;
 const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
@@ -2228,6 +2229,10 @@ const CAPITAL_MEDIUM_MIN_SPACING = CAPITAL_MEDIUM_RADIUS * 2 + 6; // 38px
 const CAPITAL_EXCLUSION_RADIUS = CAPITAL_SMALL_OUTER + CAPITAL_SMALL_RADIUS + 60; // 430px
 // ボスをマップ端から確保するマージン（城下外縁 + 余白がマップ外に出ないよう）
 const CAPITAL_BOSS_MARGIN = CAPITAL_SMALL_OUTER + CAPITAL_SMALL_RADIUS + 80; // 450px
+
+// v0.99.7: この距離までの町は全部「要塞都市」（最大段階固定＋防備）にする。
+// ボスへ真っ直ぐ向かうと必ず強い街を通ることになる＝首都圏の手応え。
+const BOSS_STRONG_RADIUS = 2600;
 
 // -----------------------------------------------------------------
 // ボス集落パラメータ
@@ -2782,18 +2787,23 @@ const TIER_FLOCK_CAP_FRACTION = [0.55, 0.70, 0.85, 1.0];
 // 一度 hp 1.80 / dmg 1.50 まで上げて測ったが、建物の平均HPが 15.4→25.9 になっても
 // **12秒の破壊数は 60→61、受けたダメージは 28→30/秒** とほぼ変わらなかった。
 // 群れ30体の火力に対して HP 26 は依然として一瞬で消える量だったため。さらに上げている。
+// v0.99.7: 動員で廃墟を建て直すのをやめた（Shooter指示）ぶん、
+// **生きている街の強化**と**動く敵の増加**に寄せる。
+// 壊した街が戻らないので、進めた分の手応えは残りつつ、残った街が硬く重くなる。
 const POWER_TIER_BOOST = [
   { hp: 1.00, dmg: 1.00 },   // 段階1 平時
-  { hp: 2.60, dmg: 1.90 },   // 段階2 動員
-  { hp: 4.20, dmg: 2.70 },   // 段階3 総力戦
-  { hp: 6.50, dmg: 3.60 },   // 段階4 決戦
+  { hp: 3.20, dmg: 2.20 },   // 段階2 動員
+  { hp: 5.60, dmg: 3.30 },   // 段階3 総力戦
+  { hp: 9.00, dmg: 4.60 },   // 段階4 決戦
 ];
 const TIER_NAMES = ["平時", "動員", "総力戦", "決戦"];
 
 // 段階が上がると動く敵の部隊数も増える。
 // 顔ぶれは時代で決まっているので変わらない——増えるのは部隊の数だけ。
 // v0.94: 強さと同じく物量も上げる（旧: 1.0 / 1.3 / 1.6 / 2.0）。
-const TIER_MOVER_MULT = [1.0, 2.0, 2.8, 3.6];
+// v0.99.7: 再建をやめた代わりに部隊を増やす（Shooter指示）。
+// 建物は壊せば減るが、動く敵は段階ごとに湧き直すので**脅威が減らない側**を担う。
+const TIER_MOVER_MULT = [1.0, 2.6, 4.0, 5.6];
 
 // 段階が上がるほど建物の色を締める（同じ建築のまま「補強された」ことを見せる）。
 // 建て替えではないので形は変わらない。段階ごとの暗さの差。
@@ -3180,12 +3190,20 @@ function dist2(ax, ay, bx, by) {
 // v0.29: 群れのスタート地点（左端中央）。この周囲には街を置かず、まばらな家だけにする。
 const START_X = 250;
 const START_Y = WORLD_H * 0.5;
-const START_TOWN_CLEAR = 500;   // v0.29.2: この距離内に町の中心を置かない（950→500に緩和）
+// v0.99.7: 500 → 2100（Shooter指示。ミニマップ上の範囲指定で受領）。
+// この円の中には町（small/medium/large）の中心を置かないので、
+// 序盤は**極小集落だけがある帯**になる。広げたぶんは
+// placeTownCenters 側で町を外へ**退避**させる（間引かない）ので、町の総数は変わらない。
+const START_TOWN_CLEAR = 2100;
+// 町の建物は中心から 189〜372px に広がる（実測・50町、中央値254）。
+// 中心だけを円の外へ退けても**棟が円の中にはみ出す**ので、
+// 中心の判定はこの分だけ外側で行う。
+const START_TOWN_CLEAR_CENTER = START_TOWN_CLEAR + 400;
 
 function placeTownCenters(townCount, bossWx, bossWy) {
   // 左端250pxは群れスタート地点なので除外
   const MARGIN_LEFT  = 300;
-  const startClear2  = START_TOWN_CLEAR * START_TOWN_CLEAR;
+  const startClear2  = START_TOWN_CLEAR_CENTER * START_TOWN_CLEAR_CENTER;
   const MARGIN_RIGHT = 150;
   const MARGIN_Y     = 200;
 
@@ -3219,8 +3237,27 @@ function placeTownCenters(townCount, bossWx, bossWy) {
         }
       }
 
-      // 3回試行してもボス周辺だった場合はこのセルをスキップ
-      // （首都と重なる小集落を強制配置しない）
+      // v0.99.7: スタート地点の空白を 500 → 2100 に広げたので、
+      // 「入ってしまったら諦める」だと**町の総数がごっそり減る**（マップの2割が対象）。
+      // 諦めずに、その円の外へ押し出してから置く。
+      // 押し出し先は円周の少し外で、角度は元の位置の向きを保つ＝偏りを作らない。
+      if (!accepted) {
+        const dx = cx - START_X, dy = cy - START_Y;
+        if (dx * dx + dy * dy < startClear2) {
+          const d = Math.sqrt(dx * dx + dy * dy) || 1;
+          const push = START_TOWN_CLEAR_CENTER + randRange(40, 260);
+          cx = START_X + (dx / d) * push;
+          cy = START_Y + (dy / d) * push;
+          // 押し出した先がマップ外／ボス周辺なら、そのセルは諦める
+          if (cx > MARGIN_LEFT && cx < WORLD_W - MARGIN_RIGHT &&
+              cy > MARGIN_Y && cy < WORLD_H - MARGIN_Y &&
+              (!hasExclusion || dist2(cx, cy, bossWx, bossWy) >= excl2)) {
+            accepted = true;
+          }
+        }
+      }
+
+      // それでも駄目ならこのセルをスキップ（首都と重なる小集落を強制配置しない）
       if (!accepted) continue;
 
       centers.push({ x: cx, y: cy });
@@ -4159,15 +4196,19 @@ function generateStageLayout(stageIndex) {
   riverPolyline    = generateRiver(stageIndex);
   bridgePlacements = computeBridges(townRoadEdges, riverPolyline);
 
-  // v0.7: ボスに近い2〜3町を「要塞都市」に指定する（Shooterプレイテスト:
+  // v0.7: ボスに近い町を「要塞都市」に指定する（Shooterプレイテスト:
   // ボス周辺にもっと強い都市が欲しい・強さが見た目で分かること）。
-  const fortifiedCount = stageIndex >= 2 ? 3 : 2;
+  // v0.99.7: 「敵ボスの周辺の街は強い街を配置して」（Shooter指示）を受けて、
+  // **距離で決める**ようにした。近い順に N 個だけだと、ボスの位置次第で
+  // 「隣なのに素の街」が残ってしまう。BOSS_STRONG_RADIUS の中は全部要塞都市にし、
+  // それが少なすぎる配置のために近い順の下限も残す。
+  const fortifiedMin = stageIndex >= 2 ? 5 : 4;
+  const byBossDist = townCenters
+    .map((c, idx) => ({ idx, d2: dist2(c.x, c.y, boss.wx, boss.wy) }))
+    .sort((a, b) => a.d2 - b.d2);
+  const strongR2 = BOSS_STRONG_RADIUS * BOSS_STRONG_RADIUS;
   const fortifiedSet = new Set(
-    townCenters
-      .map((c, idx) => ({ idx, d2: dist2(c.x, c.y, boss.wx, boss.wy) }))
-      .sort((a, b) => a.d2 - b.d2)
-      .slice(0, fortifiedCount)
-      .map(e => e.idx),
+    byBossDist.filter((e, i) => i < fortifiedMin || e.d2 < strongR2).map(e => e.idx),
   );
 
   // v0.11: 都市の規模に変化をつける（大都市1・中都市1・残りは標準±ゆらぎ）。
@@ -4196,7 +4237,10 @@ function generateStageLayout(stageIndex) {
   const townMetas = [];   // v0.29: 部分壁を付けるための町メタ一覧
   for (let t = 0; t < townCenters.length; t++) {
     const center = townCenters[t];
-    const cityScale = cityScaleByIdx.get(t) ?? randRange(0.9, 1.1);
+    // v0.99.7: 要塞都市は規模も一回り大きい。強さは数値だけでなく
+    // **街の大きさ**でも伝わらないと、近づく前に身構えられない。
+    const cityScale = (cityScaleByIdx.get(t) ?? randRange(0.9, 1.1)) *
+                      (fortifiedSet.has(t) ? 1.25 : 1);
     const s2 = cityScale * cityScale;
     // v0.56: 建築・レイアウトは全部ランの時代のもの（同じ文明の街並み）。
     // 差がつくのは動員段階＝強さと、それに伴う色の締まり具合だけ。
@@ -10682,6 +10726,9 @@ function settlementFall(settlementIndex) {
 
   hapticPulse(80);
 
+  // v0.99.7: これが最後の1棟だったらボスが最強モードに入る
+  maybeEnrageBoss();
+
   rebuildBuildingGrid();
   minimapBaseDirty = true;  // v0.6-p4: ミニマップの建物ドットキャッシュも更新
 
@@ -15722,82 +15769,6 @@ function reinforceSettlementForTier(settlement, baseTier) {
   settlement._breathParticleTimer = 0;
 }
 
-/**
- * 廃墟を再建する。同じ文明が同じ場所に建て直すだけで、時代は変わらない。
- * これが無いと段階が進むほどマップが空になり、後半ほど壊す対象が減ってしまう。
- *
- * v0.94: 選び方を**街単位**に変えた（Shooter指示）。
- * 旧実装は廃墟全体から 30% をランダムに拾っていたので、
- * **壊した街がどこもまばらに半分戻る**という読みにくい絵になっていた。
- * 今は「完全に復活する街」と「すっからかんのままの街」に分かれる。
- * 街に属さない廃墟（まばらな集落）は元々散らばっているので従来通り抽選する。
- *
- * @returns {{count:number, towns:number}} 再建した棟数と、完全復活させた街の数
- */
-function rebuildRuinsForTier(baseTier) {
-  const ruins = [];
-  for (let i = 0; i < settlements.length; i++) {
-    const s = settlements[i];
-    if (s.isBoss || s._isWall) continue;
-    // 時代固定ではなく「段階固定」の要塞は再建しない。落としたら落としたまま
-    if (s._fixedTier != null) continue;
-    if (s.fallen) ruins.push(s);
-  }
-  const budget = Math.round(ruins.length * TIER_REBUILD_RATIO);
-  const ratio  = eggBearerRatio();
-
-  // 街ごとにまとめる。_townIndex を持たない廃墟は「街なし」の山へ。
-  const byTown = new Map();
-  const loose  = [];
-  for (const s of ruins) {
-    const t = s._townIndex;
-    if (t === undefined || t === null) { loose.push(s); continue; }
-    if (!byTown.has(t)) byTown.set(t, []);
-    byTown.get(t).push(s);
-  }
-
-  const revive = (s) => {
-    s.fallen = false;
-    s.isEggBearer = random() < ratio;
-    reinforceSettlementForTier(s, baseTier);
-  };
-
-  // 街をシャッフルして、予算を使い切るまで**丸ごと**建て直す。
-  // 予算を少し超えてもその街は最後まで建てる（半分だけ戻った街を作らないため）。
-  const townKeys = Array.from(byTown.keys());
-  for (let i = townKeys.length - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
-    const tmp = townKeys[i]; townKeys[i] = townKeys[j]; townKeys[j] = tmp;
-  }
-  let count = 0, townsRevived = 0;
-  const revivedCenters = [];
-  for (const key of townKeys) {
-    if (count >= budget) break;
-    const group = byTown.get(key);
-    let cx = 0, cy = 0;
-    for (const s of group) { revive(s); cx += s.wx; cy += s.wy; }
-    count += group.length;
-    townsRevived++;
-    revivedCenters.push({ x: cx / group.length, y: cy / group.length, n: group.length });
-  }
-
-  // 街に属さない廃墟（まばらな集落など）は従来通りの抽選。
-  // 卵の供給源なので、ここが空になると群れが育てられなくなる。
-  const looseCount = Math.round(loose.length * TIER_REBUILD_RATIO);
-  for (let i = 0; i < looseCount && i < loose.length; i++) {
-    const j = i + Math.floor(random() * (loose.length - i));
-    const tmp = loose[i]; loose[i] = loose[j]; loose[j] = tmp;
-    revive(loose[i]);
-    count++;
-  }
-
-  _tierRevivedCenters = revivedCenters;
-  return { count, towns: townsRevived };
-}
-
-// 直前の段階上げで完全復活させた街の中心（ワールド表示に使う）。
-let _tierRevivedCenters = [];
-
 /** 城壁を張り直す。時代は固定なので、増えるのは段階に応じた町の部分壁だけ。 */
 function rebuildWallsForTier() {
   const kept = [];
@@ -15823,8 +15794,9 @@ function rebuildWallsForTier() {
 function advanceTier() {
   const nextTier = clampTier(powerTier + 1);
 
-  // (1) 廃墟を再建（先に立たせてから、生きている建物をまとめて補強する）
-  const rebuilt = rebuildRuinsForTier(nextTier);
+  // v0.99.7: 廃墟の再建は廃止（Shooter指示「動員で破壊された街を復活するのは辞めて、
+  // 既存の街を強化する方に集中しましょう。代わりに動く敵を増やす」）。
+  // 壊した街が戻ってこないので、進めた分が確実に残る。
 
   // (2) 生き残っている建物を補強。段階固定の要塞は触らない
   //     （触ると同じ段階のままHPだけ全快してしまい、削った意味が消える）
@@ -15866,8 +15838,81 @@ function advanceTier() {
   awardCrystals(crystalsForStageClear(nextTier));
   evaluateChallenges();
   snapshotRunSave();
+}
 
-  return rebuilt;   // v0.94: {count, towns}
+// -----------------------------------------------------------------
+// v0.99.7: ボスの最強モード（Shooter指示）
+// -----------------------------------------------------------------
+// **ボス以外の街を全部落とすと、ボスが本気を出す。**
+// 「周りを削ってから本丸へ」という順路を選んだプレイヤーに、
+// 終盤の山場をもう一つ置くための仕掛け。
+// 数える対象はボスと城壁を除いた全建物（城下の民家も含む）。
+// 城壁を外しているのは、壁は街ではなく設備で、
+// 壁を残したまま街を全部落とす遊び方を潰したくないため。
+const BOSS_ENRAGE_DMG_MULT      = 2.2;   // 弾の威力
+const BOSS_ENRAGE_INTERVAL_MULT = 0.45;  // 発射間隔（短くなる）
+const BOSS_ENRAGE_COUNT_ADD     = 2;     // 一度に撃つ弾数
+const BOSS_ENRAGE_RANGE_MULT    = 1.45;  // 射程
+let bossEnraged = false;
+
+/** ボス以外の街が残っているか。1つでも見つけたら即 true を返す。 */
+function anyTownAlive() {
+  for (let i = 0; i < settlements.length; i++) {
+    const s = settlements[i];
+    if (!s || s.fallen || s.isBoss || s._isWall) continue;
+    return true;
+  }
+  return false;
+}
+
+/** 建物が落ちるたびに呼ぶ。最後の1棟が落ちた瞬間にボスを最強モードへ。 */
+function maybeEnrageBoss() {
+  if (bossEnraged || gameState !== "playing") return;
+  if (anyTownAlive()) return;
+  const boss = settlements.find(s => s.isBoss);
+  if (!boss || boss.fallen) return;
+
+  bossEnraged = true;
+  // 毎フレーム分岐を増やさず、ボスの数値そのものを書き換える（一度きり）
+  boss.projectileDamage   *= BOSS_ENRAGE_DMG_MULT;
+  boss.projectileInterval *= BOSS_ENRAGE_INTERVAL_MULT;
+  boss.projectileCount     = (boss.projectileCount | 0) + BOSS_ENRAGE_COUNT_ADD;
+  boss.attackRadius       *= BOSS_ENRAGE_RANGE_MULT;
+
+  triggerFlash("rgba(255,60,40,0.55)", 0.5);
+  triggerShake(4.0, 0.5);
+  hapticPulse(300);
+  pushWorldText(boss.wx, boss.wy - 40, "最強モード", "#ff5a4a");
+  // 最後の1棟が落ちたフレームは動員段階のバナーと重なりうる。
+  // こちらの方が大事なので、同じフレームの書き換えが終わってから出す。
+  setTimeout(() => {
+    stageTextEl.textContent = "最強モード";
+    stageSubEl.textContent  = "守る街を失った本丸が本気を出す ／ " +
+      `火力×${BOSS_ENRAGE_DMG_MULT} ／ 連射×${(1 / BOSS_ENRAGE_INTERVAL_MULT).toFixed(1)} ／ ` +
+      `弾数+${BOSS_ENRAGE_COUNT_ADD} ／ 射程×${BOSS_ENRAGE_RANGE_MULT}`;
+    stageOverlayEl.classList.add("visible");
+    setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
+  }, 0);
+}
+
+/** 最強モードの目印。ボスの周りで脈打つ赤い輪（見て分かる必要がある）。 */
+function drawBossEnrageAura() {
+  if (!bossEnraged) return;
+  const boss = settlements.find(s => s.isBoss);
+  if (!boss || boss.fallen) return;
+  const pulse = 0.5 + 0.5 * Math.sin(breathTime * 3.4);
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  for (let k = 0; k < 2; k++) {
+    const r = boss.radius * (1.25 + k * 0.35) + 10 * pulse;
+    ctx.strokeStyle = `rgba(255, 70, 50, ${(0.45 - k * 0.18) * (0.6 + 0.4 * pulse)})`;
+    ctx.lineWidth = 3.5 - k * 1.2;
+    ctx.beginPath();
+    ctx.arc(boss.wx, boss.wy, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.globalCompositeOperation = "source-over";
 }
 
 // ---- 動員段階の演出（非モーダル: プレイは止めない）----
@@ -15880,7 +15925,8 @@ function triggerTierAdvance() {
   if (isFinalTier()) return;
 
   const prevBoost = POWER_TIER_BOOST[clampTier(powerTier)];
-  const rebuilt = advanceTier();
+  const prevMovers = movers.filter(m => m.alive).length;
+  advanceTier();
   const nowBoost = POWER_TIER_BOOST[clampTier(powerTier)];
 
   triggerFlash("rgba(255,240,200,0.85)", 0.35);
@@ -15891,24 +15937,18 @@ function triggerTierAdvance() {
   // 段階名だけだと、敵が強くなったのか街が戻ったのかが分からない。
   // 375px 幅で 2 行に収めるため、語を詰めて倍率は小数第1位までにする。
   const parts = [];
-  if (rebuilt.towns > 0)      parts.push(`街${rebuilt.towns}つが完全復活(${rebuilt.count}棟)`);
-  else if (rebuilt.count > 0) parts.push(`${rebuilt.count}棟再建`);
+  parts.push(`残った街を補強`);
   parts.push(`HP×${(nowBoost.hp / prevBoost.hp).toFixed(1)}`);
   parts.push(`火力×${(nowBoost.dmg / prevBoost.dmg).toFixed(1)}`);
-  parts.push(`部隊×${(TIER_MOVER_MULT[clampTier(powerTier)] / TIER_MOVER_MULT[clampTier(powerTier - 1)]).toFixed(1)}`);
+
+  // v0.99.7: 増えた部隊の実数を出す（倍率だけだと何体来たのか分からない）
+  const nowMovers = movers.filter(m => m.alive).length;
+  parts.push(`部隊 ${prevMovers}→${nowMovers}体`);
 
   stageTextEl.textContent = TIER_NAMES[powerTier] ?? ("PHASE " + (powerTier + 1));
   stageSubEl.textContent  = parts.join(" ／ ");
   stageOverlayEl.classList.add("visible");
   setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
-
-  // 復活した街の上にも目印を出す。どこが戻ったのかは
-  // 画面の中央のバナーでは伝わらないため。
-  for (const c of _tierRevivedCenters) {
-    pushWorldText(c.x, c.y, `再建 ${c.n}棟`, "#ffd48a");
-  }
-
-  return rebuilt;
 }
 
 /** 建物が落ちるたびに呼ばれ、破壊率が閾値を超えたら動員段階を上げる。 */
@@ -15935,6 +15975,7 @@ function loadStageWorld(stageIdx) {
   clearDamageNumbers();   // v0.99: 前の場面の数字を残さない
   resetFires();                 // v0.10: 前ステージの炎を消す
 
+  bossEnraged = false;   // v0.99.7: ステージごとにリセット
   settlements = generateStageLayout(stageIdx);
   recomputeTownRoles();   // v0.78: 役割を持つ建物（鐘楼・兵舎）の索引を作る
   rebuildBuildingGrid();
@@ -17479,6 +17520,7 @@ function render(now) {
 
   // HP バーは動的なので毎フレーム描画
   drawSettlementHPBars();
+  drawBossEnrageAura();      // v0.99.7: 最強モードの赤い輪
 
   drawEggBearerMarkers(now);
   drawEggs();
