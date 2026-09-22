@@ -119,6 +119,16 @@ try {
   await page.waitForFunction(() => debugFindCreature() !== null);
   const preCapture = await state();
   check('Four creatures are preplaced before mining', preCapture.creatures.length === 4 && preCapture.creatures.every(creature => !creature.captured && !creature.escaped));
+  const animation = await page.evaluate(() => {
+    const previousFrame = boilFrame, before = JSON.stringify({ creatures, expedition, inventory: player.inventory });
+    boilFrame = 0;
+    const first = buildPropFaces().filter(face => face.entity.type === 'creature');
+    boilFrame = 4;
+    const second = buildPropFaces().filter(face => face.entity.type === 'creature');
+    boilFrame = previousFrame;
+    return { firstFaces: first.length, changed: JSON.stringify(first.map(face => face.vertices)) !== JSON.stringify(second.map(face => face.vertices)), stable: JSON.stringify({ creatures, expedition, inventory: player.inventory }) === before };
+  });
+  check('Rounded creature meshes have two distinct visual poses without changing game state', animation.firstFaces > 60 && animation.changed && animation.stable, JSON.stringify(animation));
   await page.screenshot({ path: path.join(artifactDirectory, 'mobile-creatures.png'), fullPage: true });
   const visibleCreature = await page.evaluate(() => debugFindCreature());
   await page.mouse.click(visibleCreature.x, visibleCreature.y);
@@ -408,6 +418,7 @@ try {
   await page.waitForFunction(() => debugFindTree() !== null);
   const treeLayoutA = JSON.stringify((await state()).trees.map(tree => tree.cellIndex));
   await fresh(); await page.evaluate(() => debugDepart(1));
+  await page.waitForFunction(() => debugFindTree() !== null);
   const treeLayoutB = JSON.stringify((await state()).trees.map(tree => tree.cellIndex));
   check('Tree placement repeats for the same seed and trip', treeLayoutA === treeLayoutB);
   await page.evaluate(() => { expedition.fuel = 1; debugChop(debugFindTree().id); });
@@ -421,17 +432,29 @@ try {
     localStorage.setItem(saveKey(), JSON.stringify(legacy));
   });
   await page.reload();
-  check('V3 active expedition preserves coins and starts without trees', (await state()).expedition.phase === 'exploring' && (await state()).player.coins === 37 && (await state()).trees.length === 0);
+  check('V3 active expedition preserves coins and receives trees immediately', (await state()).expedition.phase === 'exploring' && (await state()).player.coins === 37 && (await state()).trees.length > 0);
+  const restoredTreeLayout = JSON.stringify((await state()).trees);
+  await page.evaluate(() => debugSave()); await page.reload();
+  check('Restored trees stay in place on repeated reload', JSON.stringify((await state()).trees) === restoredTreeLayout);
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem(saveKey()));
+    saved.trees = [];
+    window.removeEventListener('beforeunload', saveGame);
+    localStorage.setItem(saveKey(), JSON.stringify(saved));
+  });
+  await page.reload();
+  check('Previously migrated V4 trip with empty trees is repaired', (await state()).trees.length > 0 && (await state()).player.coins === 37);
   await page.evaluate(() => { debugReturn(); debugAcknowledgeResult(); debugDepart(1); });
-  check('Migrated save receives trees on its next departure', (await state()).trees.length > 0);
+  check('Migrated save also grows trees on its next departure', (await state()).trees.length > 0);
 
   for (const seed of [0, 1, 777, 12345]) {
     await page.goto(pathToFileURL(path.join(here, 'index.html')).href + `?seed=${seed}&fresh=1`);
     const generation = await page.evaluate(() => {
       const definingMaterials = ['copper', 'crystal', 'iron', 'gold', 'obsidian', 'starcore'];
-      return definingMaterials.map((material, index) => { generateIsland(index + 1); return { island: index + 1, material, count: debugState().counts[material] || 0 }; });
+      return definingMaterials.map((material, index) => { generateIsland(index + 1); placeCreatures(); placeTrees(); return { island: index + 1, material, count: debugState().counts[material] || 0, trees: trees.length }; });
     });
     check(`Seed ${seed}: every destination contains its defining resource`, generation.every(item => item.count > 0), JSON.stringify(generation));
+    check(`Seed ${seed}: every destination grows several trees`, generation.every(item => item.trees >= 3), JSON.stringify(generation.map(item => ({ island: item.island, trees: item.trees }))));
   }
   check('No runtime or resource errors', errors.length === 0, errors.join(' | '));
 } catch (error) {
