@@ -726,7 +726,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.0.4";
+const GAME_VERSION = "v1.0.5";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2826,27 +2826,47 @@ const TIER_FLOCK_CAP_FRACTION = [0.55, 0.70, 0.85, 1.0];
 // 一度 hp 1.80 / dmg 1.50 まで上げて測ったが、建物の平均HPが 15.4→25.9 になっても
 // **12秒の破壊数は 60→61、受けたダメージは 28→30/秒** とほぼ変わらなかった。
 // 群れ30体の火力に対して HP 26 は依然として一瞬で消える量だったため。さらに上げている。
-// v0.99.7: 廃墟の再建をやめたぶん、生きている街の強化に寄せて
-// hp 3.20/5.60/9.00・dmg 2.20/3.30/4.60 まで盛った。
-// v1.0.4: **再建が戻ったので、その盛りも戻す**（Shooter指示「合わせて警戒度の度合いも
-// 調整して下さい」）。壊した街が建ち直る以上、残った街まで硬いと二重取りになる。
-// 数値は再建があった頃（v0.94）の値に戻す。
+// v1.0.5: **警戒度が上がっても「ほぼ無風」だった**（Shooter判定）。実測がそれを裏づけた。
+// 22枚積んだ群れ55体を最大の町（159棟）の**ど真ん中に置きっぱなし**にして計測:
+//
+// | | 平時 | 決戦（v1.0.4） |
+// |---|---|---|
+// | 被ダメージ（群れ全体） | 39.3/秒 | 141.5/秒 |
+// | 竜1体あたり | 0.72/秒 | 2.53/秒 |
+// | 竜1体が落ちるまで | 76秒 | **21秒** |
+// | 10秒間のダウン | 0体 | **0.9体**（群れの2%） |
+//
+// 敵の街の真ん中で棒立ちして竜が落ちるまで21秒、というのが「無風」の正体。
+// **原因は強化軸が HP と1発の威力しかなかったこと。** 群れは枚数で
+// 最大HP・被ダメ軽減・射程・手数を同時に伸ばすのに、街は硬くなるだけだった。
+//
+// そこで軸を増やす（Shooter指示「射撃頻度が上がったり動く敵が増えたり、
+// 苛烈さを増して欲しい」「ガチで侵攻を止めるくらいのつもりで」）:
+//
+//   interval … 発射間隔の倍率（小さいほど速い）＝**射撃頻度**
+//   count    … 一度に撃つ弾数への加算。1発しか撃たない民家ほど効く
+//   range    … 射程の倍率。**同時に撃ってくる棟数**が面積で効くので体感が一番大きい
 const POWER_TIER_BOOST = [
-  { hp: 1.00, dmg: 1.00 },   // 段階1 平時
-  { hp: 2.60, dmg: 1.90 },   // 段階2 動員
-  { hp: 4.20, dmg: 2.70 },   // 段階3 総力戦
-  { hp: 6.50, dmg: 3.60 },   // 段階4 決戦
+  { hp: 1.00, dmg: 1.00, interval: 1.00, count: 0, range: 1.00 },   // 段階1 平時
+  { hp: 2.60, dmg: 2.90, interval: 0.60, count: 0, range: 1.16 },   // 段階2 動員
+  { hp: 4.20, dmg: 4.30, interval: 0.50, count: 1, range: 1.26 },   // 段階3 総力戦
+  { hp: 6.50, dmg: 7.00, interval: 0.36, count: 2, range: 1.40 },   // 段階4 決戦
 ];
+// 発射間隔の下限。これを割ると弾幕が壁になって「避ける」余地が消える
+// （それ以前に MAX_PROJECTILES を食い潰す）。
+const TIER_INTERVAL_FLOOR = 0.14;
 const TIER_NAMES = ["平時", "動員", "総力戦", "決戦"];
 
 // 段階が上がると動く敵の部隊数も増える。
 // 顔ぶれは時代で決まっているので変わらない——増えるのは部隊の数だけ。
 // v0.94: 強さと同じく物量も上げる（旧: 1.0 / 1.3 / 1.6 / 2.0）。
-// v0.99.7: 再建をやめた代わりに部隊を増やした（1.0/2.6/4.0/5.6）。
-// v1.0.4: 再建が戻ったので下げる。ただし v0.94 の 1.0/2.0/2.8/3.6 よりは高いままにする——
-// 動く敵は壊しても湧き直す＝**進行で薄まらない側**の脅威で、
-// 「動く敵を増やすのが良い」という方針自体は変えていないため。
-const TIER_MOVER_MULT = [1.0, 2.2, 3.0, 4.0];
+// v1.0.5: 動く敵は**数と苛烈さの両方**を警戒度で上げる（Shooter指示）。
+// 建物は壊せば減るが動く敵は段階ごとに湧き直す＝**進行で薄まらない側**の脅威なので、
+// 終盤の圧力はここで作る。
+const TIER_MOVER_MULT = [1.0, 2.6, 4.2, 6.0];
+// 動く敵の攻撃の苛烈さ（発射間隔の短縮・ビームDPS）。時代ぶんの係数に掛ける。
+// 数だけ増やすと「撃ってこない置物が増えた」ようにしか見えないため。
+const TIER_MOVER_FEROCITY = [1.0, 1.35, 1.75, 2.25];
 
 // 段階が上がるほど建物の色を締める（同じ建築のまま「補強された」ことを見せる）。
 // 建て替えではないので形は変わらない。段階ごとの暗さの差。
@@ -2883,7 +2903,15 @@ function settlementTier(settlement, baseTier) {
 function settlementPowerBoost(settlement, baseTier) {
   const eraBoost  = STAGE_DIFFICULTY_BOOST[currentStage] || { hp: 1, dmg: 1 };
   const tierBoost = POWER_TIER_BOOST[settlementTier(settlement, baseTier)];
-  return { hp: eraBoost.hp * tierBoost.hp, dmg: eraBoost.dmg * tierBoost.dmg };
+  // 時代は硬さと威力だけを底上げする。連射・弾数・射程は警戒度だけの軸にして、
+  // 「同じ文明が警戒を強めた」ことが読み取れるようにする。
+  return { hp: eraBoost.hp * tierBoost.hp, dmg: eraBoost.dmg * tierBoost.dmg,
+           interval: tierBoost.interval, count: tierBoost.count, range: tierBoost.range };
+}
+
+/** 動く敵の攻撃の苛烈さ（時代 × 警戒度）。 */
+function moverFerocity() {
+  return moverStageFerocity(currentStage) * (TIER_MOVER_FEROCITY[clampTier(powerTier)] ?? 1);
 }
 
 // -----------------------------------------------------------------
@@ -6829,7 +6857,7 @@ function updateBehemothArm(m, dt) {
   m.attackTimer -= dt;
   if (m.attackTimer > 0) return;
   if (hl < BEHEMOTH_ARM_SLAM_RANGE) {
-    m.attackTimer = BEHEMOTH_ARM_SLAM_INTERVAL / moverStageFerocity(currentStage);
+    m.attackTimer = BEHEMOTH_ARM_SLAM_INTERVAL / moverFerocity();
     emitShockwave(m.wx, m.wy, BEHEMOTH_ARM_SLAM_RADIUS, BEHEMOTH_ARM_SLAM_DMG, BEHEMOTH_ARM_SLAM_PUSH);
     triggerFlash("rgba(255,120,40,0.16)", 0.12);
   } else {
@@ -7005,7 +7033,8 @@ function updateMovers(dt) {
     if (!atk) continue;        // v0.25.1: 財宝馬車など無攻撃ユニット
     if (m.submerged) continue; // v0.42: 潜行中は撃たない
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
-    const ferocity = moverStageFerocity(currentStage);
+    // v1.0.5: 警戒度ぶんも掛ける（TIER_MOVER_FEROCITY）。
+    const ferocity = moverFerocity();
     if (atk.type === "laser") {
       // v0.76: 巨人型のレーザー（Shooter指示「常時照射はやめて極太ビームの細い版を」）。
       // 首都の大技と同じ spawnLaserStrike を使うので作法も同じ＝**予兆1.3秒 → 照射0.9秒**。
@@ -16015,21 +16044,27 @@ function reinforceSettlementForTier(settlement, baseTier) {
   settlement.maxHp = hp;
   settlement.hp    = hp;
 
-  settlement.attackRadius       = bConfig.attackRadius;
+  // v1.0.5: 射程も警戒度で伸びる。**同時に撃ってくる棟数は面積で効く**ので、
+  // 1.4倍でも「町に入った瞬間に四方から来る」体感になる。
+  settlement.attackRadius       = bConfig.attackRadius * boost.range;
   // v0.57: 時代兵器は自前の射程を持つ。ここで街の既定値に戻すと、
   // 警戒度が上がった瞬間に投石機やロケット砲台が近距離武器へ化ける
   // （実測: 段階1に上げたら走査半径が5→4に落ちて投石機の射程が 500→400 になった）。
   const _emp = settlement._emplacement ? EMPLACEMENT_DEFS[settlement._emplacement] : null;
-  if (_emp) settlement.attackRadius = Math.max(settlement.attackRadius, _emp.range);
+  if (_emp) settlement.attackRadius = Math.max(settlement.attackRadius, _emp.range * boost.range);
   // v0.81: 前哨堡も同じ理由で射程を戻さない（段階が上がると近距離武器に化けてしまう）
   if (settlement._townRole === "rampart") {
-    settlement.attackRadius = Math.max(settlement.attackRadius, RAMPART_RANGE);
+    settlement.attackRadius = Math.max(settlement.attackRadius, RAMPART_RANGE * boost.range);
   }
-  settlement.projectileInterval = bConfig.projectileInterval;
+  // v1.0.5: 射撃頻度と弾数も警戒度で上がる（Shooter指示）。
+  // 弾数の加算は**1発しか撃たない民家ほど効く**（1→3は3倍、6→8は1.3倍）。
+  // 町を埋める小さな建物が終盤に効いてくる形にするため、倍率ではなく加算にしている。
+  settlement.projectileInterval = Math.max(TIER_INTERVAL_FLOOR,
+                                           bConfig.projectileInterval * boost.interval);
   settlement.projectileSpeed    = bConfig.projectileSpeed;
   settlement.projectileDamage   = bConfig.projectileDamage * boost.dmg;
   settlement.projectileColor    = bConfig.projectileColor;
-  settlement.projectileCount    = bConfig.projectileCount;
+  settlement.projectileCount    = (bConfig.projectileCount ?? 1) + boost.count;
   settlement.projectileTracking = bConfig.projectileTracking;
   settlement.projectileAoe      = bConfig.projectileAoe ?? 0;
   settlement.reward             = bConfig.reward;
@@ -16304,15 +16339,20 @@ function triggerTierAdvance() {
   // 段階名だけだと、敵が強くなったのか街が戻ったのかが分からない。
   // 375px 幅で 2 行に収めるため、語を詰めて倍率は小数第1位までにする。
   const parts = [];
-  if (rebuilt.towns > 0)      parts.push(`街${rebuilt.towns}つが完全復活(${rebuilt.count}棟)`);
+  // v1.0.5: 段の数を5つに抑える（375px幅で2行）。再建が無い回は
+  // 「残った街を補強」を出していたが、段階名だけで伝わるので落とした。
+  if (rebuilt.towns > 0)      parts.push(`街${rebuilt.towns}つ復活(${rebuilt.count}棟)`);
   else if (rebuilt.count > 0) parts.push(`${rebuilt.count}棟再建`);
-  else                        parts.push(`残った街を補強`);
   parts.push(`HP×${(nowBoost.hp / prevBoost.hp).toFixed(1)}`);
   parts.push(`火力×${(nowBoost.dmg / prevBoost.dmg).toFixed(1)}`);
+  // v1.0.5: 何が苛烈になったのかを出す。数字が無いと「硬くなっただけ」に見える
+  parts.push(`連射×${(prevBoost.interval / nowBoost.interval).toFixed(1)}`);
+  if (nowBoost.count > prevBoost.count) parts.push(`弾数+${nowBoost.count - prevBoost.count}`);
+  parts.push(`射程+${Math.round((nowBoost.range / prevBoost.range - 1) * 100)}%`);
 
   // v0.99.7: 増えた部隊の実数を出す（倍率だけだと何体来たのか分からない）
   const nowMovers = movers.filter(m => m.alive).length;
-  parts.push(`部隊 ${prevMovers}→${nowMovers}体`);
+  parts.push(`部隊 ${prevMovers}→${nowMovers}`);
 
   stageTextEl.textContent = TIER_NAMES[powerTier] ?? ("PHASE " + (powerTier + 1));
   stageSubEl.textContent  = parts.join(" ／ ");
