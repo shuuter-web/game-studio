@@ -132,7 +132,9 @@
   .debug-card p { font-size:12px; line-height:1.8; margin:10px 0; }
   .debug-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
   #btn-debug-reset { border-color:#943f29; color:#943f29; }
-  #fuel-status { top:10px; left:50%; transform:translateX(-50%) rotate(.2deg); z-index:4; width:clamp(190px,34vw,320px); padding:8px 11px; }
+  /* v0.6.1: 上に置くと島の上半分（木や空に伸びた部分）に被るので下段へ。
+     下は 道具列(12px) → ヒント(66px) → 燃料(92px) の順に積む。 */
+  #fuel-status { bottom:92px; left:50%; transform:translateX(-50%) rotate(.2deg); z-index:4; width:clamp(190px,34vw,320px); padding:8px 11px; }
   #fuel-status[hidden] { display:none; }
   .fuel-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; font-weight:bold; }
   #fuel-value { font-size:15px; }
@@ -146,7 +148,8 @@
   .fuel-notice-card { width:min(380px,100%); padding:24px; border:2px solid #8c795e; background:#f9f2e2; box-shadow:5px 6px 0 rgba(43,38,32,.22); text-align:center; }
   .fuel-notice-card p { margin:12px 0 20px; font-size:16px; line-height:1.8; font-weight:bold; }
   #btn-fuel-return { width:100%; background:#435e58; color:#fff8e7; }
-  @media (max-width: 900px) { #hud { top:76px; max-width:calc(100vw - 116px); } #inv { top:76px; } #fuel-status { width:min(310px,calc(100vw - 24px)); } }
+  /* v0.6.1: 燃料が上から退いたので、HUDと持ち物を画面の上端へ戻す */
+  @media (max-width: 900px) { #hud { max-width:calc(100vw - 116px); } #fuel-status { width:min(310px,calc(100vw - 24px)); } }
   @media (max-width: 420px) { .airship { width: 135px; height: 90px; } .port-head h1 { font-size: 23px; } #base { padding: 18px 12px 28px; } #hud { max-width:calc(100vw - 108px); } }
 </style>
 </head>
@@ -229,7 +232,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.6.0";
+const GAME_VERSION = "v0.6.1";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -651,7 +654,21 @@ function spend(cost) {
 // カメラと投影
 // -----------------------------------------------------------------
 const camera = { yaw: 0.68, pitch: -0.46, dist: 25, zoom: 1 };
-let camTargetY = -1.6;
+// v0.6.1: 注視点は**残っているブロックの重心**に寄せる（Shooter指示）。
+// 木が上に生えたぶん島の見た目の中心がずれていたし、
+// 片側を掘り進めると残りが画面の端へ寄っていく問題も同じ原因だった。
+//
+// 重心（質量中心）にしているのは、細長い木が数本生えただけで
+// 視点が大きく振られないようにするため（外接箱の中心だと木に引っぱられる）。
+// 注視点 = **島に降りた時の基準** ＋ **重心がそこからどれだけ動いたか**。
+// 基準だけを重心に置き換えると、島の質量が下の岩盤に偏っているぶん
+// 初期の画角が下にずれる（実測で 1.7 マス下がった）。
+// 「掘った分だけ視点が付いてくる」のが目的なので、**差分だけ**を足す。
+let camTargetX = 0, camTargetY = -1.6, camTargetZ = 0;   // 今の注視点（毎フレーム寄っていく）
+let camFocusX  = 0, camFocusY  = -1.6, camFocusZ  = 0;   // 寄せたい先
+let camBaseX   = 0, camBaseY   = -1.6, camBaseZ   = 0;   // 島に降りた時の基準
+let camOriginX = 0, camOriginY = 0,    camOriginZ = 0;   // その時の重心
+let focusDirty = true;
 let cameraDirty = true;
 let sortDirty = true;
 
@@ -670,6 +687,61 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 
+/**
+ * v0.6.1: 残っているブロックの重心を出す。ブロックが減るたびに呼ぶのではなく、
+ * 「汚れた」印を立てて毎フレーム1回だけ計算する（1回の採掘で複数壊れるため）。
+ */
+function blockCentroid(out) {
+  let n = 0, sx = 0, sy = 0, sz = 0;
+  for (let y = 0; y < GY; y++) {
+    for (let z = 0; z < GZ; z++) {
+      const rowBase = (y * GZ + z) * GX;
+      for (let x = 0; x < GX; x++) {
+        if (!cells[rowBase + x]) continue;
+        sx += x; sy += y; sz += z; n++;
+      }
+    }
+  }
+  if (n === 0) return false;   // 全部掘り切ったら最後の注視点のまま
+  out[0] = sx / n - (GX - 1) / 2;
+  out[1] = sy / n - GROUND_Y;
+  out[2] = sz / n - (GZ - 1) / 2;
+  return true;
+}
+
+const _centroid = [0, 0, 0];
+function recomputeCameraFocus() {
+  focusDirty = false;
+  if (!blockCentroid(_centroid)) return;
+  camFocusX = camBaseX + (_centroid[0] - camOriginX);
+  camFocusY = camBaseY + (_centroid[1] - camOriginY);
+  camFocusZ = camBaseZ + (_centroid[2] - camOriginZ);
+}
+
+/**
+ * 島に降りた時点を基準にする。ここからの重心の動きが、そのまま注視点の動きになる。
+ * @param {number[]} [target] 続きから再開する場合の注視点（基準ではなく今の位置）
+ */
+function anchorCameraFocus(target) {
+  camBaseX = 0;
+  camBaseY = -1.6 - (islandRadius - ISLAND.baseRadius) * 0.35;
+  camBaseZ = 0;
+  if (blockCentroid(_centroid)) {
+    camOriginX = _centroid[0]; camOriginY = _centroid[1]; camOriginZ = _centroid[2];
+  }
+  if (target) {
+    // 保存された注視点を今の重心に結び付け直す（掘った分のずれを引き継ぐ）
+    camOriginX -= target[0] - camBaseX;
+    camOriginY -= target[1] - camBaseY;
+    camOriginZ -= target[2] - camBaseZ;
+  }
+  recomputeCameraFocus();
+  camTargetX = camFocusX;
+  camTargetY = camFocusY;
+  camTargetZ = camFocusZ;
+  cameraDirty = true;
+}
+
 /** 島の大きさに合わせて引く。島が育っても画面に収まるように */
 function fitCameraToIsland() {
   // 輪郭ノイズで半径は最大1.2倍。横幅の 92% に収まる距離と、寄りすぎない距離の大きい方
@@ -677,8 +749,7 @@ function fitCameraToIsland() {
   const fitWidth = halfWidthWorld * focal / (viewW * 0.46);
   camera.dist = Math.max(16 + islandRadius * 1.35, fitWidth);
   camera.zoom = 1;
-  camTargetY = -1.6 - (islandRadius - ISLAND.baseRadius) * 0.35;
-  cameraDirty = true;
+  anchorCameraFocus();   // v0.6.1: ここを基準にして、以降は重心の動きに付いていく
 }
 
 const camBasis = { cy: 1, sy: 0, cp: 1, sp: 0 };
@@ -690,9 +761,11 @@ function updateCamBasis() {
 }
 const projOut = [0, 0, 0];
 function project(wx, wy, wz) {
+  const wxc = wx - camTargetX;
   const wyc = wy - camTargetY;
-  const x1 = wx * camBasis.cy - wz * camBasis.sy;
-  const z1 = wx * camBasis.sy + wz * camBasis.cy;
+  const wzc = wz - camTargetZ;
+  const x1 = wxc * camBasis.cy - wzc * camBasis.sy;
+  const z1 = wxc * camBasis.sy + wzc * camBasis.cy;
   const y2 = wyc * camBasis.cp - z1 * camBasis.sp;
   const z2 = wyc * camBasis.sp + z1 * camBasis.cp;
   const depth = z2 + camera.dist;
@@ -1510,6 +1583,7 @@ function breakCell(idx, chainStep) {
   cells[idx] = 0;
   damage[idx] = 0;
   solidCount--;
+  focusDirty = true;   // v0.6.1: 注視点を計算し直す
   player.stats.mined++;
   expedition.blocksDestroyed++;
   registerBreak();
@@ -1859,7 +1933,8 @@ function saveGame() {
     player,
     island: { level: islandLevel, gx: GX, gy: GY, gz: GZ, groundY: GROUND_Y, radius: islandRadius,
               cells: bytesToBase64(cells), damage: bytesToBase64(damage) },
-    camera: { yaw: camera.yaw, pitch: camera.pitch, dist: camera.dist, zoom: camera.zoom, targetY: camTargetY },
+    camera: { yaw: camera.yaw, pitch: camera.pitch, dist: camera.dist, zoom: camera.zoom,
+              targetX: camTargetX, targetY: camTargetY, targetZ: camTargetZ },
   };
   try { localStorage.setItem(saveKey(), JSON.stringify(data)); document.getElementById("save-warning").hidden = true; }
   catch (error) { document.getElementById("save-warning").hidden = false; }
@@ -1901,7 +1976,12 @@ function loadGame() {
   if (data.camera) {
     camera.yaw = data.camera.yaw; camera.pitch = data.camera.pitch;
     camera.dist = data.camera.dist; camera.zoom = data.camera.zoom;
-    camTargetY = data.camera.targetY;
+    // v0.6.1: 古いセーブには targetY しか無い。その場合は重心から作り直す。
+    if (typeof data.camera.targetX === "number") {
+      anchorCameraFocus([data.camera.targetX, data.camera.targetY, data.camera.targetZ]);
+    } else {
+      anchorCameraFocus();
+    }
   }
   cameraDirty = true;
   return true;
@@ -2247,6 +2327,21 @@ function frame(now) {
   if (dt > 0) fpsEma = fpsEma === 0 ? 1 / dt : fpsEma * 0.92 + (1 / dt) * 0.08;
 
   processPendingBreaks();
+
+  // v0.6.1: 注視点をゆっくり重心へ寄せる。
+  // 採掘のたびに飛ぶと酔うので、時間ベースの指数平滑で追わせる。
+  // 動いていない間は cameraDirty を立てない（毎フレームの再ソートを避ける）。
+  if (focusDirty) recomputeCameraFocus();
+  {
+    const k = 1 - Math.pow(0.02, dt);   // 約1秒で9割寄る
+    const dx = (camFocusX - camTargetX) * k;
+    const dy = (camFocusY - camTargetY) * k;
+    const dz = (camFocusZ - camTargetZ) * k;
+    if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 0.0015) {
+      camTargetX += dx; camTargetY += dy; camTargetZ += dz;
+      cameraDirty = true;
+    }
+  }
 
   const nextBoil = Math.floor(nowSeconds * BOIL_FPS);
   if (nextBoil !== lastBoilFrame) {
