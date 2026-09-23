@@ -715,7 +715,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.0.1";
+const GAME_VERSION = "v1.0.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10748,7 +10748,7 @@ function settlementFall(settlementIndex) {
 
   hapticPulse(80);
 
-  // v0.99.7: これが最後の1棟だったらボスが最強モードに入る
+  // v1.0.2: これで最後の町が陥落したならボスが最強モードに入る
   maybeEnrageBoss();
   markRunSaveDirty();   // v1.0.0: 壊した状態をセーブに残す（書き込みは間隔を空けて）
 
@@ -15759,7 +15759,7 @@ function triggerStageClear() {
 // -----------------------------------------------------------------
 // **どれだけ相手を追い込んでから本丸を落としたか**を評価にする。
 // 群れを育てずに首都へ直行すれば★1、動員を重ねさせてから落とすほど星が増え、
-// 街を一つ残らず潰してボスを最強モードに入れてから落とすのが最高評価。
+// 街を一つ残らず陥落させてボスを最強モードに入れてから落とすのが最高評価。
 //   ★1 平時のまま撃破       （powerTier 0）
 //   ★2 動員まで進めてから    （powerTier 1）
 //   ★3 総力戦まで進めてから  （powerTier 2）
@@ -16002,32 +16002,42 @@ function advanceTier() {
 // -----------------------------------------------------------------
 // v0.99.7: ボスの最強モード（Shooter指示）
 // -----------------------------------------------------------------
-// **ボス以外の街を全部落とすと、ボスが本気を出す。**
+// **街を全部「陥落」させると、ボスが本気を出す。**
 // 「周りを削ってから本丸へ」という順路を選んだプレイヤーに、
 // 終盤の山場をもう一つ置くための仕掛け。
-// 数える対象はボスと城壁を除いた全建物（城下の民家も含む）。
-// 城壁を外しているのは、壁は街ではなく設備で、
-// 壁を残したまま街を全部落とす遊び方を潰したくないため。
+//
+// v1.0.2: 条件を**1棟残らず**から**街ごとの陥落判定**に緩めた（Shooter指示）。
+// 陥落は町の棟数の TOWN_SURRENDER_RATIO（7割）が落ちた時点で成立し、
+// 成立した町はもう撃ってこない。つまり「もう脅威ではない」の線は既に引かれていて、
+// 最強モードの条件もそこに合わせるのが筋が通る。
+// 1棟残らず、だと**散らばった民家を1軒ずつ探して回る作業**になっていた。
+//
+// 数える対象は**町に属する建物だけ**（`_townIndex` を持つもの）。
+// 散在する極小集落や城下の民家は町ではないので条件に入らない。
 const BOSS_ENRAGE_DMG_MULT      = 2.2;   // 弾の威力
 const BOSS_ENRAGE_INTERVAL_MULT = 0.45;  // 発射間隔（短くなる）
 const BOSS_ENRAGE_COUNT_ADD     = 2;     // 一度に撃つ弾数
 const BOSS_ENRAGE_RANGE_MULT    = 1.45;  // 射程
 let bossEnraged = false;
 
-/** ボス以外の街が残っているか。1つでも見つけたら即 true を返す。 */
-function anyTownAlive() {
-  for (let i = 0; i < settlements.length; i++) {
-    const s = settlements[i];
-    if (!s || s.fallen || s.isBoss || s._isWall) continue;
-    return true;
-  }
+/** まだ陥落していない町が残っているか。 */
+function anyTownStanding() {
+  if (townStats.size === 0) return true;   // 町が1つも無い＝判定できないので条件未達扱い
+  for (const st of townStats.values()) if (!st.surrendered) return true;
   return false;
 }
 
-/** 建物が落ちるたびに呼ぶ。最後の1棟が落ちた瞬間にボスを最強モードへ。 */
+/** まだ陥落していない町の数（HUDと地図の目印に使う）。 */
+function standingTownCount() {
+  let n = 0;
+  for (const st of townStats.values()) if (!st.surrendered) n++;
+  return n;
+}
+
+/** 建物が落ちるたびに呼ぶ。最後の町が陥落した瞬間にボスを最強モードへ。 */
 function maybeEnrageBoss() {
   if (bossEnraged || gameState !== "playing") return;
-  if (anyTownAlive()) return;
+  if (anyTownStanding()) return;
   const boss = settlements.find(s => s.isBoss);
   if (!boss || boss.fallen) return;
 
@@ -16042,11 +16052,12 @@ function maybeEnrageBoss() {
   triggerShake(4.0, 0.5);
   hapticPulse(300);
   pushWorldText(boss.wx, boss.wy - 40, "最強モード", "#ff5a4a");
+  // ここではもう地図の赤い点は全部消えている（全町が陥落しているため）。
   // 最後の1棟が落ちたフレームは警戒度のバナーと重なりうる。
   // こちらの方が大事なので、同じフレームの書き換えが終わってから出す。
   setTimeout(() => {
     stageTextEl.textContent = "最強モード";
-    stageSubEl.textContent  = "守る街を失った本丸が本気を出す ／ " +
+    stageSubEl.textContent  = "全ての街が陥落し、本丸が本気を出す ／ " +
       `火力×${BOSS_ENRAGE_DMG_MULT} ／ 連射×${(1 / BOSS_ENRAGE_INTERVAL_MULT).toFixed(1)} ／ ` +
       `弾数+${BOSS_ENRAGE_COUNT_ADD} ／ 射程×${BOSS_ENRAGE_RANGE_MULT}`;
     stageOverlayEl.classList.add("visible");
@@ -19124,12 +19135,12 @@ const MINIMAP_DOT_SCALE = (MINIMAP_W / WORLD_W) / (80 / 4800);
 // **白リング付きの移動敵（半径2.2）より目立たない**状態だった。
 // ミニマップの仕事は「自分がどこに居るか」と「どこが敵地か」の2つだけなので、
 // 敵はボス以外を1色に潰し、白は自分にだけ使う。
-// 赤と橙が近いと 2px では見分けられない。落とさなくてよい敵は**黄土色**まで寄せる。
-const MINIMAP_ENEMY_COLOR  = "#b5862f";   // 敵のうち**落とさなくてよいもの**（城壁・移動敵）
-// v1.0.1: ボス最強モードの条件になっている建物（ボスと城壁を除く全部）は赤にする。
-// 終盤に「あと何をどこで落とせばいいか」が地図で分かるようにするため
-// （HUDの残数だけでは、残り12棟がどこにあるかは探せない）。
-const MINIMAP_TARGET_COLOR = "#e0392a";   // 落とす必要のある建物
+const MINIMAP_ENEMY_COLOR  = "#c2673f";   // 敵（建物・移動敵とも）
+// v1.0.2: 赤は**町ごとに中心の1点だけ**（Shooter指示）。
+// v1.0.1 は「落とす必要のある建物」を全部赤くしたので、序盤は地図が真っ赤になり、
+// しかも街の塊が一つの赤い面になって「いくつ残っているか」が読めなかった。
+// 1町＝1点なら、残りの数がそのまま点の数になる。
+const MINIMAP_TARGET_COLOR = "#ff3b2a";   // まだ陥落していない町の目印
 const MINIMAP_FALLEN_COLOR = "#3a3a3a";   // 陥落した建物
 const MINIMAP_SELF_COLOR   = "#9ff4ff";   // 自分の群れ
 // ボスは時代ごとの glowColor を使っていたが、橙系の時代だと敵色と見分けにくい。
@@ -19184,10 +19195,7 @@ function rebuildMinimapBase() {
       // 基準ワールド（4800×3600 / ミニマップ80×60）との比で縮める。
       const dotR = MINIMAP_DOT_SCALE *
         (settlement.size === "large" ? 3 : (settlement.size === "medium" ? 2 : (settlement.size === "tiny" ? 1.0 : 1.5)));
-      // v1.0.1: 城壁は最強モードの条件に入らないので、落とす必要のある建物と色を分ける
-      minimapCtx.fillStyle = settlement.fallen ? MINIMAP_FALLEN_COLOR
-                           : settlement._isWall ? MINIMAP_ENEMY_COLOR
-                           : MINIMAP_TARGET_COLOR;
+      minimapCtx.fillStyle = settlement.fallen ? MINIMAP_FALLEN_COLOR : MINIMAP_ENEMY_COLOR;
       minimapCtx.beginPath();
       minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
       minimapCtx.fill();
@@ -19196,6 +19204,26 @@ function rebuildMinimapBase() {
 
   minimapBosses = bosses;
   minimapBaseDirty = false;
+}
+
+/**
+ * v1.0.2: まだ陥落していない町の目印。中心に赤い点を1つだけ置く。
+ * 建物と移動敵より上・ボスと自分より下に描く。
+ */
+function drawMinimapTownMarks(c, scaleX, scaleY) {
+  for (const st of townStats.values()) {
+    if (st.surrendered) continue;
+    const mx = st.cx * scaleX, my = st.cy * scaleY;
+    // 暗い縁を敷く（街のドットの上でも点が沈まない）
+    c.fillStyle = "rgba(0,0,0,0.6)";
+    c.beginPath();
+    c.arc(mx, my, 3.4, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = MINIMAP_TARGET_COLOR;
+    c.beginPath();
+    c.arc(mx, my, 2.3, 0, Math.PI * 2);
+    c.fill();
+  }
 }
 
 /** ミニマップのボス印。**他の何にも隠れないよう一番上で描く**。 */
@@ -19267,6 +19295,9 @@ function drawMinimap() {
     minimapCtx.arc(mmx, mmy, 2.2, 0, Math.PI * 2);
   }
   minimapCtx.fill();
+
+  // v1.0.2: まだ陥落していない町の赤い点（建物・移動敵より上）
+  drawMinimapTownMarks(minimapCtx, scaleX, scaleY);
 
   // v0.99.5: ボスは建物と移動敵の**後**に描く（何にも隠れない）
   drawMinimapBoss(minimapCtx);
@@ -19359,7 +19390,11 @@ function updateHUDBuildings() {
   }
 
   const hpPct = Math.ceil((boss.hp / boss.maxHp) * 100);
-  hudBuildings.textContent = "BOSS " + hpPct + "% | " + smallRemaining + "/" + smallTotal;
+  // v1.0.2: 最強モードの条件は「町の陥落」なので、残り**町数**も出す。
+  // 棟数だけだと、あと何をすれば条件を満たすのかが分からない。
+  const townsLeft = standingTownCount();
+  hudBuildings.textContent = "BOSS " + hpPct + "% | " + smallRemaining + "/" + smallTotal +
+    (bossEnraged ? " | 最強" : " | 街" + townsLeft);
 }
 
 // -----------------------------------------------------------------
