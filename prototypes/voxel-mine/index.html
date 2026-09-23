@@ -132,7 +132,22 @@
   .debug-card p { font-size:12px; line-height:1.8; margin:10px 0; }
   .debug-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
   #btn-debug-reset { border-color:#943f29; color:#943f29; }
-  @media (max-width: 420px) { .airship { width: 135px; height: 90px; } .port-head h1 { font-size: 23px; } #base { padding: 18px 12px 28px; } }
+  #fuel-status { top:10px; left:50%; transform:translateX(-50%) rotate(.2deg); z-index:4; width:clamp(190px,34vw,320px); padding:8px 11px; }
+  #fuel-status[hidden] { display:none; }
+  .fuel-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; font-weight:bold; }
+  #fuel-value { font-size:15px; }
+  .fuel-track { height:13px; margin-top:5px; overflow:hidden; border:1.5px solid rgba(43,38,32,.7); border-radius:3px; background:#d7cdbb; }
+  #fuel-fill { display:block; height:100%; width:100%; background:#557b62; transition:width .18s ease-out,background .18s; }
+  #fuel-status.low #fuel-fill { background:#c07a36; }
+  #fuel-status.empty { border-color:#943f29; box-shadow:2px 3px 0 rgba(148,63,41,.2),0 0 0 2px rgba(148,63,41,.14); }
+  #fuel-status.empty #fuel-fill { background:#943f29; }
+  #fuel-notice { position:fixed; inset:0; z-index:11; display:grid; place-items:center; padding:18px; background:rgba(43,38,32,.48); }
+  #fuel-notice[hidden] { display:none; }
+  .fuel-notice-card { width:min(380px,100%); padding:24px; border:2px solid #8c795e; background:#f9f2e2; box-shadow:5px 6px 0 rgba(43,38,32,.22); text-align:center; }
+  .fuel-notice-card p { margin:12px 0 20px; font-size:16px; line-height:1.8; font-weight:bold; }
+  #btn-fuel-return { width:100%; background:#435e58; color:#fff8e7; }
+  @media (max-width: 900px) { #hud { top:76px; max-width:calc(100vw - 116px); } #inv { top:76px; } #fuel-status { width:min(310px,calc(100vw - 24px)); } }
+  @media (max-width: 420px) { .airship { width: 135px; height: 90px; } .port-head h1 { font-size: 23px; } #base { padding: 18px 12px 28px; } #hud { max-width:calc(100vw - 108px); } }
 </style>
 </head>
 <body>
@@ -147,6 +162,11 @@
 </div>
 
 <div class="panel" id="inv"></div>
+
+<div class="panel" id="fuel-status" hidden>
+  <div class="fuel-head"><span>残り燃料</span><span id="fuel-value">0 / 60</span></div>
+  <div class="fuel-track" id="fuel-meter" role="meter" aria-label="残り燃料" aria-valuemin="0" aria-valuemax="60" aria-valuenow="0"><span id="fuel-fill"></span></div>
+</div>
 
 <div class="panel" id="tools">
   <button id="btn-craft">工房</button>
@@ -184,6 +204,7 @@
 </section>
 <section id="result" hidden aria-label="遠征リザルト"><div class="port-sheet"><div class="port-label">EXPEDITION REPORT</div><h1>遠征の記録</h1><div id="result-details"></div><details class="lore-book" id="result-notes"><summary>積み荷の覚え書き</summary><div id="result-notes-content"></div></details><button id="btn-result-base">港へ戻る</button><button id="btn-result-debug">デバッグ</button></div></section>
 <section id="debug-panel" hidden role="dialog" aria-modal="true" aria-label="デバッグメニュー"><div class="debug-card"><div class="port-label">DEBUG MENU</div><h2>デバッグ</h2><p id="debug-slot"></p><p>このセーブ枠の所持品・強化・航路・遠征記録を初期状態に戻せます。</p><div class="debug-actions"><button id="btn-debug-reset">セーブデータを初期化</button><button id="btn-debug-close">閉じる</button></div></div></section>
+<section id="fuel-notice" hidden role="dialog" aria-modal="true" aria-labelledby="fuel-notice-message"><div class="fuel-notice-card"><div class="port-label">FUEL EMPTY</div><p id="fuel-notice-message">燃料がなくなった。帰還しよう。</p><button id="btn-fuel-return">帰還する</button></div></section>
 <div id="save-warning" role="status" hidden>保存できません。空き容量やブラウザの保存設定を確認してください。</div>
 
 <div id="craft" class="hidden">
@@ -208,7 +229,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.5.1";
+const GAME_VERSION = "v0.6.0";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -255,11 +276,11 @@ function hash3(a, b, c) {
 
 const urlParams = new URLSearchParams(location.search);
 const DEFAULT_WORLD_SEED = 20260917;
-// 世界の種。?seed= で固定。島 n の種は worldSeed と n から決まるので、同じ世界なら同じ島が並ぶ
+// 世界の種。?seed= で固定し、航海番号を混ぜることで同じ航路にも毎回別の漂流島を生成する。
 const worldSeed = urlParams.get("seed") !== null
   ? (/^\d+$/.test(urlParams.get("seed")) ? Number(urlParams.get("seed")) >>> 0 : hashSeed(urlParams.get("seed")))
   : DEFAULT_WORLD_SEED;
-function islandSeed(level) { return hashSeed(worldSeed + ":" + level); }
+function islandSeed(level) { return hashSeed(worldSeed + ":" + level + ":trip:" + tripSerial); }
 
 // -----------------------------------------------------------------
 // 設定・バランス（本制作では data/ に切り出す）
@@ -332,7 +353,7 @@ const DESTINATIONS = [
   { id: 5, name: "黒曜の高島", description: "硬い黒曜の殻", flavor: "黒い岩肌を見せる漂流島。切り離される前には、どんな景色の一部だったのか。", cost: { gold: 6, iron: 20 } },
   { id: 6, name: "星核の果て", description: "最深部の星核", flavor: "星核を秘めた小島が流れる空域。手の中の石も、巨大な浮島のほんの欠片だ。", cost: { obsidian: 8, gold: 10 } },
 ];
-const expedition = { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0, treesChopped: 0 };
+const expedition = { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 };
 function fuelCapacity() { return FUEL_LEVELS[expedition.fuelLevel].capacity; }
 
 // つるはし。tier がそのまま「掘れる素材の tier の上限」
@@ -1211,7 +1232,7 @@ function groundCandidates() {
 function placeCreatures() {
   creatures.length = 0;
   const candidates = groundCandidates();
-  candidates.sort((left, right) => makeRandomGenerator(hashSeed(worldSeed + ":creature:" + islandLevel + ":" + left))() - makeRandomGenerator(hashSeed(worldSeed + ":creature:" + islandLevel + ":" + right))());
+  candidates.sort((left, right) => makeRandomGenerator(hashSeed(worldSeed + ":creature:" + islandLevel + ":" + tripSerial + ":" + left))() - makeRandomGenerator(hashSeed(worldSeed + ":creature:" + islandLevel + ":" + tripSerial + ":" + right))());
   for (const cell of candidates) {
     const position = []; indexToXYZ(cell, position);
     if (creatures.some((creature) => { const other = []; indexToXYZ(creature.cellIndex, other); return Math.hypot(position[0] - other[0], position[2] - other[2]) < CREATURE_CONFIG.minimumSpacing; })) continue;
@@ -1243,7 +1264,7 @@ function placeTrees() {
 }
 function placeTreeKind(kind, count) {
   const candidates = groundCandidates().filter((index) => cells[index] === M_GRASS || cells[index] === M_DIRT);
-  const placementSeed = kind === "sapling" ? worldSeed : hashSeed(worldSeed + ":large-tree");
+  const placementSeed = hashSeed(worldSeed + ":tree:" + kind + ":" + tripSerial);
   candidates.sort((left, right) => (cells[right] === M_GRASS) - (cells[left] === M_GRASS) || hash3(left, islandLevel, placementSeed) - hash3(right, islandLevel, placementSeed));
   // 草地が狭い島でも本数を確保し、生き物の足場だけは共有しない。
   for (const spacing of [TREE_CONFIG.minimumSpacing, 1.5, 0]) {
@@ -1792,7 +1813,18 @@ function updateHud() {
   next.disabled = expedition.phase !== "exploring" || expedition.returnRequested;
   next.textContent = expedition.returnRequested ? "連鎖を回収中…" : "港へ帰還";
   document.getElementById("btn-craft").disabled = expedition.phase !== "base";
-  document.getElementById("h-fuel").textContent = "燃料 " + expedition.fuel + " / " + fuelCapacity() + "　" + expedition.turns + "ターン ／ 捕獲 " + expedition.captures + " ／ 発見 " + Object.values(expedition.haul).reduce((total, amount) => total + amount, 0);
+  document.getElementById("h-fuel").textContent = expedition.turns + "ターン ／ 捕獲 " + expedition.captures + " ／ 発見 " + Object.values(expedition.haul).reduce((total, amount) => total + amount, 0);
+  const capacity = fuelCapacity();
+  const fuelRatio = capacity ? expedition.fuel / capacity : 0;
+  const fuelGauge = document.getElementById("fuel-status");
+  const fuelMeter = document.getElementById("fuel-meter");
+  fuelGauge.hidden = expedition.phase !== "exploring";
+  fuelGauge.classList.toggle("low", fuelRatio > 0 && fuelRatio <= 0.25);
+  fuelGauge.classList.toggle("empty", expedition.fuel === 0);
+  fuelMeter.setAttribute("aria-valuemax", capacity);
+  fuelMeter.setAttribute("aria-valuenow", expedition.fuel);
+  document.getElementById("fuel-value").textContent = expedition.fuel + " / " + capacity;
+  document.getElementById("fuel-fill").style.width = Math.max(0, Math.min(100, fuelRatio * 100)) + "%";
 }
 function updateComboHud() {
   const el = document.getElementById("h-combo");
@@ -1821,7 +1853,7 @@ function base64ToBytes(text) {
 function saveKey() { return SAVE_KEY_PREFIX + worldSeed + (urlParams.has("fresh") ? ":fresh:" + urlParams.get("fresh") : ""); }
 function saveGame() {
   const data = {
-    version: 6, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
+    version: 7, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
     expedition, combo,
     pending: pendingBreaks.map((entry) => ({ ...entry, due: Math.max(0, entry.due - nowSeconds) })),
     player,
@@ -1878,7 +1910,7 @@ function resetGame() {
   try { localStorage.removeItem(saveKey()); } catch (error) { /* 無視 */ }
   Object.assign(player, { coins: 0, pickaxe: 0, power: 0, range: 0, chain: 0, inventory: {}, seen: {},
                           stats: { mined: 0, taps: 0, maxCombo: 0, islands: 1, crafted: 0 } });
-  Object.assign(expedition, { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0, treesChopped: 0 });
+  Object.assign(expedition, { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 });
   tripSerial = 0; creatures.length = 0; trees.length = 0;
   startIsland(1);
   renderBase();
@@ -1895,7 +1927,7 @@ function migrateResources(resources) {
   return result;
 }
 function validateSave(data) {
-  if (!data || ![1, 2, 3, 4, 5, 6].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
+  if (!data || ![1, 2, 3, 4, 5, 6, 7].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
   const savedPlayer = data.player, island = data.island;
   if (!validInteger(savedPlayer.pickaxe, PICKAXES.length - 1) || !validInteger(savedPlayer.power, 1000000) || !validInteger(savedPlayer.range, RANGE_LEVELS.length - 1) || !validInteger(savedPlayer.chain, CHAIN_LEVELS.length - 1)) return null;
   if (!validResources(savedPlayer.inventory, data.version < 3) || !savedPlayer.stats || !["mined", "taps", "maxCombo", "islands", "crafted"].every((key) => validInteger(savedPlayer.stats[key]))) return null;
@@ -1907,10 +1939,11 @@ function validateSave(data) {
   if (!validResources(inventory) || data.version >= 3 && !validInteger(savedPlayer.coins)) return null;
   const seen = Object.fromEntries(INVENTORY_ORDER.filter((id) => savedPlayer.seen?.[id] || inventory[id] > 0).map((id) => [id, true]));
   const restoredPlayer = { coins: data.version >= 3 ? savedPlayer.coins : 0, pickaxe: savedPlayer.pickaxe, power: savedPlayer.power, range: savedPlayer.range, chain: savedPlayer.chain, inventory, seen, stats: savedPlayer.stats, soundOn: savedPlayer.soundOn !== false };
-  const tripDefaults = { returnReason: "manual", blocksDestroyed: 0, captures: 0, treesChopped: 0 };
+  const tripDefaults = { returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 };
   if (data.version === 1) return { player: restoredPlayer, tripSerial: 0, creatures: [], trees: [], expedition: { ...tripDefaults, phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: Math.min(DESTINATIONS.length, island.level) - 1, haul: {}, returnRequested: false } };
   const savedExpedition = data.expedition ? { ...tripDefaults, ...data.expedition } : null;
   if (!savedExpedition || !["base", "exploring", "result"].includes(savedExpedition.phase) || !validInteger(savedExpedition.fuelLevel, FUEL_LEVELS.length - 1) || !validInteger(savedExpedition.routeLevel, DESTINATIONS.length - 1)) return null;
+  if (typeof savedExpedition.fuelNoticeAcknowledged !== "boolean" || data.version >= 7 && typeof data.expedition.fuelNoticeAcknowledged !== "boolean") return null;
   if (island.level > savedExpedition.routeLevel + 1 || !validInteger(savedExpedition.fuel, FUEL_LEVELS[savedExpedition.fuelLevel].capacity) || !validInteger(savedExpedition.turns) || !validResources(savedExpedition.haul, data.version < 3) || typeof savedExpedition.returnRequested !== "boolean" || !validInteger(data.combo)) return null;
   savedExpedition.haul = migrateResources(savedExpedition.haul);
   if (!validResources(savedExpedition.haul) || !validInteger(savedExpedition.blocksDestroyed) || !validInteger(savedExpedition.captures) || !["manual", "fuel", "cleared"].includes(savedExpedition.returnReason)) return null;
@@ -1952,7 +1985,7 @@ function nextIsland() {
 }
 function depart(destinationId) {
   if (expedition.phase !== "base" || !Number.isInteger(destinationId) || destinationId < 1 || destinationId > expedition.routeLevel + 1) return false;
-  Object.assign(expedition, { phase: "exploring", fuel: fuelCapacity(), turns: 0, haul: {}, returnRequested: false, returnReason: "manual", blocksDestroyed: 0, captures: 0, treesChopped: 0 });
+  Object.assign(expedition, { phase: "exploring", fuel: fuelCapacity(), turns: 0, haul: {}, returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 });
   tripSerial++;
   player.stats.islands = Math.max(player.stats.islands, destinationId);
   closeCraft();
@@ -1975,11 +2008,27 @@ function requestReturn() {
 }
 function finishReturn() {
   if (!expedition.returnRequested || pendingBreaks.length) return;
+  if (expedition.returnReason === "fuel" && !expedition.fuelNoticeAcknowledged) {
+    document.getElementById("fuel-notice").hidden = false;
+    document.getElementById("btn-fuel-return").focus();
+    updateHud();
+    saveGame();
+    return;
+  }
+  document.getElementById("fuel-notice").hidden = true;
   expedition.phase = "result";
   expedition.returnRequested = false;
   renderCraft();
   renderBase();
   updateHud();
+}
+function acknowledgeFuelNotice() {
+  if (expedition.phase !== "exploring" || !expedition.returnRequested || expedition.returnReason !== "fuel" || expedition.fuelNoticeAcknowledged || pendingBreaks.length) return false;
+  expedition.fuelNoticeAcknowledged = true;
+  document.getElementById("fuel-notice").hidden = true;
+  finishReturn();
+  saveGame();
+  return true;
 }
 function renderBase() {
   renderResult();
@@ -2158,6 +2207,7 @@ for (const id of ["btn-debug", "port-debug", "btn-result-debug"]) document.getEl
 document.getElementById("btn-debug-close").addEventListener("click", closeDebugMenu);
 debugPanel.addEventListener("click", (event) => { if (event.target === debugPanel) closeDebugMenu(); });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !debugPanel.hidden) closeDebugMenu(); });
+document.getElementById("btn-fuel-return").addEventListener("click", acknowledgeFuelNotice);
 document.getElementById("btn-result-base").addEventListener("click", acknowledgeResult);
 document.getElementById("btn-sell-all").addEventListener("click", sellAllTreasure);
 document.getElementById("btn-debug-reset").addEventListener("click", () => {
@@ -2312,6 +2362,7 @@ function debugFindLargeTreeBlock(blockKind) {
 }
 function debugChopTreeBlock(treeId, blockId) { return chopTreeBlock(treeId, blockId); }
 function debugFindCreature() { return creatures.map(creatureProjection).find(Boolean) || null; }
+function debugAcknowledgeFuelNotice() { return acknowledgeFuelNotice(); }
 function debugAcknowledgeResult() { return acknowledgeResult(); }
 function debugSellAll() { return sellAllTreasure(); }
 function debugCraft(lineId) { return craft(lineId); }

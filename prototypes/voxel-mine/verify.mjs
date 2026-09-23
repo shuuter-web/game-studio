@@ -85,6 +85,7 @@ try {
   current = await state();
   const originalCells = await page.evaluate(() => Array.from(cells));
   check('Departure creates island 1 and refills fuel', current.expedition.phase === 'exploring' && current.expedition.fuel === 60 && current.solid > 400);
+  check('Prominent fuel gauge shows current and maximum fuel', await page.locator('#fuel-status').isVisible() && await page.locator('#fuel-meter').getAttribute('aria-valuenow') === '60' && await page.locator('#fuel-meter').getAttribute('aria-valuemax') === '60' && (await page.locator('#fuel-value').textContent()) === '60 / 60');
   check('Island 1 renders copper but no iron', current.faces > 300 && current.counts.copper > 0 && !current.counts.iron);
   const grass = await page.evaluate(() => debugFindFace('grass'));
   check('Visible grass can be targeted', !!grass);
@@ -106,7 +107,10 @@ try {
   await page.locator('#btn-next').click();
   check('Manual return preserves inventory', (await state()).expedition.phase === 'result' && JSON.stringify((await state()).player.inventory) === JSON.stringify(inventoryBeforeReturn));
   await page.evaluate(() => { debugAcknowledgeResult(); debugDepart(1); });
-  check('Same-seed revisit regenerates exact island and refills for free', await page.evaluate(expected => JSON.stringify(Array.from(cells)) === JSON.stringify(expected) && expedition.fuel === debugState().capacity, originalCells));
+  const revisitCells = await page.evaluate(() => Array.from(cells));
+  check('Revisiting the same route generates a different island shape and refills for free', await page.evaluate(expected => JSON.stringify(Array.from(cells, value => Number(Boolean(value)))) !== JSON.stringify(expected.map(value => Number(Boolean(value)))) && expedition.fuel === debugState().capacity, originalCells));
+  await page.evaluate(() => debugSave()); await page.reload();
+  check('Reloading the current expedition preserves its generated island', await page.evaluate(expected => JSON.stringify(Array.from(cells)) === JSON.stringify(expected), revisitCells));
   await page.evaluate(() => { debugReturn(); debugAcknowledgeResult(); });
   const capacityBefore = (await state()).capacity;
   check('Fuel upgrade is craftable at base', await page.evaluate(() => debugCraft('fuel')));
@@ -181,7 +185,14 @@ try {
   await fresh(); await page.evaluate(() => debugDepart(1));
   await page.waitForFunction(() => debugFindCreature() !== null);
   await page.evaluate(() => { expedition.fuel = 1; debugCapture(debugFindCreature().id); });
-  check('Last-fuel capture awards treasure before result', (await state()).expedition.phase === 'result' && (await state()).expedition.captures === 1 && Object.keys((await state()).player.inventory).length > 0);
+  current = await state();
+  check('Last-fuel capture awards treasure and opens return notice before result', current.expedition.phase === 'exploring' && current.expedition.returnRequested && current.expedition.captures === 1 && Object.keys(current.player.inventory).length > 0 && await page.locator('#fuel-notice').isVisible() && (await page.locator('#fuel-notice-message').textContent()) === '燃料がなくなった。帰還しよう。' && await page.locator('#fuel-status').evaluate(element => element.classList.contains('empty')) && await page.locator('#fuel-meter').getAttribute('aria-valuenow') === '0');
+  await page.screenshot({ path: path.join(artifactDirectory, 'mobile-fuel-empty.png'), fullPage: true });
+  const fuelNoticeInventory = JSON.stringify(current.player.inventory);
+  await page.evaluate(() => debugSave()); await page.reload();
+  check('Fuel notice survives reload and blocks further actions', await page.locator('#fuel-notice').isVisible() && await page.evaluate(expected => { const before = JSON.stringify(player.inventory); debugTapCenter(); debugReturn(); return before === JSON.stringify(player.inventory) && JSON.stringify(player.inventory) === expected && expedition.phase === 'exploring'; }, fuelNoticeInventory));
+  await page.locator('#btn-fuel-return').click();
+  check('Fuel notice confirmation opens result exactly once', (await state()).expedition.phase === 'result' && !(await page.locator('#fuel-notice').isVisible()));
 
   await fresh(); await page.evaluate(() => debugDepart(1));
   await page.waitForFunction(() => debugFindCreature() !== null);
@@ -219,7 +230,7 @@ try {
       return { id: creature.id, oldIndex, cellIndex: creature.cellIndex, escaped: creature.escaped, supported: !!cells[creature.cellIndex], captured: creature.captured };
     }));
   }
-  check('Mining creature support relocates or escapes deterministically', JSON.stringify(supportOutcomes[0]) === JSON.stringify(supportOutcomes[1]) && (supportOutcomes[0].escaped || (supportOutcomes[0].supported && supportOutcomes[0].cellIndex !== supportOutcomes[0].oldIndex)) && !supportOutcomes[0].captured, JSON.stringify(supportOutcomes));
+  check('Mining creature support relocates or escapes safely', supportOutcomes.every(outcome => (outcome.escaped || (outcome.supported && outcome.cellIndex !== outcome.oldIndex)) && !outcome.captured), JSON.stringify(supportOutcomes));
   const relocationBatches = await page.evaluate(() => {
     const outcomes = [];
     for (const stepped of [false, true]) {
@@ -313,7 +324,9 @@ try {
   check('Zero-fuel reload preserves final chain before automatic return', (await state()).expedition.fuel === 0 && (await state()).pending === 3);
   await settle();
   current = await state();
-  check('Final fuel action returns with every chain reward', current.expedition.phase === 'result' && current.pending === 0 && current.player.inventory.copper === chainReward);
+  check('Final fuel action waits after every chain reward', current.expedition.phase === 'exploring' && current.expedition.returnRequested && current.pending === 0 && current.player.inventory.copper === chainReward && await page.locator('#fuel-notice').isVisible());
+  await page.evaluate(() => debugAcknowledgeFuelNotice());
+  check('Final chain moves to result after fuel notice confirmation', (await state()).expedition.phase === 'result');
   await fixture();
   await page.evaluate(() => { mineAt(2, 2, 2, 195, 422); debugReturn(); });
   await settle();
@@ -461,7 +474,9 @@ try {
   const treeLayoutB = JSON.stringify((await state()).trees.map(tree => [tree.kind, tree.cellIndex]));
   check('Tree placement repeats for the same seed and trip', treeLayoutA === treeLayoutB);
   await page.evaluate(() => { expedition.fuel = 1; debugChop(debugFindTree().id); });
-  check('Last-fuel chop records timber before result', (await state()).expedition.phase === 'result' && (await state()).expedition.haul.timber === timberYield);
+  check('Last-fuel chop records timber before return notice', (await state()).expedition.phase === 'exploring' && (await state()).expedition.haul.timber === timberYield && await page.locator('#fuel-notice').isVisible());
+  await page.evaluate(() => debugAcknowledgeFuelNotice());
+  check('Last-fuel chop reaches result after notice confirmation', (await state()).expedition.phase === 'result');
 
   await fresh(); await page.evaluate(() => {
     debugDepart(1); player.coins = 37; debugSave();
