@@ -554,6 +554,17 @@
   .cx-tags { font-family: monospace; font-size: 10px; color: #ffb070; margin-top: 1px; }
   .cx-atk  { font-size: 11px; color: #9fbad6; margin-top: 2px; }
   .cx-stat { font-family: monospace; font-size: 10px; color: #7d93ab; margin-top: 2px; }
+  /* v1.0.3: 強化カードの図鑑。絵札の代わりに絵文字を大きく出す */
+  .cx-card-icon { width: 52px; height: 52px; flex: 0 0 52px; display: flex; align-items: center;
+                  justify-content: center; font-size: 28px; border-radius: 8px;
+                  background: rgba(255,255,255,0.05); border: 1px solid #3a4258; }
+  .cx-rarity { font-family: monospace; font-size: 10px; padding: 0 5px; border-radius: 4px;
+               margin-left: 6px; vertical-align: middle; }
+  .cx-rarity.common { color: #cfe3d8; border: 1px solid #5a6472; }
+  .cx-rarity.rare   { color: #ffd060; border: 1px solid #ffd060; }
+  .cx-rarity.star   { color: #ff70d0; border: 1px solid #ff70d0; }
+  /* 出る条件。ここがこのページの本体なので、説明より目立たせる */
+  .cx-when { font-family: monospace; font-size: 10px; color: #8cd8ff; margin-top: 2px; }
   /* v0.68: 敵／建物／弾 のタブ */
   .cx-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
   .cx-tab { flex: 1 1 0; padding: 8px 4px; font-family: monospace; font-size: 12px;
@@ -715,7 +726,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.0.2";
+const GAME_VERSION = "v1.0.3";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -14924,7 +14935,7 @@ function openCodex()  { codexTab = "enemy"; renderCodex(); codexOverlayEl.classL
 function closeCodex() { codexOverlayEl.classList.remove("visible"); refreshTitleMenu(); }
 
 function renderCodex() {
-  const tabs = [["enemy", "敵"], ["building", "建物"], ["shot", "弾"], ["special", "特殊個体"]];
+  const tabs = [["enemy", "敵"], ["building", "建物"], ["shot", "弾"], ["special", "特殊個体"], ["card", "カード"]];
   let html =
     `<div class="tree-head">` +
       `<div class="tree-title">図鑑</div>` +
@@ -14938,6 +14949,7 @@ function renderCodex() {
   if (codexTab === "building") html += codexBuildingHtml();
   else if (codexTab === "shot") html += codexShotHtml();
   else if (codexTab === "special") html += codexSpecialHtml();
+  else if (codexTab === "card") html += codexCardHtml();
   else html += codexEnemyHtml();
 
   codexOverlayEl.innerHTML = html;
@@ -15365,6 +15377,94 @@ function codexSpecialCanvas(kind) {
     codexDrawSpecialDragon(c, kind, 44);
   }
   return cv;
+}
+
+// -----------------------------------------------------------------
+// v1.0.3: 図鑑「カード」ページ（Shooter指示）
+// -----------------------------------------------------------------
+// **このページの価値は「いつ出るか」**にある。
+// カードの名前と効果はレベルアップのたびに読めるが、
+// 「なぜ今このカードが出ないのか」はプレイ中どこにも書いていない。
+// 武器・特殊個体・突進の解禁で出現プールが切り替わる設計なので、
+// その条件を一覧で見せる。
+const CODEX_CARD_GROUPS = [
+  { name: "群れ強化",  hint: "竜種を問わず出る。ランの土台になる枠",
+    pick: (c) => !c.weapon && !c.targetWeapon && !c.specialJoin && !c.specialOf &&
+                 !c.charge && !c.chargeUnlock && !c.needsBreathArc },
+  { name: "武器強化",  hint: "**今の武器のぶんだけ**出る。武器を変えると出方も変わる",
+    pick: (c) => !!c.weapon },
+  { name: "竜種の転換", hint: "ランの**最初のレベルアップだけ**。ここで進む道を決める",
+    pick: (c) => !!c.targetWeapon },
+  { name: "特殊個体",  hint: "★は加入。強化はその個体を連れているときだけ出る",
+    pick: (c) => c.specialJoin !== undefined || c.specialOf !== undefined },
+  { name: "突進",      hint: "★で解禁してから、残りの5枚がプールに乗る",
+    pick: (c) => !!c.charge || !!c.chargeUnlock },
+  { name: "ブレスの角度", hint: "最初から全方位の竜種では出ない（空振りになるため）",
+    pick: (c) => !!c.needsBreathArc },
+];
+
+const CODEX_RARITY_LABEL = { common: "通常", rare: "レア", star: "★" };
+const CODEX_WEAPON_LABEL = { beam: "炎息系", bullet: "弾系", missile: "弾頭系", melee: "爪撃系" };
+
+/** そのカードが出る条件を日本語にする。 */
+function codexCardWhen(c) {
+  if (c.weapon)       return `武器が${CODEX_WEAPON_LABEL[c.weapon] ?? c.weapon}のときだけ`;
+  if (c.targetWeapon) return "最初のレベルアップだけ";
+  if (c.specialJoin !== undefined) {
+    const d = SPECIAL_DEFS[c.specialJoin];
+    return `連れ歩ける枠が空いているときだけ（${d ? d.name : "特殊個体"}）`;
+  }
+  if (c.specialOf !== undefined) {
+    const d = SPECIAL_DEFS[c.specialOf];
+    return `${d ? d.name : "その個体"}を連れているときだけ`;
+  }
+  if (c.chargeUnlock)   return "突進をまだ解禁していないときだけ";
+  if (c.charge)         return "突進を解禁してから";
+  if (c.needsBreathArc) return "ブレスの角度に制限がある竜種のときだけ";
+  return "いつでも出る";
+}
+
+function codexCardHtml() {
+  let html =
+    `<div class="tree-hint">レベルアップで3枚から1枚選ぶ。` +
+      `<b>出る顔ぶれは今のビルドで変わる</b>ので、条件も一緒に載せている。` +
+      `同じカードは最大回数まで重ねて取れる。</div>`;
+
+  for (const g of CODEX_CARD_GROUPS) {
+    const list = CARD_DEFS.filter(g.pick);
+    if (list.length === 0) continue;
+    html += `<div class="cx-era">${g.name}</div>` +
+            `<div class="tree-hint">${g.hint}</div>` +
+            `<div class="cx-list">`;
+    for (const c of list) {
+      const t = STRINGS.cards[c.id] ?? { name: c.id, desc: "" };
+      const maxText = c.max === Infinity ? "" : `最大 ${c.max} 回`;
+      html +=
+        `<div class="cx-row">` +
+          `<div class="cx-card-icon">${c.icon}</div>` +
+          `<div class="cx-body">` +
+            `<div class="cx-name">${t.name}` +
+              `<span class="cx-rarity ${c.rarity}">${CODEX_RARITY_LABEL[c.rarity] ?? c.rarity}</span></div>` +
+            `<div class="cx-atk">${t.desc}</div>` +
+            `<div class="cx-when">出る条件: ${codexCardWhen(c)}</div>` +
+            (maxText ? `<div class="cx-stat">${maxText}</div>` : "") +
+          `</div>` +
+        `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // 抽選の重み。ここを知らないと「★が出ない」が運なのか条件なのか分からない
+  html += `<div class="cx-era">出やすさ</div><div class="cx-list">`;
+  for (const r of ["common", "rare", "star"]) {
+    html +=
+      `<div class="cx-row"><div class="cx-card-icon">${r === "star" ? "★" : r === "rare" ? "◆" : "●"}</div>` +
+      `<div class="cx-body"><div class="cx-name">${CODEX_RARITY_LABEL[r]}` +
+      `<span class="cx-rarity ${r}">${CODEX_RARITY_LABEL[r]}</span></div>` +
+      `<div class="cx-stat">抽選の重み ${CARD_RARITY_WEIGHT[r]}</div></div></div>`;
+  }
+  html += `</div>`;
+  return html;
 }
 
 /** 弾ページの見本 canvas を差し込む（innerHTML では canvas の中身を渡せないため後入れ）。 */
