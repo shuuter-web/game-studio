@@ -136,9 +136,9 @@ try {
     camera.yaw += .9; updateCamBasis(); updateViewDir();
     const rotated = styles();
     camera.yaw = previousYaw; updateCamBasis(); updateViewDir();
-    return { thick: first.flatMap(face => face[1]).filter(style => style === 2).length, thin: first.flatMap(face => face[1]).filter(style => style === 1).length, changed: JSON.stringify(first) !== JSON.stringify(rotated) };
+    return { thick: first.flatMap(face => face[1]).filter(style => style === 2).length, thin: first.flatMap(face => face[1]).filter(style => style === 1).length, changed: JSON.stringify(first) !== JSON.stringify(rotated), sharedWidth: drawIsland.toString().includes('sceneBoldInkWidth()') && drawPropFace.toString().includes('sceneBoldInkWidth()') };
   });
-  check('Creature outer lines are bold, internal lines thin, and change with camera', silhouette.thick > 0 && silhouette.thin > 0 && silhouette.changed, JSON.stringify(silhouette));
+  check('Creature outer lines match block width, internal lines stay thin, and change with camera', silhouette.thick > 0 && silhouette.thin > 0 && silhouette.changed && silhouette.sharedWidth, JSON.stringify(silhouette));
   await page.screenshot({ path: path.join(artifactDirectory, 'mobile-creatures.png'), fullPage: true });
   const visibleCreature = await page.evaluate(() => debugFindCreature());
   await page.mouse.click(visibleCreature.x, visibleCreature.y);
@@ -427,17 +427,31 @@ try {
   await page.evaluate(() => debugSellAll());
   check('Port sale converts timber to coins', timberSale > 0 && (await state()).player.coins === beforeTimberSale + timberSale * timberYield && !(await state()).player.inventory.timber);
 
-  await fresh(); await page.evaluate(() => debugDepart(1));
-  await page.waitForFunction(() => debugFindTree('large') !== null);
-  const largeTree = await page.evaluate(() => debugFindTree('large'));
-  const largeTimberYield = await page.evaluate(() => TREE_CONFIG.largeTimberYield);
-  const beforeLargeChop = await state();
+  await fresh(); await page.evaluate(() => { debugDepart(1); player.range = RANGE_LEVELS.length - 1; });
+  await page.waitForFunction(() => debugFindLargeTreeBlock('leaf') !== null && debugFindLargeTreeBlock('wood') !== null);
+  const leafBlock = await page.evaluate(() => debugFindLargeTreeBlock('leaf'));
+  const beforeLeafChop = await state();
   await page.screenshot({ path: path.join(artifactDirectory, 'mobile-large-tree.png'), fullPage: true });
-  await page.mouse.click(largeTree.x, largeTree.y);
-  const afterLargeChop = await state();
-  check('Canvas chop of a block-built large tree yields extra timber for one fuel', afterLargeChop.expedition.fuel === beforeLargeChop.expedition.fuel - 1 && afterLargeChop.player.inventory.timber === largeTimberYield && afterLargeChop.trees.find(tree => tree.id === largeTree.id).chopped && largeTimberYield > timberYield);
+  await page.mouse.click(leafBlock.x, leafBlock.y);
+  const afterLeafChop = await state();
+  check('Large-tree leaf removes one block for one fuel and no timber even with range upgrade', afterLeafChop.expedition.fuel === beforeLeafChop.expedition.fuel - 1 && !afterLeafChop.player.inventory.timber && afterLeafChop.trees.find(tree => tree.id === leafBlock.treeId).removedBlocks.length === 1 && !afterLeafChop.trees.find(tree => tree.id === leafBlock.treeId).chopped);
+  await page.waitForFunction(() => debugFindLargeTreeBlock('wood') !== null);
+  const woodBlock = await page.evaluate(() => debugFindLargeTreeBlock('wood'));
+  const largeBlockTimberYield = await page.evaluate(() => TREE_CONFIG.largeBlockTimberYield);
+  await page.mouse.click(woodBlock.x, woodBlock.y);
+  const afterWoodChop = await state();
+  check('Large-tree wood removes one block and yields two timber', afterWoodChop.expedition.fuel === beforeLeafChop.expedition.fuel - 2 && afterWoodChop.player.inventory.timber === largeBlockTimberYield && afterWoodChop.trees.find(tree => tree.id === woodBlock.treeId).removedBlocks.includes(woodBlock.blockId));
+  await page.screenshot({ path: path.join(artifactDirectory, 'mobile-large-tree-partial.png'), fullPage: true });
+  const partialLargeState = JSON.stringify(afterWoodChop.trees.find(tree => tree.id === woodBlock.treeId));
   await page.evaluate(() => debugSave()); await page.reload();
-  check('Chopped large tree stays gone after reload', (await state()).trees.find(tree => tree.id === largeTree.id).chopped && (await state()).player.inventory.timber === largeTimberYield);
+  check('Partially chopped large tree stays partial after reload', JSON.stringify((await state()).trees.find(tree => tree.id === woodBlock.treeId)) === partialLargeState && (await state()).player.inventory.timber === largeBlockTimberYield);
+  const completeLargeTree = await page.evaluate(treeId => {
+    const tree = trees.find(entry => entry.id === treeId); expedition.fuel = 100; player.range = RANGE_LEVELS.length - 1;
+    let guard = 30;
+    while (!tree.chopped && guard-- > 0) { renderIslandLayer(); const target = findVisibleLargeTreeBlock(tree.id); if (!target || !chopTreeBlock(tree.id, target.blockId, target)) break; }
+    return { tree: JSON.parse(JSON.stringify(tree)), fuel: expedition.fuel, timber: have('timber'), treesChopped: expedition.treesChopped, blockCount: treeBoxes('large').length };
+  }, woodBlock.treeId);
+  check('Removing all large-tree blocks completes it once with six total timber', completeLargeTree.tree.chopped && completeLargeTree.tree.removedBlocks.length === completeLargeTree.blockCount && completeLargeTree.timber === largeBlockTimberYield * 3 && completeLargeTree.treesChopped === 1);
 
   await fresh(); await page.evaluate(() => debugDepart(1));
   await page.waitForFunction(() => debugFindTree() !== null);
@@ -484,6 +498,20 @@ try {
   });
   await page.reload();
   check('V4 trees migrate as young trees and add large trees without restoring chopped wood', (await state()).trees.filter(tree => tree.kind === 'sapling').length === 6 && (await state()).trees.filter(tree => tree.kind === 'large').length === 2 && (await state()).trees.some(tree => tree.kind === 'sapling' && tree.chopped) && (await state()).player.inventory.timber === timberYield);
+
+  await fresh(); await page.evaluate(() => {
+    debugDepart(1); debugSave();
+    const legacy = JSON.parse(localStorage.getItem(saveKey()));
+    legacy.version = 5;
+    for (const tree of legacy.trees) { delete tree.removedBlocks; if (tree.kind === 'large') tree.chopped = tree.id === legacy.trees.find(entry => entry.kind === 'large').id; }
+    window.removeEventListener('beforeunload', saveGame);
+    localStorage.setItem(saveKey(), JSON.stringify(legacy));
+  });
+  await page.reload();
+  check('V5 large trees migrate intact or fully removed without awarding timber', await page.evaluate(() => {
+    const large = trees.filter(tree => tree.kind === 'large');
+    return large.length === 2 && large.some(tree => tree.chopped && tree.removedBlocks.length === treeBoxes('large').length) && large.some(tree => !tree.chopped && tree.removedBlocks.length === 0) && !have('timber');
+  }));
 
   for (const seed of [0, 1, 777, 12345]) {
     await page.goto(pathToFileURL(path.join(here, 'index.html')).href + `?seed=${seed}&fresh=1`);

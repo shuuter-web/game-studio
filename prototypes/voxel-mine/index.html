@@ -208,7 +208,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.5.0";
+const GAME_VERSION = "v0.5.1";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -315,7 +315,7 @@ const DISCOVERY_TABLE = [{ threshold: 0.65, id: null }, { threshold: 0.88, id: "
 const CREATURE_CONFIG = { count: 4, kinds: ["bird", "beetle"], radius: 18, height: 0.6, minimumSpacing: 2 };
 let tripSerial = 0;
 const creatures = [];
-const TREE_CONFIG = { saplingCount: 6, largeCount: 2, minimumSpacing: 2.5, saplingTimberYield: 2, largeTimberYield: 6, trunkHeight: 1.5, crownHeight: 1.7, crownWidth: 1.5, hitRadius: 18 };
+const TREE_CONFIG = { saplingCount: 6, largeCount: 2, minimumSpacing: 2.5, saplingTimberYield: 2, largeBlockTimberYield: 2, trunkHeight: 1.5, crownHeight: 1.7, crownWidth: 1.5, hitRadius: 18 };
 const trees = [];
 function itemDefinition(id) { return id === "coins" ? { name: "コイン", color: [208, 167, 68], saleValue: 0 } : ITEMS[id]; }
 const FUEL_LEVELS = [
@@ -741,6 +741,7 @@ function inkStyle(c, width, alpha) {
 function shadeColor(rgbArr, k) {
   return "rgb(" + Math.round(rgbArr[0] * k) + "," + Math.round(rgbArr[1] * k) + "," + Math.round(rgbArr[2] * k) + ")";
 }
+function sceneBoldInkWidth() { return Math.max(1.1, camera.zoom * focal / camera.dist * 0.062); }
 
 // -----------------------------------------------------------------
 // 島の描画
@@ -756,7 +757,7 @@ function drawIsland(c) {
   const props = buildPropFaces();
   let propIndex = 0;
   const scale = camera.zoom * focal / camera.dist;
-  const inkWidth = Math.max(1.1, scale * 0.062);
+  const inkWidth = sceneBoldInkWidth();
   const jitterAmount = Math.max(1.1, scale * 0.075);
   const tier = pickaxeTier();
 
@@ -1250,7 +1251,7 @@ function placeTreeKind(kind, count) {
       if (trees.some((tree) => tree.cellIndex === index) || creatures.some((creature) => !creature.captured && !creature.escaped && creature.cellIndex === index)) continue;
       const position = []; indexToXYZ(index, position);
       if ([...trees, ...creatures].some((entry) => { const other = []; indexToXYZ(entry.cellIndex, other); return Math.hypot(position[0] - other[0], position[2] - other[2]) < spacing; })) continue;
-      trees.push({ id: trees.length, kind, cellIndex: index, chopped: false, fallen: false });
+      trees.push({ id: trees.length, kind, cellIndex: index, chopped: false, fallen: false, removedBlocks: [] });
       if (trees.filter((tree) => tree.kind === kind).length === count) return;
     }
   }
@@ -1290,7 +1291,7 @@ function finishCreaturePartEdges(faces, firstFace) {
     delete face.worldVertices;
   }
 }
-function addPropBox(faces, entity, origin, box, part) {
+function addPropBox(faces, entity, origin, box, part, metadata = null) {
   const [x, y, z, width, height, depth, color] = box;
   const meshScale = entity.type === "creature" ? CREATURE_MESH_SCALE : 1;
   const firstFace = faces.length;
@@ -1300,7 +1301,7 @@ function addPropBox(faces, entity, origin, box, part) {
     const worldVertices = face.quad.map((vertex) => [origin[0] + (x + vertex[0] * width) * meshScale, origin[1] + (y + vertex[1] * height) * meshScale, origin[2] + (z + vertex[2] * depth) * meshScale]);
     const vertices = worldVertices.map((vertex) => [...project(...vertex)]);
     const shade = face.normal[1] > 0 ? 1 : face.normal[2] ? 0.72 : 0.86;
-    const propFace = { entity, vertices, color: shadeColor(color, shade), depth: vertices.reduce((sum, vertex) => sum + vertex[2], 0) / vertices.length, key: entity.id * 1009 + part * 31 + index + (entity.type === "tree" ? 100000 : 200000) };
+    const propFace = { entity, vertices, color: shadeColor(color, shade), depth: vertices.reduce((sum, vertex) => sum + vertex[2], 0) / vertices.length, key: entity.id * 1009 + part * 31 + index + (entity.type === "tree" ? 100000 : 200000), ...metadata };
     if (entity.type === "creature") propFace.worldVertices = worldVertices;
     faces.push(propFace);
   }
@@ -1353,7 +1354,11 @@ function buildPropFaces() {
     cellToWorld(...position, origin); origin[0] += .5; origin[1] += 1; origin[2] += .5;
     const pose = Math.floor(boilFrame / 4) % 2;
     const boxes = entity.type === "tree" ? treeBoxes(entity.kind) : creatureBoxes(entity.kind, pose);
-    boxes.forEach((box, part) => addPropBox(faces, entity, origin, box, part));
+    boxes.forEach((box, part) => {
+      if (entity.type === "tree" && entity.kind === "large" && entity.removedBlocks?.includes(part)) return;
+      const metadata = entity.type === "tree" && entity.kind === "large" ? { blockId: part, blockKind: part < 3 ? "wood" : "leaf" } : null;
+      addPropBox(faces, entity, origin, box, part, metadata);
+    });
     if (entity.type === "creature") creatureEllipsoids(entity.kind, pose).forEach((oval, part) => addPropEllipsoid(faces, entity, origin, oval, part + 30));
   }
   return faces.sort((left, right) => right.depth - left.depth);
@@ -1372,7 +1377,7 @@ function drawPropFace(context, face) {
         const next = vertices[(index + 1) % vertices.length];
         penLine(context, vertex[0], vertex[1], next[0], next[1], face.key * 7 + index, Math.max(.3, scale * (style === 2 ? .045 : .015)));
       });
-      inkStyle(context, Math.max(style === 2 ? 1 : .45, scale * (style === 2 ? .085 : .022)), style === 2 ? .86 : .24);
+      inkStyle(context, style === 2 ? sceneBoldInkWidth() : Math.max(.45, scale * .022), style === 2 ? .86 : .24);
       context.stroke();
     }
     propPickFaces.push(face);
@@ -1406,9 +1411,36 @@ function treeProjection(tree) {
 function chopTree(id) {
   const tree = trees.find((entry) => entry.id === id);
   if (!canBeginAction() || !tree) return false;
+  if (tree.kind === "large") {
+    const target = findVisibleLargeTreeBlock(tree.id);
+    return target ? chopTreeBlock(tree.id, target.blockId, target) : false;
+  }
   const point = treeProjection(tree); if (!point) return false;
   beginAction(); tree.chopped = true; expedition.treesChopped++;
-  gainMaterial("timber", tree.kind === "large" ? TREE_CONFIG.largeTimberYield : TREE_CONFIG.saplingTimberYield); flushTapGain([point.x, point.y]); soundHit(); addShake(1.5);
+  gainMaterial("timber", TREE_CONFIG.saplingTimberYield); flushTapGain([point.x, point.y]); soundHit(); addShake(1.5);
+  markDirty(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
+}
+function findVisibleLargeTreeBlock(treeId, blockKind = null, blockId = null) {
+  for (const face of propPickFaces) {
+    if (face.entity.type !== "tree" || face.entity.id !== treeId || face.entity.kind !== "large" || face.blockId === undefined || blockKind && face.blockKind !== blockKind || blockId !== null && face.blockId !== blockId) continue;
+    const x = face.vertices.reduce((total, vertex) => total + vertex[0], 0) / face.vertices.length;
+    const y = face.vertices.reduce((total, vertex) => total + vertex[1], 0) / face.vertices.length;
+    const visible = visiblePropAt(x, y);
+    if (visible?.entity.type === "tree" && visible.entity.id === treeId && visible.blockId === face.blockId && x >= 0 && x <= viewW && y >= 0 && y <= viewH) return { treeId, blockId: face.blockId, blockKind: face.blockKind, x, y };
+  }
+  return null;
+}
+function chopTreeBlock(treeId, blockId, point = null) {
+  const tree = trees.find((entry) => entry.id === treeId && entry.kind === "large");
+  const boxes = treeBoxes("large");
+  if (!canBeginAction() || !tree || tree.chopped || tree.fallen || !validInteger(blockId, boxes.length - 1) || tree.removedBlocks.includes(blockId)) return false;
+  const target = point && point.blockId === blockId ? point : findVisibleLargeTreeBlock(treeId, null, blockId);
+  if (!target || target.blockId !== blockId) return false;
+  beginAction();
+  tree.removedBlocks.push(blockId); tree.removedBlocks.sort((left, right) => left - right);
+  if (blockId < 3) gainMaterial("timber", TREE_CONFIG.largeBlockTimberYield);
+  if (tree.removedBlocks.length === boxes.length) { tree.chopped = true; expedition.treesChopped++; }
+  flushTapGain([target.x, target.y]); soundHit(); addShake(1.5);
   markDirty(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
 }
 function creatureProjection(creature) {
@@ -1789,7 +1821,7 @@ function base64ToBytes(text) {
 function saveKey() { return SAVE_KEY_PREFIX + worldSeed + (urlParams.has("fresh") ? ":fresh:" + urlParams.get("fresh") : ""); }
 function saveGame() {
   const data = {
-    version: 5, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
+    version: 6, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
     expedition, combo,
     pending: pendingBreaks.map((entry) => ({ ...entry, due: Math.max(0, entry.due - nowSeconds) })),
     player,
@@ -1863,7 +1895,7 @@ function migrateResources(resources) {
   return result;
 }
 function validateSave(data) {
-  if (!data || ![1, 2, 3, 4, 5].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
+  if (!data || ![1, 2, 3, 4, 5, 6].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
   const savedPlayer = data.player, island = data.island;
   if (!validInteger(savedPlayer.pickaxe, PICKAXES.length - 1) || !validInteger(savedPlayer.power, 1000000) || !validInteger(savedPlayer.range, RANGE_LEVELS.length - 1) || !validInteger(savedPlayer.chain, CHAIN_LEVELS.length - 1)) return null;
   if (!validResources(savedPlayer.inventory, data.version < 3) || !savedPlayer.stats || !["mined", "taps", "maxCombo", "islands", "crafted"].every((key) => validInteger(savedPlayer.stats[key]))) return null;
@@ -1888,8 +1920,12 @@ function validateSave(data) {
   const restoredCreatures = data.version < 3 ? [] : data.creatures;
   if (data.version >= 3 && (!validInteger(data.tripSerial) || !Array.isArray(restoredCreatures) || restoredCreatures.length > CREATURE_CONFIG.count || !restoredCreatures.every((creature) => validInteger(creature.id) && CREATURE_CONFIG.kinds.includes(creature.kind) && validInteger(creature.cellIndex, restoredCells.length - 1) && typeof creature.captured === "boolean" && typeof creature.escaped === "boolean") || new Set(restoredCreatures.map((creature) => creature.id)).size !== restoredCreatures.length)) return null;
   const restoredTrees = data.version < 4 ? [] : data.trees;
-  if (!Array.isArray(restoredTrees) || restoredTrees.length > TREE_CONFIG.saplingCount + TREE_CONFIG.largeCount || !restoredTrees.every((tree) => validInteger(tree.id) && validInteger(tree.cellIndex, restoredCells.length - 1) && typeof tree.chopped === "boolean" && typeof tree.fallen === "boolean" && (data.version < 5 || ["sapling", "large"].includes(tree.kind))) || new Set(restoredTrees.map((tree) => tree.id)).size !== restoredTrees.length || !validInteger(savedExpedition.treesChopped)) return null;
-  const migratedTrees = restoredTrees.map((tree) => ({ ...tree, kind: data.version < 5 ? "sapling" : tree.kind }));
+  if (!Array.isArray(restoredTrees) || restoredTrees.length > TREE_CONFIG.saplingCount + TREE_CONFIG.largeCount || !restoredTrees.every((tree) => validInteger(tree.id) && validInteger(tree.cellIndex, restoredCells.length - 1) && typeof tree.chopped === "boolean" && typeof tree.fallen === "boolean" && (data.version < 5 || ["sapling", "large"].includes(tree.kind)) && (data.version < 6 || Array.isArray(tree.removedBlocks) && tree.removedBlocks.every((blockId) => validInteger(blockId, treeBoxes("large").length - 1)) && new Set(tree.removedBlocks).size === tree.removedBlocks.length)) || new Set(restoredTrees.map((tree) => tree.id)).size !== restoredTrees.length || !validInteger(savedExpedition.treesChopped)) return null;
+  const migratedTrees = restoredTrees.map((tree) => {
+    const kind = data.version < 5 ? "sapling" : tree.kind;
+    const removedBlocks = data.version < 6 && kind === "large" ? (tree.chopped ? treeBoxes("large").map((_, blockId) => blockId) : []) : (tree.removedBlocks || []);
+    return { ...tree, kind, removedBlocks };
+  });
   return { player: restoredPlayer, expedition: savedExpedition, cells: restoredCells, damage: restoredDamage, pending: data.pending, tripSerial: data.version < 3 ? 0 : data.tripSerial, creatures: restoredCreatures, trees: migratedTrees };
 }
 
@@ -2063,7 +2099,10 @@ function tapAt(sx, sy) {
   if (expedition.phase !== "exploring" || !craftEl.classList.contains("hidden")) return { broken: 0, locked: false };
   const prop = visiblePropAt(sx, sy);
   if (prop?.entity.type === "creature") return { broken: 0, locked: false, captured: captureCreature(prop.entity.id) };
-  if (prop?.entity.type === "tree") return { broken: 0, locked: false, chopped: chopTree(prop.entity.id) };
+  if (prop?.entity.type === "tree") {
+    const chopped = prop.entity.kind === "large" ? chopTreeBlock(prop.entity.id, prop.blockId, { treeId: prop.entity.id, blockId: prop.blockId, blockKind: prop.blockKind, x: sx, y: sy }) : chopTree(prop.entity.id);
+    return { broken: 0, locked: false, chopped };
+  }
   const target = creatures.map((creature) => creatureProjection(creature)).filter((point) => point && Math.hypot(point.x - sx, point.y - sy) <= CREATURE_CONFIG.radius).sort((left, right) => left.depth - right.depth)[0];
   if (target) return { broken: 0, locked: false, captured: captureCreature(target.id) };
   closeCraft();
@@ -2263,6 +2302,15 @@ function debugReturn() { return requestReturn(); }
 function debugCapture(id) { return captureCreature(id); }
 function debugChop(id) { return chopTree(id); }
 function debugFindTree(kind) { return trees.filter((tree) => !kind || tree.kind === kind).map(treeProjection).find(Boolean) || null; }
+function debugFindLargeTreeBlock(blockKind) {
+  for (const tree of trees) {
+    if (tree.kind !== "large" || tree.chopped || tree.fallen) continue;
+    const target = findVisibleLargeTreeBlock(tree.id, blockKind);
+    if (target) return target;
+  }
+  return null;
+}
+function debugChopTreeBlock(treeId, blockId) { return chopTreeBlock(treeId, blockId); }
 function debugFindCreature() { return creatures.map(creatureProjection).find(Boolean) || null; }
 function debugAcknowledgeResult() { return acknowledgeResult(); }
 function debugSellAll() { return sellAllTreasure(); }
