@@ -715,7 +715,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.99.9";
+const GAME_VERSION = "v1.0.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -775,6 +775,24 @@ function reseedForNewRun() {
 }
 
 function debugGetSeed() { return currentSeed; }
+
+// -----------------------------------------------------------------
+// v1.0.0: ワールド種（つづきから で同じ大陸を組み直すため）
+// -----------------------------------------------------------------
+// 建物の破壊状況を**添字**で保存するので、再開時に作り直す大陸が
+// 1棟単位で同じ並びでないと意味がない。ところが地形生成は
+// ゲーム用の乱数ストリームを共有していて、生成前に何回 random() を
+// 引いたかで結果が変わってしまう。
+// そこで**生成の間だけ専用のストリームに差し替える**。
+// こうするとワールドの形は runWorldSeed だけで決まり、
+// それまでの乱数の消費数から完全に独立する。
+let runWorldSeed = 0;
+
+function withWorldRandom(seed, fn) {
+  const saved = nextLogicRandom;
+  nextLogicRandom = makeRandomGenerator(seed >>> 0);
+  try { return fn(); } finally { nextLogicRandom = saved; }
+}
 
 reseedForNewRun();   // 起動直後のタイトル演出などにも乱数が要るため先に初期化しておく
 
@@ -2762,13 +2780,13 @@ const STAGE_CONFIGS = [
 const TOTAL_STAGES = STAGE_CONFIGS.length;
 
 // -----------------------------------------------------------------
-// 時代（フレーバー）と 動員段階（強化）— v0.56 で分離
+// 時代（フレーバー）と 警戒度（強化）— v0.56 で分離
 // -----------------------------------------------------------------
 // v0.51〜v0.55 は「壊すほど文明が時代を進める」構成だったが、1ランの中で
 // 石器の街が神殿になり城塞になる、というのは世界の理屈として無理があった。
 //
 // そこで**時代は1ランを通して固定のフレーバー**に戻し、
-// 「ラン中に敵が強くなる」ぶんは **動員段階（mobilization tier）** という
+// 「ラン中に敵が強くなる」ぶんは **警戒度（alert level）** という
 // 別の軸に分けた。時代が決めるのは見た目・建築・敵の顔ぶれ・兵器の種類で、
 // 段階が決めるのは強さ（HP・火力）と物量だけ。両者は互いに独立している。
 //
@@ -2783,7 +2801,7 @@ const TIER_ADVANCE_RATIO = 0.3;
 // 群れは段階をまたいでも削らない代わりに、天井が段階的に開く＝解放の快感にする。
 const TIER_FLOCK_CAP_FRACTION = [0.55, 0.70, 0.85, 1.0];
 
-// 動員段階ごとの強さ倍率。**時代とは独立した純粋な強さの軸**。
+// 警戒度ごとの強さ倍率。**時代とは独立した純粋な強さの軸**。
 // 建物の見た目（建築・色の系統）はこの段階では変わらない。
 // v0.94: 「動員で敵が強くなった感じがあまりない」（Shooter判定）のため引き上げた。
 // 旧: hp 1.00 / 1.35 / 1.80 / 2.40、dmg 1.00 / 1.20 / 1.45 / 1.75。
@@ -2819,7 +2837,7 @@ const TOWN_ADVANCED_RATIO  = 0.25;
 // 首都は最大段階のさらに上。ランの「壁」として動かない。
 const CAPITAL_POWER_MULT   = 2.6;
 
-/** 動員段階を範囲に収める。 */
+/** 警戒度を範囲に収める。 */
 function clampTier(tier) {
   return Math.max(0, Math.min(POWER_TIER_BOOST.length - 1, tier));
 }
@@ -2831,7 +2849,7 @@ function clampEra(eraIdx) {
 function maxPowerTier() { return POWER_TIER_BOOST.length - 1; }
 
 /**
- * その建物の動員段階。
+ * その建物の警戒度。
  * `_fixedTier` を持つ建物（首都区画・要塞都市）はラン中ずっとその段階に固定。
  * それ以外はラン進行＋その街のオフセット。
  */
@@ -2840,7 +2858,7 @@ function settlementTier(settlement, baseTier) {
   return clampTier(baseTier + (settlement._tierOffset || 0));
 }
 
-/** その建物に掛かる強さ倍率（時代の底上げ × 動員段階）。 */
+/** その建物に掛かる強さ倍率（時代の底上げ × 警戒度）。 */
 function settlementPowerBoost(settlement, baseTier) {
   const eraBoost  = STAGE_DIFFICULTY_BOOST[currentStage] || { hp: 1, dmg: 1 };
   const tierBoost = POWER_TIER_BOOST[settlementTier(settlement, baseTier)];
@@ -2876,7 +2894,7 @@ function unlockNextContinent(clearedEra) {
 }
 
 let runEra                = 0;   // このランの時代（タイトルで選ぶ。ラン中ずっと固定）
-let powerTier             = 0;   // 動員段階 0..TIERS_PER_RUN-1（破壊率で上がる）
+let powerTier             = 0;   // 警戒度 0..TIERS_PER_RUN-1（破壊率で上がる）
 let tierStartDestructible = 0;   // その段階の開始時に建っていた破壊対象の数（比率の分母）
 
 /** 最大段階（これ以上は上がらない）か。 */
@@ -4228,7 +4246,7 @@ function generateStageLayout(stageIndex) {
     if (order.length > 1) cityScaleByIdx.set(order[1], 1.35); // 中核都市
   }
 
-  // v0.56: 街ごとの**動員段階**オフセット（時代は全部同じ＝同じ文明の街並み）。
+  // v0.56: 街ごとの**警戒度**オフセット（時代は全部同じ＝同じ文明の街並み）。
   // 要塞都市は最初から最大段階、ほかにも一部が1段階先。
   const townTierOffset = new Map();
   for (let t = 0; t < townCenters.length; t++) {
@@ -4247,7 +4265,7 @@ function generateStageLayout(stageIndex) {
                       (fortifiedSet.has(t) ? 1.25 : 1);
     const s2 = cityScale * cityScale;
     // v0.56: 建築・レイアウトは全部ランの時代のもの（同じ文明の街並み）。
-    // 差がつくのは動員段階＝強さと、それに伴う色の締まり具合だけ。
+    // 差がつくのは警戒度＝強さと、それに伴う色の締まり具合だけ。
     const offset     = townTierOffset.get(t) || 0;
     const isFortress = fortifiedSet.has(t);
     const townBuildings = generateTown(
@@ -4458,7 +4476,7 @@ function generateStageLayout(stageIndex) {
       byTown.get(key).push(b);
     }
     for (const [, buildings] of byTown) {
-      // 要塞都市＝最初から最大段階で固定。格上の街＝動員段階が1つ先
+      // 要塞都市＝最初から最大段階で固定。格上の街＝警戒度が1つ先
       const isFortress = buildings.some(b => b._fixedTier != null);
       const isAdvanced = buildings.some(b => (b._tierOffset || 0) > 0);
       if (isFortress) pickInto(buildings, CONCUSSION_PER_FORTRESS_TOWN);
@@ -4520,7 +4538,7 @@ function generateStageLayout(stageIndex) {
 
   // --- (8) v0.6-p4: 後半ステージの難度底上げ（仕様 §4。プレイヤーの3択強化ぶんを相殺） ---
   // ボスは BOSS_HP_STAGE_MULT で既にスケールするため対象外。城壁もステージ別HP設定済みのため対象外。
-  // v0.56: 係数は「時代の底上げ（文明ごとの基礎難度）× その建物の動員段階」。
+  // v0.56: 係数は「時代の底上げ（文明ごとの基礎難度）× その建物の警戒度」。
   // 段階0の普通の街は等倍、要塞都市は最大段階ぶん重くなる。
   for (const b of result) {
     if (b.isBoss || b._isWall) continue;
@@ -6155,7 +6173,7 @@ function drawEnemyDebugLabels() {
 
 // v0.78: 鐘楼が生きている町（townIndex）と、兵舎の一覧。
 // 毎フレーム全建物（数千棟）を走査しないよう、レイアウト生成時と
-// 動員段階の建て直し後に作り直し、陥落時だけ差分で消す。
+// 警戒度の建て直し後に作り直し、陥落時だけ差分で消す。
 let townBelfryAlive = new Set();
 let barracksList = [];
 // v0.80: 町の meta 一覧（「街の向き」表示が毎フレーム使う。
@@ -6531,7 +6549,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   // v0.49: マップ全体を巡回する枠はワールド面積に合わせて増やす。
   // 大陸サイズで数を据え置くと動く敵に一度も出会わないまま終わってしまう。
   // 守備隊はボス周りの固定半径を巡回するので、密度は世界の広さに影響されない＝据え置き。
-  // v0.56: 動員段階のぶんだけ部隊数を増やす（守備隊はボス周りの固定半径なので据え置き）
+  // v0.56: 警戒度のぶんだけ部隊数を増やす（守備隊はボス周りの固定半径なので据え置き）
   const tierMult = TIER_MOVER_MULT[clampTier(tierForCount)] ?? 1;
   const spawnEntries = spawns.map(e => [e[0], Math.max(1, Math.round(scaledForWorld(e[1], MOVER_DENSITY_FACTOR) * tierMult)), false])
                              .concat(garrison.map(e => [e[0], e[1], true]));
@@ -10732,6 +10750,7 @@ function settlementFall(settlementIndex) {
 
   // v0.99.7: これが最後の1棟だったらボスが最強モードに入る
   maybeEnrageBoss();
+  markRunSaveDirty();   // v1.0.0: 壊した状態をセーブに残す（書き込みは間隔を空けて）
 
   rebuildBuildingGrid();
   minimapBaseDirty = true;  // v0.6-p4: ミニマップの建物ドットキャッシュも更新
@@ -14059,6 +14078,51 @@ function loadRunSave() {
   } catch (_) { return null; }
 }
 
+// -----------------------------------------------------------------
+// v1.0.0: 建物の破壊状況（Shooter指示「途中セーブ時の建物状況を保存したい」）
+// -----------------------------------------------------------------
+// 6000棟を1棟1ビットで持つ（750バイト → base64 で約1KB）。
+// 数えるのは**城壁を除いた settlements の並び順**。城壁は段階ごとに
+// 張り直されて並びが変わるが、それ以外の順序は生成時のまま動かないので、
+// 同じワールド種で組み直せば添字がそのまま一致する。
+function encodeFallenBits() {
+  const bytes = [];
+  let acc = 0, bit = 0, k = 0;
+  for (let i = 0; i < settlements.length; i++) {
+    const s = settlements[i];
+    if (!s || s._isWall) continue;
+    if (s.fallen) acc |= (1 << bit);
+    bit++; k++;
+    if (bit === 8) { bytes.push(acc); acc = 0; bit = 0; }
+  }
+  if (bit > 0) bytes.push(acc);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  try { return { n: k, b: btoa(bin) }; } catch (_) { return null; }
+}
+
+/** 保存したビット列を今の settlements に当てる。棟数が合わなければ何もしない。 */
+function applyFallenBits(packed) {
+  if (!packed || typeof packed.b !== "string") return false;
+  let bin;
+  try { bin = atob(packed.b); } catch (_) { return false; }
+  // 棟数が違う＝別の大陸。中途半端に当てるより諦めて丸ごと建った状態で始める。
+  let total = 0;
+  for (let i = 0; i < settlements.length; i++) if (settlements[i] && !settlements[i]._isWall) total++;
+  if (total !== (packed.n | 0)) return false;
+
+  let bit = 0, byteIdx = 0, applied = 0;
+  for (let i = 0; i < settlements.length; i++) {
+    const s = settlements[i];
+    if (!s || s._isWall) continue;
+    const on = (bin.charCodeAt(byteIdx) >> bit) & 1;
+    if (on) { s.fallen = true; s.hp = 0; applied++; }
+    bit++;
+    if (bit === 8) { bit = 0; byteIdx++; }
+  }
+  return applied;
+}
+
 function saveRunSave(data) {
   try {
     localStorage.setItem(RUN_SAVE_KEY, JSON.stringify(Object.assign({ version: RUN_SAVE_VERSION }, data)));
@@ -15555,6 +15619,7 @@ function beginRun(speciesId) {
   // 乱数を引き直す。以降このランで使う乱数はすべてこのシードから決まるので、
   // 同じシード＋同じ操作なら同じランになる（不具合はシードとセットで報告する）。
   reseedForNewRun();
+  runWorldSeed = currentSeed;            // v1.0.0: この大陸の形を決める種（セーブに残す）
   currentRunIsFirst = isFirstEverRun();   // runsStarted を増やす前に固定
   profile.runsStarted++;
   saveProfile();
@@ -15585,13 +15650,32 @@ function beginRun(speciesId) {
 
 // ---- ラン再開チェックポイント（ステージクリアごとのオートセーブ）----
 // 「次ステージ開始状態」を保存し、途中でアプリを閉じても続きから遊べる。
+// v1.0.0: 建物を壊すたびに書くと重いので、**汚れていたら一定間隔で書く**形にする。
+// 4秒に1回・実測 0.6ms（6400棟）なので、1フレーム16.7msの中に十分収まる。
+const RUN_SAVE_INTERVAL_MS = 4000;
+let runSaveDirty  = false;
+let runSaveLastMs = -Infinity;
+
+/** 保存したい変化が起きたことだけ記録する（書き込みはしない）。 */
+function markRunSaveDirty() { runSaveDirty = true; }
+
+/** tick から毎フレーム呼ぶ。間隔を空けて、汚れているときだけ書く。 */
+function maybeAutoSaveRun(nowMs) {
+  if (!runSaveDirty || gameState !== "playing") return;
+  if (nowMs - runSaveLastMs < RUN_SAVE_INTERVAL_MS) return;
+  snapshotRunSave();
+}
+
 function snapshotRunSave() {
   saveRunSave({
-    // v0.56: 保存するのは「動員段階」と「ランの時代」。旧セーブとの互換のため
+    // v0.56: 保存するのは「警戒度」と「ランの時代」。旧セーブとの互換のため
     // キー名は stage / startEra のまま（読み込み側でクランプする）。
     stage:         powerTier,
     startEra:      runEra,
     isFirstRun:    currentRunIsFirst,
+    worldSeed:     runWorldSeed,   // v1.0.0: 同じ大陸を組み直すため
+    fallen:        encodeFallenBits(),   // v1.0.0: 壊した建物
+    bossEnraged,
     playerLevel,
     playerXp,
     pendingCards,
@@ -15603,7 +15687,15 @@ function snapshotRunSave() {
     runTotalXp,
     elapsedMs:     performance.now() - runStartTime,
   });
+  runSaveDirty  = false;
+  runSaveLastMs = performance.now();
 }
+
+// 閉じる・裏に回る瞬間は間隔を待たずに書く（ここを逃すと直前の破壊が消える）
+window.addEventListener("pagehide", () => { if (runSaveDirty) snapshotRunSave(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && runSaveDirty) snapshotRunSave();
+});
 
 // タイトルの「つづきから」。保存済みステージ開始状態を復元して再開する。
 function resumeRun() {
@@ -15611,9 +15703,12 @@ function resumeRun() {
   const save = loadRunSave();
   if (!save) { refreshTitleMenu(); return; }
 
-  // 再開ランは途中経過を復元するので厳密な再現はできないが、
-  // 以降の乱数列を定義された状態から始めるためここでも引き直す。
+  // 以降の乱数列を定義された状態から始めるため引き直す。
+  // ワールドの形は runWorldSeed（保存値）で決まるので、ここの種とは独立している。
   reseedForNewRun();
+  // v1.0.0: 保存された大陸を組み直すための種。無い旧セーブは今の種で作る
+  // （その場合は並びが違うので applyFallenBits が棟数不一致で諦める）。
+  runWorldSeed = (typeof save.worldSeed === "number") ? save.worldSeed : currentSeed;
 
   // 進行の復元
   currentRunIsFirst = !!save.isFirstRun;
@@ -15640,7 +15735,8 @@ function resumeRun() {
   // 保存ステージを組み立てて再開（ステージ間リセット相当の体数）
   dismissSpeciesSelect();
   dismissLevelUpCards();
-  setupStageForResume(powerTier);   // v0.56: 引数は動員段階
+  setupStageForResume(powerTier, save.fallen);   // v0.56: 引数は警戒度
+  bossEnraged = !!save.bossEnraged;   // v1.0.0: 最強モードも引き継ぐ
 
   updateHUDWeapon();
   updateXpHud();
@@ -15768,7 +15864,7 @@ function tierDestroyRatio() {
 }
 
 /**
- * 動員段階の開始状態を確定する。比率の分母をここで揃える。
+ * 警戒度の開始状態を確定する。比率の分母をここで揃える。
  * ワールド生成の直後と段階遷移の直後に呼ぶ。
  * 時代（currentStage）はここでは触らない——ランを通して固定だから。
  */
@@ -15782,7 +15878,7 @@ function beginTier(tier) {
 /**
  * 建物1棟を「補強された状態」に更新する。
  * v0.56: 建築（形・色の系統）は変えない。同じ文明の同じ建物が、
- * 動員段階のぶんだけ頑丈になり火力が上がる——それだけ。
+ * 警戒度のぶんだけ頑丈になり火力が上がる——それだけ。
  * 色は段階ぶん締める（同じ色相のまま暗くする）ので、
  * 「別の時代の建物になった」ようには見えない。
  */
@@ -15811,7 +15907,7 @@ function reinforceSettlementForTier(settlement, baseTier) {
 
   settlement.attackRadius       = bConfig.attackRadius;
   // v0.57: 時代兵器は自前の射程を持つ。ここで街の既定値に戻すと、
-  // 動員段階が上がった瞬間に投石機やロケット砲台が近距離武器へ化ける
+  // 警戒度が上がった瞬間に投石機やロケット砲台が近距離武器へ化ける
   // （実測: 段階1に上げたら走査半径が5→4に落ちて投石機の射程が 500→400 になった）。
   const _emp = settlement._emplacement ? EMPLACEMENT_DEFS[settlement._emplacement] : null;
   if (_emp) settlement.attackRadius = Math.max(settlement.attackRadius, _emp.range);
@@ -15850,7 +15946,7 @@ function rebuildWallsForTier() {
 }
 
 /**
- * 次の動員段階へ上げる。ワールドも時代も変えない。
+ * 次の警戒度へ上げる。ワールドも時代も変えない。
  * 生き残った建物が補強され、城壁が張り直され、守備隊が増える。
  * v0.99.7 以降、**廃墟はどの段階でも戻らない**（壊した分は壊れたまま残る）。
  */
@@ -15946,7 +16042,7 @@ function maybeEnrageBoss() {
   triggerShake(4.0, 0.5);
   hapticPulse(300);
   pushWorldText(boss.wx, boss.wy - 40, "最強モード", "#ff5a4a");
-  // 最後の1棟が落ちたフレームは動員段階のバナーと重なりうる。
+  // 最後の1棟が落ちたフレームは警戒度のバナーと重なりうる。
   // こちらの方が大事なので、同じフレームの書き換えが終わってから出す。
   setTimeout(() => {
     stageTextEl.textContent = "最強モード";
@@ -15978,7 +16074,7 @@ function drawBossEnrageAura() {
   ctx.globalCompositeOperation = "source-over";
 }
 
-// ---- 動員段階の演出（非モーダル: プレイは止めない）----
+// ---- 警戒度の演出（非モーダル: プレイは止めない）----
 const TIER_SLOWMO_DURATION = 1.2;
 const TIER_BANNER_DURATION_MS = 2200;
 let tierSlowmoTimer = 0;
@@ -16014,7 +16110,7 @@ function triggerTierAdvance() {
   setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
 }
 
-/** 建物が落ちるたびに呼ばれ、破壊率が閾値を超えたら動員段階を上げる。 */
+/** 建物が落ちるたびに呼ばれ、破壊率が閾値を超えたら警戒度を上げる。 */
 function maybeAdvanceTier() {
   if (gameState !== "playing") return;
   if (isFinalTier()) return;
@@ -16039,7 +16135,8 @@ function loadStageWorld(stageIdx) {
   resetFires();                 // v0.10: 前ステージの炎を消す
 
   bossEnraged = false;   // v0.99.7: ステージごとにリセット
-  settlements = generateStageLayout(stageIdx);
+  // v1.0.0: 地形の生成だけ専用の乱数ストリームで回す（同じ種なら必ず同じ大陸）
+  settlements = withWorldRandom(runWorldSeed, () => generateStageLayout(stageIdx));
   recomputeTownRoles();   // v0.78: 役割を持つ建物（鐘楼・兵舎）の索引を作る
   rebuildBuildingGrid();
   buildingLayerDirty = true;
@@ -16051,7 +16148,7 @@ function loadStageWorld(stageIdx) {
 }
 
 /**
- * v0.56: 大陸（ワールド）を runEra の文明で組み立て、指定の動員段階から始める。
+ * v0.56: 大陸（ワールド）を runEra の文明で組み立て、指定の警戒度から始める。
  * 段階が上がってもワールドは作り直さない（advanceTier が強さだけ変える）ので、
  * ここが呼ばれるのは「新規ラン」と「つづきから」の2箇所だけ。
  */
@@ -16071,9 +16168,37 @@ function buildContinent(tier) {
 }
 
 // 「つづきから」で保存した段階から再開する（進行は resumeRun が復元済み）。
-function setupStageForResume(tier) {
-  // 町の破壊状況までは保存しないので、その段階の頭（再建済みの状態）から組み直す。
-  buildContinent(clampTier(tier));
+// v1.0.0: **同じ大陸を組み直して、段階ぶん補強して、壊した分を当てる**。
+// それまでは毎回まっさらな平時の大陸が建っていた（実測で建物の平均maxHPが
+// 正規に決戦まで進めた場合の 133.6 に対し 19.1 ＝ 7分の1）。
+function setupStageForResume(tier, fallenPacked) {
+  const t = clampTier(tier);
+  buildContinent(t);
+
+  // (1) 段階ぶんの補強。段階固定の要塞は触らない（advanceTier と同じ基準）
+  if (t > 0) {
+    for (let i = 0; i < settlements.length; i++) {
+      const s = settlements[i];
+      if (s.isBoss || s._isWall || s.fallen) continue;
+      if (s._fixedTier != null) continue;
+      reinforceSettlementForTier(s, t);
+    }
+    rebuildWallsForTier();
+    recomputeTownRoles();
+  }
+
+  // (2) 壊した建物を当てる。**城壁を張り直した後**に当てること
+  //     （張り直しで settlements の並びが変わるため）。
+  const applied = applyFallenBits(fallenPacked);
+
+  // (3) 索引と見た目を作り直す
+  rebuildBuildingGrid();
+  cacheBossIndex();
+  repaintTiledLayer(buildingTiledLayer);
+  minimapBaseDirty = true;
+  minimapBaseLastBuilt = -Infinity;
+  beginTier(t);   // 破壊率の分母をここで取り直す（壊した分を差し引いた数になる）
+  return applied;
 }
 
 /**
@@ -19189,10 +19314,12 @@ function updateHUDEggs() {
 }
 
 function updateHUDStage() {
-  // v0.56: 時代（文明名）はラン中ずっと固定のフレーバー。動くのは動員段階だけ。
+  // v0.56: 時代（文明名）はラン中ずっと固定のフレーバー。動くのは警戒度だけ。
   const config = STAGE_CONFIGS[currentStage];
   hudStage.textContent =
-    config.name + " / " + (TIER_NAMES[powerTier] ?? "") + " " + (powerTier + 1) + "/" + TIERS_PER_RUN;
+    // v1.0.0: 軸の名前（警戒度）を出す。段階名だけだと
+    // 「動員 2/4」が何の2/4なのかが伝わらない。
+    config.name + " / 警戒度" + (powerTier + 1) + " " + (TIER_NAMES[powerTier] ?? "");
 }
 
 function updateHUDBuildings() {
@@ -20350,7 +20477,7 @@ function createDragonSprites() {
  * 色文字列を [r,g,b] にする。"#rrggbb" と "rgb(r,g,b)" の両方を受ける。
  * v0.72: **これが読めていなかったのが「建物が真っ黒になる」原因**。
  * 建物の色は生成時点で既に shadeColor を通っていて "rgb(...)" 形式になっているのに、
- * 動員段階の色締め（下の shadeBuildingColor）がもう一度 shadeColor に渡していた。
+ * 警戒度の色締め（下の shadeBuildingColor）がもう一度 shadeColor に渡していた。
  * 旧実装は parseInt("rgb(90,48,24)", 16) が NaN になり、(NaN>>16)+amount → 0 に潰れて
  * **rgb(0,0,0)＝真っ黒**を返していた（try/catch では捕まらない。例外ではなく NaN なので）。
  * 実測: 格上の街と要塞都市の建物 1300〜2100棟／大陸（全建物の16〜27%）が真っ黒だった。
@@ -20427,6 +20554,7 @@ function tick() {
     const wdt = dt * timeScale;
 
     simStep(wdt);
+    maybeAutoSaveRun(now);        // v1.0.0: 壊した建物の自動セーブ（間隔を空けて書く）
     applyObstaclePushout();       // v0.6-p3: 城壁・地形の侵入不可
     updateCamera(wdt);
     updateSettlementAttacks(wdt);
