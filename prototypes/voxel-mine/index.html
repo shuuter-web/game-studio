@@ -145,6 +145,15 @@
   #fuel-status.empty #fuel-fill { background:#943f29; }
   #fuel-notice { position:fixed; inset:0; z-index:11; display:grid; place-items:center; padding:18px; background:rgba(43,38,32,.48); }
   #fuel-notice[hidden] { display:none; }
+  #encounter-status { position:fixed; right:12px; bottom:92px; z-index:5; width:min(270px,calc(100vw - 24px)); padding:10px; }
+  #encounter-status[hidden] { display:none; }
+  #encounter-status strong { display:block; margin-bottom:5px; }
+  #encounter-status button { width:100%; margin-top:7px; background:#943f29; color:#fff8e7; }
+  .gear-list { display:grid; gap:8px; margin-top:10px; }
+  .gear-card { padding:9px; border:1px solid #b5a589; background:#f6eedc; }
+  .gear-card strong,.gear-card span { display:block; }
+  .gear-card button { margin-top:6px; }
+  .treasure-card { margin:7px 0; padding:8px; border-left:3px solid #b99043; background:#f6eedc; }
   .fuel-notice-card { width:min(380px,100%); padding:24px; border:2px solid #8c795e; background:#f9f2e2; box-shadow:5px 6px 0 rgba(43,38,32,.22); text-align:center; }
   .fuel-notice-card p { margin:12px 0 20px; font-size:16px; line-height:1.8; font-weight:bold; }
   #btn-fuel-return { width:100%; background:#435e58; color:#fff8e7; }
@@ -170,6 +179,7 @@
   <div class="fuel-head"><span>残り燃料</span><span id="fuel-value">0 / 60</span></div>
   <div class="fuel-track" id="fuel-meter" role="meter" aria-label="残り燃料" aria-valuemin="0" aria-valuemax="60" aria-valuenow="0"><span id="fuel-fill"></span></div>
 </div>
+<div class="panel" id="encounter-status" hidden><strong id="encounter-title"></strong><div id="encounter-text"></div><button id="btn-enemy-attack" hidden>哨戒機を攻撃する</button><button id="btn-open-chest" hidden>埋没宝箱を開ける</button></div>
 
 <div class="panel" id="tools">
   <button id="btn-craft">工房</button>
@@ -198,7 +208,8 @@
     <div id="return-summary" hidden></div>
     <section class="port-section"><h2>航路図 <span class="sub" id="port-capacity"></span></h2><div id="destinations"></div>
       <p class="sub" style="margin-top:10px;line-height:1.8">ここに記されたのは、漂流島を探すための航路。巨大浮島へ直接乗り込む航路ではありません。<br>土や石を掘って発見、生き物を捕獲、木をタップで伐採。どの作業も燃料1を使います。<br>黒い水は出航時に無料で満タン。タンク容量が滞在できる長さを決めます。帰還用燃料は別に確保済み。</p></section>
-    <section class="port-section"><h2>積み荷とコイン</h2><div id="port-inventory"></div><button id="btn-sell-all">換金品をすべて売却</button></section>
+    <section class="port-section"><h2>積み荷とコイン</h2><div id="port-inventory"></div><div id="port-treasures"></div><button id="btn-sell-all">換金品をすべて売却</button></section>
+    <section class="port-section"><h2>飛空艇ギア <span class="sub" id="gear-capacity"></span></h2><p class="sub">港でのみ変更可能。重量6以内・最大3個を搭載できます。</p><div id="port-gears" class="gear-list"></div></section>
     <details class="lore-book" id="discovery-notes"><summary>発見物の覚え書き</summary><div id="discovery-notes-content"></div></details>
     <section class="port-section"><h2>飛空艇と採掘道具の工房</h2><div id="port-workshop"></div></section>
     <div class="port-section"><button id="port-sound">音</button> <button id="port-debug">デバッグ</button></div>
@@ -232,7 +243,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.6.1";
+const GAME_VERSION = "v0.7.0";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -336,6 +347,25 @@ const ITEM_FLAVOR = {
 for (const [id, flavor] of Object.entries(ITEM_FLAVOR)) ITEMS[id].flavor = flavor;
 const INVENTORY_ORDER = ["scrap", "copper", "crystal", "iron", "gold", "obsidian", "starcore", "ancientCoin", "amber", "bird", "beetle", "timber"];
 const DISCOVERY_TABLE = [{ threshold: 0.65, id: null }, { threshold: 0.88, id: "scrap" }, { threshold: 0.97, id: "ancientCoin" }, { threshold: 1, id: "amber" }];
+const TREASURE_BASES = [
+  { name:"古代貨幣", value:16 }, { name:"空色琥珀", value:28 }, { name:"風読み羅針盤", value:35 },
+  { name:"銀縁の杯", value:42 }, { name:"小さな機巧鳥", value:52 }, { name:"星図の断片", value:64 },
+];
+const TREASURE_STATES = [{ name:"煤けた", rate:.75 }, { name:"欠けた", rate:.85 }, { name:"よく残った", rate:1 }, { name:"鮮やかな", rate:1.3 }, { name:"奇跡的な", rate:1.7 }];
+const TREASURE_ORIGINS = ["巨大浮島の縁から落ちたらしい", "古い居住区の印がある", "防衛施設の刻印が残る", "雲海を長く漂っていた", "誰かが布で丁寧に包んでいた"];
+const TREASURE_RARITIES = [{ name:"ありふれた", rate:1 }, { name:"珍しい", rate:1.5 }, { name:"希少", rate:2.4 }, { name:"伝説級", rate:4 }];
+const GEAR_TRAITS = [
+  { id:"power", name:"掘削強化", description:"打撃力 +1", weight:2 },
+  { id:"fuel", name:"増設燃料槽", description:"最大燃料 +6", weight:2 },
+  { id:"appraisal", name:"鑑定眼", description:"換金価格 +10%", weight:1 },
+  { id:"stabilizer", name:"衝撃安定器", description:"敵の攻撃周期 +1", weight:2 },
+  { id:"treasure", name:"地下測量器", description:"宝箱の生成数 +1候補", weight:2 },
+  { id:"chain", name:"連鎖機構", description:"連鎖上限 +2", weight:1 },
+];
+const TERRAIN_PROFILES = [
+  { id:"hills", name:"丘陵", edge:.02, top:.8, twin:0 }, { id:"spire", name:"尖塔", edge:-.08, top:1.5, twin:0 },
+  { id:"basin", name:"くぼ地", edge:.05, top:-.9, twin:0 }, { id:"twin", name:"双峰", edge:-.03, top:.8, twin:1 },
+];
 const CREATURE_CONFIG = { count: 4, kinds: ["bird", "beetle"], radius: 18, height: 0.6, minimumSpacing: 2 };
 let tripSerial = 0;
 const creatures = [];
@@ -356,8 +386,13 @@ const DESTINATIONS = [
   { id: 5, name: "黒曜の高島", description: "硬い黒曜の殻", flavor: "黒い岩肌を見せる漂流島。切り離される前には、どんな景色の一部だったのか。", cost: { gold: 6, iron: 20 } },
   { id: 6, name: "星核の果て", description: "最深部の星核", flavor: "星核を秘めた小島が流れる空域。手の中の石も、巨大な浮島のほんの欠片だ。", cost: { obsidian: 8, gold: 10 } },
 ];
-const expedition = { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 };
-function fuelCapacity() { return FUEL_LEVELS[expedition.fuelLevel].capacity; }
+const expedition = { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 };
+function effectiveStats() {
+  const traits = player.equippedGearIds.map((id) => player.gears.find((gear) => gear.id === id)?.trait).filter(Boolean);
+  const count = (id) => traits.filter((trait) => trait === id).length;
+  return { power:count("power"), fuel:count("fuel") * 6, sale:1 + count("appraisal") * .1, enemyDelay:count("stabilizer"), treasure:count("treasure"), chain:count("chain") * 2 };
+}
+function fuelCapacity() { return FUEL_LEVELS[expedition.fuelLevel].capacity + effectiveStats().fuel; }
 
 // つるはし。tier がそのまま「掘れる素材の tier の上限」
 const PICKAXES = [
@@ -533,6 +568,8 @@ function pickMaterial(level, coreness, vein, isTop, nearTop, blur) {
 function generateIsland(level) {
   islandLevel = level;
   reseedLogic(islandSeed(level));
+  expedition.terrainProfileId = TERRAIN_PROFILES[Math.floor(random() * TERRAIN_PROFILES.length)].id;
+  const terrainProfile = TERRAIN_PROFILES.find((profile) => profile.id === expedition.terrainProfileId);
   const bonus = Math.min(ISLAND.radiusMaxBonus, (level - 1) * ISLAND.radiusPerLevel);
   islandRadius = ISLAND.baseRadius + bonus;
   const depth = ISLAND.baseDepth + Math.min(ISLAND.depthMaxBonus, (level - 1) * ISLAND.depthPerLevel);
@@ -555,11 +592,13 @@ function generateIsland(level) {
     for (let z = 0; z < GZ; z++) {
       const dx = x - cx, dz = z - cz;
       const dist = Math.hypot(dx, dz);
-      const radius = islandRadius * (0.78 + noiseEdge(x * 0.32, z * 0.32) * 0.42);
+      const radius = islandRadius * (0.78 + terrainProfile.edge + noiseEdge(x * 0.32, z * 0.32) * 0.42);
       if (dist > radius) continue;
 
       const inner = 1 - dist / radius;
-      const top    = Math.round(0.6 + noiseTop(x * 0.28, z * 0.28) * ISLAND.topNoise + inner * ISLAND.topInner);
+      const twinRise = terrainProfile.twin ? Math.max(0, 1 - Math.min(Math.hypot(dx - islandRadius*.3,dz), Math.hypot(dx + islandRadius*.3,dz)) / (islandRadius*.65)) * 2.2 : 0;
+      const basinDip = terrainProfile.id === "basin" ? -Math.max(0, 1 - dist / (islandRadius*.55)) * 2.2 : 0;
+      const top    = Math.round(0.6 + noiseTop(x * 0.28, z * 0.28) * ISLAND.topNoise + inner * (ISLAND.topInner + terrainProfile.top) + twinRise + basinDip);
       // 下は中心ほど深く尖らせる＝浮島のシルエット
       const bottom = -Math.round(inner * inner * depth + noiseTop(x * 0.5, z * 0.5) * 0.9);
 
@@ -633,14 +672,20 @@ const player = {
   range: 0,             // RANGE_LEVELS の添字
   chain: 0,             // CHAIN_LEVELS の添字
   inventory: {},        // 素材ID → 個数
+  treasures: [],        // 個体ごとの換金品
+  gears: [],            // 個体ごとの飛空艇ギア
+  equippedGearIds: [],
+  gearCapacity: 6,
+  workshopUnlocked: false,
+  blueprints: 0,
   seen: {},             // 一度でも手に入れた素材ID（在庫欄の表示に使う）
   stats: { mined: 0, taps: 0, maxCombo: 0, islands: 1, crafted: 0 },
   soundOn: true,
 };
 function pickaxeTier() { return player.pickaxe; }
-function hitPower() { return PICKAXES[player.pickaxe].power + player.power; }
+function hitPower() { return PICKAXES[player.pickaxe].power + player.power + effectiveStats().power; }
 function rangeRadius() { return RANGE_LEVELS[player.range].radius; }
-function chainCount() { return CHAIN_LEVELS[player.chain].count; }
+function chainCount() { return CHAIN_LEVELS[player.chain].count + effectiveStats().chain; }
 function have(id) { return id === "coins" ? player.coins : player.inventory[id] || 0; }
 function canAfford(cost) {
   if (!cost) return false;
@@ -1278,20 +1323,96 @@ function gainMaterial(dropId, amount) {
   tapGain[dropId] = (tapGain[dropId] || 0) + amount;
   bumpInventory(dropId);
 }
+function createTreasure(sourceKey) {
+  const seeded = makeRandomGenerator(hashSeed(worldSeed + ":treasure:" + tripSerial + ":" + sourceKey));
+  const base = TREASURE_BASES[Math.floor(seeded() * TREASURE_BASES.length)];
+  const state = TREASURE_STATES[Math.floor(seeded() * TREASURE_STATES.length)];
+  const origin = TREASURE_ORIGINS[Math.floor(seeded() * TREASURE_ORIGINS.length)];
+  const rarityRoll = seeded();
+  const rarity = TREASURE_RARITIES[rarityRoll > .985 ? 3 : rarityRoll > .91 ? 2 : rarityRoll > .68 ? 1 : 0];
+  const id = "t" + tripSerial + "-" + sourceKey + "-" + player.treasures.length;
+  const value = Math.max(5, Math.round(base.value * state.rate * rarity.rate));
+  return { id, name:state.name + base.name, rarity:rarity.name, origin, value, flavor:"「" + origin + "。」汚れを払うと、" + rarity.name + "品らしい光が戻った。" };
+}
+function gainTreasure(sourceKey) {
+  const treasure = createTreasure(sourceKey);
+  player.treasures.push(treasure); expedition.treasureIds.push(treasure.id);
+  spawnFloat(viewW / 2, viewH * .35, "発見：" + treasure.name, "#9a6b20", 15);
+  return treasure;
+}
+function createGear(sourceKey) {
+  const seeded = makeRandomGenerator(hashSeed(worldSeed + ":gear:" + tripSerial + ":" + sourceKey));
+  const trait = GEAR_TRAITS[Math.floor(seeded() * GEAR_TRAITS.length)];
+  const frames = ["真鍮枠", "古代機構", "雲鉄製", "工房試作"];
+  return { id:"g" + tripSerial + "-" + sourceKey + "-" + player.gears.length, name:frames[Math.floor(seeded()*frames.length)] + "・" + trait.name, trait:trait.id, weight:trait.weight };
+}
+function gainGear(sourceKey) { const gear=createGear(sourceKey); player.gears.push(gear); if (expedition.phase==="exploring") expedition.gearIds.push(gear.id); return gear; }
 function resolveBlockLoot(material, index) {
   if (material > M_STONE) return { id: MATERIALS[material].drop, amount: comboMultiplier };
   const roll = makeRandomGenerator(hashSeed(worldSeed + ":loot:" + islandLevel + ":" + tripSerial + ":" + index))();
-  const discovery = DISCOVERY_TABLE.find((entry) => roll < entry.threshold);
-  return discovery.id ? { id: discovery.id, amount: 1 } : null;
+  if (roll < .72) return null;
+  if (roll < .88) return { id:"scrap", amount:1 };
+  gainTreasure("block-" + index);
+  return null;
 }
 function canBeginAction() { return expedition.phase === "exploring" && !expedition.returnRequested && expedition.fuel > 0 && pendingBreaks.length === 0; }
-function beginAction() { player.stats.taps++; expedition.fuel--; expedition.turns++; combo = 0; comboMultiplier = 1; }
+function beginAction() { player.stats.taps++; expedition.fuel--; expedition.turns++; expedition.actionPendingThreat = true; combo = 0; comboMultiplier = 1; }
+function completeAction() {
+  if (!expedition.actionPendingThreat || pendingBreaks.length) return;
+  expedition.actionPendingThreat = false;
+  const enemy = expedition.enemy;
+  if (enemy && enemy.hp > 0) {
+    enemy.turnsUntilAttack--;
+    if (enemy.turnsUntilAttack <= 0) {
+      expedition.hull = Math.max(0, expedition.hull - 1);
+      enemy.turnsUntilAttack = enemy.attackEvery + effectiveStats().enemyDelay;
+      spawnFloat(viewW/2, viewH*.27, "船体被弾 −1", "#943f29", 18); addShake(4);
+      if (expedition.hull === 0) { expedition.returnRequested=true; expedition.returnReason="hull"; }
+    }
+  }
+  updateChestExposure();
+}
 function checkReturnReason() {
   if (expedition.phase !== "exploring") return;
-  if (solidCount === 0 || expedition.fuel === 0) {
+  if (!expedition.returnRequested && (solidCount === 0 || expedition.fuel === 0)) {
     expedition.returnRequested = true;
     expedition.returnReason = solidCount === 0 ? "cleared" : "fuel";
   }
+}
+function setupEncounters() {
+  const seeded = makeRandomGenerator(hashSeed(worldSeed + ":encounters:" + islandLevel + ":" + tripSerial));
+  const rolledChestCount = Math.min(2, Math.floor(seeded()*3) + (effectiveStats().treasure ? 1 : 0));
+  const chestCount = islandLevel===2 && !player.workshopUnlocked ? Math.max(1,rolledChestCount) : rolledChestCount;
+  const internal = [];
+  for (let index=0; index<cells.length; index++) if (cells[index]) { indexToXYZ(index,_xyz); if (NEIGHBORS6.every((d)=>cellAt(_xyz[0]+d[0],_xyz[1]+d[1],_xyz[2]+d[2]))) internal.push(index); }
+  expedition.chests = [];
+  for (let i=0;i<chestCount && internal.length;i++) { const at=Math.floor(seeded()*internal.length); expedition.chests.push({ id:i, cellIndex:internal.splice(at,1)[0], opened:false, exposed:false }); }
+  const enemyGround=groundCandidates().find((index)=>!trees.some((tree)=>tree.cellIndex===index)&&!creatures.some((creature)=>creature.cellIndex===index));
+  expedition.enemy = islandLevel === 2 ? { id:999, kind:"beetle", cellIndex:enemyGround??groundCandidates()[0], name:"古代哨戒機", hp:4, maxHp:4, attackEvery:4, turnsUntilAttack:4 } : null;
+  updateChestExposure();
+}
+function updateChestExposure() {
+  for (const chest of expedition.chests) {
+    if (chest.opened) continue;
+    indexToXYZ(chest.cellIndex,_xyz);
+    chest.exposed = !cells[chest.cellIndex] || NEIGHBORS6.some((d)=>!cellAt(_xyz[0]+d[0],_xyz[1]+d[1],_xyz[2]+d[2]));
+  }
+  renderEncounter();
+}
+function attackEnemy() {
+  const enemy=expedition.enemy;
+  if (!canBeginAction() || !enemy || enemy.hp<=0) return false;
+  beginAction(); enemy.hp=Math.max(0,enemy.hp-hitPower());
+  if (!enemy.hp) { gainGear("enemy"); spawnFloat(viewW/2,viewH*.3,"哨戒機を撃破。ギアを回収", "#557b62",16); }
+  markDirty(); completeAction(); checkReturnReason(); finishReturn(); updateHud(); renderEncounter(); saveGame(); return true;
+}
+function openExposedChest() {
+  const chest=expedition.chests.find((entry)=>entry.exposed&&!entry.opened);
+  if (!canBeginAction() || !chest) return false;
+  beginAction(); chest.opened=true;
+  if (islandLevel===2 && !player.workshopUnlocked) { player.workshopUnlocked=true; player.blueprints++; spawnFloat(viewW/2,viewH*.32,"設計図を発見：ギア工房解禁", "#9a6b20",17); }
+  else if (hash3(chest.cellIndex,tripSerial,worldSeed)>.45) gainGear("chest-"+chest.id); else gainTreasure("chest-"+chest.id);
+  completeAction(); checkReturnReason(); finishReturn(); updateHud(); renderEncounter(); saveGame(); return true;
 }
 function groundCandidates() {
   const candidates = [];
@@ -1305,13 +1426,24 @@ function groundCandidates() {
 function placeCreatures() {
   creatures.length = 0;
   const candidates = groundCandidates();
-  candidates.sort((left, right) => makeRandomGenerator(hashSeed(worldSeed + ":creature:" + islandLevel + ":" + tripSerial + ":" + left))() - makeRandomGenerator(hashSeed(worldSeed + ":creature:" + islandLevel + ":" + tripSerial + ":" + right))());
-  for (const cell of candidates) {
-    const position = []; indexToXYZ(cell, position);
-    if (creatures.some((creature) => { const other = []; indexToXYZ(creature.cellIndex, other); return Math.hypot(position[0] - other[0], position[2] - other[2]) < CREATURE_CONFIG.minimumSpacing; })) continue;
-    const index = creatures.length;
-    creatures.push({ id: index, kind: CREATURE_CONFIG.kinds[index % CREATURE_CONFIG.kinds.length], cellIndex: cell, captured: false, escaped: false });
-    if (creatures.length === CREATURE_CONFIG.count) break;
+  const centerX=(GX-1)/2, centerZ=(GZ-1)/2;
+  const heightOf=(index)=>{ indexToXYZ(index,_xyz); return _xyz[1]; };
+  const radiusOf=(index)=>{ indexToXYZ(index,_xyz); return Math.hypot(_xyz[0]-centerX,_xyz[2]-centerZ); };
+  // 最初の1体は中央寄りの高い足場へ置く。急峻な地形でも岩陰に全員隠れないための展示枠。
+  candidates.sort((left,right)=>{
+    const leftCentral=radiusOf(left)<=islandRadius*.45, rightCentral=radiusOf(right)<=islandRadius*.45;
+    if (leftCentral!==rightCentral) return rightCentral-leftCentral;
+    return heightOf(right)-heightOf(left) || radiusOf(left)-radiusOf(right) || hash3(left,tripSerial,worldSeed)-hash3(right,tripSerial,worldSeed);
+  });
+  for (const spacing of [CREATURE_CONFIG.minimumSpacing,1,0]) {
+    for (const cell of candidates) {
+      if (creatures.some((creature)=>creature.cellIndex===cell)) continue;
+      const position = []; indexToXYZ(cell, position);
+      if (creatures.some((creature) => { const other = []; indexToXYZ(creature.cellIndex, other); return Math.hypot(position[0] - other[0], position[2] - other[2]) < spacing; })) continue;
+      const index = creatures.length;
+      creatures.push({ id:index, kind:CREATURE_CONFIG.kinds[index % CREATURE_CONFIG.kinds.length], cellIndex:cell, captured:false, escaped:false });
+      if (creatures.length === CREATURE_CONFIG.count) return;
+    }
   }
 }
 function relocateCreatures() {
@@ -1387,7 +1519,7 @@ function finishCreaturePartEdges(faces, firstFace) {
 }
 function addPropBox(faces, entity, origin, box, part, metadata = null) {
   const [x, y, z, width, height, depth, color] = box;
-  const meshScale = entity.type === "creature" ? CREATURE_MESH_SCALE : 1;
+  const meshScale = entity.type !== "tree" ? CREATURE_MESH_SCALE : 1;
   const firstFace = faces.length;
   for (let index = 0; index < CUBE_FACES.length; index++) {
     const face = CUBE_FACES[index];
@@ -1396,10 +1528,10 @@ function addPropBox(faces, entity, origin, box, part, metadata = null) {
     const vertices = worldVertices.map((vertex) => [...project(...vertex)]);
     const shade = face.normal[1] > 0 ? 1 : face.normal[2] ? 0.72 : 0.86;
     const propFace = { entity, vertices, color: shadeColor(color, shade), depth: vertices.reduce((sum, vertex) => sum + vertex[2], 0) / vertices.length, key: entity.id * 1009 + part * 31 + index + (entity.type === "tree" ? 100000 : 200000), ...metadata };
-    if (entity.type === "creature") propFace.worldVertices = worldVertices;
+    if (entity.type !== "tree") propFace.worldVertices = worldVertices;
     faces.push(propFace);
   }
-  if (entity.type === "creature") finishCreaturePartEdges(faces, firstFace);
+  if (entity.type !== "tree") finishCreaturePartEdges(faces, firstFace);
 }
 function addPropEllipsoid(faces, entity, origin, oval, part) {
   const [x, y, z, width, height, depth, color] = oval;
@@ -1440,7 +1572,8 @@ function creatureEllipsoids(kind, pose) {
 function buildPropFaces() {
   if (expedition.phase !== "exploring") return [];
   const faces = [];
-  const entities = [...trees.filter((tree) => !tree.chopped && !tree.fallen).map((tree) => ({ ...tree, type: "tree" })), ...creatures.filter((creature) => !creature.captured && !creature.escaped).map((creature) => ({ ...creature, type: "creature" }))];
+  const enemyEntity=expedition.enemy?.hp>0&&Number.isInteger(expedition.enemy.cellIndex)?[{...expedition.enemy,type:"enemy"}]:[];
+  const entities = [...trees.filter((tree) => !tree.chopped && !tree.fallen).map((tree) => ({ ...tree, type: "tree" })), ...creatures.filter((creature) => !creature.captured && !creature.escaped).map((creature) => ({ ...creature, type: "creature" })), ...enemyEntity];
   for (const entity of entities) {
     if (!cells[entity.cellIndex]) continue;
     const position = [], origin = []; indexToXYZ(entity.cellIndex, position);
@@ -1453,7 +1586,7 @@ function buildPropFaces() {
       const metadata = entity.type === "tree" && entity.kind === "large" ? { blockId: part, blockKind: part < 3 ? "wood" : "leaf" } : null;
       addPropBox(faces, entity, origin, box, part, metadata);
     });
-    if (entity.type === "creature") creatureEllipsoids(entity.kind, pose).forEach((oval, part) => addPropEllipsoid(faces, entity, origin, oval, part + 30));
+    if (entity.type !== "tree") creatureEllipsoids(entity.kind, pose).forEach((oval, part) => addPropEllipsoid(faces, entity, origin, oval, part + 30));
   }
   return faces.sort((left, right) => right.depth - left.depth);
 }
@@ -1512,7 +1645,7 @@ function chopTree(id) {
   const point = treeProjection(tree); if (!point) return false;
   beginAction(); tree.chopped = true; expedition.treesChopped++;
   gainMaterial("timber", TREE_CONFIG.saplingTimberYield); flushTapGain([point.x, point.y]); soundHit(); addShake(1.5);
-  markDirty(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
+  markDirty(); completeAction(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
 }
 function findVisibleLargeTreeBlock(treeId, blockKind = null, blockId = null) {
   for (const face of propPickFaces) {
@@ -1535,7 +1668,7 @@ function chopTreeBlock(treeId, blockId, point = null) {
   if (blockId < 3) gainMaterial("timber", TREE_CONFIG.largeBlockTimberYield);
   if (tree.removedBlocks.length === boxes.length) { tree.chopped = true; expedition.treesChopped++; }
   flushTapGain([target.x, target.y]); soundHit(); addShake(1.5);
-  markDirty(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
+  markDirty(); completeAction(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
 }
 function creatureProjection(creature) {
   if (creature.captured || creature.escaped || !cells[creature.cellIndex]) return null;
@@ -1564,14 +1697,16 @@ function captureCreature(id) {
   if (!point) return false;
   beginAction(); creature.captured = true; expedition.captures++;
   gainMaterial(creature.kind, 1); flushTapGain([point.x, point.y]); soundCraft();
-  markDirty(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
+  markDirty(); completeAction(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
 }
 function estimatedSaleValue(inventory) { return INVENTORY_ORDER.reduce((total, id) => total + (inventory[id] || 0) * ITEMS[id].saleValue, 0); }
+function treasureSaleValue(ids = null) { const wanted=ids?new Set(ids):null; return Math.round(player.treasures.filter((item)=>!wanted||wanted.has(item.id)).reduce((total,item)=>total+item.value,0)*effectiveStats().sale); }
 function sellAllTreasure() {
   if (expedition.phase !== "base") return false;
-  const value = estimatedSaleValue(player.inventory);
+  const value = estimatedSaleValue(player.inventory) + treasureSaleValue();
   if (!value) return false;
   for (const id of INVENTORY_ORDER) if (ITEMS[id].saleValue) player.inventory[id] = 0;
+  player.treasures.length=0;
   player.coins += value; renderInventory(); renderCraft(); renderBase(); saveGame(); return true;
 }
 
@@ -1645,6 +1780,7 @@ function processPendingBreaks() {
     changed = true;
   }
   if (changed) { rebuildSurface(); flushTapGain(null); markDirty(); }
+  completeAction();
   checkReturnReason();
   finishReturn();
   if (processed) saveGame();
@@ -1715,6 +1851,7 @@ function mineAt(x, y, z, sx, sy) {
     spawnBurst(sx, sy, 0.45, false);
   }
   markDirty();
+  completeAction();
   checkReturnReason();
   finishReturn();
   updateHud();
@@ -1887,7 +2024,7 @@ function updateHud() {
   next.disabled = expedition.phase !== "exploring" || expedition.returnRequested;
   next.textContent = expedition.returnRequested ? "連鎖を回収中…" : "港へ帰還";
   document.getElementById("btn-craft").disabled = expedition.phase !== "base";
-  document.getElementById("h-fuel").textContent = expedition.turns + "ターン ／ 捕獲 " + expedition.captures + " ／ 発見 " + Object.values(expedition.haul).reduce((total, amount) => total + amount, 0);
+  document.getElementById("h-fuel").textContent = expedition.turns + "ターン ／ 船体 " + expedition.hull + "/" + expedition.maxHull + " ／ " + (TERRAIN_PROFILES.find((profile)=>profile.id===expedition.terrainProfileId)?.name||"");
   const capacity = fuelCapacity();
   const fuelRatio = capacity ? expedition.fuel / capacity : 0;
   const fuelGauge = document.getElementById("fuel-status");
@@ -1899,6 +2036,7 @@ function updateHud() {
   fuelMeter.setAttribute("aria-valuenow", expedition.fuel);
   document.getElementById("fuel-value").textContent = expedition.fuel + " / " + capacity;
   document.getElementById("fuel-fill").style.width = Math.max(0, Math.min(100, fuelRatio * 100)) + "%";
+  renderEncounter();
 }
 function updateComboHud() {
   const el = document.getElementById("h-combo");
@@ -1927,7 +2065,7 @@ function base64ToBytes(text) {
 function saveKey() { return SAVE_KEY_PREFIX + worldSeed + (urlParams.has("fresh") ? ":fresh:" + urlParams.get("fresh") : ""); }
 function saveGame() {
   const data = {
-    version: 7, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
+    version: 8, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
     expedition, combo,
     pending: pendingBreaks.map((entry) => ({ ...entry, due: Math.max(0, entry.due - nowSeconds) })),
     player,
@@ -1959,7 +2097,6 @@ function loadGame() {
   tripSerial = validated.tripSerial;
   creatures.splice(0, creatures.length, ...validated.creatures);
   trees.splice(0, trees.length, ...validated.trees);
-  if (data.version === 1) { generateIsland(Math.min(DESTINATIONS.length, isl.level)); fitCameraToIsland(); return true; }
   islandLevel = isl.level;
   GX = isl.gx; GY = isl.gy; GZ = isl.gz; GROUND_Y = isl.groundY; islandRadius = isl.radius;
   cells = validated.cells;
@@ -1970,13 +2107,10 @@ function loadGame() {
   solidCount = 0;
   for (let i = 0; i < cells.length; i++) if (cells[i]) solidCount++;
   rebuildSurface();
-  // 旧版から継続した遠征は木が空のまま保存され得る。未伐採なら現在の地形に補う。
   if (expedition.phase === "exploring" && trees.length === 0 && expedition.treesChopped === 0) placeTrees();
-  else if (expedition.phase === "exploring" && data.version < 5) placeTreeKind("large", TREE_CONFIG.largeCount);
   if (data.camera) {
     camera.yaw = data.camera.yaw; camera.pitch = data.camera.pitch;
     camera.dist = data.camera.dist; camera.zoom = data.camera.zoom;
-    // v0.6.1: 古いセーブには targetY しか無い。その場合は重心から作り直す。
     if (typeof data.camera.targetX === "number") {
       anchorCameraFocus([data.camera.targetX, data.camera.targetY, data.camera.targetZ]);
     } else {
@@ -1988,9 +2122,9 @@ function loadGame() {
 }
 function resetGame() {
   try { localStorage.removeItem(saveKey()); } catch (error) { /* 無視 */ }
-  Object.assign(player, { coins: 0, pickaxe: 0, power: 0, range: 0, chain: 0, inventory: {}, seen: {},
+  Object.assign(player, { coins: 0, pickaxe: 0, power: 0, range: 0, chain: 0, inventory: {}, seen: {}, treasures:[], gears:[], equippedGearIds:[], gearCapacity:6, workshopUnlocked:false, blueprints:0,
                           stats: { mined: 0, taps: 0, maxCombo: 0, islands: 1, crafted: 0 } });
-  Object.assign(expedition, { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 });
+  Object.assign(expedition, { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 });
   tripSerial = 0; creatures.length = 0; trees.length = 0;
   startIsland(1);
   renderBase();
@@ -1999,47 +2133,42 @@ function resetGame() {
 
 function validInteger(value, maximum = Number.MAX_SAFE_INTEGER) { return Number.isSafeInteger(value) && value >= 0 && value <= maximum; }
 function validResources(value, legacy = false) { return value && typeof value === "object" && !Array.isArray(value) && Object.entries(value).every(([id, amount]) => (INVENTORY_ORDER.includes(id) || legacy && ["dirt", "stone"].includes(id)) && validInteger(amount)); }
-function migrateResources(resources) {
-  const result = { ...resources };
-  const converted = (result.dirt || 0) + (result.stone || 0);
-  if (converted) result.scrap = (result.scrap || 0) + converted;
-  delete result.dirt; delete result.stone;
-  return result;
-}
 function validateSave(data) {
-  if (!data || ![1, 2, 3, 4, 5, 6, 7].includes(data.version) || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
+  if (!data || data.version !== 8 || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
   const savedPlayer = data.player, island = data.island;
   if (!validInteger(savedPlayer.pickaxe, PICKAXES.length - 1) || !validInteger(savedPlayer.power, 1000000) || !validInteger(savedPlayer.range, RANGE_LEVELS.length - 1) || !validInteger(savedPlayer.chain, CHAIN_LEVELS.length - 1)) return null;
-  if (!validResources(savedPlayer.inventory, data.version < 3) || !savedPlayer.stats || !["mined", "taps", "maxCombo", "islands", "crafted"].every((key) => validInteger(savedPlayer.stats[key]))) return null;
+  if (!validResources(savedPlayer.inventory) || !savedPlayer.stats || !["mined", "taps", "maxCombo", "islands", "crafted"].every((key) => validInteger(savedPlayer.stats[key]))) return null;
+  if (!Array.isArray(savedPlayer.treasures) || !Array.isArray(savedPlayer.gears) || !Array.isArray(savedPlayer.equippedGearIds) || savedPlayer.gearCapacity!==6 || typeof savedPlayer.workshopUnlocked!=="boolean" || !validInteger(savedPlayer.blueprints)) return null;
+  if (!savedPlayer.treasures.every((item)=>item&&typeof item.id==="string"&&typeof item.name==="string"&&typeof item.flavor==="string"&&validInteger(item.value)) || !savedPlayer.gears.every((gear)=>gear&&typeof gear.id==="string"&&typeof gear.name==="string"&&GEAR_TRAITS.some((trait)=>trait.id===gear.trait&&trait.weight===gear.weight))) return null;
+  if (new Set(savedPlayer.treasures.map((item)=>item.id)).size!==savedPlayer.treasures.length || new Set(savedPlayer.gears.map((gear)=>gear.id)).size!==savedPlayer.gears.length || new Set(savedPlayer.equippedGearIds).size!==savedPlayer.equippedGearIds.length) return null;
+  if (savedPlayer.equippedGearIds.length>3 || !savedPlayer.equippedGearIds.every((id)=>savedPlayer.gears.some((gear)=>gear.id===id)) || savedPlayer.equippedGearIds.reduce((sum,id)=>sum+savedPlayer.gears.find((gear)=>gear.id===id).weight,0)>savedPlayer.gearCapacity) return null;
   if (!Number.isInteger(island.level) || island.level < 1 || ![island.gx, island.gy, island.gz].every((size) => Number.isInteger(size) && size > 0 && size <= 128)) return null;
   if (!Number.isFinite(island.radius) || island.radius <= 0 || !validInteger(island.groundY, island.gy)) return null;
   const restoredCells = base64ToBytes(island.cells), restoredDamage = base64ToBytes(island.damage);
   if (restoredCells.length !== island.gx * island.gy * island.gz || restoredDamage.length !== restoredCells.length || restoredCells.some((material) => material >= MATERIALS.length)) return null;
-  const inventory = migrateResources(savedPlayer.inventory);
-  if (!validResources(inventory) || data.version >= 3 && !validInteger(savedPlayer.coins)) return null;
+  const inventory = savedPlayer.inventory;
+  if (!validResources(inventory) || !validInteger(savedPlayer.coins)) return null;
   const seen = Object.fromEntries(INVENTORY_ORDER.filter((id) => savedPlayer.seen?.[id] || inventory[id] > 0).map((id) => [id, true]));
-  const restoredPlayer = { coins: data.version >= 3 ? savedPlayer.coins : 0, pickaxe: savedPlayer.pickaxe, power: savedPlayer.power, range: savedPlayer.range, chain: savedPlayer.chain, inventory, seen, stats: savedPlayer.stats, soundOn: savedPlayer.soundOn !== false };
+  const restoredPlayer = { coins:savedPlayer.coins, pickaxe:savedPlayer.pickaxe, power:savedPlayer.power, range:savedPlayer.range, chain:savedPlayer.chain, inventory, seen, treasures:savedPlayer.treasures, gears:savedPlayer.gears, equippedGearIds:savedPlayer.equippedGearIds, gearCapacity:6, workshopUnlocked:savedPlayer.workshopUnlocked, blueprints:savedPlayer.blueprints, stats:savedPlayer.stats, soundOn:savedPlayer.soundOn!==false };
   const tripDefaults = { returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 };
-  if (data.version === 1) return { player: restoredPlayer, tripSerial: 0, creatures: [], trees: [], expedition: { ...tripDefaults, phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: Math.min(DESTINATIONS.length, island.level) - 1, haul: {}, returnRequested: false } };
   const savedExpedition = data.expedition ? { ...tripDefaults, ...data.expedition } : null;
   if (!savedExpedition || !["base", "exploring", "result"].includes(savedExpedition.phase) || !validInteger(savedExpedition.fuelLevel, FUEL_LEVELS.length - 1) || !validInteger(savedExpedition.routeLevel, DESTINATIONS.length - 1)) return null;
-  if (typeof savedExpedition.fuelNoticeAcknowledged !== "boolean" || data.version >= 7 && typeof data.expedition.fuelNoticeAcknowledged !== "boolean") return null;
-  if (island.level > savedExpedition.routeLevel + 1 || !validInteger(savedExpedition.fuel, FUEL_LEVELS[savedExpedition.fuelLevel].capacity) || !validInteger(savedExpedition.turns) || !validResources(savedExpedition.haul, data.version < 3) || typeof savedExpedition.returnRequested !== "boolean" || !validInteger(data.combo)) return null;
-  savedExpedition.haul = migrateResources(savedExpedition.haul);
-  if (!validResources(savedExpedition.haul) || !validInteger(savedExpedition.blocksDestroyed) || !validInteger(savedExpedition.captures) || !["manual", "fuel", "cleared"].includes(savedExpedition.returnReason)) return null;
-  if (!Array.isArray(data.pending) || !data.pending.every((entry) => validInteger(entry.idx, restoredCells.length - 1) && validInteger(entry.material, MATERIALS.length - 1) && entry.material > 0 && validInteger(entry.step, CHAIN_LEVELS.at(-1).count) && entry.step > 0 && Number.isFinite(entry.due) && entry.due >= 0 && entry.due <= CHAIN_STEP_SECONDS * CHAIN_LEVELS.at(-1).count)) return null;
+  if (!TERRAIN_PROFILES.some((profile)=>profile.id===savedExpedition.terrainProfileId) || !validInteger(savedExpedition.hull,3) || savedExpedition.maxHull!==3 || typeof savedExpedition.actionPendingThreat!=="boolean" || !Array.isArray(savedExpedition.chests) || !Array.isArray(savedExpedition.treasureIds) || !Array.isArray(savedExpedition.gearIds)) return null;
+  if (savedExpedition.chests.length>2 || !savedExpedition.chests.every((chest)=>chest&&validInteger(chest.id)&&validInteger(chest.cellIndex,island.gx*island.gy*island.gz-1)&&typeof chest.opened==="boolean"&&typeof chest.exposed==="boolean") || new Set(savedExpedition.chests.map((chest)=>chest.id)).size!==savedExpedition.chests.length || new Set(savedExpedition.chests.map((chest)=>chest.cellIndex)).size!==savedExpedition.chests.length) return null;
+  const enemy=savedExpedition.enemy;
+  if (enemy!==null && (!enemy || enemy.id!==999 || enemy.kind!=="beetle" || typeof enemy.name!=="string" || !validInteger(enemy.cellIndex,island.gx*island.gy*island.gz-1) || !validInteger(enemy.hp,enemy.maxHp) || enemy.maxHp!==4 || enemy.attackEvery!==4 || !validInteger(enemy.turnsUntilAttack,4+3))) return null;
+  if (savedExpedition.phase==="exploring" && island.level===2 && enemy===null || island.level!==2 && enemy!==null) return null;
+  if (typeof savedExpedition.fuelNoticeAcknowledged !== "boolean") return null;
+  if (island.level > savedExpedition.routeLevel + 1 || !validInteger(savedExpedition.fuel, FUEL_LEVELS[savedExpedition.fuelLevel].capacity+18) || !validInteger(savedExpedition.turns) || !validResources(savedExpedition.haul) || typeof savedExpedition.returnRequested !== "boolean" || !validInteger(data.combo)) return null;
+  if (!validResources(savedExpedition.haul) || !validInteger(savedExpedition.blocksDestroyed) || !validInteger(savedExpedition.captures) || !["manual", "fuel", "cleared", "hull"].includes(savedExpedition.returnReason)) return null;
+  if (!Array.isArray(data.pending) || !data.pending.every((entry) => validInteger(entry.idx, restoredCells.length - 1) && validInteger(entry.material, MATERIALS.length - 1) && entry.material > 0 && validInteger(entry.step, CHAIN_LEVELS.at(-1).count+6) && entry.step > 0 && Number.isFinite(entry.due) && entry.due >= 0 && entry.due <= CHAIN_STEP_SECONDS * (CHAIN_LEVELS.at(-1).count+6))) return null;
   if (new Set(data.pending.map((entry) => entry.idx)).size !== data.pending.length || (savedExpedition.phase !== "exploring" && (data.pending.length || savedExpedition.returnRequested))) return null;
   if (data.camera && (![data.camera.yaw, data.camera.pitch, data.camera.dist, data.camera.zoom, data.camera.targetY].every(Number.isFinite) || data.camera.dist <= 0 || data.camera.zoom <= 0)) return null;
-  const restoredCreatures = data.version < 3 ? [] : data.creatures;
-  if (data.version >= 3 && (!validInteger(data.tripSerial) || !Array.isArray(restoredCreatures) || restoredCreatures.length > CREATURE_CONFIG.count || !restoredCreatures.every((creature) => validInteger(creature.id) && CREATURE_CONFIG.kinds.includes(creature.kind) && validInteger(creature.cellIndex, restoredCells.length - 1) && typeof creature.captured === "boolean" && typeof creature.escaped === "boolean") || new Set(restoredCreatures.map((creature) => creature.id)).size !== restoredCreatures.length)) return null;
-  const restoredTrees = data.version < 4 ? [] : data.trees;
-  if (!Array.isArray(restoredTrees) || restoredTrees.length > TREE_CONFIG.saplingCount + TREE_CONFIG.largeCount || !restoredTrees.every((tree) => validInteger(tree.id) && validInteger(tree.cellIndex, restoredCells.length - 1) && typeof tree.chopped === "boolean" && typeof tree.fallen === "boolean" && (data.version < 5 || ["sapling", "large"].includes(tree.kind)) && (data.version < 6 || Array.isArray(tree.removedBlocks) && tree.removedBlocks.every((blockId) => validInteger(blockId, treeBoxes("large").length - 1)) && new Set(tree.removedBlocks).size === tree.removedBlocks.length)) || new Set(restoredTrees.map((tree) => tree.id)).size !== restoredTrees.length || !validInteger(savedExpedition.treesChopped)) return null;
-  const migratedTrees = restoredTrees.map((tree) => {
-    const kind = data.version < 5 ? "sapling" : tree.kind;
-    const removedBlocks = data.version < 6 && kind === "large" ? (tree.chopped ? treeBoxes("large").map((_, blockId) => blockId) : []) : (tree.removedBlocks || []);
-    return { ...tree, kind, removedBlocks };
-  });
-  return { player: restoredPlayer, expedition: savedExpedition, cells: restoredCells, damage: restoredDamage, pending: data.pending, tripSerial: data.version < 3 ? 0 : data.tripSerial, creatures: restoredCreatures, trees: migratedTrees };
+  const restoredCreatures = data.creatures;
+  if (!validInteger(data.tripSerial) || !Array.isArray(restoredCreatures) || restoredCreatures.length > CREATURE_CONFIG.count || !restoredCreatures.every((creature) => validInteger(creature.id) && CREATURE_CONFIG.kinds.includes(creature.kind) && validInteger(creature.cellIndex, restoredCells.length - 1) && typeof creature.captured === "boolean" && typeof creature.escaped === "boolean") || new Set(restoredCreatures.map((creature) => creature.id)).size !== restoredCreatures.length) return null;
+  const restoredTrees = data.trees;
+  if (!Array.isArray(restoredTrees) || restoredTrees.length > TREE_CONFIG.saplingCount + TREE_CONFIG.largeCount || !restoredTrees.every((tree) => validInteger(tree.id) && validInteger(tree.cellIndex, restoredCells.length - 1) && typeof tree.chopped === "boolean" && typeof tree.fallen === "boolean" && ["sapling", "large"].includes(tree.kind) && Array.isArray(tree.removedBlocks) && tree.removedBlocks.every((blockId) => validInteger(blockId, treeBoxes("large").length - 1)) && new Set(tree.removedBlocks).size === tree.removedBlocks.length) || new Set(restoredTrees.map((tree) => tree.id)).size !== restoredTrees.length || !validInteger(savedExpedition.treesChopped)) return null;
+  return { player:restoredPlayer, expedition:savedExpedition, cells:restoredCells, damage:restoredDamage, pending:data.pending, tripSerial:data.tripSerial, creatures:restoredCreatures, trees:restoredTrees };
 }
 
 // -----------------------------------------------------------------
@@ -2065,13 +2194,14 @@ function nextIsland() {
 }
 function depart(destinationId) {
   if (expedition.phase !== "base" || !Number.isInteger(destinationId) || destinationId < 1 || destinationId > expedition.routeLevel + 1) return false;
-  Object.assign(expedition, { phase: "exploring", fuel: fuelCapacity(), turns: 0, haul: {}, returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 });
+  Object.assign(expedition, { phase:"exploring", fuel:fuelCapacity(), turns:0, haul:{}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested:false, returnReason:"manual", fuelNoticeAcknowledged:false, blocksDestroyed:0, captures:0, treesChopped:0 });
   tripSerial++;
   player.stats.islands = Math.max(player.stats.islands, destinationId);
   closeCraft();
   startIsland(destinationId);
   placeCreatures();
   placeTrees();
+  setupEncounters();
   renderBase();
   soundIsland();
   saveGame();
@@ -2110,6 +2240,39 @@ function acknowledgeFuelNotice() {
   saveGame();
   return true;
 }
+function equippedWeight() { return player.equippedGearIds.reduce((sum,id)=>sum+(player.gears.find((gear)=>gear.id===id)?.weight||0),0); }
+function toggleGear(id) {
+  if (expedition.phase!=="base") return false;
+  const gear=player.gears.find((entry)=>entry.id===id); if (!gear) return false;
+  const at=player.equippedGearIds.indexOf(id);
+  if (at>=0) player.equippedGearIds.splice(at,1);
+  else if (player.equippedGearIds.length<3 && equippedWeight()+gear.weight<=player.gearCapacity) player.equippedGearIds.push(id);
+  else return false;
+  renderBase(); renderCraft(); saveGame(); return true;
+}
+function craftRandomGear() {
+  if (expedition.phase!=="base" || !player.workshopUnlocked || have("scrap")<15) return false;
+  player.inventory.scrap=have("scrap")-15; player.stats.crafted++; gainGear("craft-"+player.stats.crafted); renderBase(); renderCraft(); saveGame(); return true;
+}
+function renderGearBay() {
+  const capacity=document.getElementById("gear-capacity");
+  capacity.textContent="搭載 "+equippedWeight()+" / "+player.gearCapacity+" ／ "+player.equippedGearIds.length+" / 3";
+  const container=document.getElementById("port-gears");
+  if (!player.gears.length) { container.innerHTML='<p class="sub">ギアはまだありません。宝箱や古代哨戒機から回収できます。</p>'; return; }
+  container.innerHTML=player.gears.map((gear)=>{ const trait=GEAR_TRAITS.find((entry)=>entry.id===gear.trait); const equipped=player.equippedGearIds.includes(gear.id); return '<article class="gear-card"><strong>'+gear.name+'</strong><span>'+trait.description+' ／ 重量'+gear.weight+'</span><button data-gear="'+gear.id+'">'+(equipped?'解除する':'搭載する')+'</button></article>'; }).join("");
+  for (const button of container.querySelectorAll("[data-gear]")) button.addEventListener("click",()=>toggleGear(button.dataset.gear));
+}
+function renderEncounter() {
+  const panel=document.getElementById("encounter-status"), enemy=expedition.enemy, chest=expedition.chests.find((entry)=>entry.exposed&&!entry.opened);
+  const active=expedition.phase==="exploring" && (enemy?.hp>0 || chest);
+  panel.hidden=!active; if (!active) return;
+  const attack=document.getElementById("btn-enemy-attack"), open=document.getElementById("btn-open-chest");
+  if (enemy?.hp>0) {
+    document.getElementById("encounter-title").textContent=enemy.name+"　耐久 "+enemy.hp+" / "+enemy.maxHp;
+    document.getElementById("encounter-text").textContent=enemy.turnsUntilAttack===1?"警告：次の作業後に攻撃":"攻撃まで "+enemy.turnsUntilAttack+"ターン　船体 "+expedition.hull+" / "+expedition.maxHull;
+  } else { document.getElementById("encounter-title").textContent="埋没宝箱"; document.getElementById("encounter-text").textContent="岩の隙間から古い留め金が見える。"; }
+  attack.hidden=!(enemy?.hp>0); open.hidden=!chest;
+}
 function renderBase() {
   renderResult();
   renderFlavorNotes("discovery-notes-content", INVENTORY_ORDER.filter((id) => player.seen[id]), "まだ覚え書きはありません。漂流島から持ち帰った品の来歴を、ここに書き留めます。");
@@ -2123,14 +2286,19 @@ function renderBase() {
   for (const button of document.querySelectorAll("[data-depart]")) button.addEventListener("click", () => depart(Number(button.dataset.depart)));
   const inventoryText = INVENTORY_ORDER.filter((id) => have(id)).map((id) => itemDefinition(id).name + " " + have(id)).join("　");
   document.getElementById("port-inventory").textContent = "コイン " + player.coins + " ／ " + (inventoryText || "積み荷は空です。最初の島へ出航しましょう。");
-  document.getElementById("btn-sell-all").disabled = estimatedSaleValue(player.inventory) === 0;
-  document.getElementById("btn-sell-all").textContent = "換金品をすべて売却：" + estimatedSaleValue(player.inventory) + " コイン";
+  document.getElementById("port-treasures").innerHTML=player.treasures.map((item)=>'<article class="treasure-card"><strong>'+item.rarity+'・'+item.name+'</strong><div>'+item.flavor+'</div><span class="sub">査定 '+Math.round(item.value*effectiveStats().sale)+' コイン</span></article>').join("") || '<p class="sub">個体換金品はまだありません。</p>';
+  const totalSale=estimatedSaleValue(player.inventory)+treasureSaleValue();
+  document.getElementById("btn-sell-all").disabled = totalSale === 0;
+  document.getElementById("btn-sell-all").textContent = "換金品をすべて売却：" + totalSale + " コイン";
+  renderGearBay();
   const summary = document.getElementById("return-summary");
   summary.hidden = expedition.turns === 0;
   summary.textContent = "帰還記録 ─ " + DESTINATIONS[islandLevel - 1].name + " ／ " + expedition.turns + "ターン ／ 残燃料 " + expedition.fuel + "\n持ち帰り：" + (INVENTORY_ORDER.filter((id) => expedition.haul[id]).map((id) => itemDefinition(id).name + " +" + expedition.haul[id]).join("　") || "なし");
   const workshop = document.getElementById("port-workshop");
   workshop.innerHTML = document.getElementById("c-list").innerHTML;
+  workshop.insertAdjacentHTML("beforeend", player.workshopUnlocked ? '<div class="up"><div class="t">ランダムギア製作</div><div class="d">特性と重量は完成時に判明</div><div class="c">工作部品 '+have("scrap")+'/15</div><button id="btn-craft-gear"'+(have("scrap")<15?' disabled':'')+'>製作</button></div>' : '<div class="up maxed"><div class="t">ギア製作台</div><div class="d">島2の埋没宝箱から設計図を探してください。</div></div>');
   for (const button of workshop.querySelectorAll("[data-craft]")) button.addEventListener("click", () => craft(button.dataset.craft));
+  document.getElementById("btn-craft-gear")?.addEventListener("click",craftRandomGear);
   document.getElementById("port-version").textContent = GAME_VERSION + " ／ 世界の種 " + worldSeed + (urlParams.has("fresh") ? " ／ 独立テストセーブ" : " ／ 自動保存");
 }
 function renderFlavorNotes(elementId, itemIds, emptyText) {
@@ -2159,9 +2327,11 @@ function renderResult() {
   const discovered = INVENTORY_ORDER.filter((id) => expedition.haul[id] > 0);
   document.getElementById("result-notes").hidden = discovered.length === 0;
   renderFlavorNotes("result-notes-content", discovered, "");
-  const reason = { manual: "任意帰還", fuel: "作業燃料を使い切りました", cleared: "島の採掘完了" }[expedition.returnReason];
+  const reason = { manual: "任意帰還", fuel: "作業燃料を使い切りました", cleared: "島の採掘完了", hull:"船体が損傷し緊急帰還" }[expedition.returnReason];
   const list = (treasure) => INVENTORY_ORDER.filter((id) => expedition.haul[id] && Boolean(ITEMS[id].saleValue) === treasure).map((id) => ITEMS[id].name + " ×" + expedition.haul[id]).join("・") || "なし";
-  document.getElementById("result-details").textContent = DESTINATIONS[islandLevel - 1].name + " ─ " + reason + "\n使用燃料 " + expedition.turns + " ／ 残り " + expedition.fuel + "\n破壊ブロック " + expedition.blocksDestroyed + " ／ 捕獲 " + expedition.captures + " ／ 伐採 " + expedition.treesChopped + "\n\n強化素材\n" + list(false) + "\n\n換金品\n" + list(true) + "\n売却見込額：" + estimatedSaleValue(expedition.haul) + " コイン\n\n積み荷は回収済み。港で換金品を売却できます。";
+  const treasureList=player.treasures.filter((item)=>expedition.treasureIds.includes(item.id)).map((item)=>item.name+"（"+item.rarity+"）").join("・")||"なし";
+  const gearList=player.gears.filter((item)=>expedition.gearIds.includes(item.id)).map((item)=>item.name).join("・")||"なし";
+  document.getElementById("result-details").textContent = DESTINATIONS[islandLevel - 1].name + " ─ " + reason + "\n地形 " + (TERRAIN_PROFILES.find((profile)=>profile.id===expedition.terrainProfileId)?.name||"") + " ／ 使用燃料 " + expedition.turns + " ／ 残り " + expedition.fuel + " ／ 船体 "+expedition.hull+"/"+expedition.maxHull+"\n破壊ブロック " + expedition.blocksDestroyed + " ／ 捕獲 " + expedition.captures + " ／ 伐採 " + expedition.treesChopped + "\n\n強化素材\n" + list(false) + "\n\n個体換金品\n"+treasureList+"\n\n回収ギア\n"+gearList+"\n売却見込額：" + (estimatedSaleValue(expedition.haul)+treasureSaleValue(expedition.treasureIds)) + " コイン\n\n積み荷は回収済み。港で編成と売却ができます。";
 }
 function acknowledgeResult() {
   if (expedition.phase !== "result") return false;
@@ -2227,6 +2397,7 @@ canvas.addEventListener("wheel", (e) => {
 function tapAt(sx, sy) {
   if (expedition.phase !== "exploring" || !craftEl.classList.contains("hidden")) return { broken: 0, locked: false };
   const prop = visiblePropAt(sx, sy);
+  if (prop?.entity.type === "enemy") return { broken:0, locked:false, enemyAttacked:attackEnemy() };
   if (prop?.entity.type === "creature") return { broken: 0, locked: false, captured: captureCreature(prop.entity.id) };
   if (prop?.entity.type === "tree") {
     const chopped = prop.entity.kind === "large" ? chopTreeBlock(prop.entity.id, prop.blockId, { treeId: prop.entity.id, blockId: prop.blockId, blockKind: prop.blockKind, x: sx, y: sy }) : chopTree(prop.entity.id);
@@ -2288,6 +2459,8 @@ document.getElementById("btn-debug-close").addEventListener("click", closeDebugM
 debugPanel.addEventListener("click", (event) => { if (event.target === debugPanel) closeDebugMenu(); });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !debugPanel.hidden) closeDebugMenu(); });
 document.getElementById("btn-fuel-return").addEventListener("click", acknowledgeFuelNotice);
+document.getElementById("btn-enemy-attack").addEventListener("click",attackEnemy);
+document.getElementById("btn-open-chest").addEventListener("click",openExposedChest);
 document.getElementById("btn-result-base").addEventListener("click", acknowledgeResult);
 document.getElementById("btn-sell-all").addEventListener("click", sellAllTreasure);
 document.getElementById("btn-debug-reset").addEventListener("click", () => {
@@ -2460,6 +2633,10 @@ function debugFindCreature() { return creatures.map(creatureProjection).find(Boo
 function debugAcknowledgeFuelNotice() { return acknowledgeFuelNotice(); }
 function debugAcknowledgeResult() { return acknowledgeResult(); }
 function debugSellAll() { return sellAllTreasure(); }
+function debugAttackEnemy() { return attackEnemy(); }
+function debugOpenChest() { const chest=expedition.chests.find((entry)=>!entry.opened); if (chest) chest.exposed=true; return openExposedChest(); }
+function debugToggleGear(id) { return toggleGear(id); }
+function debugCraftGear() { return craftRandomGear(); }
 function debugCraft(lineId) { return craft(lineId); }
 function debugNextIsland() { nextIsland(); return debugState(); }
 function debugSave() { saveGame(); return localStorage.getItem(saveKey()) !== null; }
