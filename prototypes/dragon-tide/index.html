@@ -726,7 +726,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.0.5";
+const GAME_VERSION = "v1.0.6";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5538,6 +5538,47 @@ function moverStageFerocity(stageIndex) { return 1 + 0.20 * stageIndex; }
 // 足を踏み替えてまた撃つ、というメリハリが出る。
 const STEP_TURN_HYSTERESIS = 1.05;   // 目標方向がこれ(rad=60°)以上ずれたら踏み替える
 
+// v1.0.6: 踏み替えを1フレームで終わらせない（Shooter指示「1フレームで回転するのは
+// ちょっとチープなので少し補完を入れて」）。
+//
+// **見た目だけの補間**であることが肝。当たり判定・正面判定(frontArc)・
+// レーザーの照射角はこれまで通り m.headingX/Y を読むので、
+// **ビームが薙ぎ払うことはない**（照射角は撃つ瞬間に決まって以後動かない）。
+// 動くのは描画で使う m.drawAngle だけ。
+//
+// 等速で回すと機械仕掛けに見えるので smoothstep で「踏み出し → 回し → 置く」にする。
+// 所要時間は回る角度に比例させる（60度=0.22秒）。比例させないと、
+// たまに出る120度の踏み替えが60度と同じ時間で回って倍速に見える。
+const STEP_TURN_VISUAL_TIME = 0.22;   // 60度ぶんの踏み替えにかける秒数
+
+/** 巨人型の描画用の向きを進める。updateMovers の最後に1回だけ呼ぶ。 */
+function advanceStepTurnVisual(dt) {
+  for (const m of movers) {
+    if (!m.alive || !m.def.stepTurn) continue;
+    const target = Math.atan2(m.headingY, m.headingX);
+    if (m.drawAngle === undefined) {
+      // 湧いた直後は補間しない（画面外から回りながら現れるのはおかしい）
+      m.drawAngle = target; m._stepTo = target; m._stepT = 1;
+      continue;
+    }
+    // 目標が変わったら、**今描いている向きから**新しい踏み替えを始める
+    if (Math.abs(wrapAngle(target - m._stepTo)) > 1e-4) {
+      const delta = wrapAngle(target - m.drawAngle);
+      m._stepFrom = m.drawAngle;
+      m._stepTo   = target;
+      m._stepT    = 0;
+      m._stepDur  = Math.max(0.06, STEP_TURN_VISUAL_TIME * Math.abs(delta) / m.def.stepTurn);
+    }
+    if (m._stepT < 1) {
+      m._stepT = Math.min(1, m._stepT + dt / m._stepDur);
+      const t = m._stepT;
+      m.drawAngle = m._stepFrom + wrapAngle(m._stepTo - m._stepFrom) * (t * t * (3 - 2 * t));
+    } else {
+      m.drawAngle = m._stepTo;
+    }
+  }
+}
+
 /** 角度差を -π..π に畳む。 */
 function wrapAngle(a) {
   while (a > Math.PI) a -= Math.PI * 2;
@@ -7219,6 +7260,10 @@ function updateMovers(dt) {
     }
   }
 
+  // v1.0.6: 巨人型の描画用の向きを進める。向きを決める処理（歩行の踏み替えも
+  // レーザーの照準も）が全部終わった後に読むので、ここに置く。
+  advanceStepTurnVisual(dt);
+
   // v0.27: 反復中に召喚門が積んだレイダーを、ここでまとめて movers へ追加する（反復中の破壊的変更を避ける）
   if (_pendingMovers.length) {
     for (const nm of _pendingMovers) movers.push(nm);
@@ -8079,7 +8124,9 @@ function drawMovers() {
   for (const m of movers) {
     if (!m.alive) continue;
     const def = m.def;
-    const angle = Math.atan2(m.headingY, m.headingX);
+    // v1.0.6: 巨人型だけ**描画用の向き**を使う（踏み替えの補間）。
+    // 他の敵は drawAngle を持たないので従来どおり heading をそのまま読む。
+    const angle = m.drawAngle !== undefined ? m.drawAngle : Math.atan2(m.headingY, m.headingX);
 
     // v0.42: 潜行中は本体を描かず、地面の膨らみ（土煙の輪）だけにする＝無敵なのが一目で分かる。
     if (m.submerged) {
