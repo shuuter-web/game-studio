@@ -148,7 +148,15 @@
   #encounter-status { position:fixed; right:12px; bottom:92px; z-index:5; width:min(270px,calc(100vw - 24px)); padding:10px; }
   #encounter-status[hidden] { display:none; }
   #encounter-status strong { display:block; margin-bottom:5px; }
-  #encounter-status button { width:100%; margin-top:7px; background:#943f29; color:#fff8e7; }
+  #encounter-status button { width:100%; margin-top:7px; background:#435e58; color:#fff8e7; }
+  #enemy-details { position:fixed; inset:0; z-index:13; display:grid; place-items:end center; padding:18px; background:rgba(43,38,32,.38); }
+  #enemy-details[hidden] { display:none; }
+  .enemy-details-card { width:min(520px,100%); padding:20px; border:2px solid #8c795e; background:#f9f2e2; box-shadow:5px 6px 0 rgba(43,38,32,.22); }
+  .enemy-details-card h2 { margin:4px 0 12px; font-size:20px; }
+  .enemy-details-card p { margin:8px 0; line-height:1.7; }
+  .enemy-detail-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; margin:14px 0; }
+  .enemy-detail-stats div { padding:8px; border:1px solid #b5a589; background:#f6eedc; }
+  #btn-enemy-details-close { width:100%; margin-top:10px; background:#435e58; color:#fff8e7; }
   .gear-list { display:grid; gap:8px; margin-top:10px; }
   .gear-card { padding:9px; border:1px solid #b5a589; background:#f6eedc; }
   .gear-card strong,.gear-card span { display:block; }
@@ -184,7 +192,7 @@
   <div class="fuel-head"><span>残り燃料</span><span id="fuel-value">0 / 60</span></div>
   <div class="fuel-track" id="fuel-meter" role="meter" aria-label="残り燃料" aria-valuemin="0" aria-valuemax="60" aria-valuenow="0"><span id="fuel-fill"></span></div>
 </div>
-<div class="panel" id="encounter-status" hidden><strong id="encounter-title"></strong><div id="encounter-text"></div><button id="btn-enemy-attack" hidden>哨戒機を攻撃する</button><button id="btn-open-chest" hidden>埋没宝箱を開ける</button></div>
+<div class="panel" id="encounter-status" hidden><strong id="encounter-title"></strong><div id="encounter-text"></div><button id="btn-open-chest">埋没宝箱を開ける</button></div>
 
 <div class="panel" id="tools">
   <button id="btn-craft">工房</button>
@@ -224,6 +232,7 @@
 <section id="result" hidden aria-label="遠征リザルト"><div class="port-sheet"><div class="port-label">EXPEDITION REPORT</div><h1>遠征の記録</h1><div id="result-details"></div><details class="lore-book" id="result-notes"><summary>積み荷の覚え書き</summary><div id="result-notes-content"></div></details><button id="btn-result-base">港へ戻る</button><button id="btn-result-debug">デバッグ</button></div></section>
 <section id="debug-panel" hidden role="dialog" aria-modal="true" aria-label="デバッグメニュー"><div class="debug-card"><div class="port-label">DEBUG MENU</div><h2>デバッグ</h2><p id="debug-slot"></p><p>このセーブ枠の所持品・強化・航路・遠征記録を初期状態に戻せます。</p><div class="debug-actions"><button id="btn-debug-reset">セーブデータを初期化</button><button id="btn-debug-close">閉じる</button></div></div></section>
 <section id="fuel-notice" hidden role="dialog" aria-modal="true" aria-labelledby="fuel-notice-message"><div class="fuel-notice-card"><div class="port-label">FUEL EMPTY</div><p id="fuel-notice-message">燃料がなくなった。帰還しよう。</p><button id="btn-fuel-return">帰還する</button></div></section>
+<section id="enemy-details" hidden role="dialog" aria-modal="true" aria-labelledby="enemy-details-title"><article class="enemy-details-card"><div class="port-label">ANCIENT DEFENSE UNIT</div><h2 id="enemy-details-title">古代哨戒機</h2><p>漂流島を巡回する古代文明の防衛機構。採掘作業を感知すると、飛空艇へ照準を合わせる。</p><div class="enemy-detail-stats"><div><strong>耐久</strong><br><span id="enemy-details-hp"></span></div><div><strong>次の行動</strong><br><span id="enemy-details-action"></span></div><div><strong>船体ダメージ</strong><br>1</div><div><strong>撃破報酬</strong><br>特性付きギア</div></div><p class="sub">攻撃するには、島上の哨戒機本体をタップしてください。船外削岩機で攻撃します。</p><button id="btn-enemy-details-close">閉じる</button></article></section>
 <div id="save-warning" role="status" hidden>保存できません。空き容量やブラウザの保存設定を確認してください。</div>
 
 <div id="craft" class="hidden">
@@ -248,7 +257,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.7.3";
+const GAME_VERSION = "v0.7.4";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -802,15 +811,14 @@ function cameraSafeRect() {
   const top = compact ? 108 : 102;
   let bottomInset = compact ? 168 : 174;
   if (compact) {
-    const enemyActive=expedition.enemy?.hp>0;
     const chestActive=expedition.chests.some((chest)=>chest.exposed&&!chest.opened);
-    if (enemyActive||chestActive) {
+    if (chestActive) {
       const panel=document.getElementById("encounter-status");
       const measuredInset=panel.hidden?0:viewH-panel.getBoundingClientRect().top+12;
       bottomInset=Math.max(290,measuredInset);
     }
   }
-  // HUD、操作説明、燃料計、敵パネルを避けた中央の採掘領域。
+  // HUD、操作説明、燃料計、露出した宝箱の操作欄を避けた中央の採掘領域。
   return { left:side, top, right:viewW-side, bottom:Math.max(top+120,viewH-bottomInset) };
 }
 
@@ -961,6 +969,7 @@ function sceneBoldInkWidth() { return Math.max(1.1, camera.zoom * focal / camera
 // -----------------------------------------------------------------
 let pickFaces = [];
 let propPickFaces = [];
+let enemyMarkerHitRect = null;
 const _p0 = [0, 0], _p1 = [0, 0], _p2 = [0, 0], _p3 = [0, 0];
 const _quad = [_p0, _p1, _p2, _p3];
 
@@ -1490,7 +1499,7 @@ function attackEnemy() {
   const enemy=expedition.enemy;
   if (!canBeginAction() || !enemy || enemy.hp<=0) return false;
   beginAction(); enemy.hp=Math.max(0,enemy.hp-hitPower());
-  if (!enemy.hp) { gainGear("enemy"); spawnFloat(viewW/2,viewH*.3,"哨戒機を撃破。ギアを回収", "#557b62",16); }
+  if (!enemy.hp) { closeEnemyDetails(); gainGear("enemy"); spawnFloat(viewW/2,viewH*.3,"哨戒機を撃破。ギアを回収", "#557b62",16); }
   markDirty(); completeAction(); checkReturnReason(); finishReturn(); updateHud(); renderEncounter(); saveGame(); return true;
 }
 function openExposedChest() {
@@ -1549,6 +1558,7 @@ function relocateEnemy() {
   if (nextGround >= 0) enemy.cellIndex = nextGround;
   else {
     enemy.hp = 0;
+    closeEnemyDetails();
     spawnFloat(viewW / 2, viewH * .3, "足場を失った哨戒機が撤退", "#557b62", 15);
   }
   markDirty();
@@ -1733,22 +1743,30 @@ function enemyEllipsoids(pose, warning) {
 }
 function drawEnemyMarker(context) {
   const enemy = expedition.enemy;
+  enemyMarkerHitRect = null;
   if (!enemy || enemy.hp <= 0 || !Number.isInteger(enemy.cellIndex) || !cells[enemy.cellIndex]) return;
   indexToXYZ(enemy.cellIndex, _xyz); cellToWorld(..._xyz, _w);
   const point = project(_w[0] + .5, _w[1] + 4.05, _w[2] + .5);
   if (point[2] <= 0 || point[0] < -100 || point[0] > viewW + 100 || point[1] < -60 || point[1] > viewH + 60) return;
   const warning = enemy.turnsUntilAttack === 1;
   const blink = warning && Math.floor(boilFrame / 2) % 2 === 0;
-  const label = (warning ? "⚠ " : "◆ ") + "古代哨戒機";
+  const label = "古代哨戒機";
+  const hp = "耐久 " + "■".repeat(enemy.hp) + "□".repeat(enemy.maxHp - enemy.hp);
+  const action = warning ? "⚠ 次の作業で攻撃" : "攻撃まで " + enemy.turnsUntilAttack + " 作業";
   context.save();
-  context.font = "700 14px system-ui, sans-serif";
+  context.font = "700 13px system-ui, sans-serif";
   context.textAlign = "center"; context.textBaseline = "middle";
-  const width = context.measureText(label).width + 22, height = 28;
+  const width = Math.max(context.measureText(label).width, context.measureText(hp).width, context.measureText(action).width) + 24, height = 59;
+  enemyMarkerHitRect = { left:point[0]-width/2, top:point[1]-height/2, right:point[0]+width/2, bottom:point[1]+height/2 };
   context.fillStyle = blink ? "rgba(142,36,24,.94)" : "rgba(48,39,33,.9)";
   context.strokeStyle = warning ? "rgba(239,91,55,.98)" : "rgba(177,83,49,.95)";
   context.lineWidth = warning ? 3 : 2;
   context.beginPath(); context.roundRect(point[0] - width / 2, point[1] - height / 2, width, height, 7); context.fill(); context.stroke();
-  context.fillStyle = "#fff3d6"; context.fillText(label, point[0], point[1] + .5);
+  context.fillStyle = "#fff3d6";
+  context.fillText(label, point[0], point[1] - 17);
+  context.font = "700 12px system-ui, sans-serif";
+  context.fillText(hp, point[0], point[1]);
+  context.fillText(action, point[0], point[1] + 18);
   context.restore();
 }
 function buildPropFaces() {
@@ -2450,15 +2468,11 @@ function renderGearBay() {
   for (const button of container.querySelectorAll("[data-gear]")) button.addEventListener("click",()=>toggleGear(button.dataset.gear));
 }
 function renderEncounter() {
-  const panel=document.getElementById("encounter-status"), enemy=expedition.enemy, chest=expedition.chests.find((entry)=>entry.exposed&&!entry.opened);
-  const active=expedition.phase==="exploring" && (enemy?.hp>0 || chest);
+  const panel=document.getElementById("encounter-status"), chest=expedition.chests.find((entry)=>entry.exposed&&!entry.opened);
+  const active=expedition.phase==="exploring" && Boolean(chest);
   panel.hidden=!active; if (!active) return;
-  const attack=document.getElementById("btn-enemy-attack"), open=document.getElementById("btn-open-chest");
-  if (enemy?.hp>0) {
-    document.getElementById("encounter-title").textContent=enemy.name+"　耐久 "+enemy.hp+" / "+enemy.maxHp;
-    document.getElementById("encounter-text").textContent=enemy.turnsUntilAttack===1?"警告：次の作業後に攻撃":"攻撃まで "+enemy.turnsUntilAttack+"ターン　船体 "+expedition.hull+" / "+expedition.maxHull;
-  } else { document.getElementById("encounter-title").textContent="埋没宝箱"; document.getElementById("encounter-text").textContent="岩の隙間から古い留め金が見える。"; }
-  attack.hidden=!(enemy?.hp>0); open.hidden=!chest;
+  document.getElementById("encounter-title").textContent="埋没宝箱";
+  document.getElementById("encounter-text").textContent="岩の隙間から古い留め金が見える。";
 }
 function renderBase() {
   renderResult();
@@ -2532,8 +2546,22 @@ const pointers = new Map();
 let dragMoved = 0;
 let lastPinchDist = 0;
 const TAP_SLOP = 9;
+const enemyDetails = document.getElementById("enemy-details");
+
+function openEnemyDetails() {
+  const enemy = expedition.enemy;
+  if (expedition.phase !== "exploring" || !enemy || enemy.hp <= 0) return false;
+  document.getElementById("enemy-details-hp").textContent = enemy.hp + " / " + enemy.maxHp;
+  document.getElementById("enemy-details-action").textContent = enemy.turnsUntilAttack === 1 ? "次の作業で船体を攻撃" : "あと " + enemy.turnsUntilAttack + " 作業で攻撃";
+  enemyDetails.hidden = false;
+  document.getElementById("btn-enemy-details-close").focus();
+  return true;
+}
+function closeEnemyDetails() { enemyDetails.hidden = true; }
+function enemyDetailsOpen() { return !enemyDetails.hidden; }
 
 canvas.addEventListener("pointerdown", (e) => {
+  if (enemyDetailsOpen()) return;
   canvas.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY });
   if (pointers.size === 1) dragMoved = 0;
@@ -2577,12 +2605,14 @@ canvas.addEventListener("pointerup", (e) => {
 canvas.addEventListener("pointercancel", (e) => { pointers.delete(e.pointerId); });
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
+  if (enemyDetailsOpen()) return;
   camera.zoom = Math.min(2.6, Math.max(0.5, camera.zoom * (e.deltaY > 0 ? 0.92 : 1.08)));
   cameraDirty = true;
 }, { passive: false });
 
 function tapAt(sx, sy) {
-  if (expedition.phase !== "exploring" || !craftEl.classList.contains("hidden")) return { broken: 0, locked: false };
+  if (expedition.phase !== "exploring" || !craftEl.classList.contains("hidden") || enemyDetailsOpen()) return { broken: 0, locked: false };
+  if (enemyMarkerHitRect && sx >= enemyMarkerHitRect.left && sx <= enemyMarkerHitRect.right && sy >= enemyMarkerHitRect.top && sy <= enemyMarkerHitRect.bottom) return { broken:0, locked:false, enemyDetailsOpened:openEnemyDetails() };
   const prop = visiblePropAt(sx, sy);
   if (prop?.entity.type === "enemy") return { broken:0, locked:false, enemyAttacked:attackEnemy() };
   if (prop?.entity.type === "creature") return { broken: 0, locked: false, captured: captureCreature(prop.entity.id) };
@@ -2644,10 +2674,15 @@ function closeDebugMenu() { debugPanel.hidden = true; }
 for (const id of ["btn-debug", "port-debug", "btn-result-debug"]) document.getElementById(id).addEventListener("click", openDebugMenu);
 document.getElementById("btn-debug-close").addEventListener("click", closeDebugMenu);
 debugPanel.addEventListener("click", (event) => { if (event.target === debugPanel) closeDebugMenu(); });
-document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !debugPanel.hidden) closeDebugMenu(); });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (enemyDetailsOpen()) closeEnemyDetails();
+  else if (!debugPanel.hidden) closeDebugMenu();
+});
 document.getElementById("btn-fuel-return").addEventListener("click", acknowledgeFuelNotice);
-document.getElementById("btn-enemy-attack").addEventListener("click",attackEnemy);
 document.getElementById("btn-open-chest").addEventListener("click",openExposedChest);
+document.getElementById("btn-enemy-details-close").addEventListener("click",closeEnemyDetails);
+enemyDetails.addEventListener("click",(event)=>{ if (event.target===enemyDetails) closeEnemyDetails(); });
 document.getElementById("btn-result-base").addEventListener("click", acknowledgeResult);
 document.getElementById("btn-sell-all").addEventListener("click", sellAllTreasure);
 document.getElementById("btn-debug-reset").addEventListener("click", () => {
