@@ -243,7 +243,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.7.1";
+const GAME_VERSION = "v0.7.2";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -1044,6 +1044,7 @@ function drawIsland(c) {
     }
   }
   while (propIndex < props.length) drawPropFace(c, props[propIndex++]);
+  drawEnemyMarker(c);
 }
 
 /** 島の下に手描きの影 */
@@ -1628,6 +1629,58 @@ function creatureEllipsoids(kind, pose) {
     ? [[-.38,.17 + pose * .045,-.34,.77,.6,.68,body], [.08,.55 + pose * .045,-.27,.46,.43,.54,body]]
     : [[-.46,.1 + pose * .025,-.36,.83,.51,.72,body], [.24,.14,-.25,.34,.3,.5,dark]];
 }
+function enemyBoxes(pose, warning) {
+  const copper = [145, 67, 42], darkIron = [49, 43, 39];
+  const amber = warning && pose ? [234, 54, 34] : [231, 155, 42];
+  const boxes = [
+    // 四脚は必ず y=0 から始める。足場上面と本体の接地を視覚でも一致させる。
+    [-.64,0,-.62,.28,.18,.28,darkIron], [.34,0,-.62,.28,.18,.28,darkIron],
+    [-.64,0,.34,.28,.18,.28,darkIron], [.34,0,.34,.28,.18,.28,darkIron],
+    [-.56,.16,-.56,.18,.42,.18,copper], [.38,.16,-.56,.18,.42,.18,copper],
+    [-.56,.16,.38,.18,.42,.18,copper], [.38,.16,.38,.18,.42,.18,copper],
+    // 前面（+X）の単眼を囲う暗鉄のマスク。
+    [.65,.69,-.31,.14,.4,.62,darkIron],
+    // 背面アンテナと、警戒時に赤く点滅する灯。
+    [-.67,1.08,-.06,.13,.66,.13,darkIron], [-.72,1.68,-.11,.23,.2,.23,amber],
+    // 胴体を横切る赤銅の装甲帯。
+    [-.7,.65,-.62,1.38,.22,1.24,copper],
+  ];
+  // 2コマで膝だけを上下させ、足裏は y=0 に固定する。
+  const lift = pose ? .08 : 0;
+  boxes[4][1] += lift; boxes[7][1] += lift;
+  return boxes;
+}
+function enemyEllipsoids(pose, warning) {
+  const armor = [123, 58, 40], iron = [55, 48, 43];
+  const amber = warning && pose ? [245, 48, 30] : [237, 165, 45];
+  return [
+    [-.73,.42,-.58,1.46,1.02,1.16,armor],
+    [-.48,.55,-.47,.98,.78,.94,iron],
+    [-.2,.92,-.25,.62,.54,.5,[210, 132, 37]],
+    // +X 側の大きな単眼。攻撃直前は警戒灯と同じ赤で点滅する。
+    [.67,.74,-.2,.25,.28,.4,amber],
+  ];
+}
+function drawEnemyMarker(context) {
+  const enemy = expedition.enemy;
+  if (!enemy || enemy.hp <= 0 || !Number.isInteger(enemy.cellIndex) || !cells[enemy.cellIndex]) return;
+  indexToXYZ(enemy.cellIndex, _xyz); cellToWorld(..._xyz, _w);
+  const point = project(_w[0] + .5, _w[1] + 4.05, _w[2] + .5);
+  if (point[2] <= 0 || point[0] < -100 || point[0] > viewW + 100 || point[1] < -60 || point[1] > viewH + 60) return;
+  const warning = enemy.turnsUntilAttack === 1;
+  const blink = warning && Math.floor(boilFrame / 2) % 2 === 0;
+  const label = (warning ? "⚠ " : "◆ ") + "古代哨戒機";
+  context.save();
+  context.font = "700 14px system-ui, sans-serif";
+  context.textAlign = "center"; context.textBaseline = "middle";
+  const width = context.measureText(label).width + 22, height = 28;
+  context.fillStyle = blink ? "rgba(142,36,24,.94)" : "rgba(48,39,33,.9)";
+  context.strokeStyle = warning ? "rgba(239,91,55,.98)" : "rgba(177,83,49,.95)";
+  context.lineWidth = warning ? 3 : 2;
+  context.beginPath(); context.roundRect(point[0] - width / 2, point[1] - height / 2, width, height, 7); context.fill(); context.stroke();
+  context.fillStyle = "#fff3d6"; context.fillText(label, point[0], point[1] + .5);
+  context.restore();
+}
 function buildPropFaces() {
   if (expedition.phase !== "exploring") return [];
   const faces = [];
@@ -1638,16 +1691,15 @@ function buildPropFaces() {
     const position = [], origin = []; indexToXYZ(entity.cellIndex, position);
     if (cellAt(position[0], position[1] + 1, position[2])) continue;
     cellToWorld(...position, origin); origin[0] += .5; origin[1] += 1; origin[2] += .5;
-    // 哨戒機の脚（box最小Y .05 × mesh scale 1.4）を足場の上面へ接地させる。
-    if (entity.type === "enemy") origin[1] -= .07;
     const pose = Math.floor(boilFrame / 4) % 2;
-    const boxes = entity.type === "tree" ? treeBoxes(entity.kind) : creatureBoxes(entity.kind, pose);
+    const warning = entity.type === "enemy" && entity.turnsUntilAttack === 1;
+    const boxes = entity.type === "tree" ? treeBoxes(entity.kind) : entity.type === "enemy" ? enemyBoxes(pose, warning) : creatureBoxes(entity.kind, pose);
     boxes.forEach((box, part) => {
       if (entity.type === "tree" && entity.kind === "large" && entity.removedBlocks?.includes(part)) return;
       const metadata = entity.type === "tree" && entity.kind === "large" ? { blockId: part, blockKind: part < 3 ? "wood" : "leaf" } : null;
       addPropBox(faces, entity, origin, box, part, metadata);
     });
-    if (entity.type !== "tree") creatureEllipsoids(entity.kind, pose).forEach((oval, part) => addPropEllipsoid(faces, entity, origin, oval, part + 30));
+    if (entity.type !== "tree") (entity.type === "enemy" ? enemyEllipsoids(pose, warning) : creatureEllipsoids(entity.kind, pose)).forEach((oval, part) => addPropEllipsoid(faces, entity, origin, oval, part + 30));
   }
   return faces.sort((left, right) => right.depth - left.depth);
 }
