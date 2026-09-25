@@ -237,13 +237,13 @@
 //
 //   ・島は番号ごとにシードから生成され、番号が進むほど大きく・深く・素材が濃くなる
 //     （PS-049 の実測「島が固定だと消費の加速に供給が追いつかずランが崩れる」への答え）
-//   ・採掘能力は4系統：つるはしの段階（硬さのゲート）／打撃力／範囲／鉱脈連鎖
+//   ・採掘能力は4系統：船外削岩機の段階（硬さのゲート）／削岩出力／掘削幅／鉱脈連鎖
 //   ・素材の行き先は工房だけ（素材は湧かない。クラフトが唯一の消費先）
 //   ・「気持ちよさ」は、ひび→割れの手応え、連鎖の時間差、コンボ、音程の上昇、揺れ、破片で作る
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.7.0";
+const GAME_VERSION = "v0.7.1";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -304,7 +304,7 @@ const PAPER = "#efe8da";
 const INK   = "43,38,32";
 const FACE_SHADE = { top: 1.0, bottom: 0.5, side: 0.78 };
 
-// 素材。tier=掘るのに必要なつるはしの段階、hp=割れるまでの累積ダメージ、drop=手に入る素材ID
+// 素材。tier=掘るのに必要な船外削岩機の段階、hp=割れるまでの累積ダメージ、drop=手に入る素材ID
 // minLevel=この島番号から出る。pitch=割れたときの音の高さ
 const MATERIALS = [
   null,
@@ -333,7 +333,7 @@ Object.assign(ITEMS, {
 });
 const ITEM_FLAVOR = {
   scrap: "土に埋もれていた金具や小さな部品。元の姿は分からなくても、まだ船の役に立つ。",
-  copper: "赤茶けた鉱石。遠い空から流れ着き、今度はつるはしの先になって空へ戻る。",
+  copper: "赤茶けた鉱石。遠い空から流れ着き、今度は船外削岩機の刃となって再び空へ戻る。",
   crystal: "岩のすき間に育った淡い結晶。地上では得がたい輝きも、ここでは土にまみれている。",
   iron: "ずしりと重い鉄鉱石。帰りの積み荷にこれがあるだけで、次の仕事が少し近づく。",
   gold: "岩の奥からのぞいた金の粒。居住浮島の窓辺にも、これと同じ輝きが飾られている。",
@@ -351,11 +351,15 @@ const TREASURE_BASES = [
   { name:"古代貨幣", value:16 }, { name:"空色琥珀", value:28 }, { name:"風読み羅針盤", value:35 },
   { name:"銀縁の杯", value:42 }, { name:"小さな機巧鳥", value:52 }, { name:"星図の断片", value:64 },
 ];
+const LEAF_TREASURE_BASES = [
+  { name:"風乾きの葉", value:8, weight:.7 }, { name:"空樹の実", value:24, weight:.25 }, { name:"琥珀樹脂", value:58, weight:.05 },
+];
+const LEAF_TREASURE_ORIGINS = ["漂流する枝先で風に磨かれていた", "巨大浮島から切り離された樹冠に実っていた", "雲海の湿気を吸った葉陰に残っていた", "古代の庭園樹の名残かもしれない"];
 const TREASURE_STATES = [{ name:"煤けた", rate:.75 }, { name:"欠けた", rate:.85 }, { name:"よく残った", rate:1 }, { name:"鮮やかな", rate:1.3 }, { name:"奇跡的な", rate:1.7 }];
 const TREASURE_ORIGINS = ["巨大浮島の縁から落ちたらしい", "古い居住区の印がある", "防衛施設の刻印が残る", "雲海を長く漂っていた", "誰かが布で丁寧に包んでいた"];
 const TREASURE_RARITIES = [{ name:"ありふれた", rate:1 }, { name:"珍しい", rate:1.5 }, { name:"希少", rate:2.4 }, { name:"伝説級", rate:4 }];
 const GEAR_TRAITS = [
-  { id:"power", name:"掘削強化", description:"打撃力 +1", weight:2 },
+  { id:"power", name:"掘削強化", description:"削岩出力 +1", weight:2 },
   { id:"fuel", name:"増設燃料槽", description:"最大燃料 +6", weight:2 },
   { id:"appraisal", name:"鑑定眼", description:"換金価格 +10%", weight:1 },
   { id:"stabilizer", name:"衝撃安定器", description:"敵の攻撃周期 +1", weight:2 },
@@ -394,14 +398,14 @@ function effectiveStats() {
 }
 function fuelCapacity() { return FUEL_LEVELS[expedition.fuelLevel].capacity + effectiveStats().fuel; }
 
-// つるはし。tier がそのまま「掘れる素材の tier の上限」
+// 飛空艇から伸ばす船外削岩機。tier がそのまま「掘れる素材の tier の上限」
 const PICKAXES = [
-  { name: "素手",           power: 1, cost: null },
-  { name: "工作つるはし",   power: 2, cost: { coins: 30 } },
-  { name: "銅のつるはし",   power: 3, cost: { copper: 10, scrap: 20 } },
-  { name: "鉄のつるはし",   power: 4, cost: { iron: 12, copper: 15, crystal: 6 } },
-  { name: "黒曜のつるはし", power: 6, cost: { obsidian: 8, iron: 20, gold: 6 } },
-  { name: "星のつるはし",   power: 8, cost: { starcore: 3, obsidian: 12, gold: 12 } },
+  { name: "簡易船外削岩機", power: 1, cost: null },
+  { name: "工作式削岩機",   power: 2, cost: { coins: 30 } },
+  { name: "銅刃削岩機",     power: 3, cost: { copper: 10, scrap: 20 } },
+  { name: "鉄鋼削岩機",     power: 4, cost: { iron: 12, copper: 15, crystal: 6 } },
+  { name: "黒曜削岩機",     power: 6, cost: { obsidian: 8, iron: 20, gold: 6 } },
+  { name: "星核削岩機",     power: 8, cost: { starcore: 3, obsidian: 12, gold: 12 } },
 ];
 // 範囲（一撃で削る球の半径）。0=1個、1=3幅、2=5幅、3=7幅
 const RANGE_LEVELS = [
@@ -419,7 +423,7 @@ const CHAIN_LEVELS = [
   { count: 24, cost: { obsidian: 12, gold: 15 } },
   { count: 48, cost: { starcore: 4, obsidian: 30 } },
 ];
-// 打撃力（+1ずつ、上限なし）。段階ごとに要求素材が上がり、同じ段階の中では1.6倍ずつ
+// 削岩出力（+1ずつ、上限なし）。段階ごとに要求素材が上がり、同じ段階の中では1.6倍ずつ
 const POWER_COST_BRACKETS = [
   { material: "scrap",    base: 15 },
   { material: "copper",   base: 12 },
@@ -651,7 +655,7 @@ function rebuildSurface() {
   sortDirty = true;
 }
 
-/** 今のつるはしで掘れる残りブロック数（HUD用） */
+/** 今の船外削岩機で掘れる残りブロック数（HUD用） */
 function countMineable() {
   let n = 0;
   const tier = pickaxeTier();
@@ -668,7 +672,7 @@ function countMineable() {
 const player = {
   coins: 0,
   pickaxe: 0,           // PICKAXES の添字
-  power: 0,             // 打撃力の追加レベル
+  power: 0,             // 削岩出力の追加レベル
   range: 0,             // RANGE_LEVELS の添字
   chain: 0,             // CHAIN_LEVELS の添字
   inventory: {},        // 素材ID → 個数
@@ -1323,22 +1327,34 @@ function gainMaterial(dropId, amount) {
   tapGain[dropId] = (tapGain[dropId] || 0) + amount;
   bumpInventory(dropId);
 }
-function createTreasure(sourceKey) {
+function weightedTreasureBase(seeded, bases) {
+  const total = bases.reduce((sum, base) => sum + (base.weight ?? 1), 0);
+  let roll = seeded() * total;
+  for (const base of bases) {
+    roll -= base.weight ?? 1;
+    if (roll <= 0) return base;
+  }
+  return bases[bases.length - 1];
+}
+function createTreasure(sourceKey, bases = TREASURE_BASES, origins = TREASURE_ORIGINS) {
   const seeded = makeRandomGenerator(hashSeed(worldSeed + ":treasure:" + tripSerial + ":" + sourceKey));
-  const base = TREASURE_BASES[Math.floor(seeded() * TREASURE_BASES.length)];
+  const base = weightedTreasureBase(seeded, bases);
   const state = TREASURE_STATES[Math.floor(seeded() * TREASURE_STATES.length)];
-  const origin = TREASURE_ORIGINS[Math.floor(seeded() * TREASURE_ORIGINS.length)];
+  const origin = origins[Math.floor(seeded() * origins.length)];
   const rarityRoll = seeded();
   const rarity = TREASURE_RARITIES[rarityRoll > .985 ? 3 : rarityRoll > .91 ? 2 : rarityRoll > .68 ? 1 : 0];
   const id = "t" + tripSerial + "-" + sourceKey + "-" + player.treasures.length;
   const value = Math.max(5, Math.round(base.value * state.rate * rarity.rate));
   return { id, name:state.name + base.name, rarity:rarity.name, origin, value, flavor:"「" + origin + "。」汚れを払うと、" + rarity.name + "品らしい光が戻った。" };
 }
-function gainTreasure(sourceKey) {
-  const treasure = createTreasure(sourceKey);
+function gainTreasure(sourceKey, bases = TREASURE_BASES, origins = TREASURE_ORIGINS) {
+  const treasure = createTreasure(sourceKey, bases, origins);
   player.treasures.push(treasure); expedition.treasureIds.push(treasure.id);
   spawnFloat(viewW / 2, viewH * .35, "発見：" + treasure.name, "#9a6b20", 15);
   return treasure;
+}
+function gainLeafTreasure(treeId, blockId) {
+  return gainTreasure("leaf-" + treeId + "-" + blockId, LEAF_TREASURE_BASES, LEAF_TREASURE_ORIGINS);
 }
 function createGear(sourceKey) {
   const seeded = makeRandomGenerator(hashSeed(worldSeed + ":gear:" + tripSerial + ":" + sourceKey));
@@ -1387,8 +1403,8 @@ function setupEncounters() {
   for (let index=0; index<cells.length; index++) if (cells[index]) { indexToXYZ(index,_xyz); if (NEIGHBORS6.every((d)=>cellAt(_xyz[0]+d[0],_xyz[1]+d[1],_xyz[2]+d[2]))) internal.push(index); }
   expedition.chests = [];
   for (let i=0;i<chestCount && internal.length;i++) { const at=Math.floor(seeded()*internal.length); expedition.chests.push({ id:i, cellIndex:internal.splice(at,1)[0], opened:false, exposed:false }); }
-  const enemyGround=groundCandidates().find((index)=>!trees.some((tree)=>tree.cellIndex===index)&&!creatures.some((creature)=>creature.cellIndex===index));
-  expedition.enemy = islandLevel === 2 ? { id:999, kind:"beetle", cellIndex:enemyGround??groundCandidates()[0], name:"古代哨戒機", hp:4, maxHp:4, attackEvery:4, turnsUntilAttack:4 } : null;
+  const enemyGround = selectEnemyGround();
+  expedition.enemy = islandLevel === 2 && enemyGround >= 0 ? { id:999, kind:"beetle", cellIndex:enemyGround, name:"古代哨戒機", hp:4, maxHp:4, attackEvery:4, turnsUntilAttack:4 } : null;
   updateChestExposure();
 }
 function updateChestExposure() {
@@ -1422,6 +1438,49 @@ function groundCandidates() {
     if (!cellAt(_xyz[0], _xyz[1] + 1, _xyz[2])) candidates.push(index);
   }
   return candidates;
+}
+function horizontalCellDistance(left, right) {
+  const a = [], b = [];
+  indexToXYZ(left, a); indexToXYZ(right, b);
+  return Math.hypot(a[0] - b[0], a[2] - b[2]);
+}
+function enemyGroundIsSafe(index, spacing) {
+  if (!cells[index]) return false;
+  indexToXYZ(index, _xyz);
+  if (cellAt(_xyz[0], _xyz[1] + 1, _xyz[2])) return false;
+  const occupied = [
+    ...trees.filter((tree) => !tree.chopped && !tree.fallen).map((tree) => tree.cellIndex),
+    ...creatures.filter((creature) => !creature.captured && !creature.escaped).map((creature) => creature.cellIndex),
+    ...expedition.chests.map((chest) => chest.cellIndex),
+  ];
+  return occupied.every((cell) => cell !== index && horizontalCellDistance(index, cell) >= spacing);
+}
+function selectEnemyGround() {
+  const centerX = (GX - 1) / 2, centerZ = (GZ - 1) / 2;
+  const placementSeed = hashSeed(worldSeed + ":enemy-ground:" + islandLevel + ":" + tripSerial);
+  for (const spacing of [3, 2]) {
+    const candidates = groundCandidates().filter((index) => enemyGroundIsSafe(index, spacing));
+    candidates.sort((left, right) => {
+      const a = [], b = []; indexToXYZ(left, a); indexToXYZ(right, b);
+      const scoreA = a[1] * 3 - Math.hypot(a[0] - centerX, a[2] - centerZ);
+      const scoreB = b[1] * 3 - Math.hypot(b[0] - centerX, b[2] - centerZ);
+      return scoreB - scoreA || hash3(left, islandLevel, placementSeed) - hash3(right, islandLevel, placementSeed) || left - right;
+    });
+    if (candidates.length) return candidates[0];
+  }
+  return -1;
+}
+function relocateEnemy() {
+  const enemy = expedition.enemy;
+  if (!enemy || enemy.hp <= 0) return;
+  if (enemyGroundIsSafe(enemy.cellIndex, 1)) return;
+  const nextGround = selectEnemyGround();
+  if (nextGround >= 0) enemy.cellIndex = nextGround;
+  else {
+    enemy.hp = 0;
+    spawnFloat(viewW / 2, viewH * .3, "足場を失った哨戒機が撤退", "#557b62", 15);
+  }
+  markDirty();
 }
 function placeCreatures() {
   creatures.length = 0;
@@ -1579,6 +1638,8 @@ function buildPropFaces() {
     const position = [], origin = []; indexToXYZ(entity.cellIndex, position);
     if (cellAt(position[0], position[1] + 1, position[2])) continue;
     cellToWorld(...position, origin); origin[0] += .5; origin[1] += 1; origin[2] += .5;
+    // 哨戒機の脚（box最小Y .05 × mesh scale 1.4）を足場の上面へ接地させる。
+    if (entity.type === "enemy") origin[1] -= .07;
     const pose = Math.floor(boilFrame / 4) % 2;
     const boxes = entity.type === "tree" ? treeBoxes(entity.kind) : creatureBoxes(entity.kind, pose);
     boxes.forEach((box, part) => {
@@ -1666,6 +1727,7 @@ function chopTreeBlock(treeId, blockId, point = null) {
   beginAction();
   tree.removedBlocks.push(blockId); tree.removedBlocks.sort((left, right) => left - right);
   if (blockId < 3) gainMaterial("timber", TREE_CONFIG.largeBlockTimberYield);
+  else gainLeafTreasure(tree.id, blockId);
   if (tree.removedBlocks.length === boxes.length) { tree.chopped = true; expedition.treesChopped++; }
   flushTapGain([target.x, target.y]); soundHit(); addShake(1.5);
   markDirty(); completeAction(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
@@ -1734,8 +1796,9 @@ function breakCell(idx, chainStep) {
     spawnFloat(p[0], p[1], "+" + comboMultiplier + " " + def.name, "rgb(" + def.color.join(",") + ")", 12);
   }
   if (chainStep === 0 && def.ore && chainCount() > 0) scheduleVein(idx, material);
-  // 生き物の移動も破壊順で確定し、描画の間引きや再開時のまとめ処理で変えない。
+  // 生き物と敵の移動も破壊順で確定し、描画の間引きや再開時のまとめ処理で変えない。
   relocateCreatures();
+  relocateEnemy();
   return true;
 }
 
@@ -1800,7 +1863,7 @@ function flushTapGain(screenPos) {
 
 /**
  * タップで掘る。中心のブロックが掘れない硬さなら何も起きない（×）。
- * 範囲内の掘れるブロックすべてに打撃力ぶんのダメージを入れ、hp を超えたものが割れる。
+ * 範囲内の掘れるブロックすべてに削岩出力ぶんのダメージを入れ、hp を超えたものが割れる。
  */
 function mineAt(x, y, z, sx, sy) {
   if (!canBeginAction() || !inGrid(x, y, z)) return { broken: 0, locked: false };
@@ -1892,24 +1955,24 @@ const UPGRADE_LINES = [
     maxedText: () => "全6航路を開放", apply: () => { expedition.routeLevel++; },
   },
   {
-    id: "pickaxe", name: "つるはし",
+    id: "pickaxe", name: "飛空艇・船外削岩機",
     level: () => player.pickaxe,
     maxLevel: PICKAXES.length - 1,
     cost: (next) => PICKAXES[next].cost,
     describe: (cur, next) => {
       const unlocks = MATERIALS.filter((m) => m && m.tier === next).map((m) => m.name);
-      return PICKAXES[cur].name + " → " + PICKAXES[next].name + "（打撃 " + PICKAXES[next].power + "）" +
+      return PICKAXES[cur].name + " → " + PICKAXES[next].name + "（削岩出力 " + PICKAXES[next].power + "）" +
         (unlocks.length ? "  掘れるようになる: " + unlocks.join("・") : "");
     },
     maxedText: () => PICKAXES[player.pickaxe].name + "（最上位）",
     apply: () => { player.pickaxe++; },
   },
   {
-    id: "power", name: "打撃力",
+    id: "power", name: "削岩出力",
     level: () => player.power,
     maxLevel: Infinity,
     cost: (next) => powerUpgradeCost(next),
-    describe: (cur, next) => "一撃のダメージ " + hitPower() + " → " + (hitPower() + 1) + "（Lv" + next + "）",
+    describe: (cur, next) => "削岩ダメージ " + hitPower() + " → " + (hitPower() + 1) + "（Lv" + next + "）",
     apply: () => { player.power++; },
   },
   {
@@ -1948,7 +2011,7 @@ function craft(lineId) {
   renderCraft();
   updateHud();
   renderBase();
-  markDirty();     // つるはしが変わると「×」印が消えるので島を描き直す
+  markDirty();     // 削岩機が変わると「×」印が消えるので島を描き直す
   saveGame();
   return true;
 }
@@ -2018,7 +2081,7 @@ function updateHud() {
   document.getElementById("h-island").textContent = expedition.phase === "base" ? "飛空艇の港" : DESTINATIONS[islandLevel - 1].name;
   document.getElementById("h-left").textContent = "掘れる " + mineableCache + " / " + solidCount;
   document.getElementById("h-pick").textContent =
-    PICKAXES[player.pickaxe].name + " ／ 打撃" + hitPower() + " ／ 幅" + (rangeRadius() * 2 + 1) + " ／ 連鎖" + chainCount();
+    PICKAXES[player.pickaxe].name + " ／ 出力" + hitPower() + " ／ 掘削幅" + (rangeRadius() * 2 + 1) + " ／ 連鎖" + chainCount();
   const next = document.getElementById("btn-next");
   next.classList.toggle("attn", mineableCache === 0);
   next.disabled = expedition.phase !== "exploring" || expedition.returnRequested;

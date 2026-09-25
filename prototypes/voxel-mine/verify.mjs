@@ -428,7 +428,12 @@ try {
   await page.screenshot({ path: path.join(artifactDirectory, 'mobile-large-tree.png'), fullPage: true });
   await page.mouse.click(leafBlock.x, leafBlock.y);
   const afterLeafChop = await state();
-  check('Large-tree leaf removes one block for one fuel and no timber even with range upgrade', afterLeafChop.expedition.fuel === beforeLeafChop.expedition.fuel - 1 && !afterLeafChop.player.inventory.timber && afterLeafChop.trees.find(tree => tree.id === leafBlock.treeId).removedBlocks.length === 1 && !afterLeafChop.trees.find(tree => tree.id === leafBlock.treeId).chopped);
+  const firstLeafTreasure = afterLeafChop.player.treasures.at(-1);
+  check('Large-tree leaf removes one block for one fuel, no timber, and one individual treasure', afterLeafChop.expedition.fuel === beforeLeafChop.expedition.fuel - 1 && !afterLeafChop.player.inventory.timber && afterLeafChop.player.treasures.length === beforeLeafChop.player.treasures.length + 1 && firstLeafTreasure && afterLeafChop.trees.find(tree => tree.id === leafBlock.treeId).removedBlocks.length === 1 && !afterLeafChop.trees.find(tree => tree.id === leafBlock.treeId).chopped);
+  check('Leaf treasure uses one of the three leaf-specific names', await page.evaluate(item => LEAF_TREASURE_BASES.length === 3 && LEAF_TREASURE_BASES.some(base => item.name.endsWith(base.name)), firstLeafTreasure));
+  const leafRewardSnapshot = JSON.stringify(firstLeafTreasure);
+  await page.evaluate(() => debugSave()); await page.reload();
+  check('Leaf reward and removed block persist without rerolling or duplication', JSON.stringify((await state()).player.treasures.at(-1)) === leafRewardSnapshot && (await state()).player.treasures.length === afterLeafChop.player.treasures.length && (await state()).trees.find(tree => tree.id === leafBlock.treeId).removedBlocks.filter(blockId => blockId === leafBlock.blockId).length === 1);
   await page.waitForFunction(() => debugFindLargeTreeBlock('wood') !== null);
   const woodBlock = await page.evaluate(() => debugFindLargeTreeBlock('wood'));
   const largeBlockTimberYield = await page.evaluate(() => TREE_CONFIG.largeBlockTimberYield);
@@ -443,9 +448,9 @@ try {
     const tree = trees.find(entry => entry.id === treeId); expedition.fuel = 100; player.range = RANGE_LEVELS.length - 1;
     let guard = 30;
     while (!tree.chopped && guard-- > 0) { renderIslandLayer(); const target = findVisibleLargeTreeBlock(tree.id); if (!target || !chopTreeBlock(tree.id, target.blockId, target)) break; }
-    return { tree: JSON.parse(JSON.stringify(tree)), fuel: expedition.fuel, timber: have('timber'), treesChopped: expedition.treesChopped, blockCount: treeBoxes('large').length };
+    return { tree: JSON.parse(JSON.stringify(tree)), fuel: expedition.fuel, timber: have('timber'), treasures:player.treasures.length, treesChopped: expedition.treesChopped, blockCount: treeBoxes('large').length };
   }, woodBlock.treeId);
-  check('Removing all large-tree blocks completes it once with six total timber', completeLargeTree.tree.chopped && completeLargeTree.tree.removedBlocks.length === completeLargeTree.blockCount && completeLargeTree.timber === largeBlockTimberYield * 3 && completeLargeTree.treesChopped === 1);
+  check('Removing all 14 leaves and 3 trunk blocks yields 14 treasures and six timber', completeLargeTree.tree.chopped && completeLargeTree.tree.removedBlocks.length === completeLargeTree.blockCount && completeLargeTree.treasures === beforeLeafChop.player.treasures.length + 14 && completeLargeTree.timber === largeBlockTimberYield * 3 && completeLargeTree.treesChopped === 1);
 
   await fresh(); await page.evaluate(() => debugDepart(1));
   await page.waitForFunction(() => debugFindTree() !== null);
