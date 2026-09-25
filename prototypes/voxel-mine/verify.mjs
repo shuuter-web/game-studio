@@ -446,8 +446,15 @@ try {
   check('Partially chopped large tree stays partial after reload', JSON.stringify((await state()).trees.find(tree => tree.id === woodBlock.treeId)) === partialLargeState && (await state()).player.inventory.timber === largeBlockTimberYield);
   const completeLargeTree = await page.evaluate(treeId => {
     const tree = trees.find(entry => entry.id === treeId); expedition.fuel = 100; player.range = RANGE_LEVELS.length - 1;
-    let guard = 30;
-    while (!tree.chopped && guard-- > 0) { renderIslandLayer(); const target = findVisibleLargeTreeBlock(tree.id); if (!target || !chopTreeBlock(tree.id, target.blockId, target)) break; }
+    let guard = 80, misses = 0;
+    while (!tree.chopped && guard-- > 0) {
+      renderIslandLayer(); const target = findVisibleLargeTreeBlock(tree.id);
+      if (target && chopTreeBlock(tree.id, target.blockId, target)) { misses = 0; continue; }
+      // A fitted camera can expose a different first face than the old fixed
+      // distance. Rotate as a player would and verify every block is reachable.
+      camera.yaw += Math.PI / 4; updateCamBasis(); updateViewDir(); markDirty();
+      if (++misses >= 8) break;
+    }
     return { tree: JSON.parse(JSON.stringify(tree)), fuel: expedition.fuel, timber: have('timber'), treasures:player.treasures.length, treesChopped: expedition.treesChopped, blockCount: treeBoxes('large').length };
   }, woodBlock.treeId);
   check('Removing all 14 leaves and 3 trunk blocks yields 14 treasures and six timber', completeLargeTree.tree.chopped && completeLargeTree.tree.removedBlocks.length === completeLargeTree.blockCount && completeLargeTree.treasures === beforeLeafChop.player.treasures.length + 14 && completeLargeTree.timber === largeBlockTimberYield * 3 && completeLargeTree.treesChopped === 1);
