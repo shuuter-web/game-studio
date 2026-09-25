@@ -258,7 +258,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.7.5";
+const GAME_VERSION = "v0.7.6";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -1742,32 +1742,46 @@ function enemyEllipsoids(pose, warning) {
     [.67,.74,-.2,.25,.28,.4,amber],
   ];
 }
+function enemyVisibleProjection(enemy) {
+  const visibleSamples=[];
+  for (const face of propPickFaces) {
+    if (face.entity.type!=="enemy" || face.entity.id!==enemy.id) continue;
+    const center=[face.vertices.reduce((sum,vertex)=>sum+vertex[0],0)/face.vertices.length,face.vertices.reduce((sum,vertex)=>sum+vertex[1],0)/face.vertices.length];
+    const samples=[center,...face.vertices.map((vertex)=>[(center[0]+vertex[0])/2,(center[1]+vertex[1])/2])];
+    for (const sample of samples) {
+      if (sample[0]<0 || sample[0]>viewW || sample[1]<0 || sample[1]>viewH) continue;
+      const visible=visiblePropAt(sample[0],sample[1]);
+      if (visible?.entity.type==="enemy" && visible.entity.id===enemy.id) visibleSamples.push(sample);
+    }
+  }
+  if (!visibleSamples.length) return null;
+  return { x:visibleSamples.reduce((sum,sample)=>sum+sample[0],0)/visibleSamples.length, y:Math.min(...visibleSamples.map((sample)=>sample[1])) };
+}
 function drawEnemyMarker(context) {
   const enemy = expedition.enemy;
   enemyMarkerHitRect = null;
   if (!enemy || enemy.hp <= 0 || !Number.isInteger(enemy.cellIndex) || !cells[enemy.cellIndex]) return;
-  indexToXYZ(enemy.cellIndex, _xyz); cellToWorld(..._xyz, _w);
-  const point = project(_w[0] + .5, _w[1] + 4.05, _w[2] + .5);
-  if (point[2] <= 0 || point[0] < -100 || point[0] > viewW + 100 || point[1] < -60 || point[1] > viewH + 60) return;
+  const visible=enemyVisibleProjection(enemy);
+  if (!visible) { closeEnemyDetails(); return; }
   const warning = enemy.turnsUntilAttack === 1;
-  const blink = warning && Math.floor(boilFrame / 2) % 2 === 0;
-  const label = "古代哨戒機";
-  const hp = "耐久 " + "■".repeat(enemy.hp) + "□".repeat(enemy.maxHp - enemy.hp);
-  const action = warning ? "⚠ 次の作業で攻撃" : "攻撃まで " + enemy.turnsUntilAttack + " 作業";
+  const pulse = warning && Math.floor(boilFrame / 2)%2===0;
+  const barWidth=48,barHeight=7,segmentGap=2,iconSize=28,totalWidth=barWidth+7+iconSize;
+  const left=Math.max(4,Math.min(viewW-totalWidth-4,visible.x-totalWidth/2));
+  const top=Math.max(4,Math.min(viewH-iconSize-4,visible.y-iconSize-8));
+  enemyMarkerHitRect={left:left-5,top:top-5,right:left+totalWidth+5,bottom:top+iconSize+5};
   context.save();
-  context.font = "700 13px system-ui, sans-serif";
-  context.textAlign = "center"; context.textBaseline = "middle";
-  const width = Math.max(context.measureText(label).width, context.measureText(hp).width, context.measureText(action).width) + 24, height = 59;
-  enemyMarkerHitRect = { left:point[0]-width/2, top:point[1]-height/2, right:point[0]+width/2, bottom:point[1]+height/2 };
-  context.fillStyle = blink ? "rgba(142,36,24,.94)" : "rgba(48,39,33,.9)";
-  context.strokeStyle = warning ? "rgba(239,91,55,.98)" : "rgba(177,83,49,.95)";
-  context.lineWidth = warning ? 3 : 2;
-  context.beginPath(); context.roundRect(point[0] - width / 2, point[1] - height / 2, width, height, 7); context.fill(); context.stroke();
-  context.fillStyle = "#fff3d6";
-  context.fillText(label, point[0], point[1] - 17);
-  context.font = "700 12px system-ui, sans-serif";
-  context.fillText(hp, point[0], point[1]);
-  context.fillText(action, point[0], point[1] + 18);
+  const segmentWidth=(barWidth-segmentGap*3)/4,barTop=top+(iconSize-barHeight)/2;
+  for (let index=0;index<4;index++) {
+    context.beginPath(); context.roundRect(left+index*(segmentWidth+segmentGap),barTop,segmentWidth,barHeight,2);
+    context.fillStyle=index<enemy.hp?"rgba(177,83,49,.96)":"rgba(48,39,33,.25)"; context.fill();
+    context.strokeStyle="rgba(48,39,33,.78)"; context.lineWidth=1; context.stroke();
+  }
+  const iconLeft=left+barWidth+7;
+  context.beginPath(); context.roundRect(iconLeft,top,iconSize,iconSize,iconSize/2);
+  context.fillStyle=warning?"rgba(151,48,34,.96)":"rgba(48,39,33,.9)"; context.fill();
+  context.strokeStyle=warning?(pulse?"#fff0cf":"#e04a31"):"rgba(177,83,49,.95)"; context.lineWidth=warning?(pulse?4:2.5):1.5; context.stroke();
+  context.fillStyle="#fff3d6"; context.font="700 14px system-ui, sans-serif"; context.textAlign="center"; context.textBaseline="middle";
+  context.fillText(String(enemy.turnsUntilAttack),iconLeft+iconSize/2,top+iconSize/2+.5);
   context.restore();
 }
 function buildPropFaces() {
