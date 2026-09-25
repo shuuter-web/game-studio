@@ -223,7 +223,18 @@ try {
   await fresh(); await page.evaluate(() => debugDepart(1));
   await ensureVisibleCreature();
   const occlusion = await page.evaluate(() => {
-    const visible = debugFindCreature(), creature = creatures.find(entry => entry.id === visible.id);
+    let visible = debugFindCreature(), creature = creatures.find(entry => entry.id === visible.id);
+    indexToXYZ(creature.cellIndex, _xyz);
+    if (_xyz[1] + 1 >= GY) {
+      for (const candidate of groundCandidates()) {
+        indexToXYZ(candidate, _xyz);
+        if (_xyz[1] + 1 >= GY) continue;
+        creature.cellIndex = candidate;
+        renderIslandLayer();
+        visible = creatureProjection(creature);
+        if (visible) break;
+      }
+    }
     indexToXYZ(creature.cellIndex, _xyz); const [x, y, z] = _xyz;
     const roof = cellIndex(x, y + 1, z), previous = cells[roof];
     cells[roof] = M_STONE; if (!previous) solidCount++;
