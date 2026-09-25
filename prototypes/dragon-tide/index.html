@@ -726,7 +726,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.0.7";
+const GAME_VERSION = "v1.0.8";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2182,7 +2182,10 @@ const TINY_HAMLET_COUNT     = 100;
 const TINY_HAMLET_NEAR_START       = 55;
 // スタート地点寄せの帯。内側は「まばらな家」の緩衝地帯（440〜900）を残すため 600 から。
 const TINY_HAMLET_START_RING_INNER = 600;
-const TINY_HAMLET_START_RING_OUTER = 2050;   // v0.99.7: START_TOWN_CLEAR の内側に収める
+// v1.0.8: 芯（1200）より外まで伸ばしたまま据え置く。
+// 極小集落の輪と、小さな町が建ち始める帯を**わざと重ねる**ことで、
+// 「集落ばかり → 集落に小さな町が混じる → 町ばかり」と移っていく。
+const TINY_HAMLET_START_RING_OUTER = 2050;
 // 1クラスタあたりの tiny 棟数（min/max でランダム）
 const TINY_PER_HAMLET_MIN   = 5;
 const TINY_PER_HAMLET_MAX   = 8;   // 5〜10棟。合計は50〜80棟程度
@@ -3282,15 +3285,43 @@ function dist2(ax, ay, bx, by) {
 // v0.29: 群れのスタート地点（左端中央）。この周囲には街を置かず、まばらな家だけにする。
 const START_X = 250;
 const START_Y = WORLD_H * 0.5;
-// v0.99.7: 500 → 2100（Shooter指示。ミニマップ上の範囲指定で受領）。
-// この円の中には町（small/medium/large）の中心を置かないので、
-// 序盤は**極小集落だけがある帯**になる。広げたぶんは
-// placeTownCenters 側で町を外へ**退避**させる（間引かない）ので、町の総数は変わらない。
-const START_TOWN_CLEAR = 2100;
+// v0.99.7 で 500 → 2100 に広げたが、**帯が一様すぎて面白くない**（Shooter判定）。
+// v1.0.8: 「もう少し段階的に普通の街が混ざるように。小さめの街が配置できるなら
+// それを。ただ、最初の画面にいきなり街が入るのは避けて」（Shooter指示）。
+//
+// 構成を3層にする:
+//   1. 芯（START_TOWN_CLEAR の内側）  … 町の建物を一切置かない。極小集落だけ
+//   2. 帯（芯 〜 START_TOWN_RAMP_OUTER）… 町は建つが**小さい**。外へ行くほど大きくなる
+//   3. 外（それより先）                … 通常の町
+//
+// 芯を 2100 → 1200 に縮めたのは、帯に使う幅を稼ぐため。
+// **最初の画面に町が入らない**ことは芯の大きさで担保する:
+// 開始時のカメラ倍率は 1.15（群れが5〜10体のとき）なので、
+// 1920×1080 でも画面の外接円の半径はワールド座標で約960。
+// 一番内側の町の中心は 1600、一番小さい町の外縁半径は 170 なので、
+// 町の建物はどう転んでも 1430 より内側には来ない。
+const START_TOWN_CLEAR = 1200;
 // 町の建物は中心から 189〜372px に広がる（実測・50町、中央値254）。
 // 中心だけを円の外へ退けても**棟が円の中にはみ出す**ので、
 // 中心の判定はこの分だけ外側で行う。
 const START_TOWN_CLEAR_CENTER = START_TOWN_CLEAR + 400;
+// ここまで来たら通常の町の大きさに戻る。
+const START_TOWN_RAMP_OUTER = 3600;
+// 帯の入口に建つ町の大きさ（通常の町に対する倍率）。
+// 石器時代なら 140棟の町が約29棟になる＝**極小集落と普通の町の中間**。
+const START_TOWN_MIN_SCALE = 0.45;
+
+/**
+ * その座標の町に掛かる「序盤の帯」の縮小倍率（START_TOWN_MIN_SCALE 〜 1）。
+ * 芯の中は呼ばれない（そもそも町が置かれない）。
+ */
+function startBandTownScale(x, y) {
+  const d = Math.hypot(x - START_X, y - START_Y);
+  if (d >= START_TOWN_RAMP_OUTER) return 1;
+  const t = Math.max(0, (d - START_TOWN_CLEAR_CENTER) /
+                        (START_TOWN_RAMP_OUTER - START_TOWN_CLEAR_CENTER));
+  return START_TOWN_MIN_SCALE + (1 - START_TOWN_MIN_SCALE) * Math.min(1, t);
+}
 
 function placeTownCenters(townCount, bossWx, bossWy) {
   // 左端250pxは群れスタート地点なので除外
@@ -4307,7 +4338,13 @@ function generateStageLayout(stageIndex) {
   // 建物数は scale^2 で増やす＝「建物を壊す」メイン体験の総量を底上げする。
   const cityScaleByIdx = new Map();
   {
-    const order = townCenters.map((_, i) => i);
+    // v1.0.8: 大都市は**序盤の帯の外**から選ぶ。帯の中に当たると
+    // 「極小集落しかない帯を抜けた途端に首府級」になって段階が台無しになる。
+    // 帯の外に町が無い極端な配置のときだけ、全体から選ぶ形に落とす。
+    const outside = townCenters
+      .map((c, i) => i)
+      .filter(i => Math.hypot(townCenters[i].x - START_X, townCenters[i].y - START_Y) >= START_TOWN_RAMP_OUTER);
+    const order = (outside.length >= 2 ? outside : townCenters.map((_, i) => i)).slice();
     for (let i = order.length - 1; i > 0; i--) {
       const j = Math.floor(random() * (i + 1));
       [order[i], order[j]] = [order[j], order[i]];
@@ -4331,8 +4368,11 @@ function generateStageLayout(stageIndex) {
     const center = townCenters[t];
     // v0.99.7: 要塞都市は規模も一回り大きい。強さは数値だけでなく
     // **街の大きさ**でも伝わらないと、近づく前に身構えられない。
+    // v1.0.8: 序盤の帯に入る町は小さくする（芯に近いほど小さい）。
+    // 要塞都市はボス周辺にしか出ないので帯に掛かることはまず無いが、
+    // 「格上の街が縮む」のは筋が通らないので明示的に除外しておく。
     const cityScale = (cityScaleByIdx.get(t) ?? randRange(0.9, 1.1)) *
-                      (fortifiedSet.has(t) ? 1.25 : 1);
+                      (fortifiedSet.has(t) ? 1.25 : startBandTownScale(center.x, center.y));
     const s2 = cityScale * cityScale;
     // v0.56: 建築・レイアウトは全部ランの時代のもの（同じ文明の街並み）。
     // 差がつくのは警戒度＝強さと、それに伴う色の締まり具合だけ。
