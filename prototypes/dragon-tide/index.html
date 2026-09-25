@@ -726,7 +726,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.0.6";
+const GAME_VERSION = "v1.0.7";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2802,11 +2802,33 @@ const TOTAL_STAGES = STAGE_CONFIGS.length;
 // 段階が決めるのは強さ（HP・火力）と物量だけ。両者は互いに独立している。
 //
 //   時代 runEra    … ラン開始時に選ぶ。ラン中ずっと変わらない（currentStage と同値）
-//   段階 powerTier … 0..TIERS_PER_RUN-1。破壊率で上がる。強さと物量だけが変わる
+//   段階 powerTier … 0..TIERS_PER_RUN-1。陥落した町の数で上がる
 const TIERS_PER_RUN = 4;
 
-// その段階で建っていた破壊対象を何割落としたら次の段階へ上がるか。
-const TIER_ADVANCE_RATIO = 0.3;
+// -----------------------------------------------------------------
+// v1.0.7: 警戒度を上げる条件を**陥落した町の数**にする（Shooter指示）
+// -----------------------------------------------------------------
+// 「激しい戦闘中に警戒度がアップするのはちょっと変です。街が沈黙する区切りに
+// 合わせてアップしてほしい」。
+//
+// v1.0.6 までは「その段階で建っていた破壊対象の30%」で、**建物が1棟落ちるたび**に
+// 判定していた。だから乱戦の真ん中で唐突に段階が上がる。
+//
+// 軸を町に移すと、副産物としてもう一つの歪みも直る。旧ルールは**進み方によって
+// 段階の来る早さが倍半分違った**（seed=4242 で実測。数字は陥落した町の数/50）:
+//
+// | | 町を1つずつ全壊させる | 近い順になぎ倒す |
+// |---|---|---|
+// | 警戒度2 | 14町 (28%) | 8町 (16%) |
+// | 警戒度3 | 24町 (48%) | 13町 (26%) |
+// | 警戒度4 | **到達しない** | 16町 (32%) |
+//
+// 町を丁寧に潰す遊び方だと、最強モード（7割陥落）が先に来て**決戦に一度も
+// 入らないまま終わる**。同じ「どこまで進んだか」が読み手によって別物だった。
+//
+// 添字＝**上がった先**の警戒度。つまり [1] は警戒度2に上がる条件。
+// 最強モードの 0.70 まで均等に刻んで、50町の大陸で 9 / 18 / 26 / 35 町になる。
+const TIER_ADVANCE_TOWN_RATIO = [0, 0.18, 0.35, 0.52];
 
 // v1.0.4: 街の再建を復活させる（Shooter指示「街を全滅させる作業はあまり面白くなかった
 // ので、やはりもとのもうちょっと緩い感じに戻しましょう」）。
@@ -2944,7 +2966,6 @@ function unlockNextContinent(clearedEra) {
 
 let runEra                = 0;   // このランの時代（タイトルで選ぶ。ラン中ずっと固定）
 let powerTier             = 0;   // 警戒度 0..TIERS_PER_RUN-1（破壊率で上がる）
-let tierStartDestructible = 0;   // その段階の開始時に建っていた破壊対象の数（比率の分母）
 
 /** 最大段階（これ以上は上がらない）か。 */
 function isFinalTier() { return powerTier >= TIERS_PER_RUN - 1; }
@@ -10831,12 +10852,15 @@ function settlementFall(settlementIndex) {
   }
 
   // v0.79: 町の陥落判定。城壁とボスは数えない（recomputeTownRoles と同じ基準）。
+  // v1.0.7: この1棟で町が沈黙したか。警戒度はこの区切りでしか上がらない
+  let townJustSurrendered = false;
   if (settlement._townIndex !== undefined && !settlement._isWall && !settlement.isBoss) {
     const st = townStats.get(settlement._townIndex);
     if (st && !st.surrendered) {
       st.fallen++;
       if (st.fallen / st.total >= TOWN_SURRENDER_RATIO) {
         st.surrendered = true;
+        townJustSurrendered = true;
         pushWorldText(st.cx, st.cy, "陥落", "#ffe08a");
         hapticPulse(120);
       }
@@ -10886,8 +10910,10 @@ function settlementFall(settlementIndex) {
     return;
   }
 
-  // 通常建物: その時代の破壊率が閾値を超えたら文明が次の時代へ進む
-  maybeAdvanceTier();
+  // v1.0.7: 町が1つ沈黙したときだけ警戒度を見る。
+  // ここは settlementFall の最後（索引の張り直しも描き直しも済んだ後）なので、
+  // この中で settlements が丸ごと作り直されても（城壁の張り直し）問題ない。
+  maybeAdvanceTier(townJustSurrendered);
 }
 
 // -----------------------------------------------------------------
@@ -16032,31 +16058,14 @@ function triggerAllClear() {
 // 時代進行（v0.51）— ワールドを作り直さずに文明だけを進める
 // -----------------------------------------------------------------
 
-/** 破壊対象（首都・城壁を除く建物）のうち、まだ建っている数。 */
-function countDestructibleAlive() {
-  let n = 0;
-  for (let i = 0; i < settlements.length; i++) {
-    const s = settlements[i];
-    if (s.isBoss || s._isWall || s.fallen) continue;
-    n++;
-  }
-  return n;
-}
-
-/** その段階に建っていた建物を何割落としたか（0..1）。 */
-function tierDestroyRatio() {
-  if (tierStartDestructible <= 0) return 0;
-  return 1 - countDestructibleAlive() / tierStartDestructible;
-}
-
 /**
- * 警戒度の開始状態を確定する。比率の分母をここで揃える。
+ * 警戒度の開始状態を確定する。
  * ワールド生成の直後と段階遷移の直後に呼ぶ。
+ * v1.0.7: 判定が陥落町数になったので、破壊率の分母を取る処理は消えた。
  * 時代（currentStage）はここでは触らない——ランを通して固定だから。
  */
 function beginTier(tier) {
   powerTier = clampTier(tier);
-  tierStartDestructible = countDestructibleAlive();
   updateHUDStage();
   updateHUDBuildings();
 }
@@ -16291,6 +16300,26 @@ const BOSS_ENRAGE_COUNT_ADD     = 2;     // 一度に撃つ弾数
 const BOSS_ENRAGE_RANGE_MULT    = 1.45;  // 射程
 let bossEnraged = false;
 
+/** 陥落した町の数。警戒度も最強モードもこの1つの数だけを見る。 */
+function fallenTownCount() {
+  let n = 0;
+  for (const st of townStats.values()) if (st.surrendered) n++;
+  return n;
+}
+
+/** 次の警戒度に上がるのに必要な陥落町数（最終段階なら Infinity）。 */
+function tierAdvanceTownQuota() {
+  const next = powerTier + 1;
+  if (next >= TIERS_PER_RUN) return Infinity;
+  return Math.ceil(townStats.size * TIER_ADVANCE_TOWN_RATIO[next]);
+}
+
+/** 次の警戒度まであと何町か。 */
+function townsLeftForNextTier() {
+  if (townStats.size === 0) return Infinity;
+  return Math.max(0, tierAdvanceTownQuota() - fallenTownCount());
+}
+
 /** まだ陥落していない町の数（HUDと地図の目印に使う）。 */
 function standingTownCount() {
   let n = 0;
@@ -16413,11 +16442,16 @@ function triggerTierAdvance() {
   }
 }
 
-/** 建物が落ちるたびに呼ばれ、破壊率が閾値を超えたら警戒度を上げる。 */
-function maybeAdvanceTier() {
+/**
+ * v1.0.7: **町が1つ沈黙した瞬間にだけ**警戒度を上げる。
+ * 乱戦の真ん中で上がらないのが肝なので、引数が false のときは何も見ない。
+ */
+function maybeAdvanceTier(townJustSurrendered) {
   if (gameState !== "playing") return;
   if (isFinalTier()) return;
-  if (tierDestroyRatio() < TIER_ADVANCE_RATIO) return;
+  if (!townJustSurrendered) return;     // 街が沈黙する区切りでだけ上げる
+  if (townStats.size === 0) return;     // 町の無い大陸では上がらない
+  if (fallenTownCount() < tierAdvanceTownQuota()) return;
   triggerTierAdvance();
 }
 
@@ -19690,9 +19724,11 @@ function updateHUDBuildings() {
   }
 
   const hpPct = Math.ceil((boss.hp / boss.maxHp) * 100);
-  // v1.0.4: 出すのは「まだ落ちていない町の数」ではなく**あと何町で最強モードか**。
-  // 条件が7割になったので、残り町数を出しても達成までの距離にならない。
-  const needTowns = townsLeftForEnrage();
+  // v1.0.7: 警戒度も最強モードも軸が「陥落した町の数」で揃ったので、
+  // **次の区切りまであと何町か**を1つだけ出す。
+  // 警戒度が上がりきっていれば、次の区切りは最強モードになる。
+  const needTier = isFinalTier() ? Infinity : townsLeftForNextTier();
+  const needTowns = Number.isFinite(needTier) ? needTier : townsLeftForEnrage();
   hudBuildings.textContent = "BOSS " + hpPct + "% | " + smallRemaining + "/" + smallTotal +
     (bossEnraged ? " | 最強" : Number.isFinite(needTowns) ? " | 街あと" + needTowns : "");
 }
