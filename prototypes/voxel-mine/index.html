@@ -258,7 +258,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.7.6";
+const GAME_VERSION = "v0.8.0";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -380,6 +380,9 @@ const GEAR_TRAITS = [
   { id:"stabilizer", name:"衝撃安定器", description:"敵の攻撃周期 +1", weight:2 },
   { id:"treasure", name:"地下測量器", description:"宝箱の生成数 +1候補", weight:2 },
   { id:"chain", name:"連鎖機構", description:"連鎖上限 +2", weight:1 },
+  { id:"autoDrill", name:"自律削岩杭", description:"条件：最初の手動採掘地点／効果：次の手番から周囲2マスを出力1で自動掘削", weight:3 },
+  { id:"tripleAmp", name:"三拍増幅器", description:"条件：3の倍数手番／効果：手動採掘・大木伐採の範囲 +1", weight:2 },
+  { id:"canopyResonator", name:"樹冠共振器", description:"条件：葉ブロックを狙う／効果：大木伐採の範囲 +1", weight:2 },
 ];
 const TERRAIN_PROFILES = [
   { id:"hills", name:"丘陵", edge:.02, top:.62, twin:0 }, { id:"spire", name:"尖塔", edge:-.08, top:1.15, twin:0 },
@@ -405,11 +408,11 @@ const DESTINATIONS = [
   { id: 5, name: "黒曜の高島", description: "硬い黒曜の殻", flavor: "黒い岩肌を見せる漂流島。切り離される前には、どんな景色の一部だったのか。", cost: { gold: 6, iron: 20 } },
   { id: 6, name: "星核の果て", description: "最深部の星核", flavor: "星核を秘めた小島が流れる空域。手の中の石も、巨大な浮島のほんの欠片だ。", cost: { obsidian: 8, gold: 10 } },
 ];
-const expedition = { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 };
+const expedition = { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0, gearRuntime:{ stakes:[], autoResolvedTurn:0 } };
 function effectiveStats() {
   const traits = player.equippedGearIds.map((id) => player.gears.find((gear) => gear.id === id)?.trait).filter(Boolean);
   const count = (id) => traits.filter((trait) => trait === id).length;
-  return { power:count("power"), fuel:count("fuel") * 6, sale:1 + count("appraisal") * .1, enemyDelay:count("stabilizer"), treasure:count("treasure"), chain:count("chain") * 2 };
+  return { power:count("power"), fuel:count("fuel") * 6, sale:1 + count("appraisal") * .1, enemyDelay:count("stabilizer"), treasure:count("treasure"), chain:count("chain") * 2, autoDrill:count("autoDrill"), tripleAmp:count("tripleAmp"), canopyResonator:count("canopyResonator") };
 }
 function fuelCapacity() { return FUEL_LEVELS[expedition.fuelLevel].capacity + effectiveStats().fuel; }
 
@@ -1454,9 +1457,51 @@ function resolveBlockLoot(material, index) {
 }
 function canBeginAction() { return expedition.phase === "exploring" && !expedition.returnRequested && expedition.fuel > 0 && pendingBreaks.length === 0; }
 function beginAction() { player.stats.taps++; expedition.fuel--; expedition.turns++; expedition.actionPendingThreat = true; combo = 0; comboMultiplier = 1; }
+function actionRangeBonus(targetKind = "terrain") {
+  const stats = effectiveStats();
+  const triple = expedition.turns > 0 && expedition.turns % 3 === 0 ? stats.tripleAmp : 0;
+  return Math.min(2, triple + (targetKind === "leaf" ? stats.canopyResonator : 0));
+}
+function placeUnplacedAutoDrills(cellIndex) {
+  const runtime = expedition.gearRuntime;
+  const equipped = player.equippedGearIds.filter((id) => player.gears.find((gear) => gear.id === id)?.trait === "autoDrill");
+  for (const gearId of equipped) {
+    if (runtime.stakes.some((stake) => stake.gearId === gearId)) continue;
+    runtime.stakes.push({ gearId, cellIndex, placedTurn:expedition.turns });
+    indexToXYZ(cellIndex, _xyz); cellToWorld(_xyz[0], _xyz[1], _xyz[2], _w);
+    const point=project(_w[0]+.5,_w[1]+1.15,_w[2]+.5);
+    spawnFloat(point[0],point[1],"削岩杭を設置", "#9a6b20",12);
+  }
+}
+function autoDrillCandidates(stake) {
+  const origin=[]; indexToXYZ(stake.cellIndex,origin);
+  const candidates=[];
+  for (let index=0;index<cells.length;index++) {
+    const material=cells[index]; if (!material || MATERIALS[material].tier>pickaxeTier()) continue;
+    const position=[]; indexToXYZ(index,position);
+    const distance=Math.abs(position[0]-origin[0])+Math.abs(position[1]-origin[1])+Math.abs(position[2]-origin[2]);
+    if (distance<=2) candidates.push({ index, distance });
+  }
+  return candidates.sort((left,right)=>left.distance-right.distance||left.index-right.index);
+}
+function resolveAutoDrills() {
+  const runtime=expedition.gearRuntime;
+  if (runtime.autoResolvedTurn===expedition.turns) return;
+  runtime.autoResolvedTurn=expedition.turns;
+  let changed=false;
+  for (const stake of runtime.stakes) {
+    if (expedition.turns<=stake.placedTurn) continue;
+    const target=autoDrillCandidates(stake)[0]; if (!target) continue;
+    const material=cells[target.index], dealt=Math.min(255,damage[target.index]+1);
+    if (dealt>=MATERIALS[material].hp) changed=breakCell(target.index,-1,false)||changed;
+    else damage[target.index]=dealt;
+  }
+  if (changed) { rebuildSurface(); flushTapGain(null); markDirty(); }
+}
 function completeAction() {
   if (!expedition.actionPendingThreat || pendingBreaks.length) return;
   expedition.actionPendingThreat = false;
+  resolveAutoDrills();
   const enemy = expedition.enemy;
   if (enemy && enemy.hp > 0) {
     enemy.turnsUntilAttack--;
@@ -1660,7 +1705,7 @@ function finishCreaturePartEdges(faces, firstFace) {
 }
 function addPropBox(faces, entity, origin, box, part, metadata = null) {
   const [x, y, z, width, height, depth, color] = box;
-  const meshScale = entity.type !== "tree" ? CREATURE_MESH_SCALE : 1;
+  const meshScale = entity.type === "creature" || entity.type === "enemy" ? CREATURE_MESH_SCALE : 1;
   const firstFace = faces.length;
   for (let index = 0; index < CUBE_FACES.length; index++) {
     const face = CUBE_FACES[index];
@@ -1757,6 +1802,10 @@ function enemyVisibleProjection(enemy) {
   if (!visibleSamples.length) return null;
   return { x:visibleSamples.reduce((sum,sample)=>sum+sample[0],0)/visibleSamples.length, y:Math.min(...visibleSamples.map((sample)=>sample[1])) };
 }
+function autoDrillBoxes() {
+  const iron=[72,68,61],brass=[176,126,54],dark=[44,42,38];
+  return [[-.16,-.25,-.16,.32,.72,.32,iron],[-.32,.34,-.32,.64,.16,.64,brass],[-.12,.5,-.12,.24,.36,.24,dark],[-.06,-.48,-.06,.12,.3,.12,brass]];
+}
 function drawEnemyMarker(context) {
   const enemy = expedition.enemy;
   enemyMarkerHitRect = null;
@@ -1804,6 +1853,13 @@ function buildPropFaces() {
     });
     if (entity.type !== "tree") (entity.type === "enemy" ? enemyEllipsoids(pose, warning) : creatureEllipsoids(entity.kind, pose)).forEach((oval, part) => addPropEllipsoid(faces, entity, origin, oval, part + 30));
   }
+  for (const stake of expedition.gearRuntime.stakes) {
+    if (!validInteger(stake.cellIndex,cells.length-1)) continue;
+    const position=[],origin=[]; indexToXYZ(stake.cellIndex,position); cellToWorld(...position,origin);
+    origin[0]+=.5; origin[1]+=.55; origin[2]+=.5;
+    const entity={ id:stake.gearId,type:"autoDrill" };
+    autoDrillBoxes().forEach((box,part)=>addPropBox(faces,entity,origin,box,part));
+  }
   return faces.sort((left, right) => right.depth - left.depth);
 }
 function drawPropFace(context, face) {
@@ -1823,7 +1879,7 @@ function drawPropFace(context, face) {
       inkStyle(context, style === 2 ? sceneBoldInkWidth() : Math.max(.45, scale * .022), style === 2 ? .86 : .24);
       context.stroke();
     }
-    propPickFaces.push(face);
+    if (face.entity.type!=="autoDrill") propPickFaces.push(face);
     return;
   }
   for (let pass = 0; pass < 2; pass++) {
@@ -1831,7 +1887,7 @@ function drawPropFace(context, face) {
     vertices.forEach((vertex, index) => { const next = vertices[(index + 1) % vertices.length]; penLine(context, vertex[0], vertex[1], next[0], next[1], face.key * 7 + index + pass * 97, Math.max(.45, scale * .045) * (pass ? 1.7 : 1)); });
     inkStyle(context, Math.max(.8, scale * .05) * (pass ? .6 : 1), pass ? .3 : .85); context.stroke();
   }
-  propPickFaces.push(face);
+  if (face.entity.type!=="autoDrill") propPickFaces.push(face);
 }
 function pointInProp(face, x, y) {
   const signs = face.vertices.map((vertex, index) => { const next = face.vertices[(index + 1) % face.vertices.length]; return (next[0] - vertex[0]) * (y - vertex[1]) - (next[1] - vertex[1]) * (x - vertex[0]); });
@@ -1873,6 +1929,18 @@ function findVisibleLargeTreeBlock(treeId, blockKind = null, blockId = null) {
   }
   return null;
 }
+function treeBlockCenter(box) { return [box[0]+box[3]/2,box[1]+box[4]/2,box[2]+box[5]/2]; }
+function treeBlocksInRange(boxes, blockId, bonus) {
+  const center=treeBlockCenter(boxes[blockId]);
+  return boxes.map((box,index)=>({ index, distance:Math.hypot(...treeBlockCenter(box).map((value,axis)=>value-center[axis])) }))
+    .filter((entry)=>entry.distance<=bonus+.01).sort((left,right)=>left.distance-right.distance||left.index-right.index).map((entry)=>entry.index);
+}
+function removeLargeTreeBlock(tree, blockId) {
+  if (tree.removedBlocks.includes(blockId)) return false;
+  tree.removedBlocks.push(blockId);
+  if (blockId<3) gainMaterial("timber",TREE_CONFIG.largeBlockTimberYield); else gainLeafTreasure(tree.id,blockId);
+  return true;
+}
 function chopTreeBlock(treeId, blockId, point = null) {
   const tree = trees.find((entry) => entry.id === treeId && entry.kind === "large");
   const boxes = treeBoxes("large");
@@ -1880,9 +1948,10 @@ function chopTreeBlock(treeId, blockId, point = null) {
   const target = point && point.blockId === blockId ? point : findVisibleLargeTreeBlock(treeId, null, blockId);
   if (!target || target.blockId !== blockId) return false;
   beginAction();
-  tree.removedBlocks.push(blockId); tree.removedBlocks.sort((left, right) => left - right);
-  if (blockId < 3) gainMaterial("timber", TREE_CONFIG.largeBlockTimberYield);
-  else gainLeafTreasure(tree.id, blockId);
+  const targetKind=blockId<3?"wood":"leaf";
+  const affected=treeBlocksInRange(boxes,blockId,actionRangeBonus(targetKind));
+  for (const affectedBlockId of affected) removeLargeTreeBlock(tree,affectedBlockId);
+  tree.removedBlocks.sort((left, right) => left - right);
   if (tree.removedBlocks.length === boxes.length) { tree.chopped = true; expedition.treesChopped++; }
   flushTapGain([target.x, target.y]); soundHit(); addShake(1.5);
   markDirty(); completeAction(); checkReturnReason(); finishReturn(); updateHud(); saveGame(); return true;
@@ -1928,7 +1997,7 @@ function sellAllTreasure() {
 }
 
 /** セルを1つ割る（獲得・破片・音・連鎖の予約）。rebuildSurface は呼び出し側でまとめる */
-function breakCell(idx, chainStep) {
+function breakCell(idx, chainStep, allowChain = true) {
   const material = cells[idx];
   if (!material) return false;
   const def = MATERIALS[material];
@@ -1950,7 +2019,7 @@ function breakCell(idx, chainStep) {
     const p = project(_w[0] + 0.5, _w[1] + 0.5, _w[2] + 0.5);
     spawnFloat(p[0], p[1], "+" + comboMultiplier + " " + def.name, "rgb(" + def.color.join(",") + ")", 12);
   }
-  if (chainStep === 0 && def.ore && chainCount() > 0) scheduleVein(idx, material);
+  if (allowChain && chainStep === 0 && def.ore && chainCount() > 0) scheduleVein(idx, material);
   // 生き物と敵の移動も破壊順で確定し、描画の間引きや再開時のまとめ処理で変えない。
   relocateCreatures();
   relocateEnemy();
@@ -2034,7 +2103,7 @@ function mineAt(x, y, z, sx, sy) {
     return { broken: 0, locked: true };
   }
   beginAction();
-  const r = rangeRadius();
+  const r = rangeRadius() + actionRangeBonus("terrain");
   const power = hitPower();
   let broken = 0, hit = 0;
   for (let dy = -r; dy <= r; dy++) {
@@ -2058,6 +2127,7 @@ function mineAt(x, y, z, sx, sy) {
       }
     }
   }
+  placeUnplacedAutoDrills(centerIdx);
   if (broken > 0) {
     rebuildSurface();
     spawnBurst(sx, sy, 1 + r * 0.5, false);
@@ -2283,7 +2353,7 @@ function base64ToBytes(text) {
 function saveKey() { return SAVE_KEY_PREFIX + worldSeed + (urlParams.has("fresh") ? ":fresh:" + urlParams.get("fresh") : ""); }
 function saveGame() {
   const data = {
-    version: 8, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
+    version: 9, gameVersion: GAME_VERSION, worldSeed, tripSerial, creatures, trees,
     expedition, combo,
     pending: pendingBreaks.map((entry) => ({ ...entry, due: Math.max(0, entry.due - nowSeconds) })),
     player,
@@ -2342,7 +2412,7 @@ function resetGame() {
   try { localStorage.removeItem(saveKey()); } catch (error) { /* 無視 */ }
   Object.assign(player, { coins: 0, pickaxe: 0, power: 0, range: 0, chain: 0, inventory: {}, seen: {}, treasures:[], gears:[], equippedGearIds:[], gearCapacity:6, workshopUnlocked:false, blueprints:0,
                           stats: { mined: 0, taps: 0, maxCombo: 0, islands: 1, crafted: 0 } });
-  Object.assign(expedition, { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0 });
+  Object.assign(expedition, { phase: "base", fuel: 0, turns: 0, fuelLevel: 0, routeLevel: 0, haul: {}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested: false, returnReason: "manual", fuelNoticeAcknowledged: false, blocksDestroyed: 0, captures: 0, treesChopped: 0, gearRuntime:{ stakes:[], autoResolvedTurn:0 } });
   tripSerial = 0; creatures.length = 0; trees.length = 0;
   startIsland(1);
   renderBase();
@@ -2352,7 +2422,7 @@ function resetGame() {
 function validInteger(value, maximum = Number.MAX_SAFE_INTEGER) { return Number.isSafeInteger(value) && value >= 0 && value <= maximum; }
 function validResources(value, legacy = false) { return value && typeof value === "object" && !Array.isArray(value) && Object.entries(value).every(([id, amount]) => (INVENTORY_ORDER.includes(id) || legacy && ["dirt", "stone"].includes(id)) && validInteger(amount)); }
 function validateSave(data) {
-  if (!data || data.version !== 8 || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
+  if (!data || data.version !== 9 || data.worldSeed !== worldSeed || !data.player || !data.island) return null;
   const savedPlayer = data.player, island = data.island;
   if (!validInteger(savedPlayer.pickaxe, PICKAXES.length - 1) || !validInteger(savedPlayer.power, 1000000) || !validInteger(savedPlayer.range, RANGE_LEVELS.length - 1) || !validInteger(savedPlayer.chain, CHAIN_LEVELS.length - 1)) return null;
   if (!validResources(savedPlayer.inventory) || !savedPlayer.stats || !["mined", "taps", "maxCombo", "islands", "crafted"].every((key) => validInteger(savedPlayer.stats[key]))) return null;
@@ -2377,6 +2447,9 @@ function validateSave(data) {
   if (enemy!==null && (!enemy || enemy.id!==999 || enemy.kind!=="beetle" || typeof enemy.name!=="string" || !validInteger(enemy.cellIndex,island.gx*island.gy*island.gz-1) || !validInteger(enemy.hp,enemy.maxHp) || enemy.maxHp!==4 || enemy.attackEvery!==4 || !validInteger(enemy.turnsUntilAttack,4+3))) return null;
   if (savedExpedition.phase==="exploring" && island.level===2 && enemy===null || island.level!==2 && enemy!==null) return null;
   if (typeof savedExpedition.fuelNoticeAcknowledged !== "boolean") return null;
+  const gearRuntime=savedExpedition.gearRuntime;
+  const equippedAutoIds=savedPlayer.equippedGearIds.filter((id)=>savedPlayer.gears.find((gear)=>gear.id===id)?.trait==="autoDrill");
+  if (!gearRuntime || !Array.isArray(gearRuntime.stakes) || !validInteger(gearRuntime.autoResolvedTurn,savedExpedition.turns) || gearRuntime.stakes.length>3 || !gearRuntime.stakes.every((stake)=>stake&&typeof stake.gearId==="string"&&equippedAutoIds.includes(stake.gearId)&&validInteger(stake.cellIndex,island.gx*island.gy*island.gz-1)&&validInteger(stake.placedTurn,savedExpedition.turns)) || new Set(gearRuntime.stakes.map((stake)=>stake.gearId)).size!==gearRuntime.stakes.length) return null;
   if (island.level > savedExpedition.routeLevel + 1 || !validInteger(savedExpedition.fuel, FUEL_LEVELS[savedExpedition.fuelLevel].capacity+18) || !validInteger(savedExpedition.turns) || !validResources(savedExpedition.haul) || typeof savedExpedition.returnRequested !== "boolean" || !validInteger(data.combo)) return null;
   if (!validResources(savedExpedition.haul) || !validInteger(savedExpedition.blocksDestroyed) || !validInteger(savedExpedition.captures) || !["manual", "fuel", "cleared", "hull"].includes(savedExpedition.returnReason)) return null;
   if (!Array.isArray(data.pending) || !data.pending.every((entry) => validInteger(entry.idx, restoredCells.length - 1) && validInteger(entry.material, MATERIALS.length - 1) && entry.material > 0 && validInteger(entry.step, CHAIN_LEVELS.at(-1).count+6) && entry.step > 0 && Number.isFinite(entry.due) && entry.due >= 0 && entry.due <= CHAIN_STEP_SECONDS * (CHAIN_LEVELS.at(-1).count+6))) return null;
@@ -2412,7 +2485,7 @@ function nextIsland() {
 }
 function depart(destinationId) {
   if (expedition.phase !== "base" || !Number.isInteger(destinationId) || destinationId < 1 || destinationId > expedition.routeLevel + 1) return false;
-  Object.assign(expedition, { phase:"exploring", fuel:fuelCapacity(), turns:0, haul:{}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested:false, returnReason:"manual", fuelNoticeAcknowledged:false, blocksDestroyed:0, captures:0, treesChopped:0 });
+  Object.assign(expedition, { phase:"exploring", fuel:fuelCapacity(), turns:0, haul:{}, treasureIds:[], gearIds:[], terrainProfileId:"hills", hull:3, maxHull:3, actionPendingThreat:false, enemy:null, chests:[], returnRequested:false, returnReason:"manual", fuelNoticeAcknowledged:false, blocksDestroyed:0, captures:0, treesChopped:0, gearRuntime:{ stakes:[], autoResolvedTurn:0 } });
   tripSerial++;
   player.stats.islands = Math.max(player.stats.islands, destinationId);
   closeCraft();
@@ -2449,6 +2522,7 @@ function finishReturn() {
   document.getElementById("fuel-notice").hidden = true;
   expedition.phase = "result";
   expedition.returnRequested = false;
+  expedition.gearRuntime = { stakes:[], autoResolvedTurn:0 };
   renderCraft();
   renderBase();
   updateHud();
@@ -2917,6 +2991,14 @@ function debugAttackEnemy() { return attackEnemy(); }
 function debugOpenChest() { const chest=expedition.chests.find((entry)=>!entry.opened); if (chest) chest.exposed=true; return openExposedChest(); }
 function debugToggleGear(id) { return toggleGear(id); }
 function debugCraftGear() { return craftRandomGear(); }
+function debugGrantGear(traitId) {
+  const trait=GEAR_TRAITS.find((entry)=>entry.id===traitId); if (!trait) return null;
+  const gear={ id:"debug-gear-"+traitId+"-"+player.gears.length,name:"試験機構・"+trait.name,trait:trait.id,weight:trait.weight };
+  player.gears.push(gear); renderBase(); saveGame(); return gear;
+}
+function debugSetActionTurn(turn) { if (expedition.phase!=="exploring" || !validInteger(turn)) return false; expedition.turns=turn; return true; }
+function debugMineCell(index) { if (!validInteger(index,cells.length-1)||!cells[index]) return null; const position=[]; indexToXYZ(index,position); return mineAt(position[0],position[1],position[2],viewW/2,viewH/2); }
+function debugGearState() { return { stats:effectiveStats(),runtime:JSON.parse(JSON.stringify(expedition.gearRuntime)),actionRangeBonus:actionRangeBonus("terrain") }; }
 function debugCraft(lineId) { return craft(lineId); }
 function debugNextIsland() { nextIsland(); return debugState(); }
 function debugSave() { saveGame(); return localStorage.getItem(saveKey()) !== null; }

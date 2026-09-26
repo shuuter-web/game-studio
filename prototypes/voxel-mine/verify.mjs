@@ -403,13 +403,13 @@ try {
   await checkLayout('Desktop expedition');
   await page.evaluate(() => {
     const obsolete = JSON.parse(localStorage.getItem(saveKey()));
-    obsolete.version = 7;
+    obsolete.version = 8;
     obsolete.player.coins = 999;
     window.removeEventListener('beforeunload', saveGame);
     localStorage.setItem(saveKey(), JSON.stringify(obsolete));
   });
   await page.reload(); current = await state();
-  check('Schema 7 save is initialized as a new schema 8 game', current.expedition.phase === 'base' && current.player.coins === 0 && current.unlocks.length === 1); await page.evaluate(() => debugSave()); check('Fresh replacement save uses schema 8', JSON.parse(await page.evaluate(() => localStorage.getItem(saveKey()))).version === 8);
+  check('Schema 8 save is initialized as a new schema 9 game', current.expedition.phase === 'base' && current.player.coins === 0 && current.unlocks.length === 1); await page.evaluate(() => debugSave()); check('Fresh replacement save uses schema 9', JSON.parse(await page.evaluate(() => localStorage.getItem(saveKey()))).version === 9);
   await page.setViewportSize({ width: 390, height: 844 });
   await fresh(); await page.evaluate(() => debugDepart(1));
   await page.waitForFunction(() => debugFindTree('sapling') !== null);
