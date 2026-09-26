@@ -409,7 +409,7 @@ try {
     localStorage.setItem(saveKey(), JSON.stringify(obsolete));
   });
   await page.reload(); current = await state();
-  check('Schema 8 save is initialized as a new schema 9 game', current.expedition.phase === 'base' && current.player.coins === 0 && current.unlocks.length === 1); await page.evaluate(() => debugSave()); check('Fresh replacement save uses schema 9', JSON.parse(await page.evaluate(() => localStorage.getItem(saveKey()))).version === 9);
+  check('Schema 8 save is initialized as a new schema 10 game', current.expedition.phase === 'base' && current.player.coins === 0 && current.unlocks.length === 1); await page.evaluate(() => debugSave()); check('Fresh replacement save uses schema 10', JSON.parse(await page.evaluate(() => localStorage.getItem(saveKey()))).version === 10);
   await page.setViewportSize({ width: 390, height: 844 });
   await fresh(); await page.evaluate(() => debugDepart(1));
   await page.waitForFunction(() => debugFindTree('sapling') !== null);

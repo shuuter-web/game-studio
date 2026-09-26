@@ -63,7 +63,7 @@ try{
   check('Fuel reaching zero does not lose delayed chain/auto rewards',await page.evaluate(()=>{expedition.fuel=0;return expedition.blocksDestroyed>=2&&player.stats.mined>=2}));
 
   await fresh();await page.evaluate(()=>localStorage.setItem(saveKey(),JSON.stringify({version:8,worldSeed,player:{coins:999},island:{}})));await page.reload();await page.waitForFunction(()=>typeof debugState==='function');
-  check('Schema 8 and invalid old saves reset into schema 9',await page.evaluate(()=>player.coins===0&&JSON.parse(localStorage.getItem(saveKey())).version===9));
+  check('Schema 8 and invalid old saves reset into schema 10',await page.evaluate(()=>player.coins===0&&JSON.parse(localStorage.getItem(saveKey())).version===10));
   check('No runtime errors',errors.length===0,JSON.stringify(errors));
 }finally{await browser.close()}
 if(failures.length){console.error(`\n${failures.length} failed: ${failures.join(', ')}`);process.exitCode=1}else console.log('\nAll voxel-mine v0.8 conditional gear checks passed.');
