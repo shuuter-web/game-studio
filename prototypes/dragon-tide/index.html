@@ -726,7 +726,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.0.9";
+const GAME_VERSION = "v1.1.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -8155,7 +8155,7 @@ function updateMoverRams() {
       const ramReach = chargeReachBonusFor(i);
       const myR = m.def.radius + 6 + ramReach;
       if (dx * dx + dy * dy > myR * myR) continue;
-      const ramDamage = baseRam * chargeDamageMultFor(i);
+      const ramDamage = baseRam * chargeDamageMultFor(i) * consumeWakeCharge(i);
       const ramKnock  = chargeKnockbackFor(i);
       damageMover(m, ramDamage, px[i], py[i]);
       if (ramKnock > 0) applyMoverKnockback(m, px[i], py[i], ramKnock);
@@ -10639,11 +10639,13 @@ function updateCollisionAttacks(dt) {
       const isHeavy = boidSpecial[i] === SPECIAL_HEAVY;
       const isMelee = flockWeapon === "melee";
       // v0.87: 突進中は直接攻撃の威力が上がる（溜めに比例）
+      // v1.1.0: 曳竜の航跡を通っていれば、この1ヒットだけ倍率が乗って印が消える。
+      // 突進の倍率とは**掛け算で重なる**（突撃系のビルドで伸びるのが狙い）。
       const collisionDmg = (isHeavy
         ? effHeavyDamage()
         : isMelee
           ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
-          : COLLISION_DAMAGE) * chargeDamageMultFor(i);
+          : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i);
       s.hp -= collisionDmg;
       reportDamage(s, s.wx, s.wy, collisionDmg);
 
@@ -11026,6 +11028,9 @@ const SPECIAL_DEFLECT = 3;
 const SPECIAL_RAINBOW = 4;
 // v0.95: 機竜。初速0から加速する大きなロケットを扇状に連射する（Shooter指示）。
 const SPECIAL_MECHA   = 5;
+// v1.1.0: 曳竜。**群れより前を飛び、航跡を残す**（docs/gdd/dragon-tide-vanguard-special.md 案2）。
+// 突撃系ツリーの根。航跡を通った竜は**次の直接攻撃1ヒットだけ**威力が上がる。
+const SPECIAL_WAKE    = 6;
 
 const SPECIAL_DEFS = {
   [SPECIAL_BEACON]:  { key: "beacon",  name: "灯竜", color: "#ffd36b", hpMult: 1.5 },
@@ -11033,6 +11038,7 @@ const SPECIAL_DEFS = {
   [SPECIAL_DEFLECT]: { key: "deflect", name: "呑竜", color: "#9fd8ff", hpMult: 2.0 },
   [SPECIAL_RAINBOW]: { key: "rainbow", name: "虹竜", color: "#f0a8ff", hpMult: 2.5 },
   [SPECIAL_MECHA]:   { key: "mecha",   name: "機竜", color: "#ff7a4d", hpMult: 2.0 },
+  [SPECIAL_WAKE]:    { key: "wake",    name: "曳竜", color: "#9b7bff", hpMult: 1.6 },
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -11045,6 +11051,9 @@ let boidSpecialTimer;
 let boidSpecialCd;
 // v0.95: 機竜の「今の一連射で何発撃つか」。扇の割り付けに使う。
 let boidSpecialTotal;
+// v1.1.0: 曳竜の航跡を通った印。1 = **次の直接攻撃1ヒット**だけ威力が上がる。
+// 当たった瞬間に 0 に戻る（積み増しはしない＝何周しても1発ぶん）。
+let boidWakeCharge;
 // v0.99.2: 突進の個体状態。入口は群れで決まるが、持続は個体ごと。
 let boidChargeOn;     // 1 = この竜は今まさに突進している
 let boidChargeHold;   // 溜まっている秒数（0 .. effChargeRampSeconds()）
@@ -11090,6 +11099,7 @@ function initBoids() {
   boidSpecialTimer      = new Float32Array(MAX_BOIDS);
   boidSpecialCd         = new Float32Array(MAX_BOIDS);
   boidSpecialTotal      = new Float32Array(MAX_BOIDS);
+  boidWakeCharge        = new Uint8Array(MAX_BOIDS);
   // v0.99.2: 突進の個体状態
   boidChargeOn          = new Uint8Array(MAX_BOIDS);
   boidChargeHold        = new Float32Array(MAX_BOIDS);
@@ -11186,6 +11196,7 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
     boidSpecialTimer[i]      = 0;
     boidSpecialCd[i]         = 0;
     boidSpecialTotal[i]      = 0;
+    boidWakeCharge[i]        = 0;
     boidFireTimer[i]         = random() * currentFireInterval(); // 射撃をばらけさせる
     const base = i * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = 0;
@@ -11570,6 +11581,9 @@ const STRINGS = {
     sp_mecha:          { name: "機竜",       desc: "加速するロケットを前方へ連射する特殊個体が加わる" },
     sp_mecha_count:    { name: "多連装填", desc: "機竜の発射数 +2（最大10）" },
     sp_mecha_dmg:      { name: "弾頭強化", desc: "機竜の爆発威力 +30%" },
+    sp_wake:           { name: "曳竜",     desc: "群れの前を飛び航跡を残す。通った竜は次の直接攻撃が強くなる" },
+    sp_wake_dmg:       { name: "後押し", desc: "航跡の一撃の乗り +0.5 倍" },
+    sp_wake_life:      { name: "長い尾",  desc: "航跡が消えるまで +35%" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
     charge_reach: { name: "突進の角", desc: "突進中の体当たりの届く範囲 +30%" },
@@ -11672,6 +11686,9 @@ const CARD_DEFS = [
   { id: "sp_mecha",         icon: "\u{1F680}", rarity: "star", max: 3, specialJoin: SPECIAL_MECHA },
   { id: "sp_mecha_count",   icon: "\u{1F38B}", rarity: "rare", max: 4, specialOf: SPECIAL_MECHA },
   { id: "sp_mecha_dmg",     icon: "\u{1F4A2}", rarity: "rare", max: 4, specialOf: SPECIAL_MECHA },
+  { id: "sp_wake",          icon: "\u{1F4A8}", rarity: "star", max: 3, specialJoin: SPECIAL_WAKE },
+  { id: "sp_wake_dmg",      icon: "\u{1F4A5}", rarity: "rare", max: 4, specialOf: SPECIAL_WAKE },
+  { id: "sp_wake_life",     icon: "\u{1F300}", rarity: "rare", max: 3, specialOf: SPECIAL_WAKE },
   // F. 突進（v0.87）。発動条件は群れ全体の動きなので、竜種を問わず出る。
   // v0.91: chargeUnlock がラン内の解禁スイッチ。charge:true の5枚はこれを取った後のみプールに乗る。
   { id: "charge_unlock", icon: "\u{1F3C7}", rarity: "star", max: 1, chargeUnlock: true },
@@ -11813,6 +11830,8 @@ function resetProgression() {
   // v0.85: 加入済みの特殊個体もランごとにゼロへ（カードと同じ寿命）
   runSpecials.length = 0;
   if (boidSpecial) boidSpecial.fill(SPECIAL_NONE);
+  if (boidWakeCharge) boidWakeCharge.fill(0);
+  clearWakeTrail();
   clearSpecialBolts();
   clearMechaRockets();
   resetCharge();          // v0.87: 突進の溜めもランごとにゼロへ
@@ -12719,6 +12738,28 @@ const DEFLECT_BOLT_DMG = 20;    // 撃ち返す弾1発のダメージ
 const DEFLECT_BOLT_SPD = 430;   // 撃ち返す弾の速度（px/s）
 const DEFLECT_FAN      = 0.36;  // 撃ち返す扇の半角（rad）
 
+// ---- 曳竜 ----
+// **前に出る**ための性能差。操縦点に貼り付けるとUFOと同じ挙動になるので、
+// 慣性モデルは群れと同じまま、最高速と加速だけ上げる（設計メモ §1）。
+// 動いている間は操縦点が逃げ続けるので前に出るし、止まれば追いついて落ち着く。
+const WAKE_SPEED_MULT   = 1.25;  // 最高速の倍率
+const WAKE_ACCEL_MULT   = 1.60;  // 加速の倍率
+// 航跡。**前にいるので群れは必ずこの中を通る**のが仕掛けの肝。
+const WAKE_DROP_INTERVAL = 0.05; // 何秒ごとに航跡の節を落とすか
+const WAKE_SEG_LIFE      = 2.2;  // 節が消えるまでの秒数
+const WAKE_PICK_RADIUS   = 26;   // 節にこれだけ近づいたら印が付く
+const MAX_WAKE_SEGS      = 192;  // 節の上限（0.05秒 x 2.2秒 x 曳竜2匹でも足りる）
+// 印が乗った1ヒットの倍率。**体当たり（＝全竜種の直接攻撃）に掛かる**。
+// 緋竜25・巌竜60・それ以外8 のどれにも同じ倍率で乗るので、
+// 体当たりを主武装にしているビルドほど得をする＝突撃系の材料になる。
+const WAKE_HIT_MULT      = 2.6;
+
+function effWakeHitMult() {
+  const bonus = (WAKE_HIT_MULT - 1) + 0.5 * upCount("sp_wake_dmg");
+  return 1 + bonus * permaBuff.specialDmg;
+}
+function effWakeSegLife() { return WAKE_SEG_LIFE * (1 + 0.35 * upCount("sp_wake_life")); }
+
 // ---- ラン中カードによる強化（都度計算。ステージリセットでは消えない）----
 function effBeaconLength()  { return BEACON_LENGTH * (1 + 0.25 * upCount("sp_beacon_len")); }
 function effBeaconDps()     { return BEACON_DPS * (1 + 0.30 * upCount("sp_beacon_dmg")) * permaBuff.specialDmg; }
@@ -12885,6 +12926,70 @@ function updateSpecialBolts(dt) {
   }
 }
 
+// ---- 曳竜の航跡 ----
+// {x, y, life} の使い回しリング。節ごとに寿命を持ち、古いものから消える。
+const wakeSegs = [];
+let wakeSegHead = 0;
+
+function clearWakeTrail() { wakeSegs.length = 0; wakeSegHead = 0; }
+
+function pushWakeSeg(x, y) {
+  if (wakeSegs.length < MAX_WAKE_SEGS) {
+    wakeSegs.push({ x, y, life: effWakeSegLife(), max: effWakeSegLife() });
+    return;
+  }
+  const seg = wakeSegs[wakeSegHead];
+  seg.x = x; seg.y = y; seg.life = effWakeSegLife(); seg.max = seg.life;
+  wakeSegHead = (wakeSegHead + 1) % MAX_WAKE_SEGS;
+}
+
+/** 曳竜: 一定間隔で航跡の節を落とすだけ。印を配るのは updateWakeTrail。 */
+function updateWakeDragon(i, dt) {
+  boidSpecialTimer[i] -= dt;
+  if (boidSpecialTimer[i] > 0) return;
+  boidSpecialTimer[i] = WAKE_DROP_INTERVAL;
+  pushWakeSeg(px[i], py[i]);
+}
+
+/**
+ * 航跡の寿命を進め、中に居る竜に印を付ける。
+ * 竜 x 節の総当たりになるので、**節の側から半径で切る**（節は最大192・
+ * 竜は最大150だが、距離判定は二乗のみで打ち切っている）。
+ */
+function updateWakeTrail(dt) {
+  // 消えた節は配列から外さない。pushWakeSeg がリングとして上書きで使い回すので、
+  // splice でずらすより寿命を 0 のまま置いておくほうが安い。
+  for (let k = 0; k < wakeSegs.length; k++) {
+    if (wakeSegs[k].life > 0) wakeSegs[k].life -= dt;
+  }
+  if (wakeSegs.length === 0) return;
+  const r2 = WAKE_PICK_RADIUS * WAKE_PICK_RADIUS;
+  for (let i = 0; i < N; i++) {
+    if (boidWakeCharge[i]) continue;                  // すでに乗っている
+    if (boidDead[i] || boidDowned[i]) continue;
+    if (boidSpecial[i] === SPECIAL_WAKE) continue;    // 自分の航跡では乗らない
+    const x = px[i], y = py[i];
+    for (let k = 0; k < wakeSegs.length; k++) {
+      const seg = wakeSegs[k];
+      if (seg.life <= 0) continue;
+      const dx = seg.x - x, dy = seg.y - y;
+      if (dx * dx + dy * dy <= r2) { boidWakeCharge[i] = 1; break; }
+    }
+  }
+}
+
+/**
+ * 直接攻撃1ヒットぶんの倍率を取り出し、**その場で印を消す**。
+ * 建物への体当たり（updateCollisionAttacks）と
+ * 移動敵への体当たり（updateMoverRams）の両方から呼ぶ。
+ */
+function consumeWakeCharge(i) {
+  if (!boidWakeCharge[i]) return 1;
+  boidWakeCharge[i] = 0;
+  spawnHitParticles(px[i], py[i]);
+  return effWakeHitMult();
+}
+
 // ---- 毎フレームの更新 ----
 const _specialBuf = [];
 const deflectSlots = [];   // 呑竜のスロット番号（updateSpecials で毎フレーム作り直す）
@@ -12911,7 +13016,9 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_HEAVY)   updateHeavyDragon(i, dt);
     else if (kind === SPECIAL_DEFLECT) updateDeflectDragon(i, dt);
     else if (kind === SPECIAL_MECHA)   updateMechaDragon(i, dt);
+    else if (kind === SPECIAL_WAKE)    updateWakeDragon(i, dt);
   }
+  updateWakeTrail(dt);      // v1.1.0: 航跡の寿命と、中に居る竜への印付け
   updateSpecialBolts(dt);
   updateMechaRockets(dt);   // v0.95: 飛んでいるロケットは機竜が落ちても進む
 }
@@ -13220,7 +13327,48 @@ function tryDeflectAbsorb(projIdx) {
 // ---- 描画 ----
 
 /** 竜より下のレイヤー: 灯竜の光条と、特殊個体の足元リング。 */
+/** v1.1.0: 曳竜の航跡。竜の下に敷く。古い節ほど細く薄くなる。 */
+function drawWakeTrail() {
+  if (wakeSegs.length === 0) return;
+  const col = SPECIAL_DEFS[SPECIAL_WAKE].color;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.fillStyle = col;
+  for (let k = 0; k < wakeSegs.length; k++) {
+    const seg = wakeSegs[k];
+    if (seg.life <= 0) continue;
+    const t = seg.life / seg.max;          // 1=落としたて 0=消える寸前
+    // 判定の半径いっぱいに描くと画面で一番目立つ帯になってしまうので、
+    // 見た目は判定より一回り細くする（拾えるほうが広い＝取りこぼしの不満が出ない）。
+    ctx.globalAlpha = 0.22 * t;
+    ctx.beginPath();
+    ctx.arc(seg.x, seg.y, WAKE_PICK_RADIUS * (0.38 + 0.48 * t), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+}
+
+/** v1.1.0: 次の一撃が乗っている竜の印。当てるまで消えないので、常時出す。 */
+function drawWakeCharged() {
+  const col = SPECIAL_DEFS[SPECIAL_WAKE].color;
+  ctx.save();
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.6;
+  for (let i = 0; i < N; i++) {
+    if (!boidWakeCharge[i] || boidDead[i] || boidDowned[i]) continue;
+    ctx.globalAlpha = 0.55 + 0.25 * Math.sin(breathTime * 6 + i);
+    ctx.beginPath();
+    ctx.arc(px[i], py[i], 9 * boidBodyScale(i), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
 function drawSpecialUnder() {
+  drawWakeTrail();   // v1.1.0: 航跡は足元リングよりさらに下
   for (let i = 0; i < N; i++) {
     const kind = boidSpecial[i];
     if (kind === SPECIAL_NONE) continue;
@@ -15324,7 +15472,7 @@ function codexShotHtml() {
 // 置いた上で、その周りに能力を表す形（光条・吸引の輪・ロケット）を描く。
 // canvas を後入れするのは innerHTML では中身を渡せないため（弾のページと同じ手）。
 // -----------------------------------------------------------------
-const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA];
+const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE];
 
 function codexSpecialHtml() {
   let html =
@@ -15368,6 +15516,7 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_DEFLECT]: "★呑竜／弾幕の濃い街で強い",
   [SPECIAL_RAINBOW]: "★虹竜／群れの長。レベルと共に体格が育つ",
   [SPECIAL_MECHA]:   "★機竜／遅れて届く遠距離の爆発",
+  [SPECIAL_WAKE]:    "★曳竜／群れの前を飛ぶ。自分では打たない",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_BEACON]:
@@ -15386,6 +15535,11 @@ const CODEX_SPECIAL_DESC = {
     "着弾したところで爆発して周囲ごと巻き込む。" +
     "<b>同時には撃たない</b>。1発ずつ間を置いて出すので、直進中は1本の線に並んで伸び、" +
     "撃っている途中に群れが向きを変えれば、その軌跡に沿って扇かれる。",
+  [SPECIAL_WAKE]:
+    "<b>自分では攻撃しない。</b>ほかの竜より速く飛んで群れの前に出て、通った道に航跡を残す。" +
+    "航跡に触れた竜は<b>次の直接攻撃1ヒットだけ</b>威力が上がる（当てたらその場で消える）。" +
+    "直接攻撃＝体当たりなので<b>どの竜種でも乗る</b>が、体当たりが主武装の緋竜・巌竜ほど得をする。" +
+    "突進の倍率とは掛け算で重なる。",
 };
 const CODEX_SPECIAL_STAT = {
   [SPECIAL_BEACON]: () =>
@@ -15401,6 +15555,10 @@ const CODEX_SPECIAL_STAT = {
     `${MECHA_SALVO_GAP}秒ごとに1発 ／ 発射の向きは常に真正面 ／ ` +
     `初速0 → 最高 ${MECHA_MAX_SPEED}px/s（加速 ${MECHA_ACCEL}） ／ ` +
     `爆発 ${MECHA_DAMAGE} ・半径 ${MECHA_BLAST_R}px ／ HP ×${SPECIAL_DEFS[SPECIAL_MECHA].hpMult}`,
+  [SPECIAL_WAKE]: () =>
+    `一撃の乗り ×${WAKE_HIT_MULT}（強化で最大 ×${(WAKE_HIT_MULT + 0.5 * 4).toFixed(1)}） ／ ` +
+    `航跡の太さ ${WAKE_PICK_RADIUS}px ／ ${WAKE_SEG_LIFE}秒で消える ／ ` +
+    `最高速 ×${WAKE_SPEED_MULT}・加速 ×${WAKE_ACCEL_MULT} ／ HP ×${SPECIAL_DEFS[SPECIAL_WAKE].hpMult}`,
   [SPECIAL_RAINBOW]: () =>
     `${MOTHER_BREATH_INTERVAL}秒ごと ／ 半径 ${MOTHER_BREATH_RANGE}px の最大 ${MOTHER_BREATH_TARGETS} 体 ／ ` +
     `1発 ${MOTHER_BREATH_DAMAGE} ／ 体格はレベルごと +${Math.round(MOTHER_DRAGON.growthPerLevel * 100)}%（最大 +${Math.round(MOTHER_DRAGON.growthMax * 100)}%） ／ ` +
@@ -16980,6 +17138,11 @@ function updateFlockMetrics(dt) {
   let cx = 0, cy = 0, svx = 0, svy = 0, n = 0;
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
+    // v1.1.0: 曳竜は隊列に加わらない（整列も結合も切ってある）ので、
+    // **群れの計測からも外す**。外さないと、最高速を超えて飛ぶ1匹が
+    // 重心速度を押し上げ／押し下げして、突進の発動条件（重心速度が最高速の99.5%）を
+    // 揺らしてしまう。突進の判定は曳竜と無関係であるべき。
+    if (boidSpecial[i] === SPECIAL_WAKE) continue;
     cx += px[i]; cy += py[i];
     svx += vx[i]; svy += vy[i];
     n++;
@@ -17466,6 +17629,14 @@ function simStep(dt) {
     const sep2  = sepR * sepR;
     const xi = px[i], yi = py[i];
 
+    // v1.1.0: 曳竜は**群れない**。整列と結合を切って操縦点だけを追わせる。
+    // これを切らないと整列が周りの速度に合わせてしまい、最高速を上げても前に出ない
+    // （実測: 切る前は群れの重心より平均17pxしか前に出なかった）。
+    // 分離は残す＝仲間と重ならない。慣性モデルは群れと同じまま。
+    const isWake  = boidSpecial[i] === SPECIAL_WAKE;
+    const wAliI   = isWake ? 0 : wAli;
+    const wCohI   = isWake ? 0 : wCoh;
+
     let sepX = 0, sepY = 0;
     let aliX = 0, aliY = 0;
     let cohX = 0, cohY = 0;
@@ -17502,15 +17673,15 @@ function simStep(dt) {
     ax += sepX * wSep * 80;
     ay += sepY * wSep * 80;
 
-    if (nAli > 0) {
+    if (nAli > 0 && wAliI > 0) {
       const inv = 1 / nAli;
-      ax += (aliX * inv - vx[i]) * wAli;
-      ay += (aliY * inv - vy[i]) * wAli;
+      ax += (aliX * inv - vx[i]) * wAliI;
+      ay += (aliY * inv - vy[i]) * wAliI;
     }
-    if (nCoh > 0) {
+    if (nCoh > 0 && wCohI > 0) {
       const inv = 1 / nCoh;
-      ax += (cohX * inv - xi) * wCoh;
-      ay += (cohY * inv - yi) * wCoh;
+      ax += (cohX * inv - xi) * wCohI;
+      ay += (cohY * inv - yi) * wCohI;
     }
 
     // 追う点。通常は操縦点、弧長トレース中は線上の隊列スロット（の少し先）。
@@ -17632,12 +17803,20 @@ function simStep(dt) {
     // 望む速さ: 基本は最高速。リーダーに近いほど落として最低速に寄せる
     // ＝ minSpeed が 0 の竜種は操縦点の上でその場に留まれる。
     // minSpeed === maxSpeed の竜種（UFO）はこの減速が丸ごと無効になり**等速**になる。
-    let desiredSpeed = maxSp * Math.min(1, aDist / BOID_ARRIVE_DIST);
+    // v1.1.0: 曳竜だけ最高速と加速を上げる。**追う先も動き方も群れと同じ**なので、
+    // 動いている間は操縦点が逃げ続けて前に出るし、止まれば追いついて落ち着く。
+    // 操縦点に貼り付けないのが肝（貼り付けると慣性ゼロ＝UFOと同じ動きになる）。
+    const maxSpI    = isWake ? maxSp * WAKE_SPEED_MULT : maxSp;
+    const accelLimI = isWake ? accelLim * WAKE_ACCEL_MULT : accelLim;
+    // v1.1.0: 曳竜は操縦点に近づいても減速しない＝**行き過ぎて弧を描いて戻る**。
+    // これが「速い斥候」の見た目を作る。減速させると操縦点に貼り付いて
+    // 群れと同じ位置で止まり、前に出ているように見えない（実測: 群れの重心より平均3px）。
+    let desiredSpeed = isWake ? maxSpI : maxSpI * Math.min(1, aDist / BOID_ARRIVE_DIST);
     if (desiredSpeed < minSp) desiredSpeed = minSp;
     // v0.33.1: 近すぎる仲間がいるときは、操縦点の上でも最低限の速さを残して押し分ける。
     // これがないと minSpeed=0 の竜種（UFO型）が操縦点で完全停止し、全個体が1点に重なる。
     if (nSep > 0) {
-      const sepFloor = maxSp * SEP_MIN_SPEED_FRAC;
+      const sepFloor = maxSpI * SEP_MIN_SPEED_FRAC;
       if (desiredSpeed < sepFloor) desiredSpeed = sepFloor;
     }
     // v0.37: 跳躍の速度エンベロープは**最後に掛ける**（分離の下限より優先）。
@@ -17656,7 +17835,7 @@ function simStep(dt) {
 
     // 加速制限: 速さの変化も accelLim*dt までに抑える
     let dSpd = desiredSpeed - curSpeed;
-    const spdMax = accelLim * dt;
+    const spdMax = accelLimI * dt;
     if      (dSpd >  spdMax) dSpd =  spdMax;
     else if (dSpd < -spdMax) dSpd = -spdMax;
     const newSpeed = curSpeed + dSpd;
@@ -18106,6 +18285,7 @@ function render(now) {
   drawChargeFx();            // v0.87: 突進（尾・穂先の弧・速度線）。竜より下に敷く
   drawSpecialUnder();        // v0.85: 灯竜の光条と特殊個体の足元リング（竜の下）
   drawBoids();
+  drawWakeCharged();         // v1.1.0: 次の一撃が乗っている竜の輪（竜の上）
   drawChargeHitFx();         // v0.88: 突進が乗った一撃の衝撃（当たった面なので竜の上）
   drawSpecialOver();         // v0.85: 呑竜が溜めている弾（竜の上）
   drawSpecialBolts();        // v0.85: 呑竜が撃ち返した弾
