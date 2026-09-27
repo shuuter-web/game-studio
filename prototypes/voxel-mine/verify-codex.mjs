@@ -1,4 +1,4 @@
-// Voyage Codex acceptance and regression checks for v0.8.1.
+// Voyage Codex acceptance and regression checks for v0.8.2.
 import { createRequire } from 'node:module';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -43,7 +43,7 @@ async function layout() {
 
 try {
   await fresh();
-  check('Version is v0.8.1', await page.evaluate(() => GAME_VERSION === 'v0.8.1'));
+  check('Version is v0.8.2', await page.evaluate(() => GAME_VERSION === 'v0.8.2'));
   check('Codex entrance is in the port screen only', await page.evaluate(() => {
     const button = document.getElementById('btn-open-codex');
     return button && button.closest('#base') && !button.closest('#game') && !button.closest('#result');
@@ -126,7 +126,7 @@ try {
 
   await page.evaluate(() => { expedition.phase = 'base'; debugSave(); });
   const savedFlags = await page.evaluate(() => ({ seen: { ...player.codexSeen }, first: { ...player.codexFirst }, raw: JSON.parse(localStorage.getItem(saveKey())) }));
-  check('Schema 10 stores codex history and gear frameId', savedFlags.raw.version === 10 && savedFlags.raw.player.gears.every(gear => typeof gear.frameId === 'string'));
+  check('Schema 11 stores codex history and gear frameId', savedFlags.raw.version === 11 && savedFlags.raw.player.gears.every(gear => typeof gear.frameId === 'string'));
   await page.reload(); await page.waitForFunction(() => typeof debugCodexState === 'function');
   check('Codex history survives save and reload', await page.evaluate(expected => JSON.stringify(player.codexSeen) === JSON.stringify(expected.seen) && JSON.stringify(player.codexFirst) === JSON.stringify(expected.first), savedFlags));
   await page.evaluate(() => resetGame());
@@ -134,9 +134,9 @@ try {
 
   await page.evaluate(() => { const data = JSON.parse(localStorage.getItem(saveKey())); data.version = 9; data.player.coins = 999; localStorage.setItem(saveKey(), JSON.stringify(data)); });
   await page.reload(); await page.waitForFunction(() => typeof debugState === 'function');
-  check('Invalid schema 9 resets to a fresh schema 10 save', await page.evaluate(() => player.coins === 0 && JSON.parse(localStorage.getItem(saveKey())).version === 10 && Object.keys(player.codexSeen).length === 0));
+  check('Invalid schema 9 resets to a fresh schema 11 save', await page.evaluate(() => player.coins === 0 && JSON.parse(localStorage.getItem(saveKey())).version === 11 && Object.keys(player.codexSeen).length === 0));
   check('No runtime errors', errors.length === 0, JSON.stringify(errors));
 } finally { await browser.close(); }
 
 if (failures.length) { console.error(`\n${failures.length} failed: ${failures.join(', ')}`); process.exitCode = 1; }
-else console.log('\nAll voxel-mine v0.8.1 voyage codex checks passed.');
+else console.log('\nAll voxel-mine v0.8.2 voyage codex checks passed.');

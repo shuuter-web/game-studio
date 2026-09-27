@@ -85,7 +85,7 @@ try {
   await page.evaluate(() => localStorage.removeItem(SAVE_KEY_PREFIX + worldSeed));
   let current = await state();
   check('New game starts at base with only island 1 unlocked', current.expedition.phase === 'base' && JSON.stringify(current.unlocks) === '[1]');
-  check('Initial fuel capacity is 60', current.capacity === 60);
+  check('Initial fuel capacity is 20', current.capacity === 20);
   check('Locked and invalid destinations cannot be entered', await page.evaluate(() => [2, 0, 7, -1, 1.5].every(id => !debugDepart(id))));
   check('Insufficient materials cannot craft', await page.evaluate(() => !debugCraft('pickaxe') && !debugCraft('fuel') && !debugCraft('route')));
   const baseBefore = await state();
@@ -99,15 +99,15 @@ try {
   await page.waitForFunction(() => debugState().faces > 300);
   current = await state();
   const originalCells = await page.evaluate(() => Array.from(cells));
-  check('Departure creates island 1 and refills fuel', current.expedition.phase === 'exploring' && current.expedition.fuel === 60 && current.solid > 400);
-  check('Prominent fuel gauge shows current and maximum fuel', await page.locator('#fuel-status').isVisible() && await page.locator('#fuel-meter').getAttribute('aria-valuenow') === '60' && await page.locator('#fuel-meter').getAttribute('aria-valuemax') === '60' && (await page.locator('#fuel-value').textContent()) === '60 / 60');
+  check('Departure creates island 1 and refills fuel', current.expedition.phase === 'exploring' && current.expedition.fuel === 20 && current.solid > 400);
+  check('Prominent fuel gauge shows current and maximum fuel', await page.locator('#fuel-status').isVisible() && await page.locator('#fuel-meter').getAttribute('aria-valuenow') === '20' && await page.locator('#fuel-meter').getAttribute('aria-valuemax') === '20' && (await page.locator('#fuel-value').textContent()) === '20 / 20');
   check('Island 1 renders copper but no iron', current.faces > 300 && current.counts.copper > 0 && !current.counts.iron);
   const grass = await page.evaluate(() => debugFindFace('grass'));
   check('Visible grass can be targeted', !!grass);
   if (grass) {
     await page.mouse.click(grass.x, grass.y);
     const after = await state();
-    check('Real canvas tap mines and consumes one turn', after.solid < current.solid && after.expedition.fuel === 59 && after.expedition.turns === 1);
+    check('Real canvas tap mines and consumes one turn', after.solid < current.solid && after.expedition.fuel === 19 && after.expedition.turns === 1);
   }
   const beforeUi = await state();
   await page.locator('#btn-sound').click();
@@ -162,10 +162,10 @@ try {
   const visibleCreature = await page.evaluate(() => debugFindCreature());
   await page.mouse.click(visibleCreature.x, visibleCreature.y);
   const captured = await state();
-  check('Canvas capture spends exactly one fuel and yields treasure', captured.expedition.fuel === 59 && captured.expedition.captures === 1 && captured.creatures.find(creature => creature.id === visibleCreature.id).captured && Object.keys(captured.player.inventory).length > 0);
+  check('Canvas capture spends exactly one fuel and yields treasure', captured.expedition.fuel === 19 && captured.expedition.captures === 1 && captured.creatures.find(creature => creature.id === visibleCreature.id).captured && Object.keys(captured.player.inventory).length > 0);
   const capturedInventory = JSON.stringify(captured.player.inventory);
   await page.evaluate(id => { debugCapture(id); debugCapture(-1); debugSave(); }, visibleCreature.id);
-  check('Duplicate and invalid capture are free', (await state()).expedition.fuel === 59 && JSON.stringify((await state()).player.inventory) === capturedInventory);
+  check('Duplicate and invalid capture are free', (await state()).expedition.fuel === 19 && JSON.stringify((await state()).player.inventory) === capturedInventory);
   await page.reload();
   check('Captured creature stays captured after reload', (await state()).creatures.find(creature => creature.id === visibleCreature.id).captured && JSON.stringify((await state()).player.inventory) === capturedInventory);
   check('Cannot sell while exploring', await page.evaluate(() => { const before = JSON.stringify(player); debugSellAll(); return JSON.stringify(player) === before; }));
@@ -409,7 +409,7 @@ try {
     localStorage.setItem(saveKey(), JSON.stringify(obsolete));
   });
   await page.reload(); current = await state();
-  check('Schema 8 save is initialized as a new schema 10 game', current.expedition.phase === 'base' && current.player.coins === 0 && current.unlocks.length === 1); await page.evaluate(() => debugSave()); check('Fresh replacement save uses schema 10', JSON.parse(await page.evaluate(() => localStorage.getItem(saveKey()))).version === 10);
+  check('Schema 8 save is initialized as a new schema 11 game', current.expedition.phase === 'base' && current.player.coins === 0 && current.unlocks.length === 1); await page.evaluate(() => debugSave()); check('Fresh replacement save uses schema 11', JSON.parse(await page.evaluate(() => localStorage.getItem(saveKey()))).version === 11);
   await page.setViewportSize({ width: 390, height: 844 });
   await fresh(); await page.evaluate(() => debugDepart(1));
   await page.waitForFunction(() => debugFindTree('sapling') !== null);
@@ -502,7 +502,7 @@ try {
     debugGrant('scrap', 9); player.coins = 41; debugDepart(1); debugSave();
   }, normalSaveSentinel);
   await page.locator('#btn-debug').click();
-  check('Expedition debug menu opens without spending fuel', await page.locator('#debug-panel').isVisible() && (await state()).expedition.fuel === 60);
+  check('Expedition debug menu opens without spending fuel', await page.locator('#debug-panel').isVisible() && (await state()).expedition.fuel === 20);
   await page.locator('#btn-debug-reset').click();
   current = await state();
   check('Debug reset clears current save and returns to initial port', current.expedition.phase === 'base' && current.player.coins === 0 && Object.keys(current.player.inventory).length === 0 && current.expedition.routeLevel === 0 && current.tripSerial === 0);
