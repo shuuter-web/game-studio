@@ -726,7 +726,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.1.1";
+const GAME_VERSION = "v1.1.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -8033,7 +8033,13 @@ function drawDamageNumbers() {
     ctx.lineWidth   = Math.max(2, size * 0.30);
     ctx.strokeStyle = "rgba(0,0,0,0.85)";
     ctx.strokeText(n, x, y);
-    ctx.fillStyle   = big ? "#ffd05a" : "#ffffff";
+    // v1.1.2: ひびが入っている相手への数字は楔竜の色で出す。
+    // 「余計に通っている」ことは**数字が大きくなること**でしか分からないので、
+    // どの数字がひびのぶんなのかを色で結びつける。
+    const tgt = dmgNumTarget[i];
+    const onCracked = tgt && tgt._crackUntil > breathTime;
+    ctx.fillStyle   = onCracked ? SPECIAL_DEFS[SPECIAL_WEDGE].color
+                    : big ? "#ffd05a" : "#ffffff";
     ctx.fillText(n, x, y);
   }
   ctx.globalAlpha = 1;
@@ -10628,7 +10634,10 @@ function updateCollisionAttacks(dt) {
       // 衝突判定: ドラゴン半径6px + 建物半径 の合計以内に入ったら衝突
       // v0.85: 巌竜は体が大きいので当たりもその分広げる（見た目と判定を一致させる）
       // v0.87: 突進中は届く範囲が伸びる（溜めに比例）
-      const collideR = s.radius + 6 * boidBodyScale(i) + chargeReachBonusFor(i);
+      // v1.1.2: 楔竜は装甲が張り出しているぶん当たりも広い。
+      // これが無いと高速で旋回している間に建物の隙間をすり抜ける。
+      const collideR = s.radius + 6 * boidBodyScale(i) + chargeReachBonusFor(i)
+                     + (boidSpecial[i] === SPECIAL_WEDGE ? WEDGE_REACH_BONUS : 0);
       const dx = s.wx - px[i];
       const dy = s.wy - py[i];
       if (dx * dx + dy * dy > collideR * collideR) continue;
@@ -10643,7 +10652,8 @@ function updateCollisionAttacks(dt) {
       const isMelee = flockWeapon === "melee";
       // v1.1.1: 楔竜は触った相手にひびを入れる。**倍率を掛ける前に**入れるので、
       // この一撃自体もひびの恩恵を受ける（先陣が自分で崩し始める絵になる）。
-      if (isWedge) applyCrack(s);
+      // v1.1.2: 1棟ではなく**ぶつかった一帯**を割る
+      if (isWedge) applyCrackArea(s.wx, s.wy);
       // v0.87: 突進中は直接攻撃の威力が上がる（溜めに比例）
       // v1.1.0: 曳竜の航跡を通っていれば、この1ヒットだけ倍率が乗って印が消える。
       // 突進の倍率とは**掛け算で重なる**（突撃系のビルドで伸びるのが狙い）。
@@ -11052,7 +11062,7 @@ const SPECIAL_DEFS = {
   [SPECIAL_RAINBOW]: { key: "rainbow", name: "虹竜", color: "#f0a8ff", hpMult: 2.5 },
   [SPECIAL_MECHA]:   { key: "mecha",   name: "機竜", color: "#ff7a4d", hpMult: 2.0 },
   [SPECIAL_WAKE]:    { key: "wake",    name: "曳竜", color: "#9b7bff", hpMult: 1.6 },
-  [SPECIAL_WEDGE]:   { key: "wedge",   name: "楗竜", color: "#5fbfa0", hpMult: 2.2 },
+  [SPECIAL_WEDGE]:   { key: "wedge",   name: "楔竜", color: "#5fbfa0", hpMult: 2.2 },
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -11598,9 +11608,9 @@ const STRINGS = {
     sp_wake:           { name: "曳竜",     desc: "群れの前を飛び航跡を残す。通った竜は次の直接攻撃が強くなる" },
     sp_wake_dmg:       { name: "後押し", desc: "航跡の一撃の乗り +0.5 倍" },
     sp_wake_life:      { name: "長い尾",  desc: "航跡が消えるまで +35%" },
-    sp_wedge:          { name: "楗竜",     desc: "群れの前を飛び、触れた相手にひびを入れる（誰の攻撃も余計に通る）" },
+    sp_wedge:          { name: "楔竜",     desc: "群れの前を飛び、触れた相手にひびを入れる（誰の攻撃も余計に通る）" },
     sp_wedge_dmg:      { name: "深い割れ", desc: "ひびの割増し +15%" },
-    sp_wedge_time:     { name: "戻らぬ傷", desc: "ひびが残る時間 +30%" },
+    sp_wedge_time:     { name: "戻らぬ傷", desc: "ひびが残る時間 +30%／範囲 +18%" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
     charge_reach: { name: "突進の角", desc: "突進中の体当たりの届く範囲 +30%" },
@@ -12790,13 +12800,21 @@ const WEDGE_RAM_DAMAGE  = 22;   // 体当たり1発（通常8／緋竜25／巌�
 const WEDGE_RAM_CD      = 0.45; // 体当たりの再発動間隔
 const WEDGE_CRACK_MULT  = 1.45; // ひびが入っている間の被ダメージ倍率（誰の攻撃でも）
 const WEDGE_CRACK_TIME  = 4.0;  // ひびが残る秒数
-const MAX_CRACK_MARKS   = 64;   // 描画用に覚えておく建物の数
+// v1.1.2: **ひびは点ではなく面で入れる**（Shooter判定「見た目に全然わからない」）。
+// 1棟だけ割っても密集した街の中では見つけられないし、群れがそこを叩く保証もない。
+// 実測でも、高速で旋回している楔竜は建物の隙間をすり抜けて
+// **7秒間に一度もひびを入れられない**ことがあった。
+// ぶつかった場所を中心に一帯を割ると、光った範囲がそのまま「ここを殴れ」になる。
+const WEDGE_CRACK_RADIUS = 92;  // ぶつかった点から何pxまで割るか
+const WEDGE_REACH_BONUS  = 8;   // 体当たりの当たり半径の上乗せ（装甲の張り出し）
+const MAX_CRACK_MARKS   = 180;  // 描画用に覚えておく建物の数
 
 function effWedgeRamDamage() { return WEDGE_RAM_DAMAGE * permaBuff.specialDmg; }
 function effWedgeCrackMult() {
   return 1 + (WEDGE_CRACK_MULT - 1 + 0.15 * upCount("sp_wedge_dmg")) * permaBuff.specialDmg;
 }
 function effWedgeCrackTime() { return WEDGE_CRACK_TIME * (1 + 0.30 * upCount("sp_wedge_time")); }
+function effWedgeCrackRadius() { return WEDGE_CRACK_RADIUS * (1 + 0.18 * upCount("sp_wedge_time")); }
 
 // ---- ラン中カードによる強化（都度計算。ステージリセットでは消えない）----
 function effBeaconLength()  { return BEACON_LENGTH * (1 + 0.25 * upCount("sp_beacon_len")); }
@@ -12970,7 +12988,25 @@ function updateSpecialBolts(dt) {
 // 描画用に「今ひびが入っているもの」だけを小さな配列で覚えておく。
 const crackMarks = [];   // { s } の配列。期限切れは描画時に間引く
 
-function clearCrackMarks() { crackMarks.length = 0; }
+// v1.1.2: ひびが入った**瞬間**の弾け。印が出ていても「今かかった」が
+// 分からないと実感が湧かない（Shooter判定「見た目に全然わからない」）。
+const crackBursts = [];
+const MAX_CRACK_BURSTS = 24;
+const CRACK_BURST_LIFE = 0.45;
+
+function clearCrackMarks() { crackMarks.length = 0; crackBursts.length = 0; }
+
+function spawnCrackBurst(x, y, r) {
+  if (crackBursts.length >= MAX_CRACK_BURSTS) crackBursts.shift();
+  crackBursts.push({ x, y, r, t: 0 });
+}
+
+function updateCrackBursts(dt) {
+  for (let k = crackBursts.length - 1; k >= 0; k--) {
+    crackBursts[k].t += dt;
+    if (crackBursts[k].t >= CRACK_BURST_LIFE) crackBursts.splice(k, 1);
+  }
+}
 
 /** その相手に今ひびが入っているか（被ダメージ倍率を返す）。 */
 function crackMult(o) {
@@ -12982,7 +13018,39 @@ function applyCrack(o) {
   if (!o) return;
   const fresh = !(o._crackUntil > breathTime);
   o._crackUntil = breathTime + effWedgeCrackTime();
-  if (fresh && crackMarks.length < MAX_CRACK_MARKS) crackMarks.push(o);
+  if (fresh) {
+    if (crackMarks.length < MAX_CRACK_MARKS) crackMarks.push(o);
+    spawnCrackBurst(o.wx, o.wy, (o.radius ?? moverRadiusOf(o)) + 2);
+  }
+}
+
+const _wedgeBuf = [];
+
+/**
+ * v1.1.2: ぶつかった点を中心に、一帯の建物と移動敵へまとめてひびを入れる。
+ * 建物は空間ハッシュで拾うので、6000棟あっても走査は近傍だけ。
+ */
+function applyCrackArea(cx, cy) {
+  const R = effWedgeCrackRadius();
+  const R2 = R * R;
+  const cell = Math.max(1, Math.ceil(R / BUILDING_GRID_CELL));
+  buildingGridQueryRadius(cx, cy, cell, _wedgeBuf);
+  for (const sIdx of _wedgeBuf) {
+    const s = settlements[sIdx];
+    if (!s || s.fallen) continue;
+    const dx = s.wx - cx, dy = s.wy - cy;
+    if (dx * dx + dy * dy > R2) continue;
+    applyCrack(s);
+  }
+  for (const m of movers) {
+    if (!m.alive) continue;
+    const dx = m.wx - cx, dy = m.wy - cy;
+    if (dx * dx + dy * dy > R2) continue;
+    applyCrack(m);
+  }
+  // 面で入ったことが分かる大きな輪を1つ足す（個々の印とは別）
+  spawnCrackBurst(cx, cy, R * 0.55);
+  triggerShake(1.6, 0.08);
 }
 
 /** 楔竜: 体当たりで建物と移動敵にひびを入れる。建物側は衝突処理から呼ばれる。 */
@@ -12994,11 +13062,10 @@ function updateWedgeDragon(i, dt) {
     const rr = moverRadiusOf(m) + 6 * boidBodyScale(i) + 4;
     const dx = m.wx - px[i], dy = m.wy - py[i];
     if (dx * dx + dy * dy > rr * rr) continue;
-    applyCrack(m);
+    applyCrackArea(m.wx, m.wy);
     damageMover(m, effWedgeRamDamage(), px[i], py[i]);
     spawnCollisionParticles(m.wx, m.wy);
     boidSpecialCd[i] = WEDGE_RAM_CD;
-    triggerShake(1.2, 0.05);
     return;
   }
 }
@@ -13097,6 +13164,7 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_WEDGE)   updateWedgeDragon(i, dt);
   }
   updateWakeTrail(dt);      // v1.1.0: 航跡の寿命と、中に居る竜への印付け
+  updateCrackBursts(dt);    // v1.1.2: ひびが入った瞬間の弾け
   updateSpecialBolts(dt);
   updateMechaRockets(dt);   // v0.95: 飛んでいるロケットは機竜が落ちても進む
 }
@@ -13434,11 +13502,29 @@ function drawWakeTrail() {
  * （毎フレーム乱数を振るとチカチカして読めない）。
  */
 function drawCrackMarks() {
-  if (crackMarks.length === 0) return;
   const col = SPECIAL_DEFS[SPECIAL_WEDGE].color;
+
+  // --- ひびが入った瞬間の弾け（外へ広がる輪）---
+  if (crackBursts.length > 0) {
+    ctx.save();
+    ctx.strokeStyle = col;
+    for (let k = 0; k < crackBursts.length; k++) {
+      const b = crackBursts[k];
+      const t = b.t / CRACK_BURST_LIFE;          // 0..1
+      ctx.globalAlpha = (1 - t) * 0.9;
+      ctx.lineWidth = 4.5 * (1 - t) + 1;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r * (1 + t * 1.7), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  if (crackMarks.length === 0) return;
   ctx.save();
-  ctx.strokeStyle = col;
   ctx.lineCap = "round";
+  const pulse = 0.5 + 0.5 * Math.sin(breathTime * 7);
   for (let k = crackMarks.length - 1; k >= 0; k--) {
     const o = crackMarks[k];
     const left = (o._crackUntil || 0) - breathTime;
@@ -13447,21 +13533,38 @@ function drawCrackMarks() {
     const r = (o.radius ?? moverRadiusOf(o)) + 2;
     // 残り時間で薄くなる＝いつ切れるかが見える
     const life = Math.min(1, left / effWedgeCrackTime());
-    // 赤い建物の上で読めるだけの太さと濃さが要る。1.4px・alpha0.3 では
-    // 画面で拾えなかった（実機相当の縮尺で確認）。
-    ctx.globalAlpha = 0.55 + 0.40 * life;
-    ctx.lineWidth = 2.1;
-    // 3本のひび。角度は相手の座標から決めるので毎フレーム同じ
+
+    // v1.1.2: **線だけでは実戦の画面で読めなかった**（Shooter判定）。
+    // 相手そのものを染めて、外側に脈打つ輪を足す。
+    // 1) 塗り: 建物1棟ぶんを覆う。竜が上に重なっても色が透けて見える濃さに留める
+    ctx.globalAlpha = 0.30 * (0.55 + 0.45 * life);
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(x, y, r * 1.05, 0, Math.PI * 2);
+    ctx.fill();
+    // 2) 外の輪: 脈打つ。小さい建物でも輪郭が出るように本体より一回り大きく
+    ctx.globalAlpha = (0.45 + 0.45 * pulse) * (0.4 + 0.6 * life);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.arc(x, y, r * (1.28 + 0.10 * pulse), 0, Math.PI * 2);
+    ctx.stroke();
+    // 3) ひび: 白っぽい芯を重ねて、割れている感じを出す
     const seed = (x * 0.013 + y * 0.017);
-    for (let n = 0; n < 3; n++) {
-      const a = seed + n * 2.094;
-      const ox = Math.cos(a) * r, oy = Math.sin(a) * r;
-      const mx = Math.cos(a + 0.5) * r * 0.35, my = Math.sin(a + 0.5) * r * 0.35;
-      ctx.beginPath();
-      ctx.moveTo(x + ox, y + oy);
-      ctx.lineTo(x + mx, y + my);
-      ctx.lineTo(x - ox * 0.5, y - oy * 0.5);
-      ctx.stroke();
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.strokeStyle = pass === 0 ? "rgba(0,0,0,0.55)" : "#eafff6";
+      ctx.lineWidth   = pass === 0 ? 3.4 : 1.6;
+      ctx.globalAlpha = pass === 0 ? 0.5 * life : 0.55 + 0.4 * life;
+      for (let n = 0; n < 3; n++) {
+        const a = seed + n * 2.094;
+        const ox = Math.cos(a) * r, oy = Math.sin(a) * r;
+        const mx = Math.cos(a + 0.5) * r * 0.35, my = Math.sin(a + 0.5) * r * 0.35;
+        ctx.beginPath();
+        ctx.moveTo(x + ox, y + oy);
+        ctx.lineTo(x + mx, y + my);
+        ctx.lineTo(x - ox * 0.5, y - oy * 0.5);
+        ctx.stroke();
+      }
     }
   }
   ctx.restore();
@@ -15635,7 +15738,7 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_RAINBOW]: "★虹竜／群れの長。レベルと共に体格が育つ",
   [SPECIAL_MECHA]:   "★機竜／遅れて届く遠距離の爆発",
   [SPECIAL_WAKE]:    "★曳竜／群れの前を飛ぶ。自分では打たない",
-  [SPECIAL_WEDGE]:   "★楗竜／先陣。相手を柔らかくして本隊に渡す",
+  [SPECIAL_WEDGE]:   "★楔竜／先陣。相手を柔らかくして本隊に渡す",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_BEACON]:
@@ -15660,7 +15763,7 @@ const CODEX_SPECIAL_DESC = {
     "直接攻撃＝体当たりなので<b>どの竜種でも乗る</b>が、体当たりが主武装の緋竜・巌竜ほど得をする。" +
     "突進の倍率とは掛け算で重なる。",
   [SPECIAL_WEDGE]:
-    "曳竜と同じく群れの前を飛ぶ（装甲のぶん少し鈍い）。体当たりした相手に<b>ひび</b>を入れ、" +
+    "曳竜と同じく群れの前を飛ぶ（装甲のぶん少し鈍い）。体当たりした<b>一帯にまとめてひび</b>を入れ、" +
     "その間は<b>誰の攻撃でも余計に通る</b>——ブレスも弾も体当たりも、群れ全員ぶんが乗る。" +
     "常に一番先に触るので、本隊は柔らかくなった的を叩くことになる。" +
     "ひびは相手の輪郭に線で出るので、どれが崩れかけているか見て分かる。",
@@ -15685,7 +15788,8 @@ const CODEX_SPECIAL_STAT = {
     `最高速 ×${WAKE_SPEED_MULT}・加速 ×${WAKE_ACCEL_MULT} ／ HP ×${SPECIAL_DEFS[SPECIAL_WAKE].hpMult}`,
   [SPECIAL_WEDGE]: () =>
     `ひびの間の被ダメージ ×${WEDGE_CRACK_MULT}（強化で最大 ×${(WEDGE_CRACK_MULT + 0.15 * 4).toFixed(2)}） ／ ` +
-    `${WEDGE_CRACK_TIME}秒で消える ／ 体当たり ${WEDGE_RAM_DAMAGE}・${WEDGE_RAM_CD}秒ごと ／ ` +
+    `ひびの範囲 ${WEDGE_CRACK_RADIUS}px ／ ${WEDGE_CRACK_TIME}秒で消える ／ ` +
+    `体当たり ${WEDGE_RAM_DAMAGE}・${WEDGE_RAM_CD}秒ごと ／ ` +
     `最高速 ×1.14・加速 ×1.35 ／ HP ×${SPECIAL_DEFS[SPECIAL_WEDGE].hpMult}`,
   [SPECIAL_RAINBOW]: () =>
     `${MOTHER_BREATH_INTERVAL}秒ごと ／ 半径 ${MOTHER_BREATH_RANGE}px の最大 ${MOTHER_BREATH_TARGETS} 体 ／ ` +
