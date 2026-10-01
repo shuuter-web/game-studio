@@ -787,7 +787,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.2.0";
+const GAME_VERSION = "v1.3.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3655,6 +3655,20 @@ function placeTownCenters(townCount, bossWx, bossWy) {
 //   radial   : 広場＋放射状の通り＋環状路（中世・近世 — v0.10からの現行形）
 //   grid     : 直交する碁盤目の街路（産業革命以降）
 // -----------------------------------------------------------------
+// v1.2.0: 帯状の町（川岸町・弧の街区）の寸法
+const STRIP_LENGTH_RATIO  = 1.6;   // 帯の半分の長さ ＝ 同じ棟数の円形の町の半径 × これ（隣の町との上限で切る）
+const STRIP_HALF_W_MIN    = 90;    // 帯の半分の幅の下限（通り＋両側の家並みが収まる幅）
+const RIBBON_HALF_W_MAX   = 260;   // 川岸町の半分の幅の上限（川岸の列と郊外の列がぶつからない幅）
+const ARC_HALF_W_MAX      = 280;   // 弧の街区の半分の幅の上限（大城壁の帯に掛からない幅）
+const STRIP_ALLEY_SPACING = 120;   // 路地の間隔（px）
+const STRIP_ARC_PIECE     = 60;    // 弧の目抜き通りを継ぐ直線の長さ（px）
+const STRIP_OUTLINE_STEPS = 12;    // 輪郭の片側の刻み数
+// 隣の町と重ならない帯の長さ: 最も詰まったときの町の間隔 × これ
+const STRIP_GAP_SHARE     = 0.48;
+// 帯の面積を同じ棟数の円形の町より広げる倍率。帯は通りと路地が占める割合が高く、
+// 円形と同じ面積だと予定の棟数が建ちきらない（実測で1割5分ほど欠けた）。
+const STRIP_AREA_MULT     = 1.3;
+
 const STAGE_TOWN_LAYOUTS = [
   "scattered",  // 1 STONE AGE     — 獣道と焚き火の集落
   "rings",      // 2 ANCIENT ERA   — 同心円の神殿都市
@@ -3666,13 +3680,19 @@ const STAGE_TOWN_LAYOUTS = [
   "rings",      // 8 FINAL DOMINION — ボス城塞と同じ同心円意匠
 ];
 
-function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCount, config, townIndex, stageIndex) {
+/**
+ * @param {Object|null} [form] v1.2.0: ステージの形に合わせた町の形（townFormFor が作る）。
+ *   null なら従来どおり時代ごとのレイアウト。
+ *   { type: "ribbon", angle, awayAngle, maxHalfL } … 川に沿って細長く延びる川岸町（線状都市）
+ *   { type: "arc", ox, oy, maxHalfL }             … 首都 (ox,oy) を囲む環に沿って弧を描く街区（城塞都市）
+ */
+function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCount, config, townIndex, stageIndex, form = null) {
   const result = [];
   const baseHue = config.townBaseHues[townIndex % config.townBaseHues.length];
   const bSmall  = config.buildings.small;
   const bMedium = config.buildings.medium;
   const bLarge  = config.buildings.large;
-  const layout  = STAGE_TOWN_LAYOUTS[stageIndex] ?? "radial";
+  const layout  = form ? form.type : (STAGE_TOWN_LAYOUTS[stageIndex] ?? "radial");
 
   const totalCount = smallCount + mediumCount + largeCount;
   const PLAZA_R = 36;                                          // 中央広場の半径
@@ -3687,7 +3707,12 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   //   裏から … 卵が先に手に入って早く育つ。ただし砲台は生きたまま射程の内側に入る
   // 以前も城壁の弧の開始角はランダムだったが、防御の置き場所と揃っていなかったので
   // 非対称が**ただのノイズ**になっていた。ここで1つの角度に揃える。
-  const frontAngle = randRange(0, Math.PI * 2);
+  let frontAngle = randRange(0, Math.PI * 2);
+  // v1.2.0: 形のある町は**群れが攻めてくる側**を表にする（砲台と城壁が迎え撃ち、卵は奥に残る）。
+  //   川岸町 … 下流側（群れは下流から遡ってくる）
+  //   弧の街区 … 外側（群れは外環から内へ剥いでくる）
+  if (form && form.type === "ribbon") frontAngle = form.angle;
+  else if (form && form.type === "arc") frontAngle = Math.atan2(townCenterY - form.oy, townCenterX - form.ox);
   const RING_R  = PLAZA_R + 58;                                // 環状路の半径
 
   // --- v0.16.1: 町の外形（シルエット）。全部が円だとレイアウトを変えても
@@ -3703,12 +3728,58 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   const rectHalfW = townR * 1.12;
   const rectHalfH = townR * 1.12 * rectAspect;
 
+  // --- v1.2.0: 帯状の町（川岸町・弧の街区）。
+  // どちらも「長さ方向 u × 幅方向 v」の帯として扱い、写像だけを差し替える:
+  //   川岸町   … 川の流れの向きにまっすぐ延びる帯
+  //   弧の街区 … 首都を中心にした円弧に沿って曲がる帯（u は弧長、v は半径方向）
+  // 面積は同じ棟数の円形の町とほぼ同じにし、長さは隣の町と重ならない上限で切る。
+  let strip = null;
+  if (form) {
+    shapeType = "strip";
+    const halfL = Math.max(STRIP_HALF_W_MIN, Math.min(townR * STRIP_LENGTH_RATIO, form.maxHalfL));
+    const halfW = Math.max(STRIP_HALF_W_MIN,
+      Math.min(form.type === "ribbon" ? RIBBON_HALF_W_MAX : ARC_HALF_W_MAX,
+               (Math.PI * townR * townR * STRIP_AREA_MULT) / (4 * halfL)));
+    if (form.type === "ribbon") {
+      const ux = Math.cos(form.angle), uy = Math.sin(form.angle);
+      const nx = -uy, ny = ux;
+      strip = {
+        halfL, halfW,
+        toWorld: (u, v) => ({ x: townCenterX + ux * u + nx * v, y: townCenterY + uy * u + ny * v }),
+        dirAt:   () => form.angle,
+        toLocal: (x, y) => {
+          const dx = x - townCenterX, dy = y - townCenterY;
+          return { u: dx * ux + dy * uy, v: dx * nx + dy * ny };
+        },
+      };
+    } else {
+      const R  = Math.max(1, Math.hypot(townCenterX - form.ox, townCenterY - form.oy));
+      const a0 = Math.atan2(townCenterY - form.oy, townCenterX - form.ox);
+      strip = {
+        halfL, halfW,
+        toWorld: (u, v) => {
+          const a = a0 + u / R, r = R + v;
+          return { x: form.ox + Math.cos(a) * r, y: form.oy + Math.sin(a) * r };
+        },
+        dirAt:   (u) => a0 + u / R + Math.PI / 2,
+        toLocal: (x, y) => ({
+          u: wrapAngle(Math.atan2(y - form.oy, x - form.ox) - a0) * R,
+          v: Math.hypot(x - form.ox, y - form.oy) - R,
+        }),
+      };
+    }
+  }
+
   function townRadiusAt(theta) {
     if (shapeType !== "blob") return townR;
     return townR * (1 + blobA1 * Math.sin(theta * blobF1 + blobP1)
                       + blobA2 * Math.sin(theta * blobF2 + blobP2));
   }
   function insideTownShape(wx, wy, margin) {
+    if (strip) {
+      const l = strip.toLocal(wx, wy);
+      return Math.abs(l.u) <= strip.halfL - margin && Math.abs(l.v) <= strip.halfW - margin;
+    }
     const dx = wx - townCenterX, dy = wy - townCenterY;
     if (shapeType === "rect") {
       const ca = Math.cos(-rectTheta), sa = Math.sin(-rectTheta);
@@ -3719,7 +3790,8 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     return Math.hypot(dx, dy) <= townRadiusAt(Math.atan2(dy, dx)) - margin;
   }
   // 町の最大到達半径（畑・装飾を輪郭の外へ置くための基準）
-  const maxExtent = shapeType === "rect" ? Math.hypot(rectHalfW, rectHalfH)
+  const maxExtent = strip ? Math.hypot(strip.halfL, strip.halfW)
+    : shapeType === "rect" ? Math.hypot(rectHalfW, rectHalfH)
     : shapeType === "blob" ? townR * (1 + blobA1 + blobA2)
     : townR;
 
@@ -3727,7 +3799,27 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   const streets   = [];   // 放射状の通り {angle, len}（scattered/rings では本数を絞る）
   const ringRadii = [];   // 環状路の半径（rings は多重、radial は1本、他はなし）
   const gridRoads = [];   // 碁盤目の道路セグメント {x1,y1,x2,y2,angle}
-  if (layout === "radial") {
+  const alleyUs   = [];   // v1.2.0: 帯状の町の路地の位置（長さ方向 u）
+  const pushSeg = (p1, p2) => {
+    const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    gridRoads.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, angle,
+                     halfLen: Math.hypot(p2.x - p1.x, p2.y - p1.y) * 0.5,
+                     mx: (p1.x + p2.x) * 0.5, my: (p1.y + p2.y) * 0.5 });
+  };
+  if (strip) {
+    // 目抜き通り（帯の芯）。弧は短い直線を継いで描く
+    const pieces = form.type === "arc" ? Math.max(2, Math.ceil(strip.halfL * 2 / STRIP_ARC_PIECE)) : 1;
+    for (let k = 0; k < pieces; k++) {
+      const u1 = -strip.halfL + 10 + (k / pieces) * (strip.halfL * 2 - 20);
+      const u2 = -strip.halfL + 10 + ((k + 1) / pieces) * (strip.halfL * 2 - 20);
+      pushSeg(strip.toWorld(u1, 0), strip.toWorld(u2, 0));
+    }
+    // 路地。川岸町では川へ降りる路地、弧の街区では内外の環を結ぶ横丁
+    for (let u = -strip.halfL + STRIP_ALLEY_SPACING * 0.5; u < strip.halfL - 30; u += STRIP_ALLEY_SPACING) {
+      alleyUs.push(u);
+      pushSeg(strip.toWorld(u, -strip.halfW + 12), strip.toWorld(u, strip.halfW - 12));
+    }
+  } else if (layout === "radial") {
     const streetCount = 3 + (townIndex % 3);
     const streetBase = randRange(0, Math.PI * 2);
     for (let k = 0; k < streetCount; k++) {
@@ -3787,6 +3879,9 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   const placedPos = [];   // {x, y, r} 重なりチェック用
   function tryPlace(wx, wy, radius, minGap) {
     if (wx < 30 || wx > WORLD_W - 30 || wy < 30 || wy > WORLD_H - 30) return false;
+    // v1.2.0: 川岸町は川面に建てない（大陸の町は従来どおり＝同じ種で同じ大陸のまま）
+    if (form && form.type === "ribbon" && riverPolyline.length > 1 &&
+        distPointToPolylineSq(wx, wy, riverPolyline) < (riverWidth * 0.5 + radius + 8) ** 2) return false;
     for (const p of placedPos) {
       const minD = p.r + radius + minGap;
       if (dist2(wx, wy, p.x, p.y) < minD * minD) return false;
@@ -3833,7 +3928,14 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   let placedLarge = 0;
   for (let k = 0; k < largeCount * 10 && placedLarge < largeCount; k++) {
     let wx, wy, face;
-    if (layout === "grid" && gridRoads.length > 0) {
+    if (strip) {
+      // v1.2.0: 目抜き通りの中ほど（町の顔になる館・寺院が通りに面して並ぶ）
+      const u    = randRange(-0.45, 0.45) * strip.halfL;
+      const side = random() < 0.5 ? 1 : -1;
+      const p    = strip.toWorld(u, side * (20 + BUILDING_SIZE_PARAMS.large.radiusBase));
+      wx = p.x; wy = p.y;
+      face = strip.dirAt(u) + Math.PI / 2;
+    } else if (layout === "grid" && gridRoads.length > 0) {
       // 中心街区の大通り沿い（官庁・大工場）
       const road = gridRoads[Math.floor(random() * gridRoads.length)];
       const t    = randRange(-road.halfLen * 0.5, road.halfLen * 0.5);
@@ -3869,7 +3971,14 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   let placedMedium = 0;
   for (let k = 0; k < mediumCount * 10 && placedMedium < mediumCount; k++) {
     let wx, wy, face;
-    if (layout === "grid" && gridRoads.length > 0) {
+    if (strip) {
+      // v1.2.0: 目抜き通りの両側に商家が並ぶ
+      const u    = randRange(-0.85, 0.85) * strip.halfL;
+      const side = k % 2 === 0 ? 1 : -1;
+      const p    = strip.toWorld(u, side * (16 + randRange(0, 8) + BUILDING_SIZE_PARAMS.medium.radiusBase));
+      wx = p.x; wy = p.y;
+      face = strip.dirAt(u) + Math.PI / 2;
+    } else if (layout === "grid" && gridRoads.length > 0) {
       const road = gridRoads[Math.floor(random() * gridRoads.length)];
       const t    = randRange(-road.halfLen * 0.8, road.halfLen * 0.8);
       const side = k % 2 === 0 ? 1 : -1;
@@ -3911,7 +4020,23 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   // (4a) 骨格沿い（道路・環状路の両側にぎっしり並ぶ長屋／集落の塊）
   for (let k = 0; k < smallCount * 6 && placedSmall < smallCount; k++) {
     let wx, wy, face;
-    if (layout === "grid" && gridRoads.length > 0) {
+    if (strip) {
+      // v1.2.0: 3棟に1棟は路地沿い、残りは目抜き通り沿いの長屋
+      const side = (k >> 1) % 2 === 0 ? 1 : -1;
+      if (k % 3 === 2 && alleyUs.length > 0) {
+        const au = alleyUs[k % alleyUs.length];
+        const u  = au + side * (12 + randRange(0, 5) + BUILDING_SIZE_PARAMS.small.radiusBase);
+        const p  = strip.toWorld(u, randRange(-strip.halfW + 14, strip.halfW - 14));
+        wx = p.x; wy = p.y;
+        face = strip.dirAt(u);
+      } else {
+        const u = randRange(-strip.halfL + 12, strip.halfL - 12);
+        const p = strip.toWorld(u, side * (13 + randRange(0, 6) + BUILDING_SIZE_PARAMS.small.radiusBase));
+        wx = p.x; wy = p.y;
+        face = strip.dirAt(u) + Math.PI / 2;
+      }
+      if (!insideTownShape(wx, wy, 6)) continue;
+    } else if (layout === "grid" && gridRoads.length > 0) {
       const road = gridRoads[k % gridRoads.length];
       const t    = randRange(-road.halfLen + 10, road.halfLen - 10);
       const side = (k >> 1) % 2 === 0 ? 1 : -1;
@@ -3953,7 +4078,13 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   // 空白が消えて「自然発生集落の疎密」が死ぬため。埋まるほど広がりを緩める
   for (let k = 0; k < smallCount * 16 && placedSmall < smallCount; k++) {
     let wx, wy, face;
-    if (layout === "scattered" && scatterHubs.length > 0) {
+    if (strip) {
+      // v1.2.0: 帯の中を一様に埋める（向きは通りか路地に揃える）
+      const u = randRange(-strip.halfL + 14, strip.halfL - 14);
+      const p = strip.toWorld(u, randRange(-strip.halfW + 14, strip.halfW - 14));
+      wx = p.x; wy = p.y;
+      face = strip.dirAt(u) + (random() < 0.5 ? 0 : Math.PI / 2);
+    } else if (layout === "scattered" && scatterHubs.length > 0) {
       const hub = scatterHubs[Math.floor(random() * scatterHubs.length)];
       const spread = 50 + (k / (smallCount * 16)) * 50;   // 混んできたら少しずつ外へ
       wx = hub.x + randRange(-spread, spread);
@@ -3985,10 +4116,12 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
   // 隣り合って並ぶまとまり（クラスタ）を1〜3箇所作る。川の上は避ける。
   const fields = [];
   const decor  = [];
-  const clusterCount = randInt(1, 3);
+  // v1.2.0: 城塞の中の街区には畑を作らない（城壁の内側は市街地）。
+  const clusterCount = form && form.type === "arc" ? 0 : randInt(1, 3);
   // v0.77: 畑は**裏側**に寄せる（全周に散らすと表裏が読めない）。
   // 裏の中心から左右に振り分けるので、最大3クラスタでも裏の160度に収まる。
-  const clusterBase  = frontAngle + Math.PI;
+  // v1.2.0: 川岸町は川と反対側（陸側）に畑を広げる。
+  const clusterBase  = form && form.type === "ribbon" ? form.awayAngle : frontAngle + Math.PI;
   for (let c = 0; c < clusterCount; c++) {
     // クラスタ方向は裏を中心に左右へ振り分け＋ジッター
     const dirAngle   = clusterBase + (c - (clusterCount - 1) / 2) * (Math.PI * 0.45)
@@ -4002,7 +4135,11 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     const clusterW = cols * pw + (cols - 1) * gap;
     const clusterH = rows * ph + (rows - 1) * gap;
     // v0.16.1: 矩形・ブロブ輪郭でも外へ出るよう maxExtent 基準に
-    const dist = maxExtent + 46 + Math.max(clusterW, clusterH) * 0.5 + randRange(0, 60);
+    // v1.2.0: 帯状の町は向きによって幅が違うので、その向きの縁までの距離を使う
+    const reach = strip
+      ? Math.abs(strip.halfL * Math.cos(dirAngle - frontAngle)) + Math.abs(strip.halfW * Math.sin(dirAngle - frontAngle))
+      : maxExtent;
+    const dist = reach + 46 + Math.max(clusterW, clusterH) * 0.5 + randRange(0, 60);
     const ccx  = townCenterX + Math.cos(dirAngle) * dist;
     const ccy  = townCenterY + Math.sin(dirAngle) * dist;
     if (ccx < 80 || ccx > WORLD_W - 80 || ccy < 80 || ccy > WORLD_H - 80) continue;
@@ -4050,7 +4187,16 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
 
   // v0.16.1: 輪郭ポリゴン（町の土台・城郭リムの描画用。circle は null で従来の円描画）
   let outline = null;
-  if (shapeType === "blob") {
+  if (strip) {
+    // v1.2.0: 帯の縁を片側ずつなぞる（弧の街区は曲がった帯になる）
+    outline = [];
+    for (let i = 0; i <= STRIP_OUTLINE_STEPS; i++) {
+      outline.push(strip.toWorld(-strip.halfL + (i / STRIP_OUTLINE_STEPS) * strip.halfL * 2, strip.halfW));
+    }
+    for (let i = STRIP_OUTLINE_STEPS; i >= 0; i--) {
+      outline.push(strip.toWorld(-strip.halfL + (i / STRIP_OUTLINE_STEPS) * strip.halfL * 2, -strip.halfW));
+    }
+  } else if (shapeType === "blob") {
     outline = [];
     const OUTLINE_STEPS = 28;
     for (let i = 0; i < OUTLINE_STEPS; i++) {
@@ -4077,7 +4223,7 @@ function generateTown(townCenterX, townCenterY, smallCount, mediumCount, largeCo
     ringR: RING_R,
     townR,
     layout,       // v0.16: 町の骨格タイプ
-    shapeType,    // v0.16.1: 外形（circle/blob/rect）
+    shapeType,    // v0.16.1: 外形（circle/blob/rect）。v1.2.0: strip（帯状の町）
     outline,      // v0.16.1: 外形ポリゴン（circleはnull）
     maxExtent,    // v0.16.1: 中心からの最大到達半径
     frontAngle,   // v0.77: 表の向き（城壁・時代兵器がこちら／畑・卵が反対）
@@ -4664,6 +4810,7 @@ function generateStageLayout(stageIndex) {
       config,
       t,
       stageIndex,   // v0.16: 文明ごとの町レイアウト選択に使う
+      townFormFor(center, boss),   // v1.2.0: ステージの形に合わせた町の形（大陸は null＝従来どおり）
     );
     for (const b of townBuildings) b._tierOffset = offset;
     if (isFortress) {
@@ -5081,12 +5228,33 @@ const RIVERLINE_SIDE_MARGIN        = 350;    // 町の中心をマップの左�
 // 川岸の列は詰めて「途切れない街並み」、郊外の列はまばらにして幅に強弱を付ける。
 // 間隔は町の外縁半径（中央値254・大都市で最大430）が隣と重ならない値にしてある。
 const RIVERLINE_TOWN_ROWS = [
-  { offset: 560,  spacing: 780,  jitter: 90 },    // 川岸
-  { offset: 1380, spacing: 1250, jitter: 140 },   // 郊外
+  { offset: 560,  spacing: 780,  jitter: 40 },    // 川岸（v1.2.0: 町が川沿いに細長く延びるので、ずれを小さくして端と端を揃える）
+  { offset: 1380, spacing: 1250, jitter: 120 },   // 郊外
 ];
 // 文明ごとの町数に合わせて間隔を伸び縮みさせるときの範囲（詰めすぎると町同士が重なる）
 const RIVERLINE_SPACING_SCALE_MIN = 0.9;
 const RIVERLINE_SPACING_SCALE_MAX = 1.6;
+const RIVERLINE_SPACING_JITTER    = 0.05;   // 同じ岸での町の間隔のゆらぎ（±割合）
+
+/**
+ * v1.2.0: 町の形をステージの形に合わせる（generateTown の form 引数）。大陸は null。
+ *   線状都市 … 川の流れに沿って延びる川岸町。表＝下流側、畑＝陸側
+ *   城塞都市 … 首都を囲む環に沿って曲がる弧の街区。表＝外側
+ */
+function townFormFor(center, boss) {
+  if (worldShape === SHAPE_RIVERLINE) {
+    const dy   = 40;
+    const dxdy = (riverXAt(center.y + dy) - riverXAt(center.y - dy)) / (dy * 2);
+    const angle = Math.atan2(1, dxdy);   // 下流（+y）向きの流れの方向
+    const side  = Math.sign(center.x - riverXAt(center.y)) || 1;
+    const awayAngle = Math.sign(Math.cos(angle + Math.PI / 2)) === side ? angle + Math.PI / 2 : angle - Math.PI / 2;
+    return { type: "ribbon", angle, awayAngle, maxHalfL: center.maxHalfL };
+  }
+  if (worldShape === SHAPE_CITADEL) {
+    return { type: "arc", ox: boss.wx, oy: boss.wy, maxHalfL: center.maxHalfL };
+  }
+  return null;
+}
 
 /** 線状都市の川。マップを上から下まで縦断する大河。 */
 function generateRiverlineRiver() {
@@ -5134,14 +5302,17 @@ function placeRiverlineTownCenters(townWanted, boss) {
     for (const side of [-1, 1]) {
       // 両岸で半歩ずらす＝向こう岸の町と向かい合わず、千鳥に並ぶ
       let y = yBottom - (side > 0 ? spacing * 0.5 : 0) - random() * spacing * 0.3;
+      // 川沿いに延びる町の長さの上限＝最も詰まったときの隣の町との間隔の半分弱
+      const minGap   = spacing * (1 - RIVERLINE_SPACING_JITTER) - row.jitter * 2;
+      const maxHalfL = minGap * STRIP_GAP_SHARE;
       while (y > yTop) {
         const cy = y + randRange(-row.jitter, row.jitter);
         const cx = riverXAt(cy) + side * (row.offset + randRange(-row.jitter, row.jitter));
-        y -= spacing * randRange(0.9, 1.1);
+        y -= spacing * randRange(1 - RIVERLINE_SPACING_JITTER, 1 + RIVERLINE_SPACING_JITTER);
         if (cx < RIVERLINE_SIDE_MARGIN || cx > WORLD_W - RIVERLINE_SIDE_MARGIN) continue;
         if (dist2(cx, cy, boss.wx, boss.wy) < excl2) continue;
         if (dist2(cx, cy, START_X, START_Y) < startClear2) continue;
-        centers.push({ x: cx, y: cy });
+        centers.push({ x: cx, y: cy, maxHalfL });
       }
     }
   }
@@ -5192,7 +5363,9 @@ function placeCitadelTownCenters(boss) {
       const cy = boss.wy + Math.sin(a) * r;
       if (cx < 200 || cx > WORLD_W - 200 || cy < 200 || cy > WORLD_H - 200) continue;
       if (dist2(cx, cy, START_X, START_Y) < startClear2) continue;
-      centers.push({ x: cx, y: cy, ring: def.ring });
+      // 弧の街区の長さの上限＝角度のゆらぎで最も詰まったときの隣との間隔の半分弱
+      const maxHalfL = def.spacing * (1 - 2 * CITADEL_TOWN_ANGULAR_JITTER) * STRIP_GAP_SHARE;
+      centers.push({ x: cx, y: cy, ring: def.ring, maxHalfL });
     }
   }
   return centers;
