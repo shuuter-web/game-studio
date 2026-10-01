@@ -89,8 +89,8 @@
   /* 残建物カウント（ミニマップの上） */
   #hud-buildings {
     position: fixed;
-    /* ミニマップ（120×90）の上に置く。高さを変えたらここも合わせること */
-    bottom: calc(20vh + env(safe-area-inset-bottom, 0px) + 8px + 90px + 4px);
+    /* ミニマップの上に置く。v1.2.0: 高さはステージの形で変わる（resizeMinimapForWorld が --minimap-h を書く） */
+    bottom: calc(20vh + env(safe-area-inset-bottom, 0px) + 8px + var(--minimap-h, 90px) + 4px);
     left: 8px;
     padding: 3px 8px;
     background: rgba(8, 16, 26, 0.70);
@@ -275,6 +275,67 @@
   #card-list.species-grid .card-name { font-size: 13px; letter-spacing: 0.04em; }
   #card-list.species-grid .card-desc { font-size: 10px; line-height: 1.25; }
   #card-list.species-grid .card-span-2 { grid-column: 1 / -1; }
+
+  /* v1.2.0: パネル式のステージ選択（行＝時代 × 列＝ステージの形）。
+     24マスをスクロールなしで収めるので、1マスは★と形のアイコンだけにする。 */
+  #card-list.panel-grid {
+    display: grid;
+    grid-template-columns: minmax(84px, 1.15fr) repeat(3, 1fr);
+    gap: 4px;
+    width: min(96vw, 420px);
+  }
+  .panel-corner { }
+  .panel-col-head {
+    font: 11px/1.25 -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #a0ecff;
+    text-align: center;
+    padding-bottom: 2px;
+  }
+  .panel-row-head {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    font: 10px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #e8f4ff;
+    letter-spacing: 0.02em;
+    overflow: hidden;
+  }
+  .panel-row-head b { color: #ffd060; font-size: 12px; }
+  .panel-row-head span { color: #7f9ab4; font-size: 9px; }
+  .panel-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    min-height: 42px;
+    padding: 3px 2px;
+    background: rgba(10, 16, 30, 0.92);
+    border: 2px solid #ff70d0;
+    border-radius: 9px;
+    box-shadow: 0 0 10px rgba(255,112,208,0.35);
+    color: #e8f4ff;
+    cursor: pointer;
+    pointer-events: auto;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .panel-cell:active { transform: scale(0.95); }
+  .panel-cell .panel-icon { font-size: 16px; line-height: 1; }
+  .panel-cell .era-stars, .panel-cell .era-stars-none { font-size: 9px; letter-spacing: 0; }
+  .panel-cell.panel-locked {
+    border-color: #3a4a5a;
+    box-shadow: none;
+    opacity: 0.45;
+    cursor: default;
+  }
+  .panel-cell.panel-locked:active { transform: none; }
+  .panel-hint {
+    grid-column: 1 / -1;
+    font: 10px -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #7f9ab4;
+    text-align: center;
+  }
+  #card-list.panel-grid .panel-back { grid-column: 1 / -1; }
 
   /* v0.6: タイトル画面 */
   #title-overlay {
@@ -726,7 +787,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.1.3";
+const GAME_VERSION = "v1.2.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -864,6 +925,11 @@ function debugAddDragons(n) {
 function debugUnlockAllContinents() {
   if (!profile) return;
   profile.unlockedContinents = CONTINENT_DEFS.length;
+  // v1.2.0: パネルも全部開ける
+  if (!profile.unlockedPanels) profile.unlockedPanels = {};
+  for (let e = 0; e < CONTINENT_DEFS.length; e++) {
+    for (let sh = 0; sh < STAGE_SHAPES.length; sh++) profile.unlockedPanels[`${e}:${sh}`] = true;
+  }
   // 「初回ラン」扱いのままだと文明を選べないので、1回遊んだ状態にしておく
   if (profile.runsStarted <= 0) profile.runsStarted = 1;
   saveProfile();
@@ -1263,13 +1329,39 @@ function toggleDebugPanel(force) {
 // v0.49: 大陸サイズへ拡張（面積4倍）。「1ラン＝1大陸」構成の土台。
 // 静的レイヤーはタイル化済みなので、ここを広げてもメモリは可視範囲に比例したままになる。
 // 従来サイズ（4800×3600）は WORLD_REF_W/H として残し、町・地形・森の数を面積比で決める。
-const WORLD_W = 9600;
-const WORLD_H = 7200;
+// v1.2.0: ステージの**形**（パネルの列）ごとにワールドの大きさが変わるので let にした。
+// 値を書き換えてよいのは applyWorldShape() だけ（タイル・ミニマップ・開始地点を一緒に直すため）。
+let WORLD_W = 9600;
+let WORLD_H = 7200;
 
 // 数量スケールの基準（v0.48 までのワールド）
 const WORLD_REF_W = 4800;
 const WORLD_REF_H = 3600;
-const WORLD_AREA_RATIO = (WORLD_W * WORLD_H) / (WORLD_REF_W * WORLD_REF_H);
+let WORLD_AREA_RATIO = (WORLD_W * WORLD_H) / (WORLD_REF_W * WORLD_REF_H);
+
+// -----------------------------------------------------------------
+// v1.2.0: ステージの形（パネル式の「列」）。Shooter指示
+// -----------------------------------------------------------------
+// 縦（行）＝時代、横（列）＝土地の形。横に進むと同じ文明でもステージのありようが変わる。
+//   continent … 従来の大陸。町が島のように散らばる（横長）
+//   riverline … 大河沿いの線状都市。下流から上流の首都まで一本道で薙いでいく（縦長）
+//   citadel   … 同心円の城塞都市。外周→中環→内環と城壁を破って中心の首都へ（正方形）
+// 面積はどれも基準の約4倍に揃える＝町の数・動く敵の数・段階の閾値の感覚を変えない。
+// 縦長・正方形の辺は LAYER_TILE(1200) の倍数にしておく（タイルの端に無駄が出ない）。
+const STAGE_SHAPES = [
+  { id: "continent", w: 9600, h: 7200,  icon: "🏙" },
+  { id: "riverline", w: 4800, h: 14400, icon: "🌊" },
+  { id: "citadel",   w: 8400, h: 8400,  icon: "🏯" },
+];
+const SHAPE_CONTINENT = 0;
+const SHAPE_RIVERLINE = 1;
+const SHAPE_CITADEL   = 2;
+let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
+
+function clampShape(v) {
+  const n = v | 0;
+  return n >= 0 && n < STAGE_SHAPES.length ? n : SHAPE_CONTINENT;
+}
 
 // 町の密度。1.0 で基準ワールドと同密度。
 // v0.52: 0.75 では大陸がスカスカだったため 1.25 へ（Shooter指示）。
@@ -3042,23 +3134,66 @@ const CONTINENT_DEFS = STAGE_CONFIGS.map((cfg, i) => ({
 }));
 const CONTINENT_NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
 
+/** パネルの呼び名（例: "II. ANCIENT ERA・大河の線状都市"）。大陸の列は従来どおり文明名だけ。 */
+function panelLabel(era, shape) {
+  const base = `${CONTINENT_NUMERALS[era]}. ${CONTINENT_DEFS[era].name}`;
+  return shape === SHAPE_CONTINENT ? base : `${base}・${STRINGS.shapeNames[shape]}`;
+}
+
 /** 解放済みの文明数（1以上）。 */
 function unlockedContinentCount() {
   const n = (profile && profile.unlockedContinents) | 0;
   return Math.max(1, Math.min(CONTINENT_DEFS.length, n));
 }
 
-/** 文明をクリアしたら次を解放する。 */
-function unlockNextContinent(clearedEra) {
-  const idx = CONTINENT_DEFS.findIndex(c => c.era === clearedEra);
-  if (idx < 0) return false;
-  if (profile.unlockedContinents > idx + 1) return false;   // すでに先まで解放済み
-  if (idx + 1 >= CONTINENT_DEFS.length) return false;       // 最後には次が無い
-  profile.unlockedContinents = idx + 2;
-  return true;
-}
 
 let runEra                = 0;   // このランの時代（タイトルで選ぶ。ラン中ずっと固定）
+let runShape              = 0;   // v1.2.0: このランのステージの形（パネルの列。ラン中ずっと固定）
+
+// -----------------------------------------------------------------
+// v1.2.0: パネル式の解放（行＝時代 × 列＝ステージの形）
+// -----------------------------------------------------------------
+// 制圧したパネルの**上下左右**が開く。従来の「次の時代が開く」は同じ列の下隣として残る。
+// 列0（大陸）の★は従来の eraStars[era] をそのまま使う（既存の記録を引き継ぐため）。
+function panelKey(era, shape) { return shape === SHAPE_CONTINENT ? String(era) : `${era}:${shape}`; }
+
+function isPanelUnlocked(era, shape) {
+  if (era === 0 && shape === SHAPE_CONTINENT) return true;
+  return !!(profile && profile.unlockedPanels && profile.unlockedPanels[`${era}:${shape}`]);
+}
+
+/** パネル (era, shape) を制圧したときに、上下左右の未解放パネルを開く。開いたパネルの一覧を返す。 */
+function unlockPanelNeighbors(era, shape) {
+  if (!profile.unlockedPanels) profile.unlockedPanels = {};
+  const opened = [];
+  const around = [[era + 1, shape], [era - 1, shape], [era, shape + 1], [era, shape - 1]];
+  for (const [e, sh] of around) {
+    if (e < 0 || e >= CONTINENT_DEFS.length || sh < 0 || sh >= STAGE_SHAPES.length) continue;
+    if (isPanelUnlocked(e, sh)) continue;
+    profile.unlockedPanels[`${e}:${sh}`] = true;
+    opened.push({ era: e, shape: sh });
+  }
+  // 大陸の列は旧来の「解放済みの文明数」も合わせて進める（デバッグ表示・旧データとの互換）
+  for (const o of opened) {
+    if (o.shape === SHAPE_CONTINENT && profile.unlockedContinents < o.era + 1) profile.unlockedContinents = o.era + 1;
+  }
+  return opened;
+}
+
+/**
+ * パネル解放の記録が無い（v1.1 以前の）プロファイルを移行する。
+ * 解放済みの文明は大陸の列で開いたまま、制圧済みの文明は隣の列（線状都市）も開ける。
+ */
+function migratePanelUnlocks(p) {
+  if (p.unlockedPanels && typeof p.unlockedPanels === "object") return;
+  p.unlockedPanels = {};
+  const n = Math.max(1, p.unlockedContinents | 0);
+  for (let e = 0; e < n && e < CONTINENT_DEFS.length; e++) p.unlockedPanels[`${e}:${SHAPE_CONTINENT}`] = true;
+  for (let e = 0; e < CONTINENT_DEFS.length; e++) {
+    const cleared = e < n - 1 || (p.eraStars && p.eraStars[e] > 0);
+    if (cleared) p.unlockedPanels[`${e}:${SHAPE_RIVERLINE}`] = true;
+  }
+}
 let powerTier             = 0;   // 警戒度 0..TIERS_PER_RUN-1（破壊率で上がる）
 
 /** 最大段階（これ以上は上がらない）か。 */
@@ -3374,8 +3509,38 @@ function dist2(ax, ay, bx, by) {
  * @param {number} [bossWy]   ボスのワールドY（オプション）
  */
 // v0.29: 群れのスタート地点（左端中央）。この周囲には街を置かず、まばらな家だけにする。
-const START_X = 250;
-const START_Y = WORLD_H * 0.5;
+// v1.2.0: 開始地点はステージの形で変わる（applyWorldShape が書き換える）。
+let START_X = 250;
+let START_Y = WORLD_H * 0.5;
+
+/** 形 shape の群れの開始地点。首都から一番遠い辺・角に置く。 */
+function shapeStartPoint(shape, w, h) {
+  if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
+  if (shape === SHAPE_CITADEL)   return { x: 320, y: h - 320 };       // 城外の角（首都は中心）
+  return { x: 250, y: h * 0.5 };                                      // 左端中央（従来どおり）
+}
+
+/**
+ * ワールドの形を切り替える。ワールドを生成し直す**前に**呼ぶこと。
+ * 大きさに依存するもの（面積比・開始地点・タイル枚数・ミニマップ）をここで一緒に直す。
+ */
+function applyWorldShape(shape) {
+  worldShape = clampShape(shape);
+  const def = STAGE_SHAPES[worldShape];
+  WORLD_W = def.w;
+  WORLD_H = def.h;
+  WORLD_AREA_RATIO = (WORLD_W * WORLD_H) / (WORLD_REF_W * WORLD_REF_H);
+  const start = shapeStartPoint(worldShape, WORLD_W, WORLD_H);
+  START_X = start.x;
+  START_Y = start.y;
+  for (const layer of [groundTiledLayer, buildingTiledLayer]) {
+    if (!layer) continue;
+    invalidateTiledLayer(layer);
+    layer.cols = Math.ceil(WORLD_W / LAYER_TILE);
+    layer.rows = Math.ceil(WORLD_H / LAYER_TILE);
+  }
+  resizeMinimapForWorld();
+}
 // v0.99.7 で 500 → 2100 に広げたが、**帯が一様すぎて面白くない**（Shooter判定）。
 // v1.0.8: 「もう少し段階的に普通の街が混ざるように。小さめの街が配置できるなら
 // それを。ただ、最初の画面にいきなり街が入るのは避けて」（Shooter指示）。
@@ -4391,6 +4556,12 @@ function generateStageLayout(stageIndex) {
   // 小集落クラスタをその周囲を避けて配置する（先取り方式）。
   // v0.56: ボスの見た目・武装は**ランの時代**のまま（フレーバーは固定）。
   // 強さだけ「最大段階 × 首都倍率」で最初から最強にする（以後 動かない壁）。
+  // v1.2.0: 線状都市は川が骨格なので、首都や町より先に川を引く（町は川を避けて建つ）。
+  // 城塞都市は川を引かない。大陸は従来どおり町の後で引く（乱数の順序を変えない＝同じ種なら同じ大陸）。
+  if (worldShape === SHAPE_RIVERLINE) riverPolyline = generateRiverlineRiver();
+  else if (worldShape === SHAPE_CITADEL) riverPolyline = [];
+  citadelWallPlan = null;
+
   const boss = placeBossBuilding(stageIndex, config);
   boss._fixedTier = maxPowerTier();
   {
@@ -4401,13 +4572,22 @@ function generateStageLayout(stageIndex) {
   }
 
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
-  const townCenters = placeTownCenters(scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR), boss.wx, boss.wy);
+  const townWanted  = scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR);
+  const townCenters = worldShape === SHAPE_RIVERLINE ? placeRiverlineTownCenters(townWanted, boss)
+                    : worldShape === SHAPE_CITADEL   ? placeCitadelTownCenters(boss)
+                    : placeTownCenters(townWanted, boss.wx, boss.wy);
 
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
-  townRoadEdges = buildTownRoadNetwork(townCenters, boss);
+  // v1.2.0: 城塞都市は環状道路＋門を抜ける放射道路（最小全域木だと城壁を突き抜けてしまう）
+  if (worldShape === SHAPE_CITADEL) {
+    citadelWallPlan = planCitadelWalls(stageIndex);
+    townRoadEdges   = buildCitadelRoadNetwork(townCenters, boss, citadelWallPlan);
+  } else {
+    townRoadEdges = buildTownRoadNetwork(townCenters, boss);
+  }
 
   // v0.10: 川を1本引き、街道との交点に橋を架ける（背景の地理と攻略導線）
-  riverPolyline    = generateRiver(stageIndex);
+  if (worldShape === SHAPE_CONTINENT) riverPolyline = generateRiver(stageIndex);
   bridgePlacements = computeBridges(townRoadEdges, riverPolyline);
 
   // v0.7: ボスに近い町を「要塞都市」に指定する（Shooterプレイテスト:
@@ -4421,9 +4601,11 @@ function generateStageLayout(stageIndex) {
     .map((c, idx) => ({ idx, d2: dist2(c.x, c.y, boss.wx, boss.wy) }))
     .sort((a, b) => a.d2 - b.d2);
   const strongR2 = BOSS_STRONG_RADIUS * BOSS_STRONG_RADIUS;
-  const fortifiedSet = new Set(
-    byBossDist.filter((e, i) => i < fortifiedMin || e.d2 < strongR2).map(e => e.idx),
-  );
+  // v1.2.0: 城塞都市は距離ではなく**環**で決める。内環＝要塞都市、中環＝格上の街、外環＝素の街。
+  // 外から一枚ずつ剥いでいくほど相手が固くなる＝同心円の形そのものが難度の勾配になる。
+  const fortifiedSet = worldShape === SHAPE_CITADEL
+    ? new Set(townCenters.map((c, i) => i).filter(i => townCenters[i].ring === CITADEL_RING_INNER))
+    : new Set(byBossDist.filter((e, i) => i < fortifiedMin || e.d2 < strongR2).map(e => e.idx));
 
   // v0.11: 都市の規模に変化をつける（大都市1・中都市1・残りは標準±ゆらぎ）。
   // 建物数は scale^2 で増やす＝「建物を壊す」メイン体験の総量を底上げする。
@@ -4448,6 +4630,11 @@ function generateStageLayout(stageIndex) {
   // 要塞都市は最初から最大段階、ほかにも一部が1段階先。
   const townTierOffset = new Map();
   for (let t = 0; t < townCenters.length; t++) {
+    if (worldShape === SHAPE_CITADEL) {
+      // 城塞都市は抽選しない（環で決まる。中環だけが格上）
+      if (townCenters[t].ring === CITADEL_RING_MIDDLE) townTierOffset.set(t, TOWN_TIER_ADVANCED);
+      continue;
+    }
     if (!fortifiedSet.has(t) && random() < TOWN_ADVANCED_RATIO) {
       townTierOffset.set(t, TOWN_TIER_ADVANCED);
     }
@@ -4515,6 +4702,15 @@ function generateStageLayout(stageIndex) {
   // result を purged で置き換える（参照を変えず内容を更新）
   result.length = 0;
   for (const b of purged) result.push(b);
+
+  // v1.2.0: 城塞都市の大城壁。壁の帯に掛かる棟を退けてから壁を立てる
+  // （後で撒く小集落・地形・森が壁を避けられるよう、ここで result に入れておく）。
+  if (citadelWallPlan) {
+    const kept = result.filter(b => !overlapsCitadelWall(b, boss, citadelWallPlan));
+    result.length = 0;
+    for (const b of kept) result.push(b);
+    for (const w of generateCitadelWalls(boss, citadelWallPlan)) result.push(w);
+  }
 
   // v0.43: ダム／堰 — 川の中流に1基だけ置く。川沿いは建物が避けているので場所は空いている。
   if (riverPolyline.length > 4) {
@@ -4696,17 +4892,26 @@ function generateStageLayout(stageIndex) {
   // v0.75: 卵持ちは generateTinySettlements の中で**集落1箇所ごとに**決めている
   // （以前はここで棟数 x eggBearerRatio の割合配りをしていたが、
   //  1箇所あたり数棟しかない集落では箇所単位でほとんど当たらなかった）。
-  const tinyBuildings = generateTinySettlements(result, boss.wx, boss.wy, config);
+  // v1.2.0: 大陸以外の形では、散らす小集落が川面や大城壁に乗らないよう退ける。
+  // 線状都市は開始地点が川の上にあり、まばらな家がそのまま川に建ってしまうため。
+  // 大陸は従来どおり（ここで数が変わると、同じ種で組み直したときに保存した破壊状況が合わなくなる）。
+  const keepLoose = (b) => {
+    if (worldShape === SHAPE_CONTINENT) return true;
+    if (riverPolyline.length > 1 &&
+        distPointToPolylineSq(b.wx, b.wy, riverPolyline) < (riverWidth * 0.5 + (b.radius || 0) + 6) ** 2) return false;
+    return !(citadelWallPlan && overlapsCitadelWall(b, boss, citadelWallPlan));
+  };
+  const tinyBuildings = generateTinySettlements(result, boss.wx, boss.wy, config).filter(keepLoose);
   for (const b of tinyBuildings) result.push(b);
 
   // --- (4b) v0.11: 道沿いの集落 — 街道のところどころに小さな民家群を置く。
   // 「道があるから人が住む」の地理感＋壊す対象の追加供給。卵割当は tiny と同率。
   // v0.75: こちらも集落1箇所ごとの抽選（generateRoadsideHamlets の中）。
-  const roadsideBuildings = generateRoadsideHamlets(result, townRoadEdges, boss, config);
+  const roadsideBuildings = generateRoadsideHamlets(result, townRoadEdges, boss, config).filter(keepLoose);
   for (const b of roadsideBuildings) result.push(b);
 
   // --- (4c) v0.29: スタート地点周辺の「まばらな家」（街は置かず単独の家を散らす）---
-  const startHouses = generateStartAreaHouses(result, config);
+  const startHouses = generateStartAreaHouses(result, config).filter(keepLoose);
   for (const b of startHouses) result.push(b);
 
   // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
@@ -4859,6 +5064,240 @@ function generateRiver(stageIndex) {
   return pts;
 }
 
+// -----------------------------------------------------------------
+// v1.2.0: 線状都市（縦長）— 大河に沿って町が数珠つなぎに並ぶ
+// -----------------------------------------------------------------
+// 群れは下流の端から出て、川を遡りながら両岸の町を薙ぎ、上流の首都へ至る。
+// 「一筆書きで長く薙ぐ」ための形なので、町は川からの距離で2列（川岸・郊外）に並べる。
+const RIVERLINE_RIVER_STEPS        = 60;     // 縦に長いので大陸の川（24点）より細かく刻む
+const RIVERLINE_RIVER_AMP_MIN      = 380;    // 蛇行の振れ幅（px）
+const RIVERLINE_RIVER_AMP_MAX      = 520;
+const RIVERLINE_RIVER_WIDTH_MIN    = 96;     // 大河。大陸の川（48〜70）より太く見せて主役にする
+const RIVERLINE_RIVER_WIDTH_MAX    = 128;
+const RIVERLINE_CAPITAL_BANK_MIN   = 650;    // 首都は川岸から少し離して建てる（首都区画が川に掛からない距離）
+const RIVERLINE_CAPITAL_BANK_MAX   = 850;
+const RIVERLINE_SIDE_MARGIN        = 350;    // 町の中心をマップの左右端からこれ以上離す
+// 町の列。offset＝川の中心線からの距離、spacing＝同じ岸での町の間隔。
+// 川岸の列は詰めて「途切れない街並み」、郊外の列はまばらにして幅に強弱を付ける。
+// 間隔は町の外縁半径（中央値254・大都市で最大430）が隣と重ならない値にしてある。
+const RIVERLINE_TOWN_ROWS = [
+  { offset: 560,  spacing: 780,  jitter: 90 },    // 川岸
+  { offset: 1380, spacing: 1250, jitter: 140 },   // 郊外
+];
+// 文明ごとの町数に合わせて間隔を伸び縮みさせるときの範囲（詰めすぎると町同士が重なる）
+const RIVERLINE_SPACING_SCALE_MIN = 0.9;
+const RIVERLINE_SPACING_SCALE_MAX = 1.6;
+
+/** 線状都市の川。マップを上から下まで縦断する大河。 */
+function generateRiverlineRiver() {
+  const pts   = [];
+  const amp   = randRange(RIVERLINE_RIVER_AMP_MIN, RIVERLINE_RIVER_AMP_MAX);
+  const freq  = randRange(2.6, 3.6);
+  const phase = randRange(0, Math.PI * 2);
+  for (let i = 0; i <= RIVERLINE_RIVER_STEPS; i++) {
+    const t = i / RIVERLINE_RIVER_STEPS;
+    pts.push({ x: WORLD_W * 0.5 + Math.sin(t * Math.PI * freq + phase) * amp, y: t * WORLD_H });
+  }
+  riverWidth = randRange(RIVERLINE_RIVER_WIDTH_MIN, RIVERLINE_RIVER_WIDTH_MAX);
+  return pts;
+}
+
+/** 縦断する川の、高さ y での中心X（川が無ければマップ中央）。 */
+function riverXAt(y) {
+  if (riverPolyline.length < 2) return WORLD_W * 0.5;
+  for (let i = 0; i < riverPolyline.length - 1; i++) {
+    const a = riverPolyline[i], b = riverPolyline[i + 1];
+    if (y >= a.y && y <= b.y) {
+      const t = b.y > a.y ? (y - a.y) / (b.y - a.y) : 0;
+      return a.x + (b.x - a.x) * t;
+    }
+  }
+  return y < riverPolyline[0].y ? riverPolyline[0].x : riverPolyline[riverPolyline.length - 1].x;
+}
+
+/** 線状都市の町の中心。下流（開始地点の上）から上流（首都の手前）まで、両岸に2列ずつ並べる。 */
+function placeRiverlineTownCenters(townWanted, boss) {
+  const yBottom = START_Y - START_TOWN_CLEAR_CENTER;
+  const yTop    = boss.wy + CAPITAL_EXCLUSION_RADIUS + 250;
+  const length  = Math.max(0, yBottom - yTop);
+  // 何もしなければ並ぶ数を見積もり、文明の町数に寄せるよう間隔を伸び縮みさせる
+  let natural = 0;
+  for (const row of RIVERLINE_TOWN_ROWS) natural += 2 * length / row.spacing;
+  const spacingScale = Math.max(RIVERLINE_SPACING_SCALE_MIN,
+    Math.min(RIVERLINE_SPACING_SCALE_MAX, natural / Math.max(1, townWanted)));
+
+  const excl2       = CAPITAL_EXCLUSION_RADIUS * CAPITAL_EXCLUSION_RADIUS;
+  const startClear2 = START_TOWN_CLEAR_CENTER * START_TOWN_CLEAR_CENTER;
+  const centers = [];
+  for (const row of RIVERLINE_TOWN_ROWS) {
+    const spacing = row.spacing * spacingScale;
+    for (const side of [-1, 1]) {
+      // 両岸で半歩ずらす＝向こう岸の町と向かい合わず、千鳥に並ぶ
+      let y = yBottom - (side > 0 ? spacing * 0.5 : 0) - random() * spacing * 0.3;
+      while (y > yTop) {
+        const cy = y + randRange(-row.jitter, row.jitter);
+        const cx = riverXAt(cy) + side * (row.offset + randRange(-row.jitter, row.jitter));
+        y -= spacing * randRange(0.9, 1.1);
+        if (cx < RIVERLINE_SIDE_MARGIN || cx > WORLD_W - RIVERLINE_SIDE_MARGIN) continue;
+        if (dist2(cx, cy, boss.wx, boss.wy) < excl2) continue;
+        if (dist2(cx, cy, START_X, START_Y) < startClear2) continue;
+        centers.push({ x: cx, y: cy });
+      }
+    }
+  }
+  return centers;
+}
+
+// -----------------------------------------------------------------
+// v1.2.0: 同心円の城塞都市（正方形）— 外環・中環・内環を大城壁が隔てる
+// -----------------------------------------------------------------
+// 群れは城外の角から出て、外環の街→外城壁の門→中環→内城壁の門→内環→中心の首都と剥いでいく。
+// 内側ほど格上（外環＝素の街・中環＝格上の街・内環＝要塞都市）。
+// 2枚の城壁の門は角度をずらしてあるので、門から門へは環の中を回り込むことになる。
+const CITADEL_RING_INNER  = 0;
+const CITADEL_RING_MIDDLE = 1;
+const CITADEL_RING_OUTER  = 2;
+// 町の環。r＝首都からの距離、spacing＝環の上での町の間隔（弧長）。
+// 環の間隔は町の外縁半径（最大で約350）＋城壁の帯が収まる幅にしてある。
+const CITADEL_TOWN_RINGS = [
+  { ring: CITADEL_RING_INNER,  r: 1500, spacing: 1000 },
+  { ring: CITADEL_RING_MIDDLE, r: 2450, spacing: 980 },
+  { ring: CITADEL_RING_OUTER,  r: 3400, spacing: 960 },
+];
+const CITADEL_TOWN_RADIAL_JITTER  = 90;     // 環からのずれ（px）。完全な円に並ぶと作り物に見える
+const CITADEL_TOWN_ANGULAR_JITTER = 0.12;   // 町の間隔に対する角度のゆらぎ
+// 大城壁。内城壁（内環と中環の間）と外城壁（中環と外環の間）。
+const CITADEL_WALLS = [
+  { r: 1990, gates: 3, hpMult: 1.0 },   // 内城壁
+  { r: 2940, gates: 4, hpMult: 0.8 },   // 外城壁（門が多く、少し脆い）
+];
+const CITADEL_GATE_WIDTH     = 300;   // 門の幅（弧長px）。育った群れがまとまって抜けられる幅
+const CITADEL_WALL_HP_FALLBACK = 200; // 首都に城壁が無い時代（石器）の大城壁HP。土塁の扱い
+const CITADEL_WALL_CLEAR_GAP = 8;     // 壁の帯から棟を退ける余白（px）
+
+let citadelWallPlan = null;   // { rings: [{ r, gates: [角度...], hp }] }。城塞都市以外は null
+
+/** 城塞都市の町の中心（各要素は ring を持つ）。 */
+function placeCitadelTownCenters(boss) {
+  const startClear2 = START_TOWN_CLEAR_CENTER * START_TOWN_CLEAR_CENTER;
+  const centers = [];
+  for (const def of CITADEL_TOWN_RINGS) {
+    const count = Math.max(3, Math.round((Math.PI * 2 * def.r) / def.spacing));
+    const step  = (Math.PI * 2) / count;
+    const base  = random() * Math.PI * 2;
+    for (let k = 0; k < count; k++) {
+      const a  = base + k * step + randRange(-CITADEL_TOWN_ANGULAR_JITTER, CITADEL_TOWN_ANGULAR_JITTER) * step;
+      const r  = def.r + randRange(-CITADEL_TOWN_RADIAL_JITTER, CITADEL_TOWN_RADIAL_JITTER);
+      const cx = boss.wx + Math.cos(a) * r;
+      const cy = boss.wy + Math.sin(a) * r;
+      if (cx < 200 || cx > WORLD_W - 200 || cy < 200 || cy > WORLD_H - 200) continue;
+      if (dist2(cx, cy, START_X, START_Y) < startClear2) continue;
+      centers.push({ x: cx, y: cy, ring: def.ring });
+    }
+  }
+  return centers;
+}
+
+/** 大城壁の門の位置と硬さを決める（段階で壁を張り直しても同じ門になるよう、ここで固定する）。 */
+function planCitadelWalls(stageIndex) {
+  const stageWall = WALL_STAGE_CONFIG[stageIndex];
+  const baseHp = stageWall ? stageWall.hp : CITADEL_WALL_HP_FALLBACK;
+  return {
+    rings: CITADEL_WALLS.map((w) => {
+      const base = random() * Math.PI * 2;
+      const gates = [];
+      for (let g = 0; g < w.gates; g++) gates.push(base + (g * Math.PI * 2) / w.gates);
+      return { r: w.r, gates, hp: Math.round(baseHp * w.hpMult) };
+    }),
+  };
+}
+
+/** 角度 a が門の開口部に入っているか。 */
+function citadelAngleInGate(a, ring) {
+  const half = (CITADEL_GATE_WIDTH * 0.5) / ring.r;
+  for (const g of ring.gates) {
+    if (Math.abs(wrapAngle(a - g)) < half) return true;
+  }
+  return false;
+}
+
+/** 大城壁のセグメント一式。 */
+function generateCitadelWalls(boss, plan) {
+  const result = [];
+  for (const ring of plan.rings) {
+    const segCount  = Math.floor((Math.PI * 2 * ring.r) / WALL_SEG_SPACING);
+    const angleStep = (Math.PI * 2) / segCount;
+    for (let k = 0; k < segCount; k++) {
+      const angle = k * angleStep;
+      if (citadelAngleInGate(angle, ring)) continue;
+      const wx = boss.wx + Math.cos(angle) * ring.r;
+      const wy = boss.wy + Math.sin(angle) * ring.r;
+      if (wx < 20 || wx > WORLD_W - 20 || wy < 20 || wy > WORLD_H - 20) continue;
+      result.push(makeWallSegment(wx, wy, ring.hp, angle + Math.PI / 2));
+    }
+  }
+  return result;
+}
+
+/** 建物 b が大城壁の帯に掛かるか（門の中も含めて退ける＝門前を空けておく）。 */
+function overlapsCitadelWall(b, boss, plan) {
+  const d = Math.hypot(b.wx - boss.wx, b.wy - boss.wy);
+  for (const ring of plan.rings) {
+    if (Math.abs(d - ring.r) < WALL_SEG_RADIUS + (b.radius || 0) + CITADEL_WALL_CLEAR_GAP) return true;
+  }
+  return false;
+}
+
+/**
+ * 城塞都市の街道。環ごとに隣の町を結ぶ環状道路と、門を抜けて内外の環を結ぶ放射道路。
+ * 最小全域木で結ぶと道が城壁を突き抜けるので、門を必ず経由させる。
+ */
+function buildCitadelRoadNetwork(centers, boss, plan) {
+  const edges = [];
+  const angleOf = (c) => Math.atan2(c.y - boss.wy, c.x - boss.wx);
+  const byRing = new Map();
+  for (const c of centers) {
+    if (!byRing.has(c.ring)) byRing.set(c.ring, []);
+    byRing.get(c.ring).push(c);
+  }
+  // 環状道路
+  for (const list of byRing.values()) {
+    list.sort((a, b) => angleOf(a) - angleOf(b));
+    for (let i = 0; i < list.length && list.length > 1; i++) {
+      edges.push([list[i], list[(i + 1) % list.length]]);
+    }
+  }
+  // 角度が一番近い町（その環に町が無ければ null）
+  const nearestOnRing = (ring, a) => {
+    const list = byRing.get(ring);
+    if (!list || list.length === 0) return null;
+    let best = null, bestD = Infinity;
+    for (const c of list) {
+      const d = Math.abs(wrapAngle(angleOf(c) - a));
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return best;
+  };
+  // 放射道路：plan.rings[0]＝内城壁（内環↔中環）、plan.rings[1]＝外城壁（中環↔外環）
+  const ringPairs = [[CITADEL_RING_INNER, CITADEL_RING_MIDDLE], [CITADEL_RING_MIDDLE, CITADEL_RING_OUTER]];
+  plan.rings.forEach((ring, i) => {
+    const [inner, outer] = ringPairs[i];
+    for (const g of ring.gates) {
+      const gate = { x: boss.wx + Math.cos(g) * ring.r, y: boss.wy + Math.sin(g) * ring.r };
+      const a = nearestOnRing(inner, g);
+      const b = nearestOnRing(outer, g);
+      if (a) edges.push([a, gate]);
+      if (b) edges.push([gate, b]);
+    }
+  });
+  // 首都へは内環の近い2町から
+  const inner = (byRing.get(CITADEL_RING_INNER) || []).slice()
+    .sort((a, b) => dist2(a.x, a.y, boss.wx, boss.wy) - dist2(b.x, b.y, boss.wx, boss.wy));
+  const capitalNode = { x: boss.wx, y: boss.wy };
+  for (let i = 0; i < Math.min(2, inner.length); i++) edges.push([inner[i], capitalNode]);
+  return edges;
+}
+
 // 2線分の交点（なければ null）。
 function segmentIntersection(p1, p2, p3, p4) {
   const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
@@ -4913,6 +5352,17 @@ function applyTownFortification(townBuildings) {
  */
 function placeBossBuilding(stageIndex, config) {
   const bossTheme = config.boss;
+  // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
+  if (worldShape === SHAPE_CITADEL) {
+    return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
+  }
+  if (worldShape === SHAPE_RIVERLINE) {
+    const by   = CAPITAL_BOSS_MARGIN + randRange(150, 450);
+    const side = random() < 0.5 ? -1 : 1;
+    const bx   = riverXAt(by) + side * randRange(RIVERLINE_CAPITAL_BANK_MIN, RIVERLINE_CAPITAL_BANK_MAX);
+    const clampedX = Math.max(CAPITAL_BOSS_MARGIN, Math.min(WORLD_W - CAPITAL_BOSS_MARGIN, bx));
+    return makeBossBuilding(clampedX, by, stageIndex, bossTheme);
+  }
   // ワールド右2/3エリアかつリング外縁がマップ外に出ない安全内側に配置する。
   // CAPITAL_BOSS_MARGIN = CAPITAL_RING_OUTER + CAPITAL_RADIUS_BASE + 80px のマージン。
   const minX = WORLD_W * 0.45;
@@ -6769,7 +7219,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
       const x = 300 + random() * (WORLD_W - 600);
       const y = 250 + random() * (WORLD_H - 500);
       if (dist2(x, y, boss.wx, boss.wy) < bossClear2) continue;
-      if (dist2(x, y, 250, WORLD_H * 0.5) < 500 * 500) continue;
+      if (dist2(x, y, START_X, START_Y) < 500 * 500) continue;
       return { x, y };
     }
     return { x: WORLD_W * 0.5, y: WORLD_H * 0.5 };
@@ -8625,7 +9075,7 @@ function generateForests(buildings, boss) {
       const wx = FOREST_MARGIN + random() * (WORLD_W - FOREST_MARGIN * 2);
       const wy = FOREST_MARGIN + random() * (WORLD_H - FOREST_MARGIN * 2);
 
-      if (dist2(wx, wy, 250, WORLD_H * 0.5) < (TERRAIN_START_CLEAR + radius) ** 2) continue;
+      if (dist2(wx, wy, START_X, START_Y) < (TERRAIN_START_CLEAR + radius) ** 2) continue;
       if (dist2(wx, wy, boss.wx, boss.wy) < (bossClear + radius) ** 2) continue;
 
       let collides = false;
@@ -8716,7 +9166,7 @@ function generateTerrainObstacles(buildings, boss) {
       const wy = TERRAIN_MARGIN + random() * (WORLD_H - TERRAIN_MARGIN * 2);
 
       // 群れスタート地点の確保
-      if (dist2(wx, wy, 250, WORLD_H * 0.5) < (TERRAIN_START_CLEAR + radius) ** 2) continue;
+      if (dist2(wx, wy, START_X, START_Y) < (TERRAIN_START_CLEAR + radius) ** 2) continue;
       // ボス要塞圏の確保
       if (dist2(wx, wy, boss.wx, boss.wy) < (bossClear + radius) ** 2) continue;
 
@@ -11226,8 +11676,8 @@ function initBoids() {
   // 初期配置は BOIDS_INITIAL 体だけ。卵回収で増えていく雪だるま体験をさせる。
   N = BOIDS_INITIAL;
 
-  const startWx = 250;
-  const startWy = WORLD_H * 0.5;
+  const startWx = START_X;
+  const startWy = START_Y;
   for (let i = 0; i < MAX_BOIDS; i++) {
     boidHp[i]        = BOID_MAX_HP;
     boidDead[i]      = 1; // 一旦全部 dead にしてから N 体だけ有効化
@@ -11280,8 +11730,8 @@ function initBoids() {
 function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
   rushTimer = RUSH_INTERVAL;   // v0.29: ステージ開始ごとにラッシュ間隔をリセット
   resetBossReinforcements();   // v0.58: 増援の波数とタイマーも持ち越さない
-  const startWx = 250;
-  const startWy = WORLD_H * 0.5;
+  const startWx = START_X;
+  const startWy = START_Y;
 
   // N を初期数に戻し、全スロットを dead でリセットしてから有効分を起こす。
   // v0.19: 2回目以降のラン開始は初期1体（塊魂的にゼロから積み上げる）。
@@ -11645,7 +12095,11 @@ const STRINGS = {
   bossReinforceTitle: "増援",
   bossReinforceSub: "首都が兵を出した",
   chooseDragon: "竜を選ぶ",
-  chooseContinent: "攻め込む文明を選ぶ",
+  chooseContinent: "攻め込む土地を選ぶ",
+  // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
+  shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市"],
+  shapeShortNames: ["大陸", "大河", "城塞"],
+  panelHint: "制圧したパネルの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
   continentToughness: (mult) => `建物の硬さ ${mult}`,
   continentUnlocked: (name) => `${name} が解放された`,
@@ -14640,7 +15094,10 @@ function defaultProfile() {
     // 増やすときは OPTION_DEFS にも1行足す（画面はそれを見て作られる）。
     options: { damageNumbers: true },
     // v0.99.8: 時代ごとのクリア評価（★1〜5）の自己ベスト。key = 時代の添字。
+    // v1.2.0: 大陸以外の列は "時代:列" を key にする（panelKey）。
     eraStars: {},
+    // v1.2.0: 解放済みのパネル（key = "時代:列"）。無い旧データは migratePanelUnlocks が作る。
+    unlockedPanels: null,
   };
 }
 
@@ -14674,6 +15131,7 @@ function loadProfile() {
     p.options = Object.assign(defaultProfile().options, p.options || {});
     p.eraStars = p.eraStars || {};
   }
+  migratePanelUnlocks(p);   // v1.2.0
   p.version = PROFILE_VERSION;
   return p;
 }
@@ -16212,6 +16670,7 @@ function onTitleStart() {
   if (isFirstEverRun()) {
     // 初回だけは特別ラン。大陸も竜種も選ばせず、黎明の大陸×火竜で即開始する。
     pendingStartEra = 0;
+    pendingStartShape = SHAPE_CONTINENT;
     beginRun("fire");
   } else {
     // v0.55: 2回目以降は「どの大陸から始めるか」→「どの竜で行くか」の2段階
@@ -16221,6 +16680,7 @@ function onTitleStart() {
 
 // 次に始めるランの開始時代。大陸選択で確定し beginRun が読む。
 let pendingStartEra = 0;
+let pendingStartShape = SHAPE_CONTINENT;   // v1.2.0: パネルの列
 let continentSelecting = false;
 
 // 大陸（開始時代）選択メニュー。竜種選択と同じオーバーレイを流用する。
@@ -16228,43 +16688,62 @@ function showContinentSelect() {
   if (gameState !== "title") return;
   continentSelecting = true;
   levelupTitleEl.textContent = STRINGS.chooseContinent;
-  cardListEl.classList.add("species-grid");
+  // v1.2.0: パネル式。行＝時代（下へ進むほど後の文明）、列＝ステージの形。
+  // 24枚をスクロールなしで収めるため、カードではなく小さなマス目にする
+  // （スクロールさせると pointerdown 即選択とドラッグが喧嘩する。species-grid と同じ理由）。
+  cardListEl.classList.remove("species-grid");
+  cardListEl.classList.add("panel-grid");
   cardListEl.innerHTML = "";
 
-  const unlocked = unlockedContinentCount();
-  for (let i = 0; i < CONTINENT_DEFS.length; i++) {
-    const c        = CONTINENT_DEFS[i];
-    const isLocked = i >= unlocked;
-    // その文明の建物がどれだけ硬いか（時代の底上げ）を一言で出す
-    const eraBoost  = STAGE_DIFFICULTY_BOOST[c.era];
-    const toughness = "×" + (eraBoost ? eraBoost.hp : 1).toFixed(2);
+  const addCell = (cls, html) => {
+    const el = document.createElement("div");
+    el.className = cls;
+    el.innerHTML = html;
+    cardListEl.appendChild(el);
+    return el;
+  };
 
-    const btn = document.createElement("button");
-    btn.className = "upgrade-card card-span-2" + (isLocked ? " card-locked" : " rarity-star");
-    btn.innerHTML =
-      `<span class="card-icon">${isLocked ? "🔒" : "🏙"}</span>` +
-      `<span><div class="card-name">${CONTINENT_NUMERALS[i]}. ${c.name}` +
-      // v0.99.8: 自己ベストの★を名前の横に出す。どの時代をやり込んだかが一目で分かる
-      `${isLocked ? "" : (eraBestStars(c.era) > 0
-          ? ` <span class="era-stars">${starsText(eraBestStars(c.era))}</span>`
-          : ` <span class="era-stars-none">${starsText(0)}</span>`)}</div>` +
-      `<div class="card-desc">${isLocked ? STRINGS.continentLocked(CONTINENT_NUMERALS[i - 1] || "I")
-                                          : c.subtitle}</div>` +
-      `${isLocked ? "" : `<div class="card-desc" style="opacity:0.7">${STRINGS.continentToughness(toughness)}</div>`}</span>`;
-    if (!isLocked) {
-      btn.addEventListener("pointerdown", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        pendingStartEra = c.era;
-        dismissContinentSelect();
-        showSpeciesSelect();
-      });
-    }
-    cardListEl.appendChild(btn);
+  // 見出し行（左上は空き）
+  addCell("panel-corner", "");
+  for (let sh = 0; sh < STAGE_SHAPES.length; sh++) {
+    addCell("panel-col-head", `${STAGE_SHAPES[sh].icon}<br>${STRINGS.shapeShortNames[sh]}`);
   }
 
+  for (let era = 0; era < CONTINENT_DEFS.length; era++) {
+    const c = CONTINENT_DEFS[era];
+    const eraBoost = STAGE_DIFFICULTY_BOOST[c.era];
+    addCell("panel-row-head",
+      `<b>${CONTINENT_NUMERALS[era]}</b> ${c.name}` +
+      `<span>${STRINGS.continentToughness("×" + (eraBoost ? eraBoost.hp : 1).toFixed(2))}</span>`);
+
+    for (let sh = 0; sh < STAGE_SHAPES.length; sh++) {
+      const unlocked = isPanelUnlocked(era, sh);
+      const btn = document.createElement("button");
+      btn.className = "panel-cell" + (unlocked ? "" : " panel-locked");
+      if (unlocked) {
+        const best = panelBestStars(era, sh);
+        btn.innerHTML =
+          `<span class="panel-icon">${STAGE_SHAPES[sh].icon}</span>` +
+          `<span class="${best > 0 ? "era-stars" : "era-stars-none"}">${starsText(best)}</span>`;
+        btn.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          pendingStartEra   = c.era;
+          pendingStartShape = sh;
+          dismissContinentSelect();
+          showSpeciesSelect();
+        });
+      } else {
+        btn.innerHTML = `<span class="panel-icon">🔒</span>`;
+      }
+      cardListEl.appendChild(btn);
+    }
+  }
+
+  addCell("panel-hint", STRINGS.panelHint);
+
   const back = document.createElement("button");
-  back.className = "upgrade-card card-span-2";
+  back.className = "upgrade-card panel-back";
   back.style.justifyContent = "center";
   back.style.minHeight = "40px";
   back.innerHTML = `<span class="card-name">${STRINGS.backToTitle}</span>`;
@@ -16284,6 +16763,7 @@ function showContinentSelect() {
 function dismissContinentSelect() {
   if (!continentSelecting) return;
   continentSelecting = false;
+  cardListEl.classList.remove("panel-grid");   // v1.2.0
   levelupTitleEl.textContent = STRINGS.levelUp;
   levelupOverlayEl.classList.remove("visible");
 }
@@ -16368,6 +16848,7 @@ function beginRun(speciesId) {
   // ここで作り直すことで「同じシード＝同じ大陸」が常に成り立つ。
   // v0.56: タイトルで選んだ文明（時代）に攻め込む。初回ランは石器時代で固定。
   runEra = currentRunIsFirst ? 0 : clampEra(pendingStartEra);
+  runShape = currentRunIsFirst ? SHAPE_CONTINENT : clampShape(pendingStartShape);   // v1.2.0
   buildContinent(0);                       // ワールド生成＋段階0の確定＋初期群れ
 
   runStartTime = performance.now();
@@ -16405,6 +16886,7 @@ function snapshotRunSave() {
     // キー名は stage / startEra のまま（読み込み側でクランプする）。
     stage:         powerTier,
     startEra:      runEra,
+    shape:         runShape,      // v1.2.0: ステージの形（無い旧セーブは大陸）
     isFirstRun:    currentRunIsFirst,
     worldSeed:     runWorldSeed,   // v1.0.0: 同じ大陸を組み直すため
     fallen:        encodeFallenBits(),   // v1.0.0: 壊した建物
@@ -16448,6 +16930,7 @@ function resumeRun() {
   // 旧セーブは stage に絶対ステージ番号（0..7）が入っていることがあるが、
   // clampTier で潰せばどちらでも破綻せずに再開できる。
   runEra            = clampEra(save.startEra | 0);
+  runShape          = clampShape(save.shape | 0);   // v1.2.0
   powerTier         = clampTier(save.stage | 0);
   currentStage      = runEra;
   playerLevel       = (save.playerLevel | 0) || 1;
@@ -16517,17 +17000,17 @@ function starsText(stars) {
   return "★".repeat(Math.max(0, stars)) + "☆".repeat(Math.max(0, CLEAR_STARS_MAX - stars));
 }
 
-/** 時代 era の自己ベスト★（未クリアは 0）。 */
-function eraBestStars(era) {
-  const v = profile.eraStars ? profile.eraStars[era] : 0;
+/** パネル（時代 era × 形 shape）の自己ベスト★（未クリアは 0）。 */
+function panelBestStars(era, shape = SHAPE_CONTINENT) {
+  const v = profile.eraStars ? profile.eraStars[panelKey(era, shape)] : 0;
   return typeof v === "number" ? v : 0;
 }
 
 /** 自己ベストを更新する。更新したら true。 */
-function recordEraStars(era, stars) {
+function recordPanelStars(era, shape, stars) {
   if (!profile.eraStars) profile.eraStars = {};
-  if (stars <= eraBestStars(era)) return false;
-  profile.eraStars[era] = stars;
+  if (stars <= panelBestStars(era, shape)) return false;
+  profile.eraStars[panelKey(era, shape)] = stars;
   saveProfile();
   return true;
 }
@@ -16538,11 +17021,11 @@ function triggerAllClear() {
   const runTimeMs = performance.now() - runStartTime;
   // v0.99.8: 評価は**ボスが落ちた瞬間の状態**で決まる。後で powerTier を触られる前に取る。
   const stars = clearStars();
-  const starsBest = recordEraStars(runEra, stars);
+  const starsBest = recordPanelStars(runEra, runShape, stars);
   saveBestRecord(runTimeMs, runKills);
   profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
-  // v0.55: この大陸をクリアしたら次の大陸（開始時代）を解放する
-  const unlockedNew = unlockNextContinent(runEra);
+  // v1.2.0: 制圧したパネルの上下左右を開く（大陸の列の「次の時代」もここに含まれる）
+  const openedPanels = unlockPanelNeighbors(runEra, runShape);
   // v0.51: 最終時代ぶん＋大陸制覇ボーナスの竜晶（awardCrystals が saveProfile 済み）
   awardCrystals(crystalsForStageClear(currentStage) + CRYSTAL_ALLCLEAR_BONUS);
   evaluateChallenges();               // v0.25: 全クリア・累計系チャレンジを判定
@@ -16560,10 +17043,8 @@ function triggerAllClear() {
     `${STRINGS.statFlock}: <span class="stat-value">${runMaxFlock}</span><br>` +
     `${STRINGS.statLevel}: <span class="stat-value">Lv.${playerLevel}</span><br>` +
     `${STRINGS.statXp}: <span class="stat-value">${runTotalXp}</span>` +
-    (unlockedNew
-      ? `<br><span class="stat-value" style="color:#ffd060">🔓 ${
-          STRINGS.continentUnlocked(CONTINENT_DEFS[profile.unlockedContinents - 1].name)}</span>`
-      : "");
+    openedPanels.map(o => `<br><span class="stat-value" style="color:#ffd060">🔓 ${
+          STRINGS.continentUnlocked(panelLabel(o.era, o.shape))}</span>`).join("");
   resultStatsEl.classList.add("visible");
   retryBtn.textContent = STRINGS.toTitle;
   setTimeout(() => overlayTitle.classList.add("show"), 300);
@@ -16740,7 +17221,8 @@ function rebuildWallsForTier() {
 
   // 城壁の量は時代（文明）で決まる。段階では増減させない。
   const walls = generateWallRing(boss, currentStage)
-    .concat(generateTownWalls(townMetas, currentStage));
+    .concat(generateTownWalls(townMetas, currentStage))
+    .concat(citadelWallPlan ? generateCitadelWalls(boss, citadelWallPlan) : []);   // v1.2.0
   settlements = kept.concat(walls);
 }
 
@@ -17016,11 +17498,15 @@ function buildContinent(tier) {
   gameState       = "playing";
 
   currentStage = clampEra(runEra);   // 時代はランを通して固定
+  applyWorldShape(runShape);         // v1.2.0: ステージの形（ワールドの大きさ・開始地点）
   loadStageWorld(currentStage);
   beginTier(tier);
 
   resetBoidsForStageStart(stageStartFlockCount());
   resetLeader();
+  // v1.2.0: 開始地点がタイトル背景の大陸と違う場所になるので、カメラを流さず飛ばす
+  cam.x = START_X;
+  cam.y = START_Y;
   dismissLevelUpCards();
   updateHUDEggs();
 }
@@ -17089,6 +17575,7 @@ function returnToTitle() {
   clearXpGems();
   resetFires();                 // v0.10: タイトルへ戻る際も炎を消す
 
+  applyWorldShape(SHAPE_CONTINENT);   // v1.2.0: タイトル背景はいつも大陸
   settlements = generateStageLayout(0);
   recomputeTownRoles();   // v0.78: 役割を持つ建物（鐘楼・兵舎）の索引を作る
   rebuildBuildingGrid();
@@ -17257,8 +17744,8 @@ let vectorCommitFx  = 0;      // 確定直後の演出タイマー（秒）
 let vectorShowTimer = 0;      // 進路矢印を表示しておく残り時間（秒）。0で消える
 
 function resetLeader() {
-  leader.x  = 250;
-  leader.y  = WORLD_H * 0.5;
+  leader.x  = START_X;
+  leader.y  = START_Y;
   leader.vx = 0;
   leader.vy = 0;
   pathClear();
@@ -19998,12 +20485,32 @@ function drawFlash() {
 // -----------------------------------------------------------------
 // v0.49: ワールドが4倍になり 80×60 では町が1〜2pxに潰れて読めなくなったため拡大。
 // 4:3 のままなのでワールドとの縦横比は変わらない（#hud-buildings の bottom も追随させること）。
-const MINIMAP_W = 120;
-const MINIMAP_H = 90;
+// v1.2.0: ステージの形で縦横比が変わるので、ワールドに合わせて作り直す。
+// 横は 120px・縦は 135px を上限に、縦横比を保ったまま収める
+// （大陸は従来どおり 120×90、線状都市は 45×135、城塞都市は 120×120）。
+// 縦の長さは CSS 変数 --minimap-h で #hud-buildings の位置にも伝える。
+const MINIMAP_MAX_W = 120;
+const MINIMAP_MAX_H = 135;
+let MINIMAP_W = 120;
+let MINIMAP_H = 90;
 
 // 基準ワールド（4800×3600）をミニマップ80×60で描いていたときのドット太さを保つ係数。
 // これが無いとワールドを広げるほど町のドットが重なって一枚の色面になる。
-const MINIMAP_DOT_SCALE = (MINIMAP_W / WORLD_W) / (80 / 4800);
+let MINIMAP_DOT_SCALE = (MINIMAP_W / WORLD_W) / (80 / 4800);
+
+function resizeMinimapForWorld() {
+  const scale = Math.min(MINIMAP_MAX_W / WORLD_W, MINIMAP_MAX_H / WORLD_H);
+  MINIMAP_W = Math.round(WORLD_W * scale);
+  MINIMAP_H = Math.round(WORLD_H * scale);
+  MINIMAP_DOT_SCALE = (MINIMAP_W / WORLD_W) / (80 / 4800);
+  minimapCanvas.width  = MINIMAP_W;
+  minimapCanvas.height = MINIMAP_H;
+  document.documentElement.style.setProperty("--minimap-h", MINIMAP_H + "px");
+  // 基底キャッシュは大きさごと作り直す
+  minimapBaseCanvas = null;
+  minimapBaseDirty  = true;
+  minimapBaseLastBuilt = -Infinity;
+}
 
 // v0.99.4: **ミニマップは色を3つしか使わない**。
 // それまでは建物が街ごとの色（橙〜赤〜茶の十数色）、移動敵が敵種ごとの glowColor、
@@ -20252,7 +20759,10 @@ function updateHUDStage() {
   hudStage.textContent =
     // v1.0.0: 軸の名前（警戒度）を出す。段階名だけだと
     // 「動員 2/4」が何の2/4なのかが伝わらない。
-    config.name + " / 警戒度" + (powerTier + 1) + " " + (TIER_NAMES[powerTier] ?? "");
+    config.name +
+    // v1.2.0: 大陸以外の形なら形の名前も添える（同じ文明でもどのパネルにいるか分かるように）
+    (worldShape !== SHAPE_CONTINENT ? "・" + STRINGS.shapeShortNames[worldShape] : "") +
+    " / 警戒度" + (powerTier + 1) + " " + (TIER_NAMES[powerTier] ?? "");
 }
 
 function updateHUDBuildings() {
@@ -21596,6 +22106,7 @@ async function boot() {
   // 竜スプライトを起動時に一度だけプリレンダする（DPR確定後・画像ロード完了後に呼ぶこと）
   createDragonSprites();
   createBuildingLayer();
+  applyWorldShape(SHAPE_CONTINENT);   // v1.2.0: タイトル背景はいつも大陸
   settlements = generateStageLayout(0);
   recomputeTownRoles();   // v0.78: 役割を持つ建物（鐘楼・兵舎）の索引を作る
   rebuildBuildingGrid();
