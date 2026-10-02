@@ -280,13 +280,13 @@
      24マスをスクロールなしで収めるので、1マスは★と形のアイコンだけにする。 */
   #card-list.panel-grid {
     display: grid;
-    grid-template-columns: minmax(84px, 1.15fr) repeat(3, 1fr);
-    gap: 4px;
-    width: min(96vw, 420px);
+    grid-template-columns: minmax(58px, 0.9fr) repeat(5, 1fr);   /* 実際の列数は showContinentSelect が書く */
+    gap: 3px;
+    width: min(97vw, 460px);
   }
   .panel-corner { }
   .panel-col-head {
-    font: 11px/1.25 -apple-system, BlinkMacSystemFont, sans-serif;
+    font: 10px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
     color: #a0ecff;
     text-align: center;
     padding-bottom: 2px;
@@ -295,9 +295,9 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
-    font: 10px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
+    font: 9px/1.15 -apple-system, BlinkMacSystemFont, sans-serif;
     color: #e8f4ff;
-    letter-spacing: 0.02em;
+    letter-spacing: 0;
     overflow: hidden;
   }
   .panel-row-head b { color: #ffd060; font-size: 12px; }
@@ -321,7 +321,7 @@
   }
   .panel-cell:active { transform: scale(0.95); }
   .panel-cell .panel-icon { font-size: 16px; line-height: 1; }
-  .panel-cell .era-stars, .panel-cell .era-stars-none { font-size: 9px; letter-spacing: 0; }
+  .panel-cell .era-stars, .panel-cell .era-stars-none { font-size: 8px; letter-spacing: -0.5px; }
   .panel-cell.panel-locked {
     border-color: #3a4a5a;
     box-shadow: none;
@@ -787,7 +787,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.3.1";
+const GAME_VERSION = "v1.4.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1346,16 +1346,24 @@ let WORLD_AREA_RATIO = (WORLD_W * WORLD_H) / (WORLD_REF_W * WORLD_REF_H);
 //   continent … 従来の大陸。町が島のように散らばる（横長）
 //   riverline … 大河沿いの線状都市。下流から上流の首都まで一本道で薙いでいく（縦長）
 //   citadel   … 同心円の城塞都市。外周→中環→内環と城壁を破って中心の首都へ（正方形）
+//   frontline … 防衛線。前線の村→長城と砦→手薄で卵の多い本土→首都（縦長）
+//   sanctuary … 聖地。四方の参道の門前町と祠→結界の解けた中心の首都（正方形・やや小さい）
 // 面積はどれも基準の約4倍に揃える＝町の数・動く敵の数・段階の閾値の感覚を変えない。
 // 縦長・正方形の辺は LAYER_TILE(1200) の倍数にしておく（タイルの端に無駄が出ない）。
 const STAGE_SHAPES = [
   { id: "continent", w: 9600, h: 7200,  icon: "🏙" },
   { id: "riverline", w: 4800, h: 14400, icon: "🌊" },
   { id: "citadel",   w: 8400, h: 8400,  icon: "🏯" },
+  // v1.4.0: 防衛線（縦長）… 横一線の長城を破って、その奥の本土を蹂躙する2幕構成
+  { id: "frontline", w: 7200, h: 9600,  icon: "🛡" },
+  // v1.4.0: 聖地（やや小さい正方形）… 四方の祠を壊して結界を解き、中心の首都を呑む短期決戦
+  { id: "sanctuary", w: 7200, h: 7200,  icon: "⛩" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
 const SHAPE_CITADEL   = 2;
+const SHAPE_FRONTLINE = 3;
+const SHAPE_SANCTUARY = 4;
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
 
 function clampShape(v) {
@@ -3517,6 +3525,7 @@ let START_Y = WORLD_H * 0.5;
 function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
   if (shape === SHAPE_CITADEL)   return { x: 320, y: h - 320 };       // 城外の角（首都は中心）
+  if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
   return { x: 250, y: h * 0.5 };                                      // 左端中央（従来どおり）
 }
 
@@ -4705,8 +4714,10 @@ function generateStageLayout(stageIndex) {
   // v1.2.0: 線状都市は川が骨格なので、首都や町より先に川を引く（町は川を避けて建つ）。
   // 城塞都市は川を引かない。大陸は従来どおり町の後で引く（乱数の順序を変えない＝同じ種なら同じ大陸）。
   if (worldShape === SHAPE_RIVERLINE) riverPolyline = generateRiverlineRiver();
-  else if (worldShape === SHAPE_CITADEL) riverPolyline = [];
-  citadelWallPlan = null;
+  else if (worldShape !== SHAPE_CONTINENT) riverPolyline = [];   // 城塞・防衛線・聖地は川を引かない
+  citadelWallPlan   = null;
+  frontlinePlan     = null;
+  sanctuaryShrines  = [];
 
   const boss = placeBossBuilding(stageIndex, config);
   boss._fixedTier = maxPowerTier();
@@ -4719,8 +4730,11 @@ function generateStageLayout(stageIndex) {
 
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
   const townWanted  = scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR);
+  if (worldShape === SHAPE_FRONTLINE) frontlinePlan = planFrontline();
   const townCenters = worldShape === SHAPE_RIVERLINE ? placeRiverlineTownCenters(townWanted, boss)
                     : worldShape === SHAPE_CITADEL   ? placeCitadelTownCenters(boss)
+                    : worldShape === SHAPE_FRONTLINE ? placeFrontlineTownCenters(townWanted, boss, frontlinePlan)
+                    : worldShape === SHAPE_SANCTUARY ? placeSanctuaryTownCenters(boss)
                     : placeTownCenters(townWanted, boss.wx, boss.wy);
 
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
@@ -4728,6 +4742,10 @@ function generateStageLayout(stageIndex) {
   if (worldShape === SHAPE_CITADEL) {
     citadelWallPlan = planCitadelWalls(stageIndex);
     townRoadEdges   = buildCitadelRoadNetwork(townCenters, boss, citadelWallPlan);
+  } else if (worldShape === SHAPE_FRONTLINE) {
+    townRoadEdges = buildFrontlineRoadNetwork(townCenters, boss, frontlinePlan);
+  } else if (worldShape === SHAPE_SANCTUARY) {
+    townRoadEdges = buildSanctuaryRoadNetwork(townCenters, boss);
   } else {
     townRoadEdges = buildTownRoadNetwork(townCenters, boss);
   }
@@ -4749,8 +4767,10 @@ function generateStageLayout(stageIndex) {
   const strongR2 = BOSS_STRONG_RADIUS * BOSS_STRONG_RADIUS;
   // v1.2.0: 城塞都市は距離ではなく**環**で決める。内環＝要塞都市、中環＝格上の街、外環＝素の街。
   // 外から一枚ずつ剥いでいくほど相手が固くなる＝同心円の形そのものが難度の勾配になる。
-  const fortifiedSet = worldShape === SHAPE_CITADEL
-    ? new Set(townCenters.map((c, i) => i).filter(i => townCenters[i].ring === CITADEL_RING_INNER))
+  // v1.4.0: 形ごとの配置関数が c.fortified / c.tierOffset を決めていればそれに従う（抽選しない）。
+  const shapeDecidesTier = townCenters.some(c => c.fortified !== undefined);
+  const fortifiedSet = shapeDecidesTier
+    ? new Set(townCenters.map((c, i) => i).filter(i => townCenters[i].fortified))
     : new Set(byBossDist.filter((e, i) => i < fortifiedMin || e.d2 < strongR2).map(e => e.idx));
 
   // v0.11: 都市の規模に変化をつける（大都市1・中都市1・残りは標準±ゆらぎ）。
@@ -4776,9 +4796,8 @@ function generateStageLayout(stageIndex) {
   // 要塞都市は最初から最大段階、ほかにも一部が1段階先。
   const townTierOffset = new Map();
   for (let t = 0; t < townCenters.length; t++) {
-    if (worldShape === SHAPE_CITADEL) {
-      // 城塞都市は抽選しない（環で決まる。中環だけが格上）
-      if (townCenters[t].ring === CITADEL_RING_MIDDLE) townTierOffset.set(t, TOWN_TIER_ADVANCED);
+    if (shapeDecidesTier) {
+      if (townCenters[t].tierOffset) townTierOffset.set(t, townCenters[t].tierOffset);
       continue;
     }
     if (!fortifiedSet.has(t) && random() < TOWN_ADVANCED_RATIO) {
@@ -4796,7 +4815,8 @@ function generateStageLayout(stageIndex) {
     // 要塞都市はボス周辺にしか出ないので帯に掛かることはまず無いが、
     // 「格上の街が縮む」のは筋が通らないので明示的に除外しておく。
     const cityScale = (cityScaleByIdx.get(t) ?? randRange(0.9, 1.1)) *
-                      (fortifiedSet.has(t) ? 1.25 : startBandTownScale(center.x, center.y));
+                      (fortifiedSet.has(t) ? 1.25 : startBandTownScale(center.x, center.y)) *
+                      (center.scale ?? 1);   // v1.4.0: 形ごとの町の大きさ（防衛線の前線の村は小さい）
     const s2 = cityScale * cityScale;
     // v0.56: 建築・レイアウトは全部ランの時代のもの（同じ文明の街並み）。
     // 差がつくのは警戒度＝強さと、それに伴う色の締まり具合だけ。
@@ -4857,6 +4877,20 @@ function generateStageLayout(stageIndex) {
     result.length = 0;
     for (const b of kept) result.push(b);
     for (const w of generateCitadelWalls(boss, citadelWallPlan)) result.push(w);
+  }
+  // v1.4.0: 防衛線の長城。帯に掛かる棟を退けてから立てる
+  if (frontlinePlan) {
+    const kept = result.filter(b => !overlapsFrontlineWall(b, frontlinePlan));
+    result.length = 0;
+    for (const b of kept) result.push(b);
+    for (const w of generateFrontlineWalls(frontlinePlan)) result.push(w);
+  }
+  // v1.4.0: 聖地の祠（参道の突き当たり）
+  if (worldShape === SHAPE_SANCTUARY) {
+    for (const sh of placeSanctuaryShrines(boss, config)) {
+      result.push(sh);
+      sanctuaryShrines.push(sh);
+    }
   }
 
   // v0.43: ダム／堰 — 川の中流に1基だけ置く。川沿いは建物が避けているので場所は空いている。
@@ -4979,6 +5013,15 @@ function generateStageLayout(stageIndex) {
 
   // 卵持ちフラグをステージ全体に散らばらせて付与する（町ごとに均等割当）。
   assignEggBearers(result);
+  // v1.4.0: 防衛線の本土は卵が多い（長城を抜けた先がご褒美＝成長のスパイク）
+  if (frontlinePlan) {
+    const rich = new Set(townCenters.map((c, i) => i).filter(i => townCenters[i].eggRich));
+    const extraChance = eggBearerRatio() * TOWN_EGG_RATIO_MULT * (FRONTLINE_HOMELAND_EGG_MULT - 1);
+    for (const b of result) {
+      if (b.isEggBearer || !rich.has(b._townIndex)) continue;
+      if (random() < extraChance) b.isEggBearer = true;
+    }
+  }
 
   // --- (3) ボスと首都建物を配列に追加 ---
   result.push(boss);
@@ -5046,6 +5089,7 @@ function generateStageLayout(stageIndex) {
     if (worldShape === SHAPE_CONTINENT) return true;
     if (riverPolyline.length > 1 &&
         distPointToPolylineSq(b.wx, b.wy, riverPolyline) < (riverWidth * 0.5 + (b.radius || 0) + 6) ** 2) return false;
+    if (frontlinePlan && overlapsFrontlineWall(b, frontlinePlan)) return false;
     return !(citadelWallPlan && overlapsCitadelWall(b, boss, citadelWallPlan));
   };
   const tinyBuildings = generateTinySettlements(result, boss.wx, boss.wy, config).filter(keepLoose);
@@ -5253,6 +5297,12 @@ function townFormFor(center, boss) {
   if (worldShape === SHAPE_CITADEL) {
     return { type: "arc", ox: boss.wx, oy: boss.wy, maxHalfL: center.maxHalfL };
   }
+  // v1.4.0: 聖地の門前町は参道に沿って延びる帯。表＝参道の外側（群れが来る側）、畑＝参道と反対側
+  if (worldShape === SHAPE_SANCTUARY && center.avenue !== undefined) {
+    const nAng = center.avenue + Math.PI / 2;
+    return { type: "ribbon", angle: center.avenue, awayAngle: center.side > 0 ? nAng : nAng + Math.PI,
+             maxHalfL: center.maxHalfL };
+  }
   return null;
 }
 
@@ -5365,7 +5415,11 @@ function placeCitadelTownCenters(boss) {
       if (dist2(cx, cy, START_X, START_Y) < startClear2) continue;
       // 弧の街区の長さの上限＝角度のゆらぎで最も詰まったときの隣との間隔の半分弱
       const maxHalfL = def.spacing * (1 - 2 * CITADEL_TOWN_ANGULAR_JITTER) * STRIP_GAP_SHARE;
-      centers.push({ x: cx, y: cy, ring: def.ring, maxHalfL });
+      centers.push({
+        x: cx, y: cy, ring: def.ring, maxHalfL,
+        fortified:  def.ring === CITADEL_RING_INNER,
+        tierOffset: def.ring === CITADEL_RING_MIDDLE ? TOWN_TIER_ADVANCED : 0,
+      });
     }
   }
   return centers;
@@ -5471,6 +5525,298 @@ function buildCitadelRoadNetwork(centers, boss, plan) {
   return edges;
 }
 
+/** 点の集合を最小全域木（Prim法）で結ぶ。街道網を区画ごとに作るときに使う。 */
+function primRoadEdges(nodes) {
+  const edges = [];
+  if (nodes.length < 2) return edges;
+  const inTree = new Set([0]);
+  while (inTree.size < nodes.length) {
+    let best = null;
+    for (const i of inTree) {
+      for (let j = 0; j < nodes.length; j++) {
+        if (inTree.has(j)) continue;
+        const d = dist2(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y);
+        if (!best || d < best.d) best = { i, j, d };
+      }
+    }
+    edges.push([nodes[best.i], nodes[best.j]]);
+    inTree.add(best.j);
+  }
+  return edges;
+}
+
+/** 点の集合のうち (x,y) に一番近いもの。 */
+function nearestNode(nodes, x, y) {
+  let best = null, bestD = Infinity;
+  for (const n of nodes) {
+    const d = dist2(n.x, n.y, x, y);
+    if (d < bestD) { bestD = d; best = n; }
+  }
+  return best;
+}
+
+// -----------------------------------------------------------------
+// v1.4.0: 防衛線（縦長）— 横一線の長城が前線と本土を分ける
+// -----------------------------------------------------------------
+// 1幕: 前線の小さな村で育ちながら長城へ。壁を割るか、砦が守る門を抜けるか。
+// 2幕: 長城の奥は**手薄で卵が多い本土**。抜けた瞬間に一気に育つ。首都は最奥。
+// 長城は稜堡のようにジグザグに折れて、マップの左右端まで切れ目なく続く（門は2つ）。
+const FRONTLINE_LINE_Y_RATIO     = 0.55;   // 長城の高さ（上端からの割合）
+const FRONTLINE_ZIGZAG_AMP       = 140;    // 稜堡の折れの振れ幅（px）
+const FRONTLINE_ZIGZAG_PERIOD    = 900;    // 折れの周期（px）
+const FRONTLINE_GATE_COUNT       = 2;
+const FRONTLINE_GATE_WIDTH       = 220;    // 門の幅（px）。城塞都市の大城壁の門より狭い＝砦の射界に入る
+const FRONTLINE_WALL_HP_MULT     = 1.2;    // 首都城壁のHPに対する倍率（石器は CITADEL_WALL_HP_FALLBACK を基準）
+const FRONTLINE_WALL_CLEAR_GAP   = 10;     // 壁の帯から棟を退ける余白
+const FRONTLINE_FORT_COUNT       = 5;      // 長城の内側に並ぶ砦（要塞都市）
+const FRONTLINE_FORT_BACK        = 420;    // 砦の中心を長城からどれだけ奥に置くか
+const FRONTLINE_FORT_SCALE       = 0.8;    // 砦は小ぶり（要塞都市の1.25倍はこの上に掛かる）
+const FRONTLINE_FRONT_TOWNS      = 9;      // 長城の手前（前線）の村の数（6では前線が間延びした）
+const FRONTLINE_FRONT_SCALE      = 0.7;    // 前線の村の大きさ
+const FRONTLINE_FRONT_GAP        = 700;    // 前線の村を長城からこれ以上離す
+const FRONTLINE_HOME_GAP         = 1000;   // 本土の町を長城からこれ以上奥に置く
+const FRONTLINE_HOME_GUARDS      = 3;      // 首都に近い本土の町のうち、要塞都市にする数（首都の近衛）
+const FRONTLINE_HOMELAND_EGG_MULT = 2.0;   // 本土の町の卵持ちの割合（通常の何倍か）
+const FRONTLINE_CAPITAL_SWAY     = 1200;   // 首都の左右のばらつき（px）
+
+let frontlinePlan = null;   // { lineY, points: [{x,y}...], gates: [x...] }。防衛線以外は null
+
+/** 長城の線と門の位置を決める。 */
+function planFrontline() {
+  const lineY = WORLD_H * FRONTLINE_LINE_Y_RATIO;
+  const phase = randRange(0, FRONTLINE_ZIGZAG_PERIOD);
+  const points = [];
+  for (let x = 0; x <= WORLD_W; x += FRONTLINE_ZIGZAG_PERIOD / 4) {
+    // 三角波＝稜堡の折れ
+    const t = ((x + phase) % FRONTLINE_ZIGZAG_PERIOD) / FRONTLINE_ZIGZAG_PERIOD;
+    const tri = t < 0.5 ? t * 4 - 1 : 3 - t * 4;
+    points.push({ x, y: lineY + tri * FRONTLINE_ZIGZAG_AMP });
+  }
+  // 門は左右に1つずつ（中央は砦の正面にならないよう避ける）
+  const gates = [];
+  for (let g = 0; g < FRONTLINE_GATE_COUNT; g++) {
+    const lo = WORLD_W * (g + 0.25) / FRONTLINE_GATE_COUNT;
+    const hi = WORLD_W * (g + 0.75) / FRONTLINE_GATE_COUNT;
+    gates.push(randRange(lo, hi));
+  }
+  return { lineY, points, gates };
+}
+
+/** 長城の、横位置 x での高さ。 */
+function frontlineYAt(plan, x) {
+  const pts = plan.points;
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (x >= pts[i].x && x <= pts[i + 1].x) {
+      const t = (x - pts[i].x) / ((pts[i + 1].x - pts[i].x) || 1);
+      return pts[i].y + (pts[i + 1].y - pts[i].y) * t;
+    }
+  }
+  return plan.lineY;
+}
+
+/** 防衛線の町。前線の村・長城の砦・本土の町に分けて置く。 */
+function placeFrontlineTownCenters(townWanted, boss, plan) {
+  const centers = [];
+  const startClear2 = START_TOWN_CLEAR_CENTER * START_TOWN_CLEAR_CENTER;
+  const excl2 = CAPITAL_EXCLUSION_RADIUS * CAPITAL_EXCLUSION_RADIUS;
+
+  // (1) 長城の砦：等間隔。門の真後ろに来る砦が門を見張る
+  for (let k = 0; k < FRONTLINE_FORT_COUNT; k++) {
+    const x = WORLD_W * (k + 0.5) / FRONTLINE_FORT_COUNT;
+    centers.push({ x, y: frontlineYAt(plan, x) - FRONTLINE_FORT_BACK, fortified: true, tierOffset: 0,
+                   scale: FRONTLINE_FORT_SCALE, zone: "fort" });
+  }
+  // 門の真後ろにも砦を寄せる（一番近い砦を門の正面へずらす）
+  for (const gx of plan.gates) {
+    const fort = nearestNode(centers.filter(c => c.zone === "fort"), gx, plan.lineY);
+    if (fort) { fort.x = gx; fort.y = frontlineYAt(plan, gx) - FRONTLINE_FORT_BACK; }
+  }
+
+  // (2) 前線の村：長城の手前から開始地点の手前まで、2列に散らす
+  const frontTop    = plan.lineY + FRONTLINE_ZIGZAG_AMP + FRONTLINE_FRONT_GAP;
+  const frontBottom = START_Y - START_TOWN_CLEAR_CENTER;
+  for (let k = 0; k < FRONTLINE_FRONT_TOWNS; k++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const x = WORLD_W * (k + randRange(0.2, 0.8)) / FRONTLINE_FRONT_TOWNS;
+      const y = randRange(frontTop, Math.max(frontTop + 1, frontBottom));
+      if (dist2(x, y, START_X, START_Y) < startClear2) continue;
+      centers.push({ x, y, fortified: false, tierOffset: 0, scale: FRONTLINE_FRONT_SCALE, zone: "front" });
+      break;
+    }
+  }
+
+  // (3) 本土：長城の奥から首都の手前まで。ずらした格子に置く
+  const homeCount = Math.max(6, townWanted - centers.length);
+  const top = 200, bottom = plan.lineY - FRONTLINE_ZIGZAG_AMP - FRONTLINE_HOME_GAP;
+  const usableW = WORLD_W - 400, usableH = Math.max(1, bottom - top);
+  const cols = Math.max(1, Math.round(Math.sqrt(homeCount * usableW / usableH)));
+  const rows = Math.max(1, Math.ceil(homeCount / cols));
+  const cellW = usableW / cols, cellH = usableH / rows;
+  const home = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = 200 + c * cellW + randRange(cellW * 0.25, cellW * 0.75);
+      const y = top + r * cellH + randRange(cellH * 0.25, cellH * 0.75);
+      if (dist2(x, y, boss.wx, boss.wy) < excl2) continue;
+      home.push({ x, y, fortified: false, tierOffset: 0, eggRich: true, zone: "home" });
+    }
+  }
+  // 首都の近衛（首都に近い数町だけ要塞都市。本土の他は手薄）
+  home.sort((a, b) => dist2(a.x, a.y, boss.wx, boss.wy) - dist2(b.x, b.y, boss.wx, boss.wy));
+  for (let i = 0; i < Math.min(FRONTLINE_HOME_GUARDS, home.length); i++) {
+    home[i].fortified = true;
+    home[i].eggRich = false;
+  }
+  for (const h of home) centers.push(h);
+  return centers;
+}
+
+/** 長城のセグメント一式（折れ線に沿って等間隔。門の幅は抜く）。 */
+function generateFrontlineWalls(plan) {
+  const stageWall = WALL_STAGE_CONFIG[currentStage];
+  const hp = Math.round((stageWall ? stageWall.hp : CITADEL_WALL_HP_FALLBACK) * FRONTLINE_WALL_HP_MULT);
+  const result = [];
+  const pts = plan.points;
+  let carry = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    for (let d = carry; d < len; d += WALL_SEG_SPACING) {
+      const wx = a.x + Math.cos(ang) * d, wy = a.y + Math.sin(ang) * d;
+      carry = d + WALL_SEG_SPACING - len;
+      if (wx < 20 || wx > WORLD_W - 20) continue;
+      if (plan.gates.some(gx => Math.abs(wx - gx) < FRONTLINE_GATE_WIDTH * 0.5)) continue;
+      const w = makeWallSegment(wx, wy, hp, ang);
+      w._lineWall = true;
+      result.push(w);
+    }
+  }
+  return result;
+}
+
+/** 建物 b が長城の帯に掛かるか（門の中も含めて退ける）。 */
+function overlapsFrontlineWall(b, plan) {
+  if (Math.abs(b.wy - plan.lineY) > FRONTLINE_ZIGZAG_AMP + 200) return false;
+  return Math.abs(b.wy - frontlineYAt(plan, b.wx)) < WALL_SEG_RADIUS + (b.radius || 0) + FRONTLINE_WALL_CLEAR_GAP;
+}
+
+/** 防衛線の街道。前線側と本土側をそれぞれ結び、長城は門だけで越える。 */
+function buildFrontlineRoadNetwork(centers, boss, plan) {
+  const front = centers.filter(c => c.zone === "front");
+  const back  = centers.filter(c => c.zone !== "front").concat([{ x: boss.wx, y: boss.wy }]);
+  const edges = primRoadEdges(front).concat(primRoadEdges(back));
+  for (const gx of plan.gates) {
+    const gate = { x: gx, y: frontlineYAt(plan, gx) };
+    const a = nearestNode(front, gate.x, gate.y);
+    const b = nearestNode(back, gate.x, gate.y);
+    if (a) edges.push([a, gate]);
+    if (b) edges.push([gate, b]);
+  }
+  return edges;
+}
+
+// -----------------------------------------------------------------
+// v1.4.0: 聖地（正方形・やや小さい）— 四方の参道と祠が首都に結界を張る
+// -----------------------------------------------------------------
+// 首都から斜め四方へ参道が延び、両側に門前町（川岸町と同じ帯状の町）が並ぶ。
+// 参道の突き当たりに祠が建ち、祠が立っている間は首都にダメージが通りにくい。
+// 「四方の祠を回って結界を解き、最後に首都を呑む」が目に見える目標になる（祠から首都へ光の筋が伸びる）。
+// 参道は斜めにしてある＝開始地点（下辺の中央）が参道の正面にも祠の目の前にもならない。
+const SANCTUARY_AVENUE_COUNT    = 4;
+const SANCTUARY_AVENUE_BASE     = Math.PI / 4;   // 最初の参道の向き（斜め右下）
+const SANCTUARY_TOWN_R_MIN      = 1150;   // 門前町を置き始める首都からの距離
+const SANCTUARY_TOWN_R_MAX      = 2600;
+const SANCTUARY_TOWN_SPACING    = 640;    // 同じ側での門前町の間隔（参道に沿って）
+const SANCTUARY_TOWN_OFFSET     = 430;    // 参道の中心線から門前町の中心まで
+const SANCTUARY_TOWN_JITTER     = 40;
+const SANCTUARY_CARDINAL_R      = 2100;   // 参道と参道の間（上下左右）に置く町の距離
+const SANCTUARY_FORT_R          = 1500;   // これより内側の門前町は要塞都市
+const SANCTUARY_ADVANCED_R      = 2100;   // これより内側は格上の町
+const SANCTUARY_SHRINE_R        = 2950;   // 祠の距離（参道の突き当たり）
+const SANCTUARY_SHRINE_HP_MULT  = 5.0;    // 祠のHP（large 建物基準の倍率）
+const SANCTUARY_SHRINE_RADIUS   = 36;
+const SANCTUARY_WARD_PER_SHRINE = 0.2;    // 祠1つにつき首都が受けるダメージを何割減らすか
+const SANCTUARY_WARD_MIN_MULT   = 0.2;    // 祠が全部立っていても最低これだけは通る
+
+let sanctuaryShrines = [];   // 祠の建物オブジェクト。聖地以外は空
+
+function sanctuaryAvenueAngles() {
+  const out = [];
+  for (let k = 0; k < SANCTUARY_AVENUE_COUNT; k++) out.push(SANCTUARY_AVENUE_BASE + k * Math.PI * 2 / SANCTUARY_AVENUE_COUNT);
+  return out;
+}
+
+/** 聖地の町。参道の両側の門前町と、参道の間の町。 */
+function placeSanctuaryTownCenters(boss) {
+  const centers = [];
+  const startClear2 = START_TOWN_CLEAR_CENTER * START_TOWN_CLEAR_CENTER;
+  const maxHalfL = (SANCTUARY_TOWN_SPACING - SANCTUARY_TOWN_JITTER * 2) * STRIP_GAP_SHARE;
+  const tierFor = (r) => ({
+    fortified:  r < SANCTUARY_FORT_R,
+    tierOffset: r >= SANCTUARY_FORT_R && r < SANCTUARY_ADVANCED_R ? TOWN_TIER_ADVANCED : 0,
+  });
+  for (const a of sanctuaryAvenueAngles()) {
+    const ux = Math.cos(a), uy = Math.sin(a);
+    const nx = -uy, ny = ux;
+    for (const side of [-1, 1]) {
+      // 両側で半歩ずらして千鳥に
+      for (let r = SANCTUARY_TOWN_R_MIN + (side > 0 ? SANCTUARY_TOWN_SPACING * 0.5 : 0);
+           r <= SANCTUARY_TOWN_R_MAX; r += SANCTUARY_TOWN_SPACING) {
+        const rr  = r + randRange(-SANCTUARY_TOWN_JITTER, SANCTUARY_TOWN_JITTER);
+        const off = side * (SANCTUARY_TOWN_OFFSET + randRange(-SANCTUARY_TOWN_JITTER, SANCTUARY_TOWN_JITTER));
+        const x = boss.wx + ux * rr + nx * off, y = boss.wy + uy * rr + ny * off;
+        if (x < 250 || x > WORLD_W - 250 || y < 250 || y > WORLD_H - 250) continue;
+        if (dist2(x, y, START_X, START_Y) < startClear2) continue;
+        centers.push(Object.assign({ x, y, avenue: a, side, maxHalfL }, tierFor(rr)));
+      }
+    }
+  }
+  // 参道と参道の間（上下左右）にも町を1つずつ
+  for (const a of sanctuaryAvenueAngles()) {
+    const ca = a + Math.PI / SANCTUARY_AVENUE_COUNT;
+    const x = boss.wx + Math.cos(ca) * SANCTUARY_CARDINAL_R, y = boss.wy + Math.sin(ca) * SANCTUARY_CARDINAL_R;
+    if (dist2(x, y, START_X, START_Y) < startClear2) continue;
+    centers.push(Object.assign({ x, y }, tierFor(SANCTUARY_CARDINAL_R)));
+  }
+  return centers;
+}
+
+/** 参道の突き当たりの祠。町には属さず（陥落判定に数えない）、段階で補強も再建もされない。 */
+function placeSanctuaryShrines(boss, config) {
+  const bLarge = config.buildings.large;
+  const out = [];
+  for (const a of sanctuaryAvenueAngles()) {
+    const x = boss.wx + Math.cos(a) * SANCTUARY_SHRINE_R, y = boss.wy + Math.sin(a) * SANCTUARY_SHRINE_R;
+    const hp = Math.round(randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax) * SANCTUARY_SHRINE_HP_MULT);
+    const sh = makeBuilding(x, y, "large", "#e8c860", bLarge, hp);
+    sh._shrine    = true;
+    sh._landmark  = "temple";
+    sh._faceAngle = a + Math.PI / 2;
+    sh.radius     = SANCTUARY_SHRINE_RADIUS;
+    sh._fixedTier = maxPowerTier();
+    out.push(sh);
+  }
+  return out;
+}
+
+/** 聖地の街道。参道（首都→祠）と、各町から参道への引き込み路。 */
+function buildSanctuaryRoadNetwork(centers, boss) {
+  const edges = [];
+  const capital = { x: boss.wx, y: boss.wy };
+  for (const a of sanctuaryAvenueAngles()) {
+    edges.push([capital, { x: boss.wx + Math.cos(a) * SANCTUARY_SHRINE_R, y: boss.wy + Math.sin(a) * SANCTUARY_SHRINE_R }]);
+  }
+  for (const c of centers) {
+    if (c.avenue === undefined) { edges.push([c, capital]); continue; }
+    // 参道上の足元へ
+    const ux = Math.cos(c.avenue), uy = Math.sin(c.avenue);
+    const t = (c.x - boss.wx) * ux + (c.y - boss.wy) * uy;
+    edges.push([c, { x: boss.wx + ux * t, y: boss.wy + uy * t }]);
+  }
+  return edges;
+}
+
 // 2線分の交点（なければ null）。
 function segmentIntersection(p1, p2, p3, p4) {
   const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
@@ -5526,8 +5872,14 @@ function applyTownFortification(townBuildings) {
 function placeBossBuilding(stageIndex, config) {
   const bossTheme = config.boss;
   // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
-  if (worldShape === SHAPE_CITADEL) {
+  if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY) {
     return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
+  }
+  if (worldShape === SHAPE_FRONTLINE) {
+    // 本土の奥（上端寄り）。左右はばらす
+    const bx = WORLD_W * 0.5 + randRange(-FRONTLINE_CAPITAL_SWAY, FRONTLINE_CAPITAL_SWAY);
+    const by = CAPITAL_BOSS_MARGIN + randRange(300, 700);
+    return makeBossBuilding(bx, by, stageIndex, bossTheme);
   }
   if (worldShape === SHAPE_RIVERLINE) {
     const by   = CAPITAL_BOSS_MARGIN + randRange(150, 450);
@@ -8841,7 +9193,7 @@ function damageMover(m, damage, srcX, srcY) {
       if (damage <= 0) return;
     }
   }
-  damage *= crackMult(m);   // v1.1.1: 楔竜のひび
+  damage *= incomingDamageMult(m);   // v1.1.1: 楔竜のひび
   m.hp -= damage;
   reportDamage(m, m.wx, m.wy, damage);
   if (m.hp <= 0) {
@@ -9462,6 +9814,8 @@ function assignEggBearers(buildings) {
   const towns = [];
   let current = null;
   for (const b of buildings) {
+    // v1.4.0: 城壁と祠は卵を持たない（並びの都合で直前の町に紛れ込んでいた。大陸ではこの時点で城壁が無いので影響なし）
+    if (b._isWall || b._shrine) continue;
     if (b._townMeta) {
       current = [];
       towns.push(current);
@@ -11328,7 +11682,7 @@ function updateBeamAttacks(dt) {
       if (settlement.fallen) continue; // 同フレーム内で先の照射により陥落済み
 
       // ダメージ適用（v1.1.1: 楔竜のひびはブレスにも乗る）
-      const breathDmg = damageThisFrame * crackMult(settlement);
+      const breathDmg = damageThisFrame * incomingDamageMult(settlement);
       settlement.hp -= breathDmg;
       reportDamage(settlement, settlement.wx, settlement.wy, breathDmg);
 
@@ -11434,7 +11788,7 @@ function updateCollisionAttacks(dt) {
           ? effWedgeRamDamage()
           : isMelee
             ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
-            : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i) * crackMult(s);
+            : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i) * incomingDamageMult(s);
       s.hp -= collisionDmg;
       reportDamage(s, s.wx, s.wy, collisionDmg);
 
@@ -12327,8 +12681,9 @@ const STRINGS = {
   chooseDragon: "竜を選ぶ",
   chooseContinent: "攻め込む土地を選ぶ",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
-  shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市"],
-  shapeShortNames: ["大陸", "大河", "城塞"],
+  shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の聖地"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "聖地"],
+  wardHud: (n) => `結界${n}`,
   panelHint: "制圧したパネルの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
   continentToughness: (mult) => `建物の硬さ ${mult}`,
@@ -13049,7 +13404,7 @@ function updateHUDWeapon() {
 function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
-  damage *= crackMult(settlement);   // v1.1.1: 楔竜のひび
+  damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   settlement.hp -= damage;
   reportDamage(settlement, settlement.wx, settlement.wy, damage);
   if (settlement.hp <= 0 && !settlement.fallen) {
@@ -13465,7 +13820,7 @@ function updateMotherBreath(dt) {
     if (hits >= MOTHER_BREATH_TARGETS) break;
     const s = settlements[tg.sIdx];
     if (s.fallen) continue;
-    const mdmg = dmg * crackMult(s);   // v1.1.1: 楔竜のひび
+    const mdmg = dmg * incomingDamageMult(s);   // v1.1.1: 楔竜のひび
     s.hp -= mdmg;
     reportDamage(s, s.wx, s.wy, mdmg);
     spawnHitParticles(s.wx, s.wy);
@@ -13786,6 +14141,26 @@ function updateCrackBursts(dt) {
 /** その相手に今ひびが入っているか（被ダメージ倍率を返す）。 */
 function crackMult(o) {
   return (o && o._crackUntil > breathTime) ? effWedgeCrackMult() : 1;
+}
+
+/**
+ * v1.4.0: 建物が受けるダメージの倍率（全経路で共通）。楔竜のひび × 聖地の結界。
+ * 結界は首都だけに掛かり、立っている祠1つにつき SANCTUARY_WARD_PER_SHRINE だけ通りにくくなる。
+ */
+function incomingDamageMult(o) {
+  let m = crackMult(o);
+  if (o && o.isBoss && sanctuaryShrines.length > 0) m *= sanctuaryWardMult();
+  return m;
+}
+
+function sanctuaryShrinesAlive() {
+  let n = 0;
+  for (const sh of sanctuaryShrines) if (!sh.fallen) n++;
+  return n;
+}
+
+function sanctuaryWardMult() {
+  return Math.max(SANCTUARY_WARD_MIN_MULT, 1 - SANCTUARY_WARD_PER_SHRINE * sanctuaryShrinesAlive());
 }
 
 /** ひびを入れる（上書き延長）。 */
@@ -15401,7 +15776,8 @@ function encodeFallenBits() {
   let acc = 0, bit = 0, k = 0;
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
-    if (!s || s._isWall) continue;
+    // v1.4.0: 防衛線の長城は段階で張り直さない＝開けた突破口も保存する（他の城壁は張り直すので保存しない）
+    if (!s || (s._isWall && !s._lineWall)) continue;
     if (s.fallen) acc |= (1 << bit);
     bit++; k++;
     if (bit === 8) { bytes.push(acc); acc = 0; bit = 0; }
@@ -15419,13 +15795,16 @@ function applyFallenBits(packed) {
   try { bin = atob(packed.b); } catch (_) { return false; }
   // 棟数が違う＝別の大陸。中途半端に当てるより諦めて丸ごと建った状態で始める。
   let total = 0;
-  for (let i = 0; i < settlements.length; i++) if (settlements[i] && !settlements[i]._isWall) total++;
+  for (let i = 0; i < settlements.length; i++) {
+    const s = settlements[i];
+    if (s && (!s._isWall || s._lineWall)) total++;
+  }
   if (total !== (packed.n | 0)) return false;
 
   let bit = 0, byteIdx = 0, applied = 0;
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
-    if (!s || s._isWall) continue;
+    if (!s || (s._isWall && !s._lineWall)) continue;
     const on = (bin.charCodeAt(byteIdx) >> bit) & 1;
     if (on) { s.fallen = true; s.hp = 0; applied++; }
     bit++;
@@ -16923,6 +17302,8 @@ function showContinentSelect() {
   // （スクロールさせると pointerdown 即選択とドラッグが喧嘩する。species-grid と同じ理由）。
   cardListEl.classList.remove("species-grid");
   cardListEl.classList.add("panel-grid");
+  // v1.4.0: 列はステージの形の数だけ（行見出し＋形の数）
+  cardListEl.style.gridTemplateColumns = `minmax(58px, 0.9fr) repeat(${STAGE_SHAPES.length}, 1fr)`;
   cardListEl.innerHTML = "";
 
   const addCell = (cls, html) => {
@@ -16994,6 +17375,7 @@ function dismissContinentSelect() {
   if (!continentSelecting) return;
   continentSelecting = false;
   cardListEl.classList.remove("panel-grid");   // v1.2.0
+  cardListEl.style.gridTemplateColumns = "";
   levelupTitleEl.textContent = STRINGS.levelUp;
   levelupOverlayEl.classList.remove("visible");
 }
@@ -17441,7 +17823,8 @@ let _tierRevivedCenters = [];
 function rebuildWallsForTier() {
   const kept = [];
   for (let i = 0; i < settlements.length; i++) {
-    if (!settlements[i]._isWall) kept.push(settlements[i]);
+    // v1.4.0: 防衛線の長城は張り直さない（開けた突破口が段階のたびに塞がると、突破が積み上がらない）
+    if (!settlements[i]._isWall || settlements[i]._lineWall) kept.push(settlements[i]);
   }
   const boss = kept.find(s => s.isBoss);
   if (!boss) { settlements = kept; return; }
@@ -17607,6 +17990,41 @@ function maybeEnrageBoss() {
 }
 
 /** 最強モードの目印。ボスの周りで脈打つ赤い輪（見て分かる必要がある）。 */
+/** v1.4.0: 聖地の結界。立っている祠から首都へ光の筋を引き、首都を金の輪で包む（祠が減るほど薄く）。 */
+function drawSanctuaryWard() {
+  if (sanctuaryShrines.length === 0) return;
+  const alive = sanctuaryShrinesAlive();
+  if (alive === 0) return;
+  const boss = settlements[bossSettlementIdx] && settlements[bossSettlementIdx].isBoss
+    ? settlements[bossSettlementIdx] : settlements.find(s => s.isBoss);
+  if (!boss || boss.fallen) return;
+  const pulse = 0.5 + 0.5 * Math.sin(breathTime * 2.2);
+  const share = alive / sanctuaryShrines.length;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineCap = "round";
+  for (const sh of sanctuaryShrines) {
+    if (sh.fallen) continue;
+    ctx.strokeStyle = `rgba(255, 214, 110, ${0.10 + 0.08 * pulse})`;
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    ctx.moveTo(sh.wx, sh.wy);
+    ctx.lineTo(boss.wx, boss.wy);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 240, 190, ${0.22 + 0.12 * pulse})`;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+  const r = boss.radius * 1.9 + 8 * pulse;
+  ctx.strokeStyle = `rgba(255, 214, 110, ${(0.25 + 0.35 * share) * (0.7 + 0.3 * pulse)})`;
+  ctx.lineWidth = 3 + 4 * share;
+  ctx.beginPath();
+  ctx.arc(boss.wx, boss.wy, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+  ctx.globalCompositeOperation = "source-over";
+}
+
 function drawBossEnrageAura() {
   if (!bossEnraged) return;
   const boss = settlements.find(s => s.isBoss);
@@ -19311,6 +19729,7 @@ function render(now) {
   // HP バーは動的なので毎フレーム描画
   drawSettlementHPBars();
   drawBossEnrageAura();      // v0.99.7: 最強モードの赤い輪
+  drawSanctuaryWard();       // v1.4.0: 聖地の結界（祠から首都へ伸びる光と首都を包む輪）
 
   drawEggBearerMarkers(now);
   drawEggs();
@@ -20848,6 +21267,20 @@ function drawMinimapTownMarks(c, scaleX, scaleY) {
 }
 
 /** ミニマップのボス印。**他の何にも隠れないよう一番上で描く**。 */
+/** v1.4.0: 立っている祠を金の点で出す。首都の結界を解く目標なので、どこにあるかを地図でも分かるように。 */
+function drawMinimapShrines(c) {
+  if (sanctuaryShrines.length === 0) return;
+  const sx = MINIMAP_W / WORLD_W, sy = MINIMAP_H / WORLD_H;
+  for (const sh of sanctuaryShrines) {
+    if (sh.fallen) continue;
+    const mx = sh.wx * sx, my = sh.wy * sy;
+    c.fillStyle = "rgba(0,0,0,0.6)";
+    c.beginPath(); c.arc(mx, my, 4, 0, Math.PI * 2); c.fill();
+    c.fillStyle = "#ffd060";
+    c.beginPath(); c.arc(mx, my, 2.8, 0, Math.PI * 2); c.fill();
+  }
+}
+
 function drawMinimapBoss(c) {
   for (const b of minimapBosses) {
     if (b.fallen) {
@@ -20922,6 +21355,7 @@ function drawMinimap() {
 
   // v0.99.5: ボスは建物と移動敵の**後**に描く（何にも隠れない）
   drawMinimapBoss(minimapCtx);
+  drawMinimapShrines(minimapCtx);   // v1.4.0: 聖地の祠（壊すべき目標）
 
   // v0.99.4: 自分の群れ。**ミニマップで一番目立つものにする**。
   // 暗い縁 → 光の暈 → 芯、の3枚重ねで、敵色の上でも街の塊の上でも浮く。
@@ -21019,7 +21453,9 @@ function updateHUDBuildings() {
   // 警戒度が上がりきっていれば、次の区切りは最強モードになる。
   const needTier = isFinalTier() ? Infinity : townsLeftForNextTier();
   const needTowns = Number.isFinite(needTier) ? needTier : townsLeftForEnrage();
+  const wardN = sanctuaryShrines.length > 0 ? sanctuaryShrinesAlive() : 0;
   hudBuildings.textContent = "BOSS " + hpPct + "% | " + smallRemaining + "/" + smallTotal +
+    (wardN > 0 ? " | " + STRINGS.wardHud(wardN) : "") +   // v1.4.0: 聖地の結界
     (bossEnraged ? " | 最強" : Number.isFinite(needTowns) ? " | 街あと" + needTowns : "");
 }
 
