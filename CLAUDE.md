@@ -185,3 +185,7 @@ node tools/check.mjs prototypes/dragon-tide/index.html
   自前で抽出しようとしないこと
 
 関連コマンド: デプロイ一式は `/deploy-dragon-tide`、画像アセット生成は `/gen-game-asset`（`.claude/commands/`）。
+
+**反映先の原則（Shooter指示）**: プロトタイプの変更は、検証（`tools/check.mjs` ＋ 必要な実測）が通ったら
+**そのまま master に反映する**（ブランチで止めて確認を待たない）。ブランチに留めて確認リンクを渡すのは、
+ステージ構成や進行の作り替えのような**よほど大きな更新のときだけ**。
