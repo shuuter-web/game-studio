@@ -787,7 +787,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.3.0";
+const GAME_VERSION = "v1.3.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7392,7 +7392,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
       const x = 300 + random() * (WORLD_W - 600);
       const y = 250 + random() * (WORLD_H - 500);
       if (dist2(x, y, boss.wx, boss.wy) < bossClear2) continue;
-      if (dist2(x, y, START_X, START_Y) < 500 * 500) continue;
+      if (dist2(x, y, START_X, START_Y) < START_MOVER_CLEAR * START_MOVER_CLEAR) continue;
       return { x, y };
     }
     return { x: WORLD_W * 0.5, y: WORLD_H * 0.5 };
@@ -7497,6 +7497,61 @@ const PACK_SEPARATION_GAP  = 6;    // 同一pack個体間に確保する隙間�
 const MOVER_SEPARATION_GAP  = 4;    // 別pack同士に確保する隙間
 const MOVER_SEPARATION_PUSH = 0.22; // 別pack同士の押し戻し係数（同一packは0.5＝完全解消）
 
+// v1.3.1: 開始地点の周りの、動く敵が湧かない・巡回しない安全圏（Shooter指示「スタート即動く敵は避けたい」）。
+// 町を置かない芯（START_TOWN_CLEAR_CENTER）と同じ半径にした。開始時の画面（外接円の半径 約960）に
+// 追跡反応距離（MOVER_PURSUIT_RANGE 650）を足した距離とほぼ同じで、湧いた瞬間に群れへ寄ってこない。
+// 以前は湧く点だけ500px離していたが、外周航路（loop）の折り返し点が線状都市・城塞都市の
+// 開始地点そのものに重なり、時代IV以降の陸上甲鉄艦などが群れの真下に湧いていた。
+const START_MOVER_CLEAR        = START_TOWN_CLEAR_CENTER;
+const START_MOVER_DETOUR_SCALE = 1.1;   // 経路を迂回させる点は安全圏の少し外に置く
+const START_MOVER_FIX_PASSES   = 6;     // 迂回点を足し直す最大回数（足した区間がまた円を掠めることがある）
+
+/** 点 (x,y) を開始地点から安全圏の外（半径 × scale）へ押し出す。外向きがマップの外ならマップ中央へ逃がす。 */
+function pushOutOfStartZone(x, y, scale) {
+  let dx = x - START_X, dy = y - START_Y;
+  const d = Math.hypot(dx, dy);
+  const toCx = WORLD_W * 0.5 - START_X, toCy = WORLD_H * 0.5 - START_Y;
+  if (d < 1 || dx * toCx + dy * toCy < 0) {
+    const cd = Math.hypot(toCx, toCy) || 1;
+    dx = toCx / cd; dy = toCy / cd;
+  } else {
+    dx /= d; dy /= d;
+  }
+  const r = START_MOVER_CLEAR * scale;
+  return {
+    x: Math.max(60, Math.min(WORLD_W - 60, START_X + dx * r)),
+    y: Math.max(60, Math.min(WORLD_H - 60, START_Y + dy * r)),
+  };
+}
+
+/**
+ * 巡回経路を開始地点の安全圏の外に収める（配列をその場で書き換える）。
+ * 円の中の点は外へ押し出し、円を横切る区間には円の外を回る迂回点を挟む。
+ * @param {boolean} closed  最後の点から最初の点へ戻る経路か（loop / patrol）
+ */
+function keepPathOutOfStartZone(points, closed) {
+  const R2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
+  for (let i = 0; i < points.length; i++) {
+    if (dist2(points[i].x, points[i].y, START_X, START_Y) < R2) {
+      points[i] = pushOutOfStartZone(points[i].x, points[i].y, 1.0 + (START_MOVER_DETOUR_SCALE - 1) * 0.5);
+    }
+  }
+  for (let pass = 0; pass < START_MOVER_FIX_PASSES; pass++) {
+    let inserted = false;
+    const segCount = closed ? points.length : points.length - 1;
+    for (let i = segCount - 1; i >= 0; i--) {
+      const a = points[i], b = points[(i + 1) % points.length];
+      const abx = b.x - a.x, aby = b.y - a.y;
+      const t = Math.max(0, Math.min(1, ((START_X - a.x) * abx + (START_Y - a.y) * aby) / (abx * abx + aby * aby || 1)));
+      const qx = a.x + abx * t, qy = a.y + aby * t;
+      if (dist2(qx, qy, START_X, START_Y) >= R2) continue;
+      points.splice(i + 1, 0, pushOutOfStartZone(qx, qy, START_MOVER_DETOUR_SCALE));
+      inserted = true;
+    }
+    if (!inserted) break;
+  }
+}
+
 /** 移動敵1体を生成する（経路生成込み）。 */
 function makeMover(def, randPoint) {
   {
@@ -7526,6 +7581,8 @@ function makeMover(def, randPoint) {
       waypoints.push(a, b);
     }
 
+    // v1.3.1: 経路ごと開始地点の安全圏の外へ出す（スタート直後に動く敵が居ない／通らない）
+    keepPathOutOfStartZone(waypoints, def.moveType !== "pingpong");
     const start = waypoints[Math.floor(random() * waypoints.length)];
     return {
       def,
