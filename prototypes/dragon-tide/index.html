@@ -787,7 +787,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.4.0";
+const GAME_VERSION = "v1.5.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1348,6 +1348,7 @@ let WORLD_AREA_RATIO = (WORLD_W * WORLD_H) / (WORLD_REF_W * WORLD_REF_H);
 //   citadel   … 同心円の城塞都市。外周→中環→内環と城壁を破って中心の首都へ（正方形）
 //   frontline … 防衛線。前線の村→長城と砦→手薄で卵の多い本土→首都（縦長）
 //   sanctuary … 聖地。四方の参道の門前町と祠→結界の解けた中心の首都（正方形・やや小さい）
+//   asteroids … 小惑星帯。町を載せた岩塊が4本の軌道を回る（隣の軌道は逆回り）。中心は宇宙港（正方形）
 // 面積はどれも基準の約4倍に揃える＝町の数・動く敵の数・段階の閾値の感覚を変えない。
 // 縦長・正方形の辺は LAYER_TILE(1200) の倍数にしておく（タイルの端に無駄が出ない）。
 const STAGE_SHAPES = [
@@ -1358,12 +1359,15 @@ const STAGE_SHAPES = [
   { id: "frontline", w: 7200, h: 9600,  icon: "🛡" },
   // v1.4.0: 聖地（やや小さい正方形）… 四方の祠を壊して結界を解き、中心の首都を呑む短期決戦
   { id: "sanctuary", w: 7200, h: 7200,  icon: "⛩" },
+  // v1.5.0: 小惑星帯（正方形）… 町を載せた岩塊が中心の宇宙港の周りを回る。動く的を追って薙ぐ
+  { id: "asteroids", w: 8400, h: 8400,  icon: "☄" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
 const SHAPE_CITADEL   = 2;
 const SHAPE_FRONTLINE = 3;
 const SHAPE_SANCTUARY = 4;
+const SHAPE_ASTEROIDS = 5;
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
 
 function clampShape(v) {
@@ -3524,7 +3528,7 @@ let START_Y = WORLD_H * 0.5;
 /** 形 shape の群れの開始地点。首都から一番遠い辺・角に置く。 */
 function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
-  if (shape === SHAPE_CITADEL)   return { x: 320, y: h - 320 };       // 城外の角（首都は中心）
+  if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS) return { x: 320, y: h - 320 };   // 角（首都は中心）
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
   return { x: 250, y: h * 0.5 };                                      // 左端中央（従来どおり）
 }
@@ -4718,6 +4722,8 @@ function generateStageLayout(stageIndex) {
   citadelWallPlan   = null;
   frontlinePlan     = null;
   sanctuaryShrines  = [];
+  for (const rock of asteroidRocks) releaseAsteroidRock(rock);   // v1.5.0: 前のワールドの岩塊の絵を捨てる
+  asteroidRocks     = [];
 
   const boss = placeBossBuilding(stageIndex, config);
   boss._fixedTier = maxPowerTier();
@@ -4735,6 +4741,7 @@ function generateStageLayout(stageIndex) {
                     : worldShape === SHAPE_CITADEL   ? placeCitadelTownCenters(boss)
                     : worldShape === SHAPE_FRONTLINE ? placeFrontlineTownCenters(townWanted, boss, frontlinePlan)
                     : worldShape === SHAPE_SANCTUARY ? placeSanctuaryTownCenters(boss)
+                    : worldShape === SHAPE_ASTEROIDS ? placeAsteroidTownCenters(boss)
                     : placeTownCenters(townWanted, boss.wx, boss.wy);
 
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
@@ -4746,6 +4753,8 @@ function generateStageLayout(stageIndex) {
     townRoadEdges = buildFrontlineRoadNetwork(townCenters, boss, frontlinePlan);
   } else if (worldShape === SHAPE_SANCTUARY) {
     townRoadEdges = buildSanctuaryRoadNetwork(townCenters, boss);
+  } else if (worldShape === SHAPE_ASTEROIDS) {
+    townRoadEdges = [];   // 岩塊どうしは道でつながらない
   } else {
     townRoadEdges = buildTownRoadNetwork(townCenters, boss);
   }
@@ -4817,7 +4826,8 @@ function generateStageLayout(stageIndex) {
     const cityScale = (cityScaleByIdx.get(t) ?? randRange(0.9, 1.1)) *
                       (fortifiedSet.has(t) ? 1.25 : startBandTownScale(center.x, center.y)) *
                       (center.scale ?? 1);   // v1.4.0: 形ごとの町の大きさ（防衛線の前線の村は小さい）
-    const s2 = cityScale * cityScale;
+    const cityScaleCapped = Math.min(cityScale, center.maxScale ?? Infinity);   // v1.5.0: 岩塊に収まる大きさまで
+    const s2 = cityScaleCapped * cityScaleCapped;
     // v0.56: 建築・レイアウトは全部ランの時代のもの（同じ文明の街並み）。
     // 差がつくのは警戒度＝強さと、それに伴う色の締まり具合だけ。
     const offset     = townTierOffset.get(t) || 0;
@@ -4844,6 +4854,9 @@ function generateStageLayout(stageIndex) {
     if (tmeta) townMetas.push(tmeta._townMeta);
     for (const b of townBuildings) result.push(b);
   }
+
+  // v1.5.0: 小惑星帯は町ごとに岩塊へ載せる（以後は岩塊と一緒に動く）
+  if (worldShape === SHAPE_ASTEROIDS) buildAsteroidRocks(result, townCenters, boss);
 
   // --- (2b) 首都要塞リング（座標のみ先計算）して小集落建物との衝突除去に使う ---
   // placeCapitalDistrict は config が必要なため、ここで仮実行して座標を取得する。
@@ -5087,6 +5100,7 @@ function generateStageLayout(stageIndex) {
   // 大陸は従来どおり（ここで数が変わると、同じ種で組み直したときに保存した破壊状況が合わなくなる）。
   const keepLoose = (b) => {
     if (worldShape === SHAPE_CONTINENT) return true;
+    if (worldShape === SHAPE_ASTEROIDS) return false;   // 宇宙に地面は無い＝散らばった家も無い
     if (riverPolyline.length > 1 &&
         distPointToPolylineSq(b.wx, b.wy, riverPolyline) < (riverWidth * 0.5 + (b.radius || 0) + 6) ** 2) return false;
     if (frontlinePlan && overlapsFrontlineWall(b, frontlinePlan)) return false;
@@ -5110,15 +5124,17 @@ function generateStageLayout(stageIndex) {
   for (const w of wallSegments) result.push(w);
 
   // --- (5b) v0.29: 一部の町にも部分的な城壁（STAGE3以降。rect町は長方形の壁）---
-  const townWalls = generateTownWalls(townMetas, stageIndex);
+  const townWalls = generateTownWalls(townMetas.filter(m => !m._rock), stageIndex);   // v1.5.0: 動く町に壁は付けない
   for (const w of townWalls) result.push(w);
 
   // --- (6) v0.6-p3: 地形障害物（岩山・湖）を空白地帯へ散布 ---
   // settlements とは別系統（破壊不可）。モジュールスコープの terrainObstacles を更新する。
   terrainObstacles = generateTerrainObstacles(result, boss);
+  if (worldShape === SHAPE_ASTEROIDS) terrainObstacles = [];   // v1.5.0: 宇宙に岩山・湖は無い
 
   // v0.17: 森（非ブロッキングの自然装飾。竜は上を飛ぶ）を空白地帯へ散布
   forestClusters = generateForests(result, boss);
+  if (worldShape === SHAPE_ASTEROIDS) forestClusters = [];
 
   // --- (7) v0.6-p4: 移動敵ユニット（文明別・ステージ数に応じた混成編成） ---
   movers = generateMovers(stageIndex, boss);
@@ -5817,6 +5833,118 @@ function buildSanctuaryRoadNetwork(centers, boss) {
   return edges;
 }
 
+// -----------------------------------------------------------------
+// v1.5.0: 小惑星帯（正方形）— 町を載せた岩塊が宇宙港の周りを回る
+// -----------------------------------------------------------------
+// 地面は無く、町は1つずつ岩塊に載って4本の軌道を回る。隣の軌道は逆回りなので、
+// 岩塊どうしの隙間（抜け道）が刻々と変わる。内側の軌道ほど格上（最内＝要塞都市、2本目＝格上の町）。
+// 速さは竜の数分の一にしてある＝「追いかけっこ」ではなく「流れてくる的を薙ぐ」手触り。
+// 建物は岩塊の中心からの相対位置（_lx, _ly）を持ち、岩塊が動くと一緒に動く（回転はしない）。
+const ASTEROID_ORBITS = [
+  { r: 1500, spacing: 1350, fortified: true,  advanced: false },
+  { r: 2250, spacing: 1300, fortified: false, advanced: true  },
+  { r: 3000, spacing: 1300, fortified: false, advanced: false },
+  { r: 3750, spacing: 1300, fortified: false, advanced: false },
+];
+// 軌道の間隔（750）に岩塊2つ分が収まる大きさまでに町を抑える（岩塊の半径 ≒ 町の外縁 ＋ 余白）
+const ASTEROID_MAX_TOWN_SCALE = 1.1;
+const ASTEROID_ORBIT_SPEED    = 26;     // 岩塊の速さ（px/秒）。竜の巡航の数分の一
+const ASTEROID_ROCK_PAD       = 60;     // 町の外縁から岩塊の縁までの余白
+const ASTEROID_PHASE_JITTER   = 0.08;   // 軌道上の並びのゆらぎ（間隔に対する割合）
+const ASTEROID_CRATERS_MIN    = 4;
+const ASTEROID_CRATERS_MAX    = 8;
+const ASTEROID_ROCK_COLOR     = "#5a5248";
+const ASTEROID_ROCK_RIM       = "#2a2622";
+const ASTEROID_CRATER_COLOR   = "rgba(20, 18, 16, 0.35)";
+const ASTEROID_SPACE_BG       = "#05060c";
+const ASTEROID_STAR_COLOR       = "#cfd8ff";
+const ASTEROID_STAR_ALPHA_BRIGHT = 0.75;   // 地表のスペックルを星として描くときの明るさ
+const ASTEROID_STAR_ALPHA_DIM    = 0.30;
+
+let asteroidRocks = [];
+const ASTEROID_GRID_INTERVAL = 4;   // 動く建物の格子を作り直す間隔（フレーム）
+let asteroidGridTick = 0;   // { cx, cy, vx, vy, r, angle, omega, radius, buildings, meta, townIndex, craters }
+
+/** ステージの背景色。小惑星帯は文明によらず宇宙の色。 */
+function stageBgColor(config) {
+  return worldShape === SHAPE_ASTEROIDS ? ASTEROID_SPACE_BG : config.bgColor;
+}
+
+/** 小惑星帯の町（＝岩塊）の初期位置。各要素は軌道の情報を持つ。 */
+function placeAsteroidTownCenters(boss) {
+  const centers = [];
+  ASTEROID_ORBITS.forEach((orb, k) => {
+    const count = Math.max(3, Math.round(Math.PI * 2 * orb.r / orb.spacing));
+    const step  = Math.PI * 2 / count;
+    const base  = random() * Math.PI * 2;
+    const dir   = k % 2 === 0 ? 1 : -1;   // 隣の軌道は逆回り
+    for (let i = 0; i < count; i++) {
+      const a = base + i * step + randRange(-ASTEROID_PHASE_JITTER, ASTEROID_PHASE_JITTER) * step;
+      centers.push({
+        x: boss.wx + Math.cos(a) * orb.r, y: boss.wy + Math.sin(a) * orb.r,
+        orbitR: orb.r, angle: a, omega: dir * ASTEROID_ORBIT_SPEED / orb.r,
+        fortified: orb.fortified, tierOffset: orb.advanced ? TOWN_TIER_ADVANCED : 0,
+        maxScale: ASTEROID_MAX_TOWN_SCALE,
+      });
+    }
+  });
+  return centers;
+}
+
+/** 生成済みの町を岩塊に載せる（建物に岩塊と相対位置を覚えさせる）。 */
+function buildAsteroidRocks(buildings, centers, boss) {
+  const byTown = new Map();
+  for (const b of buildings) {
+    if (b._townIndex === undefined) continue;
+    if (!byTown.has(b._townIndex)) byTown.set(b._townIndex, []);
+    byTown.get(b._townIndex).push(b);
+  }
+  for (const [t, list] of byTown) {
+    const c = centers[t];
+    if (!c || c.orbitR === undefined) continue;
+    let reach = 0;
+    for (const b of list) reach = Math.max(reach, Math.hypot(b.wx - c.x, b.wy - c.y) + (b.radius || 0));
+    const rock = {
+      cx: c.x, cy: c.y, vx: 0, vy: 0, r: c.orbitR, angle: c.angle, omega: c.omega,
+      radius: reach + ASTEROID_ROCK_PAD, buildings: list, meta: null, townIndex: t, craters: [],
+      canvas: null, ctx: null, half: 0, work: null, dirty: true,   // 焼いた絵と焼きかけの裏の絵（drawAsteroids）
+    };
+    const craterCount = randInt(ASTEROID_CRATERS_MIN, ASTEROID_CRATERS_MAX);
+    for (let k = 0; k < craterCount; k++) {
+      const a = random() * Math.PI * 2, d = Math.sqrt(random()) * rock.radius * 0.8;
+      rock.craters.push({ dx: Math.cos(a) * d, dy: Math.sin(a) * d, r: randRange(18, 46) });
+    }
+    for (const b of list) {
+      b._rock = rock;
+      b._lx = b.wx - c.x;
+      b._ly = b.wy - c.y;
+      if (b._townMeta) { rock.meta = b._townMeta; b._townMeta._rock = rock; }
+    }
+    asteroidRocks.push(rock);
+  }
+}
+
+/** 岩塊を軌道に沿って動かし、載っている建物・町の中心・当たり判定の格子を追従させる。 */
+function updateAsteroids(dt) {
+  if (asteroidRocks.length === 0 || dt <= 0) return;
+  const boss = settlements[bossSettlementIdx];
+  const ox = boss ? boss.wx : WORLD_W * 0.5, oy = boss ? boss.wy : WORLD_H * 0.5;
+  for (const rock of asteroidRocks) {
+    rock.angle += rock.omega * dt;
+    const nx = ox + Math.cos(rock.angle) * rock.r, ny = oy + Math.sin(rock.angle) * rock.r;
+    rock.vx = (nx - rock.cx) / dt;
+    rock.vy = (ny - rock.cy) / dt;
+    rock.cx = nx; rock.cy = ny;
+    for (const b of rock.buildings) { b.wx = nx + b._lx; b.wy = ny + b._ly; }
+    if (rock.meta) { rock.meta.cx = nx; rock.meta.cy = ny; }
+    const st = townStats.get(rock.townIndex);
+    if (st) { st.cx = nx; st.cy = ny; }
+  }
+  // 当たり判定の格子は数フレームに1回で足りる（岩塊は1フレームに0.5px程度しか動かない）。
+  // 毎フレーム作り直すと6000棟ぶんで約0.6msかかっていた。
+  if (++asteroidGridTick >= ASTEROID_GRID_INTERVAL) { asteroidGridTick = 0; rebuildRockGrid(); }
+}
+
 // 2線分の交点（なければ null）。
 function segmentIntersection(p1, p2, p3, p4) {
   const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
@@ -5872,7 +6000,7 @@ function applyTownFortification(townBuildings) {
 function placeBossBuilding(stageIndex, config) {
   const bossTheme = config.boss;
   // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
-  if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY) {
+  if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY || worldShape === SHAPE_ASTEROIDS) {
     return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
   }
   if (worldShape === SHAPE_FRONTLINE) {
@@ -9914,6 +10042,7 @@ function paintBuildingTile(bctx, bounds) {
 
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
+    if (settlement._rock) continue;   // v1.5.0: 動く建物は毎フレーム drawAsteroids が描く
     if (!layerBoundsHitCircle(bounds, settlement.wx, settlement.wy,
                               settlementLayerPadding(settlement))) continue;
     drawSettlementOnLayer(bctx, settlement);
@@ -9967,8 +10096,21 @@ function regenerateGroundDetail() {
 function drawGroundDetailOnLayer(bctx, bounds) {
   const config = STAGE_CONFIGS[currentStage];
   // bgColor("#rrggbb")から明・暗のバリエーションを作る
-  const lighter = shadeColor(config.bgColor, 14);
-  const darker  = shadeColor(config.bgColor, -8);
+  const lighter = shadeColor(stageBgColor(config), 14);
+  const darker  = shadeColor(stageBgColor(config), -8);
+
+  // v1.5.0: 宇宙には地表の質感が無い。スペックルを星として描くだけにする
+  if (worldShape === SHAPE_ASTEROIDS) {
+    for (let k = 0; k < groundDetailSpeckles.length; k++) {
+      const sp = groundDetailSpeckles[k];
+      if (!layerBoundsHitCircle(bounds, sp.x, sp.y, sp.size)) continue;
+      bctx.globalAlpha = sp.light ? ASTEROID_STAR_ALPHA_BRIGHT : ASTEROID_STAR_ALPHA_DIM;
+      bctx.fillStyle = ASTEROID_STAR_COLOR;
+      bctx.fillRect(sp.x, sp.y, sp.size * 0.6, sp.size * 0.6);
+    }
+    bctx.globalAlpha = 1.0;
+    return;
+  }
 
   // v0.9: Gemini生成の低コントラスト地表タイルを薄く敷く。
   // alpha を抑えてステージ背景色を透かす＝時代ごとの色味を保ちつつ質感だけ足す。
@@ -10013,7 +10155,7 @@ function drawRoadsOnLayer(bctx, bounds) {
   // 各町のメタ情報から道路を描く
   for (let s = 0; s < settlements.length; s++) {
     const meta = settlements[s]._townMeta;
-    if (!meta) continue;
+    if (!meta || meta._rock) continue;   // v1.5.0: 岩塊の町は地面に焼かない
     if (!layerBoundsHitCircle(bounds, meta.cx, meta.cy, townMetaLayerReach(meta))) continue;
     drawTownRoadsOnLayer(bctx, meta);
   }
@@ -10092,8 +10234,8 @@ function drawBridgesOnLayer(bctx) {
 function drawInterTownRoadsOnLayer(bctx) {
   if (townRoadEdges.length === 0) return;
   const config = STAGE_CONFIGS[currentStage];
-  const roadBase = shadeColor(config.bgColor, 20);
-  const roadWorn = shadeColor(config.bgColor, 34);
+  const roadBase = shadeColor(stageBgColor(config), 20);
+  const roadWorn = shadeColor(stageBgColor(config), 34);
 
   bctx.save();
   bctx.lineCap = "round";
@@ -10134,13 +10276,13 @@ function drawInterTownRoadsOnLayer(bctx) {
  */
 function drawTownBasesOnLayer(bctx, bounds) {
   const config = STAGE_CONFIGS[currentStage];
-  const paveColor = shadeColor(config.bgColor, 16);
-  const edgeColor = shadeColor(config.bgColor, -10);
+  const paveColor = shadeColor(stageBgColor(config), 16);
+  const edgeColor = shadeColor(stageBgColor(config), -10);
 
   bctx.save();
   for (let s = 0; s < settlements.length; s++) {
     const meta = settlements[s]._townMeta;
-    if (!meta) continue;
+    if (!meta || meta._rock) continue;   // v1.5.0: 岩塊の町は地面に焼かない
     if (!layerBoundsHitCircle(bounds, meta.cx, meta.cy, townMetaLayerReach(meta))) continue;
     const { cx, cy, plazaR, streets, townR, fields } = meta;
     const ringRadii = meta.ringRadii ?? [meta.ringR];
@@ -11087,6 +11229,24 @@ const BUILDING_GRID_CELL = 100; // セルサイズ（px）
 
 function buildingGridClear() { buildingGrid.clear(); }
 
+// v1.5.0: 動く建物（小惑星帯の岩塊の上）は別の格子に入れ、毎フレーム作り直す。
+// 静的な格子は落ちたときしか作り直さないので、そこに入れると位置がずれていく。
+// 問い合わせ側（buildingGridQuery 等）は両方を見る。
+const rockGrid = new Map();
+let rockSettlementIdx = [];   // settlements のうち岩塊の上の建物の添字（rebuildBuildingGrid が作る）
+
+function rebuildRockGrid() {
+  rockGrid.clear();
+  for (const s of rockSettlementIdx) {
+    const b = settlements[s];
+    if (!b) continue;
+    const key = ((b.wx / BUILDING_GRID_CELL) | 0) * 100003 + ((b.wy / BUILDING_GRID_CELL) | 0);
+    let bucket = rockGrid.get(key);
+    if (!bucket) { bucket = []; rockGrid.set(key, bucket); }
+    bucket.push(s);
+  }
+}
+
 function buildingGridInsert(settlementIdx, wx, wy) {
   const cx = (wx / BUILDING_GRID_CELL) | 0;
   const cy = (wy / BUILDING_GRID_CELL) | 0;
@@ -11106,6 +11266,7 @@ function buildingGridQuery(wx, wy, out) {
       const key = (cx + dx) * 100003 + (cy + dy);
       const b = buildingGrid.get(key);
       if (b) for (const idx of b) out.push(idx);
+      if (rockGrid.size > 0) { const r = rockGrid.get(key); if (r) for (const idx of r) out.push(idx); }
     }
   }
 }
@@ -11121,6 +11282,7 @@ function buildingGridQueryRadius(wx, wy, cellRadius, out) {
       const key = (cx + dx) * 100003 + (cy + dy);
       const b = buildingGrid.get(key);
       if (b) for (const idx of b) out.push(idx);
+      if (rockGrid.size > 0) { const r = rockGrid.get(key); if (r) for (const idx of r) out.push(idx); }
     }
   }
 }
@@ -11132,9 +11294,12 @@ function rebuildBuildingGrid() {
   // 廃墟も検出できる必要がある。攻撃判定・障害物判定など他の全消費箇所は
   // クエリ結果を受け取った後で必ず自前の `if (!s || s.fallen) continue;` を
   // 行っているため、fallen を含めて登録しても既存の挙動に影響しない。
+  rockSettlementIdx = [];
   for (let s = 0; s < settlements.length; s++) {
+    if (settlements[s]._rock) { rockSettlementIdx.push(s); continue; }   // v1.5.0: 動く建物は別の格子
     buildingGridInsert(s, settlements[s].wx, settlements[s].wy);
   }
+  rebuildRockGrid();
 }
 
 // 建物Spatial Hashの近傍クエリ用バッファ
@@ -11184,6 +11349,10 @@ function _queryBuildingsForAttack(bx, by) {
       const bucket = buildingGrid.get(key);
       if (bucket) {
         for (const idx of bucket) _settlementsInRange.add(idx);
+      }
+      if (rockGrid.size > 0) {
+        const rb = rockGrid.get(key);
+        if (rb) for (const idx of rb) _settlementsInRange.add(idx);
       }
     }
   }
@@ -11992,7 +12161,7 @@ function detonateFirework(settlement) {
     const r = 20 + fxRandom() * 80;
     spawnHitParticles(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
   }
-  spawnFire(cx, cy, settlement.radius * 2.2);
+  spawnFire(cx, cy, settlement.radius * 2.2, settlement._rock || null);
   triggerFlash("rgba(255,215,120,0.42)", 0.30);
   hapticPulse(200);
 }
@@ -12013,7 +12182,8 @@ function settlementFall(settlementIndex) {
   if (settlement._isDam) triggerFlood(settlement._damIdx);
 
   // v0.10: 石造りの城壁以外は炎上させる（燃える街の演出）
-  if (!settlement._isWall) spawnFire(settlement.wx, settlement.wy, settlement.radius);
+  if (!settlement._isWall) spawnFire(settlement.wx, settlement.wy, settlement.radius, settlement._rock || null);
+  if (settlement._rock) repaintAsteroidArea(settlement._rock, settlement);   // v1.5.0: 岩塊の絵のその棟の範囲だけ描き直す
 
   // 変更1: 卵持ち建物だけが卵を EGG_DROP_COUNT 個落とす。
   // 残りの建物は壊しても卵を落とさない（破壊演出はそのまま）。
@@ -12063,7 +12233,7 @@ function settlementFall(settlementIndex) {
   minimapBaseDirty = true;  // v0.6-p4: ミニマップの建物ドットキャッシュも更新
 
   // 建物レイヤーを部分的に再描画（fallen状態に更新）
-  if (buildingTiledLayer) {
+  if (buildingTiledLayer && !settlement._rock) {   // v1.5.0: 動く建物はタイルに描いていない
     // v0.11.4: 密集した市街地ではクリア矩形が連鎖的に重なり合う（A⊃B⊃C…）ため、
     // 自分と直接重なる相手だけ直しても、3棟以上の巻き込みは取りこぼす。
     // 重なりが連鎖する範囲全体（連結成分）をBFSで集め、
@@ -12072,7 +12242,7 @@ function settlementFall(settlementIndex) {
     // v0.49: タイル化により、対象は「その棟に掛かる生成済みタイル」だけになる。
     // 未生成のタイルは触らない（後で焼かれるとき fallen 状態で描かれる）。
     // 二段階の順序はタイル内でも保たれる（全棟のクリアを終えてから全棟を描く）。
-    const affected = collectOverlappingCluster(settlementIndex);
+    const affected = collectOverlappingCluster(settlementIndex).filter(s => !s._rock);
     for (const s of affected) {
       const pad = settlementLayerPadding(s);
       forEachLayerTileOverlapping(buildingTiledLayer, s.wx - pad, s.wy - pad, s.wx + pad, s.wy + pad,
@@ -12458,7 +12628,10 @@ function resetFires() {
 }
 
 // 建物破壊時に炎上を開始する。radius で炎の規模を決める。
-function spawnFire(wx, wy, radius) {
+// v1.5.0: 岩塊の上で燃えている炎は岩塊と一緒に流れる（スロットごとの岩塊。無ければ null）
+const fireRock = new Array(MAX_FIRES).fill(null);
+
+function spawnFire(wx, wy, radius, rock = null) {
   let slot = -1;
   for (let i = 0; i < MAX_FIRES; i++) { if (!fireActive[i]) { slot = i; break; } }
   if (slot < 0) {
@@ -12472,6 +12645,7 @@ function spawnFire(wx, wy, radius) {
   fireLife[slot]    = FIRE_DURATION * (0.7 + fxRandom() * 0.6);
   fireEmit[slot]    = 0;
   fireScale[slot]   = Math.max(0.7, radius / 12);
+  fireRock[slot]    = rock;
 }
 
 function _spawnEmber(wx, wy, type, scale) {
@@ -12499,6 +12673,8 @@ function updateFires(dt) {
     if (!fireActive[i]) continue;
     fireLife[i] -= dt;
     if (fireLife[i] <= 0) { fireActive[i] = 0; continue; }
+    const rk = fireRock[i];
+    if (rk) { fireX[i] += rk.vx * dt; fireY[i] += rk.vy * dt; }
     fireEmit[i] -= dt;
     if (fireEmit[i] <= 0) {
       fireEmit[i] = 0.05 + fxRandom() * 0.05;
@@ -12681,8 +12857,8 @@ const STRINGS = {
   chooseDragon: "竜を選ぶ",
   chooseContinent: "攻め込む土地を選ぶ",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
-  shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の聖地"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "聖地"],
+  shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の聖地", "漂う岩塊の小惑星帯"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "聖地", "岩塊"],
   wardHud: (n) => `結界${n}`,
   panelHint: "制圧したパネルの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -17303,7 +17479,7 @@ function showContinentSelect() {
   cardListEl.classList.remove("species-grid");
   cardListEl.classList.add("panel-grid");
   // v1.4.0: 列はステージの形の数だけ（行見出し＋形の数）
-  cardListEl.style.gridTemplateColumns = `minmax(58px, 0.9fr) repeat(${STAGE_SHAPES.length}, 1fr)`;
+  cardListEl.style.gridTemplateColumns = `minmax(54px, 0.85fr) repeat(${STAGE_SHAPES.length}, 1fr)`;
   cardListEl.innerHTML = "";
 
   const addCell = (cls, html) => {
@@ -17830,7 +18006,7 @@ function rebuildWallsForTier() {
   if (!boss) { settlements = kept; return; }
 
   const townMetas = [];
-  for (const s of kept) if (s._townMeta) townMetas.push(s._townMeta);
+  for (const s of kept) if (s._townMeta && !s._townMeta._rock) townMetas.push(s._townMeta);   // v1.5.0: 岩塊の町は除く
 
   // 城壁の量は時代（文明）で決まる。段階では増減させない。
   const walls = generateWallRing(boss, currentStage)
@@ -17860,6 +18036,7 @@ function advanceTier() {
 
   // (3) 城壁を張り直す（首都は最初から最大なのでボスは触らない）
   rebuildWallsForTier();
+  markAllAsteroidsDirty();   // v1.5.0: 補強で色が締まり、廃墟が建ち直るので岩塊の絵も焼き直す
 
   // (4) 動く敵の部隊を増やす。時代は同じなので顔ぶれは変わらず、部隊数だけ増える
   movers = generateMovers(currentStage, settlements.find(s => s.isBoss), nextTier);
@@ -17990,6 +18167,116 @@ function maybeEnrageBoss() {
 }
 
 /** 最強モードの目印。ボスの周りで脈打つ赤い輪（見て分かる必要がある）。 */
+/**
+ * v1.5.0: 岩塊（土台）とその上の町を描く。
+ * 建物を1棟ずつ毎フレーム描くと 142棟で約5.8ms（スマホ相当の画面）・717棟で約28ms（1920×1080）かかったので、
+ * 岩塊ごとに町ごと1枚の絵に焼いておき、毎フレームはそれを置くだけにする（静的レイヤーのタイルと同じ考え方）。
+ *   - 焼くのは画面の近くに来た岩塊だけ。遠ざかったら絵を捨ててメモリを返す
+ *   - 1棟あたり約0.15msかかるので、1岩塊（百数十棟）を一度に焼くと18msのカクつきになる。
+ *     **数フレームに分けて裏の絵に焼き、焼き上がったら差し替える**
+ *   - 建物が落ちたときは、その棟の範囲だけ切り抜いて描き直す（タイルの部分再描画と同じ）
+ *   - 段階の補強・再建のあとは全部を焼き直し待ちにする（これも分割で焼く）
+ */
+const ASTEROID_CANVAS_PAD        = 48;    // 岩塊の縁の外にはみ出す建物の影・廃墟の分の余白
+const ASTEROID_PREPAINT_MARGIN   = 900;   // 画面のこれだけ外にある岩塊まで先に焼いておく
+const ASTEROID_RELEASE_MARGIN    = 2200;  // これより遠ざかった岩塊の絵は捨ててメモリを返す
+const ASTEROID_PAINT_PER_FRAME   = 25;    // 1フレームに焼く建物の上限（約0.15ms/棟）
+
+function asteroidRockHalf(rock) { return Math.ceil(rock.radius + ASTEROID_CANVAS_PAD); }
+
+/** 岩塊の土台（縁・地肌・クレーター）を、中心 (cx,cy) に描く。 */
+function drawAsteroidGround(c, cx, cy, rock) {
+  c.fillStyle = ASTEROID_ROCK_RIM;
+  c.beginPath(); c.arc(cx, cy, rock.radius + 6, 0, Math.PI * 2); c.fill();
+  c.fillStyle = ASTEROID_ROCK_COLOR;
+  c.beginPath(); c.arc(cx, cy, rock.radius, 0, Math.PI * 2); c.fill();
+  c.fillStyle = ASTEROID_CRATER_COLOR;
+  for (const cr of rock.craters) {
+    c.beginPath(); c.arc(cx + cr.dx, cy + cr.dy, cr.r, 0, Math.PI * 2); c.fill();
+  }
+}
+
+/** 裏の絵に焼き始める（土台だけ描いて、建物は continueAsteroidPaint が少しずつ描く）。 */
+function beginAsteroidPaint(rock) {
+  const half = asteroidRockHalf(rock);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = half * 2;
+  const c = canvas.getContext("2d");
+  drawAsteroidGround(c, half, half, rock);
+  rock.work = { canvas, ctx: c, cursor: 0, half };
+  rock.dirty = false;
+}
+
+/** 裏の絵に建物を最大 budget 棟描く。焼き上がったら表に差し替える。描いた棟数を返す。 */
+function continueAsteroidPaint(rock, budget) {
+  const w = rock.work;
+  const c = w.ctx;
+  // 建物はワールド座標で描くので、今の岩塊の中心が絵の中心に来るようにずらす（相対位置は不変）
+  c.setTransform(1, 0, 0, 1, w.half - rock.cx, w.half - rock.cy);
+  let n = 0;
+  while (w.cursor < rock.buildings.length && n < budget) {
+    drawSettlementOnLayer(c, rock.buildings[w.cursor]);
+    w.cursor++; n++;
+  }
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  if (w.cursor >= rock.buildings.length) {
+    if (rock.canvas) rock.canvas.width = rock.canvas.height = 0;
+    rock.canvas = w.canvas; rock.ctx = c; rock.half = w.half;
+    rock.work = null;
+  }
+  return n;
+}
+
+/** 建物 s が落ちたとき、その棟の範囲だけ岩塊の絵を描き直す。 */
+function repaintAsteroidArea(rock, s) {
+  if (!rock.canvas) return;
+  const c = rock.ctx, half = rock.half;
+  const pad = settlementLayerPadding(s);
+  const x0 = s.wx - pad, y0 = s.wy - pad, size = pad * 2;
+  c.save();
+  c.setTransform(1, 0, 0, 1, half - rock.cx, half - rock.cy);
+  c.beginPath(); c.rect(x0, y0, size, size); c.clip();
+  c.clearRect(x0, y0, size, size);
+  drawAsteroidGround(c, rock.cx, rock.cy, rock);
+  for (const b of rock.buildings) {
+    const pb = settlementLayerPadding(b);
+    if (b.wx + pb < x0 || b.wx - pb > x0 + size || b.wy + pb < y0 || b.wy - pb > y0 + size) continue;
+    drawSettlementOnLayer(c, b);
+  }
+  c.restore();
+}
+
+function releaseAsteroidRock(rock) {
+  if (rock.canvas) rock.canvas.width = rock.canvas.height = 0;
+  if (rock.work) rock.work.canvas.width = rock.work.canvas.height = 0;
+  rock.canvas = null; rock.ctx = null; rock.work = null;
+  rock.dirty = true;
+}
+
+/** 段階の補強・再建・つづきからの復元で見た目が変わったとき、全部の岩塊を焼き直し待ちにする。 */
+function markAllAsteroidsDirty() {
+  for (const rock of asteroidRocks) rock.dirty = true;
+}
+
+function drawAsteroids() {
+  if (asteroidRocks.length === 0) return;
+  const vb = getViewBoundsWorld(80);
+  let budget = ASTEROID_PAINT_PER_FRAME;
+  const near = (rock, m) => rock.cx + rock.radius > vb.minX - m && rock.cx - rock.radius < vb.maxX + m &&
+                            rock.cy + rock.radius > vb.minY - m && rock.cy - rock.radius < vb.maxY + m;
+  for (const rock of asteroidRocks) {
+    if (!near(rock, ASTEROID_RELEASE_MARGIN)) { if (rock.canvas || rock.work) releaseAsteroidRock(rock); continue; }
+    const visible = near(rock, 0);
+    if (!visible && !near(rock, ASTEROID_PREPAINT_MARGIN)) continue;
+    if (!rock.work && (rock.dirty || !rock.canvas)) beginAsteroidPaint(rock);
+    // 画面内でまだ絵が無い岩塊は予算を超えても焼き上げる（土台だけの岩塊を見せない）
+    if (rock.work && (budget > 0 || (visible && !rock.canvas))) {
+      budget -= continueAsteroidPaint(rock, visible && !rock.canvas ? Infinity : budget);
+    }
+    if (visible && rock.canvas) ctx.drawImage(rock.canvas, rock.cx - rock.half, rock.cy - rock.half);
+  }
+}
+
 /** v1.4.0: 聖地の結界。立っている祠から首都へ光の筋を引き、首都を金の輪で包む（祠が減るほど薄く）。 */
 function drawSanctuaryWard() {
   if (sanctuaryShrines.length === 0) return;
@@ -18182,6 +18469,7 @@ function setupStageForResume(tier, fallenPacked) {
   // (2) 壊した建物を当てる。**城壁を張り直した後**に当てること
   //     （張り直しで settlements の並びが変わるため）。
   const applied = applyFallenBits(fallenPacked);
+  markAllAsteroidsDirty();   // v1.5.0
 
   // (3) 索引と見た目を作り直す
   rebuildBuildingGrid();
@@ -19697,7 +19985,7 @@ function updateLeader(dt) {
 // -----------------------------------------------------------------
 function render(now) {
   const stageConfig = STAGE_CONFIGS[currentStage];
-  ctx.fillStyle = stageConfig.bgColor;
+  ctx.fillStyle = stageBgColor(stageConfig);
   ctx.fillRect(0, 0, viewW, viewH);
 
   ctx.save();
@@ -19722,6 +20010,7 @@ function render(now) {
   drawTiledLayer(ctx, groundTiledLayer);
   drawTiledLayer(ctx, buildingTiledLayer);
 
+  drawAsteroids();     // v1.5.0: 小惑星帯の岩塊とその上の町（動くので毎フレーム描く）
   drawBossCitadel();   // v0.7: ボス城塞スプライト（静的レイヤーのボス円の上に重ねる）
 
   // v0.14: 建物の攻撃射程リング（薄い円の大量表示）は視覚ノイズだったため廃止
@@ -21206,7 +21495,7 @@ function rebuildMinimapBase() {
   }
   const minimapCtx = minimapBaseCtx;
   const stageConfig = STAGE_CONFIGS[currentStage];
-  minimapCtx.fillStyle = stageConfig.bgColor;
+  minimapCtx.fillStyle = stageBgColor(stageConfig);
   minimapCtx.fillRect(0, 0, MINIMAP_W, MINIMAP_H);
 
   const scaleX = MINIMAP_W / WORLD_W;
@@ -21215,6 +21504,7 @@ function rebuildMinimapBase() {
   const bosses = [];
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
+    if (settlement._rock) continue;   // v1.5.0: 岩塊は drawMinimap が毎フレーム描く
     const mx = settlement.wx * scaleX;
     const my = settlement.wy * scaleY;
 
@@ -21267,6 +21557,19 @@ function drawMinimapTownMarks(c, scaleX, scaleY) {
 }
 
 /** ミニマップのボス印。**他の何にも隠れないよう一番上で描く**。 */
+/** v1.5.0: 岩塊をミニマップに出す（動くので基底に焼かない）。建物が残っていれば敵の色、無ければ廃墟の色。 */
+function drawMinimapRocks(c) {
+  if (asteroidRocks.length === 0) return;
+  const sx = MINIMAP_W / WORLD_W, sy = MINIMAP_H / WORLD_H;
+  for (const rock of asteroidRocks) {
+    const standing = rock.buildings.some(b => !b.fallen);
+    c.fillStyle = standing ? MINIMAP_ENEMY_COLOR : MINIMAP_FALLEN_COLOR;
+    c.beginPath();
+    c.arc(rock.cx * sx, rock.cy * sy, Math.max(1.5, rock.radius * sx), 0, Math.PI * 2);
+    c.fill();
+  }
+}
+
 /** v1.4.0: 立っている祠を金の点で出す。首都の結界を解く目標なので、どこにあるかを地図でも分かるように。 */
 function drawMinimapShrines(c) {
   if (sanctuaryShrines.length === 0) return;
@@ -21354,6 +21657,7 @@ function drawMinimap() {
   drawMinimapTownMarks(minimapCtx, scaleX, scaleY);
 
   // v0.99.5: ボスは建物と移動敵の**後**に描く（何にも隠れない）
+  drawMinimapRocks(minimapCtx);     // v1.5.0: 動く岩塊
   drawMinimapBoss(minimapCtx);
   drawMinimapShrines(minimapCtx);   // v1.4.0: 聖地の祠（壊すべき目標）
 
@@ -22690,6 +22994,7 @@ function tick() {
     if (eraSlowmo)  tierSlowmoTimer = Math.max(0, tierSlowmoTimer - dt);
     const wdt = dt * timeScale;
 
+    updateAsteroids(wdt);         // v1.5.0: 岩塊を軌道に沿って動かす（当たり判定より先に位置を確定）
     simStep(wdt);
     maybeAutoSaveRun(now);        // v1.0.0: 壊した建物の自動セーブ（間隔を空けて書く）
     applyObstaclePushout();       // v0.6-p3: 城壁・地形の侵入不可
