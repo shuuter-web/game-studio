@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.7.0";
+const GAME_VERSION = "v1.8.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -989,6 +989,7 @@ const DEBUG_ENEMY_LABELS = {
   balloon: "🎈爆撃気球", raider: "🏹レイダー", warlord: "💀ウォーロード", shockman: "💢衝撃兵",
   healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車",
   behemoth_core: "👹巨獣(腕2本つき)", behemoth_arm: "👹巨獣の腕",
+  walker_hull: "🕷多脚戦車(脚6本つき)", walker_leg: "🕷多脚戦車の脚",
   // v0.57: 文明ごとの看板ユニット
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
   grenadiers: "💣擲弾兵隊", armortrain: "🚄装甲列車", teslagiant: "⚡雷公",
@@ -1010,6 +1011,7 @@ const DEBUG_ENEMY_ORDER = [
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
+  "walker_hull",
 ];
 
 /** 群れのすぐ横に敵を湧かせる。隊（packCount）は隊ごと、巨獣はコア＋腕2本まとめて。 */
@@ -1031,6 +1033,15 @@ function debugSpawnEnemy(key) {
     spawnDragonAppearEffect(m.wx, m.wy);
     return m;
   };
+
+  if (key === "walker_hull") {
+    const hull = spawnOne(def, 0, 0);
+    for (const leg of attachWalkerLegs(hull)) {
+      movers.push(leg);
+      spawnDragonAppearEffect(leg.wx, leg.wy);
+    }
+    return;
+  }
 
   if (key === "behemoth_core") {
     const core = spawnOne(def, 0, 0);
@@ -2199,7 +2210,7 @@ function chargeDamageReductionNow() {
 function applyMoverKnockback(m, fromX, fromY, speed) {
   if (speed <= 0 || !m.alive) return;
   // v1.7.0: 巨獣の関節パーツだけは押せる。バネが元の位置へ戻すので配置は壊れない
-  if (m.def && m.def.part === "arm") {
+  if (m.def && (m.def.part === "arm" || m.def.part === "leg")) {
     nudgeBehemothPart(m, fromX, fromY, speed / BEHEMOTH_PART_KNOCK_SCALE);
     return;
   }
@@ -6723,6 +6734,30 @@ const MOVER_DEFS = {
               damage: 4.0, aoe: 70, speed: 200, scatter: 90, color: "#ff9ad0" },
   },
 
+  // v1.8.0 多脚戦車（多パーツ）: 6本の脚で歩く巨大戦車。砲塔は胴と別に旋回する。
+  // 巨獣が「殴ると凹む関節」なら、こちらは「**折ると遅くなる関節**」。
+  // 脚は接地点が当たり判定なので、群れは近づくと自然にまず脚へ届く＝
+  // 教えなくても「脚を折った → 遅くなった」に気づける。
+  walker_hull: {
+    name: "walker_hull", sprite: "walker_hull", part: "hull", walker: true,
+    turnRate: 0.80,          // 図体のわりに素直には曲がらない（旋回半径33px）
+    elite: true, showHpBar: true,
+    hp: 2800, speed: 30, xp: 650, eggDrop: 8, radius: 44,
+    color: "#4a4a3a", glowColor: "#ffc040", moveType: "patrol",
+    // 主砲は1発だけの重い着弾弾。殲滅砲兵の3発散布とは撃ち方が違う
+    attack: { type: "shell", interval: 3.6, range: 700, count: 1,
+              damage: 5.0, aoe: 95, speed: 190, scatter: 34, color: "#ffc766" },
+    walkerReward: 70,        // 胴撃破の竜晶ボーナス
+  },
+  walker_leg: {
+    name: "walker_leg", sprite: "walker_foot", part: "leg",
+    hp: 200, speed: 0, xp: 45, eggDrop: 0, radius: 18,
+    // 6本ぶん並ぶので、1本あたりの外周グローは胴より暗く落とす
+    color: "#4a4a3a", glowColor: "#6a5a28",
+    hpBarWhenHurt: true,   // 無傷のときはバーを出さない（6本並ぶと画面が埋まる）
+    // 攻撃は踏みつけ（updateWalkerLeg 内）。ここには置かない
+  },
+
   // v0.25.1 財宝馬車: 竜ではない運搬体。群れから逃げ回り、倒すと竜晶/XPが大量に弾ける当たり枠。
   // 攻撃はせず（fleer）、空を漂って地形も無視。既存 balloon スプライトを金色オーラで流用。
   treasure: {
@@ -7951,6 +7986,16 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
     result.push(t);
   }
 
+  // v1.8.0: 多脚戦車を大戦（STAGE7）と最終（STAGE8）に1体。
+  if (stageIndex === 6 || stageIndex === 7) {
+    const hull = makeMover(MOVER_DEFS.walker_hull, randPoint);
+    hull.maxHp   = MOVER_DEFS.walker_hull.hp;
+    hull.hp      = MOVER_DEFS.walker_hull.hp;
+    hull.xpValue = MOVER_DEFS.walker_hull.xp;
+    result.push(hull);
+    for (const leg of attachWalkerLegs(hull)) result.push(leg);
+  }
+
   // v0.26: 巨獣（多パーツボス）を後半の一部ステージ（STAGE6・STAGE8）に1体。
   if (stageIndex === 5 || stageIndex === 7) {
     const core = makeMover(MOVER_DEFS.behemoth_core, randPoint);
@@ -8492,6 +8537,11 @@ function updateMovers(dt) {
     // v0.26: 巨獣の腕はコアに追従して浮遊し、独自ロジックで叩きつける
     if (def.part === "arm") { updateBehemothArm(m, dt); continue; }
 
+    // v1.8.0: 多脚戦車の脚は歩行（接地点の置き直し）だけで、共通の移動には乗らない
+    if (def.part === "leg") { updateWalkerLeg(m, dt); continue; }
+    // 胴は共通の移動・攻撃に乗せたうえで、脚の本数と砲塔だけ先に片付ける
+    if (def.walker) updateWalkerHull(m, dt);
+
     // v0.42: 潜行者 — 潜っている間は無敵・攻撃なし。移動は続けるので「どこから出るか」を読む。
     if (def.submerge) {
       if (m.submergeTimer === undefined) {
@@ -8796,11 +8846,13 @@ function updateMovers(dt) {
   // mover総数は数十のためO(n^2)で十分。
   for (let i = 0; i < movers.length; i++) {
     const a = movers[i];
-    if (!a.alive || a.def.part === "arm" || a.submerged) continue;
+    // v1.8.0: 関節パーツ（巨獣の腕・多脚戦車の脚）は押し合いの対象外。
+    // 親に付いて動くものを押すと、関節の計算と喧嘩して暴れる
+    if (!a.alive || a.def.part === "arm" || a.def.part === "leg" || a.submerged) continue;
     const aMovable = a.def.speed > 0;
     for (let j = i + 1; j < movers.length; j++) {
       const b = movers[j];
-      if (!b.alive || b.def.part === "arm" || b.submerged) continue;
+      if (!b.alive || b.def.part === "arm" || b.def.part === "leg" || b.submerged) continue;
       const bMovable = b.def.speed > 0;
       if (!aMovable && !bMovable) continue;   // 動かない者同士は押し合わない
       const samePack = a.packId !== undefined && a.packId === b.packId;
@@ -9573,8 +9625,10 @@ function damageMover(m, damage, srcX, srcY) {
     }
   }
   damage *= incomingDamageMult(m);   // v1.1.1: 楔竜のひび
-  // v1.7.0: 巨獣の関節パーツは殴られた向きへ押し込まれる（HPが減るだけだと置物に見える）
-  if (m.def.part === "arm") nudgeBehemothPart(m, srcX, srcY, damage);
+  // v1.7.0: 関節パーツは殴られた向きへ押し込まれる（HPが減るだけだと置物に見える）
+  if (m.def.part === "arm" || m.def.part === "leg") nudgeBehemothPart(m, srcX, srcY, damage);
+  // v1.8.0: 脚を全部折られた多脚戦車は無防備（折りきった見返り）
+  if (m.def.walker && m.grounded) damage *= WALKER_GROUNDED_MULT;
   m.hp -= damage;
   reportDamage(m, m.wx, m.wy, damage);
   if (m.hp <= 0) {
@@ -9625,6 +9679,27 @@ function damageMover(m, damage, srcX, srcY) {
         }
         spawnCollisionParticles(m.wx, m.wy);
       }
+    }
+
+    // v1.8.0: 多脚戦車 — 脚を折ると胴がつんのめる／胴を落とすと脚も崩れる
+    if (m.def.part === "leg" && m.parent) {
+      triggerShake(2.6, 0.12);
+      hapticPulse(60);
+      for (let k = 0; k < 10; k++) {
+        const a = fxRandom() * Math.PI * 2;
+        spawnHitParticles(m.wx + Math.cos(a) * fxRandom() * 26, m.wy + Math.sin(a) * fxRandom() * 26);
+      }
+    }
+    if (m.def.walker) {
+      for (const leg of (m.legs ?? [])) if (leg.alive) leg.alive = false;
+      if (m.def.walkerReward) awardCrystals(m.def.walkerReward);
+      for (let k = 0; k < 34; k++) {
+        const a = fxRandom() * Math.PI * 2;
+        const r = 20 + fxRandom() * 110;
+        spawnHitParticles(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
+      }
+      triggerFlash("rgba(255,200,90,0.45)", 0.38);
+      hapticPulse(300);
     }
 
     // v0.26: 巨獣コア撃破 → 腕も道連れ＋大報酬＋派手演出
@@ -9814,6 +9889,345 @@ function drawBehemothLimbs() {
   }
 }
 
+// =====================================================================
+// v1.8.0: 多脚戦車
+//
+// 脚は「付け根（胴に固定）→ 膝 → 足」の3点。巨獣の腕と同じバネを使うが、
+// 目標の決め方がまったく違う:
+//   腕 … 常に目標へ追従する（浮いている）
+//   脚 … **接地点は地面に置きっぱなし**。胴が離れたら持ち上げて置き直す
+// この置き直し（踏み替え）が歩行そのものなので、速度を書かなくても
+// 胴の動きに歩幅が自然についてくる。
+//
+// 踏み替えは三脚歩行: 脚を2組に分け、片方が全部接地してからもう片方が動く。
+// これをやらないと6本が同時に浮いて「浮遊する胴」になる。
+// =====================================================================
+const WALKER_LEG_COUNT    = 6;
+// 絵のソケット位置に合わせた付け根の角度（正面から ±30/±90/±150度）
+const WALKER_HIP_ANGLES   = [-30, 30, -90, 90, -150, 150];
+const WALKER_HIP_R        = 48;   // 胴の中心から付け根まで（絵のソケットの位置）
+// 実機で 120 にしたら脚の先が胴の絵（幅136px）からほとんど出ず、
+// 「脚で歩いている」ではなく「ずんぐりした塊が滑っている」に見えた。
+const WALKER_STRIDE_R     = 180;  // 胴の中心から、足を置きたい輪の半径
+const WALKER_LEG_LEN      = WALKER_STRIDE_R - WALKER_HIP_R;   // 付け根から足までの標準長
+const WALKER_STEP_TRIGGER = 62;   // 足が定位置からこれだけずれたら踏み替える
+const WALKER_STEP_TIME    = 0.30; // 踏み替えにかかる時間
+const WALKER_STEP_LEAD    = 0.60; // 進行方向へ何秒ぶん先に足を置くか（速度×この値）
+// 膝は伸びきっているときでも外へ張り出させる。張り出しを「縮んだぶん」だけに
+// すると実機では脚がまっすぐな棒になり、関節が1つも見えなかった。
+const WALKER_KNEE_BEND    = 70;   // 膝が外へ張り出す量
+const WALKER_FOOT_SPRING  = 300;  // 足のバネ（踏み替えの軌道に追いつく強さ）
+const WALKER_FOOT_DAMP    = 13.0;
+const WALKER_KNEE_SPRING  = 160;
+const WALKER_KNEE_DAMP    = 9.5;
+const WALKER_STOMP_DMG    = 7;    // 踏みつけの威力
+// 踏み替えの歩幅（62px）より少し大きくする。足が持ち上がった時点で竜は
+// 「さっきまで足があった場所」に残っているので、半径が歩幅を下回ると
+// 着地が毎回**空振り**する。48 では1回あたり 0.5体も巻き込めなかった。
+// 66 にすると 1回あたり 0.90体（実測185回）。踏みつけ単体で群れを溶かす数字ではなく、
+// 「脚の下に居続けると削られる」程度の圧をかける値。
+const WALKER_STOMP_R      = 66;   // 踏みつけの範囲
+const WALKER_STOMP_PUSH   = 92;   // 踏みつけの押し飛ばし距離
+const WALKER_LEG_SLOW     = 0.17; // 脚を1本折るごとに落ちる速度の割合
+const WALKER_GROUNDED_MULT = 1.5; // 脚を全部折られた胴が受ける被ダメージ倍率
+const WALKER_TURRET_TRAVERSE = 1.5;  // 砲塔の旋回角速度（rad/s）
+const WALKER_TURRET_SCALE = 0.62; // 胴の描画幅に対する砲塔の大きさ
+
+/**
+ * 胴に6本の脚を付ける（ステージ生成とデバッグ湧かせの共通処理）。
+ * @returns {Array} 生成した脚（呼び出し側が movers へ入れる）
+ */
+function attachWalkerLegs(hull) {
+  const legs = [];
+  for (let i = 0; i < WALKER_LEG_COUNT; i++) {
+    const leg = makeMover(MOVER_DEFS.walker_leg, () => ({ x: hull.wx, y: hull.wy }));
+    leg.maxHp   = MOVER_DEFS.walker_leg.hp;
+    leg.hp      = MOVER_DEFS.walker_leg.hp;
+    leg.xpValue = MOVER_DEFS.walker_leg.xp;
+    leg.parent   = hull;
+    leg.hipAngle = WALKER_HIP_ANGLES[i] * Math.PI / 180;
+    // 三脚歩行の組分け。隣り合う脚が別の組になるように並べる
+    leg.gaitGroup = i % 2;
+    const a = Math.atan2(hull.headingY, hull.headingX) + leg.hipAngle;
+    leg.wx = hull.wx + Math.cos(a) * WALKER_STRIDE_R;
+    leg.wy = hull.wy + Math.sin(a) * WALKER_STRIDE_R;
+    legs.push(leg);
+  }
+  hull.legs = legs;
+  return legs;
+}
+
+/** 脚の関節と歩行の状態（makeMover を汚さないための遅延初期化）。 */
+function initWalkerLegJoints(leg) {
+  leg.fvx = 0; leg.fvy = 0;                    // 足のバネ速度
+  leg.kneeX = leg.wx; leg.kneeY = leg.wy;      // 膝
+  leg.kvx = 0; leg.kvy = 0;
+  leg.hipX = leg.wx; leg.hipY = leg.wy;        // 付け根（胴に固定・描画用）
+  leg.plantX = leg.wx; leg.plantY = leg.wy;    // 今踏んでいる地面の点
+  leg.stepT = 1;                               // 1=接地 0〜1=踏み替え中
+  leg.stepFromX = leg.wx; leg.stepFromY = leg.wy;
+  leg.stepToX = leg.wx;   leg.stepToY = leg.wy;
+}
+
+/** その脚が今から踏み替えてよいか（三脚歩行＝反対の組が全部接地しているか）。 */
+function walkerLegMayStep(leg, hull) {
+  for (const other of hull.legs) {
+    if (other === leg || !other.alive) continue;
+    if (other.gaitGroup !== leg.gaitGroup && other.stepT < 1) return false;
+  }
+  return true;
+}
+
+/** 足が地面に着いた瞬間の踏みつけ。 */
+function walkerStomp(leg) {
+  const r2 = WALKER_STOMP_R * WALKER_STOMP_R;
+  const fer = moverFerocity();
+  let hit = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - leg.plantX, dy = py[i] - leg.plantY;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > r2) continue;
+    applyDamageToBoid(i, WALKER_STOMP_DMG * fer);
+    const d = Math.sqrt(d2) || 1;
+    applyKickDist(i, dx / d, dy / d, WALKER_STOMP_PUSH);
+    hit++;
+  }
+  // 土煙は当たっていなくても出す（踏んだ事実が見えないと避ける学習ができない）
+  for (let k = 0; k < 5; k++) {
+    const a = fxRandom() * Math.PI * 2, r = WALKER_STOMP_R * (0.3 + fxRandom() * 0.7);
+    spawnCollisionParticles(leg.plantX + Math.cos(a) * r, leg.plantY + Math.sin(a) * r);
+  }
+  shockwaveFxList.push({ x: leg.plantX, y: leg.plantY, maxR: WALKER_STOMP_R,
+                         life: SHOCKWAVE_FX_DURATION, color: "#ffc766" });
+  triggerShake(hit > 0 ? 2.0 : 1.1, 0.07);
+}
+
+/** 多脚戦車の脚1本。接地点を地面に置いたまま、離れたら持ち上げて置き直す。 */
+function updateWalkerLeg(leg, dt) {
+  const hull = leg.parent;
+  if (!hull || !hull.alive) { leg.alive = false; return; }
+  if (leg.fvx === undefined) initWalkerLegJoints(leg);
+
+  const hullAng = Math.atan2(hull.headingY, hull.headingX);
+  const a = hullAng + leg.hipAngle;
+  leg.hipX = hull.wx + Math.cos(a) * WALKER_HIP_R;
+  leg.hipY = hull.wy + Math.sin(a) * WALKER_HIP_R;
+
+  // 足を置きたい場所＝付け根の外側。進んでいるぶんだけ**前に置く**ので、
+  // 歩幅が速度に比例して伸びる（遅いとちょこちょこ、速いと大股になる）。
+  const spd = (hull.def.speed || 0) * (hull.speedMult ?? 1);
+  const tgtX = hull.wx + Math.cos(a) * WALKER_STRIDE_R + hull.headingX * spd * WALKER_STEP_LEAD;
+  const tgtY = hull.wy + Math.sin(a) * WALKER_STRIDE_R + hull.headingY * spd * WALKER_STEP_LEAD;
+
+  if (leg.stepT >= 1) {
+    const dx = tgtX - leg.plantX, dy = tgtY - leg.plantY;
+    if (dx * dx + dy * dy > WALKER_STEP_TRIGGER * WALKER_STEP_TRIGGER &&
+        walkerLegMayStep(leg, hull)) {
+      leg.stepFromX = leg.plantX; leg.stepFromY = leg.plantY;
+      leg.stepToX = tgtX;         leg.stepToY = tgtY;
+      leg.stepT = 0;
+    }
+  } else {
+    leg.stepT = Math.min(1, leg.stepT + dt / WALKER_STEP_TIME);
+    const e = leg.stepT * leg.stepT * (3 - 2 * leg.stepT);
+    leg.plantX = leg.stepFromX + (leg.stepToX - leg.stepFromX) * e;
+    leg.plantY = leg.stepFromY + (leg.stepToY - leg.stepFromY) * e;
+    if (leg.stepT >= 1) walkerStomp(leg);
+  }
+  // 浮いている高さ（0=接地）。描画の拡大と影のずらしに使う
+  leg.footAir = leg.stepT >= 1 ? 0 : Math.sin(Math.PI * leg.stepT);
+
+  // 足は接地点へバネで追従する。殴られてずれても歩行が引き戻す
+  springAxis(leg, "wx", "fvx", leg.plantX, WALKER_FOOT_SPRING, WALKER_FOOT_DAMP, dt);
+  springAxis(leg, "wy", "fvy", leg.plantY, WALKER_FOOT_SPRING, WALKER_FOOT_DAMP, dt);
+
+  // 膝は付け根と足の中間から外へ。脚が縮むほど深く折れる
+  {
+    const dx = leg.wx - leg.hipX, dy = leg.wy - leg.hipY;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const bend = WALKER_KNEE_BEND * (0.50 + Math.max(0, 1 - d / WALKER_LEG_LEN));
+    let nx = -dy / d, ny = dx / d;
+    const mx = (leg.hipX + leg.wx) * 0.5, my = (leg.hipY + leg.wy) * 0.5;
+    if (nx * (mx - hull.wx) + ny * (my - hull.wy) < 0) { nx = -nx; ny = -ny; }
+    springAxis(leg, "kneeX", "kvx", mx + nx * bend, WALKER_KNEE_SPRING, WALKER_KNEE_DAMP, dt);
+    springAxis(leg, "kneeY", "kvy", my + ny * bend, WALKER_KNEE_SPRING, WALKER_KNEE_DAMP, dt);
+  }
+
+  // 足の向き（爪先は外向き＝膝から足へ）
+  const hx = leg.wx - leg.kneeX, hy = leg.wy - leg.kneeY;
+  const hl = Math.sqrt(hx * hx + hy * hy) || 1;
+  leg.headingX = hx / hl; leg.headingY = hy / hl;
+}
+
+/** 多脚戦車の胴。脚の残り本数で速度が決まり、砲塔は胴と別に旋回する。 */
+function updateWalkerHull(hull, dt) {
+  if (!hull.legs) return;
+  let alive = 0;
+  for (const leg of hull.legs) if (leg.alive) alive++;
+  hull.legsAlive = alive;
+  // **脚を折るほど遅くなる**。全部折れたら動けない（＝的になる）
+  hull.speedMult = Math.max(0, 1 - WALKER_LEG_SLOW * (hull.legs.length - alive));
+  hull.grounded  = alive === 0;
+
+  // 砲塔は胴の向きと無関係に旋回する。旋回速度に上限があるので、
+  // 群れが横を走り抜けると砲塔が追いきれず撃ち損ねる
+  const targetIdx = findNearestAliveBoid(hull.wx, hull.wy);
+  if (hull.turretAngle === undefined) hull.turretAngle = Math.atan2(hull.headingY, hull.headingX);
+  if (targetIdx >= 0) {
+    const want = Math.atan2(py[targetIdx] - hull.wy, px[targetIdx] - hull.wx);
+    const diff = wrapAngle(want - hull.turretAngle);
+    const maxT = WALKER_TURRET_TRAVERSE * dt;
+    hull.turretAngle = wrapAngle(hull.turretAngle + Math.max(-maxT, Math.min(maxT, diff)));
+  }
+
+  // 主砲は共通の攻撃処理（shell）が撃つので、**撃った瞬間はタイマーの跳ね上がりで拾う**。
+  // 共通処理に砲口炎の都合を持ち込まずに済む。
+  if (hull._prevAtkTimer !== undefined && hull.attackTimer > hull._prevAtkTimer + 0.5) {
+    hull.muzzleT = 0.14;
+    triggerShake(1.4, 0.06);
+  }
+  hull._prevAtkTimer = hull.attackTimer;
+  if (hull.muzzleT > 0) hull.muzzleT = Math.max(0, hull.muzzleT - dt);
+}
+
+/**
+ * 脚の描画（胴より下のレイヤー）。付け根→膝→足を2本の装甲柱で結ぶ。
+ * 柱は毎フレーム伸び縮みするので、絵を伸ばさず多角形で描く
+ * （装甲板を並べる巨獣の腕と違い、脚は長さの変化が大きい）。
+ */
+function drawWalkerLegs() {
+  for (const leg of movers) {
+    if (!leg.alive || !leg.def || leg.def.part !== "leg") continue;
+    const hull = leg.parent;
+    if (!hull || !hull.alive || leg.hipX === undefined) continue;
+
+    const air = leg.footAir || 0;
+    // 浮いている足の**落ちる先**を地面に出す。真俯瞰では高さが描けないので、
+    // この影が「ここに降ってくる」の唯一の予告になる
+    if (air > 0.02) {
+      ctx.save();
+      ctx.globalAlpha = 0.16 + 0.30 * (1 - air);
+      ctx.fillStyle = "#000000";
+      ctx.beginPath();
+      ctx.ellipse(leg.stepToX, leg.stepToY, WALKER_STOMP_R * (0.55 + 0.45 * (1 - air)),
+                  WALKER_STOMP_R * (0.38 + 0.32 * (1 - air)), 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.5 * (1 - air) + 0.2;
+      ctx.strokeStyle = "#ffc766";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(leg.stepToX, leg.stepToY, WALKER_STOMP_R, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
+    // 傷つくほど赤く灼ける（脚にHPバーを付けると6本ぶん並んで画面が埋まる）
+    const hurt = 1 - Math.max(0, Math.min(1, leg.hp / (leg.maxHp || 1)));
+    const hx = leg.hipX, hy = leg.hipY, kx = leg.kneeX, ky = leg.kneeY;
+    const fx = leg.wx, fy = leg.wy;
+    const strut = (ax, ay, bx, by, wa, wb) => {
+      const dx = bx - ax, dy = by - ay;
+      const d = Math.hypot(dx, dy) || 1;
+      const nx = -dy / d, ny = dx / d;
+      ctx.beginPath();
+      ctx.moveTo(ax + nx * wa, ay + ny * wa);
+      ctx.lineTo(bx + nx * wb, by + ny * wb);
+      ctx.lineTo(bx - nx * wb, by - ny * wb);
+      ctx.lineTo(ax - nx * wa, ay - ny * wa);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    };
+    ctx.save();
+    // 浮いている脚は影を落として高さを出す
+    if (air > 0.02) {
+      ctx.globalAlpha = 0.18 * air;
+      ctx.fillStyle = "#000000";
+      ctx.strokeStyle = "rgba(0,0,0,0)";
+      ctx.lineWidth = 0;
+      const o = 7 * air;
+      strut(hx + o, hy + o * 1.4, kx + o, ky + o * 1.4, 11, 8.5);
+      strut(kx + o, ky + o * 1.4, fx + o, fy + o * 1.4, 8.5, 6);
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = hurt > 0.02
+      ? `rgb(${Math.round(74 + 110 * hurt)},${Math.round(74 - 20 * hurt)},${Math.round(58 - 14 * hurt)})`
+      : "#4a4a3a";
+    ctx.strokeStyle = "#1a1a16";
+    ctx.lineWidth = 2.2;
+    strut(hx, hy, kx, ky, 12.5, 9.5);   // 腿
+    strut(kx, ky, fx, fy, 9.5, 6.5);    // すね
+    // 膝の関節
+    ctx.beginPath();
+    ctx.arc(kx, ky, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#ffc040";
+    ctx.globalAlpha = 0.55 + 0.25 * Math.sin(breathTime * 3 + leg.hipAngle * 2);
+    ctx.beginPath();
+    ctx.arc(kx, ky, 3.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+}
+
+/** 砲塔（胴の絵の上に重ねる＝胴とは別に旋回して見える）。 */
+function drawWalkerTurrets() {
+  const img = enemyImages.walker_turret;
+  for (const hull of movers) {
+    if (!hull.alive || !hull.def || !hull.def.walker) continue;
+    const ang = hull.turretAngle ?? Math.atan2(hull.headingY, hull.headingX);
+    const drawW = hull.def.radius * (ENEMY_SPRITE_META.walker_hull.drawScale) * WALKER_TURRET_SCALE;
+    ctx.save();
+    ctx.translate(hull.wx, hull.wy);
+    ctx.rotate(ang + Math.PI / 2);
+    if (img) {
+      const sc = drawW / img.naturalWidth;
+      const h  = img.naturalHeight * sc;
+      // 回転軸は砲塔の丸い部分の中心（画像の重心は砲身に引っぱられるので使わない）
+      ctx.drawImage(img, -drawW * 0.5, -h * 0.71, drawW, h);
+      // 砲口炎（撃った瞬間だけ）
+      if (hull.muzzleT > 0) {
+        const f = hull.muzzleT / 0.14;
+        ctx.globalAlpha = f;
+        ctx.fillStyle = "#ffe0a0";
+        const tip = -h * 0.71 - 4;
+        ctx.beginPath();
+        ctx.moveTo(0, tip);
+        ctx.lineTo(-13 * f, tip + 26 * f);
+        ctx.lineTo(13 * f, tip + 26 * f);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    } else {
+      ctx.fillStyle = "#4a4a3a";
+      ctx.strokeStyle = "#1a1a16";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, drawW * 0.4, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      ctx.fillRect(-4, -drawW * 0.95, 8, drawW * 0.6);
+    }
+    ctx.restore();
+    // 脚を全部折られた＝動けない。胴が無防備になったことを輪で見せる
+    if (hull.grounded) {
+      ctx.save();
+      ctx.globalAlpha = 0.30 + 0.25 * Math.sin(breathTime * 6);
+      ctx.strokeStyle = "#ff6040";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(hull.wx, hull.wy, hull.def.radius * 1.7, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
 /** 移動敵の描画（本体＋HPバー＋衝撃波リング）。ワールド座標系で呼ぶ。 */
 function drawMovers() {
   for (const m of movers) {
@@ -9924,7 +10338,9 @@ function drawMovers() {
       const meta  = ENEMY_SPRITE_META[spriteKey];
       // v1.7.0: 巨獣の拳は振りかぶるほど大きく描く。真俯瞰では「振り上げた」を
       // 高さで表せないので、拡大と濃い落ち影で代わりにする。
-      const lift  = m.armCharge ? 1 + 0.26 * m.armCharge : 1;
+      const lift  = m.armCharge ? 1 + 0.26 * m.armCharge
+                  : m.footAir   ? 1 + 0.30 * m.footAir
+                  : 1;
       const drawW = def.radius * meta.drawScale * lift;
       const s     = drawW / enemyImg.naturalWidth;
       const drawH = enemyImg.naturalHeight * s;
@@ -10090,7 +10506,9 @@ function drawMovers() {
     // v0.13: pack個体（マンモス・騎士）は頭数が多くバーが常時出ると視覚ノイズに
     // なるため、被弾している個体だけ表示する。単独の大物は従来どおり常時表示
     const hpRatio = Math.max(0, m.hp / m.maxHp);
-    if (m.packId === undefined || hpRatio < 1) {
+    // v1.8.0: def.hpBarWhenHurt も pack と同じ扱い（多脚戦車の脚6本が常時バーを出すと
+    // 戦車そのものがバーに埋もれる）
+    if ((m.packId === undefined && !def.hpBarWhenHurt) || hpRatio < 1) {
       const barW = def.radius * 2.4;
       const barX = m.wx - barW * 0.5;
       const barY = m.wy - def.radius - 14;
@@ -16956,6 +17374,7 @@ const CODEX_ENEMY_NAMES = {
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
   behemoth_core: "巨獣（コア）", behemoth_arm: "巨獣の腕",
+  walker_hull: "多脚戦車", walker_leg: "多脚戦車の脚",
   raider: "レイダー", treasure: "財宝馬車",
 };
 
@@ -16965,6 +17384,8 @@ const CODEX_SPECIAL_ERA = {
   treasure:       "全文明 — 1体だけ漂う当たり枠",
   behemoth_core:  "VI 電気 / VIII 最終",
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
+  walker_hull:    "VII 大戦 / VIII 最終",
+  walker_leg:     "VII 大戦 / VIII 最終（胴の周り6本）",
   splitter_mid:   "分裂体を壊すと出る",
   splitter_small: "分裂体（中）を壊すと出る",
 };
@@ -16988,6 +17409,8 @@ function codexAttackLabel(def) {
   const a = def.attack;
   if (!a) {
     if (def.name === "behemoth_arm") return "薙ぎ払い（振りかぶり有）＋叩きつけ衝撃波";
+    if (def.name === "walker_leg")
+      return `踏みつけ 範囲${WALKER_STOMP_R}・威力${WALKER_STOMP_DMG}（降りる先に影が出る）`;
     if (def.treasure) return "攻撃しない — 逃げ回る";
     return "攻撃しない";
   }
@@ -20552,7 +20975,9 @@ function render(now) {
   drawEmbers();             // v0.10: 燃える建物の火の粉・煙（建物の上・ユニットの下）
   drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
   drawBehemothLimbs();       // v1.7.0: 巨獣の関節（コア・拳の下に敷く）
+  drawWalkerLegs();          // v1.8.0: 多脚戦車の脚（胴と足の下に敷く）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
+  drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
   drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
   drawBreathAttacks(now);
   drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
@@ -22417,6 +22842,10 @@ const ENEMY_IMAGE_SOURCES = {
   citadel:       "assets/boss_citadel.png",
   behemoth_core: "assets/mover_behemoth_core.png",
   behemoth_arm:  "assets/mover_behemoth_arm.png",
+  walker_hull:   "assets/mover_walker_hull.png",
+  walker_foot:   "assets/mover_walker_foot.png",
+  // v1.8.0: 砲塔は敵そのものではなく胴の上に重ねる部品（drawWalkerTurrets）
+  walker_turret: "assets/mover_walker_turret.png",
   // v1.7.0: 腕の関節板。敵そのものではないので ENEMY_SPRITE_META には載せない
   // （drawMovers は通らず、drawBehemothLimbs が自前の寸法で並べる）
   behemoth_link: "assets/mover_behemoth_link.png",
@@ -22573,6 +23002,10 @@ const ENEMY_SPRITE_META = {
   // forward:"none" は進行方向を向かないもの（気球・静止塔・門・要塞・浮遊する塊）。
   balloon:        { px: 0.499, py: 0.459, forward: "none", drawScale: 2.97, hover: true },
   behemoth_arm:   { px: 0.524, py: 0.482, forward: "up", drawScale: 1.41, hover: true },
+  // v1.8.0: 多脚戦車。胴は左右上下対称なので重心＝中心。
+  // 足は爪先が外を向くので、回転軸を足首寄り（py 0.58）に置いて脚と繋げる。
+  walker_hull:    { px: 0.498, py: 0.498, forward: "up", drawScale: 3.10 },
+  walker_foot:    { px: 0.496, py: 0.580, forward: "up", drawScale: 1.95 },
   behemoth_core:  { px: 0.498, py: 0.525, forward: "up", drawScale: 3.42 },
   // v0.47.1: 生成された絵の前後が逆だった（冠に見えた台形が実は台座で、顔が下を向いていた）ので
   // 画像そのものを180度回してある。ここは回転後の実測値。
