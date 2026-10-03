@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.6.0";
+const GAME_VERSION = "v1.7.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2198,7 +2198,12 @@ function chargeDamageReductionNow() {
 /** 移動敵を弾き飛ばす（突進中の体当たりから呼ぶ）。減衰する速度チャネルに積む。 */
 function applyMoverKnockback(m, fromX, fromY, speed) {
   if (speed <= 0 || !m.alive) return;
-  // 動かない敵（設置物・巨獣の腕など）は押さない。押すと配置の意味が壊れる
+  // v1.7.0: 巨獣の関節パーツだけは押せる。バネが元の位置へ戻すので配置は壊れない
+  if (m.def && m.def.part === "arm") {
+    nudgeBehemothPart(m, fromX, fromY, speed / BEHEMOTH_PART_KNOCK_SCALE);
+    return;
+  }
+  // 動かない敵（設置物・門など）は押さない。押すと配置の意味が壊れる
   if (!m.def || !m.def.speed) return;
   const dx = m.wx - fromX, dy = m.wy - fromY;
   const d  = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -8090,13 +8095,62 @@ function makeMover(def, randPoint) {
 // v0.27: 召喚門が湧かせたレイダーの一時置き場（updateMovers 反復後にまとめて movers へ）
 const _pendingMovers = [];
 
-// v0.26: 巨獣の腕の挙動パラメータ
-const BEHEMOTH_ARM_ORBIT         = 100;  // コア中心からの浮遊半径
+// =====================================================================
+// v1.7.0: 巨獣の腕 — 関節とバネ（Shooter指示「単にパーツが分かれているだけ」の解消）
+//
+// 腕を **肩（コアに固定）→ 肘 → 拳（HPを持つパーツ）** の3点で持つ。
+// 肘と拳は目標位置へ**バネで追いかけるだけ**にしてあり、固い追従はしない。
+// バネにした理由は3つとも手触りに直結している:
+//   1. 遅れて付いてくる  … コアが回頭すると腕が振り回される＝関節に見える
+//   2. 押し込める        … 竜が殴ると関節ごと凹み、バネが戻す（壊れも外れもしない）
+//   3. 軌跡がタダで出る  … 振りかぶり→薙ぎ払いは目標点を動かすだけで鞭のようにしなる
+// 2D横スクロールのボス（複数パーツが鎖で繋がっているアレ）を真俯瞰に置き換えた形。
+// =====================================================================
+// 肩はコアの**絵の縁**に置く。中心寄り（40）だと関節板が3枚ともコアの絵の下に
+// 隠れてしまい、腕が繋がって見えなかった（実機で確認）。
+const BEHEMOTH_SHOULDER_R        = 76;   // コア中心から肩までの距離
+const BEHEMOTH_ARM_ORBIT         = 88;   // 平常時、肩から拳までの距離
+const BEHEMOTH_ELBOW_BEND        = 54;   // 腕が縮んだとき肘が外へ張り出す量
+// バネ係数。k が復元の強さ、damp が減衰。k=300/damp=11 で減衰比 0.3 前後＝
+// 「戻ってきて少し行き過ぎる」。ここを堅くしすぎると昔のカクついた追従に戻る。
+const BEHEMOTH_FIST_SPRING       = 300;
+const BEHEMOTH_FIST_DAMP         = 11.0;
+const BEHEMOTH_ELBOW_SPRING      = 130;  // 肘は拳より緩い＝一拍遅れて曲がる
+const BEHEMOTH_ELBOW_DAMP        = 8.0;
+const BEHEMOTH_PART_SLACK        = 92;   // 目標からここまでしか離れない（腕がちぎれて見える上限）
+// 実測で決めた値（誰も殴っていない静止状態に既知の一撃を入れて測った）:
+//   体当たり8ダメージ → 拳が 15px 凹んで 0.16秒で戻る ／ 緋竜の近接25 → 33px ／
+//   巌竜の突進60 → 42px・0.32秒（上限に当たる）
+// 拳の絵は約37px幅なので「普通の体当たりで4割、重い突進なら1個ぶん以上」。
+// 初版の 9.0 は 4px しか動かず、画面ではまったく見えなかった。
+const BEHEMOTH_PART_KNOCK_SCALE  = 55;   // ダメージ1あたりの押し込み速度
+const BEHEMOTH_PART_KNOCK_CAP    = 900;  // 1発ぶんの押し込み速度の上限（近接・突進で到達）
+
+// v0.26: 叩きつけ（近くに来た竜への点攻撃）。v1.7.0 で薙ぎ払い中は出さないようにした
 const BEHEMOTH_ARM_SLAM_INTERVAL = 2.4;  // 叩きつけ間隔（秒）
 const BEHEMOTH_ARM_SLAM_RANGE    = 280;  // 叩きつけを始める距離
 const BEHEMOTH_ARM_SLAM_RADIUS   = 120;  // 衝撃波半径
 const BEHEMOTH_ARM_SLAM_DMG      = 6;    // 衝撃波ダメージ
 const BEHEMOTH_ARM_SLAM_PUSH     = 70;   // ノックバック距離（通常の踏鳴らし26より強い）
+
+// v1.7.0: 薙ぎ払い。**予備動作を腕そのもので見せる**のが主眼（Shooter指示）。
+// 腕を縮めて振りかぶる約1秒 → 0.34秒で振り抜く。地面の予告帯は補助で、
+// 腕が引かれる動きだけでも「来る」が読めるようにしてある。
+const BEHEMOTH_SWEEP_INTERVAL = 5.2;  // 薙ぎ払いの間隔（秒・腕ごと）
+const BEHEMOTH_SWEEP_RANGE    = 560;  // 群れがこの距離に入ったら振りかぶる
+const BEHEMOTH_SWEEP_WINDUP   = 0.95; // 予備動作（振りかぶり）
+const BEHEMOTH_SWEEP_TIME     = 0.34; // 振り抜き
+const BEHEMOTH_SWEEP_RECOVER  = 0.60; // 振り切った後の戻し
+const BEHEMOTH_SWEEP_SPAN     = 2.95; // 薙ぐ角度（rad・約170度）
+const BEHEMOTH_SWEEP_REACH    = 165;  // 振り抜いたときの肩から拳までの距離
+const BEHEMOTH_SWEEP_COIL     = 0.42; // 振りかぶりで腕を縮める割合
+// 薙ぐ向きと**逆**へ少し引いてから振る。これが無いと、群れが真横に居るときは
+// 振り始めの角度が平常時の角度とほぼ同じになり、予備動作が「少し縮む」だけになる
+// （実機で確認: 腕の回転が1度しかない配置があった）。
+const BEHEMOTH_SWEEP_WINDBACK = 0.50; // 振りかぶりで逆へ引く角度（rad・約29度）
+const BEHEMOTH_SWEEP_BAND     = 34;   // 腕の当たりの太さ（拳だけでなく前腕全体で当たる）
+const BEHEMOTH_SWEEP_DMG      = 9;
+const BEHEMOTH_SWEEP_PUSH     = 150;  // 弾き飛ばし距離
 
 // 指定座標に衝撃波を発生（範囲内の竜へダメージ＋外向き押し飛ばし＋リングFX）。
 /**
@@ -8191,34 +8245,227 @@ function emitShockwave(wx, wy, radius, damage, pushDist) {
   hapticPulse(25);
 }
 
-// 巨獣の腕: コアの左右に浮遊（ゆっくり漂う）し、最寄りの竜へ拳を向けて叩きつける。
+// ---------------------------------------------------------------------
+// v1.7.0: 巨獣の腕（関節つき）
+// ---------------------------------------------------------------------
+
+/** 点と線分の距離の二乗。薙ぎ払いを「拳」ではなく「前腕の線」で当てるのに使う。 */
+function pointSegDist2(pxx, pyy, ax, ay, bx, by) {
+  const vx = bx - ax, vy = by - ay;
+  const len2 = vx * vx + vy * vy;
+  let t = len2 > 0 ? ((pxx - ax) * vx + (pyy - ay) * vy) / len2 : 0;
+  t = t < 0 ? 0 : (t > 1 ? 1 : t);
+  const dx = pxx - (ax + vx * t), dy = pyy - (ay + vy * t);
+  return dx * dx + dy * dy;
+}
+
+/**
+ * バネ1軸ぶんを1ステップ進める。holder の座標と速度を直接書き換える
+ * （毎フレーム 2腕×2関節×2軸 回るので、戻り値のオブジェクトは作らない）。
+ */
+function springAxis(holder, posKey, velKey, target, k, damp, dt) {
+  holder[velKey] += -k * (holder[posKey] - target) * dt;
+  holder[velKey] *= Math.exp(-damp * dt);
+  holder[posKey] += holder[velKey] * dt;
+}
+
+/** 関節の状態をその場に用意する（makeMover を巨獣専用に汚さないための遅延初期化）。 */
+function initBehemothArmJoints(m) {
+  m.fvx = 0; m.fvy = 0;                  // 拳の速度
+  m.elbowX = m.wx; m.elbowY = m.wy;      // 肘
+  m.evx = 0; m.evy = 0;
+  m.shX = m.wx; m.shY = m.wy;            // 肩（コアに固定・描画用）
+  m.armState = "idle";
+  m.armT = 0;
+  m.sweepCd = BEHEMOTH_SWEEP_INTERVAL * (0.4 + random() * 0.8);
+  m.swingFrom = 0; m.swingTo = 0; m.sweepDir = 1;
+  m.armCharge = 0;      // 0=平常 1=振りかぶり切った。描画の灼けと拳の拡大に使う
+  m.swingHit = new Set();
+}
+
+/**
+ * v1.7.0: 関節パーツを押し込む（竜の体当たり・ブレス・あらゆる被弾から呼ぶ）。
+ * HPを削るだけでは「硬い置物を叩いている」感触しか返らないので、
+ * 当たった向きへ拳を実際に逃がす。バネが戻すので配置は壊れない。
+ */
+function nudgeBehemothPart(m, fromX, fromY, damage) {
+  if (fromX === undefined || fromY === undefined || m.fvx === undefined) return;
+  const dx = m.wx - fromX, dy = m.wy - fromY;
+  const d = Math.sqrt(dx * dx + dy * dy) || 1;
+  const v = Math.min(BEHEMOTH_PART_KNOCK_CAP, damage * BEHEMOTH_PART_KNOCK_SCALE);
+  m.fvx += (dx / d) * v;
+  m.fvy += (dy / d) * v;
+  // 肘にも半分だけ伝える＝腕全体がしなる（拳だけ動くとパーツが浮いて見える）
+  m.evx += (dx / d) * v * 0.5;
+  m.evy += (dy / d) * v * 0.5;
+}
+
+// 巨獣の腕: 肩→肘→拳の3点をバネで繋いで浮遊し、振りかぶって薙ぎ払う。
 // コアが倒れると腕も落ちる（道連れ）。腕自身は個別HPで先に壊せる。
 function updateBehemothArm(m, dt) {
   const core = m.parent;
   if (!core || !core.alive) { m.alive = false; return; }
-  const t = performance.now() * 0.001;
-  // コアの向き（進行方向）に対する左右（±90度）へ配置。コアが回頭すると腕も脇へ追従する。
+  if (m.fvx === undefined) initBehemothArmJoints(m);
+  // 振りかぶり中の腕を先に壊された場合に、もう片方が永久に振れなくなるのを防ぐ
+  if (core._armBusy && !core._armBusy.alive) core._armBusy = null;
+
+  const t = breathTime;
+  // 肩はコアの脇（進行方向±90度）に固定。コアが回頭すれば腕ごと振り回される。
   const coreAng = Math.atan2(core.headingY, core.headingX);
-  const ang     = coreAng + m.armSide * (Math.PI / 2) + Math.sin(t * 0.8 + m.swayPhase) * 0.18;
-  const orbit   = BEHEMOTH_ARM_ORBIT + Math.sin(t * 1.1 + m.swayPhase) * 10;
-  m.wx = core.wx + Math.cos(ang) * orbit;
-  m.wy = core.wy + Math.sin(ang) * orbit;
+  const shAng = coreAng + m.armSide * (Math.PI / 2);
+  m.shX = core.wx + Math.cos(shAng) * BEHEMOTH_SHOULDER_R;
+  m.shY = core.wy + Math.sin(shAng) * BEHEMOTH_SHOULDER_R;
 
+  const idleAng = shAng + Math.sin(t * 0.8 + m.swayPhase) * 0.18;
+  const idleLen = BEHEMOTH_ARM_ORBIT + Math.sin(t * 1.1 + m.swayPhase) * 10;
+  let restAng = idleAng, restLen = idleLen;
+
+  if (m.armState === "windup") {
+    m.armT += dt;
+    const k = Math.min(1, m.armT / BEHEMOTH_SWEEP_WINDUP);
+    const e = 1 - (1 - k) * (1 - k) * (1 - k);          // 最初に速く引いて、溜めて止まる
+    m.armCharge = k;
+    // **腕を縮めながら、薙ぐ向きの逆へ引く**＝これが予備動作そのもの
+    const cock = m.swingFrom - m.sweepDir * BEHEMOTH_SWEEP_WINDBACK;
+    restAng = idleAng + wrapAngle(cock - idleAng) * e;
+    restLen = idleLen * (1 - (1 - BEHEMOTH_SWEEP_COIL) * e);
+    if (m.armT >= BEHEMOTH_SWEEP_WINDUP) {
+      m.armState = "swing";
+      m.armT = 0;
+      m.swingHit.clear();
+      triggerShake(2.4, 0.10);
+      triggerFlash("rgba(255,120,40,0.14)", 0.10);
+      hapticPulse(40);
+    }
+  } else if (m.armState === "swing") {
+    m.armT += dt;
+    const k = Math.min(1, m.armT / BEHEMOTH_SWEEP_TIME);
+    const e = k * k * (3 - 2 * k);                       // 中盤がいちばん速い
+    m.armCharge = 1;
+    // 引き切った位置（cock）から振り始めの角度へ戻る途中なので、
+    // 振り出しの一瞬はバネが一気に追いかける＝鞭のように加速する
+    restAng = m.swingFrom + wrapAngle(m.swingTo - m.swingFrom) * e;
+    // 振り抜くにつれ腕が伸びる＝遠心力で拳が外へ出る
+    const coiled = idleLen * BEHEMOTH_SWEEP_COIL;
+    restLen = coiled + (BEHEMOTH_SWEEP_REACH - coiled) * Math.min(1, k * 2.2);
+    behemothSweepHits(m, core);
+    if (m.armT >= BEHEMOTH_SWEEP_TIME) { m.armState = "recover"; m.armT = 0; }
+  } else if (m.armState === "recover") {
+    m.armT += dt;
+    const k = Math.min(1, m.armT / BEHEMOTH_SWEEP_RECOVER);
+    m.armCharge = 1 - k;
+    restAng = m.swingTo + wrapAngle(idleAng - m.swingTo) * k;
+    restLen = BEHEMOTH_SWEEP_REACH + (idleLen - BEHEMOTH_SWEEP_REACH) * k;
+    if (m.armT >= BEHEMOTH_SWEEP_RECOVER) {
+      m.armState = "idle";
+      m.armT = 0;
+      m.sweepCd = BEHEMOTH_SWEEP_INTERVAL / moverFerocity();
+      if (core._armBusy === m) core._armBusy = null;
+    }
+  } else {
+    m.armCharge = 0;
+    m.sweepCd -= dt;
+    const c = calcFriendlyCentroid();
+    // 片腕ずつしか振らない。両腕が同時に振りかぶると予備動作が読めなくなる
+    if (m.sweepCd <= 0 && !core._armBusy &&
+        dist2(core.wx, core.wy, c.x, c.y) < BEHEMOTH_SWEEP_RANGE * BEHEMOTH_SWEEP_RANGE) {
+      const tgt = Math.atan2(c.y - core.wy, c.x - core.wx);
+      // 群れのいる方向を**跨ぐ**ように、自分の側から反対側まで薙ぐ
+      m.swingFrom = tgt + m.armSide * (BEHEMOTH_SWEEP_SPAN / 2);
+      m.swingTo   = tgt - m.armSide * (BEHEMOTH_SWEEP_SPAN / 2);
+      m.sweepDir  = Math.sign(wrapAngle(m.swingTo - m.swingFrom)) || 1;
+      m.armState  = "windup";
+      m.armT      = 0;
+      core._armBusy = m;
+    }
+  }
+
+  // ---- 拳: 目標へバネで追いかける（固い追従にしない＝遅れとしなりが出る）----
+  const restX = m.shX + Math.cos(restAng) * restLen;
+  const restY = m.shY + Math.sin(restAng) * restLen;
+  // 「本来いるべき場所」。押し込まれ具合を測るときの基準になるので残しておく
+  m.restX = restX; m.restY = restY;
+  springAxis(m, "wx", "fvx", restX, BEHEMOTH_FIST_SPRING, BEHEMOTH_FIST_DAMP, dt);
+  springAxis(m, "wy", "fvy", restY, BEHEMOTH_FIST_SPRING, BEHEMOTH_FIST_DAMP, dt);
+  // 離れすぎたら引き戻す。バネだけだと強い連撃で腕が body から千切れて見える
+  {
+    const dx = m.wx - restX, dy = m.wy - restY;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d > BEHEMOTH_PART_SLACK) {
+      const f = BEHEMOTH_PART_SLACK / d;
+      m.wx = restX + dx * f;
+      m.wy = restY + dy * f;
+    }
+  }
+
+  // ---- 肘: 肩と拳の中間から外へ張り出す。腕が縮むほど深く曲がる ----
+  {
+    const dx = m.wx - m.shX, dy = m.wy - m.shY;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const bend = BEHEMOTH_ELBOW_BEND *
+                 (0.30 + Math.max(0, 1 - d / (BEHEMOTH_ARM_ORBIT * 1.15)));
+    let nx = -dy / d, ny = dx / d;
+    const mx = (m.shX + m.wx) * 0.5, my = (m.shY + m.wy) * 0.5;
+    // コアから遠ざかる側へ曲げる（内側に曲げると腕が胴にめり込む）
+    if (nx * (mx - core.wx) + ny * (my - core.wy) < 0) { nx = -nx; ny = -ny; }
+    springAxis(m, "elbowX", "evx", mx + nx * bend, BEHEMOTH_ELBOW_SPRING, BEHEMOTH_ELBOW_DAMP, dt);
+    springAxis(m, "elbowY", "evy", my + ny * bend, BEHEMOTH_ELBOW_SPRING, BEHEMOTH_ELBOW_DAMP, dt);
+  }
+
+  // ---- 拳の向き ----
+  if (m.armState === "swing") {
+    // 振り抜き中は進行方向を向く＝拳が軌跡に沿って走って見える
+    const sp = Math.sqrt(m.fvx * m.fvx + m.fvy * m.fvy) || 1;
+    m.headingX = m.fvx / sp; m.headingY = m.fvy / sp;
+  } else {
+    const hx = m.wx - m.elbowX, hy = m.wy - m.elbowY;
+    const hl = Math.sqrt(hx * hx + hy * hy) || 1;
+    m.headingX = hx / hl; m.headingY = hy / hl;
+  }
+
+  // ---- 叩きつけ（近接の点攻撃）: 薙ぎ払いの最中は出さない ----
+  if (m.armState !== "idle") return;
   const nearestIdx = findNearestAliveBoid(m.wx, m.wy);
-  if (nearestIdx < 0) { m.headingX = Math.cos(ang); m.headingY = Math.sin(ang); return; }
-  // 拳を最寄りの竜へ向ける
-  let hx = px[nearestIdx] - m.wx, hy = py[nearestIdx] - m.wy;
-  const hl = Math.sqrt(hx * hx + hy * hy) || 1;
-  m.headingX = hx / hl; m.headingY = hy / hl;
-
+  if (nearestIdx < 0) return;
+  const ndx = px[nearestIdx] - m.wx, ndy = py[nearestIdx] - m.wy;
+  const nd = Math.sqrt(ndx * ndx + ndy * ndy);
   m.attackTimer -= dt;
   if (m.attackTimer > 0) return;
-  if (hl < BEHEMOTH_ARM_SLAM_RANGE) {
+  if (nd < BEHEMOTH_ARM_SLAM_RANGE) {
     m.attackTimer = BEHEMOTH_ARM_SLAM_INTERVAL / moverFerocity();
     emitShockwave(m.wx, m.wy, BEHEMOTH_ARM_SLAM_RADIUS, BEHEMOTH_ARM_SLAM_DMG, BEHEMOTH_ARM_SLAM_PUSH);
     triggerFlash("rgba(255,120,40,0.16)", 0.12);
+    // 叩きつけた反動で腕が跳ねる（点攻撃にも関節の手応えを出す）
+    m.fvx -= m.headingX * 120; m.fvy -= m.headingY * 120;
   } else {
     m.attackTimer = 0.4;   // 射程外は短い再チェック
+  }
+}
+
+/**
+ * v1.7.0: 薙ぎ払いの判定。**肘から拳までの線**で当てる。
+ * 拳の点だけで判定すると、振り抜いた内側（腕の下）がごっそりすり抜ける。
+ * 1回の薙ぎで同じ竜に二度当たらないよう swingHit で覚える。
+ */
+function behemothSweepHits(m, core) {
+  const band = BEHEMOTH_SWEEP_BAND + m.def.radius;
+  const band2 = band * band;
+  const sp = Math.sqrt(m.fvx * m.fvx + m.fvy * m.fvy) || 1;
+  const fer = moverFerocity();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i] || m.swingHit.has(i)) continue;
+    if (pointSegDist2(px[i], py[i], m.elbowX, m.elbowY, m.wx, m.wy) > band2) continue;
+    m.swingHit.add(i);
+    applyDamageToBoid(i, BEHEMOTH_SWEEP_DMG * fer);
+    // 弾かれる向き＝「腕の進む向き」＋「コアから外向き」。
+    // 外向きを混ぜないと、巨獣の裏側へ押し込まれた竜が胴に貼り付く。
+    let kx = m.fvx / sp, ky = m.fvy / sp;
+    const ox = px[i] - core.wx, oy = py[i] - core.wy;
+    const od = Math.sqrt(ox * ox + oy * oy) || 1;
+    kx += (ox / od) * 0.6; ky += (oy / od) * 0.6;
+    const kd = Math.sqrt(kx * kx + ky * ky) || 1;
+    applyKickDist(i, kx / kd, ky / kd, BEHEMOTH_SWEEP_PUSH);
+    spawnCollisionParticles(px[i], py[i]);
   }
 }
 
@@ -9326,6 +9573,8 @@ function damageMover(m, damage, srcX, srcY) {
     }
   }
   damage *= incomingDamageMult(m);   // v1.1.1: 楔竜のひび
+  // v1.7.0: 巨獣の関節パーツは殴られた向きへ押し込まれる（HPが減るだけだと置物に見える）
+  if (m.def.part === "arm") nudgeBehemothPart(m, srcX, srcY, damage);
   m.hp -= damage;
   reportDamage(m, m.wx, m.wy, damage);
   if (m.hp <= 0) {
@@ -9442,6 +9691,129 @@ function updateMoverRams() {
   }
 }
 
+/**
+ * v1.7.0: 巨獣の腕を肩→肘→拳で繋ぐ装甲板の列。
+ * 板は等間隔に浮かべてあるので、関節が押し込まれると**間隔が伸び縮みする**＝
+ * 繋がって見えつつ、殴れば歪む。移動敵より下のレイヤーで描き、
+ * 両端（コアと拳のスプライト）が板の端を隠す。
+ */
+const BEHEMOTH_LINK_COUNT = 5;
+
+function drawBehemothLimbs() {
+  const img = enemyImages.behemoth_link;
+  for (const m of movers) {
+    if (!m.alive || !m.def || m.def.part !== "arm") continue;
+    const core = m.parent;
+    if (!core || !core.alive || m.shX === undefined) continue;
+
+    // --- 予告帯: これから薙ぐ範囲。腕の予備動作を**地面側からも**裏打ちする ---
+    if (m.armState === "windup" || m.armState === "swing") {
+      const warn = m.armState === "windup";
+      const k = Math.min(1, m.armT / (warn ? BEHEMOTH_SWEEP_WINDUP : BEHEMOTH_SWEEP_TIME));
+      const a0 = m.swingFrom;
+      const a1 = m.swingFrom + wrapAngle(m.swingTo - m.swingFrom);
+      // **扇ではなく帯**にする。コア中心から塗ると画面の半分が橙色に沈んで
+      // 「どこを薙ぐのか」ではなく「画面が光った」になってしまった（実機で確認）。
+      // 当たるのは肘〜拳の線なので、その通り道だけを塗るのが正しくもある。
+      const rIn  = BEHEMOTH_SHOULDER_R + 34;
+      const rOut = BEHEMOTH_SHOULDER_R + BEHEMOTH_SWEEP_REACH;
+      ctx.save();
+      ctx.globalAlpha = warn ? 0.05 + 0.13 * k : 0.20 * (1 - k);
+      ctx.fillStyle = "#ff7a28";
+      ctx.beginPath();
+      ctx.arc(core.wx, core.wy, rOut, a0, a1, a1 < a0);
+      ctx.arc(core.wx, core.wy, rIn, a1, a0, a1 >= a0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = warn ? 0.30 + 0.45 * k : 0.45 * (1 - k);
+      ctx.strokeStyle = "#ffb060";
+      ctx.lineWidth = 2.4;
+      ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
+    // --- 振り抜いた軌跡。腕が通り過ぎた跡を残して速さを見せる ---
+    if (m.armState === "swing") {
+      const kk = Math.min(1, m.armT / BEHEMOTH_SWEEP_TIME);
+      const cur = m.swingFrom + wrapAngle(m.swingTo - m.swingFrom) * (kk * kk * (3 - 2 * kk));
+      const span = Math.abs(wrapAngle(m.swingTo - m.swingFrom));
+      const rad = Math.hypot(m.wx - m.shX, m.wy - m.shY);
+      ctx.save();
+      ctx.lineCap = "round";
+      for (let p = 2; p >= 0; p--) {
+        ctx.globalAlpha = (0.46 - p * 0.13) * (1 - kk * 0.3);
+        ctx.strokeStyle = p === 0 ? "#ffe0b0" : "#ff9040";
+        ctx.lineWidth   = 8 + p * 9;
+        ctx.beginPath();
+        ctx.arc(m.shX, m.shY, rad, cur - m.sweepDir * span * (0.10 + p * 0.09), cur,
+                m.sweepDir < 0);
+        ctx.stroke();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
+    // --- 肩→肘→拳 を二次ベジエで通る装甲板の列 ---
+    const sx = m.shX, sy = m.shY, ex = m.elbowX, ey = m.elbowY, fx = m.wx, fy = m.wy;
+    const glow = m.armCharge || 0;
+    ctx.save();
+    // 拳そのものも灼ける（関節板だけだと、振りかぶっているのが腕の付け根にしか出ない）
+    if (glow > 0) {
+      ctx.globalAlpha = 0.30 * glow * (0.6 + 0.4 * Math.sin(breathTime * 14));
+      ctx.fillStyle = "#ff8030";
+      ctx.beginPath();
+      ctx.arc(fx, fy, m.def.radius * 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    for (let n = 0; n < BEHEMOTH_LINK_COUNT; n++) {
+      const u  = (n + 0.6) / (BEHEMOTH_LINK_COUNT + 0.4);
+      const iu = 1 - u;
+      const x  = iu * iu * sx + 2 * iu * u * ex + u * u * fx;
+      const y  = iu * iu * sy + 2 * iu * u * ey + u * u * fy;
+      const w  = 34 - 15 * u;          // 肩側が大きく、拳に近いほど小さい
+      // 落ち影（浮いているのが分かる）
+      ctx.globalAlpha = 0.20;
+      ctx.fillStyle = "#000000";
+      ctx.beginPath();
+      ctx.ellipse(x + 5, y + 8, w * 0.42, w * 0.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 振りかぶり中は関節が灼ける（力が溜まっている合図）
+      if (glow > 0) {
+        ctx.globalAlpha = 0.28 * glow * (0.6 + 0.4 * Math.sin(breathTime * 14 + n));
+        ctx.fillStyle = "#ff8030";
+        ctx.beginPath();
+        ctx.arc(x, y, w * 0.85, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      if (img) {
+        const tx = 2 * iu * (ex - sx) + 2 * u * (fx - ex);
+        const ty = 2 * iu * (ey - sy) + 2 * u * (fy - ey);
+        const s  = w / img.naturalWidth;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(Math.atan2(ty, tx) + Math.PI / 2);
+        ctx.drawImage(img, -w * 0.5, -img.naturalHeight * s * 0.5,
+                      w, img.naturalHeight * s);
+        ctx.restore();
+      } else {
+        // 画像が読めなかったときの代替（丸い板）
+        ctx.fillStyle = "#3a2a2a";
+        ctx.strokeStyle = "#ff8040";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(x, y, w * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+}
+
 /** 移動敵の描画（本体＋HPバー＋衝撃波リング）。ワールド座標系で呼ぶ。 */
 function drawMovers() {
   for (const m of movers) {
@@ -9550,7 +9922,10 @@ function drawMovers() {
     const enemyImg = enemyImages[spriteKey];
     if (enemyImg) {
       const meta  = ENEMY_SPRITE_META[spriteKey];
-      const drawW = def.radius * meta.drawScale;
+      // v1.7.0: 巨獣の拳は振りかぶるほど大きく描く。真俯瞰では「振り上げた」を
+      // 高さで表せないので、拡大と濃い落ち影で代わりにする。
+      const lift  = m.armCharge ? 1 + 0.26 * m.armCharge : 1;
+      const drawW = def.radius * meta.drawScale * lift;
       const s     = drawW / enemyImg.naturalWidth;
       const drawH = enemyImg.naturalHeight * s;
       const phase = m.swayPhase ?? 0;
@@ -9560,7 +9935,8 @@ function drawMovers() {
         ctx.globalAlpha = 0.22;
         ctx.fillStyle = "#000000";
         ctx.beginPath();
-        ctx.ellipse(5, 8, def.radius * 0.85, def.radius * 0.55, 0, 0, Math.PI * 2);
+        ctx.ellipse(5 * lift * lift, 8 * lift * lift,
+                    def.radius * 0.85 * lift, def.radius * 0.55 * lift, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1.0;
       }
@@ -16611,7 +16987,7 @@ function codexEraLabel(key) {
 function codexAttackLabel(def) {
   const a = def.attack;
   if (!a) {
-    if (def.name === "behemoth_arm") return "叩きつけ衝撃波（コアの脇から）";
+    if (def.name === "behemoth_arm") return "薙ぎ払い（振りかぶり有）＋叩きつけ衝撃波";
     if (def.treasure) return "攻撃しない — 逃げ回る";
     return "攻撃しない";
   }
@@ -20175,6 +20551,7 @@ function render(now) {
   drawEggs();
   drawEmbers();             // v0.10: 燃える建物の火の粉・煙（建物の上・ユニットの下）
   drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
+  drawBehemothLimbs();       // v1.7.0: 巨獣の関節（コア・拳の下に敷く）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
   drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
   drawBreathAttacks(now);
@@ -22040,6 +22417,9 @@ const ENEMY_IMAGE_SOURCES = {
   citadel:       "assets/boss_citadel.png",
   behemoth_core: "assets/mover_behemoth_core.png",
   behemoth_arm:  "assets/mover_behemoth_arm.png",
+  // v1.7.0: 腕の関節板。敵そのものではないので ENEMY_SPRITE_META には載せない
+  // （drawMovers は通らず、drawBehemothLimbs が自前の寸法で並べる）
+  behemoth_link: "assets/mover_behemoth_link.png",
   // v0.69: 図鑑で別項目になっている敵は**全部が自分の絵を持つ**ようにした（Shooter指示）。
   // ここまでは sprite: で他の敵の絵を流用していた18種。
   clubmen:        "assets/mover_clubmen.png",
