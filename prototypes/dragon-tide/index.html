@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.8.0";
+const GAME_VERSION = "v1.9.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -6740,13 +6740,17 @@ const MOVER_DEFS = {
   // 教えなくても「脚を折った → 遅くなった」に気づける。
   walker_hull: {
     name: "walker_hull", sprite: "walker_hull", part: "hull", walker: true,
-    turnRate: 0.80,          // 図体のわりに素直には曲がらない（旋回半径33px）
+    // v1.9.0: 狙うのは砲塔の仕事なので、胴は行き先だけ見ればよい。
+    // 目標の向きを1.6秒かけてなましてから、ゆっくり旋回する
+    turnRate: 0.55, headingSmooth: 1.6,
     elite: true, showHpBar: true,
     hp: 2800, speed: 30, xp: 650, eggDrop: 8, radius: 44,
     color: "#4a4a3a", glowColor: "#ffc040", moveType: "patrol",
-    // 主砲は1発だけの重い着弾弾。殲滅砲兵の3発散布とは撃ち方が違う
-    attack: { type: "shell", interval: 3.6, range: 700, count: 1,
-              damage: 5.0, aoe: 95, speed: 190, scatter: 34, color: "#ffc766" },
+    // v1.9.0: 主砲は溜めてから撃つので共通の攻撃処理には乗せない（manualAttack）。
+    // 数値は図鑑が読むのでここに残す。撃つのは updateWalkerGun。
+    manualAttack: true,
+    attack: { type: "shell", interval: 4.2, range: 700, count: 1,
+              damage: 6.5, aoe: 105, speed: 230, scatter: 30, color: "#ffd27a" },
     walkerReward: 70,        // 胴撃破の竜晶ボーナス
   },
   walker_leg: {
@@ -8607,7 +8611,22 @@ function updateMovers(dt) {
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
-    const dirX = dx / d, dirY = dy / d;
+    let dirX = dx / d, dirY = dy / d;
+    // v1.9.0: def.headingSmooth — 目標の向きを**なまして**から使う。
+    // 多脚戦車は群れの重心を追うが、重心は毎フレーム細かく振れる（実測で毎秒13度）。
+    // そのまま向きにすると胴が小刻みに向き直り、180px先の足が毎回置き直しになって
+    // 足がせわしなく動いた（Shooter判定）。
+    // **旋回を遅くするだけでは逆効果**だった: 遅いと目標に永久に追いつけず、
+    // かえって常時フル旋回しっぱなしになる（実測 12°/s → 18°/s に悪化）。
+    // 直すべきは旋回速度ではなく**目標そのもののゆらぎ**。
+    if (def.headingSmooth) {
+      const want = Math.atan2(dirY, dirX);
+      if (m._aimAngle === undefined) m._aimAngle = want;
+      m._aimAngle = wrapAngle(m._aimAngle +
+                    wrapAngle(want - m._aimAngle) * Math.min(1, dt / def.headingSmooth));
+      dirX = Math.cos(m._aimAngle);
+      dirY = Math.sin(m._aimAngle);
+    }
     // 進む向き。既定は「向いている方向」＝従来と同じ（向きが即座に目標を向くため）
     let moveX = dirX, moveY = dirY;
 
@@ -8685,6 +8704,7 @@ function updateMovers(dt) {
 
     const atk = def.attack;
     if (!atk) continue;        // v0.25.1: 財宝馬車など無攻撃ユニット
+    if (def.manualAttack) continue;   // v1.9.0: 自前で撃つ敵（多脚戦車の主砲）
     if (m.submerged) continue; // v0.42: 潜行中は撃たない
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
     // v1.0.5: 警戒度ぶんも掛ける（TIER_MOVER_FEROCITY）。
@@ -9931,6 +9951,11 @@ const WALKER_STOMP_PUSH   = 92;   // 踏みつけの押し飛ばし距離
 const WALKER_LEG_SLOW     = 0.17; // 脚を1本折るごとに落ちる速度の割合
 const WALKER_GROUNDED_MULT = 1.5; // 脚を全部折られた胴が受ける被ダメージ倍率
 const WALKER_TURRET_TRAVERSE = 1.5;  // 砲塔の旋回角速度（rad/s）
+// v1.9.0: 主砲。**溜め→発砲**にした（Shooter判定「大きな大砲がある割に砲撃が地味」）。
+// 共通の shell 処理は撃った瞬間しか無いので、溜めを足すには自前で撃つしかない。
+const WALKER_GUN_CHARGE   = 1.05; // 溜めの秒数。この間ずっと砲口に光が集まる
+const WALKER_GUN_ALIGN    = 0.22; // 砲塔がこの角度まで狙いを付けてから溜め始める
+const WALKER_GUN_RECOIL   = 0.26; // 発砲の反動で砲塔が後ろへ下がる秒数
 const WALKER_TURRET_SCALE = 0.62; // 胴の描画幅に対する砲塔の大きさ
 
 /**
@@ -10067,7 +10092,10 @@ function updateWalkerHull(hull, dt) {
   for (const leg of hull.legs) if (leg.alive) alive++;
   hull.legsAlive = alive;
   // **脚を折るほど遅くなる**。全部折れたら動けない（＝的になる）
-  hull.speedMult = Math.max(0, 1 - WALKER_LEG_SLOW * (hull.legs.length - alive));
+  // v1.9.0: 溜めている間はほぼ足を止める。踏ん張ってから撃つ形になるうえ、
+  // 歩きが止まることで「今から撃つ」が body language としても読める。
+  hull.speedMult = Math.max(0, 1 - WALKER_LEG_SLOW * (hull.legs.length - alive))
+                 * (hull.gunCharging ? 0.2 : 1);
   hull.grounded  = alive === 0;
 
   // 砲塔は胴の向きと無関係に旋回する。旋回速度に上限があるので、
@@ -10081,14 +10109,80 @@ function updateWalkerHull(hull, dt) {
     hull.turretAngle = wrapAngle(hull.turretAngle + Math.max(-maxT, Math.min(maxT, diff)));
   }
 
-  // 主砲は共通の攻撃処理（shell）が撃つので、**撃った瞬間はタイマーの跳ね上がりで拾う**。
-  // 共通処理に砲口炎の都合を持ち込まずに済む。
-  if (hull._prevAtkTimer !== undefined && hull.attackTimer > hull._prevAtkTimer + 0.5) {
-    hull.muzzleT = 0.14;
-    triggerShake(1.4, 0.06);
+  updateWalkerGun(hull, dt, targetIdx);
+  if (hull.muzzleT > 0)  hull.muzzleT  = Math.max(0, hull.muzzleT - dt);
+  if (hull.recoilT > 0)  hull.recoilT  = Math.max(0, hull.recoilT - dt);
+}
+
+/**
+ * v1.9.0: 主砲。待機 → 溜め → 発砲 の3段。
+ * 溜めている間は狙点を追い続け、そこに予告円を出す＝**撃たれる前に退ける**。
+ * 溜め中も砲塔は回るので、群れが横へ抜ければ狙いは置いていかれる。
+ */
+function updateWalkerGun(hull, dt, targetIdx) {
+  const atk = hull.def.attack;
+  if (hull.gunCd === undefined) { hull.gunCd = atk.interval * (0.3 + random() * 0.7); hull.gunT = 0; }
+
+  if (hull.gunCharging) {
+    hull.gunT += dt;
+    // 狙点は溜めのあいだ追い続ける（置いていかれるかどうかはプレイヤー次第）
+    if (targetIdx >= 0) { hull.gunAimX = px[targetIdx]; hull.gunAimY = py[targetIdx]; }
+    hull.gunCharge = Math.min(1, hull.gunT / WALKER_GUN_CHARGE);
+    if (hull.gunT >= WALKER_GUN_CHARGE) {
+      fireWalkerGun(hull);
+      hull.gunCharging = false;
+      hull.gunCharge = 0;
+      hull.gunCd = atk.interval / moverFerocity();
+    }
+    return;
   }
-  hull._prevAtkTimer = hull.attackTimer;
-  if (hull.muzzleT > 0) hull.muzzleT = Math.max(0, hull.muzzleT - dt);
+
+  hull.gunCharge = 0;
+  hull.gunCd -= dt;
+  if (hull.gunCd > 0 || targetIdx < 0) return;
+  const dx = px[targetIdx] - hull.wx, dy = py[targetIdx] - hull.wy;
+  if (dx * dx + dy * dy > atk.range * atk.range) { hull.gunCd = 0.3; return; }
+  // 砲塔が向ききる前に溜め始めると、溜めの光と砲身の向きがちぐはぐになる
+  if (Math.abs(wrapAngle(Math.atan2(dy, dx) - hull.turretAngle)) > WALKER_GUN_ALIGN) {
+    hull.gunCd = 0.15;
+    return;
+  }
+  hull.gunCharging = true;
+  hull.gunT = 0;
+  hull.gunAimX = px[targetIdx];
+  hull.gunAimY = py[targetIdx];
+}
+
+/** 砲口から1発。重い弾（kind=5）なので飛んでくるのが見える。 */
+function fireWalkerGun(hull) {
+  const atk = hull.def.attack;
+  const ang = hull.turretAngle ?? 0;
+  const muzzle = walkerMuzzleDist(hull);
+  const mx = hull.wx + Math.cos(ang) * muzzle;
+  const my = hull.wy + Math.sin(ang) * muzzle;
+  const sa = random() * Math.PI * 2;
+  const sr = random() * (atk.scatter ?? 0);
+  spawnShell(mx, my, (hull.gunAimX ?? hull.wx) + Math.cos(sa) * sr,
+             (hull.gunAimY ?? hull.wy) + Math.sin(sa) * sr,
+             atk.speed, atk.damage * moverFerocity(), atk.aoe, atk.color, 5);
+  hull.muzzleT = 0.22;
+  hull.recoilT = WALKER_GUN_RECOIL;
+  triggerShake(3.4, 0.13);
+  triggerFlash("rgba(255,200,110,0.18)", 0.12);
+  hapticPulse(70);
+  for (let k = 0; k < 10; k++) {
+    const a = ang + (fxRandom() - 0.5) * 1.0;
+    const r = 10 + fxRandom() * 34;
+    spawnHitParticles(mx + Math.cos(a) * r, my + Math.sin(a) * r);
+  }
+}
+
+/** 砲口までの距離（砲塔の絵の寸法から引く。描画と発射点をずらさないため）。 */
+function walkerMuzzleDist(hull) {
+  const img = enemyImages.walker_turret;
+  const drawW = hull.def.radius * ENEMY_SPRITE_META.walker_hull.drawScale * WALKER_TURRET_SCALE;
+  if (!img) return drawW * 0.9;
+  return img.naturalHeight * (drawW / img.naturalWidth) * 0.71;
 }
 
 /**
@@ -10181,26 +10275,110 @@ function drawWalkerTurrets() {
     if (!hull.alive || !hull.def || !hull.def.walker) continue;
     const ang = hull.turretAngle ?? Math.atan2(hull.headingY, hull.headingX);
     const drawW = hull.def.radius * (ENEMY_SPRITE_META.walker_hull.drawScale) * WALKER_TURRET_SCALE;
+    const chg = hull.gunCharge || 0;
+    const muzzle = walkerMuzzleDist(hull);
+
+    // --- 溜めている間の狙点（撃たれる前に退くための予告）---
+    if (chg > 0 && hull.gunAimX !== undefined) {
+      ctx.save();
+      ctx.globalAlpha = 0.10 + 0.22 * chg;
+      ctx.fillStyle = hull.def.attack.color;
+      ctx.beginPath();
+      ctx.arc(hull.gunAimX, hull.gunAimY, hull.def.attack.aoe, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.35 + 0.5 * chg;
+      ctx.strokeStyle = hull.def.attack.color;
+      ctx.lineWidth = 2.6;
+      ctx.beginPath();
+      ctx.arc(hull.gunAimX, hull.gunAimY, hull.def.attack.aoe, 0, Math.PI * 2);
+      ctx.stroke();
+      // 砲口から狙点へ伸びる線（どの個体を狙っているかが読める）
+      ctx.globalAlpha = 0.18 + 0.34 * chg;
+      ctx.lineWidth = 1.6 + 2.2 * chg;
+      ctx.beginPath();
+      ctx.moveTo(hull.wx + Math.cos(ang) * muzzle, hull.wy + Math.sin(ang) * muzzle);
+      ctx.lineTo(hull.gunAimX, hull.gunAimY);
+      ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
     ctx.save();
     ctx.translate(hull.wx, hull.wy);
     ctx.rotate(ang + Math.PI / 2);
+    // 発砲の反動で砲塔が後ろへ下がって戻る
+    if (hull.recoilT > 0) {
+      const rk = hull.recoilT / WALKER_GUN_RECOIL;
+      ctx.translate(0, 13 * Math.sin(Math.PI * rk * 0.5) * rk);
+    }
     if (img) {
       const sc = drawW / img.naturalWidth;
       const h  = img.naturalHeight * sc;
       // 回転軸は砲塔の丸い部分の中心（画像の重心は砲身に引っぱられるので使わない）
       ctx.drawImage(img, -drawW * 0.5, -h * 0.71, drawW, h);
-      // 砲口炎（撃った瞬間だけ）
-      if (hull.muzzleT > 0) {
-        const f = hull.muzzleT / 0.14;
-        ctx.globalAlpha = f;
-        ctx.fillStyle = "#ffe0a0";
-        const tip = -h * 0.71 - 4;
+
+      // --- 溜め: 砲身が灼けて、外から光の輪が砲口へ吸い込まれる ---
+      if (chg > 0) {
+        const tipY = -muzzle;
+        ctx.save();
+        // 砲身に沿った熱
+        ctx.globalAlpha = 0.25 + 0.45 * chg;
+        ctx.strokeStyle = "#ffd27a";
+        ctx.lineWidth = 5 + 5 * chg;
+        ctx.lineCap = "round";
         ctx.beginPath();
-        ctx.moveTo(0, tip);
-        ctx.lineTo(-13 * f, tip + 26 * f);
-        ctx.lineTo(13 * f, tip + 26 * f);
+        ctx.moveTo(0, -h * 0.30);
+        ctx.lineTo(0, tipY + 4);
+        ctx.stroke();
+        // 砲口に集まる光
+        ctx.globalAlpha = 0.55 + 0.45 * chg;
+        ctx.fillStyle = "#fff0c8";
+        ctx.beginPath();
+        ctx.arc(0, tipY, 3 + 11 * chg * chg, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 0.30 * chg;
+        ctx.fillStyle = "#ffc040";
+        ctx.beginPath();
+        ctx.arc(0, tipY, 10 + 26 * chg, 0, Math.PI * 2);
+        ctx.fill();
+        // 吸い込まれる輪を3本。位相をずらして「ずっと集まり続けている」ようにする
+        ctx.strokeStyle = "#ffe0a0";
+        for (let k = 0; k < 3; k++) {
+          const ph = (breathTime * 1.6 + k / 3) % 1;          // 1 → 0 で内へ
+          const rr = 8 + 56 * (1 - ph) * (0.5 + 0.5 * chg);
+          ctx.globalAlpha = (0.14 + 0.5 * chg) * ph;
+          ctx.lineWidth = 1.6 + 2.4 * (1 - ph);
+          ctx.beginPath();
+          ctx.arc(0, tipY, rr, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+        ctx.globalAlpha = 1;
+      }
+      // 砲口炎（撃った瞬間だけ）。溜めた光がそのまま前へ吐き出される形にする
+      if (hull.muzzleT > 0) {
+        const f = hull.muzzleT / 0.22;
+        const tip = -muzzle - 2;
+        ctx.globalAlpha = f;
+        ctx.fillStyle = "#fff4d8";
+        ctx.beginPath();
+        ctx.moveTo(0, tip - 46 * f);
+        ctx.lineTo(-20 * f, tip + 16);
+        ctx.lineTo(20 * f, tip + 16);
         ctx.closePath();
         ctx.fill();
+        ctx.globalAlpha = 0.65 * f;
+        ctx.fillStyle = "#ffb43a";
+        ctx.beginPath();
+        ctx.arc(0, tip, 9 + 22 * f, 0, Math.PI * 2);
+        ctx.fill();
+        // 横へ抜ける発射煙（反動の向きが分かる）
+        ctx.globalAlpha = 0.4 * f;
+        for (let k = -1; k <= 1; k += 2) {
+          ctx.beginPath();
+          ctx.arc(k * (14 + 16 * (1 - f)), tip + 14, 7 + 7 * (1 - f), 0, Math.PI * 2);
+          ctx.fill();
+        }
         ctx.globalAlpha = 1;
       }
     } else {
@@ -11896,7 +12074,11 @@ function eraShotSpeedMult() {
 // 飛行中は当たり判定を持たず、落下点に予告円が出る＝**円から退く**という別種の課題になる。
 // 投石・矢の雨・絨毯爆撃・対空弾幕・臼砲を、この1つの部品で全部作っている。
 const SHELL_PUSH_DIST = 22;   // 炸裂の押し飛ばし（emitShockwave へ渡す）
-function spawnShell(fromWx, fromWy, tx, ty, speed, damage, aoe, color) {
+/**
+ * @param {number} [kind=4] 4=ふつうの着弾弾 ／ 5=主砲弾（v1.9.0。大きく光り、尾を引く）
+ * 既存の臼砲・絨毯爆撃・殲滅砲兵を一切変えずに「重い1発」を足すために別 kind にした。
+ */
+function spawnShell(fromWx, fromWy, tx, ty, speed, damage, aoe, color, kind = 4) {
   const slot = takeProjectileSlot();
   if (slot < 0) return;
   const dx = tx - fromWx, dy = ty - fromWy;
@@ -11917,14 +12099,30 @@ function spawnShell(fromWx, fromWy, tx, ty, speed, damage, aoe, color) {
   projTracking[slot]  = 0;
   projTargetIdx[slot] = -1;
   projColor[slot]     = color;
-  projKind[slot]      = 4;
+  projKind[slot]      = kind === 5 ? 5 : 4;
   projStyle[slot]     = eraShotStyle();
 }
 
 /** 着弾弾の炸裂。範囲ダメージ＋押し飛ばし＋輪のFXは既存の衝撃波に集約する。 */
 function detonateShell(i) {
-  emitShockwave(projTgtX[i], projTgtY[i], projAoe[i], projDmg[i], SHELL_PUSH_DIST);
+  const heavy = projKind[i] === 5;
+  emitShockwave(projTgtX[i], projTgtY[i], projAoe[i], projDmg[i],
+                heavy ? SHELL_PUSH_DIST * 2.4 : SHELL_PUSH_DIST);
   spawnCollisionParticles(projTgtX[i], projTgtY[i]);
+  // v1.9.0: 主砲弾は着弾も重い。溜めて撃った1発が小さく弾けると拍子抜けする
+  if (heavy) {
+    const tx = projTgtX[i], ty = projTgtY[i];
+    for (let k = 0; k < 18; k++) {
+      const a = fxRandom() * Math.PI * 2;
+      const r = fxRandom() * projAoe[i];
+      spawnHitParticles(tx + Math.cos(a) * r, ty + Math.sin(a) * r);
+    }
+    shockwaveFxList.push({ x: tx, y: ty, maxR: projAoe[i] * 1.5,
+                           life: SHOCKWAVE_FX_DURATION, color: projColor[i] });
+    triggerFlash("rgba(255,190,100,0.26)", 0.16);
+    triggerShake(3.6, 0.14);
+    hapticPulse(110);
+  }
   projActive[i] = 0;
 }
 
@@ -12420,7 +12618,7 @@ function updateProjectiles(dt) {
 
     // v0.57: 着弾弾（kind=4）は飛距離ではなく**落下点への到達**で終わる。
     // 竜との当たり判定は持たない（線ではなく円で脅すための弾）。
-    if (projKind[i] === 4) {
+    if (projKind[i] === 4 || projKind[i] === 5) {
       const sdx = projTgtX[i] - projWx[i];
       const sdy = projTgtY[i] - projWy[i];
       // 行き過ぎ（内積が負）か、1フレームぶんの距離まで来たら炸裂
@@ -17426,6 +17624,9 @@ function codexAttackLabel(def) {
   if (t === "chain")     return `連鎖電撃 射程${a.range}・密集しているほど痛い`;
   if (t === "heal")      return `周囲の建物と敵を回復 半径${a.radius}`;
   if (t === "summon")    return `レイダーを召喚（最大${a.cap}体）`;
+  if (t === "shell" && def.manualAttack)
+    return `主砲 範囲${a.aoe}・射程${a.range}・${a.interval}秒ごと` +
+           `（${WALKER_GUN_CHARGE}秒溜めてから1発。溜めている間は狙点に円が出る）`;
   if (t === "shell")     return `着弾弾${a.count}発 範囲${a.aoe}・射程${a.range}（予告円つき）`;
   return t;
 }
@@ -21819,6 +22020,68 @@ function drawProjectiles() {
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc(projWx[i] - r * 0.3, projWy[i] - r * 0.3, r * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      continue;
+    }
+
+    // v1.9.0: 主砲弾（kind=5）— 溜めて撃った1発。小さい黒丸だと溜めが嘘になるので、
+    // **白熱した芯＋尾＋脈打つ予告円**で「重いのが来る」を全部見せる。
+    if (projKind[i] === 5) {
+      const tx = projTgtX[i], ty = projTgtY[i];
+      const totalX = tx - projStartWx[i], totalY = ty - projStartWy[i];
+      const total  = Math.sqrt(totalX * totalX + totalY * totalY) || 1;
+      const restX  = tx - projWx[i], restY = ty - projWy[i];
+      const rest   = Math.sqrt(restX * restX + restY * restY);
+      const prog   = Math.max(0, Math.min(1, 1 - rest / total));
+      ctx.save();
+      // --- 落下点の予告円（通常の着弾弾より太く、着弾が近いほど速く脈打つ）---
+      const pulse = 0.5 + 0.5 * Math.sin(breathTime * (8 + 18 * prog));
+      ctx.globalAlpha = 0.30 + 0.45 * prog;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.arc(tx, ty, projAoe[i], 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = (0.30 + 0.40 * prog) * (0.5 + 0.5 * pulse);
+      ctx.lineWidth = 4.0;
+      ctx.beginPath();
+      ctx.arc(tx, ty, Math.max(3, projAoe[i] * (1.05 - prog)), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.14 + 0.16 * prog;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(tx, ty, projAoe[i], 0, Math.PI * 2);
+      ctx.fill();
+      // --- 尾（後ろへ流れる光。速いので残像が無いと点にしか見えない）---
+      const vlen = Math.sqrt(projVx[i] * projVx[i] + projVy[i] * projVy[i]) || 1;
+      const ux = projVx[i] / vlen, uy = projVy[i] / vlen;
+      for (let k = 1; k <= 5; k++) {
+        ctx.globalAlpha = 0.34 - k * 0.055;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(projWx[i] - ux * k * 11, projWy[i] - uy * k * 11, 9 - k * 1.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // --- 弾体: 外の光 → 装甲 → 白熱した芯 ---
+      const r = 8.5 + 3.5 * prog;
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], r * 1.9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#2e2a24";
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+      ctx.fillStyle = "#fff4d8";
+      ctx.beginPath();
+      ctx.arc(projWx[i] - ux * r * 0.25, projWy[i] - uy * r * 0.25, r * 0.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
       ctx.globalAlpha = 1;
