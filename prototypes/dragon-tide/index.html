@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.2.0";
+const GAME_VERSION = "v2.3.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -4785,7 +4785,7 @@ function generateStageLayout(stageIndex) {
   asteroidRocks     = [];
   railLines         = [];
   railJunctions     = [];
-  railTrains        = [];
+  enemyGroups.length = 0;   // v2.3.0: 前のステージのグループ敵を捨てる
 
   const boss = placeBossBuilding(stageIndex, config);
   boss._fixedTier = maxPowerTier();
@@ -8938,7 +8938,7 @@ function behemothSweepHits(m, core) {
 }
 
 function updateMovers(dt) {
-  updateRailTrains(dt);   // v2.2.0: 編成（機関車がやられても走り続ける）
+  updateEnemyGroups(dt);   // v2.3.0: 複数パーツのグループ敵（編成など）
 
   // 衝撃波FXの寿命更新
   for (let i = shockwaveFxList.length - 1; i >= 0; i--) {
@@ -8966,7 +8966,7 @@ function updateMovers(dt) {
     if (def.part === "leg") { updateWalkerLeg(m, dt); continue; }
 
     // v2.0.0: 鉄路の敵は線路の弧長を進むだけ
-    // v2.2.0: 編成の車両は updateRailTrains が動かす（機関車の生死に依存しない）
+    // v2.3.0: 編成の車両は enemyGroups（updateRailTrainGroup）が動かす
     if (def.part === "train") continue;
     if (def.railBound) { updateRailMover(m, dt); continue; }
     // 胴は共通の移動・攻撃に乗せたうえで、脚の本数と砲塔だけ先に片付ける
@@ -10881,8 +10881,57 @@ const RAIL_TRAIN_REWARD    = 60;   // 編成を全車両潰したときの竜晶
 // 「編成を動かす主体」を切り離すしかない（親が死ぬと子が止まる形では無理）。
 // 1路線に1編成。線をまたいだ乗り換えはしない（画面上で尻尾が別の線へ飛ぶのが
 // 不自然だったため。Shooter判定）。
-// railTrains[i] = { line, s, dir, units:[mover], respawn, dead }
-let railTrains = [];
+// =====================================================================
+// v2.3.0: 複数パーツの敵の持ち方は**2通りある**。新しいグループ敵を足すときは
+// どちらかを選ぶこと（混ぜると後で必ず破綻する）。
+//
+//  (A) 親子 … 中心を倒すと残りも落ちる。巨獣（コア＋腕）・多脚戦車（胴＋脚）。
+//      mover の parent / 親側の配列で足りる。**中心が死ぬと更新も止まる**ので、
+//      「中心が死んだ後も戦い続ける」は表現できない。
+//
+//  (B) 編成 … **全パーツ倒すまで終わらない**。列車砲列（機関車＋砲車＋機関車）。
+//      中心が死んでも動き続ける必要があるため親子では書けない。
+//      enemyGroups に登録し、movers の更新とは別系統で動かす。
+//
+// (B) を足すときは **enemyGroups に新しい kind で登録する**。
+// 既存のグループ（railTrain など）の配列に相乗りしてはいけない。
+// 共通の面倒（全滅判定・撃破時の報酬と演出・復活待ち）はここが見る。
+//
+// group = {
+//   kind:        "railTrain" など識別子
+//   units:       [mover]            … このグループの全パーツ
+//   update(g,dt)                    … 生き残りが居る間、毎フレーム
+//   onDestroyed(g)                  … 全滅した瞬間に1回（報酬・演出）
+//   onDead(g,dt)                    … 全滅した後、毎フレーム（復活待ちなど）
+//   removed:     true にすると次のフレームで登録簿から外れる
+// }
+const enemyGroups = [];
+
+function registerEnemyGroup(group) {
+  enemyGroups.push(group);
+  return group;
+}
+
+/** kind のグループだけ取り出す（鉄路側が自分の編成を引くのに使う）。 */
+function enemyGroupsOfKind(kind) {
+  const out = [];
+  for (const g of enemyGroups) if (g.kind === kind) out.push(g);
+  return out;
+}
+
+/** すべてのグループを動かす。movers の更新とは別系統。 */
+function updateEnemyGroups(dt) {
+  if (gameState !== "playing") return;
+  for (let i = enemyGroups.length - 1; i >= 0; i--) {
+    const g = enemyGroups[i];
+    if (g.removed) { enemyGroups.splice(i, 1); continue; }
+    let anyAlive = false;
+    for (const u of g.units) if (u.alive) { anyAlive = true; break; }
+    if (anyAlive) { if (g.update) g.update(g, dt); continue; }
+    if (!g.dead) { g.dead = true; if (g.onDestroyed) g.onDestroyed(g); }
+    if (g.onDead) g.onDead(g, dt);
+  }
+}
 
 // v2.1.1: **向きを進行方向に直結させない**（Shooter判定「方向を変えるたびに
 // 前後が入れ替わるのはバグにしか見えない」）。直結させていたので、線の端で
@@ -11083,7 +11132,11 @@ function spawnRailTrainOnLine(lineIdx) {
     aimTimer: random() * RAIL_AIM_INTERVAL, targetS: 0,
     respawn: 0, dead: false,
   };
-  railTrains.push(train);
+  train.kind        = "railTrain";
+  train.update      = updateRailTrainGroup;
+  train.onDestroyed = onRailTrainDestroyed;
+  train.onDead      = tickRailTrainRespawn;
+  registerEnemyGroup(train);
   positionRailTrain(train);
   return train;
 }
@@ -11113,70 +11166,68 @@ function railTrainLocos(train) {
   return n;
 }
 
-/** すべての編成を動かす。movers の更新とは別系統（機関車の生死に依存しない）。 */
-function updateRailTrains(dt) {
-  if (gameState !== "playing") return;
-  for (const train of railTrains) {
-    const line = railLines[train.line];
-    if (!line) continue;
+/**
+ * 編成1本ぶんの更新（生き残りが居る間だけ enemyGroups から呼ばれる）。
+ * 機関車の生死に依存しないのがこの形の肝。
+ */
+function updateRailTrainGroup(train, dt) {
+  const line = railLines[train.line];
+  if (!line) return;
 
-    // --- 全車両がやられたら、時間を置いて同じ路線に新しい編成が出る ---
-    let anyAlive = false;
-    for (const u of train.units) if (u.alive) { anyAlive = true; break; }
-    if (!anyAlive) {
-      if (!train.dead) {
-        train.dead = true;
-        train.respawn = RAIL_HUNTER_RESPAWN;
-        awardCrystals(RAIL_TRAIN_REWARD);
-        const head = train.units[0];
-        for (let k = 0; k < 24; k++) {
-          const a = fxRandom() * Math.PI * 2, r = 20 + fxRandom() * 120;
-          spawnHitParticles(head.wx + Math.cos(a) * r, head.wy + Math.sin(a) * r);
-        }
-        triggerFlash("rgba(255,170,70,0.40)", 0.32);
-        hapticPulse(260);
-      }
-      train.respawn -= dt;
-      if (train.respawn <= 0) railRespawnTrain(train);
-      continue;
-    }
-
-    // --- 進む向き: **自分の路線の上で**群れに一番近い場所を目指す（線は変えない）---
-    train.aimTimer -= dt;
-    if (train.aimTimer <= 0) {
-      train.aimTimer = RAIL_AIM_INTERVAL;
-      const c = calcFriendlyCentroid();
-      train.targetS = railClosestS(line, c.x, c.y);
-    }
-    if (line.loop) {
-      let d = train.targetS - train.s;
-      while (d >  line.len * 0.5) d -= line.len;
-      while (d < -line.len * 0.5) d += line.len;
-      if (Math.abs(d) > 80) train.dir = d > 0 ? 1 : -1;
-    } else {
-      const want = Math.max(train.lo, Math.min(train.hi, train.targetS));
-      if (Math.abs(want - train.s) > 80) train.dir = want > train.s ? 1 : -1;
-    }
-
-    // --- 走る。機関車が減るほど遅く、両方やられたら止まる（砲は撃ち続ける）---
-    const locos = railTrainLocos(train);
-    const speedMult = locos >= 2 ? 1 : (locos === 1 ? 0.55 : 0);
-    if (speedMult > 0) {
-      train.s += MOVER_DEFS.railgun_loco.speed * RAIL_TRAIN_SPEED * speedMult * train.dir * dt;
-      if (line.loop) {
-        if (train.s >= line.len) train.s -= line.len;
-        else if (train.s < 0)    train.s += line.len;
-      } else if (train.s > train.hi) { train.s = train.hi; train.dir = -1; }
-      else if (train.s < train.lo)   { train.s = train.lo; train.dir = 1; }
-    }
-    positionRailTrain(train);
-
-    // --- 砲撃（生きている砲車だけ）---
-    for (const u of train.units) {
-      if (u.alive && u.def.carGun) updateRailCarShell(u, dt);
-      else if (!u.alive && u.wreckSmoke === undefined) u.wreckSmoke = fxRandom() * 10;
-    }
+  // --- 進む向き: **自分の路線の上で**群れに一番近い場所を目指す（線は変えない）---
+  train.aimTimer -= dt;
+  if (train.aimTimer <= 0) {
+    train.aimTimer = RAIL_AIM_INTERVAL;
+    const c = calcFriendlyCentroid();
+    train.targetS = railClosestS(line, c.x, c.y);
   }
+  if (line.loop) {
+    let d = train.targetS - train.s;
+    while (d >  line.len * 0.5) d -= line.len;
+    while (d < -line.len * 0.5) d += line.len;
+    if (Math.abs(d) > 80) train.dir = d > 0 ? 1 : -1;
+  } else {
+    const want = Math.max(train.lo, Math.min(train.hi, train.targetS));
+    if (Math.abs(want - train.s) > 80) train.dir = want > train.s ? 1 : -1;
+  }
+
+  // --- 走る。機関車が減るほど遅く、両方やられたら止まる（砲は撃ち続ける）---
+  const locos = railTrainLocos(train);
+  const speedMult = locos >= 2 ? 1 : (locos === 1 ? 0.55 : 0);
+  if (speedMult > 0) {
+    train.s += MOVER_DEFS.railgun_loco.speed * RAIL_TRAIN_SPEED * speedMult * train.dir * dt;
+    if (line.loop) {
+      if (train.s >= line.len) train.s -= line.len;
+      else if (train.s < 0)    train.s += line.len;
+    } else if (train.s > train.hi) { train.s = train.hi; train.dir = -1; }
+    else if (train.s < train.lo)   { train.s = train.lo; train.dir = 1; }
+  }
+  positionRailTrain(train);
+
+  // --- 砲撃（生きている砲車だけ）---
+  for (const u of train.units) {
+    if (u.alive && u.def.carGun) updateRailCarShell(u, dt);
+    else if (!u.alive && u.wreckSmoke === undefined) u.wreckSmoke = fxRandom() * 10;
+  }
+}
+
+/** 全車両やられた瞬間（登録簿が1回だけ呼ぶ）。 */
+function onRailTrainDestroyed(train) {
+  train.respawn = RAIL_HUNTER_RESPAWN;
+  awardCrystals(RAIL_TRAIN_REWARD);
+  const head = train.units[0];
+  for (let k = 0; k < 24; k++) {
+    const a = fxRandom() * Math.PI * 2, r = 20 + fxRandom() * 120;
+    spawnHitParticles(head.wx + Math.cos(a) * r, head.wy + Math.sin(a) * r);
+  }
+  triggerFlash("rgba(255,170,70,0.40)", 0.32);
+  hapticPulse(260);
+}
+
+/** 全滅後の待ち時間（登録簿が毎フレーム呼ぶ）。 */
+function tickRailTrainRespawn(train, dt) {
+  train.respawn -= dt;
+  if (train.respawn <= 0) railRespawnTrain(train);
 }
 
 /** 同じ路線に編成を出し直す。 */
@@ -11185,8 +11236,7 @@ function railRespawnTrain(train) {
     const idx = movers.indexOf(u);
     if (idx >= 0) movers.splice(idx, 1);
   }
-  const i = railTrains.indexOf(train);
-  if (i >= 0) railTrains.splice(i, 1);
+  train.removed = true;   // 登録簿からは次のフレームで外れる
   const fresh = spawnRailTrainOnLine(train.line);
   if (!fresh) return;
   for (const u of fresh.units) {
@@ -11201,7 +11251,7 @@ function railRespawnTrain(train) {
  * movers 側は alive=false を描かないので、ここで別に描く。
  */
 function drawRailWrecks() {
-  for (const train of railTrains) {
+  for (const train of enemyGroupsOfKind("railTrain")) {
     for (const u of train.units) {
       if (u.alive || u.wx === undefined) continue;
       const def = u.def;
@@ -11341,7 +11391,6 @@ function generateRailMovers(stageIndex, result, tierForCount = 0) {
   railLines.forEach((l, i) => { if (!l.loop) radials.push(i); });
   // v2.2.0: **路線ごとに1編成**。線をまたいだ乗り換えをやめたので、
   // どの線の近くに居ても「その線の編成」が寄ってくる形になる。
-  railTrains = [];
   for (let li = 0; li < railLines.length; li++) {
     const train = spawnRailTrainOnLine(li);
     if (train) for (const u of train.units) result.push(u);

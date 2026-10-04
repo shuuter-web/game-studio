@@ -3901,6 +3901,63 @@ v2.1.0 で半々だった「警戒度1の終盤時代」も 59% になり、
 残骸が連結位置（300px・450px）を保ったまま引きずられること、
 8本の路線が最後まで入れ替わらないことを実機で確認済み。
 
+### 2-1bm. 複数パーツ敵の持ち方を1つの登録簿に寄せる（v2.3.0）
+
+Shooter 指摘:「今後も『グループ編成で全部パーツを倒さないといけない敵』は出すと
+思うのですが、別系統の編成の持ち方はそれで大丈夫でしょうか。今後新たなグループの
+敵を出したときに railTrains という名称のまま使い続けることが起きないように
+なっていれば大丈夫です」。
+
+#### 別系統にしたこと自体は正しかった。危ないのは名前だった
+
+親子（`m.parent`）では「中心が死んでも戦い続ける」は**構造的に書けない**
+（更新の主体が親なので、親が死ぬと子も止まる）。だから列車を別系統にしたのは妥当。
+
+問題は、v2.2.0 時点でグループの機構が `railTrains` **1つしか無かった**こと。
+新しいグループ敵を足そうとした人が辿り着く先がそこしかないので、
+
+1. `railTrains` に混ぜる（まさにこの指摘）
+2. 4つ目の並行システムをコピペで作る
+3. 巨獣・多脚戦車（親子）を真似して書き始め、途中で詰まって作り直す
+
+のどれかが起きる。パーツ持ちが**3種類3通り**に分かれていたのも拍車をかけていた。
+
+#### 直し: 汎用の登録簿にして、鉄路専用の名前を消した
+
+`railTrains` というグローバルを**消した**（識別子ごと無くなったので、そこへ
+相乗りすること自体ができない）。代わりに kind 付きの登録簿を置いた:
+
+```
+const enemyGroups = [];
+// group = { kind, units[], update(g,dt), onDestroyed(g), onDead(g,dt), removed }
+```
+
+共通の面倒（**全滅判定・撃破時の報酬と演出・復活待ち**）は `updateEnemyGroups` が持ち、
+路線ごとの編成は `kind:"railTrain"` として登録するだけになった。
+鉄路側は `enemyGroupsOfKind("railTrain")` で自分の編成を引く。
+
+登録簿の直上に、新しいグループ敵を足すときの**判断基準**をコメントで置いた:
+
+| | 使う場面 | 持ち方 |
+|---|---|---|
+| (A) 親子 | **中心を倒すと終わり**（巨獣・多脚戦車） | `m.parent` ＋ 親側の配列 |
+| (B) 編成 | **全パーツ倒すまで終わらない**（列車砲列） | `enemyGroups` に新しい kind で登録 |
+
+巨獣と多脚戦車は (A) のまま残した。あちらは「中心を倒すと終わり」という
+**別の正しい契約**で、移しても挙動は1つも良くならない書き換えになるため。
+混在は残るが、どちらを選ぶかが明文化されていれば迷わない。
+
+#### 挙動は変えていない（実機で再確認）
+
+| 確かめたこと | 結果 |
+|---|---|
+| 1路線1編成 | 8グループ・全部 kind:"railTrain"・路線 0〜7 |
+| 機関車2両を潰した後 | 停止（移動0）・砲車4両が生存・撃ち続ける・編成は未撃破 |
+| 全6両を潰した後 | 竜晶60・復活待ち37秒 |
+| 復活 | 同じ路線に6両で出し直し。登録簿に `removed` の残りカス0 |
+
+60fps 維持、エラー0。
+
 ---
 
 ## 3. 未着手のアイディア（着手順は未定）
@@ -4128,6 +4185,6 @@ v2.1.0 で半々だった「警戒度1の終盤時代」も 59% になり、
 | 軌道の地域（v2.0.0） | 形は `SHAPE_RAILWAY`。線路は `buildRailNetwork`（放射＋環状のポリライン）→ `railLines`、座標引きは `railPointAt`、線路上かの判定は `onRail`。町は `placeRailwayTownCenters`、描画は `drawRailsOnLayer`。定数は `RAIL_*` |
 | 鉄路の敵（v2.0.0） | `def.railBound` で共通の移動から外し、`updateRailMover` が弧長を進める（`advanceRail` が折り返し／回り込み）。列車は `spawnRailTrain`＋`updateRailTrain`（砲車は `part:"car"`）、単体は `spawnRailUnit`。編成は `generateRailMovers`、前照灯と砲口炎は `drawRailExtras` |
 | 列車砲列の砲塔（v2.1.0） | 砲塔は別スプライトで `drawRailTurrets` が車体の上に重ねる。旋回と連射は `updateRailCarShell`、1発は `fireRailCarShell`。数値は `def.carGun`（burst/burstGap/traverse/align）|
-| 粘着編成（v2.1.0） | `loco.railHunter`。進路選びは `railHunterSteer`（分岐は `buildRailJunctions` が生成時に総当たりで拾う）。復活は `updateRailHunterRespawn`（`updateMovers` の先頭で毎フレーム判定）|
+| 複数パーツのグループ敵（v2.3.0） | **新規追加はまずここを読む**。`enemyGroups` に `{ kind, units, update, onDestroyed, onDead }` で登録し、`updateEnemyGroups` が全滅判定・報酬・復活待ちを見る。「中心を倒すと終わり」なら登録簿ではなく親子（`m.parent`）で足りる＝巨獣・多脚戦車。列車砲列は `kind:"railTrain"`（`updateRailTrainGroup` / `onRailTrainDestroyed` / `tickRailTrainRespawn`）|
 | ステージ生成 | `generateStageLayout`／`placeTownCenters`／`generateTownWalls`／`START_TOWN_CLEAR` |
 | デバッグ | 左下バージョン3タップ。「🛸 動き切替」（hover/ground）「💥 反動切替」（0/40/100/240）<br>**v0.44 の敵確認セット**: 「👾 敵を出す…」（図鑑から選んで群れの隣に湧かせる。隊は隊ごと・巨獣は腕つき）／「🏷 敵の名札」（名前・HP・潜航中かを頭上に表示、盾持ちは弾く扇も出る）／「🛡 竜を無敵」（落ちずに敵の挙動だけ観察）／「☠ 敵を全部消す」（1体だけ残して見る）／「🌊 堰を決壊させる」／「🎯 ボス手前へワープ」 |
