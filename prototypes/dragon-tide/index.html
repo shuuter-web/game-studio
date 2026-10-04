@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v1.9.1";
+const GAME_VERSION = "v2.0.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -990,6 +990,8 @@ const DEBUG_ENEMY_LABELS = {
   healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車",
   behemoth_core: "👹巨獣(腕2本つき)", behemoth_arm: "👹巨獣の腕",
   walker_hull: "🕷多脚戦車(脚6本つき)", walker_leg: "🕷多脚戦車の脚",
+  railgun_loco: "🚂列車砲列(砲車3両つき)", railgun_car: "🚃列車砲列の砲車",
+  railcar: "🚈装甲軌道車", railram: "🚞衝角機関車",
   // v0.57: 文明ごとの看板ユニット
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
   grenadiers: "💣擲弾兵隊", armortrain: "🚄装甲列車", teslagiant: "⚡雷公",
@@ -1012,6 +1014,8 @@ const DEBUG_ENEMY_ORDER = [
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
   "walker_hull",
+  // v2.0.0: 軌道の敵。線路が無い地域では湧かせられない（押しても何も起きない）
+  "railgun_loco", "railcar", "railram",
 ];
 
 /** 群れのすぐ横に敵を湧かせる。隊（packCount）は隊ごと、巨獣はコア＋腕2本まとめて。 */
@@ -1033,6 +1037,32 @@ function debugSpawnEnemy(key) {
     spawnDragonAppearEffect(m.wx, m.wy);
     return m;
   };
+
+  // v2.0.0: 鉄路の敵は線路の上にしか置けない。群れに一番近い線路へ乗せる
+  if (MOVER_DEFS[key] && (MOVER_DEFS[key].railBound)) {
+    if (railLines.length === 0) return;   // 軌道以外の地域
+    let bestLine = 0, bestS = 0, bestD2 = Infinity;
+    const probe = { x: 0, y: 0, tx: 1, ty: 0 };
+    for (let li = 0; li < railLines.length; li++) {
+      const line = railLines[li];
+      for (let t = 0; t < line.len; t += 120) {
+        railPointAt(line, t, probe);
+        const d2 = dist2(probe.x, probe.y, c.x, c.y);
+        if (d2 < bestD2) { bestD2 = d2; bestLine = li; bestS = t; }
+      }
+    }
+    if (key === "railgun_loco") {
+      for (const m of spawnRailTrain(bestLine, bestS)) {
+        movers.push(m);
+        spawnDragonAppearEffect(m.wx, m.wy);
+      }
+    } else {
+      const m = spawnRailUnit(key, bestLine, bestS, 1);
+      movers.push(m);
+      spawnDragonAppearEffect(m.wx, m.wy);
+    }
+    return;
+  }
 
   if (key === "walker_hull") {
     const hull = spawnOne(def, 0, 0);
@@ -1362,6 +1392,8 @@ let WORLD_AREA_RATIO = (WORLD_W * WORLD_H) / (WORLD_REF_W * WORLD_REF_H);
 //   frontline … 防衛線。前線の村→長城と砦→手薄で卵の多い本土→首都（縦長）
 //   sanctuary … 聖地。四方の参道の門前町と祠→結界の解けた中心の首都（正方形・やや小さい）
 //   asteroids … 小惑星帯。町を載せた岩塊が4本の軌道を回る（隣の軌道は逆回り）。中心は宇宙港（正方形）
+//   railway   … 軌道。滅びた文明が遺した鉄路が首都から放射状に延び、二重の環状線が囲む。
+//               無人の列車がいまも走り続けている（正方形）
 // 面積はどれも基準の約4倍に揃える＝町の数・動く敵の数・段階の閾値の感覚を変えない。
 // 縦長・正方形の辺は LAYER_TILE(1200) の倍数にしておく（タイルの端に無駄が出ない）。
 const STAGE_SHAPES = [
@@ -1376,6 +1408,8 @@ const STAGE_SHAPES = [
   { id: "sanctuary", w: 7200, h: 7200,  icon: "⛩" },
   // v1.5.0: 小惑星帯（正方形）… 町を載せた岩塊が中心の宇宙港の周りを回る。動く的を追って薙ぐ
   { id: "asteroids", w: 8400, h: 8400,  icon: "☄" },
+  // v2.0.0: 軌道（正方形）… 放射6本＋環状2本の鉄路。列車がその上だけを走る
+  { id: "railway",   w: 8400, h: 8400,  icon: "🚆" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
@@ -1383,6 +1417,7 @@ const SHAPE_CITADEL   = 2;
 const SHAPE_FRONTLINE = 3;
 const SHAPE_SANCTUARY = 4;
 const SHAPE_ASTEROIDS = 5;
+const SHAPE_RAILWAY   = 6;
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
 
 function clampShape(v) {
@@ -2214,6 +2249,7 @@ function applyMoverKnockback(m, fromX, fromY, speed) {
     nudgeBehemothPart(m, fromX, fromY, speed / BEHEMOTH_PART_KNOCK_SCALE);
     return;
   }
+  if (m.def && m.def.railBound) return;   // v2.0.0: 線路から押し出せない
   // 動かない敵（設置物・門など）は押さない。押すと配置の意味が壊れる
   if (!m.def || !m.def.speed) return;
   const dx = m.wx - fromX, dy = m.wy - fromY;
@@ -3548,7 +3584,9 @@ let START_Y = WORLD_H * 0.5;
 /** 形 shape の群れの開始地点。首都から一番遠い辺・角に置く。 */
 function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
-  if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS) return { x: 320, y: h - 320 };   // 角（首都は中心）
+  if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY) {
+    return { x: 320, y: h - 320 };   // 角（首都は中心）
+  }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
   return { x: 250, y: h * 0.5 };                                      // 左端中央（従来どおり）
 }
@@ -4744,6 +4782,7 @@ function generateStageLayout(stageIndex) {
   sanctuaryShrines  = [];
   for (const rock of asteroidRocks) releaseAsteroidRock(rock);   // v1.5.0: 前のワールドの岩塊の絵を捨てる
   asteroidRocks     = [];
+  railLines         = [];
 
   const boss = placeBossBuilding(stageIndex, config);
   boss._fixedTier = maxPowerTier();
@@ -4757,11 +4796,14 @@ function generateStageLayout(stageIndex) {
   // --- (2) 小集落クラスタの中心をボス＋リング占有領域を避けて決める ---
   const townWanted  = scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR);
   if (worldShape === SHAPE_FRONTLINE) frontlinePlan = planFrontline();
+  // v2.0.0: 鉄路は町より先に敷く（町は線路の脇に並ぶので、線路が骨格になる）
+  if (worldShape === SHAPE_RAILWAY) buildRailNetwork(boss);
   const townCenters = worldShape === SHAPE_RIVERLINE ? placeRiverlineTownCenters(townWanted, boss)
                     : worldShape === SHAPE_CITADEL   ? placeCitadelTownCenters(boss)
                     : worldShape === SHAPE_FRONTLINE ? placeFrontlineTownCenters(townWanted, boss, frontlinePlan)
                     : worldShape === SHAPE_SANCTUARY ? placeSanctuaryTownCenters(boss)
                     : worldShape === SHAPE_ASTEROIDS ? placeAsteroidTownCenters(boss)
+                    : worldShape === SHAPE_RAILWAY   ? placeRailwayTownCenters(boss)
                     : placeTownCenters(townWanted, boss.wx, boss.wy);
 
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
@@ -4775,6 +4817,8 @@ function generateStageLayout(stageIndex) {
     townRoadEdges = buildSanctuaryRoadNetwork(townCenters, boss);
   } else if (worldShape === SHAPE_ASTEROIDS) {
     townRoadEdges = [];   // 岩塊どうしは道でつながらない
+  } else if (worldShape === SHAPE_RAILWAY) {
+    townRoadEdges = buildRailwayRoadNetwork(townCenters, boss);
   } else {
     townRoadEdges = buildTownRoadNetwork(townCenters, boss);
   }
@@ -5121,6 +5165,8 @@ function generateStageLayout(stageIndex) {
   const keepLoose = (b) => {
     if (worldShape === SHAPE_CONTINENT) return true;
     if (worldShape === SHAPE_ASTEROIDS) return false;   // 宇宙に地面は無い＝散らばった家も無い
+    // v2.0.0: 線路の上に家が建つと列車がそこを突っ切って見えるので退ける
+    if (onRail(b.wx, b.wy, RAIL_CLEAR + (b.radius || 0))) return false;
     if (riverPolyline.length > 1 &&
         distPointToPolylineSq(b.wx, b.wy, riverPolyline) < (riverWidth * 0.5 + (b.radius || 0) + 6) ** 2) return false;
     if (frontlinePlan && overlapsFrontlineWall(b, frontlinePlan)) return false;
@@ -5147,10 +5193,29 @@ function generateStageLayout(stageIndex) {
   const townWalls = generateTownWalls(townMetas.filter(m => !m._rock), stageIndex);   // v1.5.0: 動く町に壁は付けない
   for (const w of townWalls) result.push(w);
 
+  // v2.0.0: 線路の上に乗ってしまった建物をまとめて退ける。
+  // keepLoose は散らした家にしか効かないので、**町の建物・城壁もここで**落とす。
+  // 退けないと実測で 366〜460棟が線路に乗り、列車が家の中を走る絵になっていた。
+  // 首都（ターミナル）だけは残す＝鉄路はそこへ集まる終着点なので中を通ってよい。
+  if (worldShape === SHAPE_RAILWAY && railLines.length > 0) {
+    for (let i = result.length - 1; i >= 0; i--) {
+      const b = result[i];
+      if (b.isBoss) continue;
+      // 町の下地・道路の描画はこの棟にぶら下がっている（_townMeta）。
+      // 落とすと町がまるごと地図から消えるので、線路に掛かっていても残す
+      if (b._townMeta) continue;
+      if (onRail(b.wx, b.wy, RAIL_CLEAR + (b.radius || 0) * 0.6)) result.splice(i, 1);
+    }
+  }
+
   // --- (6) v0.6-p3: 地形障害物（岩山・湖）を空白地帯へ散布 ---
   // settlements とは別系統（破壊不可）。モジュールスコープの terrainObstacles を更新する。
   terrainObstacles = generateTerrainObstacles(result, boss);
   if (worldShape === SHAPE_ASTEROIDS) terrainObstacles = [];   // v1.5.0: 宇宙に岩山・湖は無い
+  // v2.0.0: 岩山が線路を塞ぐと「通れないはずの線路を列車が走る」ことになる
+  if (worldShape === SHAPE_RAILWAY) {
+    terrainObstacles = terrainObstacles.filter(o => !onRail(o.wx, o.wy, RAIL_CLEAR + (o.radius || 0)));
+  }
 
   // v0.17: 森（非ブロッキングの自然装飾。竜は上を飛ぶ）を空白地帯へ散布
   forestClusters = generateForests(result, boss);
@@ -5332,6 +5397,12 @@ function townFormFor(center, boss) {
   }
   if (worldShape === SHAPE_CITADEL) {
     return { type: "arc", ox: boss.wx, oy: boss.wy, maxHalfL: center.maxHalfL };
+  }
+  // v2.0.0: 駅前町は線路に沿って延びる帯。畑は線路と反対側へ逃がす
+  if (worldShape === SHAPE_RAILWAY && center.rail !== undefined) {
+    const nAng = center.rail + Math.PI / 2;
+    return { type: "ribbon", angle: center.rail, awayAngle: center.side > 0 ? nAng : nAng + Math.PI,
+             maxHalfL: center.maxHalfL };
   }
   // v1.4.0: 聖地の門前町は参道に沿って延びる帯。表＝参道の外側（群れが来る側）、畑＝参道と反対側
   if (worldShape === SHAPE_SANCTUARY && center.avenue !== undefined) {
@@ -5853,6 +5924,233 @@ function buildSanctuaryRoadNetwork(centers, boss) {
   return edges;
 }
 
+// =====================================================================
+// v2.0.0: 軌道（正方形）— 滅びた文明が遺した鉄路
+// =====================================================================
+// 首都（中央のターミナル）から放射状に6本、それを二重の環状線が囲む。
+// 線路は**敵の通り道そのもの**で、列車はこの上しか走れない。
+// つまり「どこに居るか」が「どれだけ早く殴られるか」に直結する地域になる。
+//
+// 時代は関係なく全文明に出す（Shooter指示）。石器時代に鉄路がある説明は
+// **滅びた過去の遺物**で、走っている列車も無人のまま動き続けている機械。
+// 町はその時代のものなので、古い町並みの脇を装甲列車が通り過ぎる絵になる。
+const RAIL_RADIAL_COUNT = 6;
+const RAIL_RING_RADII   = [1650, 3150];
+const RAIL_RING_STEPS   = 96;    // 環状線のポリライン分割（滑らかさ）
+const RAIL_RADIAL_STEPS = 24;
+const RAIL_EDGE_MARGIN  = 150;   // 放射線をマップ端の手前で止める余白
+const RAIL_GAUGE        = 24;    // 2本のレールの間隔
+const RAIL_BALLAST_W    = 44;    // 路盤（砂利）の幅
+const RAIL_TIE_GAP      = 30;    // 枕木の間隔
+const RAIL_CLEAR        = 54;    // 線路から建物・地形を退ける距離
+const RAIL_TOWN_OFFSET  = 300;   // 線路から町の中心までの横のずらし
+const RAIL_TOWN_SPACING = 760;   // 線路沿いの町の間隔
+const RAIL_TOWN_JITTER  = 110;
+const RAIL_TOWN_R_MIN   = 900;
+const RAIL_FORT_R       = 1850;  // この内側＝要塞都市
+const RAIL_ADVANCED_R   = 3350;  // この内側＝格上の町
+
+// { pts:[{x,y}], cum:[0..len], len, loop }
+let railLines = [];
+
+/** ポリラインに累積距離を付けて1本の線路にする。 */
+function makeRailLine(pts, loop) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  }
+  return { pts, cum, len: cum[cum.length - 1], loop };
+}
+
+/**
+ * 首都を中心に放射6本＋環状2本を敷く。
+ * 放射は端で止まる開いた線、環状は閉じた輪（列車の走り方が変わる）。
+ */
+function buildRailNetwork(boss) {
+  railLines = [];
+  const base = random() * Math.PI * 2;   // 放射の向きはランごとに回す
+  const maxR = Math.hypot(WORLD_W, WORLD_H) * 0.5;
+  for (let i = 0; i < RAIL_RADIAL_COUNT; i++) {
+    const a = base + i * (Math.PI * 2 / RAIL_RADIAL_COUNT);
+    const ux = Math.cos(a), uy = Math.sin(a);
+    const pts = [];
+    for (let k = 0; k <= RAIL_RADIAL_STEPS; k++) {
+      const r = (maxR / RAIL_RADIAL_STEPS) * k;
+      const x = boss.wx + ux * r, y = boss.wy + uy * r;
+      if (x < RAIL_EDGE_MARGIN || x > WORLD_W - RAIL_EDGE_MARGIN ||
+          y < RAIL_EDGE_MARGIN || y > WORLD_H - RAIL_EDGE_MARGIN) break;
+      pts.push({ x, y });
+    }
+    if (pts.length >= 2) {
+      const line = makeRailLine(pts, false);
+      line.angle = a;
+      railLines.push(line);
+    }
+  }
+  for (const r of RAIL_RING_RADII) {
+    const pts = [];
+    for (let k = 0; k <= RAIL_RING_STEPS; k++) {
+      const a = base + (k / RAIL_RING_STEPS) * Math.PI * 2;
+      pts.push({ x: boss.wx + Math.cos(a) * r, y: boss.wy + Math.sin(a) * r });
+    }
+    const line = makeRailLine(pts, true);
+    line.ring = r;
+    railLines.push(line);
+  }
+}
+
+/** 線路 line の弧長 s の位置と進行方向。s は呼ぶ側で範囲内に丸めておくこと。 */
+function railPointAt(line, s, out) {
+  const cum = line.cum;
+  let lo = 0, hi = cum.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (cum[mid] <= s) lo = mid; else hi = mid;
+  }
+  const a = line.pts[lo], b = line.pts[lo + 1] ?? line.pts[lo];
+  const seg = Math.max(1e-6, cum[lo + 1] - cum[lo]);
+  const t = Math.max(0, Math.min(1, (s - cum[lo]) / seg));
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const d = Math.hypot(dx, dy) || 1;
+  out.x = a.x + dx * t; out.y = a.y + dy * t;
+  out.tx = dx / d;      out.ty = dy / d;
+  return out;
+}
+
+/** 点が線路からどれだけ離れているか（二乗）。線路網全体の最短。 */
+function railDist2(x, y) {
+  let best = Infinity;
+  for (const line of railLines) {
+    for (let i = 0; i < line.pts.length - 1; i++) {
+      const d2 = pointSegDist2(x, y, line.pts[i].x, line.pts[i].y, line.pts[i + 1].x, line.pts[i + 1].y);
+      if (d2 < best) best = d2;
+    }
+  }
+  return best;
+}
+
+/** 線路の上（pad 以内）か。建物・地形を線路から退けるのに使う。 */
+function onRail(x, y, pad) { return railLines.length > 0 && railDist2(x, y) < pad * pad; }
+
+/** 軌道の町。放射線の両脇に、線路と平行な帯の町を並べる（＝駅前町）。 */
+function placeRailwayTownCenters(boss) {
+  const centers = [];
+  const startClear2 = START_TOWN_CLEAR_CENTER * START_TOWN_CLEAR_CENTER;
+  const maxHalfL = (RAIL_TOWN_SPACING - RAIL_TOWN_JITTER * 2) * STRIP_GAP_SHARE;
+  const rMax = Math.hypot(WORLD_W, WORLD_H) * 0.5 - RAIL_EDGE_MARGIN - 200;
+  for (const line of railLines) {
+    if (line.loop) continue;                 // 町は放射線沿いだけ（環状線は走行用）
+    const a = line.angle;
+    const ux = Math.cos(a), uy = Math.sin(a);
+    const nx = -uy, ny = ux;
+    for (const side of [-1, 1]) {
+      // 両脇で半歩ずらして千鳥に（線路をはさんで向かい合わせにしない）
+      for (let r = RAIL_TOWN_R_MIN + (side > 0 ? RAIL_TOWN_SPACING * 0.5 : 0);
+           r <= rMax; r += RAIL_TOWN_SPACING) {
+        const rr  = r + randRange(-RAIL_TOWN_JITTER, RAIL_TOWN_JITTER);
+        const off = side * (RAIL_TOWN_OFFSET + randRange(-40, 70));
+        const x = boss.wx + ux * rr + nx * off;
+        const y = boss.wy + uy * rr + ny * off;
+        if (x < 300 || x > WORLD_W - 300 || y < 300 || y > WORLD_H - 300) continue;
+        if (dist2(x, y, START_X, START_Y) < startClear2) continue;
+        centers.push({
+          x, y, rail: a, side, maxHalfL,
+          fortified:  rr < RAIL_FORT_R,
+          tierOffset: rr >= RAIL_FORT_R && rr < RAIL_ADVANCED_R ? TOWN_TIER_ADVANCED : 0,
+        });
+      }
+    }
+  }
+  return centers;
+}
+
+/** 軌道の街道。町から脇の線路へ引き込む短い道だけ（長距離は鉄路が担う）。 */
+function buildRailwayRoadNetwork(centers, boss) {
+  const edges = [];
+  for (const c of centers) {
+    if (c.rail === undefined) { edges.push([c, { x: boss.wx, y: boss.wy }]); continue; }
+    const ux = Math.cos(c.rail), uy = Math.sin(c.rail);
+    const t = (c.x - boss.wx) * ux + (c.y - boss.wy) * uy;
+    edges.push([c, { x: boss.wx + ux * t, y: boss.wy + uy * t }]);
+  }
+  return edges;
+}
+
+/**
+ * 鉄路を地面レイヤーへ焼く。路盤（砂利）→枕木→レール2本の順。
+ * 町の下地より後に描くので、駅前町の地面の上を線路が通る。
+ */
+function drawRailsOnLayer(bctx, bounds) {
+  if (railLines.length === 0) return;
+  bctx.save();
+  bctx.lineCap = "butt";
+  bctx.lineJoin = "round";
+  for (const line of railLines) {
+    // タイルに掛からない線はまるごと捨てる（1枚ごとに全線を描くと枚数ぶん無駄になる）
+    let hit = false;
+    for (const p of line.pts) {
+      if (layerBoundsHitCircle(bounds, p.x, p.y, RAIL_BALLAST_W)) { hit = true; break; }
+    }
+    if (!hit) continue;
+
+    const path = () => {
+      bctx.beginPath();
+      bctx.moveTo(line.pts[0].x, line.pts[0].y);
+      for (let i = 1; i < line.pts.length; i++) bctx.lineTo(line.pts[i].x, line.pts[i].y);
+    };
+    // 路盤
+    bctx.globalAlpha = 0.85;
+    bctx.strokeStyle = "#3a352c";
+    bctx.lineWidth = RAIL_BALLAST_W;
+    path(); bctx.stroke();
+    bctx.globalAlpha = 0.55;
+    bctx.strokeStyle = "#6b6252";
+    bctx.lineWidth = RAIL_BALLAST_W - 10;
+    path(); bctx.stroke();
+
+    // 枕木（線分ごとに等間隔で刻む）
+    bctx.globalAlpha = 0.75;
+    bctx.strokeStyle = "#2a241c";
+    bctx.lineWidth = 5;
+    bctx.beginPath();
+    for (let i = 0; i < line.pts.length - 1; i++) {
+      const a = line.pts[i], b = line.pts[i + 1];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len, uy = dy / len;
+      const nx = -uy * (RAIL_GAUGE * 0.5 + 7), ny = ux * (RAIL_GAUGE * 0.5 + 7);
+      for (let d = 0; d < len; d += RAIL_TIE_GAP) {
+        const px0 = a.x + ux * d, py0 = a.y + uy * d;
+        bctx.moveTo(px0 - nx, py0 - ny);
+        bctx.lineTo(px0 + nx, py0 + ny);
+      }
+    }
+    bctx.stroke();
+
+    // レール2本（鋼の線）
+    bctx.globalAlpha = 0.95;
+    for (const sideSign of [-1, 1]) {
+      bctx.strokeStyle = "#8f9299";
+      bctx.lineWidth = 3.4;
+      bctx.beginPath();
+      for (let i = 0; i < line.pts.length; i++) {
+        const a = line.pts[i];
+        const b = line.pts[i + 1] ?? line.pts[i - 1];
+        const dx = (line.pts[i + 1] ? b.x - a.x : a.x - b.x);
+        const dy = (line.pts[i + 1] ? b.y - a.y : a.y - b.y);
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len * (RAIL_GAUGE * 0.5) * sideSign;
+        const ny =  dx / len * (RAIL_GAUGE * 0.5) * sideSign;
+        if (i === 0) bctx.moveTo(a.x + nx, a.y + ny);
+        else         bctx.lineTo(a.x + nx, a.y + ny);
+      }
+      bctx.stroke();
+    }
+  }
+  bctx.restore();
+  bctx.globalAlpha = 1;
+}
+
 // -----------------------------------------------------------------
 // v1.5.0: 小惑星帯（正方形）— 町を載せた岩塊が宇宙港の周りを回る
 // -----------------------------------------------------------------
@@ -6020,7 +6318,8 @@ function applyTownFortification(townBuildings) {
 function placeBossBuilding(stageIndex, config) {
   const bossTheme = config.boss;
   // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
-  if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY || worldShape === SHAPE_ASTEROIDS) {
+  if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY ||
+      worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_RAILWAY) {
     return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
   }
   if (worldShape === SHAPE_FRONTLINE) {
@@ -6760,6 +7059,47 @@ const MOVER_DEFS = {
     color: "#4a4a3a", glowColor: "#6a5a28",
     hpBarWhenHurt: true,   // 無傷のときはバーを出さない（6本並ぶと画面が埋まる）
     // 攻撃は踏みつけ（updateWalkerLeg 内）。ここには置かない
+  },
+
+  // ===================================================================
+  // v2.0.0 軌道の敵（鉄路の上しか走れない）。全文明に出るが**軌道の地域だけ**。
+  // 滅びた文明が遺した無人の機械、という扱いなので時代で見た目は変わらない。
+  // 線路の上に居るかどうかがそのまま危険度になる＝位置取りが問われる地域の核。
+  // ===================================================================
+
+  // 列車砲列: 機関車＋砲車3両。環状線を回りながら順に砲撃する移動砲台。
+  // 砲車は1両ずつ壊せる＝弾幕が目に見えて減る（段階的解体）。
+  railgun_loco: {
+    name: "railgun_loco", sprite: "railgun_loco", part: "loco", railBound: true, railLoopOnly: true,
+    elite: true, showHpBar: true,
+    hp: 1600, speed: 54, xp: 560, eggDrop: 7, radius: 34,
+    color: "#3a3630", glowColor: "#ffb040",
+    railReward: 60,
+  },
+  railgun_car: {
+    name: "railgun_car", sprite: "railgun_car", part: "car", showHpBar: true,
+    hp: 420, speed: 0, xp: 130, eggDrop: 1, radius: 28,
+    color: "#3a3630", glowColor: "#ffc060",
+    // 砲撃は updateRailTrain の中（砲車ごとに位相をずらして順に撃つ）
+    carGun: { interval: 3.6, range: 620, damage: 4.2, aoe: 78, speed: 210, color: "#ffc766" },
+  },
+
+  // 装甲軌道車: 軽くて速い。線路を端まで走って折り返しながら撃ち続ける。
+  // 速度115は竜の巡航より速く、振り切るには線路から離れるしかない。
+  railcar: {
+    name: "railcar", sprite: "railcar", part: null, railBound: true, showHpBar: true,
+    hp: 260, speed: 115, xp: 95, eggDrop: 1, radius: 20,
+    color: "#44403a", glowColor: "#ffd080",
+    attack: { type: "fan", interval: 1.7, count: 3, damage: 1.8, speed: 150, range: 400, spread: 0.20 },
+  },
+
+  // 衝角機関車: 撃たない。線路の上を突っ走って轢く。
+  // 「線路の上に居るな」を体で覚えさせる枠（前照灯の光条が唯一の予告）。
+  railram: {
+    name: "railram", sprite: "railram", part: null, railBound: true, showHpBar: true,
+    hp: 900, speed: 175, xp: 240, eggDrop: 3, radius: 28,
+    color: "#4a3630", glowColor: "#ff7030",
+    railRam: { damage: 14, radius: 46, push: 190 },
   },
 
   // v0.25.1 財宝馬車: 竜ではない運搬体。群れから逃げ回り、倒すと竜晶/XPが大量に弾ける当たり枠。
@@ -7990,6 +8330,9 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
     result.push(t);
   }
 
+  // v2.0.0: 軌道の地域は、時代に関係なく鉄路の敵が走っている（遺された無人の機械）
+  if (worldShape === SHAPE_RAILWAY) generateRailMovers(stageIndex, result);
+
   // v1.8.0: 多脚戦車を大戦（STAGE7）と最終（STAGE8）に1体。
   if (stageIndex === 6 || stageIndex === 7) {
     const hull = makeMover(MOVER_DEFS.walker_hull, randPoint);
@@ -8543,6 +8886,10 @@ function updateMovers(dt) {
 
     // v1.8.0: 多脚戦車の脚は歩行（接地点の置き直し）だけで、共通の移動には乗らない
     if (def.part === "leg") { updateWalkerLeg(m, dt); continue; }
+
+    // v2.0.0: 鉄路の敵は線路の弧長を進むだけ（砲車は機関車が動かす）
+    if (def.part === "car") continue;
+    if (def.railBound) { updateRailMover(m, dt); continue; }
     // 胴は共通の移動・攻撃に乗せたうえで、脚の本数と砲塔だけ先に片付ける
     if (def.walker) updateWalkerHull(m, dt);
 
@@ -8872,11 +9219,13 @@ function updateMovers(dt) {
     const a = movers[i];
     // v1.8.0: 関節パーツ（巨獣の腕・多脚戦車の脚）は押し合いの対象外。
     // 親に付いて動くものを押すと、関節の計算と喧嘩して暴れる
-    if (!a.alive || a.def.part === "arm" || a.def.part === "leg" || a.submerged) continue;
+    if (!a.alive || a.def.part === "arm" || a.def.part === "leg" ||
+        a.def.part === "car" || a.def.railBound || a.submerged) continue;
     const aMovable = a.def.speed > 0;
     for (let j = i + 1; j < movers.length; j++) {
       const b = movers[j];
-      if (!b.alive || b.def.part === "arm" || b.def.part === "leg" || b.submerged) continue;
+      if (!b.alive || b.def.part === "arm" || b.def.part === "leg" ||
+          b.def.part === "car" || b.def.railBound || b.submerged) continue;
       const bMovable = b.def.speed > 0;
       if (!aMovable && !bMovable) continue;   // 動かない者同士は押し合わない
       const samePack = a.packId !== undefined && a.packId === b.packId;
@@ -9705,6 +10054,19 @@ function damageMover(m, damage, srcX, srcY) {
       }
     }
 
+    // v2.0.0: 機関車を落とすと砲車も止まる（連結が切れて脱線する絵）
+    if (m.def.part === "loco") {
+      for (const car of (m.cars ?? [])) if (car.alive) car.alive = false;
+      if (m.def.railReward) awardCrystals(m.def.railReward);
+      for (let k = 0; k < 26; k++) {
+        const a = fxRandom() * Math.PI * 2;
+        const r = 20 + fxRandom() * 90;
+        spawnHitParticles(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
+      }
+      triggerFlash("rgba(255,170,70,0.42)", 0.34);
+      hapticPulse(260);
+    }
+
     // v1.8.0: 多脚戦車 — 脚を折ると胴がつんのめる／胴を落とすと脚も崩れる
     if (m.def.part === "leg" && m.parent) {
       triggerShake(2.6, 0.12);
@@ -10414,6 +10776,249 @@ function drawWalkerTurrets() {
   }
 }
 
+// =====================================================================
+// v2.0.0: 鉄路の上を走る敵
+// =====================================================================
+// 共通の移動（巡回・追跡）には乗せず、線路の弧長を進めるだけにしてある。
+// 攻撃も自前（巨獣の腕・多脚戦車の主砲と同じ扱い）。
+// 列車が線路から外れないことが、この地域の遊びの前提そのものなので、
+// 追跡ロジックと混ぜて「線路から浮く」事故が起きないようにしている。
+const RAIL_CAR_GAP     = 150;   // 機関車と砲車、砲車どうしの間隔（弧長。絵の長さに合わせる）
+const RAIL_CAR_COUNT   = 3;     // 砲車の数
+const RAIL_HEADLIGHT_R = 260;   // 衝角機関車の前照灯が届く距離
+
+const _railPt = { x: 0, y: 0, tx: 1, ty: 0 };
+
+/** 線路に乗せる（湧かせた直後の1回だけ）。 */
+function placeOnRail(m, lineIdx, s, dir) {
+  m.railLine = lineIdx;
+  m.railS    = s;
+  m.railDir  = dir;
+  const line = railLines[lineIdx];
+  railPointAt(line, Math.max(0, Math.min(line.len, s)), _railPt);
+  m.wx = _railPt.x; m.wy = _railPt.y;
+  m.headingX = _railPt.tx * dir; m.headingY = _railPt.ty * dir;
+}
+
+/** 弧長を range に収める。閉じた輪は回り込み、開いた線は端で折り返す。 */
+function advanceRail(m, line, delta) {
+  m.railS += delta;
+  if (line.loop) {
+    if (m.railS >= line.len) m.railS -= line.len;
+    else if (m.railS < 0)    m.railS += line.len;
+  } else if (m.railS > line.len) {
+    m.railS = line.len - (m.railS - line.len);
+    m.railDir *= -1;
+  } else if (m.railS < 0) {
+    m.railS = -m.railS;
+    m.railDir *= -1;
+  }
+}
+
+/** 鉄路の敵1体。位置を進めてから、種類ごとの攻撃をする。 */
+function updateRailMover(m, dt) {
+  const line = railLines[m.railLine];
+  if (!line) { m.alive = false; return; }   // 地域を跨いだ等。線路が無ければ存在できない
+  const def = m.def;
+
+  advanceRail(m, line, def.speed * (m.speedMult ?? 1) * m.railDir * dt);
+  railPointAt(line, m.railS, _railPt);
+  m.wx = _railPt.x; m.wy = _railPt.y;
+  m.headingX = _railPt.tx * m.railDir;
+  m.headingY = _railPt.ty * m.railDir;
+
+  if (def.part === "loco") { updateRailTrain(m, dt); return; }
+  if (def.railRam)         { updateRailRam(m, dt);   return; }
+  if (def.attack)          { updateRailCarGun(m, dt); }
+}
+
+/** 装甲軌道車の射撃（共通の fan をそのまま使うが、撃つ判断はここでする）。 */
+function updateRailCarGun(m, dt) {
+  const atk = m.def.attack;
+  const idx = findNearestAliveBoid(m.wx, m.wy);
+  if (idx < 0) return;
+  const dx = px[idx] - m.wx, dy = py[idx] - m.wy;
+  if (m.attackTimer === undefined) m.attackTimer = random() * atk.interval;
+  m.attackTimer -= dt;
+  if (m.attackTimer > 0) return;
+  if (dx * dx + dy * dy > atk.range * atk.range) { m.attackTimer = 0.3; return; }
+  m.attackTimer = atk.interval / moverFerocity();
+  const base = Math.atan2(dy, dx);
+  for (let k = -(atk.count >> 1); k <= (atk.count >> 1); k++) {
+    spawnFanProjectileRaw(m.wx, m.wy, base + k * atk.spread, atk.speed,
+                          atk.damage * moverFerocity(), "#ffd080", 0, 0, 0);
+  }
+}
+
+/**
+ * 衝角機関車。撃たずに轢く。線路の上に居る竜を弾き飛ばしながら走り抜ける。
+ * 1体につき1回だけ当たる（すれ違いざまに連打しない）ようクールダウンを持たせる。
+ */
+function updateRailRam(m, dt) {
+  const ram = m.def.railRam;
+  const r2 = ram.radius * ram.radius;
+  const fer = moverFerocity();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - m.wx, dy = py[i] - m.wy;
+    if (dx * dx + dy * dy > r2) continue;
+    if (boidCollisionCooldown[i] > 0) continue;
+    applyDamageToBoid(i, ram.damage * fer);
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    applyKickDist(i, dx / d, dy / d, ram.push);
+    boidCollisionCooldown[i] = COLLISION_COOLDOWN;
+    spawnCollisionParticles(px[i], py[i]);
+  }
+  // 前照灯に竜が入ると光が強まる＝「今から轢かれる」が線路の先に出る
+  let lit = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - m.wx, dy = py[i] - m.wy;
+    const along = dx * m.headingX + dy * m.headingY;
+    if (along < 0 || along > RAIL_HEADLIGHT_R) continue;
+    const side = Math.abs(dx * -m.headingY + dy * m.headingX);
+    if (side < 70) { lit = 1; break; }
+  }
+  m.railAlert = Math.max(0, Math.min(1, (m.railAlert ?? 0) + (lit ? dt * 4 : -dt * 3)));
+}
+
+/** 列車砲列。砲車を機関車の後ろに連ねて、順に撃たせる。 */
+function updateRailTrain(loco, dt) {
+  const line = railLines[loco.railLine];
+  if (!loco.cars) return;
+  for (let k = 0; k < loco.cars.length; k++) {
+    const car = loco.cars[k];
+    if (!car.alive) continue;
+    // 砲車は機関車の後ろ（進行方向の逆）へ等間隔。環状線なので回り込みだけで済む
+    let cs = loco.railS - loco.railDir * RAIL_CAR_GAP * (k + 1);
+    if (line.loop) { cs = ((cs % line.len) + line.len) % line.len; }
+    else           { cs = Math.max(0, Math.min(line.len, cs)); }
+    railPointAt(line, cs, _railPt);
+    car.wx = _railPt.x; car.wy = _railPt.y;
+    car.headingX = _railPt.tx * loco.railDir;
+    car.headingY = _railPt.ty * loco.railDir;
+    updateRailCarShell(car, dt);
+  }
+}
+
+/** 砲車1両の砲撃（予告円つきの着弾弾）。 */
+function updateRailCarShell(car, dt) {
+  const g = car.def.carGun;
+  if (car.attackTimer === undefined) car.attackTimer = random() * g.interval;
+  car.attackTimer -= dt;
+  if (car.attackTimer > 0) return;
+  const idx = findNearestAliveBoid(car.wx, car.wy);
+  if (idx < 0) { car.attackTimer = 0.4; return; }
+  const dx = px[idx] - car.wx, dy = py[idx] - car.wy;
+  if (dx * dx + dy * dy > g.range * g.range) { car.attackTimer = 0.4; return; }
+  car.attackTimer = g.interval / moverFerocity();
+  // 砲身は絵の右側に張り出しているので、狙いが左なら絵ごと左右反転する。
+  // これが無いと「群れと逆を向いた砲が当ててくる」ことになる
+  const side = (px[idx] - car.wx) * -car.headingY + (py[idx] - car.wy) * car.headingX;
+  car.mirror = side < 0;
+  spawnShell(car.wx, car.wy, px[idx], py[idx], g.speed,
+             g.damage * moverFerocity(), g.aoe, g.color);
+  car.muzzleT = 0.16;
+  spawnHitParticles(car.wx, car.wy);
+}
+
+/** 機関車＋砲車3両を線路に乗せて作る。呼び出し側が movers へ入れる。 */
+function spawnRailTrain(lineIdx, s) {
+  const out = [];
+  const loco = makeMover(MOVER_DEFS.railgun_loco, () => ({ x: 0, y: 0 }));
+  loco.maxHp = MOVER_DEFS.railgun_loco.hp;
+  loco.hp    = MOVER_DEFS.railgun_loco.hp;
+  loco.xpValue = MOVER_DEFS.railgun_loco.xp;
+  placeOnRail(loco, lineIdx, s, 1);
+  loco.cars = [];
+  out.push(loco);
+  for (let k = 0; k < RAIL_CAR_COUNT; k++) {
+    const car = makeMover(MOVER_DEFS.railgun_car, () => ({ x: loco.wx, y: loco.wy }));
+    car.maxHp = MOVER_DEFS.railgun_car.hp;
+    car.hp    = MOVER_DEFS.railgun_car.hp;
+    car.xpValue = MOVER_DEFS.railgun_car.xp;
+    car.parent  = loco;
+    car.wx = loco.wx; car.wy = loco.wy;
+    // 砲車ごとに撃つ間隔の位相をずらす＝左から順に火を噴く「砲列」になる
+    car.attackTimer = (k / RAIL_CAR_COUNT) * MOVER_DEFS.railgun_car.carGun.interval;
+    loco.cars.push(car);
+    out.push(car);
+  }
+  return out;
+}
+
+/** 単体の鉄路の敵を線路に乗せて作る。 */
+function spawnRailUnit(defKey, lineIdx, s, dir) {
+  const def = MOVER_DEFS[defKey];
+  const m = makeMover(def, () => ({ x: 0, y: 0 }));
+  m.maxHp = def.hp; m.hp = def.hp; m.xpValue = def.xp;
+  placeOnRail(m, lineIdx, s, dir);
+  return m;
+}
+
+/** 軌道の地域の編成。環状線に砲列、放射線に軌道車と衝角機関車。 */
+function generateRailMovers(stageIndex, result) {
+  if (railLines.length === 0) return;
+  const loops   = [];
+  const radials = [];
+  railLines.forEach((l, i) => (l.loop ? loops : radials).push(i));
+  // 砲列は環状線に1本ずつ（閉じた輪なので砲車が機関車の後ろから離れない）
+  for (const li of loops) {
+    for (const m of spawnRailTrain(li, random() * railLines[li].len)) result.push(m);
+  }
+  // 軌道車は時代が進むほど増やす（線路の交通量そのものが難度になる）
+  const carCount = 4 + Math.floor(stageIndex / 2);
+  for (let k = 0; k < carCount; k++) {
+    const li = railLines.length > 0 ? (k % railLines.length) : 0;
+    result.push(spawnRailUnit("railcar", li, random() * railLines[li].len, random() < 0.5 ? -1 : 1));
+  }
+  // 衝角機関車は放射線（首都へ出入りする線）に。端で折り返して何度も通る
+  const ramCount = Math.max(1, Math.min(3, 1 + Math.floor(stageIndex / 3)));
+  for (let k = 0; k < ramCount && radials.length > 0; k++) {
+    const li = radials[k % radials.length];
+    result.push(spawnRailUnit("railram", li, random() * railLines[li].len, random() < 0.5 ? -1 : 1));
+  }
+}
+
+/** 列車の付け足し描画（砲車の砲口炎・衝角機関車の前照灯）。movers の上に重ねる。 */
+function drawRailExtras() {
+  for (const m of movers) {
+    if (!m.alive || !m.def) continue;
+    if (m.def.railRam) {
+      // 前照灯。線路の先へ伸びる光条で「この線は今ふさがっている」を見せる
+      const a = Math.atan2(m.headingY, m.headingX);
+      const alert = m.railAlert ?? 0;
+      ctx.save();
+      ctx.translate(m.wx, m.wy);
+      ctx.rotate(a);
+      const grad = ctx.createLinearGradient(0, 0, RAIL_HEADLIGHT_R, 0);
+      grad.addColorStop(0, `rgba(255,190,110,${0.30 + 0.35 * alert})`);
+      grad.addColorStop(1, "rgba(255,190,110,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(RAIL_HEADLIGHT_R, -46 - 26 * alert);
+      ctx.lineTo(RAIL_HEADLIGHT_R, 46 + 26 * alert);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+    if (m.def.carGun && m.muzzleT > 0) {
+      m.muzzleT = Math.max(0, m.muzzleT - 1 / 60);
+      const f = m.muzzleT / 0.16;
+      ctx.save();
+      ctx.globalAlpha = f;
+      ctx.fillStyle = "#ffe8b0";
+      ctx.beginPath();
+      ctx.arc(m.wx, m.wy, 10 + 16 * f, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
 /** 移動敵の描画（本体＋HPバー＋衝撃波リング）。ワールド座標系で呼ぶ。 */
 function drawMovers() {
   for (const m of movers) {
@@ -10545,6 +11150,8 @@ function drawMovers() {
 
       if (meta.forward === "up")        ctx.rotate(angle + Math.PI / 2);
       else if (meta.forward === "down") ctx.rotate(angle - Math.PI / 2);
+      // v2.0.0: 横に砲を張り出した絵（列車砲の砲車）を、狙う側へ向けて反転する
+      if (m.mirror) ctx.scale(-1, 1);
 
       // v0.9: 生気づけアニメーション。静止画のまま滑るのを防ぐ
       if (meta.hover) {
@@ -11003,6 +11610,9 @@ function paintGroundTile(bctx, bounds) {
 
   // 道路ラインを先に描く（建物の下に来る）
   drawRoadsOnLayer(bctx, bounds);
+
+  // v2.0.0: 鉄路は町の下地・道路の上（線路は街を貫いて敷かれている）
+  drawRailsOnLayer(bctx, bounds);
 }
 
 /**
@@ -13864,8 +14474,9 @@ const STRINGS = {
   chooseContinent: "ステージを選ぶ",
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
-  shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊"],
+  shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
+               "無人列車の走る軌道"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
   regionHint: "地域ごとに土地の形と遊び方が変わる。時代（建物・敵・兵器）はどの地域でも同じ。",
@@ -13885,6 +14496,8 @@ const STRINGS = {
       rule: "祠1つにつき首都へのダメージ2割減（4つで8割減）" },
     { route: "角 → 中心の宇宙港", play: "町を載せた岩塊が4本の軌道を回る。隣の軌道は逆回りで、隙間が刻々と変わる。",
       rule: "内側の軌道ほど格上。地面が無いので散らばった家は無い" },
+    { route: "角 → 中心のターミナル", play: "滅びた文明の鉄路が放射6本と環状2本。無人の列車が今も走り続けている。",
+      rule: "列車は線路の上しか走れない。線路から離れれば追ってこない" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -17581,6 +18194,8 @@ const CODEX_ENEMY_NAMES = {
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
   behemoth_core: "巨獣（コア）", behemoth_arm: "巨獣の腕",
   walker_hull: "多脚戦車", walker_leg: "多脚戦車の脚",
+  railgun_loco: "列車砲列（機関車）", railgun_car: "列車砲列の砲車",
+  railcar: "装甲軌道車", railram: "衝角機関車",
   raider: "レイダー", treasure: "財宝馬車",
 };
 
@@ -17592,6 +18207,10 @@ const CODEX_SPECIAL_ERA = {
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
   walker_hull:    "VII 大戦 / VIII 最終",
   walker_leg:     "VII 大戦 / VIII 最終（胴の周り6本）",
+  railgun_loco:   "軌道（全文明） — 滅びた文明の遺物",
+  railgun_car:    "軌道（全文明） — 機関車の後ろに3両",
+  railcar:        "軌道（全文明） — 時代が進むほど増える",
+  railram:        "軌道（全文明） — 放射線を行き来する",
   splitter_mid:   "分裂体を壊すと出る",
   splitter_small: "分裂体（中）を壊すと出る",
 };
@@ -17617,6 +18236,15 @@ function codexAttackLabel(def) {
     if (def.name === "behemoth_arm") return "薙ぎ払い（振りかぶり有）＋叩きつけ衝撃波";
     if (def.name === "walker_leg")
       return `踏みつけ 範囲${WALKER_STOMP_R}・威力${WALKER_STOMP_DMG}（降りる先に影が出る）`;
+    if (def.name === "railgun_loco") return "撃たない — 砲車3両を牽く（落とすと編成ごと止まる）";
+    if (def.carGun) {
+      const g = def.carGun;
+      return `列車砲 範囲${g.aoe}・射程${g.range}・${g.interval}秒ごと（予告円つき／3両が順に撃つ）`;
+    }
+    if (def.railRam) {
+      const r = def.railRam;
+      return `轢殺 威力${r.damage}・範囲${r.radius}・押し${r.push}（線路の上に居ると轢かれる）`;
+    }
     if (def.treasure) return "攻撃しない — 逃げ回る";
     return "攻撃しない";
   }
@@ -21187,6 +21815,7 @@ function render(now) {
   drawWalkerLegs();          // v1.8.0: 多脚戦車の脚（胴と足の下に敷く）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
+  drawRailExtras();          // v2.0.0: 前照灯・砲車の砲口炎
   drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
   drawBreathAttacks(now);
   drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
@@ -22725,6 +23354,22 @@ function rebuildMinimapBase() {
   const scaleX = MINIMAP_W / WORLD_W;
   const scaleY = MINIMAP_H / WORLD_H;
 
+  // v2.0.0: 軌道の地域は線路が地図の骨格。どこが危ないかを俯瞰で読ませる
+  if (railLines.length > 0) {
+    minimapCtx.save();
+    minimapCtx.strokeStyle = "rgba(190,180,160,0.45)";
+    minimapCtx.lineWidth = 1;
+    for (const line of railLines) {
+      minimapCtx.beginPath();
+      minimapCtx.moveTo(line.pts[0].x * scaleX, line.pts[0].y * scaleY);
+      for (let i = 1; i < line.pts.length; i++) {
+        minimapCtx.lineTo(line.pts[i].x * scaleX, line.pts[i].y * scaleY);
+      }
+      minimapCtx.stroke();
+    }
+    minimapCtx.restore();
+  }
+
   const bosses = [];
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
@@ -23113,6 +23758,10 @@ const ENEMY_IMAGE_SOURCES = {
   citadel:       "assets/boss_citadel.png",
   behemoth_core: "assets/mover_behemoth_core.png",
   behemoth_arm:  "assets/mover_behemoth_arm.png",
+  railgun_loco:  "assets/mover_railgun_loco.png",
+  railgun_car:   "assets/mover_railgun_car.png",
+  railcar:       "assets/mover_railcar.png",
+  railram:       "assets/mover_railram.png",
   walker_hull:   "assets/mover_walker_hull.png",
   walker_foot:   "assets/mover_walker_foot.png",
   // v1.8.0: 砲塔は敵そのものではなく胴の上に重ねる部品（drawWalkerTurrets）
@@ -23275,6 +23924,13 @@ const ENEMY_SPRITE_META = {
   behemoth_arm:   { px: 0.524, py: 0.482, forward: "up", drawScale: 1.41, hover: true },
   // v1.8.0: 多脚戦車。胴は左右上下対称なので重心＝中心。
   // 足は爪先が外を向くので、回転軸を足首寄り（py 0.58）に置いて脚と繋げる。
+  // v2.0.0: 鉄路の敵。線路（砂利44px・軌間24px）に乗る幅になるよう drawScale を決めた。
+  // 砲車だけ px が中心でないのは、**回転軸が車体の中心で、砲身は横へ張り出している**ため
+  // （アルファ重心を使うと砲身に引かれて車体が線路から浮く）。
+  railgun_loco:   { px: 0.495, py: 0.499, forward: "up", drawScale: 1.18 },
+  railgun_car:    { px: 0.272, py: 0.500, forward: "up", drawScale: 3.64 },
+  railcar:        { px: 0.497, py: 0.559, forward: "up", drawScale: 1.70 },
+  railram:        { px: 0.495, py: 0.521, forward: "up", drawScale: 1.36 },
   walker_hull:    { px: 0.498, py: 0.498, forward: "up", drawScale: 3.10 },
   walker_foot:    { px: 0.496, py: 0.580, forward: "up", drawScale: 1.95 },
   behemoth_core:  { px: 0.498, py: 0.525, forward: "up", drawScale: 3.42 },
