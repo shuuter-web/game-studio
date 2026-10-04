@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.1.0";
+const GAME_VERSION = "v2.1.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10850,6 +10850,16 @@ const RAIL_HUNTER_RESPAWN  = 38;   // 撃破から次の編成が出るまでの
 // 「常に近づいてくる」どころか一度も会わずに終わる（実測: 20秒で752pxしか詰めなかった）。
 // 竜の巡航(160前後)より遅いので振り切れはするが、止まれば必ず追いつかれる速さにする。
 const RAIL_HUNTER_SPEED    = 1.9;  // 粘着編成の速度倍率
+// v2.1.1: **向きを進行方向に直結させない**（Shooter判定「方向を変えるたびに
+// 前後が入れ替わるのはバグにしか見えない」）。直結させていたので、線の端で
+// 折り返すたびに絵が1フレームで180度ひっくり返っていた。
+//   編成（機関車＋砲車）… 連結の向きは据え置き。戻るときは**後退する**。
+//                         これが実物の挙動で、砲車が機関車の前に飛ぶ事故も消える
+//   単体（軌道車・衝角） … 端で**止まって向きを変える**。転車台で回る体
+const RAIL_TURN_TIME = 0.75;   // 単体が向きを変えるのにかかる秒数
+// 分岐で線を乗り換えると、編成の尻尾が別の線へ一度に移る（実測で最大111度の跳び）。
+// 位置と向きをこの秒数かけて振り回して、ポイントを渡っていく動きに見せる。
+const RAIL_SWING_TIME = 0.8;
 let railHunterTimer = 0;           // >0 なら復活待ち
 let railJunctions = [];            // railJunctions[lineIdx] = [{ s, other, otherS }]
 
@@ -10866,19 +10876,46 @@ function placeOnRail(m, lineIdx, s, dir) {
   m.headingX = _railPt.tx * dir; m.headingY = _railPt.ty * dir;
 }
 
-/** 弧長を range に収める。閉じた輪は回り込み、開いた線は端で折り返す。 */
+/**
+ * 弧長を range に収める。閉じた輪は回り込み、開いた線は端で折り返す。
+ * v2.1.1: 編成は車両ぶんの余白を残して折り返す（砲車が線の外へはみ出さないように）。
+ * 折り返しのときは railDir を反転するだけで、**向き（headingX/Y）は触らない**。
+ */
 function advanceRail(m, line, delta) {
+  const lo = m.railMin ?? 0;
+  const hi = m.railMax ?? line.len;
   m.railS += delta;
   if (line.loop) {
     if (m.railS >= line.len) m.railS -= line.len;
     else if (m.railS < 0)    m.railS += line.len;
-  } else if (m.railS > line.len) {
-    m.railS = line.len - (m.railS - line.len);
-    m.railDir *= -1;
-  } else if (m.railS < 0) {
-    m.railS = -m.railS;
-    m.railDir *= -1;
+  } else if (m.railS > hi) {
+    m.railS = hi - (m.railS - hi);
+    railReverse(m);
+  } else if (m.railS < lo) {
+    m.railS = lo + (lo - m.railS);
+    railReverse(m);
   }
+}
+
+/**
+ * 進行方向を反転する。編成はそのまま後退し、単体はその場で向きを変え始める。
+ * 単体が1フレームで反転すると「前後が入れ替わった」ようにしか見えない。
+ */
+function railReverse(m) {
+  m.railDir *= -1;
+  if (m.def.part === "loco") return;        // 編成は後退するだけ
+  const cur = Math.atan2(m.headingY, m.headingX);
+  m.turnFrom = cur;
+  m.turnTo   = cur + Math.PI;
+  m.railTurn = RAIL_TURN_TIME;
+}
+
+/** 開いた線で編成が折り返せる範囲（車両の長さぶん内側に寄せる）。 */
+function setConsistRange(loco, line) {
+  const tail = RAIL_CAR_GAP * RAIL_CAR_COUNT + 40;
+  if (line.loop) { loco.railMin = undefined; loco.railMax = undefined; return; }
+  if (loco.consistDir > 0) { loco.railMin = Math.min(tail, line.len * 0.4); loco.railMax = line.len; }
+  else                     { loco.railMin = 0; loco.railMax = Math.max(line.len - tail, line.len * 0.6); }
 }
 
 /** 鉄路の敵1体。位置を進めてから、種類ごとの攻撃をする。 */
@@ -10887,12 +10924,28 @@ function updateRailMover(m, dt) {
   if (!line) { m.alive = false; return; }   // 地域を跨いだ等。線路が無ければ存在できない
   const def = m.def;
 
-  advanceRail(m, line, def.speed * (m.speedMult ?? 1) * m.railDir * dt);
-  if (m.railHunter) railHunterSteer(m, dt);
-  railPointAt(line, railLines[m.railLine].len > 0 ? m.railS : 0, _railPt);
+  // v2.1.1: 単体が端で向きを変えている間は**止まって回る**（転車台の体）。
+  // 進めるかどうかを先に決め、**向きは最後にまとめて**決めるのが肝。
+  // 先に向きを進行方向から入れてしまうと、折り返した瞬間に1フレームで180度飛び、
+  // その後わざわざ元の向きへ戻ってから回り直すという二重の事故になる。
+  if (m.railTurn > 0) {
+    m.railTurn = Math.max(0, m.railTurn - dt);
+  } else {
+    advanceRail(m, line, def.speed * (m.speedMult ?? 1) * m.railDir * dt);
+    if (m.railHunter) railHunterSteer(m, dt);
+  }
+  railPointAt(railLines[m.railLine], m.railS, _railPt);
   m.wx = _railPt.x; m.wy = _railPt.y;
-  m.headingX = _railPt.tx * m.railDir;
-  m.headingY = _railPt.ty * m.railDir;
+  if (m.railTurn > 0) {
+    const t = 1 - m.railTurn / RAIL_TURN_TIME;
+    const a = m.turnFrom + wrapAngle(m.turnTo - m.turnFrom) * (t * t * (3 - 2 * t));
+    m.headingX = Math.cos(a); m.headingY = Math.sin(a);
+  } else {
+    // 編成は連結の向き、単体は進行方向。どちらも折り返しで1フレーム反転はしない
+    const face = def.part === "loco" ? (m.consistDir ?? 1) : m.railDir;
+    m.headingX = _railPt.tx * face;
+    m.headingY = _railPt.ty * face;
+  }
 
   if (def.part === "loco") { updateRailTrain(m, dt); return; }
   if (def.railRam)         { updateRailRam(m, dt);   return; }
@@ -10985,9 +11038,14 @@ function railHunterSteer(m, dt) {
       const ax = _railPt.x - c.x, ay = _railPt.y - c.y;
       const aheadD = Math.hypot(ax, ay);
       if (aheadD < toLen - 40) {    // 乗り換えた先のほうが明らかに近い
+        // 乗り換える前の見た目を控えておき、そこから振り回す
+        beginRailSwing(m);
         m.railLine = j.other;
         m.railS = j.otherS;
         m.railDir = dir;
+        // 分岐を曲がったら連結も新しい線の向きに乗る（ここだけは向きが変わる）
+        m.consistDir = dir;
+        setConsistRange(m, railLines[j.other]);
         m.railSwitchCd = RAIL_SWITCH_COOLDOWN;
         return;
       }
@@ -10995,21 +11053,48 @@ function railHunterSteer(m, dt) {
   }
 }
 
+/** 分岐を渡るときの「振り回し」を仕込む（今の見た目を控える）。 */
+function beginRailSwing(loco) {
+  loco.swingT = 0;
+  loco.swingAngle = Math.atan2(loco.headingY, loco.headingX);
+  for (const car of (loco.cars ?? [])) {
+    car.swingX = car.wx; car.swingY = car.wy;
+    car.swingAngle = Math.atan2(car.headingY, car.headingX);
+  }
+}
+
 /** 列車砲列。砲車を機関車の後ろに連ねて、順に撃たせる。 */
 function updateRailTrain(loco, dt) {
   const line = railLines[loco.railLine];
   if (!loco.cars) return;
+  // 分岐を渡っている最中は、控えた見た目から目標へ寄せていく
+  let swing = 1;
+  if (loco.swingT !== undefined && loco.swingT < 1) {
+    loco.swingT = Math.min(1, loco.swingT + dt / RAIL_SWING_TIME);
+    swing = loco.swingT * loco.swingT * (3 - 2 * loco.swingT);
+    const la = loco.swingAngle + wrapAngle(Math.atan2(loco.headingY, loco.headingX) - loco.swingAngle) * swing;
+    loco.headingX = Math.cos(la); loco.headingY = Math.sin(la);
+  }
   for (let k = 0; k < loco.cars.length; k++) {
     const car = loco.cars[k];
     if (!car.alive) continue;
-    // 砲車は機関車の後ろ（進行方向の逆）へ等間隔。環状線なので回り込みだけで済む
-    let cs = loco.railS - loco.railDir * RAIL_CAR_GAP * (k + 1);
+    // v2.1.1: 砲車の並びは**連結の向き**で決める。進行方向で決めていたので、
+    // 折り返すたびに砲車が機関車の反対側へ瞬間移動していた（編成が裏返って見えた）。
+    const cdir = loco.consistDir ?? 1;
+    let cs = loco.railS - cdir * RAIL_CAR_GAP * (k + 1);
     if (line.loop) { cs = ((cs % line.len) + line.len) % line.len; }
     else           { cs = Math.max(0, Math.min(line.len, cs)); }
     railPointAt(line, cs, _railPt);
-    car.wx = _railPt.x; car.wy = _railPt.y;
-    car.headingX = _railPt.tx * loco.railDir;
-    car.headingY = _railPt.ty * loco.railDir;
+    let cx = _railPt.x, cy = _railPt.y;
+    let ca = Math.atan2(_railPt.ty * cdir, _railPt.tx * cdir);
+    if (swing < 1 && car.swingX !== undefined) {
+      cx = car.swingX + (cx - car.swingX) * swing;
+      cy = car.swingY + (cy - car.swingY) * swing;
+      ca = car.swingAngle + wrapAngle(ca - car.swingAngle) * swing;
+    }
+    car.wx = cx; car.wy = cy;
+    car.headingX = Math.cos(ca);
+    car.headingY = Math.sin(ca);
     updateRailCarShell(car, dt);
   }
 }
@@ -11092,8 +11177,13 @@ function spawnRailTrain(lineIdx, s, hunter = false) {
   loco.xpValue = MOVER_DEFS.railgun_loco.xp;
   placeOnRail(loco, lineIdx, s, 1);
   loco.cars = [];
+  // 連結の向き。進行方向(railDir)とは独立で、折り返しても変わらない
+  loco.consistDir = 1;
   loco.railHunter = !!hunter;
   if (hunter) loco.speedMult = RAIL_HUNTER_SPEED;
+  setConsistRange(loco, railLines[lineIdx]);
+  // 車両が線に収まる位置から始める
+  loco.railS = Math.max(loco.railMin ?? 0, Math.min(loco.railMax ?? railLines[lineIdx].len, loco.railS));
   out.push(loco);
   for (let k = 0; k < RAIL_CAR_COUNT; k++) {
     const car = makeMover(MOVER_DEFS.railgun_car, () => ({ x: loco.wx, y: loco.wy }));
