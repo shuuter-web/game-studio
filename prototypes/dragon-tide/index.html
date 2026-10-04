@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.3.0";
+const GAME_VERSION = "v2.3.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2250,7 +2250,7 @@ function applyMoverKnockback(m, fromX, fromY, speed) {
     nudgeBehemothPart(m, fromX, fromY, speed / BEHEMOTH_PART_KNOCK_SCALE);
     return;
   }
-  if (m.def && m.def.railBound) return;   // v2.0.0: 線路から押し出せない
+  if (isRailVehicle(m.def)) return;   // v2.0.0: 線路から押し出せない
   // 動かない敵（設置物・門など）は押さない。押すと配置の意味が壊れる
   if (!m.def || !m.def.speed) return;
   const dx = m.wx - fromX, dy = m.wy - fromY;
@@ -8717,6 +8717,17 @@ function emitShockwave(wx, wy, radius, damage, pushDist) {
 // v1.7.0: 巨獣の腕（関節つき）
 // ---------------------------------------------------------------------
 
+/**
+ * v2.3.2: 線路の上のものか（単体の車両も、編成の車両も）。
+ * 「揺らさない」「線路から押し出せない」「押し合いの対象外」が全部これで決まる。
+ * v2.2.0 で編成の part を "car" → "train" に改名したとき、**揺れの除外条件だけ
+ * 旧名のまま残って車両が揺れ出した**（Shooter報告）。条件が3箇所に散っていたのが原因なので、
+ * 判定はこの1つだけにして、次に名前が変わっても1箇所で済むようにする。
+ */
+function isRailVehicle(def) {
+  return !!def && (def.railBound === true || def.part === "train");
+}
+
 /** 点と線分の距離の二乗。薙ぎ払いを「拳」ではなく「前腕の線」で当てるのに使う。 */
 function pointSegDist2(pxx, pyy, ax, ay, bx, by) {
   const vx = bx - ax, vy = by - ay;
@@ -9299,12 +9310,12 @@ function updateMovers(dt) {
     // v1.8.0: 関節パーツ（巨獣の腕・多脚戦車の脚）は押し合いの対象外。
     // 親に付いて動くものを押すと、関節の計算と喧嘩して暴れる
     if (!a.alive || a.def.part === "arm" || a.def.part === "leg" ||
-        a.def.part === "train" || a.def.railBound || a.submerged) continue;
+        isRailVehicle(a.def) || a.submerged) continue;
     const aMovable = a.def.speed > 0;
     for (let j = i + 1; j < movers.length; j++) {
       const b = movers[j];
       if (!b.alive || b.def.part === "arm" || b.def.part === "leg" ||
-          b.def.part === "train" || b.def.railBound || b.submerged) continue;
+          isRailVehicle(b.def) || b.submerged) continue;
       const bMovable = b.def.speed > 0;
       if (!aMovable && !bMovable) continue;   // 動かない者同士は押し合わない
       const samePack = a.packId !== undefined && a.packId === b.packId;
@@ -10872,6 +10883,11 @@ const RAIL_TURRET_PIVOT_Y = 0.635; // 砲塔の絵の中で回転軸（砲塔の
 const RAIL_HUNTER_RESPAWN  = 38;   // 撃破から次の編成が出るまでの秒数（路線ごと）
 const RAIL_AIM_INTERVAL    = 0.4;  // 群れの位置を見て進む向きを決め直す間隔
 const RAIL_TRAIN_SPEED     = 1.9;  // 編成の速度倍率（54×1.9＝103px/秒）
+// v2.3.1: 編成は**速度を持つ**（Shooter判定「前進後退の切り替え時もうすこし自然に
+// 減速と加速をしてほしい」）。向きを ±1 で持って毎フレーム全速で位置を足していたので、
+// 折り返しが1フレームで +103 → -103 の跳びになっていた。
+// 103px/秒 から止まるまで約1.7秒・制動距離88px。重い編成が軋みながら止まる尺。
+const RAIL_TRAIN_ACCEL     = 60;   // 加減速（px/秒²）
 const RAIL_TRAIN_REWARD    = 60;   // 編成を全車両潰したときの竜晶
 // 粘着編成は普通の砲列より速く走る。54px/秒だとマップを横断するのに2分半かかり、
 // 「常に近づいてくる」どころか一度も会わずに終わる（実測: 20秒で752pxしか詰めなかった）。
@@ -11129,6 +11145,7 @@ function spawnRailTrainOnLine(lineIdx) {
     line: lineIdx, units, tail, lo, hi,
     s: line.loop ? random() * line.len : lo + random() * Math.max(1, hi - lo),
     dir: random() < 0.5 ? -1 : 1,
+    vel: 0,
     aimTimer: random() * RAIL_AIM_INTERVAL, targetS: 0,
     respawn: 0, dead: false,
   };
@@ -11192,16 +11209,25 @@ function updateRailTrainGroup(train, dt) {
   }
 
   // --- 走る。機関車が減るほど遅く、両方やられたら止まる（砲は撃ち続ける）---
+  // v2.3.1: 向きを切り替えても速度は一息に反転しない。**0を通って**反対へ積み直す。
   const locos = railTrainLocos(train);
   const speedMult = locos >= 2 ? 1 : (locos === 1 ? 0.55 : 0);
-  if (speedMult > 0) {
-    train.s += MOVER_DEFS.railgun_loco.speed * RAIL_TRAIN_SPEED * speedMult * train.dir * dt;
-    if (line.loop) {
-      if (train.s >= line.len) train.s -= line.len;
-      else if (train.s < 0)    train.s += line.len;
-    } else if (train.s > train.hi) { train.s = train.hi; train.dir = -1; }
-    else if (train.s < train.lo)   { train.s = train.lo; train.dir = 1; }
+  const maxSpeed = MOVER_DEFS.railgun_loco.speed * RAIL_TRAIN_SPEED * speedMult;
+  let targetVel = train.dir * maxSpeed;
+  if (!line.loop) {
+    // 残りの距離で止まりきれる速さに頭を押さえる（v² = 2as）。
+    // 端に着いてから急停止するのではなく、**手前から減速して**止まる。
+    const room = Math.max(0, train.dir > 0 ? train.hi - train.s : train.s - train.lo);
+    targetVel = train.dir * Math.min(maxSpeed, Math.sqrt(2 * RAIL_TRAIN_ACCEL * room));
   }
+  const dv = RAIL_TRAIN_ACCEL * dt;
+  train.vel += Math.max(-dv, Math.min(dv, targetVel - train.vel));
+  train.s += train.vel * dt;
+  if (line.loop) {
+    if (train.s >= line.len) train.s -= line.len;
+    else if (train.s < 0)    train.s += line.len;
+  } else if (train.s > train.hi) { train.s = train.hi; train.vel = 0; }
+  else if (train.s < train.lo)   { train.s = train.lo; train.vel = 0; }
   positionRailTrain(train);
 
   // --- 砲撃（生きている砲車だけ）---
@@ -11619,7 +11645,7 @@ function drawMovers() {
         ctx.scale(sc, sc);
       } else if (def.name === "balloon") {
         ctx.rotate(Math.sin(breathTime * 0.9 + phase) * 0.07);
-      } else if (!def.railBound && def.part !== "car") {
+      } else if (!isRailVehicle(def)) {
         // 地上ユニット: 歩行スイング（車両の甲鉄艦はごく控えめに）
         // v2.1.0: 鉄路の敵は揺れない。レールに乗っているものが左右に首を振るのは変
         //（Shooter判定「列車が揺れながら走るのは変」）
