@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.0.0";
+const GAME_VERSION = "v2.1.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -990,7 +990,7 @@ const DEBUG_ENEMY_LABELS = {
   healer: "💚治癒塔", summoner: "🌀召喚門", treasure: "💰財宝馬車",
   behemoth_core: "👹巨獣(腕2本つき)", behemoth_arm: "👹巨獣の腕",
   walker_hull: "🕷多脚戦車(脚6本つき)", walker_leg: "🕷多脚戦車の脚",
-  railgun_loco: "🚂列車砲列(砲車3両つき)", railgun_car: "🚃列車砲列の砲車",
+  railgun_loco: "🚂列車砲列(砲車4両つき)", railgun_car: "🚃列車砲列の砲車",
   railcar: "🚈装甲軌道車", railram: "🚞衝角機関車",
   // v0.57: 文明ごとの看板ユニット
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
@@ -4783,6 +4783,8 @@ function generateStageLayout(stageIndex) {
   for (const rock of asteroidRocks) releaseAsteroidRock(rock);   // v1.5.0: 前のワールドの岩塊の絵を捨てる
   asteroidRocks     = [];
   railLines         = [];
+  railJunctions     = [];
+  railHunterTimer   = 0;
 
   const boss = placeBossBuilding(stageIndex, config);
   boss._fixedTier = maxPowerTier();
@@ -4797,7 +4799,7 @@ function generateStageLayout(stageIndex) {
   const townWanted  = scaledForWorld(config.townCount, TOWN_DENSITY_FACTOR);
   if (worldShape === SHAPE_FRONTLINE) frontlinePlan = planFrontline();
   // v2.0.0: 鉄路は町より先に敷く（町は線路の脇に並ぶので、線路が骨格になる）
-  if (worldShape === SHAPE_RAILWAY) buildRailNetwork(boss);
+  if (worldShape === SHAPE_RAILWAY) { buildRailNetwork(boss); buildRailJunctions(); }
   const townCenters = worldShape === SHAPE_RIVERLINE ? placeRiverlineTownCenters(townWanted, boss)
                     : worldShape === SHAPE_CITADEL   ? placeCitadelTownCenters(boss)
                     : worldShape === SHAPE_FRONTLINE ? placeFrontlineTownCenters(townWanted, boss, frontlinePlan)
@@ -5999,6 +6001,36 @@ function buildRailNetwork(boss) {
   }
 }
 
+/**
+ * 線と線の交点（分岐）を洗い出す。放射×環状の交点が乗り換え地点になる。
+ * 生成時に1回だけ総当たりで拾う（本数が少ないので十分速い）。
+ */
+function buildRailJunctions() {
+  railJunctions = railLines.map(() => []);
+  const STEP = 40;
+  const pa = { x: 0, y: 0, tx: 1, ty: 0 }, pb = { x: 0, y: 0, tx: 1, ty: 0 };
+  for (let i = 0; i < railLines.length; i++) {
+    for (let j = i + 1; j < railLines.length; j++) {
+      const A = railLines[i], B = railLines[j];
+      let best = null;
+      for (let sa = 0; sa < A.len; sa += STEP) {
+        railPointAt(A, sa, pa);
+        for (let sb = 0; sb < B.len; sb += STEP) {
+          railPointAt(B, sb, pb);
+          const d2 = dist2(pa.x, pa.y, pb.x, pb.y);
+          if (d2 < RAIL_JUNCTION_SNAP * RAIL_JUNCTION_SNAP && (!best || d2 < best.d2)) {
+            best = { d2, sa, sb };
+          }
+        }
+      }
+      if (best) {
+        railJunctions[i].push({ s: best.sa, other: j, otherS: best.sb });
+        railJunctions[j].push({ s: best.sb, other: i, otherS: best.sa });
+      }
+    }
+  }
+}
+
 /** 線路 line の弧長 s の位置と進行方向。s は呼ぶ側で範囲内に丸めておくこと。 */
 function railPointAt(line, s, out) {
   const cum = line.cum;
@@ -7070,18 +7102,31 @@ const MOVER_DEFS = {
   // 列車砲列: 機関車＋砲車3両。環状線を回りながら順に砲撃する移動砲台。
   // 砲車は1両ずつ壊せる＝弾幕が目に見えて減る（段階的解体）。
   railgun_loco: {
-    name: "railgun_loco", sprite: "railgun_loco", part: "loco", railBound: true, railLoopOnly: true,
+    name: "railgun_loco", sprite: "railgun_loco", part: "loco", railBound: true,
     elite: true, showHpBar: true,
-    hp: 1600, speed: 54, xp: 560, eggDrop: 7, radius: 34,
+    hp: 1800, speed: 54, xp: 560, eggDrop: 7, radius: 34,
     color: "#3a3630", glowColor: "#ffb040",
     railReward: 60,
   },
+  // 砲車は**旋回する連装砲塔**を載せた多パーツ敵の一員。
+  // 多脚戦車の主砲が「溜めて1発」なので、こちらは**4基の砲塔が代わる代わる連射**する。
+  // 1両ずつ潰せるので、弾幕の減り方がそのまま進捗になる。
   railgun_car: {
     name: "railgun_car", sprite: "railgun_car", part: "car", showHpBar: true,
-    hp: 420, speed: 0, xp: 130, eggDrop: 1, radius: 28,
+    hp: 460, speed: 0, xp: 130, eggDrop: 1, radius: 28,
     color: "#3a3630", glowColor: "#ffc060",
-    // 砲撃は updateRailTrain の中（砲車ごとに位相をずらして順に撃つ）
-    carGun: { interval: 3.6, range: 620, damage: 4.2, aoe: 78, speed: 210, color: "#ffc766" },
+    carGun: {
+      interval: 4.4,     // 1連射ぶんの間隔
+      burst: 3,          // 1回の連射で撃つ発数
+      burstGap: 0.26,    // 連射の中の間隔
+      traverse: 1.9,     // 砲塔の旋回角速度（rad/s）
+      align: 0.30,       // ここまで狙いが付いてから撃ち始める
+      // 射程660では線路から群れまで届かなかった（実測: 粘着編成が1388pxまでしか
+      // 寄れない。放射6本＋環状2本の網では、線路から一番遠い点がそれくらい残る）。
+      // 列車砲は本来そういう長射程の攻城兵器なので、網の穴を埋める側ではなく
+      // **射程で届かせる**ことにした。予告円が出るので見てから退ける。
+      range: 1100, damage: 3.4, aoe: 72, speed: 240, color: "#ffc766",
+    },
   },
 
   // 装甲軌道車: 軽くて速い。線路を端まで走って折り返しながら撃ち続ける。
@@ -8284,7 +8329,11 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   // 守備隊はボス周りの固定半径を巡回するので、密度は世界の広さに影響されない＝据え置き。
   // v0.56: 警戒度のぶんだけ部隊数を増やす（守備隊はボス周りの固定半径なので据え置き）
   const tierMult = TIER_MOVER_MULT[clampTier(tierForCount)] ?? 1;
-  const spawnEntries = spawns.map(e => [e[0], Math.max(1, Math.round(scaledForWorld(e[1], MOVER_DENSITY_FACTOR) * tierMult)), false])
+  // v2.1.0: 軌道では鉄路の敵が主役。普通の巡回敵を減らして、接敵する相手の過半を列車にする
+  const genericMult = worldShape === SHAPE_RAILWAY
+    ? Math.min(tierMult, RAIL_GENERIC_TIER_CAP) * RAIL_GENERIC_MULT
+    : tierMult;
+  const spawnEntries = spawns.map(e => [e[0], Math.max(1, Math.round(scaledForWorld(e[1], MOVER_DENSITY_FACTOR) * genericMult)), false])
                              .concat(garrison.map(e => [e[0], e[1], true]));
 
   for (const [defKey, count, isGarrison] of spawnEntries) {
@@ -8331,7 +8380,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   }
 
   // v2.0.0: 軌道の地域は、時代に関係なく鉄路の敵が走っている（遺された無人の機械）
-  if (worldShape === SHAPE_RAILWAY) generateRailMovers(stageIndex, result);
+  if (worldShape === SHAPE_RAILWAY) generateRailMovers(stageIndex, result, tierForCount);
 
   // v1.8.0: 多脚戦車を大戦（STAGE7）と最終（STAGE8）に1体。
   if (stageIndex === 6 || stageIndex === 7) {
@@ -8485,6 +8534,7 @@ function makeMover(def, randPoint) {
 }
 
 // v0.27: 召喚門が湧かせたレイダーの一時置き場（updateMovers 反復後にまとめて movers へ）
+// v2.1.0: 粘着編成の復活もここを通す（movers の反復中に push しない）
 const _pendingMovers = [];
 
 // =====================================================================
@@ -8862,6 +8912,8 @@ function behemothSweepHits(m, core) {
 }
 
 function updateMovers(dt) {
+  updateRailHunterRespawn(dt);   // v2.1.0: 粘着編成が落ちていたら時間を置いて出し直す
+
   // 衝撃波FXの寿命更新
   for (let i = shockwaveFxList.length - 1; i >= 0; i--) {
     shockwaveFxList[i].life -= dt;
@@ -10784,8 +10836,22 @@ function drawWalkerTurrets() {
 // 列車が線路から外れないことが、この地域の遊びの前提そのものなので、
 // 追跡ロジックと混ぜて「線路から浮く」事故が起きないようにしている。
 const RAIL_CAR_GAP     = 150;   // 機関車と砲車、砲車どうしの間隔（弧長。絵の長さに合わせる）
-const RAIL_CAR_COUNT   = 3;     // 砲車の数
+const RAIL_CAR_COUNT   = 4;     // 砲車の数（＝砲塔の数）
 const RAIL_HEADLIGHT_R = 260;   // 衝角機関車の前照灯が届く距離
+const RAIL_TURRET_SCALE   = 1.55;  // 砲車の描画幅に対する砲塔の大きさ
+const RAIL_TURRET_PIVOT_Y = 0.635; // 砲塔の絵の中で回転軸（砲塔の丸い部分の中心）が来る高さ
+// v2.1.0: 粘着する砲列。分岐で線を乗り換えて群れへ寄ってくる。
+// 倒しても首都のターミナルから新しい編成が出てくるので、軌道では
+// **常にどこかから砲列が近づいている**状態になる（Shooter指示）。
+const RAIL_JUNCTION_SNAP   = 46;   // 分岐とみなす距離
+const RAIL_SWITCH_COOLDOWN = 1.2;  // 乗り換え直後に再乗り換えしない時間
+const RAIL_HUNTER_RESPAWN  = 38;   // 撃破から次の編成が出るまでの秒数
+// 粘着編成は普通の砲列より速く走る。54px/秒だとマップを横断するのに2分半かかり、
+// 「常に近づいてくる」どころか一度も会わずに終わる（実測: 20秒で752pxしか詰めなかった）。
+// 竜の巡航(160前後)より遅いので振り切れはするが、止まれば必ず追いつかれる速さにする。
+const RAIL_HUNTER_SPEED    = 1.9;  // 粘着編成の速度倍率
+let railHunterTimer = 0;           // >0 なら復活待ち
+let railJunctions = [];            // railJunctions[lineIdx] = [{ s, other, otherS }]
 
 const _railPt = { x: 0, y: 0, tx: 1, ty: 0 };
 
@@ -10822,7 +10888,8 @@ function updateRailMover(m, dt) {
   const def = m.def;
 
   advanceRail(m, line, def.speed * (m.speedMult ?? 1) * m.railDir * dt);
-  railPointAt(line, m.railS, _railPt);
+  if (m.railHunter) railHunterSteer(m, dt);
+  railPointAt(line, railLines[m.railLine].len > 0 ? m.railS : 0, _railPt);
   m.wx = _railPt.x; m.wy = _railPt.y;
   m.headingX = _railPt.tx * m.railDir;
   m.headingY = _railPt.ty * m.railDir;
@@ -10882,6 +10949,52 @@ function updateRailRam(m, dt) {
   m.railAlert = Math.max(0, Math.min(1, (m.railAlert ?? 0) + (lit ? dt * 4 : -dt * 3)));
 }
 
+/**
+ * v2.1.0: 粘着する砲列の進路選び。
+ * 分岐に差し掛かったら「群れへ近づく向き」を選ぶ。線の上では向き直るしかないので、
+ * 進行方向と群れへの向きの内積で**今の線を逆走するか／別の線へ移るか**を決める。
+ * 完全な経路探索はしない——貪欲で十分この網（放射＋環状）では寄ってくる。
+ */
+function railHunterSteer(m, dt) {
+  m.railSwitchCd = Math.max(0, (m.railSwitchCd ?? 0) - dt);
+  const c = calcFriendlyCentroid();
+  const line = railLines[m.railLine];
+  railPointAt(line, m.railS, _railPt);
+  const toX = c.x - _railPt.x, toY = c.y - _railPt.y;
+  const toLen = Math.hypot(toX, toY) || 1;
+  const ux = toX / toLen, uy = toY / toLen;
+
+  // いま進んでいる向きが群れから離れていくなら、その場で逆走する
+  const fwd = _railPt.tx * m.railDir * ux + _railPt.ty * m.railDir * uy;
+  if (fwd < -0.25 && m.railSwitchCd <= 0) {
+    m.railDir *= -1;
+    m.railSwitchCd = RAIL_SWITCH_COOLDOWN;
+    return;
+  }
+  if (m.railSwitchCd > 0) return;
+
+  // 分岐の上に居るなら、乗り換えたほうが群れに近づけるか見る
+  const js = railJunctions[m.railLine] ?? [];
+  for (const j of js) {
+    let d = Math.abs(m.railS - j.s);
+    if (line.loop) d = Math.min(d, line.len - d);
+    if (d > RAIL_JUNCTION_SNAP) continue;
+    const other = railLines[j.other];
+    for (const dir of [1, -1]) {
+      railPointAt(other, Math.max(0, Math.min(other.len, j.otherS + dir * 60)), _railPt);
+      const ax = _railPt.x - c.x, ay = _railPt.y - c.y;
+      const aheadD = Math.hypot(ax, ay);
+      if (aheadD < toLen - 40) {    // 乗り換えた先のほうが明らかに近い
+        m.railLine = j.other;
+        m.railS = j.otherS;
+        m.railDir = dir;
+        m.railSwitchCd = RAIL_SWITCH_COOLDOWN;
+        return;
+      }
+    }
+  }
+}
+
 /** 列車砲列。砲車を機関車の後ろに連ねて、順に撃たせる。 */
 function updateRailTrain(loco, dt) {
   const line = railLines[loco.railLine];
@@ -10901,29 +11014,77 @@ function updateRailTrain(loco, dt) {
   }
 }
 
-/** 砲車1両の砲撃（予告円つきの着弾弾）。 */
+/**
+ * 砲車1両。砲塔が独立して旋回し、狙いが付いたら**連射**する。
+ * 砲塔の旋回に上限があるので、群れが横を走り抜ければ狙いは置いていける。
+ */
 function updateRailCarShell(car, dt) {
   const g = car.def.carGun;
   if (car.attackTimer === undefined) car.attackTimer = random() * g.interval;
+  if (car.turretAngle === undefined) car.turretAngle = Math.atan2(car.headingY, car.headingX);
+
+  const idx = findNearestAliveBoid(car.wx, car.wy);
+  if (idx >= 0) {
+    const want = Math.atan2(py[idx] - car.wy, px[idx] - car.wx);
+    const maxT = g.traverse * dt;
+    car.turretAngle = wrapAngle(car.turretAngle +
+      Math.max(-maxT, Math.min(maxT, wrapAngle(want - car.turretAngle))));
+  }
+  if (car.muzzleT > 0) car.muzzleT = Math.max(0, car.muzzleT - dt);
+
+  // 連射中: burstGap ごとに1発ずつ吐き出す
+  if (car.burstLeft > 0) {
+    car.burstTimer -= dt;
+    if (car.burstTimer > 0) return;
+    car.burstTimer = g.burstGap;
+    car.burstLeft--;
+    fireRailCarShell(car, g);
+    return;
+  }
+
   car.attackTimer -= dt;
   if (car.attackTimer > 0) return;
-  const idx = findNearestAliveBoid(car.wx, car.wy);
   if (idx < 0) { car.attackTimer = 0.4; return; }
   const dx = px[idx] - car.wx, dy = py[idx] - car.wy;
   if (dx * dx + dy * dy > g.range * g.range) { car.attackTimer = 0.4; return; }
+  // 砲塔が向ききる前に撃つと、弾が砲身と無関係な方向へ飛ぶ
+  if (Math.abs(wrapAngle(Math.atan2(dy, dx) - car.turretAngle)) > g.align) {
+    car.attackTimer = 0.12;
+    return;
+  }
   car.attackTimer = g.interval / moverFerocity();
-  // 砲身は絵の右側に張り出しているので、狙いが左なら絵ごと左右反転する。
-  // これが無いと「群れと逆を向いた砲が当ててくる」ことになる
-  const side = (px[idx] - car.wx) * -car.headingY + (py[idx] - car.wy) * car.headingX;
-  car.mirror = side < 0;
-  spawnShell(car.wx, car.wy, px[idx], py[idx], g.speed,
-             g.damage * moverFerocity(), g.aoe, g.color);
-  car.muzzleT = 0.16;
-  spawnHitParticles(car.wx, car.wy);
+  car.burstLeft = g.burst;
+  car.burstTimer = 0;
 }
 
-/** 機関車＋砲車3両を線路に乗せて作る。呼び出し側が movers へ入れる。 */
-function spawnRailTrain(lineIdx, s) {
+/** 砲塔から1発。砲口は砲身の先に合わせる（弾が車体の真ん中から出ると嘘になる）。 */
+function fireRailCarShell(car, g) {
+  const idx = findNearestAliveBoid(car.wx, car.wy);
+  if (idx < 0) { car.burstLeft = 0; return; }
+  const muzzle = railTurretLength(car);
+  const mx = car.wx + Math.cos(car.turretAngle) * muzzle;
+  const my = car.wy + Math.sin(car.turretAngle) * muzzle;
+  // 連射なので少し散らす（同じ点に3発落ちると避ける余地が無い）
+  const sa = random() * Math.PI * 2, sr = random() * 46;
+  spawnShell(mx, my, px[idx] + Math.cos(sa) * sr, py[idx] + Math.sin(sa) * sr,
+             g.speed, g.damage * moverFerocity(), g.aoe, g.color);
+  car.muzzleT = 0.13;
+  triggerShake(0.9, 0.04);
+}
+
+/** 砲塔の砲口までの距離（絵の寸法から引く）。 */
+function railTurretLength(car) {
+  const img = enemyImages.railgun_turret;
+  const w = railTurretDrawW(car);
+  if (!img) return w * 0.8;
+  return img.naturalHeight * (w / img.naturalWidth) * (1 - RAIL_TURRET_PIVOT_Y);
+}
+function railTurretDrawW(car) {
+  return car.def.radius * ENEMY_SPRITE_META.railgun_car.drawScale * RAIL_TURRET_SCALE;
+}
+
+/** 機関車＋砲車を線路に乗せて作る。呼び出し側が movers へ入れる。 */
+function spawnRailTrain(lineIdx, s, hunter = false) {
   const out = [];
   const loco = makeMover(MOVER_DEFS.railgun_loco, () => ({ x: 0, y: 0 }));
   loco.maxHp = MOVER_DEFS.railgun_loco.hp;
@@ -10931,6 +11092,8 @@ function spawnRailTrain(lineIdx, s) {
   loco.xpValue = MOVER_DEFS.railgun_loco.xp;
   placeOnRail(loco, lineIdx, s, 1);
   loco.cars = [];
+  loco.railHunter = !!hunter;
+  if (hunter) loco.speedMult = RAIL_HUNTER_SPEED;
   out.push(loco);
   for (let k = 0; k < RAIL_CAR_COUNT; k++) {
     const car = makeMover(MOVER_DEFS.railgun_car, () => ({ x: loco.wx, y: loco.wy }));
@@ -10956,34 +11119,135 @@ function spawnRailUnit(defKey, lineIdx, s, dir) {
   return m;
 }
 
-/** 軌道の地域の編成。環状線に砲列、放射線に軌道車と衝角機関車。 */
-function generateRailMovers(stageIndex, result) {
+/**
+ * 軌道の地域の編成。
+ * v2.1.0: **接敵する敵の半分以上が鉄路の敵になる**ように数を組み直した（Shooter指示）。
+ * 鉄路の敵を増やすだけでなく、普通の巡回敵を RAIL_GENERIC_MULT まで減らしている。
+ * 鉄路の敵は線を伝って寄ってくるので、同じ数でも出会う回数が多い。
+ */
+const RAIL_GENERIC_MULT = 0.15;   // 軌道では普通の巡回敵をこの割合に減らす
+// 警戒度が上がると普通の敵は最大6倍まで増えるが、軌道でそれを素通りさせると
+// 終盤に鉄路の敵が埋もれる（実測で割合が 59% → 38% まで落ちた）。
+// 滅びた文明の土地なので動員できる兵自体が少ない、という理屈で上限を付ける。
+// 代わりに**鉄路の側が警戒度ぶん増える**（遺された自動機械が反応して動き出す）。
+const RAIL_GENERIC_TIER_CAP = 2.6;
+
+function generateRailMovers(stageIndex, result, tierForCount = 0) {
+  const tierMult = TIER_MOVER_MULT[clampTier(tierForCount)] ?? 1;
   if (railLines.length === 0) return;
   const loops   = [];
   const radials = [];
   railLines.forEach((l, i) => (l.loop ? loops : radials).push(i));
-  // 砲列は環状線に1本ずつ（閉じた輪なので砲車が機関車の後ろから離れない）
+  // 環状線を回る砲列（閉じた輪なので砲車が機関車の後ろから離れない）
   for (const li of loops) {
     for (const m of spawnRailTrain(li, random() * railLines[li].len)) result.push(m);
   }
+  // 粘着する砲列。分岐を乗り換えて群れを追ってくる＝常に1本は近づいている。
+  // 警戒度が上がるとターミナルが出す編成の数そのものが増える
+  const tier = clampTier(tierForCount);
+  const hunters = 1 + (tier >= 2 ? 1 : 0) + (tier >= 3 ? 1 : 0);
+  for (let k = 0; k < hunters && radials.length > 0; k++) {
+    const li = radials[randInt(0, radials.length - 1)];
+    for (const m of spawnRailTrain(li, random() * railLines[li].len, true)) result.push(m);
+  }
+  railHunterTimer = 0;
   // 軌道車は時代が進むほど増やす（線路の交通量そのものが難度になる）
-  const carCount = 4 + Math.floor(stageIndex / 2);
+  const carCount = Math.round((8 + stageIndex * 1.8) * tierMult);
   for (let k = 0; k < carCount; k++) {
-    const li = railLines.length > 0 ? (k % railLines.length) : 0;
+    const li = k % railLines.length;
     result.push(spawnRailUnit("railcar", li, random() * railLines[li].len, random() < 0.5 ? -1 : 1));
   }
   // 衝角機関車は放射線（首都へ出入りする線）に。端で折り返して何度も通る
-  const ramCount = Math.max(1, Math.min(3, 1 + Math.floor(stageIndex / 3)));
+  const ramCount = Math.round((2 + stageIndex * 0.8) * tierMult);
   for (let k = 0; k < ramCount && radials.length > 0; k++) {
     const li = radials[k % radials.length];
     result.push(spawnRailUnit("railram", li, random() * railLines[li].len, random() < 0.5 ? -1 : 1));
   }
 }
 
+/**
+ * 粘着編成の復活。首都のターミナルから新しい編成が出てくる、という体にして、
+ * 一番首都寄りの放射線の根元に湧かせる。
+ */
+function updateRailHunterRespawn(dt) {
+  if (worldShape !== SHAPE_RAILWAY || railLines.length === 0) return;
+  if (gameState !== "playing") return;
+  let alive = false;
+  for (const m of movers) if (m.alive && m.railHunter) { alive = true; break; }
+  if (alive) { railHunterTimer = 0; return; }
+  if (railHunterTimer <= 0) railHunterTimer = RAIL_HUNTER_RESPAWN;
+  railHunterTimer -= dt;
+  if (railHunterTimer > 0) return;
+  railHunterTimer = 0;
+  const radials = [];
+  railLines.forEach((l, i) => { if (!l.loop) radials.push(i); });
+  if (radials.length === 0) return;
+  const li = radials[randInt(0, radials.length - 1)];
+  for (const m of spawnRailTrain(li, 40, true)) {   // 弧長40＝首都のすぐ外
+    _pendingMovers.push(m);
+    spawnDragonAppearEffect(m.wx, m.wy);
+  }
+  triggerFlash("rgba(255,140,60,0.14)", 0.2);
+}
+
+/** 砲車の連装砲塔。車体の絵の上に重ね、車体とは別に旋回する。 */
+function drawRailTurrets() {
+  const img = enemyImages.railgun_turret;
+  for (const car of movers) {
+    if (!car.alive || !car.def || !car.def.carGun) continue;
+    const ang = car.turretAngle ?? Math.atan2(car.headingY, car.headingX);
+    const w = railTurretDrawW(car);
+    ctx.save();
+    ctx.translate(car.wx, car.wy);
+    ctx.rotate(ang + Math.PI / 2);
+    if (car.muzzleT > 0) ctx.translate(0, 7 * (car.muzzleT / 0.13));   // 発砲の反動
+    if (img) {
+      const sc = w / img.naturalWidth;
+      const h  = img.naturalHeight * sc;
+      ctx.drawImage(img, -w * 0.5, -h * RAIL_TURRET_PIVOT_Y, w, h);
+      if (car.muzzleT > 0) {
+        const f = car.muzzleT / 0.13;
+        const tip = -h * (1 - RAIL_TURRET_PIVOT_Y) - 2;
+        ctx.globalAlpha = f;
+        ctx.fillStyle = "#fff0c8";
+        ctx.beginPath();
+        ctx.moveTo(0, tip - 22 * f);
+        ctx.lineTo(-11 * f, tip + 10);
+        ctx.lineTo(11 * f, tip + 10);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    } else {
+      ctx.fillStyle = "#3a3630";
+      ctx.strokeStyle = "#1a1a16";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, w * 0.4, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      ctx.fillRect(-4, -w * 0.95, 8, w * 0.6);
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
 /** 列車の付け足し描画（砲車の砲口炎・衝角機関車の前照灯）。movers の上に重ねる。 */
 function drawRailExtras() {
   for (const m of movers) {
     if (!m.alive || !m.def) continue;
+    // 粘着する編成だけ赤い標識を回す（「こいつは追ってくる」を一目で）
+    if (m.railHunter) {
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.35 * Math.sin(breathTime * 5);
+      ctx.strokeStyle = "#ff5030";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(m.wx, m.wy, m.def.radius * 1.6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
     if (m.def.railRam) {
       // 前照灯。線路の先へ伸びる光条で「この線は今ふさがっている」を見せる
       const a = Math.atan2(m.headingY, m.headingX);
@@ -11000,18 +11264,6 @@ function drawRailExtras() {
       ctx.lineTo(RAIL_HEADLIGHT_R, -46 - 26 * alert);
       ctx.lineTo(RAIL_HEADLIGHT_R, 46 + 26 * alert);
       ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-      ctx.globalAlpha = 1;
-    }
-    if (m.def.carGun && m.muzzleT > 0) {
-      m.muzzleT = Math.max(0, m.muzzleT - 1 / 60);
-      const f = m.muzzleT / 0.16;
-      ctx.save();
-      ctx.globalAlpha = f;
-      ctx.fillStyle = "#ffe8b0";
-      ctx.beginPath();
-      ctx.arc(m.wx, m.wy, 10 + 16 * f, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
       ctx.globalAlpha = 1;
@@ -11150,8 +11402,6 @@ function drawMovers() {
 
       if (meta.forward === "up")        ctx.rotate(angle + Math.PI / 2);
       else if (meta.forward === "down") ctx.rotate(angle - Math.PI / 2);
-      // v2.0.0: 横に砲を張り出した絵（列車砲の砲車）を、狙う側へ向けて反転する
-      if (m.mirror) ctx.scale(-1, 1);
 
       // v0.9: 生気づけアニメーション。静止画のまま滑るのを防ぐ
       if (meta.hover) {
@@ -11162,8 +11412,10 @@ function drawMovers() {
         ctx.scale(sc, sc);
       } else if (def.name === "balloon") {
         ctx.rotate(Math.sin(breathTime * 0.9 + phase) * 0.07);
-      } else {
+      } else if (!def.railBound && def.part !== "car") {
         // 地上ユニット: 歩行スイング（車両の甲鉄艦はごく控えめに）
+        // v2.1.0: 鉄路の敵は揺れない。レールに乗っているものが左右に首を振るのは変
+        //（Shooter判定「列車が揺れながら走るのは変」）
         const swayAmp = def.name === "ironclad" ? 0.02 : 0.05;
         ctx.rotate(Math.sin(breathTime * 5.0 + phase) * swayAmp);
       }
@@ -18208,7 +18460,7 @@ const CODEX_SPECIAL_ERA = {
   walker_hull:    "VII 大戦 / VIII 最終",
   walker_leg:     "VII 大戦 / VIII 最終（胴の周り6本）",
   railgun_loco:   "軌道（全文明） — 滅びた文明の遺物",
-  railgun_car:    "軌道（全文明） — 機関車の後ろに3両",
+  railgun_car:    "軌道（全文明） — 機関車の後ろに4両",
   railcar:        "軌道（全文明） — 時代が進むほど増える",
   railram:        "軌道（全文明） — 放射線を行き来する",
   splitter_mid:   "分裂体を壊すと出る",
@@ -18236,10 +18488,12 @@ function codexAttackLabel(def) {
     if (def.name === "behemoth_arm") return "薙ぎ払い（振りかぶり有）＋叩きつけ衝撃波";
     if (def.name === "walker_leg")
       return `踏みつけ 範囲${WALKER_STOMP_R}・威力${WALKER_STOMP_DMG}（降りる先に影が出る）`;
-    if (def.name === "railgun_loco") return "撃たない — 砲車3両を牽く（落とすと編成ごと止まる）";
+    if (def.name === "railgun_loco")
+      return `撃たない — 砲車${RAIL_CAR_COUNT}両を牽く（落とすと編成ごと止まる）`;
     if (def.carGun) {
       const g = def.carGun;
-      return `列車砲 範囲${g.aoe}・射程${g.range}・${g.interval}秒ごと（予告円つき／3両が順に撃つ）`;
+      return `連装砲塔 ${g.burst}連射 範囲${g.aoe}・射程${g.range}・${g.interval}秒ごと` +
+             `（砲塔が独立して旋回／予告円つき／${RAIL_CAR_COUNT}基が代わる代わる撃つ）`;
     }
     if (def.railRam) {
       const r = def.railRam;
@@ -21815,7 +22069,8 @@ function render(now) {
   drawWalkerLegs();          // v1.8.0: 多脚戦車の脚（胴と足の下に敷く）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
-  drawRailExtras();          // v2.0.0: 前照灯・砲車の砲口炎
+  drawRailTurrets();         // v2.1.0: 砲車の旋回砲塔（車体の絵の上）
+  drawRailExtras();          // v2.0.0: 前照灯・粘着編成の標識
   drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
   drawBreathAttacks(now);
   drawDragonProjectiles();   // v0.6-p2: 自軍の氷弾・ミサイル
@@ -23760,6 +24015,8 @@ const ENEMY_IMAGE_SOURCES = {
   behemoth_arm:  "assets/mover_behemoth_arm.png",
   railgun_loco:  "assets/mover_railgun_loco.png",
   railgun_car:   "assets/mover_railgun_car.png",
+  // v2.1.0: 砲車の連装砲塔。車体とは別に旋回するので ENEMY_SPRITE_META には載せない
+  railgun_turret: "assets/mover_railgun_turret.png",
   railcar:       "assets/mover_railcar.png",
   railram:       "assets/mover_railram.png",
   walker_hull:   "assets/mover_walker_hull.png",
@@ -23925,10 +24182,10 @@ const ENEMY_SPRITE_META = {
   // v1.8.0: 多脚戦車。胴は左右上下対称なので重心＝中心。
   // 足は爪先が外を向くので、回転軸を足首寄り（py 0.58）に置いて脚と繋げる。
   // v2.0.0: 鉄路の敵。線路（砂利44px・軌間24px）に乗る幅になるよう drawScale を決めた。
-  // 砲車だけ px が中心でないのは、**回転軸が車体の中心で、砲身は横へ張り出している**ため
-  // （アルファ重心を使うと砲身に引かれて車体が線路から浮く）。
+  // v2.1.0: 砲車は砲を外した車体だけの絵に差し替えたので、回転軸は素直に重心。
+  // 砲塔は drawRailTurrets が車体の上へ別に重ねる。
   railgun_loco:   { px: 0.495, py: 0.499, forward: "up", drawScale: 1.18 },
-  railgun_car:    { px: 0.272, py: 0.500, forward: "up", drawScale: 3.64 },
+  railgun_car:    { px: 0.494, py: 0.498, forward: "up", drawScale: 1.43 },
   railcar:        { px: 0.497, py: 0.559, forward: "up", drawScale: 1.70 },
   railram:        { px: 0.495, py: 0.521, forward: "up", drawScale: 1.36 },
   walker_hull:    { px: 0.498, py: 0.498, forward: "up", drawScale: 3.10 },
