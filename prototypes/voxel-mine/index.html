@@ -287,7 +287,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.8.3";
+const GAME_VERSION = "v0.8.4";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -421,6 +421,7 @@ const GEAR_FRAMES = [
   { id:"prototype", name:"工房試作", origin:"設計図を基に港の製作台で組み上げる。", effect:"特性機構を1基保持する。" },
 ];
 const FIRST_GEAR_DISCOVERY = { minimumBlocks:3, traits:["autoDrill","tripleAmp","canopyResonator"] };
+const SALVAGE_GEAR_DISCOVERY = { chance:0.06, maximumPerTrip:2 };
 const CODEX_MATERIAL_IDS = ["scrap","copper","crystal","iron","gold","obsidian","starcore","timber"];
 const CODEX_CATEGORIES = [
   { id:"blocks", name:"ブロック" }, { id:"creatures", name:"生き物" }, { id:"enemies", name:"敵" },
@@ -1533,6 +1534,10 @@ function gainGear(sourceKey) { const gear=createGear(sourceKey); player.gears.pu
 function discoverFirstGear() {
   if (expedition.phase!=="exploring" || islandLevel!==1 || player.gears.length || expedition.blocksDestroyed<FIRST_GEAR_DISCOVERY.minimumBlocks) return false;
   const gear=gainGear("first-discovery");
+  showGearDiscovery(gear);
+  return true;
+}
+function showGearDiscovery(gear) {
   const trait=GEAR_TRAITS.find(entry=>entry.id===gear.trait);
   // 初回の発見を通常素材の通知で上書きせず、搭載の場所を伝える。
   clearTimeout(flavorToastTimer);
@@ -1540,6 +1545,18 @@ function discoverFirstGear() {
   document.getElementById("flavor-toast-text").textContent=trait.description+"。持ち帰って港で搭載しよう。";
   document.getElementById("flavor-toast").hidden=false;
   flavorToastTimer=setTimeout(hideFlavorToast,FLAVOR_TOAST_MILLISECONDS);
+}
+function discoverSalvageGear(index) {
+  if (expedition.phase!=="exploring" || !player.gears.length) return false;
+  const prefix="g"+tripSerial+"-salvage-";
+  if (expedition.gearIds.filter(id=>id.startsWith(prefix)).length>=SALVAGE_GEAR_DISCOVERY.maximumPerTrip) return false;
+  const sourceKey="salvage-"+index;
+  // セルごとの独立抽選で、再読込や連鎖の処理タイミングによる再抽選を防ぐ。
+  const roll=makeRandomGenerator(hashSeed(worldSeed+":salvage:"+islandLevel+":"+tripSerial+":"+index))();
+  if (roll>=SALVAGE_GEAR_DISCOVERY.chance) return false;
+  if (expedition.gearIds.some(id=>id.startsWith("g"+tripSerial+"-"+sourceKey+"-"))) return false;
+  const gear=gainGear(sourceKey);
+  showGearDiscovery(gear);
   return true;
 }
 function resolveBlockLoot(material, index) {
@@ -2110,7 +2127,7 @@ function breakCell(idx, chainStep, allowChain = true) {
   registerBreak();
   const loot = resolveBlockLoot(material, idx);
   if (loot) gainMaterial(loot.id, loot.amount);
-  discoverFirstGear();
+  if (!discoverFirstGear()) discoverSalvageGear(idx);
   indexToXYZ(idx, _xyz);
   cellToWorld(_xyz[0], _xyz[1], _xyz[2], _w);
   spawnChips(_w[0], _w[1], _w[2], material, 1 + rangeRadius() * 0.35);
@@ -2735,7 +2752,7 @@ function renderResult() {
   const reason = { manual: "任意帰還", fuel: "作業燃料を使い切りました", cleared: "島の採掘完了", hull:"船体が損傷し緊急帰還" }[expedition.returnReason];
   const list = (treasure) => INVENTORY_ORDER.filter((id) => expedition.haul[id] && Boolean(ITEMS[id].saleValue) === treasure).map((id) => ITEMS[id].name + " ×" + expedition.haul[id]).join("・") || "なし";
   const treasureList=player.treasures.filter((item)=>expedition.treasureIds.includes(item.id)).map((item)=>item.name+"（"+item.rarity+"）").join("・")||"なし";
-  const gearList=player.gears.filter((item)=>expedition.gearIds.includes(item.id)).map((item)=>item.name).join("・")||"なし";
+  const gearList=player.gears.filter((item)=>expedition.gearIds.includes(item.id)).map((item)=>item.name+" ／ 重量"+item.weight+"\n"+GEAR_TRAITS.find(trait=>trait.id===item.trait).description).join("\n\n")||"なし";
   document.getElementById("result-details").textContent = DESTINATIONS[islandLevel - 1].name + " ─ " + reason + "\n地形 " + (TERRAIN_PROFILES.find((profile)=>profile.id===expedition.terrainProfileId)?.name||"") + " ／ 使用燃料 " + expedition.turns + " ／ 残り " + expedition.fuel + " ／ 船体 "+expedition.hull+"/"+expedition.maxHull+"\n破壊ブロック " + expedition.blocksDestroyed + " ／ 捕獲 " + expedition.captures + " ／ 伐採 " + expedition.treesChopped + "\n\n強化素材\n" + list(false) + "\n\n個体換金品\n"+treasureList+"\n\n回収ギア\n"+gearList+"\n売却見込額：" + (estimatedSaleValue(expedition.haul)+treasureSaleValue(expedition.treasureIds)) + " コイン\n\n積み荷は回収済み。港で編成と売却ができます。";
 }
 function acknowledgeResult() {
