@@ -4005,6 +4005,83 @@ function isRailVehicle(def) { return def.railBound === true || def.part === "tra
 
 ---
 
+### 2-1bo. 軌道の首都を走らせる（v2.4.0）
+
+Shooter指示「ボスも軌道上を動くようにしたい。一定の路線を走り続けるように」。
+
+#### どこを走らせたか
+
+**内側の環状線を「御召線」にして、そこをボス専用にした**。閉じた輪なので端が無く、
+止まる理由も向きを変える理由も生まれない＝「一定の路線を走り続ける」がそのまま成立する。
+放射線だと必ず端で折り返すことになり、v2.1.1 で潰した「向きが反転して見える」問題を
+ボスでもう一度作ることになる。
+
+- 周長 10365px / 速さ 70px/秒 → **1周 148秒**
+- 竜の巡航は約160px/秒なので、追いつけない速さにはしていない（振り切られる鬼ごっこにしない）
+- 御召線には編成も軌道車も入れない（`railTrafficLines()` が除外）。
+  入れるとボスと編成がすれ違って車体が重なる
+
+#### 「要塞に籠らないボス」になることについて
+
+首都の建物・城壁はその場に残り、**中枢だけが外へ出る**。
+城壁を割らなくてもボスに手が届くので、その分だけ素直には易しくなる。
+ただし環状線（半径1650）は要塞都市の帯（`RAIL_FORT_R`=1850）の内側を回るので、
+**追いかけている間ずっと要塞都市の射程の中に居る**ことになる。実測:
+
+| 御召線上の64点で測った「450px以内の撃てる建物」 | 平均153.8棟 / 最少58 / 最多264 |
+|---|---|
+| そのうち要塞都市の建物 | 86% |
+
+一度も「安全な区間」が無いので、割に合わない交換にはなっていないと判断した。
+ぬるいと感じたら `RAIL_BOSS_SPEED`（70）を上げるのが一番効く。
+
+#### 動く建物の仕掛けを汎用化した
+
+建物はステージ生成時に地面へ焼いてしまうので、動かすには3点が要る。
+これは小惑星帯の岩塊（v1.5.0）でやったことと同じなので、**岩塊専用の名前を汎用へ寄せた**。
+
+| | 旧（岩塊専用） | 新 |
+|---|---|---|
+| 判定 | `settlement._rock` を直書き（4か所） | `isMovingBuilding(b)` 1か所 |
+| 格子 | `rockGrid` / `rockSettlementIdx` / `rebuildRockGrid` | `movingBuildingGrid` / `movingBuildingIdx` / `rebuildMovingBuildingGrid` |
+| 間引き | `ASTEROID_GRID_INTERVAL` / `asteroidGridTick` | `MOVING_BUILDING_GRID_INTERVAL` / `movingBuildingGridTick` |
+
+次に動く建物を足すときは `isMovingBuilding()` に足すだけで、
+「焼かない・毎フレーム描く・格子を作り直す」の3点が揃う。
+
+#### 踏んだ落とし穴: 「首都の位置」を読んでいる処理
+
+ボスを動かすと、**ボスの座標を「首都の中心」として読んでいる処理が全部ついてくる**。
+生成時は問題にならず、**段階上げ（`advanceTier`）で初めて出る**ので見つけにくい。
+
+- `generateWallRing` … 城壁が列車の現在地に張り直される
+- `generateMovers` の守備隊 … 守備隊が列車の周りに湧く
+
+`capitalAnchor(boss)` を1つ作り、`boss._capitalX/_capitalY`（生成時の中心）を返すようにして
+この2つを通した。実測で段階上げ後も首都の城壁111棟は首都の周り、列車の周りは4棟（無関係の町の壁）、
+守備隊は首都周辺15体に対し列車周辺3体。
+
+`attachBossToRail` は `generateStageLayout` の**最後**で呼ぶ。
+町・街道・城壁・鉄路・動く敵を全部ボスの座標基準で並べているので、
+途中で動かすと世界ごと列車について行ってしまう。
+
+#### 画面で読ませる
+
+- **御召線は赤い路盤＋金の枕木**で描き分ける。ミニマップでも金で描くので、
+  地図を見れば「ボスがどこを回っているか」が分かる
+- **首都の中心には機関庫**（金縁の円座＋放射状の留置線）を置いた。
+  中枢が居ないのに真ん中が空いている理由を絵で示す
+- ボスの絵は新規生成（`mover_boss_train.png`）。
+  冠を戴いた金の円蓋を中央に据えた装甲司令列車。描画は `drawRailBoss`
+  （円のグローだと列車の形と喧嘩するので、車体に沿った楕円にしてある）
+
+#### 動く敵の構成比は維持
+
+御召線から編成1本ぶんを抜いたので測り直した。鉄路の敵の割合は **58〜79%**
+（v2.3.2 時点の 59〜80% から実質変化なし）。「軌道では過半が線路の敵」は保てている。
+
+---
+
 ## 3. 未着手のアイディア（着手順は未定）
 
 ### 3-1. 攻略対象の拡張（本書 §5 に詳細を保管）
@@ -4228,8 +4305,10 @@ function isRailVehicle(def) { return def.railBound === true || def.part === "tra
 | 多脚戦車（v1.8.0） | 脚付けは `attachWalkerLegs`、歩行は `updateWalkerLeg`（接地点の置き直し＋三脚歩行 `walkerLegMayStep`）、踏みつけは `walkerStomp`。胴は `updateWalkerHull`（脚の残数→`speedMult`／砲塔旋回／砲口炎）。描画は `drawWalkerLegs`（胴の下）と `drawWalkerTurrets`（胴の上）。定数は `WALKER_*` |
 | 多脚戦車の主砲（v1.9.0） | `def.manualAttack` で共通の攻撃処理を素通りさせ、`updateWalkerGun` が溜め〜発砲を回す。弾は `spawnShell(..., 5)`＝kind=5 の主砲弾（描画は `drawProjectiles` の kind=5 分岐、着弾は `detonateShell` の heavy 分岐）。溜めの絵は `drawWalkerTurrets`。胴のゆらぎ止めは `def.headingSmooth` |
 | 軌道の地域（v2.0.0） | 形は `SHAPE_RAILWAY`。線路は `buildRailNetwork`（放射＋環状のポリライン）→ `railLines`、座標引きは `railPointAt`、線路上かの判定は `onRail`。町は `placeRailwayTownCenters`、描画は `drawRailsOnLayer`。定数は `RAIL_*` |
-| 鉄路の敵（v2.0.0） | `def.railBound` で共通の移動から外し、`updateRailMover` が弧長を進める（`advanceRail` が折り返し／回り込み）。列車は `spawnRailTrain`＋`updateRailTrain`（砲車は `part:"car"`）、単体は `spawnRailUnit`。編成は `generateRailMovers`、前照灯と砲口炎は `drawRailExtras` |
+| 鉄路の敵（v2.0.0） | `def.railBound` で共通の移動から外し、`updateRailMover` が弧長を進める（`advanceRail` が折り返し／回り込み）。編成は `spawnRailTrainOnLine`＋`updateRailTrainGroup`（車両は `part:"train"`）、単体は `spawnRailUnit`。湧かせるのは `generateRailMovers`、前照灯と砲口炎は `drawRailExtras`。鉄路かどうかの判定は `isRailVehicle(def)` 1か所 |
 | 列車砲列の砲塔（v2.1.0） | 砲塔は別スプライトで `drawRailTurrets` が車体の上に重ねる。旋回と連射は `updateRailCarShell`、1発は `fireRailCarShell`。数値は `def.carGun`（burst/burstGap/traverse/align）|
 | 複数パーツのグループ敵（v2.3.0） | **新規追加はまずここを読む**。`enemyGroups` に `{ kind, units, update, onDestroyed, onDead }` で登録し、`updateEnemyGroups` が全滅判定・報酬・復活待ちを見る。「中心を倒すと終わり」なら登録簿ではなく親子（`m.parent`）で足りる＝巨獣・多脚戦車。列車砲列は `kind:"railTrain"`（`updateRailTrainGroup` / `onRailTrainDestroyed` / `tickRailTrainRespawn`）|
+| 動く建物（v2.4.0） | **動く建物を足すときはまずここ**。`isMovingBuilding(b)` に条件を足すと「焼かない（`paintBuildingTile`）／毎フレーム描く／`movingBuildingGrid` を作り直す」が揃う。現行は小惑星帯の岩塊（`_rock`）と軌道の司令列車（`_railRide`）。**ボスの座標を「首都の中心」として読む処理は `capitalAnchor(boss)` を通すこと**（通さないと段階上げで城壁と守備隊が列車について行く）|
+| 軌道のボス（v2.4.0） | 御召線は `buildRailNetwork` が内側の環状線に `line.bossOnly` を立てて作る（`railBossLine`）。乗せるのは `attachBossToRail`（**`generateStageLayout` の最後**）、走るのは `updateRailBoss`、描くのは `drawRailBoss`。他の車両を入れないのは `railTrafficLines()`。速さは `RAIL_BOSS_SPEED` |
 | ステージ生成 | `generateStageLayout`／`placeTownCenters`／`generateTownWalls`／`START_TOWN_CLEAR` |
 | デバッグ | 左下バージョン3タップ。「🛸 動き切替」（hover/ground）「💥 反動切替」（0/40/100/240）<br>**v0.44 の敵確認セット**: 「👾 敵を出す…」（図鑑から選んで群れの隣に湧かせる。隊は隊ごと・巨獣は腕つき）／「🏷 敵の名札」（名前・HP・潜航中かを頭上に表示、盾持ちは弾く扇も出る）／「🛡 竜を無敵」（落ちずに敵の挙動だけ観察）／「☠ 敵を全部消す」（1体だけ残して見る）／「🌊 堰を決壊させる」／「🎯 ボス手前へワープ」 |

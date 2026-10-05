@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.3.2";
+const GAME_VERSION = "v2.4.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1045,6 +1045,7 @@ function debugSpawnEnemy(key) {
     const probe = { x: 0, y: 0, tx: 1, ty: 0 };
     for (let li = 0; li < railLines.length; li++) {
       const line = railLines[li];
+      if (line.bossOnly) continue;   // v2.4.0: 御召線はボス専用
       for (let t = 0; t < line.len; t += 120) {
         railPointAt(line, t, probe);
         const d2 = dist2(probe.x, probe.y, c.x, c.y);
@@ -4785,6 +4786,8 @@ function generateStageLayout(stageIndex) {
   asteroidRocks     = [];
   railLines         = [];
   railJunctions     = [];
+  railBossLine      = -1;   // v2.4.0: 御召線（ボス専用線）
+  railCenter        = null;
   enemyGroups.length = 0;   // v2.3.0: 前のステージのグループ敵を捨てる
 
   const boss = placeBossBuilding(stageIndex, config);
@@ -5271,6 +5274,11 @@ function generateStageLayout(stageIndex) {
       result[idx].isFirework = true;
     }
   }
+
+  // --- (10) v2.4.0: 軌道の首都を御召線へ乗せる ---
+  // **必ず最後に**。首都の位置を基準に町・街道・城壁・鉄路・動く敵を並べているので、
+  // それが全部終わってからでないと世界ごと列車について行ってしまう。
+  if (worldShape === SHAPE_RAILWAY) attachBossToRail(boss);
 
   return result;
 }
@@ -5953,8 +5961,12 @@ const RAIL_TOWN_R_MIN   = 900;
 const RAIL_FORT_R       = 1850;  // この内側＝要塞都市
 const RAIL_ADVANCED_R   = 3350;  // この内側＝格上の町
 
-// { pts:[{x,y}], cum:[0..len], len, loop }
+// { pts:[{x,y}], cum:[0..len], len, loop, bossOnly }
 let railLines = [];
+// v2.4.0: 御召線＝司令列車（ボス）の専用線。内側の環状線をこれに充てる。
+// ほかの車両を入れないので、編成とボスがすれ違って重なる絵にならない。
+let railBossLine = -1;
+let railCenter   = null;   // 首都の中心（＝機関庫。司令列車が出ていった跡を描く）
 
 /** ポリラインに累積距離を付けて1本の線路にする。 */
 function makeRailLine(pts, loop) {
@@ -5998,8 +6010,120 @@ function buildRailNetwork(boss) {
     }
     const line = makeRailLine(pts, true);
     line.ring = r;
+    // 内側の環状線を御召線にする。閉じた輪なので端が無い＝止まる理由も
+    // 向きを変える理由も無く、「一定の路線を走り続ける」がそのまま成立する。
+    if (r === RAIL_RING_RADII[0]) { line.bossOnly = true; railBossLine = railLines.length; }
     railLines.push(line);
   }
+  railCenter = { x: boss.wx, y: boss.wy };
+}
+
+/** 普通の車両を入れてよい路線の添字（御召線を外す）。 */
+function railTrafficLines() {
+  const out = [];
+  for (let i = 0; i < railLines.length; i++) if (!railLines[i].bossOnly) out.push(i);
+  return out;
+}
+
+// =====================================================================
+// v2.4.0: 軌道の首都は**要塞に籠らず走り続ける**（Shooter指示）。
+// 中枢は装甲司令列車に乗っていて、御召線を一定の速さで回り続ける。
+// 首都の建物・城壁はその場に残るので、「要塞を割ってから本体を追う」ではなく
+// 「本体が要塞都市の間を巡回していく」戦いになる。
+//
+// 動かすための3点（焼かない／毎フレーム描く／格子を作り直す）は
+// isMovingBuilding() まわりにまとめてある。
+// =====================================================================
+const RAIL_BOSS_SPEED = 70;   // 司令列車の速さ(px/秒)。竜の巡航(約160)より十分遅い＝振り切られない
+const _railBossPt = { x: 0, y: 0, tx: 1, ty: 0 };
+
+/**
+ * 生成の最後に呼ぶ。**これより前に呼んではいけない**——首都の位置を基準に
+ * 町・街道・城壁・鉄路を並べるので、途中で動かすと全部ずれる。
+ */
+function attachBossToRail(boss) {
+  const line = railLines[railBossLine];
+  if (!boss || !line) return;
+  // 生成時の中心は別に控える。城壁の張り直し等は**列車の現在地ではなくここ**を見る
+  boss._capitalX = boss.wx;
+  boss._capitalY = boss.wy;
+  boss._railRide = { line: railBossLine, s: random() * line.len };
+  updateRailBossPose(boss);
+}
+
+/**
+ * v2.4.0: 「首都の中心」。軌道の首都は動くので、**位置を基準に物を並べる処理は
+ * boss.wx をそのまま読んではいけない**（城壁の張り直しが列車の現在地に出る）。
+ */
+function capitalAnchor(boss) {
+  if (!boss || boss._capitalX === undefined) return boss;
+  return { wx: boss._capitalX, wy: boss._capitalY, radius: boss.radius };
+}
+
+function updateRailBossPose(boss) {
+  const line = railLines[boss._railRide.line];
+  if (!line) return;
+  railPointAt(line, boss._railRide.s, _railBossPt);
+  boss.wx = _railBossPt.x;  boss.wy = _railBossPt.y;
+  boss.headingX = _railBossPt.tx;  boss.headingY = _railBossPt.ty;
+}
+
+/** 線路に乗っているボス（居なければ null）。 */
+function railBossSettlement() {
+  const b = settlements[bossSettlementIdx];
+  return b && b._railRide ? b : null;
+}
+
+function updateRailBoss(dt) {
+  if (gameState !== "playing" || dt <= 0) return;
+  const boss = railBossSettlement();
+  if (!boss || boss.fallen) return;
+  const line = railLines[boss._railRide.line];
+  if (!line) return;
+  boss._railRide.s += RAIL_BOSS_SPEED * dt;
+  if (boss._railRide.s >= line.len) boss._railRide.s -= line.len;   // 閉じた輪＝端が無い
+  updateRailBossPose(boss);
+  if (++movingBuildingGridTick >= MOVING_BUILDING_GRID_INTERVAL) {
+    movingBuildingGridTick = 0;
+    rebuildMovingBuildingGrid();
+  }
+}
+
+/**
+ * 司令列車の描画。円のボスではなく線路に沿った列車なので、
+ * グローも車体に沿った楕円にする（円のグローだと列車の形と喧嘩する）。
+ */
+const BOSS_TRAIN_SCALE = 1.45;   // 描画幅 ＝ BOSS_RADIUS × これ（普通の機関車の約1.7倍の幅）
+
+function drawRailBoss(boss) {
+  const img  = enemyImages.boss_train;
+  const meta = ENEMY_SPRITE_META.boss_train;
+  const drawW = boss.radius * BOSS_TRAIN_SCALE;
+  const drawH = (img && meta) ? drawW * (img.naturalHeight / img.naturalWidth) : drawW * 4;
+  const bounds = getViewBoundsWorld(drawH);
+  if (boss.wx < bounds.minX || boss.wx > bounds.maxX ||
+      boss.wy < bounds.minY || boss.wy > bounds.maxY) return;
+
+  ctx.save();
+  ctx.translate(boss.wx, boss.wy);
+  ctx.rotate(Math.atan2(boss.headingY, boss.headingX) + Math.PI / 2);
+  if (!boss.fallen) {
+    ctx.globalAlpha = 0.16 + 0.07 * Math.sin(breathTime * 2);
+    ctx.fillStyle = boss._bossGlowColor ?? "#ff8800";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, drawW * 1.05, drawH * 0.60, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  if (img && meta) {
+    if (boss.fallen) ctx.filter = "grayscale(1) brightness(0.45) contrast(1.15)";
+    ctx.drawImage(img, -drawW * meta.px, -drawH * meta.py, drawW, drawH);
+    ctx.filter = "none";
+  } else {
+    ctx.fillStyle = boss.fallen ? "#241f1a" : "#3a3630";
+    ctx.fillRect(-drawW * 0.5, -drawH * 0.5, drawW, drawH);
+  }
+  ctx.restore();
 }
 
 /** 線路 line の弧長 s の位置と進行方向。s は呼ぶ側で範囲内に丸めておくこと。 */
@@ -6087,6 +6211,31 @@ function drawTurntablesOnLayer(bctx, bounds) {
   if (railLines.length === 0) return;
   const p = { x: 0, y: 0, tx: 1, ty: 0 };
   bctx.save();
+  // v2.4.0: 首都の中心は機関庫。司令列車が走り出した後の空いた円座を描いておく
+  // （中枢が居ないのに真ん中が空いている理由を絵で示す）。
+  if (railCenter && layerBoundsHitCircle(bounds, railCenter.x, railCenter.y, RAIL_DEPOT_R + 14)) {
+    bctx.fillStyle = "#2e2a22";
+    bctx.beginPath();
+    bctx.arc(railCenter.x, railCenter.y, RAIL_DEPOT_R, 0, Math.PI * 2);
+    bctx.fill();
+    bctx.strokeStyle = "#b8923c";
+    bctx.lineWidth = 4;
+    bctx.stroke();
+    // 放射状の留置線（扇形車庫に見せる）
+    bctx.strokeStyle = "#8f9299";
+    bctx.lineWidth = 3;
+    for (let k = 0; k < 10; k++) {
+      const a = (k / 10) * Math.PI * 2;
+      bctx.beginPath();
+      bctx.moveTo(railCenter.x + Math.cos(a) * 14, railCenter.y + Math.sin(a) * 14);
+      bctx.lineTo(railCenter.x + Math.cos(a) * RAIL_DEPOT_R, railCenter.y + Math.sin(a) * RAIL_DEPOT_R);
+      bctx.stroke();
+    }
+    bctx.fillStyle = "#b8923c";
+    bctx.beginPath();
+    bctx.arc(railCenter.x, railCenter.y, 8, 0, Math.PI * 2);
+    bctx.fill();
+  }
   for (const line of railLines) {
     if (line.loop) continue;              // 輪には終端が無い
     for (const sPos of [RAIL_INNER_TERMINUS, line.len]) {
@@ -6147,19 +6296,23 @@ function drawRailsOnLayer(bctx, bounds) {
       bctx.moveTo(line.pts[0].x, line.pts[0].y);
       for (let i = 1; i < line.pts.length; i++) bctx.lineTo(line.pts[i].x, line.pts[i].y);
     };
+    // v2.4.0: 御召線（ボスが走る線）は赤い路盤と金の枕木で描き分ける。
+    // 「ボスがどこを通るか」を地面の絵だけで読ませるため（画面を見れば分かること）。
+    const royal = !!line.bossOnly;
+
     // 路盤
     bctx.globalAlpha = 0.85;
-    bctx.strokeStyle = "#3a352c";
+    bctx.strokeStyle = royal ? "#4a2420" : "#3a352c";
     bctx.lineWidth = RAIL_BALLAST_W;
     path(); bctx.stroke();
     bctx.globalAlpha = 0.55;
-    bctx.strokeStyle = "#6b6252";
+    bctx.strokeStyle = royal ? "#7d3a2e" : "#6b6252";
     bctx.lineWidth = RAIL_BALLAST_W - 10;
     path(); bctx.stroke();
 
     // 枕木（線分ごとに等間隔で刻む）
     bctx.globalAlpha = 0.75;
-    bctx.strokeStyle = "#2a241c";
+    bctx.strokeStyle = royal ? "#b8923c" : "#2a241c";
     bctx.lineWidth = 5;
     bctx.beginPath();
     for (let i = 0; i < line.pts.length - 1; i++) {
@@ -6229,8 +6382,11 @@ const ASTEROID_STAR_ALPHA_BRIGHT = 0.75;   // 地表のスペックルを星と�
 const ASTEROID_STAR_ALPHA_DIM    = 0.30;
 
 let asteroidRocks = [];
-const ASTEROID_GRID_INTERVAL = 4;   // 動く建物の格子を作り直す間隔（フレーム）
-let asteroidGridTick = 0;   // { cx, cy, vx, vy, r, angle, omega, radius, buildings, meta, townIndex, craters }
+// 動く建物の格子を作り直す間隔（フレーム）。岩塊も司令列車も1フレームに1px程度しか
+// 動かないので毎フレームは要らない（毎フレームだと6000棟ぶんで約0.6msかかっていた）。
+const MOVING_BUILDING_GRID_INTERVAL = 4;
+let movingBuildingGridTick = 0;
+// rock = { cx, cy, vx, vy, r, angle, omega, radius, buildings, meta, townIndex, craters }
 
 /** ステージの背景色。小惑星帯は文明によらず宇宙の色。 */
 function stageBgColor(config) {
@@ -6307,9 +6463,10 @@ function updateAsteroids(dt) {
     const st = townStats.get(rock.townIndex);
     if (st) { st.cx = nx; st.cy = ny; }
   }
-  // 当たり判定の格子は数フレームに1回で足りる（岩塊は1フレームに0.5px程度しか動かない）。
-  // 毎フレーム作り直すと6000棟ぶんで約0.6msかかっていた。
-  if (++asteroidGridTick >= ASTEROID_GRID_INTERVAL) { asteroidGridTick = 0; rebuildRockGrid(); }
+  if (++movingBuildingGridTick >= MOVING_BUILDING_GRID_INTERVAL) {
+    movingBuildingGridTick = 0;
+    rebuildMovingBuildingGrid();
+  }
 }
 
 // 2線分の交点（なければ null）。
@@ -6678,6 +6835,7 @@ function makeWallSegment(wx, wy, hp, tangentAngle) {
 function generateWallRing(boss, stageIndex) {
   const config = WALL_STAGE_CONFIG[stageIndex];
   if (!config) return [];
+  boss = capitalAnchor(boss);   // v2.4.0: 軌道の首都は動く。城壁は生成時の中心に張る
 
   const result = [];
   const gateBaseAngle = random() * Math.PI * 2;
@@ -8325,12 +8483,15 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   const spawns = MOVER_SPAWNS_BY_STAGE[stageIndex];
   const result = [];
 
+  // v2.4.0: 守備隊は「首都の周り」に湧かせたいので、動く首都の現在地ではなく
+  // 生成時の中心を見る（段階上げで湧かし直すときに列車の周りへ出てしまう）
+  const anchor = capitalAnchor(boss);
   const bossClear2 = (WALL_OUTER_RING_RADIUS + 150) ** 2;
   function randPoint() {
     for (let attempt = 0; attempt < 20; attempt++) {
       const x = 300 + random() * (WORLD_W - 600);
       const y = 250 + random() * (WORLD_H - 500);
-      if (dist2(x, y, boss.wx, boss.wy) < bossClear2) continue;
+      if (dist2(x, y, anchor.wx, anchor.wy) < bossClear2) continue;
       if (dist2(x, y, START_X, START_Y) < START_MOVER_CLEAR * START_MOVER_CLEAR) continue;
       return { x, y };
     }
@@ -8343,8 +8504,8 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
     const a = random() * Math.PI * 2;
     const r = BOSS_GARRISON_INNER + random() * (BOSS_GARRISON_OUTER - BOSS_GARRISON_INNER);
     return {
-      x: Math.max(60, Math.min(WORLD_W - 60, boss.wx + Math.cos(a) * r)),
-      y: Math.max(60, Math.min(WORLD_H - 60, boss.wy + Math.sin(a) * r)),
+      x: Math.max(60, Math.min(WORLD_W - 60, anchor.wx + Math.cos(a) * r)),
+      y: Math.max(60, Math.min(WORLD_H - 60, anchor.wy + Math.sin(a) * r)),
     };
   }
 
@@ -10959,6 +11120,7 @@ const RAIL_TURN_TIME = 0.75;   // 単体が向きを変えるのにかかる秒�
 // v2.2.0: 線路の終端は転車台。単体はここで向きを変える（Shooter指示）。
 const RAIL_INNER_TERMINUS = 340;  // 首都側の終端（首都の建物の外）
 const RAIL_TURNTABLE_R    = 58;   // 転車台の見た目の半径
+const RAIL_DEPOT_R        = 70;   // v2.4.0: 首都中心の機関庫（司令列車の出所）の半径
 // 分岐で線を乗り換えると、編成の尻尾が別の線へ一度に移る（実測で最大111度の跳び）。
 // 位置と向きをこの秒数かけて振り回して、ポイントを渡っていく動きに見せる。
 const RAIL_SWING_TIME = 0.8;
@@ -11413,18 +11575,21 @@ const RAIL_GENERIC_TIER_CAP = 2.6;
 function generateRailMovers(stageIndex, result, tierForCount = 0) {
   const tierMult = TIER_MOVER_MULT[clampTier(tierForCount)] ?? 1;
   if (railLines.length === 0) return;
-  const radials = [];
-  railLines.forEach((l, i) => { if (!l.loop) radials.push(i); });
+  // v2.4.0: 御召線はボスの専用線。ここに編成や軌道車を入れると
+  // 司令列車とすれ違って車体が重なるので、交通はすべて他の線に乗せる。
+  const traffic = railTrafficLines();
+  if (traffic.length === 0) return;
+  const radials = traffic.filter(i => !railLines[i].loop);
   // v2.2.0: **路線ごとに1編成**。線をまたいだ乗り換えをやめたので、
   // どの線の近くに居ても「その線の編成」が寄ってくる形になる。
-  for (let li = 0; li < railLines.length; li++) {
+  for (const li of traffic) {
     const train = spawnRailTrainOnLine(li);
     if (train) for (const u of train.units) result.push(u);
   }
   // 軌道車は時代が進むほど増やす（線路の交通量そのものが難度になる）
   const carCount = Math.round((4 + stageIndex) * tierMult);
   for (let k = 0; k < carCount; k++) {
-    const li = k % railLines.length;
+    const li = traffic[k % traffic.length];
     result.push(spawnRailUnit("railcar", li, random() * railLines[li].len, random() < 0.5 ? -1 : 1));
   }
   // 衝角機関車は放射線（首都へ出入りする線）に。端で折り返して何度も通る
@@ -12122,7 +12287,7 @@ function paintBuildingTile(bctx, bounds) {
 
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
-    if (settlement._rock) continue;   // v1.5.0: 動く建物は毎フレーム drawAsteroids が描く
+    if (isMovingBuilding(settlement)) continue;   // 動く建物は焼かない（毎フレーム自前で描く）
     if (!layerBoundsHitCircle(bounds, settlement.wx, settlement.wy,
                               settlementLayerPadding(settlement))) continue;
     drawSettlementOnLayer(bctx, settlement);
@@ -13329,20 +13494,36 @@ const BUILDING_GRID_CELL = 100; // セルサイズ（px）
 
 function buildingGridClear() { buildingGrid.clear(); }
 
-// v1.5.0: 動く建物（小惑星帯の岩塊の上）は別の格子に入れ、毎フレーム作り直す。
-// 静的な格子は落ちたときしか作り直さないので、そこに入れると位置がずれていく。
-// 問い合わせ側（buildingGridQuery 等）は両方を見る。
-const rockGrid = new Map();
-let rockSettlementIdx = [];   // settlements のうち岩塊の上の建物の添字（rebuildBuildingGrid が作る）
+// =====================================================================
+// 動く建物（**新規追加はまずここを読む**）
+//
+// 建物は本来ステージ生成時に地面へ焼いてしまうので、動かすには3点が要る:
+//   (a) 焼いたレイヤーに描かない      … paintBuildingTile / drawMinimapBase
+//   (b) 毎フレーム自前で描く          … drawAsteroids / drawBossCitadel
+//   (c) 当たり判定の格子を作り直す    … この movingBuildingGrid
+// 静的な格子（buildingGrid）は建物が落ちたときしか作り直さないので、
+// 動く建物をそこに入れると当たり判定だけが置いていかれる。
+//
+// 動く建物かどうかは **isMovingBuilding() 1か所で決める**。
+// 新しい種類（v1.5.0 岩塊 / v2.4.0 軌道の司令列車）を足すときは、
+// 判定を増やすのではなくこの述語に足すこと。
+// =====================================================================
+const movingBuildingGrid = new Map();
+let movingBuildingIdx = [];   // settlements のうち動く建物の添字（rebuildBuildingGrid が作る）
 
-function rebuildRockGrid() {
-  rockGrid.clear();
-  for (const s of rockSettlementIdx) {
+/** この建物はステージ中に動くか（＝焼いてはいけない／格子を作り直す必要がある）。 */
+function isMovingBuilding(b) {
+  return !!b && (!!b._rock || !!b._railRide);
+}
+
+function rebuildMovingBuildingGrid() {
+  movingBuildingGrid.clear();
+  for (const s of movingBuildingIdx) {
     const b = settlements[s];
     if (!b) continue;
     const key = ((b.wx / BUILDING_GRID_CELL) | 0) * 100003 + ((b.wy / BUILDING_GRID_CELL) | 0);
-    let bucket = rockGrid.get(key);
-    if (!bucket) { bucket = []; rockGrid.set(key, bucket); }
+    let bucket = movingBuildingGrid.get(key);
+    if (!bucket) { bucket = []; movingBuildingGrid.set(key, bucket); }
     bucket.push(s);
   }
 }
@@ -13366,7 +13547,7 @@ function buildingGridQuery(wx, wy, out) {
       const key = (cx + dx) * 100003 + (cy + dy);
       const b = buildingGrid.get(key);
       if (b) for (const idx of b) out.push(idx);
-      if (rockGrid.size > 0) { const r = rockGrid.get(key); if (r) for (const idx of r) out.push(idx); }
+      if (movingBuildingGrid.size > 0) { const r = movingBuildingGrid.get(key); if (r) for (const idx of r) out.push(idx); }
     }
   }
 }
@@ -13382,7 +13563,7 @@ function buildingGridQueryRadius(wx, wy, cellRadius, out) {
       const key = (cx + dx) * 100003 + (cy + dy);
       const b = buildingGrid.get(key);
       if (b) for (const idx of b) out.push(idx);
-      if (rockGrid.size > 0) { const r = rockGrid.get(key); if (r) for (const idx of r) out.push(idx); }
+      if (movingBuildingGrid.size > 0) { const r = movingBuildingGrid.get(key); if (r) for (const idx of r) out.push(idx); }
     }
   }
 }
@@ -13394,12 +13575,12 @@ function rebuildBuildingGrid() {
   // 廃墟も検出できる必要がある。攻撃判定・障害物判定など他の全消費箇所は
   // クエリ結果を受け取った後で必ず自前の `if (!s || s.fallen) continue;` を
   // 行っているため、fallen を含めて登録しても既存の挙動に影響しない。
-  rockSettlementIdx = [];
+  movingBuildingIdx = [];
   for (let s = 0; s < settlements.length; s++) {
-    if (settlements[s]._rock) { rockSettlementIdx.push(s); continue; }   // v1.5.0: 動く建物は別の格子
+    if (isMovingBuilding(settlements[s])) { movingBuildingIdx.push(s); continue; }   // 動く建物は別の格子
     buildingGridInsert(s, settlements[s].wx, settlements[s].wy);
   }
-  rebuildRockGrid();
+  rebuildMovingBuildingGrid();
 }
 
 // 建物Spatial Hashの近傍クエリ用バッファ
@@ -13450,8 +13631,8 @@ function _queryBuildingsForAttack(bx, by) {
       if (bucket) {
         for (const idx of bucket) _settlementsInRange.add(idx);
       }
-      if (rockGrid.size > 0) {
-        const rb = rockGrid.get(key);
+      if (movingBuildingGrid.size > 0) {
+        const rb = movingBuildingGrid.get(key);
         if (rb) for (const idx of rb) _settlementsInRange.add(idx);
       }
     }
@@ -14333,7 +14514,7 @@ function settlementFall(settlementIndex) {
   minimapBaseDirty = true;  // v0.6-p4: ミニマップの建物ドットキャッシュも更新
 
   // 建物レイヤーを部分的に再描画（fallen状態に更新）
-  if (buildingTiledLayer && !settlement._rock) {   // v1.5.0: 動く建物はタイルに描いていない
+  if (buildingTiledLayer && !isMovingBuilding(settlement)) {   // 動く建物はタイルに描いていない
     // v0.11.4: 密集した市街地ではクリア矩形が連鎖的に重なり合う（A⊃B⊃C…）ため、
     // 自分と直接重なる相手だけ直しても、3棟以上の巻き込みは取りこぼす。
     // 重なりが連鎖する範囲全体（連結成分）をBFSで集め、
@@ -14342,7 +14523,7 @@ function settlementFall(settlementIndex) {
     // v0.49: タイル化により、対象は「その棟に掛かる生成済みタイル」だけになる。
     // 未生成のタイルは触らない（後で焼かれるとき fallen 状態で描かれる）。
     // 二段階の順序はタイル内でも保たれる（全棟のクリアを終えてから全棟を描く）。
-    const affected = collectOverlappingCluster(settlementIndex).filter(s => !s._rock);
+    const affected = collectOverlappingCluster(settlementIndex).filter(s => !isMovingBuilding(s));
     for (const s of affected) {
       const pad = settlementLayerPadding(s);
       forEachLayerTileOverlapping(buildingTiledLayer, s.wx - pad, s.wy - pad, s.wx + pad, s.wy + pad,
@@ -22451,7 +22632,11 @@ function buildBossRingLayers() {
 function drawBossCitadel() {
   if (bossSettlementIdx < 0) return;
   const boss = settlements[bossSettlementIdx];
-  if (!boss || boss.fallen) return;
+  if (!boss) return;
+  // v2.4.0: 軌道の首都は線路を走る列車。焼いたレイヤーに絵が無いので、
+  // 陥落後もここで（灰にして）描く——描かないと撃破の瞬間に消えてしまう。
+  if (boss._railRide) { drawRailBoss(boss); return; }
+  if (boss.fallen) return;
   const img = enemyImages.citadel;
   if (!img) return;
 
@@ -23847,9 +24032,11 @@ function rebuildMinimapBase() {
   // v2.0.0: 軌道の地域は線路が地図の骨格。どこが危ないかを俯瞰で読ませる
   if (railLines.length > 0) {
     minimapCtx.save();
-    minimapCtx.strokeStyle = "rgba(190,180,160,0.45)";
     minimapCtx.lineWidth = 1;
     for (const line of railLines) {
+      // v2.4.0: 御召線は金で描く＝「ボスがどこを回っているか」が地図で読める
+      minimapCtx.strokeStyle = line.bossOnly ? "rgba(235,195,95,0.85)" : "rgba(190,180,160,0.45)";
+      minimapCtx.lineWidth   = line.bossOnly ? 1.8 : 1;
       minimapCtx.beginPath();
       minimapCtx.moveTo(line.pts[0].x * scaleX, line.pts[0].y * scaleY);
       for (let i = 1; i < line.pts.length; i++) {
@@ -23863,7 +24050,7 @@ function rebuildMinimapBase() {
   const bosses = [];
   for (let s = 0; s < settlements.length; s++) {
     const settlement = settlements[s];
-    if (settlement._rock) continue;   // v1.5.0: 岩塊は drawMinimap が毎フレーム描く
+    if (isMovingBuilding(settlement)) continue;   // 動く建物は drawMinimap が毎フレーム描く
     const mx = settlement.wx * scaleX;
     const my = settlement.wy * scaleY;
 
@@ -23943,8 +24130,21 @@ function drawMinimapShrines(c) {
   }
 }
 
+// 焼いた地図には載らない「動くボス」を毎フレーム足すための作業配列（使い回す）
+const _minimapBossBuf = [];
+
 function drawMinimapBoss(c) {
-  for (const b of minimapBosses) {
+  _minimapBossBuf.length = 0;
+  for (const b of minimapBosses) _minimapBossBuf.push(b);
+  const moving = railBossSettlement();
+  if (moving) {
+    _minimapBossBuf.push({
+      mx: moving.wx * (MINIMAP_W / WORLD_W),
+      my: moving.wy * (MINIMAP_H / WORLD_H),
+      fallen: !!moving.fallen,
+    });
+  }
+  for (const b of _minimapBossBuf) {
     if (b.fallen) {
       c.fillStyle = MINIMAP_FALLEN_COLOR;
       c.beginPath();
@@ -24246,6 +24446,7 @@ const ENEMY_IMAGE_SOURCES = {
   miasma:        "assets/mover_miasma.png",
   teslawagon:    "assets/mover_teslawagon.png",
   citadel:       "assets/boss_citadel.png",
+  boss_train:    "assets/mover_boss_train.png",   // v2.4.0: 軌道の首都（装甲司令列車）
   behemoth_core: "assets/mover_behemoth_core.png",
   behemoth_arm:  "assets/mover_behemoth_arm.png",
   railgun_loco:  "assets/mover_railgun_loco.png",
@@ -24447,6 +24648,8 @@ const ENEMY_SPRITE_META = {
   treasure:       { px: 0.498, py: 0.601, forward: "up", drawScale: 2.28 },
   warlord:        { px: 0.497, py: 0.579, forward: "up", drawScale: 1.71 },
   citadel:        { px: 0.498, py: 0.488, forward: "none", drawScale: 3.45 },
+  // v2.4.0: 司令列車。drawScale は drawRailBoss が BOSS_TRAIN_SCALE で決めるので使わない。
+  boss_train:     { px: 0.498, py: 0.541, forward: "up", drawScale: 1.45 },
   // v0.69: 流用をやめて専用の絵にした18種。
   // px/py は tools/sprite_clean.py が出したアルファ質量重心。
   // drawScale は既存と同じ規則（縦長: 3.6×w/h ／ 横長: 2.8）を tools/gen_sprite_batch.sh が算出。
@@ -25378,6 +25581,7 @@ function tick() {
     const wdt = dt * timeScale;
 
     updateAsteroids(wdt);         // v1.5.0: 岩塊を軌道に沿って動かす（当たり判定より先に位置を確定）
+    updateRailBoss(wdt);          // v2.4.0: 司令列車（軌道のボス）を御召線の上で進める
     simStep(wdt);
     maybeAutoSaveRun(now);        // v1.0.0: 壊した建物の自動セーブ（間隔を空けて書く）
     applyObstaclePushout();       // v0.6-p3: 城壁・地形の侵入不可
