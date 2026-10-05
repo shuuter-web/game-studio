@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.4.0";
+const GAME_VERSION = "v2.4.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1045,7 +1045,6 @@ function debugSpawnEnemy(key) {
     const probe = { x: 0, y: 0, tx: 1, ty: 0 };
     for (let li = 0; li < railLines.length; li++) {
       const line = railLines[li];
-      if (line.bossOnly) continue;   // v2.4.0: 御召線はボス専用
       for (let t = 0; t < line.len; t += 120) {
         railPointAt(line, t, probe);
         const d2 = dist2(probe.x, probe.y, c.x, c.y);
@@ -5961,10 +5960,13 @@ const RAIL_TOWN_R_MIN   = 900;
 const RAIL_FORT_R       = 1850;  // この内側＝要塞都市
 const RAIL_ADVANCED_R   = 3350;  // この内側＝格上の町
 
-// { pts:[{x,y}], cum:[0..len], len, loop, bossOnly }
+// { pts:[{x,y}], cum:[0..len], len, loop, royal }
 let railLines = [];
-// v2.4.0: 御召線＝司令列車（ボス）の専用線。内側の環状線をこれに充てる。
-// ほかの車両を入れないので、編成とボスがすれ違って重なる絵にならない。
+// v2.4.0: 御召線＝司令列車（ボス）が走る線。内側の環状線をこれに充てる。
+// v2.4.1: **専用線ではない**。ほかの編成も軌道車も今までどおり通る
+// （同じ線で列車がすれ違うのは元から起きていて不自然ではない。Shooter判定。
+//  避けようとすると配車の仕組みが要るので、重なりは許容する）。
+// royal は**見た目の目印**（赤い路盤＋金の枕木・ミニマップの金線）としてだけ使う。
 let railBossLine = -1;
 let railCenter   = null;   // 首都の中心（＝機関庫。司令列車が出ていった跡を描く）
 
@@ -6012,17 +6014,10 @@ function buildRailNetwork(boss) {
     line.ring = r;
     // 内側の環状線を御召線にする。閉じた輪なので端が無い＝止まる理由も
     // 向きを変える理由も無く、「一定の路線を走り続ける」がそのまま成立する。
-    if (r === RAIL_RING_RADII[0]) { line.bossOnly = true; railBossLine = railLines.length; }
+    if (r === RAIL_RING_RADII[0]) { line.royal = true; railBossLine = railLines.length; }
     railLines.push(line);
   }
   railCenter = { x: boss.wx, y: boss.wy };
-}
-
-/** 普通の車両を入れてよい路線の添字（御召線を外す）。 */
-function railTrafficLines() {
-  const out = [];
-  for (let i = 0; i < railLines.length; i++) if (!railLines[i].bossOnly) out.push(i);
-  return out;
 }
 
 // =====================================================================
@@ -6090,39 +6085,87 @@ function updateRailBoss(dt) {
 }
 
 /**
- * 司令列車の描画。円のボスではなく線路に沿った列車なので、
- * グローも車体に沿った楕円にする（円のグローだと列車の形と喧嘩する）。
+ * 司令列車の描画（v2.4.1 で連結車両に）。
+ *
+ * ボスは**1棟の建物**のままで、車両は見た目だけ。1両の長い絵を線路に乗せると
+ * 曲線で車体が線路からはみ出すので、編成と同じく**車両ごとに弧長をずらして置き、
+ * その場所の接線を向かせる**（＝曲線に沿う）。
+ * コア（ボスの本体＝当たり判定もHPバーも大技の発射点もここ）は中央に重ねて描く。
  */
-const BOSS_TRAIN_SCALE = 1.45;   // 描画幅 ＝ BOSS_RADIUS × これ（普通の機関車の約1.7倍の幅）
+const BOSS_CONSIST     = ["loco", "car", "car", "core", "car", "car", "loco"];
+const BOSS_CONSIST_MID = 3;     // コアの位置（この車両の弧長 ＝ ボスの座標）
+const BOSS_CONSIST_GAP = 150;   // 車両の間隔（弧長）
+const BOSS_CAR_W       = 50;    // 車体の描画幅。路盤44pxに合わせる＝線路からはみ出さない
+const BOSS_CORE_SCALE  = 3.2;   // コアの描画幅 ＝ BOSS_RADIUS × これ（従来のボスとほぼ同寸）
+
+/** 編成の k 両目を、その場所の接線に沿って描く。 */
+function drawBossConsistCar(boss, line, slot, k) {
+  let cs = boss._railRide.s + (BOSS_CONSIST_MID - k) * BOSS_CONSIST_GAP;
+  if (line.loop) cs = ((cs % line.len) + line.len) % line.len;
+  else           cs = Math.max(0, Math.min(line.len, cs));
+  railPointAt(line, cs, _railBossPt);
+  const key  = slot === "loco" ? "railgun_loco" : "boss_car";
+  const img  = enemyImages[key];
+  const meta = ENEMY_SPRITE_META[key];
+  const drawW = BOSS_CAR_W;
+  const drawH = (img && meta) ? drawW * (img.naturalHeight / img.naturalWidth) : drawW * 3.6;
+  const bounds = getViewBoundsWorld(drawH);
+  if (_railBossPt.x < bounds.minX || _railBossPt.x > bounds.maxX ||
+      _railBossPt.y < bounds.minY || _railBossPt.y > bounds.maxY) return;
+  // 後ろの機関車は逆を向く（どちらへ走っても先頭は機関車に見える）
+  const face = (k > BOSS_CONSIST_MID && slot === "loco") ? Math.PI : 0;
+  ctx.save();
+  ctx.translate(_railBossPt.x, _railBossPt.y);
+  ctx.rotate(Math.atan2(_railBossPt.ty, _railBossPt.tx) + Math.PI / 2 + face);
+  if (boss.fallen) ctx.filter = "grayscale(1) brightness(0.45) contrast(1.15)";
+  if (img && meta) {
+    ctx.drawImage(img, -drawW * meta.px, -drawH * meta.py, drawW, drawH);
+  } else {
+    ctx.fillStyle = "#3a3630";
+    ctx.fillRect(-drawW * 0.5, -drawH * 0.5, drawW, drawH);
+  }
+  ctx.filter = "none";
+  ctx.restore();
+}
 
 function drawRailBoss(boss) {
-  const img  = enemyImages.boss_train;
-  const meta = ENEMY_SPRITE_META.boss_train;
-  const drawW = boss.radius * BOSS_TRAIN_SCALE;
-  const drawH = (img && meta) ? drawW * (img.naturalHeight / img.naturalWidth) : drawW * 4;
-  const bounds = getViewBoundsWorld(drawH);
+  const line = railLines[boss._railRide.line];
+  if (!line) return;
+
+  // --- 車両（見た目だけ。曲線に沿わせるため1両ずつ置く）---
+  for (let k = 0; k < BOSS_CONSIST.length; k++) {
+    drawBossConsistCar(boss, line, BOSS_CONSIST[k], k);
+  }
+
+  // --- コア（ボスの本体）---
+  const coreW = boss.radius * BOSS_CORE_SCALE;
+  const bounds = getViewBoundsWorld(coreW);
   if (boss.wx < bounds.minX || boss.wx > bounds.maxX ||
       boss.wy < bounds.minY || boss.wy > bounds.maxY) return;
-
+  if (!boss.fallen) {
+    // 従来のボスと同じ丸いグロー＝「ここが本体」を一目で
+    ctx.save();
+    ctx.fillStyle = boss._bossGlowColor ?? "#ff8800";
+    ctx.globalAlpha = 0.18;
+    ctx.beginPath(); ctx.arc(boss.wx, boss.wy, coreW * 0.62, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.10;
+    ctx.beginPath(); ctx.arc(boss.wx, boss.wy, coreW * 0.82, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  const img  = enemyImages.boss_core;
+  const meta = ENEMY_SPRITE_META.boss_core;
   ctx.save();
   ctx.translate(boss.wx, boss.wy);
   ctx.rotate(Math.atan2(boss.headingY, boss.headingX) + Math.PI / 2);
-  if (!boss.fallen) {
-    ctx.globalAlpha = 0.16 + 0.07 * Math.sin(breathTime * 2);
-    ctx.fillStyle = boss._bossGlowColor ?? "#ff8800";
-    ctx.beginPath();
-    ctx.ellipse(0, 0, drawW * 1.05, drawH * 0.60, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  }
+  if (boss.fallen) ctx.filter = "grayscale(1) brightness(0.45) contrast(1.15)";
   if (img && meta) {
-    if (boss.fallen) ctx.filter = "grayscale(1) brightness(0.45) contrast(1.15)";
-    ctx.drawImage(img, -drawW * meta.px, -drawH * meta.py, drawW, drawH);
-    ctx.filter = "none";
+    const coreH = coreW * (img.naturalHeight / img.naturalWidth);
+    ctx.drawImage(img, -coreW * meta.px, -coreH * meta.py, coreW, coreH);
   } else {
-    ctx.fillStyle = boss.fallen ? "#241f1a" : "#3a3630";
-    ctx.fillRect(-drawW * 0.5, -drawH * 0.5, drawW, drawH);
+    ctx.fillStyle = "#b8923c";
+    ctx.beginPath(); ctx.arc(0, 0, coreW * 0.5, 0, Math.PI * 2); ctx.fill();
   }
+  ctx.filter = "none";
   ctx.restore();
 }
 
@@ -6298,7 +6341,7 @@ function drawRailsOnLayer(bctx, bounds) {
     };
     // v2.4.0: 御召線（ボスが走る線）は赤い路盤と金の枕木で描き分ける。
     // 「ボスがどこを通るか」を地面の絵だけで読ませるため（画面を見れば分かること）。
-    const royal = !!line.bossOnly;
+    const royal = !!line.royal;
 
     // 路盤
     bctx.globalAlpha = 0.85;
@@ -11575,10 +11618,8 @@ const RAIL_GENERIC_TIER_CAP = 2.6;
 function generateRailMovers(stageIndex, result, tierForCount = 0) {
   const tierMult = TIER_MOVER_MULT[clampTier(tierForCount)] ?? 1;
   if (railLines.length === 0) return;
-  // v2.4.0: 御召線はボスの専用線。ここに編成や軌道車を入れると
-  // 司令列車とすれ違って車体が重なるので、交通はすべて他の線に乗せる。
-  const traffic = railTrafficLines();
-  if (traffic.length === 0) return;
+  // v2.4.1: 御召線にも今までどおり編成と軌道車を入れる（ボスとすれ違ってよい）
+  const traffic = railLines.map((l, i) => i);
   const radials = traffic.filter(i => !railLines[i].loop);
   // v2.2.0: **路線ごとに1編成**。線をまたいだ乗り換えをやめたので、
   // どの線の近くに居ても「その線の編成」が寄ってくる形になる。
@@ -24035,8 +24076,8 @@ function rebuildMinimapBase() {
     minimapCtx.lineWidth = 1;
     for (const line of railLines) {
       // v2.4.0: 御召線は金で描く＝「ボスがどこを回っているか」が地図で読める
-      minimapCtx.strokeStyle = line.bossOnly ? "rgba(235,195,95,0.85)" : "rgba(190,180,160,0.45)";
-      minimapCtx.lineWidth   = line.bossOnly ? 1.8 : 1;
+      minimapCtx.strokeStyle = line.royal ? "rgba(235,195,95,0.85)" : "rgba(190,180,160,0.45)";
+      minimapCtx.lineWidth   = line.royal ? 1.8 : 1;
       minimapCtx.beginPath();
       minimapCtx.moveTo(line.pts[0].x * scaleX, line.pts[0].y * scaleY);
       for (let i = 1; i < line.pts.length; i++) {
@@ -24446,7 +24487,9 @@ const ENEMY_IMAGE_SOURCES = {
   miasma:        "assets/mover_miasma.png",
   teslawagon:    "assets/mover_teslawagon.png",
   citadel:       "assets/boss_citadel.png",
-  boss_train:    "assets/mover_boss_train.png",   // v2.4.0: 軌道の首都（装甲司令列車）
+  // v2.4.1: 軌道の首都は「連結車両＋コア」。前後の機関車は railgun_loco を使い回す
+  boss_car:      "assets/mover_boss_car.png",
+  boss_core:     "assets/mover_boss_core.png",
   behemoth_core: "assets/mover_behemoth_core.png",
   behemoth_arm:  "assets/mover_behemoth_arm.png",
   railgun_loco:  "assets/mover_railgun_loco.png",
@@ -24648,8 +24691,10 @@ const ENEMY_SPRITE_META = {
   treasure:       { px: 0.498, py: 0.601, forward: "up", drawScale: 2.28 },
   warlord:        { px: 0.497, py: 0.579, forward: "up", drawScale: 1.71 },
   citadel:        { px: 0.498, py: 0.488, forward: "none", drawScale: 3.45 },
-  // v2.4.0: 司令列車。drawScale は drawRailBoss が BOSS_TRAIN_SCALE で決めるので使わない。
-  boss_train:     { px: 0.498, py: 0.541, forward: "up", drawScale: 1.45 },
+  // v2.4.1: 司令列車。描画幅は drawRailBoss が BOSS_CAR_W / BOSS_CORE_SCALE で決めるので
+  // drawScale は使わない（px/py の回転軸だけ使う）。
+  boss_car:       { px: 0.497, py: 0.503, forward: "up", drawScale: 1.45 },
+  boss_core:      { px: 0.498, py: 0.504, forward: "up", drawScale: 3.2 },
   // v0.69: 流用をやめて専用の絵にした18種。
   // px/py は tools/sprite_clean.py が出したアルファ質量重心。
   // drawScale は既存と同じ規則（縦長: 3.6×w/h ／ 横長: 2.8）を tools/gen_sprite_batch.sh が算出。
