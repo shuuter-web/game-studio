@@ -287,7 +287,7 @@
 //
 // 描画の仕組み（沸き・版ズレ・折り目線）は voxel-sketch の README を参照。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.8.2";
+const GAME_VERSION = "v0.8.3";
 const SAVE_KEY_PREFIX = "voxel-mine:save:";
 
 // -----------------------------------------------------------------
@@ -420,6 +420,7 @@ const GEAR_FRAMES = [
   { id:"cloudIron", name:"雲鉄製", origin:"浮島の鉱材を組み直した頑丈な枠。", effect:"特性機構を1基保持する。" },
   { id:"prototype", name:"工房試作", origin:"設計図を基に港の製作台で組み上げる。", effect:"特性機構を1基保持する。" },
 ];
+const FIRST_GEAR_DISCOVERY = { minimumBlocks:3, traits:["autoDrill","tripleAmp","canopyResonator"] };
 const CODEX_MATERIAL_IDS = ["scrap","copper","crystal","iron","gold","obsidian","starcore","timber"];
 const CODEX_CATEGORIES = [
   { id:"blocks", name:"ブロック" }, { id:"creatures", name:"生き物" }, { id:"enemies", name:"敵" },
@@ -1523,11 +1524,24 @@ function gainLeafTreasure(treeId, blockId) {
 }
 function createGear(sourceKey) {
   const seeded = makeRandomGenerator(hashSeed(worldSeed + ":gear:" + tripSerial + ":" + sourceKey));
-  const trait = GEAR_TRAITS[Math.floor(seeded() * GEAR_TRAITS.length)];
+  const candidates = sourceKey === "first-discovery" ? GEAR_TRAITS.filter(trait => FIRST_GEAR_DISCOVERY.traits.includes(trait.id)) : GEAR_TRAITS;
+  const trait = candidates[Math.floor(seeded() * candidates.length)];
   const frame = GEAR_FRAMES[Math.floor(seeded()*GEAR_FRAMES.length)];
   return { id:"g" + tripSerial + "-" + sourceKey + "-" + player.gears.length, name:frame.name + "・" + trait.name, frameId:frame.id, trait:trait.id, weight:trait.weight };
 }
 function gainGear(sourceKey) { const gear=createGear(sourceKey); player.gears.push(gear); registerCodex("gearFrames",gear.frameId); registerCodex("traits",gear.trait); if (expedition.phase==="exploring") expedition.gearIds.push(gear.id); return gear; }
+function discoverFirstGear() {
+  if (expedition.phase!=="exploring" || islandLevel!==1 || player.gears.length || expedition.blocksDestroyed<FIRST_GEAR_DISCOVERY.minimumBlocks) return false;
+  const gear=gainGear("first-discovery");
+  const trait=GEAR_TRAITS.find(entry=>entry.id===gear.trait);
+  // 初回の発見を通常素材の通知で上書きせず、搭載の場所を伝える。
+  clearTimeout(flavorToastTimer);
+  document.getElementById("flavor-toast-name").textContent="埋もれた機構を発見 — "+trait.name;
+  document.getElementById("flavor-toast-text").textContent=trait.description+"。持ち帰って港で搭載しよう。";
+  document.getElementById("flavor-toast").hidden=false;
+  flavorToastTimer=setTimeout(hideFlavorToast,FLAVOR_TOAST_MILLISECONDS);
+  return true;
+}
 function resolveBlockLoot(material, index) {
   if (material > M_STONE) return { id: MATERIALS[material].drop, amount: comboMultiplier };
   const roll = makeRandomGenerator(hashSeed(worldSeed + ":loot:" + islandLevel + ":" + tripSerial + ":" + index))();
@@ -2096,6 +2110,7 @@ function breakCell(idx, chainStep, allowChain = true) {
   registerBreak();
   const loot = resolveBlockLoot(material, idx);
   if (loot) gainMaterial(loot.id, loot.amount);
+  discoverFirstGear();
   indexToXYZ(idx, _xyz);
   cellToWorld(_xyz[0], _xyz[1], _xyz[2], _w);
   spawnChips(_w[0], _w[1], _w[2], material, 1 + rangeRadius() * 0.35);
@@ -2646,7 +2661,7 @@ function renderGearBay() {
   const capacity=document.getElementById("gear-capacity");
   capacity.textContent="搭載 "+equippedWeight()+" / "+player.gearCapacity+" ／ "+player.equippedGearIds.length+" / 3";
   const container=document.getElementById("port-gears");
-  if (!player.gears.length) { container.innerHTML='<p class="sub">ギアはまだありません。宝箱や古代哨戒機から回収できます。</p>'; return; }
+  if (!player.gears.length) { container.innerHTML='<p class="sub">はじまりの草島を掘って、埋もれた機構を探しましょう。回収したギアはここで搭載できます。</p>'; return; }
   container.innerHTML=player.gears.map((gear)=>{ const trait=GEAR_TRAITS.find((entry)=>entry.id===gear.trait); const equipped=player.equippedGearIds.includes(gear.id); return '<article class="gear-card"><strong>'+gear.name+'</strong><span>'+trait.description+' ／ 重量'+gear.weight+'</span><button data-gear="'+gear.id+'">'+(equipped?'解除する':'搭載する')+'</button></article>'; }).join("");
   for (const button of container.querySelectorAll("[data-gear]")) button.addEventListener("click",()=>toggleGear(button.dataset.gear));
 }

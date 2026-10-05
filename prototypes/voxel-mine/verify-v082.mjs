@@ -27,7 +27,7 @@ async function fresh() {
 
 try {
   await fresh();
-  check('Version and fuel progression are v0.8.2 and 20/30/45/65', await page.evaluate(() => GAME_VERSION === 'v0.8.2' && JSON.stringify(FUEL_LEVELS.map(level => level.capacity)) === '[20,30,45,65]' && fuelCapacity() === 20));
+  check('Version and fuel progression are v0.8.3 and 20/30/45/65', await page.evaluate(() => GAME_VERSION === 'v0.8.3' && JSON.stringify(FUEL_LEVELS.map(level => level.capacity)) === '[20,30,45,65]' && fuelCapacity() === 20));
   check('Port and result contain no flavor-note sections', await page.evaluate(() => !document.getElementById('discovery-notes') && !document.getElementById('result-notes')));
 
   const portTreasure = await page.evaluate(() => {
@@ -97,4 +97,4 @@ try {
 } finally { await browser.close(); }
 
 if (failures.length) { console.error(`\n${failures.length} failed: ${failures.join(', ')}`); process.exitCode = 1; }
-else console.log('\nAll voxel-mine v0.8.2 fuel and flavor checks passed.');
+else console.log('\nAll voxel-mine v0.8.3 fuel and flavor checks passed.');
