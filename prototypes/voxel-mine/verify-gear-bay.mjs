@@ -1,0 +1,55 @@
+import {createRequire} from 'node:module';
+import {mkdir} from 'node:fs/promises';
+import {pathToFileURL} from 'node:url';
+import path from 'node:path';
+const require=createRequire(import.meta.url);
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE_PATH||'playwright');
+const browser=await chromium.launch({executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+const page=await browser.newPage({viewport:{width:390,height:844}});
+const errors=[];page.on('pageerror',error=>errors.push(error.message));
+const check=(name,value)=>{if(!value)throw Error(name);console.log('PASS '+name);};
+await mkdir('artifacts/voxel-mine',{recursive:true});
+try {
+  await page.goto(pathToFileURL(path.resolve('prototypes/voxel-mine/index.html')).href+'?seed=85085&fresh=gear-bay');
+  await page.waitForFunction(()=>typeof sketchIcon==='function');
+  const initial=await page.evaluate(()=>{resetGame();return {denied:!debugCraft('gearBay'),capacity:player.gearCapacity,slots:gearSlotLimit()};});
+  check('Fresh capacity is 6/3 and upgrade requires resources',initial.denied&&initial.capacity===6&&initial.slots===3);
+  const upgraded=await page.evaluate(()=>{
+    player.coins=100;player.inventory.scrap=12;player.inventory.copper=6;
+    const first=debugCraft('gearBay'),middle={capacity:player.gearCapacity,slots:gearSlotLimit(),coins:player.coins,scrap:have('scrap')};
+    const second=debugCraft('gearBay'),maxed=!debugCraft('gearBay');
+    for(let n=0;n<6;n++)debugGrantGear('fuel');
+    const equipped=player.gears.map(gear=>debugToggleGear(gear.id));
+    debugSave();return {first,middle,second,maxed,equipped,capacity:player.gearCapacity,slots:gearSlotLimit(),coins:player.coins,scrap:have('scrap'),copper:have('copper')};
+  });
+  check('Capacity and slots upgrade twice with exact costs',upgraded.first&&upgraded.middle.capacity===9&&upgraded.middle.slots===4&&upgraded.middle.coins===70&&upgraded.middle.scrap===8&&upgraded.second&&upgraded.maxed&&upgraded.capacity===12&&upgraded.slots===6&&upgraded.coins===10&&upgraded.scrap===0&&upgraded.copper===0);
+  check('Expanded bay equips six weight-2 gears',upgraded.equipped.every(Boolean));
+  await page.reload();await page.waitForFunction(()=>typeof sketchIcon==='function');
+  check('Expanded loadout survives schema 11 reload',await page.evaluate(()=>player.gearCapacity===12&&player.equippedGearIds.length===6&&gearSlotLimit()===6));
+  await page.evaluate(()=>{debugDepart(1);debugSave();});
+  await page.reload();await page.waitForFunction(()=>typeof sketchIcon==='function');
+  check('Six fuel gears and 56 fuel survive expedition reload',await page.evaluate(()=>expedition.phase==='exploring'&&expedition.fuel===56&&player.gearCapacity===12));
+  check('Capacity upgrades are port-only',await page.evaluate(()=>!debugCraft('gearBay')));
+  const notification=await page.evaluate(()=>{
+    gainGear('test-one');gainGear('test-two');gainMaterial('copper',2);gainMaterial('scrap',1);
+    const stack=document.getElementById('gear-find-stack'),material=document.getElementById('material-find');
+    return {count:stack.children.length,icons:stack.querySelectorAll('svg').length,text:stack.textContent,material:material.textContent,materialIcons:material.querySelectorAll('svg').length,pointer:getComputedStyle(stack).pointerEvents};
+  });
+  check('Gear notifications persist separately from materials with icons',notification.count===2&&notification.icons===2&&notification.pointer==='none'&&notification.text.includes('重量')&&notification.material.includes('+2')&&notification.materialIcons===2);
+  await page.screenshot({path:'artifacts/voxel-mine/gear-discovery-v085.png'});
+  const freshFlags=await page.evaluate(()=>{debugSave();return player.gears.slice(-2).every(gear=>gear.isNew);});
+  check('Acquired gear has persisted new marker',freshFlags);
+  await page.evaluate(()=>{debugReturn();debugAcknowledgeResult();});
+  check('Port displays new markers and sketch icons',await page.evaluate(()=>document.querySelectorAll('.new-gear').length===2&&document.querySelectorAll('.gear-title svg').length===player.gears.length));
+  await page.setViewportSize({width:375,height:667});
+  check('Mobile port does not overflow horizontally',await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await page.screenshot({path:'artifacts/voxel-mine/gear-bay-v085.png',fullPage:true});
+  await page.evaluate(()=>{resetGame();player.coins=30;player.inventory.scrap=4;renderCraft();renderBase();});
+  await page.locator('#gear-bay-upgrade').scrollIntoViewIfNeeded();
+  await page.screenshot({path:'artifacts/voxel-mine/gear-bay-upgrade-v085.png'});
+  await page.locator('#btn-upgrade-gear-bay').click();
+  check('Visible port upgrade button expands bay',await page.evaluate(()=>player.gearCapacity===9));
+  const marker=await page.evaluate(()=>{const gear=gainGear('mark-test');renderBase();const before=gear.isNew;const equipped=debugToggleGear(gear.id);debugSave();return {before,equipped,after:gear.isNew};});
+  check('New marker clears on equipping',marker.before&&marker.equipped&&marker.after===false);
+  check('No runtime errors',errors.length===0);
+} finally {await browser.close();}

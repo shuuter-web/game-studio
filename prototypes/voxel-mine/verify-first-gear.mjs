@@ -16,7 +16,7 @@ try {
     debugMineCell(cellIndex(2,2,2));debugMineCell(cellIndex(3,2,2));
     const before=player.gears.length;
     debugMineCell(cellIndex(4,2,2));
-    const gear={...player.gears[0]},notification=document.getElementById('flavor-toast').textContent;
+    const gear={...player.gears[0]},notification=document.getElementById('gear-find-stack').textContent;
     debugMineCell(cellIndex(5,2,2));debugSave();
     return {before,gear,notification,count:player.gears.length,haul:expedition.gearIds,fuel:expedition.fuel,equipped:player.equippedGearIds.length};
   });
