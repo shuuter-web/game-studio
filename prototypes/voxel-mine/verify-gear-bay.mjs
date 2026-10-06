@@ -40,7 +40,7 @@ try {
   const freshFlags=await page.evaluate(()=>{debugSave();return player.gears.slice(-2).every(gear=>gear.isNew);});
   check('Acquired gear has persisted new marker',freshFlags);
   await page.evaluate(()=>{debugReturn();debugAcknowledgeResult();});
-  check('Port displays new markers and sketch icons',await page.evaluate(()=>document.querySelectorAll('.new-gear').length===2&&document.querySelectorAll('.gear-title svg').length===player.gears.length));
+  check('Port displays new markers and sketch icons',await page.evaluate(()=>document.querySelectorAll('.new-gear').length===2&&document.querySelectorAll('.gear-card .gear-art').length===player.gears.length));
   await page.setViewportSize({width:375,height:667});
   check('Mobile port does not overflow horizontally',await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   await page.screenshot({path:'artifacts/voxel-mine/gear-bay-v085.png',fullPage:true});

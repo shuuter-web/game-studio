@@ -1,4 +1,4 @@
-// Voyage Codex acceptance and regression checks for v0.8.5.
+// Voyage Codex acceptance and regression checks for v0.8.6.
 import { createRequire } from 'node:module';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -43,7 +43,7 @@ async function layout() {
 
 try {
   await fresh();
-  check('Version is v0.8.5', await page.evaluate(() => GAME_VERSION === 'v0.8.5'));
+  check('Version is v0.8.6', await page.evaluate(() => GAME_VERSION === 'v0.8.6'));
   check('Codex entrance is in the port screen only', await page.evaluate(() => {
     const button = document.getElementById('btn-open-codex');
     return button && button.closest('#base') && !button.closest('#game') && !button.closest('#result');
@@ -139,4 +139,4 @@ try {
 } finally { await browser.close(); }
 
 if (failures.length) { console.error(`\n${failures.length} failed: ${failures.join(', ')}`); process.exitCode = 1; }
-else console.log('\nAll voxel-mine v0.8.5 voyage codex checks passed.');
+else console.log('\nAll voxel-mine v0.8.6 voyage codex checks passed.');
