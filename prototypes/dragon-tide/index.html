@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.5.2";
+const GAME_VERSION = "v2.5.3";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2362,8 +2362,115 @@ function applyImpactToMover(m, fromX, fromY, impulse) {
   const sp = splitImpact(dx / d, dy / d, impulse,
                          impactResistOf(m.def), impactMassOf(m.def), axis);
   const knock = sp.knock, nx = sp.nx, ny = sp.ny;
-  if (sp.dmg > 0) damageMover(m, sp.dmg, fromX, fromY);
+  if (sp.dmg > 0) {
+    // 当たった面（中心ではなく発生源を向いた縁）から出す
+    const rr = m.def.radius || 20;
+    spawnImpactAbsorbFx(m.wx - (dx / d) * rr, m.wy - (dy / d) * rr, dx / d, dy / d, sp.dmg);
+    damageMover(m, sp.dmg, fromX, fromY);
+  }
   if (knock > 0 && m.alive) pushMover(m, nx, ny, knock);
+}
+
+// v2.5.3: 衝撃がノックバックに逃げられず**ダメージとして入った**ときの印。
+// 押せる相手は弾かれるので見ただけで分かるが、押せない相手（建物・線路の車両）は
+// 数字が増えるだけで、普通のダメージと区別が付かなかった。
+// 「逃げ場が無くて受け止めた」ことを絵で出す＝突っ込む意味が画面で読める。
+// 色は KNOCKBACK_MARK_COLOR と同系の淡い水色で、**この色＝衝撃**に統一する。
+const IMPACT_FX_DURATION = 0.34;
+const IMPACT_FX_MIN_DMG  = 1.5;   // これ未満の小突きでは出さない（画面が散らかる）
+const MAX_IMPACT_FX      = 40;
+const impactFxList = [];
+
+/**
+ * @param {number} x,y    受け止めた点（相手の中心ではなく**当たった面**）
+ * @param {number} nx,ny  衝撃の向き（発生源→相手。正規化済み）
+ * @param {number} dmg    実際に入った衝撃ダメージ。これで大きさが決まる
+ */
+function spawnImpactAbsorbFx(x, y, nx, ny, dmg) {
+  if (dmg < IMPACT_FX_MIN_DMG) return;
+  if (impactFxList.length >= MAX_IMPACT_FX) impactFxList.shift();
+  impactFxList.push({
+    x, y, ang: Math.atan2(ny, nx),
+    r: Math.min(84, 22 + dmg * 2.8),
+    life: IMPACT_FX_DURATION,
+    seed: fxRandom() * Math.PI * 2,
+  });
+  // 既存の破片（暖色）は**足さない**。この game はほぼ暖色なので、
+  // 冷たい白〜水色のままにしておくほうが「普通の被弾ではない」と一目で分かる
+  // （混ぜたら中心が橙に埋もれて、ただのヒットに見えた）。
+}
+
+function updateImpactFx(dt) {
+  for (let i = impactFxList.length - 1; i >= 0; i--) {
+    impactFxList[i].life -= dt;
+    if (impactFxList[i].life <= 0) impactFxList.splice(i, 1);
+  }
+}
+
+/**
+ * 受け止めた衝撃の描画。**面で跳ね返る**形にしてある（当たった先へ広がるのではなく、
+ * 行き場を失って発生源の側へ戻ってくる）＝「押せなかった」が形で読める。
+ * 竜より下・建物より上。
+ */
+function drawImpactFx() {
+  if (impactFxList.length === 0) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const fx of impactFxList) {
+    const k = 1 - fx.life / IMPACT_FX_DURATION;       // 0→1
+    const e = 1 - (1 - k) * (1 - k) * (1 - k);        // 最初に一気に開いて止まる
+    const fade = (1 - k) * (1 - k);                   // 後半は素早く消す
+    ctx.save();
+    ctx.translate(fx.x, fx.y);
+    ctx.rotate(fx.ang);                               // +x が衝撃の向き（面の奥）
+
+    // ① 跳ね返る波。発生源の側（-x）へ開く弧を2枚、位相をずらして重ねる
+    for (let w = 0; w < 2; w++) {
+      const ee = Math.max(0, e - w * 0.22);
+      if (ee <= 0) continue;
+      ctx.globalAlpha = fade * (w === 0 ? 0.95 : 0.45);
+      ctx.strokeStyle = w === 0 ? "#ffffff" : KNOCKBACK_MARK_COLOR;
+      ctx.lineWidth = (w === 0 ? 4.0 : 2.4) * (0.55 + 0.45 * fade);
+      ctx.beginPath();
+      ctx.ellipse(-fx.r * 0.18 * ee, 0, fx.r * 0.55 * ee, fx.r * 0.95 * ee,
+                  0, Math.PI * 0.38, Math.PI * 1.62);
+      ctx.stroke();
+    }
+
+    // ② 面に沿って左右へ逃げる筋（行き場を失った力の抜け道）
+    ctx.globalAlpha = fade * 0.85;
+    ctx.strokeStyle = KNOCKBACK_MARK_COLOR;
+    ctx.lineWidth = 1 + 2.0 * fade;
+    for (let j = 0; j < 6; j++) {
+      const side = j % 2 === 0 ? 1 : -1;
+      const t = Math.floor(j / 2);
+      const ang = side * (Math.PI * 0.5 + t * 0.30) + Math.sin(fx.seed + j) * 0.07;
+      const r0 = fx.r * 0.30 * e;
+      const r1 = r0 + fx.r * (0.55 + 0.18 * Math.sin(fx.seed + j * 2.1)) * e;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ang) * r0, Math.sin(ang) * r0);
+      ctx.lineTo(Math.cos(ang) * r1, Math.sin(ang) * r1);
+      ctx.stroke();
+    }
+
+    // ③ 当たった点の白熱（最初だけ強く、すぐ落とす）
+    if (k < 0.5) {
+      const f = 1 - k / 0.5;
+      ctx.globalAlpha = f * 0.35;
+      ctx.fillStyle = KNOCKBACK_MARK_COLOR;
+      ctx.beginPath();
+      ctx.arc(0, 0, 3 + fx.r * 0.11 * f, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = f * 0.95;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(0, 0, 1.5 + fx.r * 0.045 * f, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 /**
@@ -2384,10 +2491,21 @@ function applyImpactToBuilding(settlementIdx, impulse, fromX, fromY) {
       const sign = (sp.nx * s.headingX + sp.ny * s.headingY) >= 0 ? 1 : -1;
       s._railRide.vel = (s._railRide.vel || 0) + sign * Math.min(sp.knock, RAIL_PUSH_CAP);
     }
-    if (sp.dmg > 0) damageBuilding(settlementIdx, sp.dmg);
+    if (sp.dmg > 0) {
+      const rr = s.radius || 20;
+      spawnImpactAbsorbFx(s.wx - (dx / d) * rr, s.wy - (dy / d) * rr, dx / d, dy / d, sp.dmg);
+      damageBuilding(settlementIdx, sp.dmg);
+    }
     return;
   }
-  damageBuilding(settlementIdx, impulse * IMPACT_TO_DAMAGE);
+  const dmg = impulse * IMPACT_TO_DAMAGE;
+  if (fromX !== undefined) {
+    const ddx = s.wx - fromX, ddy = s.wy - fromY;
+    const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
+    const rr = s.radius || 20;
+    spawnImpactAbsorbFx(s.wx - (ddx / dd) * rr, s.wy - (ddy / dd) * rr, ddx / dd, ddy / dd, dmg);
+  }
+  damageBuilding(settlementIdx, dmg);
 }
 
 /** 竜へ衝撃を与える。竜は耐衝撃1（押されるだけでダメージにはならない）。 */
@@ -5424,6 +5542,7 @@ function generateStageLayout(stageIndex) {
   // --- (7) v0.6-p4: 移動敵ユニット（文明別・ステージ数に応じた混成編成） ---
   movers = generateMovers(stageIndex, boss);
   shockwaveFxList.length = 0;
+  impactFxList.length = 0;   // v2.5.3: 前ステージの衝撃の印を持ち越さない
   bombList.length = 0;       // v0.37.1: 前ステージの未炸裂爆弾を持ち越さない
   tongueFxList.length = 0;
   hazards.length = 0;        // v0.42: 前ステージの危険地帯を持ち越さない
@@ -22797,6 +22916,7 @@ function render(now) {
   drawDams();                // v0.43: 堰の見た目
   drawHazardShots();         // v0.63: 危険地帯の見せ弾（誰が撃ったかを見せる）
   drawEmplacements();        // v0.57: 時代兵器の目印（輪の色で種類が分かる）
+  drawImpactFx();            // v2.5.3: 衝撃がダメージとして入った印（淡い水色）
   drawSlashFx();             // v0.8: 緋竜の斬閃 / v0.35: 隼竜の刃翼（銀）
   drawBombs();               // v0.37.1: 爆竜の投下済み爆弾（竜より下＝地面にある）
   drawChargeFx();            // v0.87: 突進（尾・穂先の弧・速度線）。竜より下に敷く
@@ -25900,6 +26020,7 @@ function tick() {
     updateHazardShots(wdt);       // v0.63: 危険地帯の見せ弾（当たり判定なし）
     updateFlood(wdt);             // v0.43: 決壊した堰の洪水（下流の建物を順に沈める）
     updateChainFx(wdt);           // v0.43: 連鎖電撃のFX
+    updateImpactFx(wdt);          // v2.5.3: 衝撃を受け止めた印
     updateMoverRams();            // v0.6-p4: 移動敵への体当たり
     updateBossNova(wdt);          // v0.7: ボスの反発衝撃波
     updateBossArt(wdt);           // v0.57: 首都の大技（文明ごとに技が変わる・予兆つき）
