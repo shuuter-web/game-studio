@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.4.1";
+const GAME_VERSION = "v2.5.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2242,30 +2242,225 @@ function chargeDamageReductionNow() {
   return chargeCount > 0 ? effChargeDamageReduction() * chargeLevel : 0;
 }
 
-/** 移動敵を弾き飛ばす（突進中の体当たりから呼ぶ）。減衰する速度チャネルに積む。 */
-function applyMoverKnockback(m, fromX, fromY, speed) {
-  if (speed <= 0 || !m.alive) return;
-  // v1.7.0: 巨獣の関節パーツだけは押せる。バネが元の位置へ戻すので配置は壊れない
-  if (m.def && (m.def.part === "arm" || m.def.part === "leg")) {
-    nudgeBehemothPart(m, fromX, fromY, speed / BEHEMOTH_PART_KNOCK_SCALE);
-    return;
+// =====================================================================
+// v2.5.0: 衝撃の共通システム（**押す攻撃を足すときはまずここを読む**）
+//
+// 攻撃は **通常ダメージ** と **衝撃力** の2本立て。どちらも攻撃側が持つ。
+// 衝撃力は受け手の性質で「ノックバック」と「追加ダメージ」に振り分けられる。
+//
+//   受け手が持つもの
+//     重さ       … 同じ衝撃力でも重いほど飛ばない（impactMassOf）
+//     耐衝撃性能 … 0〜1。**自由な成分のうちノックバックに回す割合**。
+//                  残りはダメージになる。建物は0なので衝撃を全部ダメージで受ける
+//     自由な軸   … 省略可。1軸しか自由でないものは、その軸に沿った成分だけが
+//                  ノックバックになり、直交成分はダメージになる（線路の車両）
+//     戻すバネ   … 省略可。あるべき位置へ戻る力。多パーツ敵が「揺れて戻る」
+//
+// 「押せない」と「衝撃が痛い」を1つの数字に束ねないのがこの形の肝。
+// 自由な軸が0本＝建物、1本＝線路の車両、2本＝普通の敵と竜、
+// 2本＋バネ＝多パーツ敵の胴、と**軸の本数だけ**で4通りが書ける。
+// 以前はこれを applyMoverKnockback の中のハードコード分岐3本でやっていた。
+// =====================================================================
+
+// 衝撃力1あたりのダメージ。**唯一の換算係数**なので、建物の硬さを触るならここ。
+// 0.05 は「突進(衝撃力240)が建物に12ダメージ＝体当たり33.6の約4割増し」の重み。
+const IMPACT_TO_DAMAGE = 0.05;
+
+// 多パーツ敵の胴が「あるべき位置」へ戻るバネ。
+// 揺れは**位置そのものではなく「ずれ」**で持つ（下の updateMovers を参照）。
+// 戻す力がある＝連結が緩い、という手触りで、押しても編成が壊れない。
+const IMPACT_SHOVE_SPRING = 55;    // 戻す力。大きいほど素早く戻る（周期が短くなる）
+const IMPACT_SHOVE_DAMP   = 5.5;   // 揺れの収まり。小さいとぶらぶら揺れ続ける
+const IMPACT_SHOVE_CAP    = 40;    // ずれの上限(px)。ここを超えると見た目が分解する
+// 揺れの倍率。**重さで割った後に掛け直す**のは、揺れが「質量ぶんの移動」ではなく
+// **連結の遊び（サスペンションの沈み込み）**だから。巨獣のコアは重さ110あるので、
+// 素のままだと突進1発で4pxしか揺れず、揺れていることが画面で読めない（実測）。
+const IMPACT_SHOVE_GAIN   = 6.0;
+// 部品を叩いたとき親へ伝わる割合。腕を殴るとコアごと揺れる＝連結が緩い手触り
+const IMPACT_PART_TO_PARENT = 0.35;
+
+/**
+ * 胴が揺れる敵か。巨獣のコアと多脚戦車の胴——**部品がぶら下がっている親**だけ。
+ * 普通の敵は押されたらその場所に留まるのが正しいので、バネを付けない。
+ */
+function hasImpactShove(def) {
+  return !!def && (def.part === "core" || def.walker === true);
+}
+
+/** 揺れの状態をその場に用意する（springAxis が undefined を触ると NaN になる）。 */
+function initImpactShove(m) {
+  if (m.shoveX === undefined) { m.shoveX = 0; m.shoveY = 0; m.shoveVx = 0; m.shoveVy = 0; }
+}
+
+// 竜の重さ。巌竜だけ重い＝押されにくい（体当たりが主武装なので押し返されると困る）
+const DRAGON_MASS       = 1.0;
+const DRAGON_MASS_HEAVY = 2.5;
+
+/** 受け手の重さ。専用値が無ければHPから導く（v2.5.0 以前と同じ式）。 */
+function impactMassOf(def) {
+  if (!def) return 1;
+  return def.mass ?? Math.max(1, (def.hp || 20) / 20);
+}
+
+/** 耐衝撃性能 0〜1。自由な成分のうちノックバックに回す割合。 */
+function impactResistOf(def) {
+  if (!def) return 0;
+  if (def.impactResist !== undefined) return def.impactResist;
+  // 線路の車両は接線方向には素直に押される（直交成分は impactFreeAxis がダメージに回す）
+  if (isRailVehicle(def)) return 1;
+  // 関節パーツは**自分の足で動かないが押される**（バネが戻すので配置は壊れない）。
+  // ここを def.speed で判定すると速度0のパーツが「建物扱い」になり、
+  // v1.7.0 で入れた「殴った向きへ拳が逃げる」が丸ごと消える（実測で押し0になった）。
+  if (def.part === "arm" || def.part === "leg") return 1;
+  // 動かない設置物・門は建物と同じ扱い（押しても配置の意味が壊れるだけ）
+  return def.speed ? 1 : 0;
+}
+
+const _impactAxis  = { x: 1, y: 0 };
+const _impactSplit = { knock: 0, dmg: 0, nx: 1, ny: 0 };
+
+/**
+ * 自由に動ける軸を out に入れる（単位ベクトル）。全方向自由なら false。
+ * 線路の車両は向き（headingX/Y）が常に線路の接線なので、それをそのまま使える。
+ */
+function impactFreeAxis(m, out) {
+  if (!m.def || !isRailVehicle(m.def)) return false;
+  out.x = m.headingX; out.y = m.headingY;
+  return true;
+}
+
+/**
+ * 衝撃を「ノックバック速度」と「追加ダメージ」に分ける。
+ * axis を渡すと、その軸に沿った成分だけがノックバックになり、直交成分はダメージになる。
+ * 重さは平方根で効かせる（素の割り算だと軽い敵が画面外まで飛ぶ。
+ * 上限が無かった頃に実測で3秒9,676px吹き飛んだ事故があるので、ここは弱めておく）。
+ */
+function splitImpact(dirX, dirY, impulse, resist, mass, axis) {
+  let kx = dirX, ky = dirY, free = impulse, blocked = 0;
+  if (axis) {
+    const t = dirX * axis.x + dirY * axis.y;          // 接線成分（符号つきcos）
+    free    = Math.abs(t) * impulse;
+    blocked = Math.sqrt(Math.max(0, 1 - t * t)) * impulse;
+    const sign = t >= 0 ? 1 : -1;
+    kx = axis.x * sign; ky = axis.y * sign;
   }
-  if (isRailVehicle(m.def)) return;   // v2.0.0: 線路から押し出せない
-  // 動かない敵（設置物・門など）は押さない。押すと配置の意味が壊れる
-  if (!m.def || !m.def.speed) return;
+  _impactSplit.knock = free * resist / Math.sqrt(mass);
+  _impactSplit.dmg   = (blocked + free * (1 - resist)) * IMPACT_TO_DAMAGE;
+  _impactSplit.nx = kx; _impactSplit.ny = ky;
+  return _impactSplit;
+}
+
+/**
+ * 移動敵へ衝撃を与える。**通常ダメージとは別**に呼ぶこと
+ * （この関数が入れるのは衝撃ぶんのダメージだけ）。
+ */
+function applyImpactToMover(m, fromX, fromY, impulse) {
+  if (!m.alive || impulse <= 0) return;
   const dx = m.wx - fromX, dy = m.wy - fromY;
   const d  = Math.sqrt(dx * dx + dy * dy) || 1;
-  // 重い敵ほど飛びにくい（HPを質量の代わりに使う。専用の質量値は持たせない）
-  const mass = Math.max(1, (m.def.hp || 20) / 20);
-  const v = speed / Math.sqrt(mass);
-  m.knockVx = (m.knockVx || 0) + (dx / d) * v;
-  m.knockVy = (m.knockVy || 0) + (dy / d) * v;
+  const axis = impactFreeAxis(m, _impactAxis) ? _impactAxis : null;
+  const sp = splitImpact(dx / d, dy / d, impulse,
+                         impactResistOf(m.def), impactMassOf(m.def), axis);
+  const knock = sp.knock, nx = sp.nx, ny = sp.ny;
+  if (sp.dmg > 0) damageMover(m, sp.dmg, fromX, fromY);
+  if (knock > 0 && m.alive) pushMover(m, nx, ny, knock);
+}
+
+/**
+ * 建物へ衝撃を与える。建物は耐衝撃0なので基本は全部ダメージ。
+ * ただし**線路に乗っているボス**だけは自由な軸が1本あるので、
+ * 線路に沿った成分はダメージではなく進行速度への押しになる。
+ */
+function applyImpactToBuilding(settlementIdx, impulse, fromX, fromY) {
+  if (impulse <= 0) return;
+  const s = settlements[settlementIdx];
+  if (!s || s.fallen) return;
+  if (s._railRide && fromX !== undefined) {
+    const dx = s.wx - fromX, dy = s.wy - fromY;
+    const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+    _impactAxis.x = s.headingX; _impactAxis.y = s.headingY;
+    const sp = splitImpact(dx / d, dy / d, impulse, 1, impactMassOf(s.def) || 1, _impactAxis);
+    if (sp.knock > 0) {
+      const sign = (sp.nx * s.headingX + sp.ny * s.headingY) >= 0 ? 1 : -1;
+      s._railRide.vel = (s._railRide.vel || 0) + sign * Math.min(sp.knock, RAIL_PUSH_CAP);
+    }
+    if (sp.dmg > 0) damageBuilding(settlementIdx, sp.dmg);
+    return;
+  }
+  damageBuilding(settlementIdx, impulse * IMPACT_TO_DAMAGE);
+}
+
+/** 竜へ衝撃を与える。竜は耐衝撃1（押されるだけでダメージにはならない）。 */
+function applyImpactToBoid(i, nx, ny, impulse) {
+  if (impulse <= 0) return;
+  const mass = boidSpecial[i] === SPECIAL_HEAVY ? DRAGON_MASS_HEAVY : DRAGON_MASS;
+  applyKick(i, nx, ny, impulse / Math.sqrt(mass));
+}
+
+/** 距離指定版（既存の push 距離のチューニング値をそのまま渡せる）。 */
+function applyImpactToBoidDist(i, nx, ny, dist) {
+  applyImpactToBoid(i, nx, ny, kickSpeedForDistance(dist));
+}
+
+// 線路の車両を押したときに編成の速度へ入る量の上限（px/秒）。
+// 無制限だと群れ全員の体当たりが同じフレームで積まれて編成が飛ぶ
+const RAIL_PUSH_CAP = 90;
+
+/**
+ * 線路の上の車両を押す。押せるのは線路に沿った向きだけ。
+ * 編成（列車砲列）とボス（司令列車）は1本の速度で動いているので、そこへ足す。
+ * 単体の車両は自分の弧長を進むので、減衰する速度を別に持たせる。
+ */
+function pushRailVehicle(m, nx, ny, v) {
+  const sign = (nx * m.headingX + ny * m.headingY) >= 0 ? 1 : -1;
+  const add  = sign * Math.min(v, RAIL_PUSH_CAP);
+  const train = m.train;
+  if (train) {
+    // 編成は後ろ向きの機関車も居るので、押す向きは**編成の進行基準**で揃える
+    train.vel = (train.vel || 0) + add * (m.def.railTail ? -1 : 1);
+    return;
+  }
+  if (m._railRide) { m._railRide.vel = (m._railRide.vel || 0) + add; return; }
+  m.railKickV = (m.railKickV || 0) + add;
+}
+
+/**
+ * ノックバックぶんを実際に動かす。**どう動くかは受け手の構造で変わる**:
+ *   関節パーツ … バネで戻る押し込み（巨獣の腕・多脚戦車の足）
+ *   それ以外   … 減衰する速度チャネル（押されたぶんだけ位置がずれる）
+ */
+function pushMover(m, nx, ny, v) {
+  if (m.def && (m.def.part === "arm" || m.def.part === "leg")) {
+    m.fvx += nx * v; m.fvy += ny * v;
+    m.evx += nx * v * 0.5; m.evy += ny * v * 0.5;   // 肘にも半分＝腕全体がしなる
+    // 部品を叩いたぶんは親にも伝える（腕を殴るとコアごと揺れる）
+    const parent = m.parent;
+    if (parent && parent.alive && hasImpactShove(parent.def)) {
+      pushMover(parent, nx, ny, v * IMPACT_PART_TO_PARENT);
+    }
+    return;
+  }
+  // 胴が揺れる敵は「ずれ」に積む。位置そのものを押すと、ぶら下がっている
+  // 腕や脚の基準がまるごと動いてしまい、歩き方・振りかぶりが壊れる
+  if (hasImpactShove(m.def)) {
+    initImpactShove(m);
+    m.shoveVx += nx * v * IMPACT_SHOVE_GAIN;
+    m.shoveVy += ny * v * IMPACT_SHOVE_GAIN;
+    return;
+  }
+  // v2.5.0: 線路の車両は線路の上しか動けない。接線成分は**編成そのものの速度**へ流す
+  // （v2.3.1 で編成に速度を持たせてあるので受け皿がある）。押して遅らせる／
+  // 背中から押して加速させる、が成立する。
+  if (isRailVehicle(m.def)) {
+    pushRailVehicle(m, nx, ny, v);
+    return;
+  }
+  m.knockVx = (m.knockVx || 0) + nx * v;
+  m.knockVy = (m.knockVy || 0) + ny * v;
 
   // **積み上がりの上限**。updateMoverRams は射程内の竜が全員それぞれ体当たりするので、
   // 上限が無いと群れ37体が同じフレームで押して 1体あたりの37倍の速度になる
   // （実測: 3秒で 9,676px 吹き飛んだ。1体ぶんの想定は数十px）。
-  // 1発ぶんの MOVER_KNOCK_STACK_CAP 倍で頭打ちにして、
-  // 「大群で押すほうが速いが、青天井ではない」に収める。
   const cap = v * MOVER_KNOCK_STACK_CAP;
   const kmag = Math.sqrt(m.knockVx * m.knockVx + m.knockVy * m.knockVy);
   if (kmag > cap) {
@@ -6075,7 +6270,14 @@ function updateRailBoss(dt) {
   if (!boss || boss.fallen) return;
   const line = railLines[boss._railRide.line];
   if (!line) return;
-  boss._railRide.s += RAIL_BOSS_SPEED * dt;
+  // v2.5.0: 押されたぶんは進行速度に足して減衰させる（押して遅らせる／加速させる）
+  const ride = boss._railRide;
+  if (ride.vel) {
+    ride.vel *= Math.exp(-MOVER_KNOCK_DECAY_PER_SEC * dt);
+    if (Math.abs(ride.vel) < 1) ride.vel = 0;
+  }
+  boss._railRide.s += (RAIL_BOSS_SPEED + (ride.vel || 0)) * dt;
+  if (boss._railRide.s < 0) boss._railRide.s += line.len;   // 強く押し戻されて巻き戻った場合
   if (boss._railRide.s >= line.len) boss._railRide.s -= line.len;   // 閉じた輪＝端が無い
   updateRailBossPose(boss);
   if (++movingBuildingGridTick >= MOVING_BUILDING_GRID_INTERVAL) {
@@ -7578,7 +7780,7 @@ function updateLaserStrikes(dt) {
       applyDamageToBoid(i, L.dps * LASER_TICK);
       // 軸の外へ押し出す＝「なぎ払われる」感触。減衰する外力チャネルに乗せる
       const sgn = perp >= 0 ? 1 : -1;
-      applyKickDist(i, -ay * sgn, ax * sgn, 26);
+      applyImpactToBoidDist(i, -ay * sgn, ax * sgn, 26);
     }
   }
 }
@@ -8911,7 +9113,7 @@ function emitShockwave(wx, wy, radius, damage, pushDist) {
       applyDamageToBoid(i, damage);
       const sd = Math.sqrt(sd2) || 1;
       // v0.34.1: 位置を直接ずらすとワープに見えるので、減衰する外力で押す
-      applyKickDist(i, sdx / sd, sdy / sd, pushDist);
+      applyImpactToBoidDist(i, sdx / sd, sdy / sd, pushDist);
     }
   }
   hapticPulse(25);
@@ -9147,7 +9349,7 @@ function behemothSweepHits(m, core) {
     const od = Math.sqrt(ox * ox + oy * oy) || 1;
     kx += (ox / od) * 0.6; ky += (oy / od) * 0.6;
     const kd = Math.sqrt(kx * kx + ky * ky) || 1;
-    applyKickDist(i, kx / kd, ky / kd, BEHEMOTH_SWEEP_PUSH);
+    applyImpactToBoidDist(i, kx / kd, ky / kd, BEHEMOTH_SWEEP_PUSH);
     spawnCollisionParticles(px[i], py[i]);
   }
 }
@@ -9307,6 +9509,11 @@ function updateMovers(dt) {
       m.headingY = dirY;
     }
 
+    // v2.5.0: 揺れている胴は、**一度あるべき位置へ戻してから**動かす。
+    // こうすると移動・旋回・歩行はすべて揺れを知らないまま回り、
+    // 揺れは最後に足す見た目のずれで済む（m.wx は常に揺れ込みの位置）。
+    if (m.shoveX) { m.wx -= m.shoveX; m.wy -= m.shoveY; }
+
     // v0.61: 画面外から来る増援は、群れに近づくまで行軍速度で走る
     const moveSpeed = laserLocked ? 0
       : def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
@@ -9322,6 +9529,21 @@ function updateMovers(dt) {
       m.knockVx *= kd;
       m.knockVy *= kd;
       if (Math.abs(m.knockVx) < 1 && Math.abs(m.knockVy) < 1) { m.knockVx = 0; m.knockVy = 0; }
+    }
+
+    // v2.5.0: 揺れを1ステップ進めて足し直す。目標はいつでも「ずれ0」＝あるべき位置。
+    if (m.shoveVx || m.shoveX) {
+      springAxis(m, "shoveX", "shoveVx", 0, IMPACT_SHOVE_SPRING, IMPACT_SHOVE_DAMP, dt);
+      springAxis(m, "shoveY", "shoveVy", 0, IMPACT_SHOVE_SPRING, IMPACT_SHOVE_DAMP, dt);
+      const sm = Math.sqrt(m.shoveX * m.shoveX + m.shoveY * m.shoveY);
+      if (sm > IMPACT_SHOVE_CAP) {
+        m.shoveX = m.shoveX / sm * IMPACT_SHOVE_CAP;
+        m.shoveY = m.shoveY / sm * IMPACT_SHOVE_CAP;
+      }
+      if (sm < 0.3 && Math.abs(m.shoveVx) < 1 && Math.abs(m.shoveVy) < 1) {
+        m.shoveX = 0; m.shoveY = 0; m.shoveVx = 0; m.shoveVy = 0;
+      }
+      m.wx += m.shoveX; m.wy += m.shoveY;
     }
 
     // 地形（岩山）は移動敵も回り込む（押し出しスライド）。飛行ユニットは無視。
@@ -9764,7 +9986,7 @@ function updateBossNova(dt) {
     // 中心に近いほど強く弾き飛ばす。v0.34.1: 位置変位＋速度上書きをやめ、
     // 減衰する外力に一本化（ワープに見えず、押し出されて戻ってくる動きになる）。
     const pushDist = BOSS_NOVA_PUSH_MIN + (1 - d / BOSS_NOVA_RADIUS) * 90;
-    applyKickDist(i, nx, ny, pushDist);
+    applyImpactToBoidDist(i, nx, ny, pushDist);
   }
   triggerFlash("rgba(255,140,40,0.18)", 0.15);
   triggerShake(5, 0.3);   // v0.8: ノヴァの衝撃を画面でも伝える
@@ -10423,7 +10645,9 @@ function updateMoverRams() {
       const ramDamage = baseRam * chargeDamageMultFor(i) * consumeWakeCharge(i);
       const ramKnock  = chargeKnockbackFor(i);
       damageMover(m, ramDamage, px[i], py[i]);
-      if (ramKnock > 0) applyMoverKnockback(m, px[i], py[i], ramKnock);
+      // v2.5.0: 衝撃は通常ダメージとは別チャネル。受け手の耐衝撃性能と自由な軸で
+      // ノックバックと追加ダメージに振り分けられる
+      if (ramKnock > 0) applyImpactToMover(m, px[i], py[i], ramKnock);
       // v0.87: 突進中は止まらない。轢きながら進むのが突進の見せ場なので、
       // ここでヒットストップを入れると敵の列で群れが減速し、自分で突進を解除してしまう
       boidHitStopTimer[i]      = (boidChargeOn[i] && chg().plowThrough) ? 0 : HITSTOP_DURATION;
@@ -10674,7 +10898,7 @@ function walkerStomp(leg) {
     if (d2 > r2) continue;
     applyDamageToBoid(i, WALKER_STOMP_DMG * fer);
     const d = Math.sqrt(d2) || 1;
-    applyKickDist(i, dx / d, dy / d, WALKER_STOMP_PUSH);
+    applyImpactToBoidDist(i, dx / d, dy / d, WALKER_STOMP_PUSH);
     hit++;
   }
   // 土煙は当たっていなくても出す（踏んだ事実が見えないと避ける学習ができない）
@@ -10701,8 +10925,15 @@ function updateWalkerLeg(leg, dt) {
   // 足を置きたい場所＝付け根の外側。進んでいるぶんだけ**前に置く**ので、
   // 歩幅が速度に比例して伸びる（遅いとちょこちょこ、速いと大股になる）。
   const spd = (hull.def.speed || 0) * (hull.speedMult ?? 1);
-  const tgtX = hull.wx + Math.cos(a) * WALKER_STRIDE_R + hull.headingX * spd * WALKER_STEP_LEAD;
-  const tgtY = hull.wy + Math.sin(a) * WALKER_STRIDE_R + hull.headingY * spd * WALKER_STEP_LEAD;
+  // v2.5.0: **着地目標だけは揺れを引いた位置から計算する**。
+  // 揺れ込みの位置で計算すると、胴が WALKER_STEP_TRIGGER(62px) ぶん揺れただけで
+  // 6本全部が踏み替えを始め、v1.9.0 で潰した「足がせわしない」が戻る。
+  // 付け根(hipX/hipY)は揺れ込みのままなので、胴が揺れると脚が引きずられ、
+  // 足は地面に残って踏ん張る——という見え方になる。
+  const bx = hull.wx - (hull.shoveX || 0);
+  const by = hull.wy - (hull.shoveY || 0);
+  const tgtX = bx + Math.cos(a) * WALKER_STRIDE_R + hull.headingX * spd * WALKER_STEP_LEAD;
+  const tgtY = by + Math.sin(a) * WALKER_STRIDE_R + hull.headingY * spd * WALKER_STEP_LEAD;
 
   if (leg.stepT >= 1) {
     const dx = tgtX - leg.plantX, dy = tgtY - leg.plantY;
@@ -11237,7 +11468,14 @@ function updateRailMover(m, dt) {
   if (m.railTurn > 0) {
     m.railTurn = Math.max(0, m.railTurn - dt);
   } else {
-    advanceRail(m, line, def.speed * (m.speedMult ?? 1) * m.railDir * dt);
+    // v2.5.0: 押されたぶん(railKickV)は進行とは別に弧長へ乗せ、減衰で収まる
+    let step = def.speed * (m.speedMult ?? 1) * m.railDir;
+    if (m.railKickV) {
+      step += m.railKickV;
+      m.railKickV *= Math.exp(-MOVER_KNOCK_DECAY_PER_SEC * dt);
+      if (Math.abs(m.railKickV) < 1) m.railKickV = 0;
+    }
+    advanceRail(m, line, step * dt);
   }
   railPointAt(railLines[m.railLine], m.railS, _railPt);
   m.wx = _railPt.x; m.wy = _railPt.y;
@@ -11288,7 +11526,7 @@ function updateRailRam(m, dt) {
     if (boidCollisionCooldown[i] > 0) continue;
     applyDamageToBoid(i, ram.damage * fer);
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    applyKickDist(i, dx / d, dy / d, ram.push);
+    applyImpactToBoidDist(i, dx / d, dy / d, ram.push);
     boidCollisionCooldown[i] = COLLISION_COOLDOWN;
     spawnCollisionParticles(px[i], py[i]);
   }
@@ -11354,6 +11592,7 @@ function spawnRailTrainOnLine(lineIdx) {
     aimTimer: random() * RAIL_AIM_INTERVAL, targetS: 0,
     respawn: 0, dead: false,
   };
+  for (const u of units) u.train = train;   // v2.5.0: 押されたとき編成の速度へ流すための逆引き
   train.kind        = "railTrain";
   train.update      = updateRailTrainGroup;
   train.onDestroyed = onRailTrainDestroyed;
@@ -14065,7 +14304,7 @@ function applyProjectileKnockback(boidIdx, projIdx) {
   // 打ち消されるため）、ワープして見えて不自然だった。
   // 外力チャネルなら操舵に消されず、かつ連続的に動くので両方の問題が解ける。
   if (projKind[projIdx] === 2) {
-    applyKickDist(boidIdx, nx, ny, BOSS_SHOT_KNOCKBACK_DIST);
+    applyImpactToBoidDist(boidIdx, nx, ny, BOSS_SHOT_KNOCKBACK_DIST);
     return;
   }
 
@@ -14075,7 +14314,7 @@ function applyProjectileKnockback(boidIdx, projIdx) {
   const knockbackSpeed = projKind[projIdx] === 1
     ? CATAPULT_KNOCKBACK_SPEED
     : ARROW_KNOCKBACK_SPEED;
-  applyKick(boidIdx, nx, ny, knockbackSpeed);
+  applyImpactToBoid(boidIdx, nx, ny, knockbackSpeed);
 }
 
 function applyAoeProjectileDamage(wx, wy, aoeR, damage) {
@@ -14282,6 +14521,11 @@ function updateCollisionAttacks(dt) {
             : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i) * incomingDamageMult(s);
       s.hp -= collisionDmg;
       reportDamage(s, s.wx, s.wy, collisionDmg);
+      // v2.5.0: 突進の衝撃力。建物は耐衝撃0＝逃げ場が無いので全部ダメージになる。
+      // **通常ダメージとは別勘定**で、ここで初めて建物が「押せない代償」を払う。
+      // s.hp を直に引いた直後なので、陥落判定はこの後の共通処理に任せる
+      // （applyImpactToBuilding は damageBuilding 経由で自分でも陥落を見る）。
+      if (!s.fallen && s.hp > 0) applyImpactToBuilding(sIdx, chargeKnockbackFor(i), px[i], py[i]);
 
       // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）。
       // v0.33: 攻撃の fireStun（硬直）が長ければそちらを使う
