@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.5.0";
+const GAME_VERSION = "v2.5.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7217,6 +7217,13 @@ const MOVER_DEFS = {
     name: "behemoth_core", sprite: "behemoth_core", part: "core", elite: true, showHpBar: true,
     hp: 2200, speed: 18, xp: 600, eggDrop: 8, radius: 50,
     color: "#3a2a2a", glowColor: "#ff6020", moveType: "loop",
+    // v2.5.1: 向きの角速度に上限（Shooter判定「旋回能力が高すぎて腕に攻撃できない。1/3くらい」）。
+    // 以前は上限が無く、コアは毎フレーム群れの方向を向いていた（実測32.1度/秒）。
+    // 肩は向きの真横に付くので、**コアが群れを向く限り腕は必ず群れの反対側へ逃げる**。
+    // 0.19rad/s＝10.9度/秒 で、実測の約1/3。
+    // turnRate ではなく headingRate なのは、turnRate だと「向いている方向にしか
+    // 進めない」までセットで付いてきて、巨獣が近づくのをやめて遠巻きに回り出すため。
+    headingRate: 0.19,
     attack: { type: "fan", interval: 2.2, count: 5, damage: 3, speed: 90, range: 520 },
     behemothReward: 60,   // コア撃破の竜晶ボーナス
   },
@@ -8983,6 +8990,12 @@ const _pendingMovers = [];
 // 肩はコアの**絵の縁**に置く。中心寄り（40）だと関節板が3枚ともコアの絵の下に
 // 隠れてしまい、腕が繋がって見えなかった（実機で確認）。
 const BEHEMOTH_SHOULDER_R        = 76;   // コア中心から肩までの距離
+// v2.5.1: 肩と拳を**前寄り**に出す角度（コアの向きからの開き・rad）。
+// 以前はどちらも ±90度＝真横に固定していた。コアは常に群れを向くので、
+// 真横だと腕は必ず群れの反対側へ逃げ、実測で腕は群れから241px（コア自身の190pxより遠い）、
+// 受けるダメージは全体の12パーセントしかなかった（＝腕を狙えない。Shooter判定）。
+const BEHEMOTH_SHOULDER_SPREAD   = Math.PI / 2;
+const BEHEMOTH_ARM_IDLE_SPREAD   = Math.PI / 2;
 const BEHEMOTH_ARM_ORBIT         = 88;   // 平常時、肩から拳までの距離
 const BEHEMOTH_ELBOW_BEND        = 54;   // 腕が縮んだとき肘が外へ張り出す量
 // バネ係数。k が復元の強さ、damp が減衰。k=300/damp=11 で減衰比 0.3 前後＝
@@ -9197,11 +9210,13 @@ function updateBehemothArm(m, dt) {
   const t = breathTime;
   // 肩はコアの脇（進行方向±90度）に固定。コアが回頭すれば腕ごと振り回される。
   const coreAng = Math.atan2(core.headingY, core.headingX);
-  const shAng = coreAng + m.armSide * (Math.PI / 2);
+  const shAng = coreAng + m.armSide * BEHEMOTH_SHOULDER_SPREAD;
   m.shX = core.wx + Math.cos(shAng) * BEHEMOTH_SHOULDER_R;
   m.shY = core.wy + Math.sin(shAng) * BEHEMOTH_SHOULDER_R;
 
-  const idleAng = shAng + Math.sin(t * 0.8 + m.swayPhase) * 0.18;
+  // 拳は肩の延長ではなく**さらに前**へ出す（肩の線上に伸ばすと腕全体が真横に寝る）
+  const idleAng = coreAng + m.armSide * BEHEMOTH_ARM_IDLE_SPREAD
+                + Math.sin(t * 0.8 + m.swayPhase) * 0.18;
   const idleLen = BEHEMOTH_ARM_ORBIT + Math.sin(t * 1.1 + m.swayPhase) * 10;
   let restAng = idleAng, restLen = idleLen;
 
@@ -9490,6 +9505,17 @@ function updateMovers(dt) {
       }
       m.headingX = Math.cos(m.faceAngle);
       m.headingY = Math.sin(m.faceAngle);
+    } else if (def.headingRate) {
+      // v2.5.1: **向きだけ**に角速度の上限を掛ける（進む向きは目標のまま）。
+      // def.turnRate は「向いている方向にしか進めない」までセットなので、
+      // これを巨獣に使うと近づくのをやめて遠巻きに回り始める（実測で腕に届く時間が
+      // 2パーセント→0パーセントに悪化した）。鈍くしたいのは**向きだけ**。
+      const cur  = Math.atan2(m.headingY, m.headingX);
+      const diff = wrapAngle(Math.atan2(dirY, dirX) - cur);
+      const maxTurn = def.headingRate * dt;
+      const next = cur + Math.max(-maxTurn, Math.min(maxTurn, diff));
+      m.headingX = Math.cos(next);
+      m.headingY = Math.sin(next);
     } else if (def.turnRate) {
       // 船・車両: 旋回角速度に上限。**向いている方向にしか進めない**ので大回りになる
       const cur  = Math.atan2(m.headingY, m.headingX);
