@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.6.1";
+const GAME_VERSION = "v2.6.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10817,6 +10817,29 @@ function beginMoverDeath(m) {
   }
 }
 
+/**
+ * 残骸の色。**sepia を混ぜて「焼けた鉄」にするのが肝**（鉄路の残骸と同じ作法）。
+ * v2.6.1 までは grayscale と暗くするだけだったが、元の絵がもともと暗い敵
+ * （巨獣のコア・多脚戦車の胴）では見分けが付かず、死んだように見えなかった。
+ * opacity もここに入れる＝描画側が globalAlpha を上書きしても効く。
+ */
+function moverDeathFilter(sink, alpha) {
+  return "grayscale(" + (0.3 + 0.7 * sink).toFixed(2) +
+         ") sepia(" + (0.5 * sink).toFixed(2) +
+         ") brightness(" + (1 - 0.48 * sink).toFixed(2) +
+         ") contrast(1.2) opacity(" + alpha.toFixed(3) + ")";
+}
+
+/**
+ * 手足の見え方。崩れるあいだに暗く沈みながら本体へ畳まれ、崩れ切ると消える
+ * （最後は本体の下に入っているので、残しても団子になるだけ）。
+ */
+function limbDeathVisibility(d) {
+  if (!d) return 1;
+  const look = moverDeathLook(d);
+  return look.alpha * Math.max(0, 1 - look.sink);
+}
+
 /** 沈み具合(0..1)と不透明度。描画側はこれだけ見る。 */
 function moverDeathLook(d) {
   const fadeStart = DEATH_COLLAPSE + DEATH_HOLD;
@@ -10830,6 +10853,9 @@ function moverDeathLook(d) {
 function moverDeathSlam(m) {
   const impulse = Math.min(DEATH_PUSH_CAP, 90 + impactMassOf(m.def) * 2.2);
   const radius  = (m.def.radius || 20) * 4;
+  // 燃える（建物の炎をそのまま使う）。FIRE_DURATION 2.4秒 ＜ 残骸が残る5秒なので、
+  // 「燃えて → 鎮火して黒い残骸 → 消える」の順に収まる
+  spawnFire(m.wx, m.wy, m.def.radius * 1.3);
   shockwaveFxList.push({ x: m.wx, y: m.wy, maxR: radius,
                          life: SHOCKWAVE_FX_DURATION, color: "#c8b088" });
   const r2 = radius * radius;
@@ -10895,14 +10921,22 @@ function drawMoverWrecks() {
     const key  = m.def.sprite ?? m.def.name;
     const img  = enemyImages[key];
     const meta = ENEMY_SPRITE_META[key];
+    // 地面の焦げ跡。**残骸そのものより先に「ここで何かが死んだ」を伝える**
     ctx.save();
-    ctx.globalAlpha = look.alpha;
+    ctx.globalAlpha = 0.30 * look.alpha * look.sink;
+    ctx.fillStyle = "#120e0a";
+    ctx.beginPath();
+    ctx.ellipse(m.wx, m.wy, m.def.radius * 1.75 * look.sink, m.def.radius * 1.45 * look.sink,
+                0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
     ctx.translate(m.wx, m.wy);
     ctx.rotate(Math.atan2(m.headingY, m.headingX) + Math.PI / 2 + (m.deathTilt || 0) * look.sink);
-    const sc = 1 - 0.14 * look.sink;   // 沈む＝わずかに縮む（真俯瞰なので倒れは出せない）
+    const sc = 1 - 0.22 * look.sink;   // 沈む＝縮む（真俯瞰なので倒れは出せない）
     ctx.scale(sc, sc);
-    ctx.filter = "grayscale(" + (0.3 + 0.7 * look.sink).toFixed(2) +
-                 ") brightness(" + (1 - 0.55 * look.sink).toFixed(2) + ") contrast(1.1)";
+    ctx.filter = moverDeathFilter(look.sink, look.alpha);
     if (img && meta) {
       const drawW = m.def.radius * meta.drawScale;
       const sp = drawW / img.naturalWidth;
@@ -10999,8 +11033,12 @@ function drawBehemothLimbs() {
     const core = m.parent;
     if (!core || m.shX === undefined) continue;
     if (!core.alive && !(core.death && !core.death.done)) continue;
-    const armFade = m.death ? moverDeathLook(m.death).alpha : 1;
-    if (armFade <= 0) continue;
+    // v2.6.2: 腕もコアと一緒に焼ける（下の moverDeathFilter の opacity で消える）
+    const armVis = limbDeathVisibility(m.death);
+    if (armVis <= 0.01) continue;
+    ctx.filter = m.death
+      ? moverDeathFilter(moverDeathLook(m.death).sink, armVis)
+      : "none";
 
     // --- 予告帯: これから薙ぐ範囲。腕の予備動作を**地面側からも**裏打ちする ---
     if (m.armState === "windup" || m.armState === "swing") {
@@ -11108,6 +11146,7 @@ function drawBehemothLimbs() {
     ctx.restore();
     ctx.globalAlpha = 1;
   }
+  ctx.filter = "none";
 }
 
 // =====================================================================
@@ -11410,8 +11449,14 @@ function drawWalkerLegs() {
     const hull = leg.parent;
     if (!hull || leg.hipX === undefined) continue;
     if (!hull.alive && !(hull.death && !hull.death.done)) continue;
-    const legFade = leg.death ? moverDeathLook(leg.death).alpha : 1;
-    if (legFade <= 0) continue;
+    // v2.6.2: 計算した不透明度を**実際に適用する**（v2.6.0 は出しっぱなしで、
+    // 焼けた胴に明るいままの脚が付いていて死んで見えなかった）。
+    // 中で globalAlpha を 1 に戻している箇所があるので、filter 側の opacity で効かせる。
+    const legVis = limbDeathVisibility(leg.death);
+    if (legVis <= 0.01) continue;
+    ctx.filter = leg.death
+      ? moverDeathFilter(moverDeathLook(leg.death).sink, legVis)
+      : "none";
 
     const air = leg.footAir || 0;
     // 浮いている足の**落ちる先**を地面に出す。真俯瞰では高さが描けないので、
@@ -11483,16 +11528,25 @@ function drawWalkerLegs() {
     ctx.restore();
     ctx.globalAlpha = 1;
   }
+  ctx.filter = "none";
 }
 
 /** 砲塔（胴の絵の上に重ねる＝胴とは別に旋回して見える）。 */
 function drawWalkerTurrets() {
   const img = enemyImages.walker_turret;
   for (const hull of movers) {
-    if (!hull.alive || !hull.def || !hull.def.walker) continue;
-    const ang = hull.turretAngle ?? Math.atan2(hull.headingY, hull.headingX);
+    if (!hull.def || !hull.def.walker) continue;
+    // v2.6.2: 撃破の瞬間に砲塔だけ消えると「死んだ」ではなく「バグった」に見える。
+    // 胴と一緒に焼けて沈むまで描く。
+    const dying = !hull.alive && hull.death && !hull.death.done;
+    if (!hull.alive && !dying) continue;
+    const dLook = dying ? moverDeathLook(hull.death) : null;
+    if (dying && dLook.alpha <= 0.01) continue;
+    ctx.filter = dying ? moverDeathFilter(dLook.sink, dLook.alpha) : "none";
+    const ang = (hull.turretAngle ?? Math.atan2(hull.headingY, hull.headingX))
+              + (dying ? (hull.deathTilt || 0) * dLook.sink * 1.6 : 0);   // 力尽きて傾く
     const drawW = hull.def.radius * (ENEMY_SPRITE_META.walker_hull.drawScale) * WALKER_TURRET_SCALE;
-    const chg = hull.gunCharge || 0;
+    const chg = dying ? 0 : (hull.gunCharge || 0);   // 溜めの予告は出さない
     const muzzle = walkerMuzzleDist(hull);
 
     // --- 溜めている間の狙点（撃たれる前に退くための予告）---
@@ -11621,6 +11675,7 @@ function drawWalkerTurrets() {
       ctx.globalAlpha = 1;
     }
   }
+  ctx.filter = "none";
 }
 
 // =====================================================================
