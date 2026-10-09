@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.7.0";
+const GAME_VERSION = "v2.7.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10834,21 +10834,31 @@ function beginMoverDeath(m) {
 //   ・暗さ     … 絵の**黒いシルエット**を上から重ねる
 //                （建物の getTintedBuildingSprite と同じ destination-in の作法）
 // =====================================================================
-const _wreckSilhouettes = new Map();
+const _wreckDarkSprites = new Map();
 
-/** 絵の形をした「黒い板」を作って使い回す（暗くするのに重ねる）。 */
-function wreckSilhouetteFor(key, img) {
-  let c = _wreckSilhouettes.get(key);
+/**
+ * v2.7.1: **暗くした絵を先に1枚焼いておく**。
+ * 本番で「元の絵＋黒い板」を毎回重ねる方式だと、フェード中に明るくなる。
+ * 黒い板の濃さも alpha 倍されるので、alpha が下がると**板のほうが先に薄くなり**、
+ * 元の絵の色が相対的に濃く出てしまうため（絵の寄与は alpha=1 で0.12倍、
+ * alpha=0.5 で0.28倍と、途中で2倍以上明るくなる計算になる）。
+ * 焼いておけば、フェードは**その1枚を globalAlpha で薄めるだけ**になり、
+ * 明るさは単調に落ちる。
+ */
+function wreckDarkSpriteFor(key, img) {
+  let c = _wreckDarkSprites.get(key);
   if (c) return c;
   c = document.createElement("canvas");
   c.width = img.naturalWidth;
   c.height = img.naturalHeight;
   const g = c.getContext("2d");
+  g.drawImage(img, 0, 0);
+  // source-atop ＝ 絵がある画素だけを塗る（アルファの形はそのまま残る）
+  g.globalCompositeOperation = "source-atop";
+  g.globalAlpha = 0.88;
   g.fillStyle = "#0b0a09";
   g.fillRect(0, 0, c.width, c.height);
-  g.globalCompositeOperation = "destination-in";
-  g.drawImage(img, 0, 0);
-  _wreckSilhouettes.set(key, c);
+  _wreckDarkSprites.set(key, c);
   return c;
 }
 
@@ -10861,11 +10871,19 @@ function wreckSilhouetteFor(key, img) {
  */
 function drawWreckSprite(key, img, dx, dy, w, h, darken, alpha) {
   if (alpha <= 0) return;
-  ctx.globalAlpha = alpha;
-  ctx.drawImage(img, dx, dy, w, h);
-  if (darken > 0) {
-    ctx.globalAlpha = alpha * Math.min(1, darken * 0.88);
-    ctx.drawImage(wreckSilhouetteFor(key, img), dx, dy, w, h);
+  if (darken >= 1) {
+    // 残骸として見えている時間のほぼ全部がここ。**1枚だけ**描くので明るさは単調に落ちる
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(wreckDarkSpriteFor(key, img), dx, dy, w, h);
+  } else if (darken <= 0) {
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(img, dx, dy, w, h);
+  } else {
+    // 暗転の0.16秒だけ。2枚の不透明度の合計が alpha になるので下地は透けない
+    ctx.globalAlpha = alpha * (1 - darken);
+    ctx.drawImage(img, dx, dy, w, h);
+    ctx.globalAlpha = alpha * darken;
+    ctx.drawImage(wreckDarkSpriteFor(key, img), dx, dy, w, h);
   }
   ctx.globalAlpha = 1;
 }
