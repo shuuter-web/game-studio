@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.6.3";
+const GAME_VERSION = "v2.6.4";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10780,7 +10780,12 @@ function damageMover(m, damage, srcX, srcY) {
 // 死んだ mover は配列に残り続ける（描画で飛ばしているだけ）ので、
 // 状態を1つ持たせるだけで最期を回せる＝**配列の管理には触らない**。
 // =====================================================================
-const DEATH_COLLAPSE   = 0.8;   // 崩れ切るまで
+const DEATH_COLLAPSE   = 0.8;   // 崩れ切るまで（**動き**の時計）
+// v2.6.4: 色は崩れる動きとは**別の時計**で、ほぼ即座に落とす。
+// 以前は色も崩れと同じ0.8秒かけて落としていたので、死んだ直後のあいだ
+// 生きているのと同じ明るさの絵が出ていた（＝「死んだように見えない」の一因）。
+// 動きは0.8秒かけて崩れてよいが、**死んだことは1フレーム目で伝わるべき**。
+const DEATH_DARKEN     = 0.12;  // 色が落ち切るまで（秒）
 const DEATH_HOLD       = 5.0;   // 残骸がそのまま残る（Shooter判定）
 const DEATH_FADE       = 1.0;   // 薄れて消えるのにかける時間
 const DEATH_MIN_RADIUS = 34;    // この大きさ以上だけ。小物は従来どおり即消え
@@ -10845,8 +10850,9 @@ function limbDeathVisibility(d) {
 function moverDeathLook(d) {
   const fadeStart = DEATH_COLLAPSE + DEATH_HOLD;
   return {
-    sink:  Math.min(1, d.t / DEATH_COLLAPSE),
-    alpha: d.t <= fadeStart ? 1 : Math.max(0, 1 - (d.t - fadeStart) / DEATH_FADE),
+    sink:   Math.min(1, d.t / DEATH_COLLAPSE),     // 動き（崩れ・畳まれ）
+    darken: Math.min(1, d.t / DEATH_DARKEN),       // 色（即座に落ちる）
+    alpha:  d.t <= fadeStart ? 1 : Math.max(0, 1 - (d.t - fadeStart) / DEATH_FADE),
   };
 }
 
@@ -10927,7 +10933,7 @@ function drawMoverWrecks() {
     ctx.save();
     ctx.translate(m.wx, m.wy);
     ctx.rotate(Math.atan2(m.headingY, m.headingX) + Math.PI / 2 + (m.deathTilt || 0) * look.sink);
-    ctx.filter = moverDeathFilter(look.sink, look.alpha);
+    ctx.filter = moverDeathFilter(look.darken, look.alpha);
     if (img && meta) {
       const drawW = m.def.radius * meta.drawScale;
       const sp = drawW / img.naturalWidth;
@@ -11028,7 +11034,7 @@ function drawBehemothLimbs() {
     const armVis = limbDeathVisibility(m.death);
     if (armVis <= 0.01) continue;
     ctx.filter = m.death
-      ? moverDeathFilter(moverDeathLook(m.death).sink, armVis)
+      ? moverDeathFilter(moverDeathLook(m.death).darken, armVis)
       : "none";
 
     // --- 予告帯: これから薙ぐ範囲。腕の予備動作を**地面側からも**裏打ちする ---
@@ -11446,7 +11452,7 @@ function drawWalkerLegs() {
     const legVis = limbDeathVisibility(leg.death);
     if (legVis <= 0.01) continue;
     ctx.filter = leg.death
-      ? moverDeathFilter(moverDeathLook(leg.death).sink, legVis)
+      ? moverDeathFilter(moverDeathLook(leg.death).darken, legVis)
       : "none";
 
     const air = leg.footAir || 0;
@@ -11533,7 +11539,7 @@ function drawWalkerTurrets() {
     if (!hull.alive && !dying) continue;
     const dLook = dying ? moverDeathLook(hull.death) : null;
     if (dying && dLook.alpha <= 0.01) continue;
-    ctx.filter = dying ? moverDeathFilter(dLook.sink, dLook.alpha) : "none";
+    ctx.filter = dying ? moverDeathFilter(dLook.darken, dLook.alpha) : "none";
     const ang = (hull.turretAngle ?? Math.atan2(hull.headingY, hull.headingX))
               + (dying ? (hull.deathTilt || 0) * dLook.sink * 1.6 : 0);   // 力尽きて傾く
     const drawW = hull.def.radius * (ENEMY_SPRITE_META.walker_hull.drawScale) * WALKER_TURRET_SCALE;
