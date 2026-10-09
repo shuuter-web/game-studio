@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.5.4";
+const GAME_VERSION = "v2.6.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9503,6 +9503,7 @@ function behemothSweepHits(m, core) {
 
 function updateMovers(dt) {
   updateEnemyGroups(dt);   // v2.3.0: 複数パーツのグループ敵（編成など）
+  updateMoverDeaths(dt);   // v2.6.0: 大きい敵の最期（崩れ→倒れ込み→残骸）
 
   // 衝撃波FXの寿命更新
   for (let i = shockwaveFxList.length - 1; i >= 0; i--) {
@@ -10670,6 +10671,8 @@ function damageMover(m, damage, srcX, srcY) {
   if (m.hp <= 0) {
     m.alive = false;
     m.hp = 0;
+    // v2.6.0: 大きい敵はすぐ消えず、崩れて倒れ込んで残骸になる
+    if (moverLeavesWreck(m.def)) beginMoverDeath(m);
     runKills++;
     // v0.25: エリート撃破の累計（チャレンジ用）
     if (m.def.elite) { profile.eliteKills = (profile.eliteKills || 0) + 1; saveProfile(); }
@@ -10766,6 +10769,164 @@ function damageMover(m, damage, srcX, srcY) {
   }
 }
 
+// =====================================================================
+// v2.6.0: 大きい敵の最期（Shooter指示「撃破時にすぐ消えるのではなく演出が欲しい」）
+//
+// 3拍:
+//   ① 崩れる   … 沈んで暗くなり、体の上を小爆発が走る。多パーツは親へ垂れる
+//   ② 倒れ込む … 着地で衝撃波＋重さぶんの押し出し（v2.5.0 の衝撃をそのまま使う）
+//   ③ 残骸     … 5秒そのまま、1秒かけて消える
+//
+// 死んだ mover は配列に残り続ける（描画で飛ばしているだけ）ので、
+// 状態を1つ持たせるだけで最期を回せる＝**配列の管理には触らない**。
+// =====================================================================
+const DEATH_COLLAPSE   = 0.8;   // 崩れ切るまで
+const DEATH_HOLD       = 5.0;   // 残骸がそのまま残る（Shooter判定）
+const DEATH_FADE       = 1.0;   // 薄れて消えるのにかける時間
+const DEATH_MIN_RADIUS = 34;    // この大きさ以上だけ。小物は従来どおり即消え
+const DEATH_POP_GAP    = 0.16;  // 崩れている間の小爆発の間隔
+const DEATH_PUSH_CAP   = 560;   // 倒れ込みの押しの上限
+
+/**
+ * 最期の演出を出す相手か。
+ * 鉄路の車両は**編成が自前で残骸を引きずる**仕組み（drawRailWrecks）を持つので外す。
+ */
+function moverLeavesWreck(def) {
+  return !!def && (def.radius || 0) >= DEATH_MIN_RADIUS && !isRailVehicle(def);
+}
+
+/** 最期を始める。多パーツなら手足も一緒に（親へ垂れながら残骸になる）。 */
+function beginMoverDeath(m) {
+  if (m.death) return;
+  m.death = { t: 0, popT: 0, slammed: false, drift: null };
+  m.deathTilt = fxRandom() * 0.5 - 0.25;   // 崩れるときの傾き（個体差）
+  const parts = [];
+  if (m.legs) for (const p of m.legs) parts.push(p);
+  if (m.armL) parts.push(m.armL);
+  if (m.armR) parts.push(m.armR);
+  for (const p of parts) {
+    if (!p || p.death) continue;
+    // slammed:true ＝ 衝撃波は親が1回だけ出す（手足6本ぶん重ねない）
+    p.death = { t: 0, popT: fxRandom() * DEATH_POP_GAP, slammed: true, drift: m };
+    p.deathTilt = fxRandom() * 0.8 - 0.4;
+  }
+}
+
+/** 沈み具合(0..1)と不透明度。描画側はこれだけ見る。 */
+function moverDeathLook(d) {
+  const fadeStart = DEATH_COLLAPSE + DEATH_HOLD;
+  return {
+    sink:  Math.min(1, d.t / DEATH_COLLAPSE),
+    alpha: d.t <= fadeStart ? 1 : Math.max(0, 1 - (d.t - fadeStart) / DEATH_FADE),
+  };
+}
+
+/** ② 倒れ込みの一撃。重いほど強く押す（v2.5.0 の衝撃をそのまま使う）。 */
+function moverDeathSlam(m) {
+  const impulse = Math.min(DEATH_PUSH_CAP, 90 + impactMassOf(m.def) * 2.2);
+  const radius  = (m.def.radius || 20) * 4;
+  shockwaveFxList.push({ x: m.wx, y: m.wy, maxR: radius,
+                         life: SHOCKWAVE_FX_DURATION, color: "#c8b088" });
+  const r2 = radius * radius;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - m.wx, dy = py[i] - m.wy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > r2) continue;
+    const dd = Math.sqrt(d2) || 1;
+    // 中心に近いほど強く押される（端は撫でられる程度）
+    applyImpactToBoid(i, dx / dd, dy / dd, impulse * (1 - dd / radius));
+  }
+  for (let k = 0; k < 10; k++) {
+    const a = fxRandom() * Math.PI * 2, r = radius * (0.2 + fxRandom() * 0.5);
+    spawnCollisionParticles(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
+  }
+  triggerShake(3.4, 0.16);
+  hapticPulse(120);
+}
+
+function updateMoverDeaths(dt) {
+  if (gameState !== "playing" || dt <= 0) return;
+  for (const m of movers) {
+    const d = m.death;
+    if (!d || d.done) continue;
+    d.t += dt;
+    if (d.t < DEATH_COLLAPSE) {
+      // ① 体の上を小爆発が走る
+      d.popT -= dt;
+      if (d.popT <= 0) {
+        d.popT = DEATH_POP_GAP;
+        const a = fxRandom() * Math.PI * 2;
+        const r = fxRandom() * (m.def.radius || 20) * 0.9;
+        spawnHitParticles(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
+      }
+      // 手足は親へ引き寄せられる＝腕が垂れ、脚が畳まれる
+      if (d.drift) {
+        const k = Math.min(1, dt * 2.6);
+        m.wx += (d.drift.wx - m.wx) * k;
+        m.wy += (d.drift.wy - m.wy) * k;
+      }
+    } else if (!d.slammed) {
+      d.slammed = true;
+      moverDeathSlam(m);
+    }
+    if (d.t >= DEATH_COLLAPSE + DEATH_HOLD + DEATH_FADE) d.done = true;
+  }
+}
+
+/**
+ * ③ 残骸の描画。崩れるほど沈んで暗くなり、そのあと薄れて消える。
+ * 手足は専用の描画（drawBehemothLimbs / drawWalkerLegs）が出すので、ここは body だけ。
+ */
+function drawMoverWrecks() {
+  const bounds = getViewBoundsWorld(160);
+  for (const m of movers) {
+    const d = m.death;
+    if (!d || d.done) continue;
+    if (m.def.part === "arm" || m.def.part === "leg") continue;
+    if (m.wx < bounds.minX || m.wx > bounds.maxX ||
+        m.wy < bounds.minY || m.wy > bounds.maxY) continue;
+    const look = moverDeathLook(d);
+    const key  = m.def.sprite ?? m.def.name;
+    const img  = enemyImages[key];
+    const meta = ENEMY_SPRITE_META[key];
+    ctx.save();
+    ctx.globalAlpha = look.alpha;
+    ctx.translate(m.wx, m.wy);
+    ctx.rotate(Math.atan2(m.headingY, m.headingX) + Math.PI / 2 + (m.deathTilt || 0) * look.sink);
+    const sc = 1 - 0.14 * look.sink;   // 沈む＝わずかに縮む（真俯瞰なので倒れは出せない）
+    ctx.scale(sc, sc);
+    ctx.filter = "grayscale(" + (0.3 + 0.7 * look.sink).toFixed(2) +
+                 ") brightness(" + (1 - 0.55 * look.sink).toFixed(2) + ") contrast(1.1)";
+    if (img && meta) {
+      const drawW = m.def.radius * meta.drawScale;
+      const sp = drawW / img.naturalWidth;
+      ctx.drawImage(img, -img.naturalWidth * sp * meta.px, -img.naturalHeight * sp * meta.py,
+                    drawW, img.naturalHeight * sp);
+    } else {
+      ctx.fillStyle = "#2a2622";
+      ctx.beginPath(); ctx.arc(0, 0, m.def.radius, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.filter = "none";
+    ctx.restore();
+
+    // くすぶる煙（残っている間ずっと）
+    const t = breathTime * 0.8 + (m.deathTilt || 0) * 7;
+    ctx.save();
+    ctx.fillStyle = "#6b6258";
+    for (let k = 0; k < 3; k++) {
+      const ph = (t + k * 0.33) % 1;
+      ctx.globalAlpha = 0.26 * (1 - ph) * look.alpha * look.sink;
+      ctx.beginPath();
+      ctx.arc(m.wx + Math.sin((t + k) * 2.1) * 12, m.wy - ph * 40,
+              6 + ph * 14, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
 /** 群れの体当たり判定（移動敵版）。建物用クールダウンを共用して連打を防ぐ。 */
 function updateMoverRams() {
   if (movers.length === 0) return;
@@ -10827,9 +10988,14 @@ const BEHEMOTH_LINK_COUNT = 5;
 function drawBehemothLimbs() {
   const img = enemyImages.behemoth_link;
   for (const m of movers) {
-    if (!m.alive || !m.def || m.def.part !== "arm") continue;
+    if (!m.def || m.def.part !== "arm") continue;
+    // v2.6.0: 死んでいても最期のあいだは描く（コアへ垂れていく）
+    if (!m.alive && !(m.death && !m.death.done)) continue;
     const core = m.parent;
-    if (!core || !core.alive || m.shX === undefined) continue;
+    if (!core || m.shX === undefined) continue;
+    if (!core.alive && !(core.death && !core.death.done)) continue;
+    const armFade = m.death ? moverDeathLook(m.death).alpha : 1;
+    if (armFade <= 0) continue;
 
     // --- 予告帯: これから薙ぐ範囲。腕の予備動作を**地面側からも**裏打ちする ---
     if (m.armState === "windup" || m.armState === "swing") {
@@ -11233,9 +11399,14 @@ function walkerMuzzleDist(hull) {
  */
 function drawWalkerLegs() {
   for (const leg of movers) {
-    if (!leg.alive || !leg.def || leg.def.part !== "leg") continue;
+    if (!leg.def || leg.def.part !== "leg") continue;
+    // v2.6.0: 死んでいても最期のあいだは描く（胴と一緒に畳まれていく）
+    if (!leg.alive && !(leg.death && !leg.death.done)) continue;
     const hull = leg.parent;
-    if (!hull || !hull.alive || leg.hipX === undefined) continue;
+    if (!hull || leg.hipX === undefined) continue;
+    if (!hull.alive && !(hull.death && !hull.death.done)) continue;
+    const legFade = leg.death ? moverDeathLook(leg.death).alpha : 1;
+    if (legFade <= 0) continue;
 
     const air = leg.footAir || 0;
     // 浮いている足の**落ちる先**を地面に出す。真俯瞰では高さが描けないので、
@@ -22916,6 +23087,7 @@ function render(now) {
   drawEggs();
   drawEmbers();             // v0.10: 燃える建物の火の粉・煙（建物の上・ユニットの下）
   drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
+  drawMoverWrecks();         // v2.6.0: 崩れかけ／残骸の本体（生きている敵より下）
   drawBehemothLimbs();       // v1.7.0: 巨獣の関節（コア・拳の下に敷く）
   drawWalkerLegs();          // v1.8.0: 多脚戦車の脚（胴と足の下に敷く）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
