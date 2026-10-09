@@ -789,7 +789,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.6.4";
+const GAME_VERSION = "v2.7.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -6438,14 +6438,13 @@ function drawBossConsistCar(boss, line, slot, k) {
   ctx.save();
   ctx.translate(_railBossPt.x, _railBossPt.y);
   ctx.rotate(Math.atan2(_railBossPt.ty, _railBossPt.tx) + Math.PI / 2 + face);
-  if (boss.fallen) ctx.filter = "grayscale(1) brightness(0.45) contrast(1.15)";
   if (img && meta) {
-    ctx.drawImage(img, -drawW * meta.px, -drawH * meta.py, drawW, drawH);
+    drawWreckSprite(key, img, -drawW * meta.px, -drawH * meta.py, drawW, drawH,
+                    boss.fallen ? 1 : 0, 1);
   } else {
-    ctx.fillStyle = "#3a3630";
+    ctx.fillStyle = boss.fallen ? "#1a1715" : "#3a3630";
     ctx.fillRect(-drawW * 0.5, -drawH * 0.5, drawW, drawH);
   }
-  ctx.filter = "none";
   ctx.restore();
 }
 
@@ -6478,15 +6477,14 @@ function drawRailBoss(boss) {
   ctx.save();
   ctx.translate(boss.wx, boss.wy);
   ctx.rotate(Math.atan2(boss.headingY, boss.headingX) + Math.PI / 2);
-  if (boss.fallen) ctx.filter = "grayscale(1) brightness(0.45) contrast(1.15)";
   if (img && meta) {
     const coreH = coreW * (img.naturalHeight / img.naturalWidth);
-    ctx.drawImage(img, -coreW * meta.px, -coreH * meta.py, coreW, coreH);
+    drawWreckSprite("boss_core", img, -coreW * meta.px, -coreH * meta.py, coreW, coreH,
+                    boss.fallen ? 1 : 0, 1);
   } else {
-    ctx.fillStyle = "#b8923c";
+    ctx.fillStyle = boss.fallen ? "#1a1715" : "#b8923c";
     ctx.beginPath(); ctx.arc(0, 0, coreW * 0.5, 0, Math.PI * 2); ctx.fill();
   }
-  ctx.filter = "none";
   ctx.restore();
 }
 
@@ -10822,29 +10820,56 @@ function beginMoverDeath(m) {
   }
 }
 
-/**
- * 残骸の色。**sepia を混ぜて「焼けた鉄」にするのが肝**（鉄路の残骸と同じ作法）。
- * v2.6.1 までは grayscale と暗くするだけだったが、元の絵がもともと暗い敵
- * （巨獣のコア・多脚戦車の胴）では見分けが付かず、死んだように見えなかった。
- * opacity もここに入れる＝描画側が globalAlpha を上書きしても効く。
- */
-function moverDeathFilter(sink, alpha) {
-  // contrast は**足さない**。暗くした後に掛けると、もともと暗い敵
-  // （多脚戦車の胴）が真っ黒に潰れて形が消えた（実測で輝度2.0＝ほぼ黒）。
-  return "grayscale(" + sink.toFixed(2) +
-         ") brightness(" + (1 - 0.74 * sink).toFixed(2) +
-         ") opacity(" + alpha.toFixed(3) + ")";
+// =====================================================================
+// v2.7.0: **ctx.filter は使わない**（Shooter報告で判明）。
+// iOS Safari は ctx.filter への代入を**黙って無視する**。例外も出ない。
+// そのため実機（iPad）では残骸が
+//   ・暗くならない（grayscale/brightness が効かない）
+//   ・5秒後にフェードせず**パッと消える**（opacity が効かない）
+// という状態だった。症状が2つとも出ていたのは、暗さと不透明度を
+// どちらも filter 文字列に入れていたから＝**単一の依存で両方死んでいた**。
+//
+// 代わりに、どの環境でも効く2つだけで組む:
+//   ・不透明度 … ctx.globalAlpha
+//   ・暗さ     … 絵の**黒いシルエット**を上から重ねる
+//                （建物の getTintedBuildingSprite と同じ destination-in の作法）
+// =====================================================================
+const _wreckSilhouettes = new Map();
+
+/** 絵の形をした「黒い板」を作って使い回す（暗くするのに重ねる）。 */
+function wreckSilhouetteFor(key, img) {
+  let c = _wreckSilhouettes.get(key);
+  if (c) return c;
+  c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const g = c.getContext("2d");
+  g.fillStyle = "#0b0a09";
+  g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = "destination-in";
+  g.drawImage(img, 0, 0);
+  _wreckSilhouettes.set(key, c);
+  return c;
 }
 
 /**
- * 手足の見え方。崩れるあいだに暗く沈みながら本体へ畳まれ、崩れ切ると消える
- * （最後は本体の下に入っているので、残しても団子になるだけ）。
+ * 残骸として1枚描く。呼ぶ側で translate/rotate を済ませておくこと。
+ * 元の絵を描いてから黒い板を重ねるので、**暗さも不透明度も globalAlpha だけ**で出る
+ * ＝ ctx.filter に依存しない（iOS Safari は filter を黙って無視する）。
+ * @param {number} darken 0=そのまま 1=ほぼ真っ黒
+ * @param {number} alpha  0=消える 1=くっきり
  */
-function limbDeathVisibility(d) {
-  if (!d) return 1;
-  const look = moverDeathLook(d);
-  return look.alpha * Math.max(0, 1 - look.sink);
+function drawWreckSprite(key, img, dx, dy, w, h, darken, alpha) {
+  if (alpha <= 0) return;
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(img, dx, dy, w, h);
+  if (darken > 0) {
+    ctx.globalAlpha = alpha * Math.min(1, darken * 0.88);
+    ctx.drawImage(wreckSilhouetteFor(key, img), dx, dy, w, h);
+  }
+  ctx.globalAlpha = 1;
 }
+
 
 /** 沈み具合(0..1)と不透明度。描画側はこれだけ見る。 */
 function moverDeathLook(d) {
@@ -10933,17 +10958,18 @@ function drawMoverWrecks() {
     ctx.save();
     ctx.translate(m.wx, m.wy);
     ctx.rotate(Math.atan2(m.headingY, m.headingX) + Math.PI / 2 + (m.deathTilt || 0) * look.sink);
-    ctx.filter = moverDeathFilter(look.darken, look.alpha);
     if (img && meta) {
       const drawW = m.def.radius * meta.drawScale;
       const sp = drawW / img.naturalWidth;
-      ctx.drawImage(img, -img.naturalWidth * sp * meta.px, -img.naturalHeight * sp * meta.py,
-                    drawW, img.naturalHeight * sp);
+      drawWreckSprite(key, img,
+                      -img.naturalWidth * sp * meta.px, -img.naturalHeight * sp * meta.py,
+                      drawW, img.naturalHeight * sp, look.darken, look.alpha);
     } else {
-      ctx.fillStyle = "#2a2622";
+      ctx.globalAlpha = look.alpha;
+      ctx.fillStyle = "#1a1715";
       ctx.beginPath(); ctx.arc(0, 0, m.def.radius, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
     }
-    ctx.filter = "none";
     ctx.restore();
 
     // くすぶる煙（残っている間ずっと）
@@ -11030,12 +11056,8 @@ function drawBehemothLimbs() {
     const core = m.parent;
     if (!core || m.shX === undefined) continue;
     if (!core.alive && !(core.death && !core.death.done)) continue;
-    // v2.6.2: 腕もコアと一緒に焼ける（下の moverDeathFilter の opacity で消える）
-    const armVis = limbDeathVisibility(m.death);
-    if (armVis <= 0.01) continue;
-    ctx.filter = m.death
-      ? moverDeathFilter(moverDeathLook(m.death).darken, armVis)
-      : "none";
+    // v2.7.0: 腕も同じ理由で、死んだら描かない（脚と揃える）
+    if (m.death) continue;
 
     // --- 予告帯: これから薙ぐ範囲。腕の予備動作を**地面側からも**裏打ちする ---
     if (m.armState === "windup" || m.armState === "swing") {
@@ -11143,7 +11165,6 @@ function drawBehemothLimbs() {
     ctx.restore();
     ctx.globalAlpha = 1;
   }
-  ctx.filter = "none";
 }
 
 // =====================================================================
@@ -11446,14 +11467,10 @@ function drawWalkerLegs() {
     const hull = leg.parent;
     if (!hull || leg.hipX === undefined) continue;
     if (!hull.alive && !(hull.death && !hull.death.done)) continue;
-    // v2.6.2: 計算した不透明度を**実際に適用する**（v2.6.0 は出しっぱなしで、
-    // 焼けた胴に明るいままの脚が付いていて死んで見えなかった）。
-    // 中で globalAlpha を 1 に戻している箇所があるので、filter 側の opacity で効かせる。
-    const legVis = limbDeathVisibility(leg.death);
-    if (legVis <= 0.01) continue;
-    ctx.filter = leg.death
-      ? moverDeathFilter(moverDeathLook(leg.death).darken, legVis)
-      : "none";
+    // v2.7.0: 脚はベクタ描画で、内部で globalAlpha を 1 に戻すので外から薄められない。
+    // ctx.filter も使えない（iOS が無視する）ので、**死んだら描かない**。
+    // 「脚がもがれた残骸」として読めるので、畳まれる動きは諦めてよいと判断した。
+    if (leg.death) continue;
 
     const air = leg.footAir || 0;
     // 浮いている足の**落ちる先**を地面に出す。真俯瞰では高さが描けないので、
@@ -11525,7 +11542,6 @@ function drawWalkerLegs() {
     ctx.restore();
     ctx.globalAlpha = 1;
   }
-  ctx.filter = "none";
 }
 
 /** 砲塔（胴の絵の上に重ねる＝胴とは別に旋回して見える）。 */
@@ -11539,7 +11555,8 @@ function drawWalkerTurrets() {
     if (!hull.alive && !dying) continue;
     const dLook = dying ? moverDeathLook(hull.death) : null;
     if (dying && dLook.alpha <= 0.01) continue;
-    ctx.filter = dying ? moverDeathFilter(dLook.darken, dLook.alpha) : "none";
+    const turretDark = dying ? dLook.darken : 0;
+    const turretAlpha = dying ? dLook.alpha : 1;
     const ang = (hull.turretAngle ?? Math.atan2(hull.headingY, hull.headingX))
               + (dying ? (hull.deathTilt || 0) * dLook.sink * 1.6 : 0);   // 力尽きて傾く
     const drawW = hull.def.radius * (ENEMY_SPRITE_META.walker_hull.drawScale) * WALKER_TURRET_SCALE;
@@ -11583,7 +11600,8 @@ function drawWalkerTurrets() {
       const sc = drawW / img.naturalWidth;
       const h  = img.naturalHeight * sc;
       // 回転軸は砲塔の丸い部分の中心（画像の重心は砲身に引っぱられるので使わない）
-      ctx.drawImage(img, -drawW * 0.5, -h * 0.71, drawW, h);
+      drawWreckSprite("walker_turret", img, -drawW * 0.5, -h * 0.71, drawW, h,
+                      turretDark, turretAlpha);
 
       // --- 溜め: 砲身が灼けて、外から光の輪が砲口へ吸い込まれる ---
       if (chg > 0) {
@@ -11672,7 +11690,6 @@ function drawWalkerTurrets() {
       ctx.globalAlpha = 1;
     }
   }
-  ctx.filter = "none";
 }
 
 // =====================================================================
@@ -12113,11 +12130,10 @@ function drawRailWrecks() {
       if (img && meta) {
         const drawW = def.radius * meta.drawScale;
         const sc = drawW / img.naturalWidth;
-        // 焼けた鉄の色に落とす＝専用スプライトを起こさずに「潰れた車両」を出す
-        ctx.filter = "grayscale(1) brightness(0.52) sepia(0.35) contrast(1.1)";
-        ctx.drawImage(img, -img.naturalWidth * sc * meta.px, -img.naturalHeight * sc * meta.py,
-                      drawW, img.naturalHeight * sc);
-        ctx.filter = "none";
+        // v2.7.0: 黒い板を重ねて潰れた車両にする（ctx.filter は iOS が無視する）
+        drawWreckSprite(key, img,
+                        -img.naturalWidth * sc * meta.px, -img.naturalHeight * sc * meta.py,
+                        drawW, img.naturalHeight * sc, 1, 1);
       } else {
         ctx.fillStyle = "#241f1a";
         ctx.fillRect(-14, -40, 28, 80);
