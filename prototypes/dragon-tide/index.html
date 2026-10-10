@@ -838,7 +838,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.11.0";
+const GAME_VERSION = "v2.11.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10643,8 +10643,10 @@ function updateRaiderSpawns(dt) {
 // v2.11.0: 竜の被ダメージも出す（Shooter指示）。敵への数字とは**色・符号・流れる向き**で分ける。
 //   敵へ … 白（大きい一撃は金）。上へ浮く
 //   竜へ … 赤で「−」付き、少し小さい。下へ沈む
-// 竜は群れで同時に被弾するので、**近くの竜の数字は1つにまとめる**（＝群れのその辺りで失ったHP）。
-// 1体ずつ出すと、衝撃波1発で群れの上が数字で埋まる。
+// 竜は群れで同時に被弾するので、1体ずつ出すと衝撃波1発で群れの上が数字で埋まる。
+// v2.11.1: 近くの竜が**近い値**を受けたときは、もう出ている数字を代表にして新しく出さない。
+// **差が大きい値は別に出す**。合計はしない（Shooter判定「合計値は意味が分からなくなる」。
+// v2.11.0 は近くの竜のぶんを足し込んでいたので、矢1本が −27 のように見えていた）。
 // プールは敵と分ける（竜の被弾で敵の数字が押し出されないように）。
 const DMG_NUM_MAX   = 96;    // 同時表示の上限。溢れたら**一番古いもの**を捨てる
 const DMG_NUM_LIFE  = 1.25;  // 1個の表示時間（秒）
@@ -10654,7 +10656,8 @@ const DMG_NUM_FONT  = 11;    // 文字の基準サイズ（論理px）
 const DMG_NUM_BIG   = 40;    // これ以上は「大きい一撃」として色と大きさを変える
 
 const DRAGON_DMG_NUM_MAX     = 40;         // 竜の数字の同時表示の上限（敵とは別枠）
-const DRAGON_DMG_NUM_MERGE_R = 30;         // この距離にある若い数字へ足し込む（論理px）
+const DRAGON_DMG_NUM_GROUP_R = 48;         // この距離の若い数字は「同じ所で受けた」とみなす（論理px）
+const DRAGON_DMG_NUM_SIMILAR = 0.25;       // 1発の値の差がこの割合以内なら「近い値」＝代表に任せる
 const DRAGON_DMG_NUM_COLOR   = "#ff5f57";  // 竜が受けたダメージの色
 const DRAGON_DMG_NUM_SCALE   = 0.9;        // 敵の数字より少し小さく（主役は与えたダメージ）
 
@@ -10666,6 +10669,7 @@ function makeDamageNumberPool(size) {
     val:    new Float32Array(size),
     age:    new Float32Array(size),
     drift:  new Float32Array(size),   // 横へのずれ（重なり防止）
+    last:   new Float32Array(size),   // 直近の1発の値（竜の数字で「近い値か」を比べる）
     active: new Uint8Array(size),
     target: new Array(size).fill(null),
     cursor: 0,                        // 空きを探す開始位置（毎回0から舐めない）
@@ -10704,6 +10708,7 @@ function pushDamageNumber(pool, target, wx, wy, amount, follow) {
   const slot = target._dmgSlot;
   if (damageNumberIsYoung(pool, slot, target)) {
     pool.val[slot] += amount;
+    pool.last[slot] = amount;
     if (follow) { pool.x[slot] = wx; pool.y[slot] = wy; }
     return;
   }
@@ -10723,6 +10728,7 @@ function pushDamageNumber(pool, target, wx, wy, amount, follow) {
   pool.x[free]      = wx;
   pool.y[free]      = wy;
   pool.val[free]    = amount;
+  pool.last[free]   = amount;
   pool.age[free]    = 0;
   // 同じ相手に続けて出るとき真上に重なるので、出るたびに左右へ振る
   pool.drift[free]  = (fxRandom() - 0.5) * 14;
@@ -10751,17 +10757,16 @@ function reportDragonDamage(i, amount) {
   if (!damageNumberOnScreen(wx, wy)) return;
   const pool = dragonDmgNums;
   const key = _boidDmgKeys[i] || (_boidDmgKeys[i] = {});
+  // 同じ竜への連続ダメージ（燃える帯・レーザーの刻み）は、敵の数字と同じく自分の数字に足す
   if (!damageNumberIsYoung(pool, key._dmgSlot, key)) {
-    // 自分の数字が無ければ、近くの竜の若い数字へ足し込む（その数字はその場に留める）
-    const r2 = DRAGON_DMG_NUM_MERGE_R * DRAGON_DMG_NUM_MERGE_R;
+    // 近くで近い値の数字がもう出ていれば、それを代表にして出さない（足しもしない）
+    const r2 = DRAGON_DMG_NUM_GROUP_R * DRAGON_DMG_NUM_GROUP_R;
     for (let k = 0; k < pool.size; k++) {
       if (!pool.active[k] || pool.age[k] >= DMG_NUM_MERGE) continue;
       const dx = pool.x[k] - wx, dy = pool.y[k] - wy;
       if (dx * dx + dy * dy > r2) continue;
-      pool.val[k] += amount;
-      pool.target[k] = key;   // この竜の次の被弾もここへ足す
-      key._dmgSlot = k;
-      return;
+      const ref = pool.last[k];
+      if (Math.abs(amount - ref) <= Math.max(amount, ref) * DRAGON_DMG_NUM_SIMILAR) return;
     }
   }
   pushDamageNumber(pool, key, wx, wy, amount, false);
@@ -20175,7 +20180,7 @@ const OPTION_DEFS = [
   {
     key:  "dragonDamageNumbers",
     name: "竜の被ダメージ数字",
-    desc: "竜が受けたダメージを赤い「−」付きの数字で、竜の下に出す。近くの竜のぶんは1つにまとめる（群れのその辺りで失ったHP）。",
+    desc: "竜が受けたダメージを赤い「−」付きの数字で、竜の下に出す。近くの竜が近い値を受けたときは代表の1つだけ出し、値が大きく違うものは別に出す。",
   },
 ];
 
