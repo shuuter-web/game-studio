@@ -838,7 +838,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.9.2";
+const GAME_VERSION = "v2.10.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2556,6 +2556,65 @@ function applyImpactToBuilding(settlementIdx, impulse, fromX, fromY) {
     spawnImpactAbsorbFx(s.wx - (ddx / dd) * rr, s.wy - (ddy / dd) * rr, ddx / dd, ddy / dd, dmg);
   }
   damageBuilding(settlementIdx, dmg);
+}
+
+// =====================================================================
+// v2.10.0: 攻撃の共通の形（Shooter判定「4分類をゲームの仕組みに使う」）
+//
+// 攻撃 ＝ **ダメージ3種 ＋ 衝撃** の値の組（hit）。どの項目も省略してよい（0扱い）。
+//   direct … 直接。体（爪・腕・脚・車体）が触れて入る。体の真下だけを叩く踏みつけもここ
+//   blast  … 爆発。発生点から円く広がる範囲に入る。居座る帯（毎秒）もここ
+//   shot   … 射撃（竜側の呼び名はブレス）。飛ぶ弾・伸びる光線・飛び移る電撃が当たった相手に入る
+//   impact … 衝撃。押す力（初速 px/s）。受け手の重さ・耐衝撃性能が
+//            「押し」と「ダメージ」に振り分ける（上の applyImpactTo*）
+//
+// **当てるときは必ず hitBoid / hitMover / hitBuilding / hitInRadius を通す**
+// （それまで十数か所が applyDamageToBoid・damageMover・settlement.hp を直に触っていた）。
+// 受け手は分類ごとの倍率 damageResist を持てる（{ blast: 0.5 } のように部分で書く）。
+// 衝撃の受け止め方は重さ・耐衝撃性能がすでに担っているので、衝撃の倍率は作らない。
+// **今はどの受け手も倍率を持たない＝全部 1**（土台だけを先に作った段階）。
+// 4つは「どう届くか」の区分で、属性（火・氷…）とは混ぜない。属性を入れるなら別の軸にする。
+// =====================================================================
+
+// 竜の分類ごとの被ダメージ倍率（カード・特殊個体で動かす前提の置き場所）
+const DRAGON_DAMAGE_RESIST = {};
+
+/** 押し距離(px)で書かれた押しを、衝撃力（初速 px/s）に直す。 */
+function impactFromPushDist(dist) { return kickSpeedForDistance(dist); }
+
+/** 攻撃のダメージ合計を、受け手の分類ごとの倍率込みで出す（衝撃は含まない）。 */
+function hitDamage(hit, resist) {
+  let sum = 0;
+  if (hit.direct) sum += hit.direct * (resist && resist.direct !== undefined ? resist.direct : 1);
+  if (hit.blast)  sum += hit.blast  * (resist && resist.blast  !== undefined ? resist.blast  : 1);
+  if (hit.shot)   sum += hit.shot   * (resist && resist.shot   !== undefined ? resist.shot   : 1);
+  return sum;
+}
+
+/**
+ * 竜に当てる。(nx, ny) は押す向き（衝撃が無ければ使わない）。
+ * この一撃でダウンした竜は押さない（以前は弾だけがそうしていた。全攻撃をこれに揃えた）。
+ */
+function hitBoid(i, hit, nx, ny) {
+  const dmg = hitDamage(hit, DRAGON_DAMAGE_RESIST);
+  if (dmg > 0) applyDamageToBoid(i, dmg);
+  if (hit.impact > 0 && !boidDowned[i]) applyImpactToBoid(i, nx, ny, hit.impact);
+}
+
+/** 移動敵に当てる。(fromX, fromY) は発生点（盾の向き・押す向き・関節の押し込みに使う）。 */
+function hitMover(m, hit, fromX, fromY) {
+  const dmg = hitDamage(hit, m.def.damageResist);
+  if (dmg > 0) damageMover(m, dmg, fromX, fromY);
+  if (hit.impact > 0) applyImpactToMover(m, fromX, fromY, hit.impact);
+}
+
+/** 建物に当てる。この一撃で陥落したら衝撃は入れない（押す相手がもう無い）。 */
+function hitBuilding(sIdx, hit, fromX, fromY) {
+  const st = settlements[sIdx];
+  if (!st || st.fallen) return;
+  const dmg = hitDamage(hit, st.damageResist);
+  if (dmg > 0) damageBuilding(sIdx, dmg);
+  if (hit.impact > 0 && !st.fallen && st.hp > 0) applyImpactToBuilding(sIdx, hit.impact, fromX, fromY);
 }
 
 /** 竜へ衝撃を与える。竜は耐衝撃1（押されるだけでダメージにはならない）。 */
@@ -7919,6 +7978,7 @@ function spawnRocket(fromWx, fromWy, angle) {
 const LASER_WARN_TIME  = 1.3;   // 予兆（細い線が伸びて脈打つ）
 const LASER_FIRE_TIME  = 0.9;   // 照射（極太・この間ずっと判定がある）
 const LASER_TICK       = 0.15;  // ダメージを刻む間隔
+const LASER_PUSH_DIST  = 26;    // 刻むたびに線の外へ押す距離（px）
 const laserStrikes = [];
 
 /**
@@ -7953,10 +8013,10 @@ function updateLaserStrikes(dt) {
       if (along < 0 || along > L.length) continue;
       const perp = dx * -ay + dy * ax;
       if (Math.abs(perp) > half) continue;
-      applyDamageToBoid(i, L.dps * LASER_TICK);
-      // 軸の外へ押し出す＝「なぎ払われる」感触。減衰する外力チャネルに乗せる
+      // 軸の外へ押し出す＝「なぎ払われる」感触
       const sgn = perp >= 0 ? 1 : -1;
-      applyImpactToBoidDist(i, -ay * sgn, ax * sgn, 26);
+      hitBoid(i, { shot: L.dps * LASER_TICK, impact: impactFromPushDist(LASER_PUSH_DIST) },
+              -ay * sgn, ax * sgn);
     }
   }
 }
@@ -8339,11 +8399,12 @@ function updateHazards(dt) {
     h.tick = HAZARD_TICK;
     const rNow = hazardRadiusAt(h);
     const r2 = rNow * rNow;
+    const hit = { blast: h.dps * HAZARD_TICK };
     for (let i = 0; i < N; i++) {
       if (boidDead[i] || boidDowned[i]) continue;
       const dx = px[i] - h.x, dy = py[i] - h.y;
       if (dx * dx + dy * dy > r2) continue;
-      applyDamageToBoid(i, h.dps * HAZARD_TICK);
+      hitBoid(i, hit);
     }
   }
 }
@@ -9296,26 +9357,33 @@ function emitChainLightning(fromX, fromY, atk, ferocity = 1) {
       if (ndx2 * ndx2 + ndy2 * ndy2 < dRange2) neighbours++;
     }
     const mult = Math.min(atk.densityMax, 1 + neighbours * atk.densityScale);
-    applyDamageToBoid(idx, atk.damage * ferocity * mult);
+    hitBoid(idx, { shot: atk.damage * ferocity * mult });
   }
   chainFxList.push({ segs, life: CHAIN_FX_DURATION });
   return true;
 }
 
-function emitShockwave(wx, wy, radius, damage, pushDist) {
+/**
+ * 衝撃波。半径内の竜に hit を当てて外へ押し、輪を出す。
+ * v2.10.0: (damage, pushDist) を hit に置き換えた。輪だけ出したいときは {} を渡す。
+ */
+function emitShockwave(wx, wy, radius, hit) {
   shockwaveFxList.push({ x: wx, y: wy, maxR: radius, life: SHOCKWAVE_FX_DURATION });
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
     const sdx = px[i] - wx, sdy = py[i] - wy;
     const sd2 = sdx * sdx + sdy * sdy;
     if (sd2 < radius * radius) {
-      applyDamageToBoid(i, damage);
       const sd = Math.sqrt(sd2) || 1;
-      // v0.34.1: 位置を直接ずらすとワープに見えるので、減衰する外力で押す
-      applyImpactToBoidDist(i, sdx / sd, sdy / sd, pushDist);
+      hitBoid(i, hit, sdx / sd, sdy / sd);
     }
   }
   hapticPulse(25);
+}
+
+/** 敵の衝撃波の hit（爆発＋押し距離で書かれた衝撃）。 */
+function shockwaveHit(damage, pushDist) {
+  return { blast: damage, impact: impactFromPushDist(pushDist) };
 }
 
 // ---------------------------------------------------------------------
@@ -9519,7 +9587,8 @@ function updateBehemothArm(m, dt) {
   if (m.attackTimer > 0) return;
   if (nd < BEHEMOTH_ARM_SLAM_RANGE) {
     m.attackTimer = BEHEMOTH_ARM_SLAM_INTERVAL / moverFerocity();
-    emitShockwave(m.wx, m.wy, BEHEMOTH_ARM_SLAM_RADIUS, BEHEMOTH_ARM_SLAM_DMG, BEHEMOTH_ARM_SLAM_PUSH);
+    emitShockwave(m.wx, m.wy, BEHEMOTH_ARM_SLAM_RADIUS,
+                  shockwaveHit(BEHEMOTH_ARM_SLAM_DMG, BEHEMOTH_ARM_SLAM_PUSH));
     triggerFlash("rgba(255,120,40,0.16)", 0.12);
     // 叩きつけた反動で腕が跳ねる（点攻撃にも関節の手応えを出す）
     m.fvx -= m.headingX * 120; m.fvy -= m.headingY * 120;
@@ -9542,7 +9611,6 @@ function behemothSweepHits(m, core) {
     if (boidDead[i] || boidDowned[i] || m.swingHit.has(i)) continue;
     if (pointSegDist2(px[i], py[i], m.elbowX, m.elbowY, m.wx, m.wy) > band2) continue;
     m.swingHit.add(i);
-    applyDamageToBoid(i, BEHEMOTH_SWEEP_DMG * fer);
     // 弾かれる向き＝「腕の進む向き」＋「コアから外向き」。
     // 外向きを混ぜないと、巨獣の裏側へ押し込まれた竜が胴に貼り付く。
     let kx = m.fvx / sp, ky = m.fvy / sp;
@@ -9550,7 +9618,8 @@ function behemothSweepHits(m, core) {
     const od = Math.sqrt(ox * ox + oy * oy) || 1;
     kx += (ox / od) * 0.6; ky += (oy / od) * 0.6;
     const kd = Math.sqrt(kx * kx + ky * ky) || 1;
-    applyImpactToBoidDist(i, kx / kd, ky / kd, BEHEMOTH_SWEEP_PUSH);
+    hitBoid(i, { direct: BEHEMOTH_SWEEP_DMG * fer, impact: impactFromPushDist(BEHEMOTH_SWEEP_PUSH) },
+            kx / kd, ky / kd);
     spawnCollisionParticles(px[i], py[i]);
   }
 }
@@ -9859,7 +9928,7 @@ function updateMovers(dt) {
       // 踏鳴らし/叩きつけ: 半径内の全個体にダメージ＋押し飛ばし＋リングFX（emitShockwave に集約）
       // atk.push を持つ敵（衝撃兵など）は通常より強く吹き飛ばす。
       if (nearestD2 < (atk.radius + 60) * (atk.radius + 60)) {
-        emitShockwave(m.wx, m.wy, atk.radius, atk.damage, atk.push ?? SHOCKWAVE_PUSH_DIST);
+        emitShockwave(m.wx, m.wy, atk.radius, shockwaveHit(atk.damage, atk.push ?? SHOCKWAVE_PUSH_DIST));
       } else {
         m.attackTimer = 0.4; // 射程外: 短い再チェック間隔で待機
       }
@@ -10185,11 +10254,10 @@ function updateBossNova(dt) {
     const d  = Math.sqrt(d2) || 1;
     const nx = dx / d;
     const ny = dy / d;
-    applyDamageToBoid(i, BOSS_NOVA_DAMAGE);
     // 中心に近いほど強く弾き飛ばす。v0.34.1: 位置変位＋速度上書きをやめ、
     // 減衰する外力に一本化（ワープに見えず、押し出されて戻ってくる動きになる）。
     const pushDist = BOSS_NOVA_PUSH_MIN + (1 - d / BOSS_NOVA_RADIUS) * BOSS_NOVA_PUSH_EXTRA;
-    applyImpactToBoidDist(i, nx, ny, pushDist);
+    hitBoid(i, shockwaveHit(BOSS_NOVA_DAMAGE, pushDist), nx, ny);
   }
   triggerFlash("rgba(255,140,40,0.18)", 0.15);
   triggerShake(5, 0.3);   // v0.8: ノヴァの衝撃を画面でも伝える
@@ -10973,7 +11041,7 @@ function moverDeathSlam(m) {
     if (d2 > r2) continue;
     const dd = Math.sqrt(d2) || 1;
     // 中心に近いほど強く押される（端は撫でられる程度）
-    applyImpactToBoid(i, dx / dd, dy / dd, impulse * (1 - dd / radius));
+    hitBoid(i, { impact: impulse * (1 - dd / radius) }, dx / dd, dy / dd);
   }
   for (let k = 0; k < 10; k++) {
     const a = fxRandom() * Math.PI * 2, r = radius * (0.2 + fxRandom() * 0.5);
@@ -11089,10 +11157,9 @@ function updateMoverRams() {
       if (dx * dx + dy * dy > myR * myR) continue;
       const ramDamage = baseRam * chargeDamageMultFor(i) * consumeWakeCharge(i);
       const ramKnock  = chargeKnockbackFor(i);
-      damageMover(m, ramDamage, px[i], py[i]);
       // v2.5.0: 衝撃は通常ダメージとは別チャネル。受け手の耐衝撃性能と自由な軸で
       // ノックバックと追加ダメージに振り分けられる
-      if (ramKnock > 0) applyImpactToMover(m, px[i], py[i], ramKnock);
+      hitMover(m, { direct: ramDamage, impact: ramKnock }, px[i], py[i]);
       // v0.87: 突進中は止まらない。轢きながら進むのが突進の見せ場なので、
       // ここでヒットストップを入れると敵の列で群れが減速し、自分で突進を解除してしまう
       boidHitStopTimer[i]      = (boidChargeOn[i] && chg().plowThrough) ? 0 : HITSTOP_DURATION;
@@ -11346,9 +11413,9 @@ function walkerStomp(leg) {
     const dx = px[i] - leg.plantX, dy = py[i] - leg.plantY;
     const d2 = dx * dx + dy * dy;
     if (d2 > r2) continue;
-    applyDamageToBoid(i, WALKER_STOMP_DMG * fer);
     const d = Math.sqrt(d2) || 1;
-    applyImpactToBoidDist(i, dx / d, dy / d, WALKER_STOMP_PUSH);
+    hitBoid(i, { direct: WALKER_STOMP_DMG * fer, impact: impactFromPushDist(WALKER_STOMP_PUSH) },
+            dx / d, dy / d);
     hit++;
   }
   // 土煙は当たっていなくても出す（踏んだ事実が見えないと避ける学習ができない）
@@ -11995,9 +12062,8 @@ function updateRailRam(m, dt) {
     const dx = px[i] - m.wx, dy = py[i] - m.wy;
     if (dx * dx + dy * dy > r2) continue;
     if (boidCollisionCooldown[i] > 0) continue;
-    applyDamageToBoid(i, ram.damage * fer);
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    applyImpactToBoidDist(i, dx / d, dy / d, ram.push);
+    hitBoid(i, { direct: ram.damage * fer, impact: impactFromPushDist(ram.push) }, dx / d, dy / d);
     boidCollisionCooldown[i] = COLLISION_COOLDOWN;
     spawnCollisionParticles(px[i], py[i]);
   }
@@ -14126,8 +14192,8 @@ function spawnShell(fromWx, fromWy, tx, ty, speed, damage, aoe, color, kind = 4)
 /** 着弾弾の炸裂。範囲ダメージ＋押し飛ばし＋輪のFXは既存の衝撃波に集約する。 */
 function detonateShell(i) {
   const heavy = projKind[i] === 5;
-  emitShockwave(projTgtX[i], projTgtY[i], projAoe[i], projDmg[i],
-                heavy ? SHELL_PUSH_DIST * HEAVY_SHELL_PUSH_MULT : SHELL_PUSH_DIST);
+  emitShockwave(projTgtX[i], projTgtY[i], projAoe[i],
+                shockwaveHit(projDmg[i], heavy ? SHELL_PUSH_DIST * HEAVY_SHELL_PUSH_MULT : SHELL_PUSH_DIST));
   spawnCollisionParticles(projTgtX[i], projTgtY[i]);
   // v1.9.0: 主砲弾は着弾も重い。溜めて撃った1発が小さく弾けると拍子抜けする
   if (heavy) {
@@ -14757,7 +14823,7 @@ function checkProjectileHitBoids(projIdx) {
     }
 
     if (hit) {
-      applyDamageToBoid(i, shotHitDamage(projKind[projIdx], projDmg[projIdx]));
+      hitBoid(i, { shot: shotHitDamage(projKind[projIdx], projDmg[projIdx]) });
       // v0.7: AoE弾（爆撃気球・古代の投石など projectileAoe>0）は着弾点周囲にも被害
       if (projAoe[projIdx] > 0) {
         applyAoeProjectileDamage(projWx[projIdx], projWy[projIdx], projAoe[projIdx],
@@ -14767,7 +14833,8 @@ function checkProjectileHitBoids(projIdx) {
       // v0.59: 押してくる射撃（散弾砲車・衝撃砲）は**着弾点で周りごと押す**。
       // ダメージは既に上で入っているので、ここは押し出しとリングFXだけ（damage 0）。
       if (projKnockR[projIdx] > 0) {
-        emitShockwave(projWx[projIdx], projWy[projIdx], projKnockR[projIdx], 0, KNOCK_SHOT_PUSH);
+        emitShockwave(projWx[projIdx], projWy[projIdx], projKnockR[projIdx],
+                      { impact: impactFromPushDist(KNOCK_SHOT_PUSH) });
       }
       spawnHitParticles(projWx[projIdx], projWy[projIdx]);
       if (!boidDowned[i]) applyProjectileKnockback(i, projIdx);
@@ -14794,18 +14861,17 @@ function applyProjectileKnockback(boidIdx, projIdx) {
   // 打ち消されるため）、ワープして見えて不自然だった。
   // 外力チャネルなら操舵に消されず、かつ連続的に動くので両方の問題が解ける。
   // v2.9.0: 弾種ごとの強さは shotKnockImpulse に集約（図鑑も同じ関数で数字を出す）
-  applyImpactToBoid(boidIdx, nx, ny, shotKnockImpulse(projKind[projIdx]));
+  hitBoid(boidIdx, { impact: shotKnockImpulse(projKind[projIdx]) }, nx, ny);
 }
 
 function applyAoeProjectileDamage(wx, wy, aoeR, damage) {
   const r2 = aoeR * aoeR;
+  const hit = { blast: damage };
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
     const dx = wx - px[i];
     const dy = wy - py[i];
-    if (dx * dx + dy * dy < r2) {
-      applyDamageToBoid(i, damage);
-    }
+    if (dx * dx + dy * dy < r2) hitBoid(i, hit);
   }
 }
 
@@ -14880,7 +14946,7 @@ function updateBeamAttacks(dt) {
         nearestMoverD2 = md2; nearestMover = m;
       }
       if (nearestMover) {
-        damageMover(nearestMover, damageThisFrame, px[i], py[i]);
+        hitMover(nearestMover, { shot: damageThisFrame }, px[i], py[i]);
         activeBreaths.push({ boidIdx: i, targetWx: nearestMover.wx, targetWy: nearestMover.wy });
       }
       continue;
@@ -14891,10 +14957,8 @@ function updateBeamAttacks(dt) {
       const settlement = settlements[sIdx];
       if (settlement.fallen) continue; // 同フレーム内で先の照射により陥落済み
 
-      // ダメージ適用（v1.1.1: 楔竜のひびはブレスにも乗る）
-      const breathDmg = damageThisFrame * incomingDamageMult(settlement);
-      settlement.hp -= breathDmg;
-      reportDamage(settlement, settlement.wx, settlement.wy, breathDmg);
+      // ダメージ適用（v1.1.1: 楔竜のひびはブレスにも乗る＝hitBuilding の中）
+      hitBuilding(sIdx, { shot: damageThisFrame }, px[i], py[i]);
 
       // ヒットパーティクル（0.2秒間引き）
       settlement._breathParticleTimer -= dt;
@@ -14904,13 +14968,6 @@ function updateBeamAttacks(dt) {
           settlement.wx + (fxRandom() - 0.5) * settlement.radius,
           settlement.wy + (fxRandom() - 0.5) * settlement.radius,
         );
-      }
-
-      // 建物破壊チェック
-      if (settlement.hp <= 0 && !settlement.fallen) {
-        settlementFall(sIdx);
-        // 破壊された建物のグリッドエントリを更新（次フレームで再構築される）
-        buildingLayerDirty = true;
       }
 
       // ブレス描画データを収集
@@ -14998,14 +15055,11 @@ function updateCollisionAttacks(dt) {
           ? effWedgeRamDamage()
           : isMelee
             ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
-            : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i) * incomingDamageMult(s);
-      s.hp -= collisionDmg;
-      reportDamage(s, s.wx, s.wy, collisionDmg);
+            : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i);
       // v2.5.0: 突進の衝撃力。建物は耐衝撃0＝逃げ場が無いので全部ダメージになる。
       // **通常ダメージとは別勘定**で、ここで初めて建物が「押せない代償」を払う。
-      // s.hp を直に引いた直後なので、陥落判定はこの後の共通処理に任せる
-      // （applyImpactToBuilding は damageBuilding 経由で自分でも陥落を見る）。
-      if (!s.fallen && s.hp > 0) applyImpactToBuilding(sIdx, chargeKnockbackFor(i), px[i], py[i]);
+      // v2.10.0: 楔竜のひび・陥落判定は hitBuilding（damageBuilding）が持つ
+      hitBuilding(sIdx, { direct: collisionDmg, impact: chargeKnockbackFor(i) }, px[i], py[i]);
 
       // ヒットストップ: この個体だけ一瞬止める（3フレーム相当）。
       // v0.33: 攻撃の fireStun（硬直）が長ければそちらを使う
@@ -15031,7 +15085,7 @@ function updateCollisionAttacks(dt) {
       }
       // v0.85: 巌竜の一撃は「押し潰した」と読めるよう衝撃波と揺れを出す
       if (isHeavy) {
-        emitShockwave(s.wx, s.wy, 34 * boidBodyScale(i), 0, 26);
+        emitShockwave(s.wx, s.wy, 34 * boidBodyScale(i), { impact: impactFromPushDist(26) });
         triggerShake(3.2, 0.11);
       }
 
@@ -16883,12 +16937,12 @@ function updateDragonProjectiles(dt) {
       const mHitR = m.def.radius + 3;
       if (mdx * mdx + mdy * mdy > mHitR * mHitR) continue;
       if (dprojKind[i] === 0) {
-        damageMover(m, BULLET_DAMAGE * effWeaponDmgMult("bullet"), dprojX[i], dprojY[i]);
+        hitMover(m, { shot: BULLET_DAMAGE * effWeaponDmgMult("bullet") }, dprojX[i], dprojY[i]);
         spawnHitParticles(dprojX[i], dprojY[i]);
         dprojHits[i]--;
         if (dprojHits[i] <= 0) dprojActive[i] = 0;
       } else {
-        damageMover(m, MISSILE_DAMAGE * effWeaponDmgMult("missile"), dprojX[i], dprojY[i]);
+        hitMover(m, { shot: MISSILE_DAMAGE * effWeaponDmgMult("missile") }, dprojX[i], dprojY[i]);
         spawnCollisionParticles(dprojX[i], dprojY[i]);
         dprojActive[i] = 0;
       }
@@ -16912,7 +16966,7 @@ function updateDragonProjectiles(dt) {
 
       if (dprojKind[i] === 0) {
         // 弾丸: ダメージ＋貫通消費
-        damageBuilding(sIdx, BULLET_DAMAGE * effWeaponDmgMult("bullet"));
+        hitBuilding(sIdx, { shot: BULLET_DAMAGE * effWeaponDmgMult("bullet") }, dprojX[i], dprojY[i]);
         spawnHitParticles(dprojX[i], dprojY[i]);
         dprojLastHit[i] = sIdx;
         dprojHits[i]--;
@@ -16922,7 +16976,7 @@ function updateDragonProjectiles(dt) {
         // ミサイル: 直撃＋爆発範囲ダメージ
         const dmg  = MISSILE_DAMAGE * effWeaponDmgMult("missile");
         const aoeR = MISSILE_AOE * effMissileAoeMult();
-        damageBuilding(sIdx, dmg);
+        hitBuilding(sIdx, { shot: dmg }, dprojX[i], dprojY[i]);
         // 爆心周辺の他建物に範囲ダメージ
         buildingGridQueryRadius(dprojX[i], dprojY[i], Math.max(1, Math.ceil(aoeR / BUILDING_GRID_CELL)), _dprojNeighbourBuf);
         for (const aIdx of _dprojNeighbourBuf) {
@@ -16932,7 +16986,7 @@ function updateDragonProjectiles(dt) {
           const adx = a.wx - dprojX[i];
           const ady = a.wy - dprojY[i];
           if (adx * adx + ady * ady < (aoeR + a.radius) * (aoeR + a.radius)) {
-            damageBuilding(aIdx, dmg * MISSILE_AOE_FACTOR);
+            hitBuilding(aIdx, { blast: dmg * MISSILE_AOE_FACTOR }, dprojX[i], dprojY[i]);
           }
         }
         spawnCollisionParticles(dprojX[i], dprojY[i]);
@@ -17067,12 +17121,9 @@ function updateMotherBreath(dt) {
     if (hits >= MOTHER_BREATH_TARGETS) break;
     const s = settlements[tg.sIdx];
     if (s.fallen) continue;
-    const mdmg = dmg * incomingDamageMult(s);   // v1.1.1: 楔竜のひび
-    s.hp -= mdmg;
-    reportDamage(s, s.wx, s.wy, mdmg);
+    hitBuilding(tg.sIdx, { shot: dmg }, mx, my);   // v1.1.1 の楔竜のひびは hitBuilding の中
     spawnHitParticles(s.wx, s.wy);
     pushMotherBreathFx(mx, my, s.wx, s.wy, (hits * 60) % 360);   // 虹色に色相をずらす
-    if (s.hp <= 0 && !s.fallen) { settlementFall(tg.sIdx); buildingLayerDirty = true; }
     hits++;
   }
   // 建物が足りなければ移動敵も薙ぐ
@@ -17082,7 +17133,7 @@ function updateMotherBreath(dt) {
       if (!m.alive) continue;
       const mdx = m.wx - mx, mdy = m.wy - my;
       if (mdx * mdx + mdy * mdy >= R2) continue;
-      damageMover(m, dmg, mx, my);
+      hitMover(m, { shot: dmg }, mx, my);
       pushMotherBreathFx(mx, my, m.wx, m.wy, (hits * 60) % 360);   // 虹色に色相をずらす
       hits++;
     }
@@ -17338,7 +17389,7 @@ function updateSpecialBolts(dt) {
       const dx = s.wx - sboltX[i], dy = s.wy - sboltY[i];
       const rr = s.radius + 4;
       if (dx * dx + dy * dy > rr * rr) continue;
-      damageBuilding(sIdx, sboltDmg[i]);
+      hitBuilding(sIdx, { shot: sboltDmg[i] }, sboltX[i], sboltY[i]);
       spawnHitParticles(sboltX[i], sboltY[i]);
       consumed = true;
       break;
@@ -17350,7 +17401,7 @@ function updateSpecialBolts(dt) {
       const dx = m.wx - sboltX[i], dy = m.wy - sboltY[i];
       const rr = moverRadiusOf(m) + 4;
       if (dx * dx + dy * dy > rr * rr) continue;
-      damageMover(m, sboltDmg[i], sboltX[i], sboltY[i]);
+      hitMover(m, { shot: sboltDmg[i] }, sboltX[i], sboltY[i]);
       spawnHitParticles(sboltX[i], sboltY[i]);
       consumed = true;
       break;
@@ -17460,7 +17511,7 @@ function updateWedgeDragon(i, dt) {
     const dx = m.wx - px[i], dy = m.wy - py[i];
     if (dx * dx + dy * dy > rr * rr) continue;
     applyCrackArea(m.wx, m.wy);
-    damageMover(m, effWedgeRamDamage(), px[i], py[i]);
+    hitMover(m, { direct: effWedgeRamDamage() }, px[i], py[i]);
     spawnCollisionParticles(m.wx, m.wy);
     boidSpecialCd[i] = WEDGE_RAM_CD;
     return;
@@ -17591,7 +17642,7 @@ function updateBeaconDragon(i, dt) {
     const t  = dx * ca + dy * sa;                 // 光条に沿った距離
     if (t < -s.radius || t > len + s.radius) continue;
     if (Math.abs(-dx * sa + dy * ca) > BEACON_WIDTH + s.radius) continue;   // 光条からの横ずれ
-    damageBuilding(sIdx, dmg);
+    hitBuilding(sIdx, { shot: dmg }, px[i], py[i]);
     if (fxRandom() < 0.08) spawnHitParticles(s.wx, s.wy);
   }
   for (const m of movers) {
@@ -17601,7 +17652,7 @@ function updateBeaconDragon(i, dt) {
     const t  = dx * ca + dy * sa;
     if (t < -mr || t > len + mr) continue;
     if (Math.abs(-dx * sa + dy * ca) > BEACON_WIDTH + mr) continue;
-    damageMover(m, dmg, ox, oy);
+    hitMover(m, { shot: dmg }, ox, oy);
   }
 }
 
@@ -17614,7 +17665,7 @@ function updateHeavyDragon(i, dt) {
     const mr = moverRadiusOf(m) + reach;
     const dx = m.wx - px[i], dy = m.wy - py[i];
     if (dx * dx + dy * dy > mr * mr) continue;
-    damageMover(m, effHeavyDamage(), px[i], py[i]);
+    hitMover(m, { direct: effHeavyDamage() }, px[i], py[i]);
     spawnCollisionParticles(m.wx, m.wy);
     boidSpecialTimer[i] = HEAVY_MOVER_CD;
     triggerShake(1.8, 0.07);
@@ -17736,8 +17787,8 @@ function clearMechaRockets() { mrocketActive.fill(0); }
 function detonateMechaRocket(i) {
   const x = mrocketX[i], y = mrocketY[i];
   mrocketActive[i] = 0;
-  damageInRadius(x, y, MECHA_BLAST_R, mrocketDmg[i]);
-  emitShockwave(x, y, MECHA_BLAST_R, 0, 0);   // 押しは入れない（群れを散らさないため）
+  hitInRadius(x, y, MECHA_BLAST_R, { blast: mrocketDmg[i] });
+  emitShockwave(x, y, MECHA_BLAST_R, {});   // 輪だけ。押しは入れない（群れを散らさないため）
   spawnCollisionParticles(x, y);
   triggerShake(2.4, 0.09);
 }
@@ -18121,25 +18172,30 @@ function drawSpecialBolts() {
 // spawnDragonProjectile / slashFxList / shockwaveFxList）を組み替えて作る。
 // =================================================================
 
-/** 近傍の建物と移動敵にまとめてダメージを入れる共通ヘルパー（範囲攻撃用）。 */
-function damageInRadius(wx, wy, radius, damage) {
+/**
+ * 範囲内の建物と移動敵にまとめて当てる（衝撃は中心から外へ押す）。当たった数を返す。
+ * hit を渡さなければ**数えるだけ**で当てない（空振りしないための下見）。
+ * v2.10.0: 以前は下見のたびに 0 ダメージを実際に入れていたので、
+ * 鏡の盾兵や潜行中の敵が下見だけで「弾いた火花」を出していた。
+ */
+function hitInRadius(wx, wy, radius, hit) {
   let hits = 0;
   const cellRadius = Math.max(1, Math.ceil(radius / BUILDING_GRID_CELL));
   buildingGridQueryRadius(wx, wy, cellRadius, _buildingNeighbourBuf);
   const r2 = radius * radius;
   for (const sIdx of _buildingNeighbourBuf) {
-    const s = settlements[sIdx];
-    if (!s || s.fallen) continue;
-    const dx = s.wx - wx, dy = s.wy - wy;
+    const st = settlements[sIdx];
+    if (!st || st.fallen) continue;
+    const dx = st.wx - wx, dy = st.wy - wy;
     if (dx * dx + dy * dy > r2) continue;
-    damageBuilding(sIdx, damage);
+    if (hit) hitBuilding(sIdx, hit, wx, wy);
     hits++;
   }
   for (const m of movers) {
     if (!m.alive) continue;
     const dx = m.wx - wx, dy = m.wy - wy;
     if (dx * dx + dy * dy > r2) continue;
-    damageMover(m, damage, wx, wy);
+    if (hit) hitMover(m, hit, wx, wy);
     hits++;
   }
   return hits;
@@ -18175,7 +18231,7 @@ function updateBladeAttacks(dt) {
       while (da >  Math.PI) da -= Math.PI * 2;
       while (da < -Math.PI) da += Math.PI * 2;
       if (Math.abs(da) > BLADE_ARC) continue;
-      damageBuilding(sIdx, dmg);
+      hitBuilding(sIdx, { direct: dmg }, px[i], py[i]);
       hit = true;
     }
     for (const m of movers) {
@@ -18186,7 +18242,7 @@ function updateBladeAttacks(dt) {
       while (da >  Math.PI) da -= Math.PI * 2;
       while (da < -Math.PI) da += Math.PI * 2;
       if (Math.abs(da) > BLADE_ARC) continue;
-      damageMover(m, dmg, px[i], py[i]);
+      hitMover(m, { direct: dmg }, px[i], py[i]);
       hit = true;
     }
     // 空振りでは撃たない（タイマーを進めず標的を待つ＝他武器と同じ作法）
@@ -18244,13 +18300,14 @@ function satellitePos(i, k, out) {
 const _satPos = { x: 0, y: 0 };
 function updateSatelliteAttacks(dt) {
   const dmg = SAT_DPS * effWeaponDmgMult("satellite") * dt;
+  const hit = { direct: dmg };
   const hitR = SAT_HIT_R * effWeaponRangeMult("satellite");
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     for (let k = 0; k < SAT_COUNT; k++) {
       satellitePos(i, k, _satPos);
-      damageInRadius(_satPos.x, _satPos.y, hitR, dmg);
+      hitInRadius(_satPos.x, _satPos.y, hitR, hit);
     }
   }
 }
@@ -18280,6 +18337,10 @@ function drawSatellites() {
 // ---- 落下叩きつけ（ガーゴイル）: 真下を石の衝撃で叩く ----
 const DIVE_RADIUS   = 56;
 const DIVE_DAMAGE   = 18;
+// v2.10.0: 石の竜が叩きつける＝衝撃を持たせる（Shooter判定）。説明は前から
+// 「石の衝撃で叩く」だったのに押しを持っていなかった。移動敵は外へ弾かれ、
+// 建物には ×IMPACT_TO_DAMAGE（120 → 6）のダメージで入る。竜種で唯一、主攻撃が衝撃を持つ
+const DIVE_IMPACT   = 120;
 const DIVE_INTERVAL = 1.5;
 function updateDivebombAttacks(dt) {
   const radius = DIVE_RADIUS * effWeaponRangeMult("divebomb");
@@ -18292,9 +18353,9 @@ function updateDivebombAttacks(dt) {
     if (boidFireTimer[i] > 0) continue;
 
     // 射程内に何か居るときだけ叩く（空振りしない）
-    if (damageInRadius(px[i], py[i], radius, 0) === 0) continue;
+    if (hitInRadius(px[i], py[i], radius) === 0) continue;
     boidFireTimer[i] = inter;
-    damageInRadius(px[i], py[i], radius, dmg);
+    hitInRadius(px[i], py[i], radius, { direct: dmg, impact: DIVE_IMPACT });
     // 石色の衝撃リング＋硬直（fireStun 0.18）
     shockwaveFxList.push({ x: px[i], y: py[i], maxR: radius, life: SHOCKWAVE_FX_DURATION, color: "#b8c0c8" });
     spawnCollisionParticles(px[i], py[i]);
@@ -18322,7 +18383,7 @@ function updateBombDrops(dt) {
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
     // 炸裂したとき当たるものが今この場所にあるか（空振りでは落とさない＝他武器と同じ作法）
-    if (damageInRadius(px[i], py[i], radius, 0) === 0) continue;
+    if (hitInRadius(px[i], py[i], radius) === 0) continue;
     boidFireTimer[i] = inter;
     if (bombList.length < BOMB_MAX) bombList.push({ x: px[i], y: py[i], t: BOMB_FUSE });
   }
@@ -18337,7 +18398,7 @@ function updateBombFuses(dt) {
     const b = bombList[k];
     b.t -= dt;
     if (b.t > 0) continue;
-    damageInRadius(b.x, b.y, radius, dmg);
+    hitInRadius(b.x, b.y, radius, { blast: dmg });
     shockwaveFxList.push({ x: b.x, y: b.y, maxR: radius, life: SHOCKWAVE_FX_DURATION, color: "#ffb060" });
     spawnCollisionParticles(b.x, b.y);
     bombList.splice(k, 1);
@@ -18414,7 +18475,7 @@ function updateTongueAttacks(dt) {
       if (along < 0 || along > range) continue;
       const side = Math.abs(dx * -hy + dy * hx);        // 線からの横ずれ
       if (side > s.radius + TONGUE_HALF_W) continue;
-      damageBuilding(sIdx, dmg);
+      hitBuilding(sIdx, { direct: dmg }, px[i], py[i]);
       hit = true;
     }
     for (const m of movers) {
@@ -18424,7 +18485,7 @@ function updateTongueAttacks(dt) {
       if (along < 0 || along > range) continue;
       const side = Math.abs(dx * -hy + dy * hx);
       if (side > (m.radius || 12) + TONGUE_HALF_W) continue;
-      damageMover(m, dmg, px[i], py[i]);
+      hitMover(m, { direct: dmg }, px[i], py[i]);
       hit = true;
     }
     if (!hit) continue;   // 空振りでは伸ばさない
@@ -19714,6 +19775,8 @@ function codexAttackLabel(def) {
 //   射撃 … 飛ぶ弾・伸びる光線・飛び移る電撃が、当たった相手に入る
 //
 // どれでもないもの（回復・召喚・航跡・ひび・鐘楼）は攻撃ではないので成分を持たない。
+// v2.10.0: ゲーム側も同じ形（hit＝ダメージ3種＋衝撃）で当てるようになった。下の成分表は
+// その hit を作る式を写したもの。攻撃を足したら、ゲーム側の hit と一緒にここも1行足す。
 //
 // **数値は定義の値ではなく、実際に入る値を出す**（通常弾の直撃は 基準4.3 ×1.3 × damage など）。
 // 図鑑はゲームと同じ関数・定数を呼んで数字を作るので、片方だけ変わってずれることはない。
@@ -19731,9 +19794,6 @@ function attackCategoryName(cat, side) {
   const c = ATTACK_CATEGORIES[cat];
   return side === "dragon" && c.jaDragon ? c.jaDragon : c.ja;
 }
-
-/** 押し距離(px)で書かれた敵の押しを、衝撃力（初速）に直す。 */
-function impactFromPushDist(dist) { return kickSpeedForDistance(dist); }
 
 /** 図鑑用の数値（小数1桁・末尾の .0 は落とす）。[最小, 最大] を渡すと幅で出す。 */
 function codexNum(v) {
@@ -19808,7 +19868,8 @@ function codexMoverPowers(def) {
       return [{ label: "衝撃波", blast: a.damage, impact: impactFromPushDist(a.push ?? SHOCKWAVE_PUSH_DIST),
                 note: `半径${a.radius}` }];
     case "laser":
-      return [{ label: "レーザー", shot: a.dps, perSec: true }];
+      return [{ label: "レーザー", shot: a.dps, perSec: true, impact: impactFromPushDist(LASER_PUSH_DIST),
+                note: "線の外へ押す" }];
     case "fan": {
       const k = fanShotKind(a.kind ?? 0);
       const list = [{ label: (k === 1 ? "重弾" : "矢") + "（1発）",
@@ -19847,7 +19908,7 @@ const CODEX_EMPLACEMENT_POWERS = {
   tesla:     () => [{ label: "連鎖電撃", shot: TESLA_TOWER_CHAIN.damage, note: `密集で最大×${TESLA_TOWER_CHAIN.densityMax}` }],
   flak:      () => [{ label: "炸裂（1発）", blast: FLAK_DAMAGE, impact: impactFromPushDist(SHELL_PUSH_DIST),
                       note: `半径${FLAK_AOE}` }],
-  prism:     () => [{ label: "レーザー", shot: PRISM_DPS, perSec: true }],
+  prism:     () => [{ label: "レーザー", shot: PRISM_DPS, perSec: true, impact: impactFromPushDist(LASER_PUSH_DIST) }],
   concussionBattery: () => [
     { label: "衝撃弾（1発）", shot: shotHitDamage(fanShotKind(1), CONCUSSION_BATTERY_DAMAGE),
       impact: shotKnockImpulse(fanShotKind(1)) },
@@ -19894,9 +19955,9 @@ const CODEX_BOSS_ART_POWERS = {
   arrowRain:  () => ({ blast: BOSS_RAIN_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
   volley:     () => ({ shot: shotHitDamage(fanShotKind(1), BOSS_VOLLEY_DMG), impact: shotKnockImpulse(fanShotKind(1)) }),
   carpet:     () => ({ blast: BOSS_CARPET_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
-  laser:      () => ({ shot: BOSS_LASER_DPS, perSec: true }),
+  laser:      () => ({ shot: BOSS_LASER_DPS, perSec: true, impact: impactFromPushDist(LASER_PUSH_DIST) }),
   flakStorm:  () => ({ blast: BOSS_STORM_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
-  prismCross: () => ({ shot: BOSS_CROSS_DPS, perSec: true }),
+  prismCross: () => ({ shot: BOSS_CROSS_DPS, perSec: true, impact: impactFromPushDist(LASER_PUSH_DIST) }),
 };
 
 /** 首都の成分。通常弾・反発衝撃波・文明ごとの大技。 */
@@ -20406,7 +20467,7 @@ function codexDragonMainAttack(def) {
       return { power: { label: label + "（1匹）", direct: SAT_DPS, perSec: true },
                stat: `1体に${SAT_COUNT}匹 ／ 周回半径 ${SAT_ORBIT_R}px` };
     case "divebomb":
-      return { power: { label, direct: DIVE_DAMAGE },
+      return { power: { label, direct: DIVE_DAMAGE, impact: DIVE_IMPACT },
                stat: `真下 半径${DIVE_RADIUS}px ／ ${DIVE_INTERVAL}秒ごと` };
     case "bomb":
       return { power: { label, blast: BOMB_DAMAGE },
