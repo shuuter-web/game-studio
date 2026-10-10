@@ -654,6 +654,16 @@
   .cx-tags { font-family: monospace; font-size: 10px; color: #ffb070; margin-top: 1px; }
   .cx-atk  { font-size: 11px; color: #9fbad6; margin-top: 2px; }
   .cx-stat { font-family: monospace; font-size: 10px; color: #7d93ab; margin-top: 2px; }
+  /* v2.9.0: 攻撃の4分類。1攻撃＝1行で、成分ごとの色つきチップを並べる */
+  .cx-pws { margin-top: 3px; display: flex; flex-direction: column; gap: 2px; }
+  .cx-pwline { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 4px; }
+  .cx-pwname { font-family: monospace; font-size: 10px; color: #c8d6e6; margin-right: 1px; }
+  .cx-pw { font-family: monospace; font-size: 10px; line-height: 1.5; padding: 0 5px; border-radius: 4px;
+           color: var(--pw); border: 1px solid var(--pw); background: rgba(0,0,0,0.28); white-space: nowrap; }
+  .cx-pwnote { font-family: monospace; font-size: 9.5px; color: #7d93ab; }
+  .cx-legend { display: grid; grid-template-columns: auto 1fr; gap: 3px 7px; align-items: center;
+               font-family: monospace; font-size: 10px; color: #8aa; margin: -4px 0 12px; }
+  .cx-legend .cx-pw { justify-self: start; }
   /* v1.0.3: 強化カードの図鑑。絵札の代わりに絵文字を大きく出す */
   .cx-card-icon { width: 52px; height: 52px; flex: 0 0 52px; display: flex; align-items: center;
                   justify-content: center; font-size: 28px; border-radius: 8px;
@@ -666,9 +676,10 @@
   /* 出る条件。ここがこのページの本体なので、説明より目立たせる */
   .cx-when { font-family: monospace; font-size: 10px; color: #8cd8ff; margin-top: 2px; }
   /* v0.68: 敵／建物／弾 のタブ */
-  .cx-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
-  /* v1.6.0: 6タブになったので「特殊個体」が2行に折れないよう詰める */
-  .cx-tab { flex: 1 1 0; padding: 8px 2px; font-family: monospace; font-size: 11px; white-space: nowrap; letter-spacing: 0;
+  /* v2.9.0: 7タブになったので4列×2段に組む（1段のままだと375px幅で「特殊個体」が枠からはみ出す）。
+     上段＝相手側（敵・建物・地域・弾）、下段＝自分側（竜・特殊個体・カード） */
+  .cx-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 10px; }
+  .cx-tab { padding: 8px 2px; font-family: monospace; font-size: 11px; white-space: nowrap; letter-spacing: 0;
             color: #9fbad6; background: rgba(16,22,36,0.92); border: 1px solid #3a4a66;
             border-radius: 8px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
   .cx-tab.on { color: #ffe0b0; border-color: #b08a4a; background: rgba(46,34,20,0.92); }
@@ -827,7 +838,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.8.0";
+const GAME_VERSION = "v2.9.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2909,6 +2920,7 @@ const BOSS_NOVA_INTERVAL = 5.0;   // v0.29: ノヴァを高頻度化（6.0→5.0
 const BOSS_NOVA_RADIUS   = 280;   // v0.29: 効果半径を拡大（260→280）
 const BOSS_NOVA_DAMAGE   = 3.5;   // v0.29: ノヴァ強化（2.5→3.5）
 const BOSS_NOVA_PUSH_MIN = 40;    // 最低押し戻し距離（px。中心に近いほど大きく飛ぶ）
+const BOSS_NOVA_PUSH_EXTRA = 90;  // 中心で足される押し距離（px）
 
 // ボスのHP計算（stageIndexは0始まり）
 function calcBossHp(stageIndex) {
@@ -8165,6 +8177,11 @@ const FLAK_SCATTER      = 135;
 const PRISM_WIDTH       = 30;    // 首都の極太レーザー(86)の小型版
 const PRISM_LENGTH      = 640;
 const PRISM_DPS         = 14;
+// テスラ塔の連鎖電撃（射程は EMPLACEMENT_DEFS.tesla.range から足す）
+const TESLA_TOWER_CHAIN = {
+  damage: 2.2, hops: 14, hopRange: 58,
+  densityRange: 46, densityScale: 0.30, densityMax: 3.0,
+};
 
 // v0.48: ロケット砲台（建物側の見せ場）。**弾速の遅い大きな弾をまとめて撃つ**。
 // 速い弾は「気づいたら削れている」だけだが、遅い弾は**飛んでくる間に避けられる**＝
@@ -10169,7 +10186,7 @@ function updateBossNova(dt) {
     applyDamageToBoid(i, BOSS_NOVA_DAMAGE);
     // 中心に近いほど強く弾き飛ばす。v0.34.1: 位置変位＋速度上書きをやめ、
     // 減衰する外力に一本化（ワープに見えず、押し出されて戻ってくる動きになる）。
-    const pushDist = BOSS_NOVA_PUSH_MIN + (1 - d / BOSS_NOVA_RADIUS) * 90;
+    const pushDist = BOSS_NOVA_PUSH_MIN + (1 - d / BOSS_NOVA_RADIUS) * BOSS_NOVA_PUSH_EXTRA;
     applyImpactToBoidDist(i, nx, ny, pushDist);
   }
   triggerFlash("rgba(255,140,40,0.18)", 0.15);
@@ -14074,6 +14091,7 @@ function eraShotSpeedMult() {
 // 飛行中は当たり判定を持たず、落下点に予告円が出る＝**円から退く**という別種の課題になる。
 // 投石・矢の雨・絨毯爆撃・対空弾幕・臼砲を、この1つの部品で全部作っている。
 const SHELL_PUSH_DIST = 22;   // 炸裂の押し飛ばし（emitShockwave へ渡す）
+const HEAVY_SHELL_PUSH_MULT = 2.4;   // 主砲弾（kind=5）の押し倍率
 /**
  * @param {number} [kind=4] 4=ふつうの着弾弾 ／ 5=主砲弾（v1.9.0。大きく光り、尾を引く）
  * 既存の臼砲・絨毯爆撃・殲滅砲兵を一切変えずに「重い1発」を足すために別 kind にした。
@@ -14107,7 +14125,7 @@ function spawnShell(fromWx, fromWy, tx, ty, speed, damage, aoe, color, kind = 4)
 function detonateShell(i) {
   const heavy = projKind[i] === 5;
   emitShockwave(projTgtX[i], projTgtY[i], projAoe[i], projDmg[i],
-                heavy ? SHELL_PUSH_DIST * 2.4 : SHELL_PUSH_DIST);
+                heavy ? SHELL_PUSH_DIST * HEAVY_SHELL_PUSH_MULT : SHELL_PUSH_DIST);
   spawnCollisionParticles(projTgtX[i], projTgtY[i]);
   // v1.9.0: 主砲弾は着弾も重い。溜めて撃った1発が小さく弾けると拍子抜けする
   if (heavy) {
@@ -14411,10 +14429,7 @@ function fireEmplacement(s, targetIdx) {
     }
   } else if (key === "tesla") {
     // 連鎖電撃（敵の雷撃塔車と同じ）。固めているほど痛い＝建物側にも密度の罰を置く
-    const fired = emitChainLightning(s.wx, s.wy, {
-      range: def.range, damage: 2.2, hops: 14, hopRange: 58,
-      densityRange: 46, densityScale: 0.30, densityMax: 3.0,
-    });
+    const fired = emitChainLightning(s.wx, s.wy, Object.assign({ range: def.range }, TESLA_TOWER_CHAIN));
     if (!fired) s.attackTimer = 0.5;
   } else if (key === "flak") {
     // 対空弾幕。小さい炸裂を群れの周囲へ広く撒いて逃げ場を削る
@@ -14602,7 +14617,7 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind
   projTargetIdx[slot]  = -1;
   projColor[slot]      = color;
   // 変更5: 種別を記録（デフォルト 0=arrow）
-  projKind[slot]       = (kind === 1) ? 1 : 0;
+  projKind[slot]       = fanShotKind(kind);
   projStyle[slot]      = eraShotStyle();
   projRange[slot]      = maxRange || 0;   // v0.57: 0 なら kind ごとの既定射程
   projKnockR[slot]     = knockR || 0;     // v0.59: 着弾点で周囲を押す半径
@@ -14688,6 +14703,27 @@ const NORMAL_SHOT_DAMAGE_MULT = 1.3;
 // 120px/s は maxSpeed(160) の75%なので体感できるが maxSpeed クランプで飛び出さない。
 const PROJECTILE_KNOCKBACK_SPEED = 120;
 
+// v2.9.0: 弾が竜に当たったときの値は**ここだけで決める**（図鑑も同じ関数で数字を出す）。
+// 直撃ダメージは弾の種別だけで決まり、**撃った側の damage は見ない**
+// （damage が効くのは projectileAoe を持つ弾の巻き込みだけ）。
+// kind: 0=矢 1=カタパルト弾 2=ボス重弾 3=ロケット（4/5 の着弾弾は竜に直接当たらない）
+function shotHitDamage(kind) {
+  // v0.63: 遅くした通常弾(0/1)だけ +30%。ロケット(3)・ボス重弾(2)は据え置き
+  const kindMult = (kind === 0 || kind === 1) ? NORMAL_SHOT_DAMAGE_MULT : 1;
+  return PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER * kindMult;
+}
+/** 弾が竜を押す衝撃力（初速 px/s）。 */
+function shotKnockImpulse(kind) {
+  // v0.7: ボス弾は「位置ごと押し戻す」距離で調整してあるので距離から換算する
+  if (kind === 2) return kickSpeedForDistance(BOSS_SHOT_KNOCKBACK_DIST);
+  // 変更5: カタパルト弾は強く（体感できる吹き飛び）、矢は弱く（ちょっと押される程度）
+  return kind === 1 ? CATAPULT_KNOCKBACK_SPEED : ARROW_KNOCKBACK_SPEED;
+}
+/** 扇撃ち（spawnFanProjectileRaw）で実際に使われる弾種。カタパルト弾以外は矢に丸められる。 */
+function fanShotKind(kind) { return kind === 1 ? 1 : 0; }
+// 巻き込み（projectileAoe を持つ弾）の周囲へのダメージ＝撃った側の damage のこの割合
+const AOE_SPLASH_FACTOR = 0.6;
+
 function checkProjectileHitBoids(projIdx) {
   const HIT_R  = 8;
   const HIT_R2 = HIT_R * HIT_R;
@@ -14715,14 +14751,11 @@ function checkProjectileHitBoids(projIdx) {
     }
 
     if (hit) {
-      // v0.63: 遅くした通常弾(0/1)だけ +30%。ロケット(3)・ボス重弾(2)・着弾弾(4)は据え置き
-      const kindMult = (projKind[projIdx] === 0 || projKind[projIdx] === 1)
-        ? NORMAL_SHOT_DAMAGE_MULT : 1;
-      applyDamageToBoid(i, PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER * kindMult);
+      applyDamageToBoid(i, shotHitDamage(projKind[projIdx]));
       // v0.7: AoE弾（爆撃気球・古代の投石など projectileAoe>0）は着弾点周囲にも被害
       if (projAoe[projIdx] > 0) {
         applyAoeProjectileDamage(projWx[projIdx], projWy[projIdx], projAoe[projIdx],
-                                 projDmg[projIdx] * 0.6);
+                                 projDmg[projIdx] * AOE_SPLASH_FACTOR);
         spawnCollisionParticles(projWx[projIdx], projWy[projIdx]);
       }
       // v0.59: 押してくる射撃（散弾砲車・衝撃砲）は**着弾点で周りごと押す**。
@@ -14754,18 +14787,8 @@ function applyProjectileKnockback(boidIdx, projIdx) {
   // 旧実装は kind=2 だけ px/py を直接ずらしていたが（速度加算が操舵に
   // 打ち消されるため）、ワープして見えて不自然だった。
   // 外力チャネルなら操舵に消されず、かつ連続的に動くので両方の問題が解ける。
-  if (projKind[projIdx] === 2) {
-    applyImpactToBoidDist(boidIdx, nx, ny, BOSS_SHOT_KNOCKBACK_DIST);
-    return;
-  }
-
-  // 変更5: 種別ごとにノックバック強度を分岐する
-  // catapult(kind=1): CATAPULT_KNOCKBACK_SPEED=220（強い。体感できる吹き飛び）
-  // arrow  (kind=0): ARROW_KNOCKBACK_SPEED=60（弱い。ちょっと押される程度）
-  const knockbackSpeed = projKind[projIdx] === 1
-    ? CATAPULT_KNOCKBACK_SPEED
-    : ARROW_KNOCKBACK_SPEED;
-  applyImpactToBoid(boidIdx, nx, ny, knockbackSpeed);
+  // v2.9.0: 弾種ごとの強さは shotKnockImpulse に集約（図鑑も同じ関数で数字を出す）
+  applyImpactToBoid(boidIdx, nx, ny, shotKnockImpulse(projKind[projIdx]));
 }
 
 function applyAoeProjectileDamage(wx, wy, aoeR, damage) {
@@ -19672,6 +19695,208 @@ function codexAttackLabel(def) {
   return t;
 }
 
+// -----------------------------------------------------------------
+// v2.9.0: 攻撃の4分類（Shooter指示）
+// -----------------------------------------------------------------
+// 敵味方すべての攻撃を「直接・衝撃・爆発・射撃（竜側の呼び名はブレス）」の成分で表す。
+// 1つの攻撃が複数の成分を持ってよい（爆弾＝直撃の射撃＋巻き込みの爆発＋押す衝撃）。
+//
+//   直接 … 体（爪・腕・脚・車体）が触れて入る。体の真下だけを叩く踏みつけもここ
+//   衝撃 … 押す力。単位は押し出しの初速(px/s)。押せない相手（建物）には
+//          IMPACT_TO_DAMAGE 倍のダメージとして入る（v2.5.0 の衝撃システム）
+//   爆発 … 発生点から円く広がる範囲に入る。衝撃波・着弾弾・居座る帯（毎秒）
+//   射撃 … 飛ぶ弾・伸びる光線・飛び移る電撃が、当たった相手に入る
+//
+// どれでもないもの（回復・召喚・航跡・ひび・鐘楼）は攻撃ではないので成分を持たない。
+//
+// **数値は定義の値ではなく、実際に入る値を出す**。たとえば敵の通常弾は定義に damage を
+// 持つが、竜に当たったときは shotHitDamage() の一律値が入る。図鑑はゲームと同じ関数・定数を
+// 呼んで数字を作るので、片方だけ変わってずれることはない。
+// -----------------------------------------------------------------
+const ATTACK_CATEGORIES = {
+  direct: { ja: "直接", color: "#ff9a80", hint: "体が触れて入る" },
+  impact: { ja: "衝撃", color: KNOCKBACK_MARK_COLOR,
+            hint: `押す力。押せない相手（建物）には ×${IMPACT_TO_DAMAGE} のダメージで入る` },
+  blast:  { ja: "爆発", color: "#ffc24d", hint: "点から円く広がる範囲に入る" },
+  shot:   { ja: "射撃", jaDragon: "ブレス", color: "#c9adff", hint: "弾・光線・電撃が当たった相手に入る" },
+};
+const ATTACK_CATEGORY_ORDER = ["direct", "impact", "blast", "shot"];
+
+function attackCategoryName(cat, side) {
+  const c = ATTACK_CATEGORIES[cat];
+  return side === "dragon" && c.jaDragon ? c.jaDragon : c.ja;
+}
+
+/** 押し距離(px)で書かれた敵の押しを、衝撃力（初速）に直す。 */
+function impactFromPushDist(dist) { return kickSpeedForDistance(dist); }
+
+/** 図鑑用の数値（小数1桁・末尾の .0 は落とす）。[最小, 最大] を渡すと幅で出す。 */
+function codexNum(v) {
+  if (Array.isArray(v)) {
+    return v[0] === v[1] ? codexNum(v[0]) : codexNum(v[0]) + "〜" + codexNum(v[1]);
+  }
+  return String(Math.round(v * 10) / 10);
+}
+
+/**
+ * 攻撃の成分を1攻撃1行で出す。
+ * @param {Array} list  { label, direct?, impact?, blast?, shot?, perSec?, note? } の配列
+ *                      perSec はダメージ成分（衝撃以外）が「触れている間の毎秒」であること
+ * @param {"enemy"|"dragon"} side  射撃の呼び名（竜は「ブレス」）
+ */
+function codexPowerHtml(list, side) {
+  if (!list || list.length === 0) return "";
+  let html = `<div class="cx-pws">`;
+  for (const e of list) {
+    html += `<div class="cx-pwline"><span class="cx-pwname">${e.label}</span>`;
+    for (const cat of ATTACK_CATEGORY_ORDER) {
+      const v = e[cat];
+      if (v === undefined || v === 0) continue;
+      const unit = e.perSec && cat !== "impact" ? "/秒" : "";
+      // 衝撃は初速(px/s)なので小数に意味がない。整数で出す
+      const shown = cat === "impact"
+        ? (Array.isArray(v) ? v.map(Math.round) : Math.round(v)) : v;
+      html += `<span class="cx-pw" style="--pw:${ATTACK_CATEGORIES[cat].color}">` +
+              `${attackCategoryName(cat, side)} <b>${codexNum(shown)}</b>${unit}</span>`;
+    }
+    if (e.note) html += `<span class="cx-pwnote">${e.note}</span>`;
+    html += `</div>`;
+  }
+  return html + `</div>`;
+}
+
+/** 分類の凡例（敵・建物・竜・特殊個体のページの頭に出す）。 */
+function codexPowerLegend(side) {
+  let html = `<div class="cx-legend">`;
+  for (const cat of ATTACK_CATEGORY_ORDER) {
+    const c = ATTACK_CATEGORIES[cat];
+    html += `<span class="cx-pw" style="--pw:${c.color}">${attackCategoryName(cat, side)}</span>` +
+            `<span>${c.hint}</span>`;
+  }
+  return html + `<span></span><span>/秒 は触れている間の毎秒。` +
+    `${side === "dragon" ? "強化カード前の1体ぶん" : "敵は文明と警戒度で強くなる前の基準値"}</span></div>`;
+}
+
+/** 移動敵の攻撃の成分。 */
+function codexMoverPowers(def) {
+  const shell = impactFromPushDist(SHELL_PUSH_DIST);
+  if (def.name === "behemoth_arm") {
+    return [
+      { label: "薙ぎ払い", direct: BEHEMOTH_SWEEP_DMG, impact: impactFromPushDist(BEHEMOTH_SWEEP_PUSH) },
+      { label: "叩きつけ", blast: BEHEMOTH_ARM_SLAM_DMG, impact: impactFromPushDist(BEHEMOTH_ARM_SLAM_PUSH),
+        note: `半径${BEHEMOTH_ARM_SLAM_RADIUS}` },
+    ];
+  }
+  if (def.name === "walker_leg") {
+    return [{ label: "踏みつけ", direct: WALKER_STOMP_DMG, impact: impactFromPushDist(WALKER_STOMP_PUSH) }];
+  }
+  if (def.carGun) {
+    return [{ label: "砲弾（1発）", blast: def.carGun.damage, impact: shell, note: `半径${def.carGun.aoe}` }];
+  }
+  if (def.railRam) {
+    return [{ label: "轢殺", direct: def.railRam.damage, impact: impactFromPushDist(def.railRam.push) }];
+  }
+  const a = def.attack;
+  if (!a) return [];
+  switch (a.type) {
+    case "shockwave":
+      return [{ label: "衝撃波", blast: a.damage, impact: impactFromPushDist(a.push ?? SHOCKWAVE_PUSH_DIST),
+                note: `半径${a.radius}` }];
+    case "laser":
+      return [{ label: "レーザー", shot: a.dps, perSec: true }];
+    case "fan": {
+      const k = fanShotKind(a.kind ?? 0);
+      const list = [{ label: (k === 1 ? "重弾" : "矢") + "（1発）",
+                      shot: shotHitDamage(k), impact: shotKnockImpulse(k) }];
+      if (a.knockR) list.push({ label: "着弾の衝撃波", impact: impactFromPushDist(KNOCK_SHOT_PUSH),
+                                note: `半径${a.knockR}` });
+      return list;
+    }
+    case "broadside":   // 舷側砲は spawnFanProjectileRaw に kind=1 で撃つ
+      return [{ label: "砲弾（1発）", shot: shotHitDamage(1), impact: shotKnockImpulse(1) }];
+    case "bomb":        // 直撃の弾（kind=1）＋着弾点の巻き込み
+      return [{ label: "爆弾", shot: shotHitDamage(1), impact: shotKnockImpulse(1),
+                blast: a.damage * AOE_SPLASH_FACTOR, note: `巻き込み半径${a.aoe}` }];
+    case "hazard":
+      return [{ label: "居座る帯", blast: a.dps ?? a.damage, perSec: true, note: `半径${a.radius}・${a.life}秒` }];
+    case "chain":
+      return [{ label: "連鎖電撃", shot: a.damage, note: `密集で最大×${a.densityMax}` }];
+    case "shell":
+      return [{ label: (def.manualAttack ? "主砲" : "着弾弾") + "（1発）", blast: a.damage,
+                impact: def.manualAttack ? shell * HEAVY_SHELL_PUSH_MULT : shell, note: `半径${a.aoe}` }];
+  }
+  return [];   // heal / summon は攻撃ではない
+}
+
+/** 時代兵器の成分。 */
+const CODEX_EMPLACEMENT_POWERS = {
+  trebuchet: () => [{ label: "巨岩", blast: TREBUCHET_DAMAGE, impact: impactFromPushDist(SHELL_PUSH_DIST),
+                      note: `半径${TREBUCHET_AOE}` }],
+  ember:     () => [{ label: "燃える輪", blast: EMBER_TOWER_DPS, perSec: true, note: `半径${EMBER_TOWER_RADIUS}` }],
+  ballista:  () => [{ label: "重矢（1発）", shot: shotHitDamage(fanShotKind(1)), impact: shotKnockImpulse(fanShotKind(1)) }],
+  rocket:    () => [{ label: "ロケット（1発）", shot: shotHitDamage(3), impact: shotKnockImpulse(3),
+                      blast: ROCKET_DAMAGE * AOE_SPLASH_FACTOR, note: `巻き込み半径${ROCKET_AOE}` }],
+  mortar:    () => [{ label: "砲弾（1発）", blast: MORTAR_DAMAGE, impact: impactFromPushDist(SHELL_PUSH_DIST),
+                      note: `半径${MORTAR_AOE}` }],
+  tesla:     () => [{ label: "連鎖電撃", shot: TESLA_TOWER_CHAIN.damage, note: `密集で最大×${TESLA_TOWER_CHAIN.densityMax}` }],
+  flak:      () => [{ label: "炸裂（1発）", blast: FLAK_DAMAGE, impact: impactFromPushDist(SHELL_PUSH_DIST),
+                      note: `半径${FLAK_AOE}` }],
+  prism:     () => [{ label: "レーザー", shot: PRISM_DPS, perSec: true }],
+  concussionBattery: () => [
+    { label: "衝撃弾（1発）", shot: shotHitDamage(fanShotKind(1)), impact: shotKnockImpulse(fanShotKind(1)) },
+    { label: "着弾の衝撃波", impact: impactFromPushDist(KNOCK_SHOT_PUSH), note: `半径${CONCUSSION_BATTERY_KNOCK_R}` },
+  ],
+};
+
+/** 普通の建物（大きさ別）の成分。large と首都はカタパルト弾、それ以外は矢。 */
+function codexBuildingSizePowers(size) {
+  const kind = size === "large" ? 1 : 0;
+  const list = [{ label: "通常弾（1発）", shot: shotHitDamage(kind), impact: shotKnockImpulse(kind) }];
+  // 巻き込みは「1発撃ち（扇でない）かつ projectileAoe を持つ」文明だけ。扇撃ちは巻き込みを持たない
+  const splash = [];
+  for (const cfg of STAGE_CONFIGS) {
+    const b = cfg.buildings[size];
+    if (b && (b.projectileAoe ?? 0) > 0 && (b.projectileCount ?? 1) === 1) {
+      splash.push(b.projectileDamage * AOE_SPLASH_FACTOR);
+    }
+  }
+  if (splash.length) {
+    list.push({ label: "巻き込み（一部の文明）", blast: [Math.min(...splash), Math.max(...splash)] });
+  }
+  return list;
+}
+
+// 首都の大技の成分（STAGE_FEATURES[].bossArt ごと）
+const CODEX_BOSS_ART_POWERS = {
+  boulders:   () => ({ blast: BOSS_BOULDER_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
+  pillars:    () => ({ blast: BOSS_PILLAR_DPS, perSec: true }),
+  arrowRain:  () => ({ blast: BOSS_RAIN_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
+  volley:     () => ({ shot: shotHitDamage(fanShotKind(1)), impact: shotKnockImpulse(fanShotKind(1)) }),
+  carpet:     () => ({ blast: BOSS_CARPET_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
+  laser:      () => ({ shot: BOSS_LASER_DPS, perSec: true }),
+  flakStorm:  () => ({ blast: BOSS_STORM_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
+  prismCross: () => ({ shot: BOSS_CROSS_DPS, perSec: true }),
+};
+
+/** 首都の成分。通常弾・反発衝撃波・文明ごとの大技。 */
+function codexCapitalPowers() {
+  // 首都の通常弾は7方向の扇で撃つので、扇撃ちの弾種に丸められる（fanShotKind）
+  const k = fanShotKind(2);
+  const list = [
+    { label: "通常弾（1発）", shot: shotHitDamage(k), impact: shotKnockImpulse(k) },
+    { label: "反発衝撃波", blast: BOSS_NOVA_DAMAGE,
+      impact: [impactFromPushDist(BOSS_NOVA_PUSH_MIN), impactFromPushDist(BOSS_NOVA_PUSH_MIN + BOSS_NOVA_PUSH_EXTRA)],
+      note: "中心ほど強く押す" },
+  ];
+  STAGE_FEATURES.forEach((f, i) => {
+    const p = CODEX_BOSS_ART_POWERS[f.bossArt];
+    if (!p) return;
+    list.push(Object.assign(
+      { label: `${CONTINENT_NUMERALS[i]} ${CODEX_BOSS_ART_NAMES[f.bossArt] ?? f.bossArt}` }, p()));
+  });
+  return list;
+}
+
 /** 図鑑に並べる順。出る文明が早い順 → 同じ文明ならHPの軽い順。 */
 function codexEntries() {
   const firstEra = (key) => {
@@ -19852,12 +20077,13 @@ function renderOptions() {
 }
 
 const codexOverlayEl = document.getElementById("codex-overlay");
-let codexTab = "enemy";   // "enemy" | "building" | "region" | "shot" | "special" | "card"
+let codexTab = "enemy";   // "enemy" | "building" | "region" | "shot" | "dragon" | "special" | "card"
 function openCodex()  { codexTab = "enemy"; renderCodex(); codexOverlayEl.classList.add("visible"); }
 function closeCodex() { codexOverlayEl.classList.remove("visible"); refreshTitleMenu(); }
 
 function renderCodex() {
-  const tabs = [["enemy", "敵"], ["building", "建物"], ["region", "地域"], ["shot", "弾"], ["special", "特殊個体"], ["card", "カード"]];
+  const tabs = [["enemy", "敵"], ["building", "建物"], ["region", "地域"], ["shot", "弾"],
+                ["dragon", "竜"], ["special", "特殊個体"], ["card", "カード"]];
   let html =
     `<div class="tree-head">` +
       `<div class="tree-title">図鑑</div>` +
@@ -19871,6 +20097,7 @@ function renderCodex() {
   if (codexTab === "building") html += codexBuildingHtml();
   else if (codexTab === "region") html += codexRegionHtml();   // v1.6.0
   else if (codexTab === "shot") html += codexShotHtml();
+  else if (codexTab === "dragon") html += codexDragonHtml();   // v2.9.0
   else if (codexTab === "special") html += codexSpecialHtml();
   else if (codexTab === "card") html += codexCardHtml();
   else html += codexEnemyHtml();
@@ -19878,6 +20105,7 @@ function renderCodex() {
   codexOverlayEl.innerHTML = html;
   // 弾のページは canvas を後から差し込む（innerHTML では canvas の中身を渡せない）
   if (codexTab === "shot") codexFillShotCanvases();
+  if (codexTab === "dragon") codexFillDragonCanvases();
   if (codexTab === "special") codexFillSpecialCanvases();
   if (codexTab === "region") codexFillRegionCanvases();
   codexOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
@@ -19899,6 +20127,7 @@ function codexEnemyHtml() {
   let html =
     `<div class="tree-hint">${entries.length}種。数字は出てくる文明。* は首都の守備隊だけに出る。` +
       `${CODEX_UNLOCK_ALL ? "（開発中のため全解放）" : ""}</div>` +
+    codexPowerLegend("enemy") +
     `<div class="cx-list">`;
 
   let shownEra = -1;
@@ -19928,6 +20157,7 @@ function codexEnemyHtml() {
           `<div class="cx-name">${CODEX_ENEMY_NAMES[e.key]}</div>` +
           `<div class="cx-tags">${codexEraLabel(e.key)}${tags.length ? " ／ " + tags.join("・") : ""}</div>` +
           `<div class="cx-atk">${codexAttackLabel(def)}</div>` +
+          codexPowerHtml(codexMoverPowers(def), "enemy") +
           `<div class="cx-stat">HP ${def.hp} ／ XP ${def.xp} ／ 卵 ${def.eggDrop ?? 0}</div>` +
         `</div>` +
       `</div>`;
@@ -19941,6 +20171,7 @@ function codexBuildingHtml() {
   let html =
     `<div class="tree-hint">「×N」はその文明に置かれる数。時代兵器は large 建物のいくつかが変化したもの。` +
       `普通の建物は<b>文明ごとに建築が変わる</b>（絵は石器時代のもの）。</div>` +
+    codexPowerLegend("enemy") +
     `<div class="cx-era">時代兵器（目印の輪が出る建物）</div><div class="cx-list">`;
   for (const key of Object.keys(EMPLACEMENT_DEFS)) {
     const def = EMPLACEMENT_DEFS[key];
@@ -19951,6 +20182,7 @@ function codexBuildingHtml() {
           `<div class="cx-name">${def.label}</div>` +
           `<div class="cx-tags">${codexEmplacementEras(key)}</div>` +
           `<div class="cx-atk">${CODEX_EMPLACEMENT_DESC[key] ?? ""}</div>` +
+          codexPowerHtml(CODEX_EMPLACEMENT_POWERS[key] ? CODEX_EMPLACEMENT_POWERS[key]() : [], "enemy") +
           `<div class="cx-stat">射程 ${def.range} ／ ${def.interval}秒ごと` +
             `${def.knockback ? " ／ 押してくる" : ""}</div>` +
         `</div>` +
@@ -19972,6 +20204,10 @@ function codexBuildingHtml() {
                                    "どの町にも1つ"}` +
             ` ／ ${key === "granary" ? "町の裏側" : key === "belfry" ? "町の中心寄り" : "町の表側"}</div>` +
           `<div class="cx-atk">${def.desc}</div>` +
+          (key === "rampart"
+            ? codexPowerHtml([{ label: "通常弾（1発）", shot: shotHitDamage(fanShotKind(1)),
+                                impact: shotKnockImpulse(fanShotKind(1)) }], "enemy")
+            : "") +
           `<div class="cx-stat">${
             key === "belfry"   ? `町の発射間隔 ×${BELFRY_INTERVAL_MULT}` :
             key === "granary"  ? `卵 ${GRANARY_EGG_COUNT}個（町に散らばる卵は1町2〜3個）` :
@@ -19998,6 +20234,7 @@ function codexBuildingHtml() {
           `<div class="cx-name">${b.label}</div>` +
           `<div class="cx-tags">全文明</div>` +
           `<div class="cx-atk">${b.note || "その文明の通常弾を撃つ"}</div>` +
+          codexPowerHtml(codexBuildingSizePowers(b.size), "enemy") +
           `<div class="cx-stat">射程 ${first.attackRadius}〜${last.attackRadius} ／ ` +
             `${first.projectileInterval}〜${last.projectileInterval}秒ごと ／ ` +
             `1度に${first.projectileCount}〜${last.projectileCount}発</div>` +
@@ -20029,6 +20266,7 @@ function codexBuildingHtml() {
         `<div class="cx-atk">重い光弾＋反発衝撃波。加えて文明ごとの大技 — ` +
           `${STAGE_FEATURES.map((f, i) =>
               CONTINENT_NUMERALS[i] + " " + (CODEX_BOSS_ART_NAMES[f.bossArt] ?? f.bossArt)).join(" ／ ")}</div>` +
+        codexPowerHtml(codexCapitalPowers(), "enemy") +
         `<div class="cx-stat">射程 ${BOSS_ATTACK_RADIUS} ／ 衝撃波 半径${BOSS_NOVA_RADIUS}</div>` +
       `</div>` +
     `</div>` +
@@ -20096,6 +20334,126 @@ function codexShotHtml() {
 // 置いた上で、その周りに能力を表す形（光条・吸引の輪・ロケット）を描く。
 // canvas を後入れするのは innerHTML では中身を渡せないため（弾のページと同じ手）。
 // -----------------------------------------------------------------
+// -----------------------------------------------------------------
+// v2.9.0: 竜図鑑（Shooter指示）
+// -----------------------------------------------------------------
+// 竜種ごとに「姿・動き・攻撃の成分」を並べる。並び順は竜種選択と同じ（SPECIES_CHOICES）。
+// 数値は SPECIES_DEFS / ATTACK_DEFS / 各攻撃の定数から**その場で引く**（手書きしない）。
+
+/** 竜種の動きを1行で。旋回半径は群れの散らばりの目安（SPECIES_DEFS の指針と同じ式）。 */
+function codexDragonMoveLabel(def) {
+  const mv = Object.assign({}, MOVE_PROFILE_DEFAULT, def.move);
+  const turn = mv.turnRate === INSTANT ? "即座に向きを変える"
+             : `旋回半径 ${Math.round(mv.maxSpeed / mv.turnRate)}px`;
+  const extra = [];
+  if (mv.minSpeed >= mv.maxSpeed) extra.push("止まれない（等速）");
+  else if (mv.minSpeed === 0) extra.push("止まれる");
+  if (mv.hopPeriod > 0) extra.push("跳ねて進む");
+  if (mv.controlScheme === "vector") extra.push("矢印で操る");
+  return `最高速 ${mv.maxSpeed} ／ ${turn}` + (extra.length ? " ／ " + extra.join("・") : "");
+}
+
+/** 竜種の主攻撃。{ power: 成分, stat: 諸元 }。 */
+function codexDragonMainAttack(def) {
+  const a = ATTACK_DEFS[def.attack];
+  const label = a.ja;
+  const arc = def.breathArcDeg !== undefined && def.breathArcDeg < BREATH_ARC_FULL_DEG
+    ? ` ／ 前方${def.breathArcDeg}度だけ` : "";
+  switch (a.kind) {
+    case "beam":
+      return { power: { label, shot: BREATH_DAMAGE_PER_SEC, perSec: true },
+               stat: `射程 ${BREATH_RANGE} ／ 照射し続ける（カードで最大${BREATH_MAX_TARGETS}体同時）${arc}` };
+    case "bullet":
+      return { power: { label: label + "（1発）", shot: BULLET_DAMAGE },
+               stat: `射程 ${BULLET_RANGE} ／ ${BULLET_INTERVAL}秒ごと ／ まっすぐ飛ぶ${arc}` };
+    case "missile":
+      return { power: { label: label + "（1発）", shot: MISSILE_DAMAGE,
+                        blast: MISSILE_DAMAGE * MISSILE_AOE_FACTOR, note: "爆発は建物だけ" },
+               stat: `射程 ${MISSILE_RANGE} ／ ${MISSILE_INTERVAL}秒ごと ／ 追尾する ／ 爆発半径 ${MISSILE_AOE}${arc}` };
+    case "melee":
+      return { power: { label: label + "（体当たり）", direct: MELEE_COLLISION_DAMAGE },
+               stat: `${MELEE_COLLISION_COOLDOWN}秒ごと ／ 遠隔攻撃なし ／ 弾で押されない ／ HP ×${MELEE_HP_MULT}` };
+    case "blade":
+      return { power: { label, direct: BLADE_DAMAGE },
+               stat: `前方 ${BLADE_RANGE}px・約${Math.round(BLADE_ARC * 2 * 180 / Math.PI)}度の扇 ／ ${BLADE_INTERVAL}秒ごと` };
+    case "scatter":
+      return { power: { label: label + "（1発）", shot: BULLET_DAMAGE },
+               stat: `${SCATTER_COUNT}方向へ撒く ／ 射程 ${BULLET_RANGE} ／ ${SCATTER_INTERVAL}秒ごと${arc}` };
+    case "satellite":
+      return { power: { label: label + "（1匹）", direct: SAT_DPS, perSec: true },
+               stat: `1体に${SAT_COUNT}匹 ／ 周回半径 ${SAT_ORBIT_R}px` };
+    case "divebomb":
+      return { power: { label, direct: DIVE_DAMAGE },
+               stat: `真下 半径${DIVE_RADIUS}px ／ ${DIVE_INTERVAL}秒ごと` };
+    case "bomb":
+      return { power: { label, blast: BOMB_DAMAGE },
+               stat: `半径 ${BOMB_RADIUS}px ／ 落として${BOMB_FUSE}秒後に炸裂 ／ ${BOMB_INTERVAL}秒ごと` };
+    case "tongue":
+      return { power: { label, direct: TONGUE_DAMAGE },
+               stat: `正面まっすぐ ${TONGUE_RANGE}px ／ ${TONGUE_INTERVAL}秒ごと（跳躍1回に1度）` };
+  }
+  return { power: null, stat: "" };
+}
+
+/** 竜ページ。 */
+function codexDragonHtml() {
+  let html =
+    `<div class="tree-hint">${SPECIES_CHOICES.length}種。ランの最初に1種を選び、群れ全体がその竜種になる。` +
+      `どの竜種も主攻撃に加えて体当たりを持ち、★一斉突撃を引くと突進が乗る。</div>` +
+    codexPowerLegend("dragon") +
+    `<div class="cx-list">`;
+  for (const { species } of SPECIES_CHOICES) {
+    const def = SPECIES_DEFS[species];
+    if (!def) continue;
+    const main  = codexDragonMainAttack(def);
+    const melee = ATTACK_DEFS[def.attack].kind === "melee";
+    const ch    = Object.assign({}, CHARGE_PROFILE_DEFAULT, def.charge || {});
+    const ram   = melee ? MELEE_COLLISION_DAMAGE : COLLISION_DAMAGE;
+    const powers = [];
+    if (main.power) powers.push(main.power);
+    if (!melee) powers.push({ label: "体当たり", direct: COLLISION_DAMAGE });
+    powers.push({ label: "突進（最大溜め）", direct: ram * ch.damageMult, impact: ch.knockback });
+    html +=
+      `<div class="cx-row" style="border-color:${def.color}66">` +
+        `<div class="cx-dr-slot" data-species="${species}"></div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name" style="color:${def.color}">${def.icon} ${def.ja}</div>` +
+          `<div class="cx-tags">${codexDragonMoveLabel(def)}</div>` +
+          `<div class="cx-atk">${def.desc}</div>` +
+          codexPowerHtml(powers, "dragon") +
+          `<div class="cx-stat">${main.stat}</div>` +
+        `</div>` +
+      `</div>`;
+  }
+  return html + `</div>`;
+}
+
+function codexFillDragonCanvases() {
+  for (const slot of codexOverlayEl.querySelectorAll(".cx-dr-slot")) {
+    slot.replaceWith(codexDragonCanvas(slot.getAttribute("data-species")));
+  }
+}
+
+/**
+ * 竜種の姿を 52px 角で描く。鼻先は上（特殊個体のページと向きを揃える）。
+ * getSpeciesSprites（16コマ×LRU 8列）は通さず**1コマだけ**描く。13種をキャッシュに
+ * 載せると本編で使っている列が押し出され、次のランの頭に作り直しが走るため。
+ */
+function codexDragonCanvas(species) {
+  const cv = document.createElement("canvas");
+  cv.width = 104; cv.height = 104;   // DPR2相当。CSSで52pxに縮める
+  cv.className = "cx-shot";
+  const def = SPECIES_DEFS[species];
+  if (!def) return cv;
+  const box = 132;   // 竜の論理サイズ66 × 2。翼幅が約80px＝枠の8割に収まる
+  const frame = renderDragonFrame(def.element, 0, box);
+  const c = cv.getContext("2d");
+  c.translate(52, 52);
+  c.rotate(-Math.PI / 2);
+  c.drawImage(frame, -box / 2, -box / 2, box, box);
+  return cv;
+}
+
 const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE];
 
 function codexSpecialHtml() {
@@ -20103,6 +20461,7 @@ function codexSpecialHtml() {
     `<div class="tree-hint">ラン中の★カードで群れに1匹ずつ加わる。` +
       `同時に連れ歩けるのは${SPECIAL_SLOTS_BASE}体まで（恒常ツリーで増やせる）。` +
       `ダウン中は能力ごと消える。</div>` +
+    codexPowerLegend("dragon") +
     `<div class="cx-list">`;
   for (const kind of CODEX_SPECIAL_ORDER) {
     const d = SPECIAL_DEFS[kind];
@@ -20113,6 +20472,7 @@ function codexSpecialHtml() {
           `<div class="cx-name" style="color:${d.color}">${d.name}</div>` +
           `<div class="cx-tags">${CODEX_SPECIAL_TAG[kind]}</div>` +
           `<div class="cx-atk">${CODEX_SPECIAL_DESC[kind]}</div>` +
+          codexPowerHtml(CODEX_SPECIAL_POWERS[kind] ? CODEX_SPECIAL_POWERS[kind]() : [], "dragon") +
           `<div class="cx-stat">${CODEX_SPECIAL_STAT[kind]()}</div>` +
         `</div>` +
       `</div>`;
@@ -20134,6 +20494,15 @@ function codexSpecialHtml() {
   return html;
 }
 
+// v2.9.0: 特殊個体の攻撃の成分。曳竜は自分では攻撃しないので持たない
+const CODEX_SPECIAL_POWERS = {
+  [SPECIAL_RAINBOW]: () => [{ label: "虹の薙ぎ払い（1体ごと）", shot: MOTHER_BREATH_DAMAGE }],
+  [SPECIAL_BEACON]:  () => [{ label: "光条", shot: BEACON_DPS, perSec: true }],
+  [SPECIAL_HEAVY]:   () => [{ label: "体当たり", direct: HEAVY_RAM_DAMAGE }],
+  [SPECIAL_DEFLECT]: () => [{ label: "撃ち返し（1発）", shot: DEFLECT_BOLT_DMG }],
+  [SPECIAL_MECHA]:   () => [{ label: "ロケット", blast: MECHA_DAMAGE, note: `半径${MECHA_BLAST_R}` }],
+  [SPECIAL_WEDGE]:   () => [{ label: "体当たり", direct: WEDGE_RAM_DAMAGE }],
+};
 const CODEX_SPECIAL_TAG = {
   [SPECIAL_BEACON]:  "★灯竜／向きを選ばない削り役",
   [SPECIAL_HEAVY]:   "★巌竜／遠隔攻撃なしの体当たり専門",
