@@ -838,7 +838,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.10.0";
+const GAME_VERSION = "v2.11.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10640,7 +10640,12 @@ function updateRaiderSpawns(dt) {
 // 生きている数字が DMG_NUM_MERGE 秒より若ければそこに足し込む。
 // 結果として「殴られ続けている敵の上で数字が膨らんでいき、離すと流れて消える」。
 //
-// 対象は敵だけ（建物・移動敵）。竜の被ダメージは出さない。
+// v2.11.0: 竜の被ダメージも出す（Shooter指示）。敵への数字とは**色・符号・流れる向き**で分ける。
+//   敵へ … 白（大きい一撃は金）。上へ浮く
+//   竜へ … 赤で「−」付き、少し小さい。下へ沈む
+// 竜は群れで同時に被弾するので、**近くの竜の数字は1つにまとめる**（＝群れのその辺りで失ったHP）。
+// 1体ずつ出すと、衝撃波1発で群れの上が数字で埋まる。
+// プールは敵と分ける（竜の被弾で敵の数字が押し出されないように）。
 const DMG_NUM_MAX   = 96;    // 同時表示の上限。溢れたら**一番古いもの**を捨てる
 const DMG_NUM_LIFE  = 1.25;  // 1個の表示時間（秒）
 const DMG_NUM_MERGE = 0.90;  // この秒数までは同じ敵への追加を合算する
@@ -10648,18 +10653,80 @@ const DMG_NUM_RISE  = 22;    // 上へ流れる速さ（論理px/秒）
 const DMG_NUM_FONT  = 11;    // 文字の基準サイズ（論理px）
 const DMG_NUM_BIG   = 40;    // これ以上は「大きい一撃」として色と大きさを変える
 
-const dmgNumX      = new Float32Array(DMG_NUM_MAX);
-const dmgNumY      = new Float32Array(DMG_NUM_MAX);
-const dmgNumVal    = new Float32Array(DMG_NUM_MAX);
-const dmgNumAge    = new Float32Array(DMG_NUM_MAX);
-const dmgNumDrift  = new Float32Array(DMG_NUM_MAX);   // 横へのずれ（重なり防止）
-const dmgNumActive = new Uint8Array(DMG_NUM_MAX);
-const dmgNumTarget = new Array(DMG_NUM_MAX).fill(null);
-let   dmgNumCursor = 0;   // 空きを探す開始位置（毎回0から舐めない）
+const DRAGON_DMG_NUM_MAX     = 40;         // 竜の数字の同時表示の上限（敵とは別枠）
+const DRAGON_DMG_NUM_MERGE_R = 30;         // この距離にある若い数字へ足し込む（論理px）
+const DRAGON_DMG_NUM_COLOR   = "#ff5f57";  // 竜が受けたダメージの色
+const DRAGON_DMG_NUM_SCALE   = 0.9;        // 敵の数字より少し小さく（主役は与えたダメージ）
+
+function makeDamageNumberPool(size) {
+  return {
+    size,
+    x:      new Float32Array(size),
+    y:      new Float32Array(size),
+    val:    new Float32Array(size),
+    age:    new Float32Array(size),
+    drift:  new Float32Array(size),   // 横へのずれ（重なり防止）
+    active: new Uint8Array(size),
+    target: new Array(size).fill(null),
+    cursor: 0,                        // 空きを探す開始位置（毎回0から舐めない）
+  };
+}
+const enemyDmgNums  = makeDamageNumberPool(DMG_NUM_MAX);
+const dragonDmgNums = makeDamageNumberPool(DRAGON_DMG_NUM_MAX);
+// 竜は配列の添字で持っているので、合算のキーにする入れ物を1体に1つ用意する
+const _boidDmgKeys = [];
 
 function clearDamageNumbers() {
-  dmgNumActive.fill(0);
-  for (let i = 0; i < DMG_NUM_MAX; i++) dmgNumTarget[i] = null;
+  for (const pool of [enemyDmgNums, dragonDmgNums]) {
+    pool.active.fill(0);
+    pool.target.fill(null);
+  }
+}
+
+/** 画面の中（少し外まで）か。画面外には出さない＝プールを今見えているものに使い切る。 */
+function damageNumberOnScreen(wx, wy) {
+  const sx = (wx - cam.x) * cam.scale + viewW * 0.5;
+  const sy = (wy - cam.y) * cam.scale + viewH * 0.5;
+  return !(sx < -60 || sx > viewW + 60 || sy < -60 || sy > viewH + 60);
+}
+
+/** その相手の若い数字か。 */
+function damageNumberIsYoung(pool, slot, target) {
+  return slot !== undefined && pool.active[slot] && pool.target[slot] === target &&
+         pool.age[slot] < DMG_NUM_MERGE;
+}
+
+/**
+ * プールに数字を1つ足す。同じ相手の若い数字があればそこへ足し込む。
+ * @param {boolean} follow 足し込むときに数字を相手の位置へ寄せるか（移動敵に追従させる）
+ */
+function pushDamageNumber(pool, target, wx, wy, amount, follow) {
+  const slot = target._dmgSlot;
+  if (damageNumberIsYoung(pool, slot, target)) {
+    pool.val[slot] += amount;
+    if (follow) { pool.x[slot] = wx; pool.y[slot] = wy; }
+    return;
+  }
+  // 空きを探す。無ければ一番古いものを置き換える。
+  let free = -1;
+  for (let k = 0; k < pool.size; k++) {
+    const i = (pool.cursor + k) % pool.size;
+    if (!pool.active[i]) { free = i; break; }
+  }
+  if (free < 0) {
+    free = 0;
+    for (let i = 1; i < pool.size; i++) if (pool.age[i] > pool.age[free]) free = i;
+  }
+  pool.cursor = (free + 1) % pool.size;
+  pool.active[free] = 1;
+  pool.target[free] = target;
+  pool.x[free]      = wx;
+  pool.y[free]      = wy;
+  pool.val[free]    = amount;
+  pool.age[free]    = 0;
+  // 同じ相手に続けて出るとき真上に重なるので、出るたびに左右へ振る
+  pool.drift[free]  = (fxRandom() - 0.5) * 14;
+  target._dmgSlot   = free;
 }
 
 /**
@@ -10672,90 +10739,94 @@ function clearDamageNumbers() {
 function reportDamage(target, wx, wy, amount) {
   if (!optDamageNumbers()) return;
   if (!(amount > 0) || !target) return;
+  if (!damageNumberOnScreen(wx, wy)) return;
+  pushDamageNumber(enemyDmgNums, target, wx, wy, amount, true);
+}
 
-  // 画面外の敵には出さない。プールを「今見えている敵」に使い切るため。
-  const sx = (wx - cam.x) * cam.scale + viewW * 0.5;
-  const sy = (wy - cam.y) * cam.scale + viewH * 0.5;
-  if (sx < -60 || sx > viewW + 60 || sy < -60 || sy > viewH + 60) return;
-
-  // 同じ敵の「若い」数字があれば足し込む（持続ダメージが1個にまとまる）
-  const slot = target._dmgSlot;
-  if (slot !== undefined && dmgNumActive[slot] && dmgNumTarget[slot] === target &&
-      dmgNumAge[slot] < DMG_NUM_MERGE) {
-    dmgNumVal[slot] += amount;
-    dmgNumX[slot] = wx;               // 移動敵に追従させる
-    dmgNumY[slot] = wy;
-    return;
+/** v2.11.0: 竜 i が受けたダメージを報告する。**表示だけ**。 */
+function reportDragonDamage(i, amount) {
+  if (!optDragonDamageNumbers()) return;
+  if (!(amount > 0)) return;
+  const wx = px[i], wy = py[i];
+  if (!damageNumberOnScreen(wx, wy)) return;
+  const pool = dragonDmgNums;
+  const key = _boidDmgKeys[i] || (_boidDmgKeys[i] = {});
+  if (!damageNumberIsYoung(pool, key._dmgSlot, key)) {
+    // 自分の数字が無ければ、近くの竜の若い数字へ足し込む（その数字はその場に留める）
+    const r2 = DRAGON_DMG_NUM_MERGE_R * DRAGON_DMG_NUM_MERGE_R;
+    for (let k = 0; k < pool.size; k++) {
+      if (!pool.active[k] || pool.age[k] >= DMG_NUM_MERGE) continue;
+      const dx = pool.x[k] - wx, dy = pool.y[k] - wy;
+      if (dx * dx + dy * dy > r2) continue;
+      pool.val[k] += amount;
+      pool.target[k] = key;   // この竜の次の被弾もここへ足す
+      key._dmgSlot = k;
+      return;
+    }
   }
-
-  // 空きを探す。無ければ一番古いものを置き換える。
-  let free = -1;
-  for (let k = 0; k < DMG_NUM_MAX; k++) {
-    const i = (dmgNumCursor + k) % DMG_NUM_MAX;
-    if (!dmgNumActive[i]) { free = i; break; }
-  }
-  if (free < 0) {
-    let oldest = 0;
-    for (let i = 1; i < DMG_NUM_MAX; i++) if (dmgNumAge[i] > dmgNumAge[oldest]) oldest = i;
-    free = oldest;
-  }
-  dmgNumCursor = (free + 1) % DMG_NUM_MAX;
-
-  dmgNumActive[free] = 1;
-  dmgNumTarget[free] = target;
-  dmgNumX[free]      = wx;
-  dmgNumY[free]      = wy;
-  dmgNumVal[free]    = amount;
-  dmgNumAge[free]    = 0;
-  // 同じ敵に続けて出るとき真上に重なるので、出るたびに左右へ振る
-  dmgNumDrift[free]  = (fxRandom() - 0.5) * 14;
-  target._dmgSlot    = free;
+  pushDamageNumber(pool, key, wx, wy, amount, false);
 }
 
 function updateDamageNumbers(dt) {
-  for (let i = 0; i < DMG_NUM_MAX; i++) {
-    if (!dmgNumActive[i]) continue;
-    dmgNumAge[i] += dt;
-    if (dmgNumAge[i] >= DMG_NUM_LIFE) {
-      dmgNumActive[i] = 0;
-      dmgNumTarget[i] = null;
+  for (const pool of [enemyDmgNums, dragonDmgNums]) {
+    for (let i = 0; i < pool.size; i++) {
+      if (!pool.active[i]) continue;
+      pool.age[i] += dt;
+      if (pool.age[i] >= DMG_NUM_LIFE) {
+        pool.active[i] = 0;
+        pool.target[i] = null;
+      }
     }
   }
 }
 
-/** ワールド座標系で描く（カメラ変換の内側）。敵の少し上に浮かせる。 */
+/** プール1つぶんを描く。onDragon=true は竜の被ダメージ（赤・「−」付き・下へ沈む）。 */
+function drawDamageNumberPool(pool, onDragon) {
+  for (let i = 0; i < pool.size; i++) {
+    if (!pool.active[i]) continue;
+    const n = Math.round(pool.val[i]);
+    if (n < 1) continue;                     // 端数だけの間は出さない
+    const t    = pool.age[i] / DMG_NUM_LIFE;   // 0..1
+    // 出た瞬間だけ少し大きい（弾んで出る）
+    const pop  = t < 0.14 ? 1 + (1 - t / 0.14) * 0.35 : 1;
+    const big  = !onDragon && n >= DMG_NUM_BIG;
+    const size = DMG_NUM_FONT * (onDragon ? DRAGON_DMG_NUM_SCALE : big ? 1.35 : 1) * pop;
+    // 後半でフェード
+    ctx.globalAlpha = t < 0.6 ? 1 : 1 - (t - 0.6) / 0.4;
+    ctx.font = `bold ${size}px "Segoe UI", system-ui, sans-serif`;
+    const x = pool.x[i] + pool.drift[i] * t;
+    // 敵の数字は上へ浮き、竜の数字は下へ沈む（向きでも見分けられるように）
+    const y = onDragon ? pool.y[i] + 8 + DMG_NUM_RISE * t
+                       : pool.y[i] - 10 - DMG_NUM_RISE * t;
+    const text = onDragon ? "\u2212" + n : n;
+    ctx.lineWidth   = Math.max(2, size * 0.30);
+    ctx.strokeStyle = "rgba(0,0,0,0.85)";
+    ctx.strokeText(text, x, y);
+    if (onDragon) {
+      ctx.fillStyle = DRAGON_DMG_NUM_COLOR;
+    } else {
+      // v1.1.2: ひびが入っている相手への数字は楔竜の色で出す。
+      // 「余計に通っている」ことは**数字が大きくなること**でしか分からないので、
+      // どの数字がひびのぶんなのかを色で結びつける。
+      const tgt = pool.target[i];
+      const onCracked = tgt && tgt._crackUntil > breathTime;
+      ctx.fillStyle = onCracked ? SPECIAL_DEFS[SPECIAL_WEDGE].color
+                    : big ? "#ffd05a" : "#ffffff";
+    }
+    ctx.fillText(text, x, y);
+  }
+}
+
+/** ワールド座標系で描く（カメラ変換の内側）。竜の数字を先に描き、敵の数字を上に重ねる。 */
 function drawDamageNumbers() {
-  if (!optDamageNumbers()) return;
+  const showEnemy = optDamageNumbers(), showDragon = optDragonDamageNumbers();
+  if (!showEnemy && !showDragon) return;
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.lineJoin = "round";
-  for (let i = 0; i < DMG_NUM_MAX; i++) {
-    if (!dmgNumActive[i]) continue;
-    const n = Math.round(dmgNumVal[i]);
-    if (n < 1) continue;                     // 端数だけの間は出さない
-    const t    = dmgNumAge[i] / DMG_NUM_LIFE;   // 0..1
-    // 出た瞬間だけ少し大きい（弾んで出る）
-    const pop  = t < 0.14 ? 1 + (1 - t / 0.14) * 0.35 : 1;
-    const big  = n >= DMG_NUM_BIG;
-    const size = DMG_NUM_FONT * (big ? 1.35 : 1) * pop;
-    // 後半でフェード
-    ctx.globalAlpha = t < 0.6 ? 1 : 1 - (t - 0.6) / 0.4;
-    ctx.font = `bold ${size}px "Segoe UI", system-ui, sans-serif`;
-    const x = dmgNumX[i] + dmgNumDrift[i] * t;
-    const y = dmgNumY[i] - 10 - DMG_NUM_RISE * t;
-    ctx.lineWidth   = Math.max(2, size * 0.30);
-    ctx.strokeStyle = "rgba(0,0,0,0.85)";
-    ctx.strokeText(n, x, y);
-    // v1.1.2: ひびが入っている相手への数字は楔竜の色で出す。
-    // 「余計に通っている」ことは**数字が大きくなること**でしか分からないので、
-    // どの数字がひびのぶんなのかを色で結びつける。
-    const tgt = dmgNumTarget[i];
-    const onCracked = tgt && tgt._crackUntil > breathTime;
-    ctx.fillStyle   = onCracked ? SPECIAL_DEFS[SPECIAL_WEDGE].color
-                    : big ? "#ffd05a" : "#ffffff";
-    ctx.fillText(n, x, y);
-  }
+  if (showDragon) drawDamageNumberPool(dragonDmgNums, true);
+  if (showEnemy)  drawDamageNumberPool(enemyDmgNums, false);
   ctx.globalAlpha = 1;
   ctx.restore();
 }
@@ -19005,7 +19076,7 @@ function defaultProfile() {
     unlockedContinents: 1,
     // v0.99.1: 遊び方の好みで切り替える設定。**既定値はここが唯一の定義**。
     // 増やすときは OPTION_DEFS にも1行足す（画面はそれを見て作られる）。
-    options: { damageNumbers: true },
+    options: { damageNumbers: true, dragonDamageNumbers: true },
     // v0.99.8: 時代ごとのクリア評価（★1〜5）の自己ベスト。key = 時代の添字。
     // v1.2.0: 大陸以外の列は "時代:列" を key にする（panelKey）。
     eraStars: {},
@@ -20101,6 +20172,11 @@ const OPTION_DEFS = [
     name: "ダメージ数字",
     desc: "敵に与えたダメージを敵の位置に表示する。同じ敵への連続ダメージは少しの間まとめて数える。",
   },
+  {
+    key:  "dragonDamageNumbers",
+    name: "竜の被ダメージ数字",
+    desc: "竜が受けたダメージを赤い「−」付きの数字で、竜の下に出す。近くの竜のぶんは1つにまとめる（群れのその辺りで失ったHP）。",
+  },
 ];
 
 /** 設定値を読む（プロファイルがまだ無い瞬間でも落ちないようにする）。 */
@@ -20115,6 +20191,8 @@ function optSet(key, value) {
 }
 /** ダメージ数字を出すか。描画と計上の両方がここを見る。 */
 function optDamageNumbers() { return optGet("damageNumbers"); }
+/** v2.11.0: 竜の被ダメージの数字を出すか。 */
+function optDragonDamageNumbers() { return optGet("dragonDamageNumbers"); }
 
 const optionsOverlayEl = document.getElementById("options-overlay");
 function openOptions()  { renderOptions(); optionsOverlayEl.classList.add("visible"); }
@@ -20152,7 +20230,7 @@ function renderOptions() {
       const key = row.getAttribute("data-key");
       optSet(key, !optGet(key));
       // 消したときは出ている数字も畳む（次に点けたとき古いのが残らない）
-      if (key === "damageNumbers" && !optGet(key)) clearDamageNumbers();
+      if ((key === "damageNumbers" || key === "dragonDamageNumbers") && !optGet(key)) clearDamageNumbers();
       renderOptions();
     });
   }
@@ -22868,7 +22946,9 @@ function applyDamageToBoid(boidIndex, damage) {
   if (debugInvincible) return;   // v0.44: デバッグ「竜を無敵」中は落ちない（敵の観察用）
   // v0.6: 「竜鱗共鳴」カードで被ダメージ軽減
   // v0.89: 突進中の軽減（強化で手に入れたときだけ）。溜めに比例する。
-  boidHp[boidIndex] -= damage * effDmgTakenMult() * (1 - chargeDamageReductionFor(boidIndex));
+  const dealt = damage * effDmgTakenMult() * (1 - chargeDamageReductionFor(boidIndex));
+  boidHp[boidIndex] -= dealt;
+  reportDragonDamage(boidIndex, dealt);   // v2.11.0: 軽減を掛けた後の、実際に減った量を出す
   if (boidHp[boidIndex] <= 0) {
     // 変更2: 消滅ではなくダウン状態へ移行（恒久喪失なし）
     // v0.6: 「再生の潮」カードで復帰時間短縮
