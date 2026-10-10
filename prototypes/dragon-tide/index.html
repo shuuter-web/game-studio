@@ -838,7 +838,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.11.1";
+const GAME_VERSION = "v2.11.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -14513,7 +14513,68 @@ function recomputeAttackQueryRadius() {
   _atkCellRadius = Math.ceil(maxR / BUILDING_GRID_CELL);
 }
 
-// ドラゴン位置周辺の建物を攻撃判定グリッドで収集する
+/**
+ * v2.11.2: 撃つ可能性のある建物を**群れ全体で1回だけ**集める。
+ * それまでは竜1体ごとに周り (2r+1)² マスを引いていたので、固まって飛ぶ群れでは
+ * 同じマスを何十回も引いていた（55体・r=5 で毎フレーム約6,600回。線路と岩塊のステージは
+ * 動く建物の格子も引くので倍）。
+ * 群れが居るマスの範囲に射程ぶん（r マス）を足した四角形を1回だけ引く。四角形は
+ * 各竜の範囲の和を必ず含むので取りこぼしは無く、余分に拾った建物はこの後の
+ * 射程判定（竜との実距離）で落ちる＝**撃つ建物の顔ぶれは変わらない**。
+ * 群れが大きく割れて四角形のほうが広くなるときだけ、従来どおり竜ごとに引く。
+ */
+function collectBuildingsNearFlock() {
+  let minCx = Infinity, maxCx = -Infinity, minCy = Infinity, maxCy = -Infinity, alive = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const cx = (px[i] / BUILDING_GRID_CELL) | 0;
+    const cy = (py[i] / BUILDING_GRID_CELL) | 0;
+    if (cx < minCx) minCx = cx;
+    if (cx > maxCx) maxCx = cx;
+    if (cy < minCy) minCy = cy;
+    if (cy > maxCy) maxCy = cy;
+    alive++;
+  }
+  if (alive === 0) return;
+  const r = _atkCellRadius;
+  const x0 = minCx - r, x1 = maxCx + r, y0 = minCy - r, y1 = maxCy + r;
+  const boxCells     = (x1 - x0 + 1) * (y1 - y0 + 1);
+  const perBoidCells = alive * (2 * r + 1) * (2 * r + 1);
+  if (boxCells > perBoidCells) {
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      _queryBuildingsForAttack(px[i], py[i]);
+    }
+    return;
+  }
+  for (let cy = y0; cy <= y1; cy++) {
+    for (let cx = x0; cx <= x1; cx++) {
+      const bucket = buildingGrid.get(cx * 100003 + cy);
+      if (bucket) for (const idx of bucket) _settlementsInRange.add(idx);
+    }
+  }
+  // 動く建物。線路の首都は1棟だけなので格子を引かずに四角形に入っているかを直接見る
+  // （格子は数フレームおきにしか作り直さないので、今の位置で見るぶんこちらが正確）。
+  // 岩塊ステージは岩の上の建物が全部「動く建物」で数千棟あるので、その場合は格子を引く
+  if (movingBuildingIdx.length <= boxCells) {
+    for (const idx of movingBuildingIdx) {
+      const b = settlements[idx];
+      if (!b || b.fallen) continue;
+      const cx = (b.wx / BUILDING_GRID_CELL) | 0;
+      const cy = (b.wy / BUILDING_GRID_CELL) | 0;
+      if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) _settlementsInRange.add(idx);
+    }
+  } else {
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const rb = movingBuildingGrid.get(cx * 100003 + cy);
+        if (rb) for (const idx of rb) _settlementsInRange.add(idx);
+      }
+    }
+  }
+}
+
+// ドラゴン位置周辺の建物を攻撃判定グリッドで収集する（群れが割れたときの竜ごとの版）
 function _queryBuildingsForAttack(bx, by) {
   const cx = (bx / BUILDING_GRID_CELL) | 0;
   const cy = (by / BUILDING_GRID_CELL) | 0;
@@ -14603,10 +14664,7 @@ function updateSettlementAttacks(dt) {
   // 群れ全体でO(N × (2*cellRadius+1)^2) ≈ O(N × 49)。
   // 群れから遠い大多数の建物は Set に入らないため全ドラゴン走査から除外される。
   _settlementsInRange.clear();
-  for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
-    _queryBuildingsForAttack(px[i], py[i]);
-  }
+  collectBuildingsNearFlock();   // v2.11.2: 群れ全体で1回だけ引く
 
   // (B) Set 内の建物だけ射程内判定・発射処理する。
   // Set サイズは群れ近傍の建物数のみ（遠方の建物は含まれない）。
