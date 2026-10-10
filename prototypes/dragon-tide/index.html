@@ -838,7 +838,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.9.1";
+const GAME_VERSION = "v2.9.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1542,8 +1542,9 @@ function maybeGiveHamletEgg(houses, symbol) {
 const BOID_DOWN_DURATION    = 10.0;  // ダウン継続秒数（この後フェードインで復帰）
 const BOID_REVIVE_DURATION  = 0.6;  // フェードイン復帰アニメ秒数
 
-// v2.9.1: 弾の直撃ダメージの一律値（PROJECTILE_HIT_DAMAGE 4.3）は撤去した。
-// 直撃も撃った側の damage を使う（shotHitDamage を参照）。
+// 1ヒットあたりのダメージ量（BOID_MAX_HP の約1/7 ≒ 数発耐える）
+// BOID_MAX_HP=30 → 約4.3ダメージ → 7発でダウン
+const PROJECTILE_HIT_DAMAGE = 4.3;
 
 // -----------------------------------------------------------------
 // バランスデータ（Phase2から流用）
@@ -9869,8 +9870,7 @@ function updateMovers(dt) {
         const baseAngle = Math.atan2(ndy, ndx);
         const fanSpread = atk.spread ?? 0.22;
         for (let k = -(atk.count >> 1); k <= (atk.count >> 1); k++) {
-          // v2.9.1: 弾の威力にも文明ごとの強化を掛ける（着弾弾・装甲軌道車と揃える）
-          spawnFanProjectileRaw(m.wx, m.wy, baseAngle + k * fanSpread, atk.speed, atk.damage * ferocity,
+          spawnFanProjectileRaw(m.wx, m.wy, baseAngle + k * fanSpread, atk.speed, atk.damage,
                                 atk.color ?? "#e8eef8", atk.kind ?? 0, 0, atk.knockR ?? 0);
         }
       } else {
@@ -9881,7 +9881,7 @@ function updateMovers(dt) {
       const heading = Math.atan2(m.headingY, m.headingX);
       for (const side of [Math.PI / 2, -Math.PI / 2]) {
         for (let k = -1; k <= 1; k++) {
-          spawnFanProjectileRaw(m.wx, m.wy, heading + side + k * 0.15, atk.speed, atk.damage * ferocity, "#90b0d0", 1);
+          spawnFanProjectileRaw(m.wx, m.wy, heading + side + k * 0.15, atk.speed, atk.damage, "#90b0d0", 1);
         }
       }
     } else if (atk.type === "chain") {
@@ -9918,7 +9918,7 @@ function updateMovers(dt) {
     } else if (atk.type === "bomb") {
       // v0.7 爆撃気球: 最寄りの竜めがけてAoE爆弾を投下（projectileAoe で着弾時に範囲被害）
       if (nearestD2 < atk.range * atk.range) {
-        spawnProjectile(m.wx, m.wy, nearestIdx, atk.speed, atk.damage * ferocity, "#e0b070", atk.aoe, false, 1);
+        spawnProjectile(m.wx, m.wy, nearestIdx, atk.speed, atk.damage, "#e0b070", atk.aoe, false, 1);
       } else {
         m.attackTimer = 0.4;
       }
@@ -14704,16 +14704,13 @@ const NORMAL_SHOT_DAMAGE_MULT = 1.3;
 const PROJECTILE_KNOCKBACK_SPEED = 120;
 
 // v2.9.0: 弾が竜に当たったときの値は**ここだけで決める**（図鑑も同じ関数で数字を出す）。
+// 直撃ダメージは弾の種別だけで決まり、**撃った側の damage は見ない**
+// （damage が効くのは projectileAoe を持つ弾の巻き込みだけ）。
 // kind: 0=矢 1=カタパルト弾 2=ボス重弾 3=ロケット（4/5 の着弾弾は竜に直接当たらない）
-//
-// v2.9.1: 直撃も**撃った側の damage** で決める（Shooter判定「巻き込みに効いて直撃に
-// 効かないのは普通にバグ」）。それまでは弾種だけで決まる一律値（4.3、矢・カタパルト弾は
-// ×1.3＝5.59）で、敵ごとの差も、文明ごとの伸び（建物の projectileDamage・
-// 移動敵の moverFerocity）も直撃には効いていなかった。damage は巻き込み（×0.6）にだけ使われていた。
-function shotHitDamage(kind, damage) {
+function shotHitDamage(kind) {
   // v0.63: 遅くした通常弾(0/1)だけ +30%。ロケット(3)・ボス重弾(2)は据え置き
   const kindMult = (kind === 0 || kind === 1) ? NORMAL_SHOT_DAMAGE_MULT : 1;
-  return damage * PROJECTILE_DAMAGE_MULTIPLIER * kindMult;
+  return PROJECTILE_HIT_DAMAGE * PROJECTILE_DAMAGE_MULTIPLIER * kindMult;
 }
 /** 弾が竜を押す衝撃力（初速 px/s）。 */
 function shotKnockImpulse(kind) {
@@ -14754,7 +14751,7 @@ function checkProjectileHitBoids(projIdx) {
     }
 
     if (hit) {
-      applyDamageToBoid(i, shotHitDamage(projKind[projIdx], projDmg[projIdx]));
+      applyDamageToBoid(i, shotHitDamage(projKind[projIdx]));
       // v0.7: AoE弾（爆撃気球・古代の投石など projectileAoe>0）は着弾点周囲にも被害
       if (projAoe[projIdx] > 0) {
         applyAoeProjectileDamage(projWx[projIdx], projWy[projIdx], projAoe[projIdx],
@@ -19712,8 +19709,9 @@ function codexAttackLabel(def) {
 //
 // どれでもないもの（回復・召喚・航跡・ひび・鐘楼）は攻撃ではないので成分を持たない。
 //
-// **数値は定義の値ではなく、実際に入る値を出す**（通常弾の直撃は damage ×1.3 など）。
-// 図鑑はゲームと同じ関数・定数を呼んで数字を作るので、片方だけ変わってずれることはない。
+// **数値は定義の値ではなく、実際に入る値を出す**。たとえば敵の通常弾は定義に damage を
+// 持つが、竜に当たったときは shotHitDamage() の一律値が入る。図鑑はゲームと同じ関数・定数を
+// 呼んで数字を作るので、片方だけ変わってずれることはない。
 // -----------------------------------------------------------------
 const ATTACK_CATEGORIES = {
   direct: { ja: "直接", color: "#ff9a80", hint: "体が触れて入る" },
@@ -19809,15 +19807,15 @@ function codexMoverPowers(def) {
     case "fan": {
       const k = fanShotKind(a.kind ?? 0);
       const list = [{ label: (k === 1 ? "重弾" : "矢") + "（1発）",
-                      shot: shotHitDamage(k, a.damage), impact: shotKnockImpulse(k) }];
+                      shot: shotHitDamage(k), impact: shotKnockImpulse(k) }];
       if (a.knockR) list.push({ label: "着弾の衝撃波", impact: impactFromPushDist(KNOCK_SHOT_PUSH),
                                 note: `半径${a.knockR}` });
       return list;
     }
     case "broadside":   // 舷側砲は spawnFanProjectileRaw に kind=1 で撃つ
-      return [{ label: "砲弾（1発）", shot: shotHitDamage(1, a.damage), impact: shotKnockImpulse(1) }];
+      return [{ label: "砲弾（1発）", shot: shotHitDamage(1), impact: shotKnockImpulse(1) }];
     case "bomb":        // 直撃の弾（kind=1）＋着弾点の巻き込み
-      return [{ label: "爆弾", shot: shotHitDamage(1, a.damage), impact: shotKnockImpulse(1),
+      return [{ label: "爆弾", shot: shotHitDamage(1), impact: shotKnockImpulse(1),
                 blast: a.damage * AOE_SPLASH_FACTOR, note: `巻き込み半径${a.aoe}` }];
     case "hazard":
       return [{ label: "居座る帯", blast: a.dps ?? a.damage, perSec: true, note: `半径${a.radius}・${a.life}秒` }];
@@ -19835,9 +19833,8 @@ const CODEX_EMPLACEMENT_POWERS = {
   trebuchet: () => [{ label: "巨岩", blast: TREBUCHET_DAMAGE, impact: impactFromPushDist(SHELL_PUSH_DIST),
                       note: `半径${TREBUCHET_AOE}` }],
   ember:     () => [{ label: "燃える輪", blast: EMBER_TOWER_DPS, perSec: true, note: `半径${EMBER_TOWER_RADIUS}` }],
-  ballista:  () => [{ label: "重矢（1発）", shot: shotHitDamage(fanShotKind(1), BALLISTA_DAMAGE),
-                      impact: shotKnockImpulse(fanShotKind(1)) }],
-  rocket:    () => [{ label: "ロケット（1発）", shot: shotHitDamage(3, ROCKET_DAMAGE), impact: shotKnockImpulse(3),
+  ballista:  () => [{ label: "重矢（1発）", shot: shotHitDamage(fanShotKind(1)), impact: shotKnockImpulse(fanShotKind(1)) }],
+  rocket:    () => [{ label: "ロケット（1発）", shot: shotHitDamage(3), impact: shotKnockImpulse(3),
                       blast: ROCKET_DAMAGE * AOE_SPLASH_FACTOR, note: `巻き込み半径${ROCKET_AOE}` }],
   mortar:    () => [{ label: "砲弾（1発）", blast: MORTAR_DAMAGE, impact: impactFromPushDist(SHELL_PUSH_DIST),
                       note: `半径${MORTAR_AOE}` }],
@@ -19846,30 +19843,15 @@ const CODEX_EMPLACEMENT_POWERS = {
                       note: `半径${FLAK_AOE}` }],
   prism:     () => [{ label: "レーザー", shot: PRISM_DPS, perSec: true }],
   concussionBattery: () => [
-    { label: "衝撃弾（1発）", shot: shotHitDamage(fanShotKind(1), CONCUSSION_BATTERY_DAMAGE),
-      impact: shotKnockImpulse(fanShotKind(1)) },
+    { label: "衝撃弾（1発）", shot: shotHitDamage(fanShotKind(1)), impact: shotKnockImpulse(fanShotKind(1)) },
     { label: "着弾の衝撃波", impact: impactFromPushDist(KNOCK_SHOT_PUSH), note: `半径${CONCUSSION_BATTERY_KNOCK_R}` },
   ],
 };
 
-/** 建物の通常弾の威力の幅（全文明・指定した大きさ）。[最小, 最大] に mult を掛けて返す。 */
-function codexBuildingDamageRange(sizes, mult = 1) {
-  const vals = [];
-  for (const cfg of STAGE_CONFIGS) {
-    for (const size of sizes) {
-      const b = cfg.buildings[size];
-      if (b && b.projectileDamage > 0) vals.push(b.projectileDamage * mult);
-    }
-  }
-  return vals.length ? [Math.min(...vals), Math.max(...vals)] : [0, 0];
-}
-
 /** 普通の建物（大きさ別）の成分。large と首都はカタパルト弾、それ以外は矢。 */
 function codexBuildingSizePowers(size) {
   const kind = size === "large" ? 1 : 0;
-  // 文明で伸びるので石器〜最終の幅で出す（格上の街・要塞はさらに上がる）
-  const dmg = codexBuildingDamageRange([size]).map(d => shotHitDamage(kind, d));
-  const list = [{ label: "通常弾（1発）", shot: dmg, impact: shotKnockImpulse(kind), note: "I〜VIII" }];
+  const list = [{ label: "通常弾（1発）", shot: shotHitDamage(kind), impact: shotKnockImpulse(kind) }];
   // 巻き込みは「1発撃ち（扇でない）かつ projectileAoe を持つ」文明だけ。扇撃ちは巻き込みを持たない
   const splash = [];
   for (const cfg of STAGE_CONFIGS) {
@@ -19889,7 +19871,7 @@ const CODEX_BOSS_ART_POWERS = {
   boulders:   () => ({ blast: BOSS_BOULDER_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
   pillars:    () => ({ blast: BOSS_PILLAR_DPS, perSec: true }),
   arrowRain:  () => ({ blast: BOSS_RAIN_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
-  volley:     () => ({ shot: shotHitDamage(fanShotKind(1), BOSS_VOLLEY_DMG), impact: shotKnockImpulse(fanShotKind(1)) }),
+  volley:     () => ({ shot: shotHitDamage(fanShotKind(1)), impact: shotKnockImpulse(fanShotKind(1)) }),
   carpet:     () => ({ blast: BOSS_CARPET_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
   laser:      () => ({ shot: BOSS_LASER_DPS, perSec: true }),
   flakStorm:  () => ({ blast: BOSS_STORM_DMG, impact: impactFromPushDist(SHELL_PUSH_DIST) }),
@@ -19901,7 +19883,7 @@ function codexCapitalPowers() {
   // 首都の通常弾は7方向の扇で撃つので、扇撃ちの弾種に丸められる（fanShotKind）
   const k = fanShotKind(2);
   const list = [
-    { label: "通常弾（1発）", shot: shotHitDamage(k, BOSS_FIRE_PARAMS.projectileDamage), impact: shotKnockImpulse(k) },
+    { label: "通常弾（1発）", shot: shotHitDamage(k), impact: shotKnockImpulse(k) },
     { label: "反発衝撃波", blast: BOSS_NOVA_DAMAGE,
       impact: [impactFromPushDist(BOSS_NOVA_PUSH_MIN), impactFromPushDist(BOSS_NOVA_PUSH_MIN + BOSS_NOVA_PUSH_EXTRA)],
       note: "中心ほど強く押す" },
@@ -20223,9 +20205,7 @@ function codexBuildingHtml() {
             ` ／ ${key === "granary" ? "町の裏側" : key === "belfry" ? "町の中心寄り" : "町の表側"}</div>` +
           `<div class="cx-atk">${def.desc}</div>` +
           (key === "rampart"
-            ? codexPowerHtml([{ label: "通常弾（1発）", note: "I〜VIII",
-                                shot: codexBuildingDamageRange(Object.keys(STAGE_CONFIGS[0].buildings),
-                                  RAMPART_DMG_MULT).map(d => shotHitDamage(fanShotKind(1), d)),
+            ? codexPowerHtml([{ label: "通常弾（1発）", shot: shotHitDamage(fanShotKind(1)),
                                 impact: shotKnockImpulse(fanShotKind(1)) }], "enemy")
             : "") +
           `<div class="cx-stat">${
