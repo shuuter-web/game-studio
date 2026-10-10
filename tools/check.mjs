@@ -107,7 +107,42 @@ function checkConflictMarkers({ lines, fileLabel }, fail) {
   }
 }
 
-const CHECKS = [checkSyntax, checkConflictMarkers, checkDeterministicRandom, checkAssetsExist, checkVersion];
+/**
+ * トップレベルの関数と同じ名前の局所変数を宣言し、その関数の中で**同じ名前を呼んでいる**箇所を検出する。
+ * 局所変数が関数を隠すので、呼んだ瞬間に「X is not a function」で落ちる。構文としては正しいので
+ * node --check をすり抜ける（Dragon Tide v2.10.0 で関数 hitMover() を足したとき、
+ * 既存の `let hitMover = false;` に隠されて竜の弾が敵に当たるたびにフレームが止まった実績あり）。
+ * 宣言だけで呼んでいないもの（sp・atk などの使い回しの短い名前）は害がないので拾わない。
+ */
+function checkShadowedFunctionCall({ scripts, fileLabel }, fail) {
+  const hits = [];
+  for (const script of scripts) {
+    const code = script.code;
+    const topLevel = new Set([...code.matchAll(/^function (\w+)/gm)].map((m) => m[1]));
+    const starts = [...code.matchAll(/^function \w+/gm)].map((m) => m.index);
+    for (const decl of code.matchAll(/\b(?:let|const|var)\s+(\w+)\s*=/g)) {
+      const name = decl[1];
+      if (!topLevel.has(name)) continue;
+      const owner = starts.filter((s) => s < decl.index).pop();
+      if (owner === undefined) continue;
+      // 宣言を含む関数の終わり（波括弧を数える）
+      let i = code.indexOf("{", owner), depth = 0;
+      for (; i < code.length; i++) {
+        if (code[i] === "{") depth++;
+        else if (code[i] === "}" && --depth === 0) break;
+      }
+      const after = code.slice(decl.index + decl[0].length, i);
+      if (new RegExp(`(?<![\\w.])${name}\\s*\\(`).test(after)) {
+        const line = code.slice(0, decl.index).split("\n").length + script.startLine - 1;
+        hits.push(`${fileLabel}:${line}: 局所変数 ${name} が関数 ${name}() を隠したまま呼んでいる`);
+      }
+    }
+  }
+  if (hits.length > 0) fail(`関数名と同じ局所変数（呼ぶと落ちる）\n${hits.join("\n")}`);
+}
+
+const CHECKS = [checkSyntax, checkConflictMarkers, checkDeterministicRandom, checkAssetsExist, checkVersion,
+                checkShadowedFunctionCall];
 
 // -----------------------------------------------------------------
 // 実行

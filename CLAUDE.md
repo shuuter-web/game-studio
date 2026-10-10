@@ -154,7 +154,8 @@ node tools/check.mjs prototypes/dragon-tide/index.html
 ```
 
 検査内容: 構文（`<script>` 抽出 → `node --check`、行番号はHTML基準に読み替え）/
-`Math.random()` の直接呼び出し / 参照アセットの実在 / `GAME_VERSION` の形式。
+`Math.random()` の直接呼び出し / 参照アセットの実在 / `GAME_VERSION` の形式 /
+関数と同じ名前の局所変数がその関数を隠したまま呼んでいないか（呼ぶと実行時に落ちるが構文検査はすり抜ける）。
 `Edit`・`Write`・`MultiEdit` の後に PostToolUse フックで自動実行され、失敗すると差し戻される
 （`.claude/settings.json`）。検査を足したいときは `tools/check.mjs` の `CHECKS` に関数を追加する。
 
