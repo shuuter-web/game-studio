@@ -838,7 +838,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.12.0";
+const GAME_VERSION = "v2.13.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1719,11 +1719,41 @@ const HOP_PHASE_STAGGER = 0.14;
 //   単発攻撃（bullet/missile）… 1発ごとに**発射方向の逆へ押し戻す距離(px)**
 //   持続攻撃（beam）          … 照射している間の**押し戻し速度(px/s)**
 // 実際の押し出しは applyKickDist（減衰する外力）で行う＝ワープに見えない。
+// =====================================================================
+// v2.13.0: 攻撃の対象（Shooter判定）
+//
+// 対象の分類は既存の用語のまま3つ：
+//   建物     … settlements のうち城壁以外（首都・時代兵器・町の役割・ダム・祠。動く首都や岩の上の建物も含む）
+//   動く敵   … movers（MOVER_DEFS）。速さ0の敵・部位・線路の車両も含む
+//   城壁     … settlements のうち _isWall（障害物のうち壊せるもの。地形は対象外）
+// 分類ごとに、攻撃は次の3つのどれかを持つ：
+//   aim  … 狙う（もちろん当たる）
+//   hit  … 狙わないが当たる（通り道・範囲に入れば当たる）
+//   none … 当たらない（もちろん狙わない）
+// 狙う相手が複数あるときは**分類によらず近いほう**（v2.13.0 で揃えた）。
+// 書かない攻撃は全部 aim。
+// =====================================================================
+const TARGET_AIM  = "aim";
+const TARGET_HIT  = "hit";
+const TARGET_NONE = "none";
+const TARGETS_ALL_AIM = { building: TARGET_AIM, mover: TARGET_AIM, wall: TARGET_AIM };
+
+/** 建物か城壁か（settlements の中の分類）。 */
+function settlementTargetClass(st) { return st._isWall ? "wall" : "building"; }
+/** その分類を狙うか。 */
+function targetAimable(targets, cls) { return targets[cls] === TARGET_AIM; }
+/** その分類に当たるか（狙う・狙わないが当たる のどちらでも当たる）。 */
+function targetHittable(targets, cls) { return targets[cls] !== TARGET_NONE; }
+/** 動く敵が今狙える状態か（潜っている敵は当たらないので狙わない）。 */
+function moverAimable(m) { return !!m && m.alive && !m.submerged; }
+
 const ATTACK_DEFS = {
   flamebreath:    { ja: "炎息",       en: "Flamebreath",       kind: "beam",      recoilDist: 0,  fireStun: 0    },
   // recoilDist 28: 実機で 0/40/100/240 を比べたユーザー判断（v0.35.2）
   icelance:       { ja: "氷槍",       en: "Ice Lance",         kind: "bullet",    recoilDist: 28, fireStun: 0    },
-  shadowbolt:     { ja: "影弾",       en: "Shadow Bolt",       kind: "missile",   recoilDist: 0,  fireStun: 0    },
+  // v2.13.0: 城壁には当たらない（飛び越えて、壁の内側を狙う。仕様書 §8.1 の「MISSILE のみ越える」）
+  shadowbolt:     { ja: "影弾",       en: "Shadow Bolt",       kind: "missile",   recoilDist: 0,  fireStun: 0,
+                    targets: { building: TARGET_AIM, mover: TARGET_AIM, wall: TARGET_NONE } },
   rend:           { ja: "爪撃",       en: "Rend",              kind: "melee",     recoilDist: 0,  fireStun: 0.14 },
   // v0.35: Ⅱ群＋ガーゴイルぶん
   wingblade:      { ja: "刃翼",       en: "Wing Blade",        kind: "blade",     recoilDist: 0,  fireStun: 0    },
@@ -1739,6 +1769,12 @@ const ATTACK_DEFS = {
   // kind は scatter（羽根散弾と同じ処理）だが、反動を持たせて「撒いた反作用で加速する」感触にする。
   stardust:       { ja: "星屑",       en: "Stardust",          kind: "scatter",   recoilDist: 14, fireStun: 0    },
 };
+
+/** 攻撃の対象の設定（書いていなければ全部 aim）。def を省くと今の群れの攻撃。 */
+function attackTargets(def) {
+  const d = def || atk();
+  return (d && d.targets) || TARGETS_ALL_AIM;
+}
 
 // v0.34.1: 反動の効きを実機で確かめるためのデバッグ上書き（null=攻撃の定義値）。
 // デバッグパネルの「💥 反動」で巡回する。
@@ -15036,8 +15072,7 @@ function updateBeamAttacks(dt) {
   const maxTargets = Math.min(BREATH_MAX_TARGETS, effBeamTargets());
   const damageThisFrame = BREATH_DAMAGE_PER_SEC * effWeaponDmgMult("beam") * dt;
   const arcHalf = breathArcHalf();   // v0.90: 攻撃可能角度の半角（ループ外で1回）
-  // 射程延伸で 100px（グリッドセル）を超えたら近傍クエリの走査半径も広げる
-  const cellRadius = Math.max(1, Math.ceil(effRange / BUILDING_GRID_CELL));
+  const targets = attackTargets();   // v2.13.0: 狙う分類
 
   // Spatial Hash を使ってブレス射程内の建物候補を絞る
   for (let i = 0; i < N; i++) {
@@ -15045,49 +15080,18 @@ function updateBeamAttacks(dt) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
 
-    buildingGridQueryRadius(px[i], py[i], cellRadius, _buildingNeighbourBuf);
+    // v2.13.0: 建物・動く敵・城壁のうち、この攻撃が狙う分類から近い順に maxTargets 件。
+    // それまでは建物を優先し、射程内に建物が1棟も無いときだけ動く敵を照らしていた。
+    collectAimTargets(px[i], py[i], effRange, targets, i, arcHalf, maxTargets, _breathTargetBuf);
 
-    // 射程内の建物を距離昇順で最大 maxTargets 件選ぶ（挿入ソート、k≤3 なので軽い）
-    _breathTargetBuf.length = 0;
-    for (const sIdx of _buildingNeighbourBuf) {
-      const settlement = settlements[sIdx];
-      if (!settlement || settlement.fallen) continue;
-      const dx = settlement.wx - px[i];
-      const dy = settlement.wy - py[i];
-      const d2 = dx * dx + dy * dy;
-      if (d2 >= BREATH_R2) continue;
-      if (!isInBreathArc(i, settlement.wx, settlement.wy, arcHalf)) continue;   // v0.90
-
-      let insertAt = _breathTargetBuf.length;
-      for (let t = 0; t < _breathTargetBuf.length; t++) {
-        if (d2 < _breathTargetBuf[t].d2) { insertAt = t; break; }
+    for (const tg of _breathTargetBuf) {
+      if (tg.mover) {
+        if (!tg.mover.alive) continue;   // 同フレーム内で先の照射により撃破済み
+        hitMover(tg.mover, { shot: damageThisFrame }, px[i], py[i]);
+        activeBreaths.push({ boidIdx: i, targetWx: tg.mover.wx, targetWy: tg.mover.wy });
+        continue;
       }
-      _breathTargetBuf.splice(insertAt, 0, { sIdx, d2 });
-      if (_breathTargetBuf.length > maxTargets) _breathTargetBuf.length = maxTargets;
-    }
-
-    // v0.6-p4: 射程内に建物が無いときは移動敵を照射する（純BEAM群でも移動敵を倒せる）
-    if (_breathTargetBuf.length === 0) {
-      let nearestMover = null;
-      let nearestMoverD2 = BREATH_R2;
-      for (const m of movers) {
-        if (!m.alive) continue;
-        const mdx = m.wx - px[i];
-        const mdy = m.wy - py[i];
-        const md2 = mdx * mdx + mdy * mdy;
-        if (md2 >= nearestMoverD2) continue;
-        if (!isInBreathArc(i, m.wx, m.wy, arcHalf)) continue;   // v0.90
-        nearestMoverD2 = md2; nearestMover = m;
-      }
-      if (nearestMover) {
-        hitMover(nearestMover, { shot: damageThisFrame }, px[i], py[i]);
-        activeBreaths.push({ boidIdx: i, targetWx: nearestMover.wx, targetWy: nearestMover.wy });
-      }
-      continue;
-    }
-
-    for (let t = 0; t < _breathTargetBuf.length; t++) {
-      const sIdx = _breathTargetBuf[t].sIdx;
+      const sIdx = tg.sIdx;
       const settlement = settlements[sIdx];
       if (settlement.fallen) continue; // 同フレーム内で先の照射により陥落済み
 
@@ -16949,39 +16953,64 @@ function findNearestBuilding(wx, wy, maxDist, cellRadius, excludeWalls, boidIdx,
   return best;
 }
 
-/** ミサイルが狙える動く敵か。潜っている敵は当たらないので狙わない。 */
-function isMissileTargetMover(m) {
-  return !!m && m.alive && !m.submerged;
-}
+// 近傍クエリ用の作業バッファ（狙う相手の候補探し専用。呼んだ側の作業バッファを壊さない）
+const _aimGridBuf = [];
+const _aimOneBuf  = [];
 
 /**
- * v2.12.0: ミサイルの標的を選ぶ。**建物（城壁を除く）と動く敵のうち一番近いもの**。
- * それまでは建物しか狙わなかったので、建物の無い所で敵に囲まれると1発も撃てず、
- * 敵に当たるのは建物へ向かう途中でたまたま触れたときだけだった（Shooter指示で敵も狙う）。
- * 結果は _missileTarget に入れる（{ sIdx, mover } のどちらか一方。無ければ両方 -1/null）。
+ * v2.13.0: 狙う相手を近い順に最大 maxCount 件、out に入れる（{ sIdx, mover, d2 }）。
+ * targets で aim になっている分類だけを見る。分類によらず**近い順**。
+ * boidIdx と halfArc を渡すと、その竜の向きから見て狙える角度の中だけに絞る。
  */
-const _missileTarget = { sIdx: -1, mover: null };
-function findMissileTarget(wx, wy, maxDist, cellRadius, boidIdx, halfArc) {
-  const sIdx = findNearestBuilding(wx, wy, maxDist, cellRadius, true, boidIdx, halfArc);
-  let bestD2 = maxDist * maxDist;
-  if (sIdx >= 0) {
-    const st = settlements[sIdx];
-    bestD2 = (st.wx - wx) * (st.wx - wx) + (st.wy - wy) * (st.wy - wy);
-  }
-  let mover = null;
+function collectAimTargets(wx, wy, maxDist, targets, boidIdx, halfArc, maxCount, out) {
+  out.length = 0;
+  const r2 = maxDist * maxDist;
   const arcOn = boidIdx !== undefined && halfArc !== undefined && halfArc < Math.PI;
-  for (const m of movers) {
-    if (!isMissileTargetMover(m)) continue;
-    const dx = m.wx - wx, dy = m.wy - wy;
-    const d2 = dx * dx + dy * dy;
-    if (d2 >= bestD2) continue;
-    if (arcOn && !isInBreathArc(boidIdx, m.wx, m.wy, halfArc)) continue;
-    bestD2 = d2; mover = m;
+  const add = (sIdx, mover, d2) => {
+    let at = out.length;
+    for (let t = 0; t < out.length; t++) if (d2 < out[t].d2) { at = t; break; }
+    if (at >= maxCount) return;
+    out.splice(at, 0, { sIdx, mover, d2 });
+    if (out.length > maxCount) out.length = maxCount;
+  };
+  const aimBuilding = targetAimable(targets, "building");
+  const aimWall     = targetAimable(targets, "wall");
+  if (aimBuilding || aimWall) {
+    buildingGridQueryRadius(wx, wy, Math.max(1, Math.ceil(maxDist / BUILDING_GRID_CELL)), _aimGridBuf);
+    for (const sIdx of _aimGridBuf) {
+      const st = settlements[sIdx];
+      if (!st || st.fallen) continue;
+      if (!(st._isWall ? aimWall : aimBuilding)) continue;
+      const dx = st.wx - wx, dy = st.wy - wy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= r2) continue;
+      if (out.length >= maxCount && d2 >= out[out.length - 1].d2) continue;
+      if (arcOn && !isInBreathArc(boidIdx, st.wx, st.wy, halfArc)) continue;
+      add(sIdx, null, d2);
+    }
   }
-  _missileTarget.mover = mover;
-  _missileTarget.sIdx  = mover ? -1 : sIdx;
-  return _missileTarget;
+  if (targetAimable(targets, "mover")) {
+    for (const m of movers) {
+      if (!moverAimable(m)) continue;
+      const dx = m.wx - wx, dy = m.wy - wy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= r2) continue;
+      if (out.length >= maxCount && d2 >= out[out.length - 1].d2) continue;
+      if (arcOn && !isInBreathArc(boidIdx, m.wx, m.wy, halfArc)) continue;
+      add(-1, m, d2);
+    }
+  }
+  return out;
 }
+
+/** 一番近い狙う相手を1つ返す（{ sIdx, mover, d2 }）。無ければ null。 */
+function findNearestAimTarget(wx, wy, maxDist, targets, boidIdx, halfArc) {
+  collectAimTargets(wx, wy, maxDist, targets, boidIdx, halfArc, 1, _aimOneBuf);
+  return _aimOneBuf.length ? _aimOneBuf[0] : null;
+}
+
+/** 狙う相手の位置（建物でも動く敵でも）。 */
+function aimTargetPos(tg) { return tg.mover || settlements[tg.sIdx]; }
 
 /** BULLET: 射程内の最近建物へ直進弾を放つ（各個体、間隔 1.2s×連射機構） */
 function updateBulletAttacks(dt) {
@@ -16996,13 +17025,14 @@ function updateBulletAttacks(dt) {
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
-    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius, false, i, arcHalf);
-    if (targetIdx < 0) continue; // 射程内に標的なし: タイマーは0のまま待機（見つけ次第撃つ）
+    // v2.13.0: 建物・動く敵・城壁のうち、この攻撃が狙う分類から一番近いもの
+    const tg = findNearestAimTarget(px[i], py[i], range, attackTargets(), i, arcHalf);
+    if (!tg) continue; // 射程内に標的なし: タイマーは0のまま待機（見つけ次第撃つ）
 
     boidFireTimer[i] = interval;
-    const target = settlements[targetIdx];
+    const target = aimTargetPos(tg);
     const angle  = Math.atan2(target.wy - py[i], target.wx - px[i]);
-    spawnDragonProjectile(px[i], py[i], 0, angle, targetIdx);
+    spawnDragonProjectile(px[i], py[i], 0, angle, tg.sIdx);
     applyFireKick(i, angle);   // v0.33: 竜種プロファイルの反動・硬直
   }
 }
@@ -17021,9 +17051,9 @@ function updateMissileAttacks(dt) {
     if (boidFireTimer[i] > 0) continue;
 
     // v0.6-p3: ミサイルは城壁を狙わない（壁越しに内部の建物をロックする）
-    // v2.12.0: 動く敵も狙う（建物と敵のうち近いほう）
-    const tg = findMissileTarget(px[i], py[i], range, cellRadius, i, arcHalf);
-    if (tg.sIdx < 0 && !tg.mover) continue;
+    // v2.12.0: 動く敵も狙う。v2.13.0: 対象の設定（ATTACK_DEFS.shadowbolt.targets）から引く
+    const tg = findNearestAimTarget(px[i], py[i], range, attackTargets(ATTACK_DEFS.shadowbolt), i, arcHalf);
+    if (!tg) continue;
 
     boidFireTimer[i] = interval;
     // 発射方向は現在の進行方向（そこからゆらいで加速する軌道が気持ちよさの本体）
@@ -17044,7 +17074,7 @@ function updateDragonProjectiles(dt) {
       // ---- ミサイル: 加速＋旋回追尾 ----
       // v2.12.0: 追う相手は建物か動く敵のどちらか（target は wx/wy を持つ方）
       let target = dprojTargetMover[i];
-      if (target && !isMissileTargetMover(target)) target = null;
+      if (target && !moverAimable(target)) target = null;
       if (!target) {
         const targetIdx = dprojTarget[i];
         target = (targetIdx >= 0) ? settlements[targetIdx] : null;
@@ -17052,10 +17082,10 @@ function updateDragonProjectiles(dt) {
       }
       if (!target) {
         // 対象消失: 現在位置周辺で再ロック（城壁は対象外。見つからなければ直進して寿命切れ）
-        const tg = findMissileTarget(dprojX[i], dprojY[i], 250, 3);
-        dprojTarget[i] = tg.sIdx;
-        dprojTargetMover[i] = tg.mover;
-        target = tg.mover || (tg.sIdx >= 0 ? settlements[tg.sIdx] : null);
+        const tg = findNearestAimTarget(dprojX[i], dprojY[i], 250, attackTargets(ATTACK_DEFS.shadowbolt));
+        dprojTarget[i] = tg ? tg.sIdx : -1;
+        dprojTargetMover[i] = tg ? tg.mover : null;
+        target = tg ? aimTargetPos(tg) : null;
       }
 
       const speed = Math.min(
@@ -17109,13 +17139,16 @@ function updateDragonProjectiles(dt) {
       }
     }
 
+    // v2.13.0: この弾の攻撃の対象設定（影弾は自分の設定、ほかは今の群れの攻撃）
+    const projTargets = dprojKind[i] === 1 ? attackTargets(ATTACK_DEFS.shadowbolt) : attackTargets();
+
     // ---- v0.6-p4: 移動敵ヒット判定（数が少ないので全走査） ----
     // v2.11.3: 変数名を hitMover → hitAnyMover。v2.10.0 で関数 hitMover() を足したとき、
     // この局所変数（false）が関数を隠してしまい、竜の弾（氷竜・影竜・燕竜・彗星竜）が
     // 動く敵に当たるたびに「hitMover is not a function」でフレームの処理が途中で止まっていた
     // （描画まで届かず激しく処理落ちし、止まる前に入った撃破の経験値だけが増える）。
     let hitAnyMover = false;
-    for (const m of movers) {
+    if (targetHittable(projTargets, "mover")) for (const m of movers) {
       if (!m.alive) continue;
       const mdx = m.wx - dprojX[i];
       const mdy = m.wy - dprojY[i];
@@ -17142,7 +17175,8 @@ function updateDragonProjectiles(dt) {
       const s = settlements[sIdx];
       if (!s || s.fallen) continue;
       // v0.6-p3: ミサイルは城壁を飛び越える（唯一の壁越し攻撃。仕様 §6.3）
-      if (dprojKind[i] === 1 && s._isWall) continue;
+      // v2.13.0: 「当たらない」分類は飛び越える（影弾の城壁はここで落ちる）
+      if (!targetHittable(projTargets, settlementTargetClass(s))) continue;
       if (dprojKind[i] === 0 && sIdx === dprojLastHit[i]) continue; // 同じ建物への多段ヒット防止
       const hitR = s.radius + 3;
       const dx = s.wx - dprojX[i];
@@ -17168,6 +17202,8 @@ function updateDragonProjectiles(dt) {
           if (aIdx === sIdx) continue;
           const a = settlements[aIdx];
           if (!a || a.fallen) continue;
+          // v2.13.0: 爆発も「当たらない」分類には入れない（影弾の爆風は城壁を削らない）
+          if (!targetHittable(projTargets, settlementTargetClass(a))) continue;
           const adx = a.wx - dprojX[i];
           const ady = a.wy - dprojY[i];
           if (adx * adx + ady * ady < (aoeR + a.radius) * (aoeR + a.radius)) {
@@ -17289,39 +17325,23 @@ function updateMotherBreath(dt) {
   const dmg = MOTHER_BREATH_DAMAGE * permaBuff.motherDmg * effMotherBreathDmg();
   const cellRadius = Math.max(1, Math.ceil(MOTHER_BREATH_RANGE / BUILDING_GRID_CELL));
 
-  // 近傍の建物を距離順に最大 MOTHER_BREATH_TARGETS 件薙ぐ
-  buildingGridQueryRadius(mx, my, cellRadius, _motherBreathBuf);
-  const targets = [];
-  for (const sIdx of _motherBreathBuf) {
-    const s = settlements[sIdx];
-    if (!s || s.fallen) continue;
-    const dx = s.wx - mx, dy = s.wy - my;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < R2) targets.push({ sIdx, d2 });
-  }
-  targets.sort((a, b) => a.d2 - b.d2);
-
+  // v2.13.0: 建物・動く敵・城壁を混ぜて近い順に最大 MOTHER_BREATH_TARGETS 件薙ぐ
+  // （それまでは建物を先に取り、余った枠だけ動く敵に回していた）
+  collectAimTargets(mx, my, MOTHER_BREATH_RANGE, TARGETS_ALL_AIM, undefined, undefined,
+                    MOTHER_BREATH_TARGETS, _motherBreathBuf);
   let hits = 0;
-  for (const tg of targets) {
-    if (hits >= MOTHER_BREATH_TARGETS) break;
-    const s = settlements[tg.sIdx];
-    if (s.fallen) continue;
-    hitBuilding(tg.sIdx, { shot: dmg }, mx, my);   // v1.1.1 の楔竜のひびは hitBuilding の中
-    spawnHitParticles(s.wx, s.wy);
-    pushMotherBreathFx(mx, my, s.wx, s.wy, (hits * 60) % 360);   // 虹色に色相をずらす
-    hits++;
-  }
-  // 建物が足りなければ移動敵も薙ぐ
-  if (hits < MOTHER_BREATH_TARGETS) {
-    for (const m of movers) {
-      if (hits >= MOTHER_BREATH_TARGETS) break;
-      if (!m.alive) continue;
-      const mdx = m.wx - mx, mdy = m.wy - my;
-      if (mdx * mdx + mdy * mdy >= R2) continue;
-      hitMover(m, { shot: dmg }, mx, my);
-      pushMotherBreathFx(mx, my, m.wx, m.wy, (hits * 60) % 360);   // 虹色に色相をずらす
-      hits++;
+  for (const tg of _motherBreathBuf) {
+    const pos = aimTargetPos(tg);
+    if (tg.mover) {
+      if (!tg.mover.alive) continue;
+      hitMover(tg.mover, { shot: dmg }, mx, my);
+    } else {
+      if (pos.fallen) continue;
+      hitBuilding(tg.sIdx, { shot: dmg }, mx, my);   // v1.1.1 の楔竜のひびは hitBuilding の中
+      spawnHitParticles(pos.wx, pos.wy);
     }
+    pushMotherBreathFx(mx, my, pos.wx, pos.wy, (hits * 60) % 360);   // 虹色に色相をずらす
+    hits++;
   }
   if (hits > 0) { triggerFlash("rgba(255,180,60,0.22)", 0.14); hapticPulse(40); }
 }
@@ -18363,7 +18383,7 @@ function drawSpecialBolts() {
  * v2.10.0: 以前は下見のたびに 0 ダメージを実際に入れていたので、
  * 鏡の盾兵や潜行中の敵が下見だけで「弾いた火花」を出していた。
  */
-function hitInRadius(wx, wy, radius, hit) {
+function hitInRadius(wx, wy, radius, hit, targets = TARGETS_ALL_AIM) {
   let hits = 0;
   const cellRadius = Math.max(1, Math.ceil(radius / BUILDING_GRID_CELL));
   buildingGridQueryRadius(wx, wy, cellRadius, _buildingNeighbourBuf);
@@ -18371,12 +18391,13 @@ function hitInRadius(wx, wy, radius, hit) {
   for (const sIdx of _buildingNeighbourBuf) {
     const st = settlements[sIdx];
     if (!st || st.fallen) continue;
+    if (!targetHittable(targets, settlementTargetClass(st))) continue;   // v2.13.0
     const dx = st.wx - wx, dy = st.wy - wy;
     if (dx * dx + dy * dy > r2) continue;
     if (hit) hitBuilding(sIdx, hit, wx, wy);
     hits++;
   }
-  for (const m of movers) {
+  if (targetHittable(targets, "mover")) for (const m of movers) {
     if (!m.alive) continue;
     const dx = m.wx - wx, dy = m.wy - wy;
     if (dx * dx + dy * dy > r2) continue;
@@ -18392,6 +18413,7 @@ const BLADE_ARC      = 1.0;   // 扇の半角（rad。約57度）
 const BLADE_DAMAGE   = 16;   // v0.35: 既存4種の掃討速度に合わせて調整（11では明確に低かった）
 const BLADE_INTERVAL = 0.55;
 function updateBladeAttacks(dt) {
+  const targets = attackTargets();   // v2.13.0
   const range  = BLADE_RANGE * effWeaponRangeMult("blade");
   const dmg    = BLADE_DAMAGE * effWeaponDmgMult("blade");
   const inter  = BLADE_INTERVAL * effFireIntervalMult("blade");
@@ -18410,6 +18432,7 @@ function updateBladeAttacks(dt) {
     for (const sIdx of _buildingNeighbourBuf) {
       const s = settlements[sIdx];
       if (!s || s.fallen) continue;
+      if (!targetHittable(targets, settlementTargetClass(s))) continue;   // v2.13.0
       const dx = s.wx - px[i], dy = s.wy - py[i];
       if (dx * dx + dy * dy > r2) continue;
       let da = Math.atan2(dy, dx) - heading;
@@ -18419,7 +18442,7 @@ function updateBladeAttacks(dt) {
       hitBuilding(sIdx, { direct: dmg }, px[i], py[i]);
       hit = true;
     }
-    for (const m of movers) {
+    if (targetHittable(targets, "mover")) for (const m of movers) {
       if (!m.alive) continue;
       const dx = m.wx - px[i], dy = m.wy - py[i];
       if (dx * dx + dy * dy > r2) continue;
@@ -18456,10 +18479,12 @@ function updateScatterAttacks(dt) {
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
-    const targetIdx = findNearestBuilding(px[i], py[i], range, cell, false, i, arcHalf);
-    if (targetIdx < 0) continue;
+    // v2.13.0: 建物・動く敵・城壁のうち、この攻撃が狙う分類から一番近いもの
+    const tg = findNearestAimTarget(px[i], py[i], range, attackTargets(), i, arcHalf);
+    if (!tg) continue;
     boidFireTimer[i] = inter;
-    const t = settlements[targetIdx];
+    const targetIdx = tg.sIdx;
+    const t = aimTargetPos(tg);
     const base = Math.atan2(t.wy - py[i], t.wx - px[i]);
     const half = (SCATTER_COUNT - 1) / 2;
     for (let k = 0; k < SCATTER_COUNT; k++) {
@@ -18486,13 +18511,14 @@ const _satPos = { x: 0, y: 0 };
 function updateSatelliteAttacks(dt) {
   const dmg = SAT_DPS * effWeaponDmgMult("satellite") * dt;
   const hit = { direct: dmg };
+  const targets = attackTargets();   // v2.13.0
   const hitR = SAT_HIT_R * effWeaponRangeMult("satellite");
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
     for (let k = 0; k < SAT_COUNT; k++) {
       satellitePos(i, k, _satPos);
-      hitInRadius(_satPos.x, _satPos.y, hitR, hit);
+      hitInRadius(_satPos.x, _satPos.y, hitR, hit, targets);
     }
   }
 }
@@ -18538,9 +18564,9 @@ function updateDivebombAttacks(dt) {
     if (boidFireTimer[i] > 0) continue;
 
     // 射程内に何か居るときだけ叩く（空振りしない）
-    if (hitInRadius(px[i], py[i], radius) === 0) continue;
+    if (hitInRadius(px[i], py[i], radius, null, attackTargets()) === 0) continue;
     boidFireTimer[i] = inter;
-    hitInRadius(px[i], py[i], radius, { direct: dmg, impact: DIVE_IMPACT });
+    hitInRadius(px[i], py[i], radius, { direct: dmg, impact: DIVE_IMPACT }, attackTargets());
     // 石色の衝撃リング＋硬直（fireStun 0.18）
     shockwaveFxList.push({ x: px[i], y: py[i], maxR: radius, life: SHOCKWAVE_FX_DURATION, color: "#b8c0c8" });
     spawnCollisionParticles(px[i], py[i]);
@@ -18568,7 +18594,7 @@ function updateBombDrops(dt) {
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
     // 炸裂したとき当たるものが今この場所にあるか（空振りでは落とさない＝他武器と同じ作法）
-    if (hitInRadius(px[i], py[i], radius) === 0) continue;
+    if (hitInRadius(px[i], py[i], radius, null, attackTargets()) === 0) continue;
     boidFireTimer[i] = inter;
     if (bombList.length < BOMB_MAX) bombList.push({ x: px[i], y: py[i], t: BOMB_FUSE });
   }
@@ -18583,7 +18609,7 @@ function updateBombFuses(dt) {
     const b = bombList[k];
     b.t -= dt;
     if (b.t > 0) continue;
-    hitInRadius(b.x, b.y, radius, { blast: dmg });
+    hitInRadius(b.x, b.y, radius, { blast: dmg }, attackTargets());
     shockwaveFxList.push({ x: b.x, y: b.y, maxR: radius, life: SHOCKWAVE_FX_DURATION, color: "#ffb060" });
     spawnCollisionParticles(b.x, b.y);
     bombList.splice(k, 1);
@@ -18630,6 +18656,7 @@ const TONGUE_FX_LIFE  = 0.14;
 const tongueFxList = [];      // { x, y, angle, t }
 
 function updateTongueAttacks(dt) {
+  const targets = attackTargets();   // v2.13.0
   const range = TONGUE_RANGE * effWeaponRangeMult("tongue");
   const dmg   = TONGUE_DAMAGE * effWeaponDmgMult("tongue");
   const inter = TONGUE_INTERVAL * effFireIntervalMult("tongue");
@@ -18655,6 +18682,7 @@ function updateTongueAttacks(dt) {
     for (const sIdx of _buildingNeighbourBuf) {
       const s = settlements[sIdx];
       if (!s || s.fallen) continue;
+      if (!targetHittable(targets, settlementTargetClass(s))) continue;   // v2.13.0
       const dx = s.wx - px[i], dy = s.wy - py[i];
       const along = dx * hx + dy * hy;                  // 前方への距離
       if (along < 0 || along > range) continue;
@@ -18663,7 +18691,7 @@ function updateTongueAttacks(dt) {
       hitBuilding(sIdx, { direct: dmg }, px[i], py[i]);
       hit = true;
     }
-    for (const m of movers) {
+    if (targetHittable(targets, "mover")) for (const m of movers) {
       if (!m.alive) continue;
       const dx = m.wx - px[i], dy = m.wy - py[i];
       const along = dx * hx + dy * hy;
@@ -20533,7 +20561,7 @@ function codexBuildingHtml() {
       `</div>`;
   }
 
-  html += `</div><div class="cx-era">首都と城壁</div><div class="cx-list">` +
+  html += `</div><div class="cx-era">首都</div><div class="cx-list">` +
     `<div class="cx-row elite">` +
       `<div class="cx-thumb"><img src="${ENEMY_IMAGE_SOURCES.citadel}" alt=""></div>` +
       `<div class="cx-body">` +
@@ -20545,19 +20573,38 @@ function codexBuildingHtml() {
         codexPowerHtml(codexCapitalPowers(), "enemy") +
         `<div class="cx-stat">射程 ${BOSS_ATTACK_RADIUS} ／ 衝撃波 半径${BOSS_NOVA_RADIUS}</div>` +
       `</div>` +
-    `</div>` +
-    `<div class="cx-row">` +
-      `<div class="cx-thumb">🧱</div>` +
-      `<div class="cx-body">` +
-        `<div class="cx-name">城壁</div>` +
-        `<div class="cx-tags">II 以降（首都の周り／一部の町）</div>` +
-        `<div class="cx-atk">攻撃しない。竜が通り抜けられない壁。門から入るか壊す</div>` +
-        `<div class="cx-stat">1枚のHP ${WALL_STAGE_CONFIG[1].hp}〜${WALL_STAGE_CONFIG[WALL_STAGE_CONFIG.length - 1].hp}` +
-          `（町壁はこの0.7倍）</div>` +
-      `</div>` +
     `</div></div>`;
+
+  // v2.13.0: 障害物（壊せるもの）は建物と別の節にする。建物ではない＝攻撃の対象の分類では「城壁」。
+  // 種類を足すときは CODEX_OBSTACLES に1行足す
+  html += `<div class="cx-era">障害物（建物ではない。攻撃してこない）</div>` +
+    `<div class="tree-hint">道を塞ぐもの。残建物の数には入らない。影竜の弾は越えて当たらない。</div>` +
+    `<div class="cx-list">`;
+  for (const ob of CODEX_OBSTACLES) {
+    html +=
+      `<div class="cx-row">` +
+        `<div class="cx-thumb">${ob.icon}</div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${ob.name}</div>` +
+          `<div class="cx-tags">${ob.where}</div>` +
+          `<div class="cx-atk">${ob.desc}</div>` +
+          `<div class="cx-stat">${ob.stat()}</div>` +
+        `</div>` +
+      `</div>`;
+  }
+  html += `</div>`;
   return html;
 }
+
+// v2.13.0: 図鑑の「障害物」の節（壊せる障害物＝攻撃の対象の分類では城壁）
+const CODEX_OBSTACLES = [
+  { icon: "🧱", name: "城壁", where: "II 以降（首都の周り／一部の町）",
+    desc: "竜が通り抜けられない壁。門から入るか壊す",
+    stat: () => `1枚のHP ${WALL_STAGE_CONFIG[1].hp}〜${WALL_STAGE_CONFIG[WALL_STAGE_CONFIG.length - 1].hp}（町壁はこの0.7倍）` },
+  { icon: "\u{1F6E1}\uFE0F", name: "長城", where: "防衛線のステージ（全文明）",
+    desc: "横一線に並んで本土を塞ぐ壁。切れ目の門を抜けるか、破って突破口を開く",
+    stat: () => `1枚のHPは首都の城壁の${FRONTLINE_WALL_HP_MULT}倍` },
+];
 
 /** 弾ページ。実際の描画関数で見本を描くので、本編の見た目とずれない。 */
 function codexShotHtml() {
@@ -20671,6 +20718,20 @@ function codexDragonMainAttack(def) {
   return { power: null, stat: "" };
 }
 
+// v2.13.0: 攻撃の対象の分類（図鑑での呼び名）
+const CODEX_TARGET_CLASS_NAMES = { building: "建物", mover: "動く敵", wall: "城壁" };
+
+/** 対象の扱いを1行で（例「狙う: 建物・動く敵 ／ 当たらない: 城壁」）。 */
+function codexTargetsLabel(targets) {
+  const groups = { [TARGET_AIM]: [], [TARGET_HIT]: [], [TARGET_NONE]: [] };
+  for (const cls of ["building", "mover", "wall"]) groups[targets[cls]].push(CODEX_TARGET_CLASS_NAMES[cls]);
+  const parts = [];
+  if (groups[TARGET_AIM].length)  parts.push(`狙う: ${groups[TARGET_AIM].join("・")}（近い順）`);
+  if (groups[TARGET_HIT].length)  parts.push(`狙わないが当たる: ${groups[TARGET_HIT].join("・")}`);
+  if (groups[TARGET_NONE].length) parts.push(`当たらない: ${groups[TARGET_NONE].join("・")}`);
+  return parts.join(" ／ ");
+}
+
 /** 竜ページ。 */
 function codexDragonHtml() {
   let html =
@@ -20698,6 +20759,7 @@ function codexDragonHtml() {
           `<div class="cx-atk">${def.desc}</div>` +
           codexPowerHtml(powers, "dragon") +
           `<div class="cx-stat">${main.stat}</div>` +
+          `<div class="cx-stat">${codexTargetsLabel(attackTargets(ATTACK_DEFS[def.attack]))}</div>` +
         `</div>` +
       `</div>`;
   }
