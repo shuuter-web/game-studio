@@ -838,7 +838,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.11.3";
+const GAME_VERSION = "v2.12.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16864,6 +16864,8 @@ const dprojKind    = new Uint8Array(MAX_DPROJ);   // 0=bullet, 1=missile
 const dprojHits    = new Uint8Array(MAX_DPROJ);   // bullet: 残り貫通ヒット数
 const dprojLastHit = new Int32Array(MAX_DPROJ);   // bullet: 直前ヒット建物（連続多段ヒット防止）
 const dprojTarget  = new Int32Array(MAX_DPROJ);   // missile: 追尾対象の建物インデックス
+// v2.12.0: missile が動く敵を追っているときはこちら（建物を追うときは null）
+const dprojTargetMover = new Array(MAX_DPROJ).fill(null);
 
 function clearDragonProjectiles() { dprojActive.fill(0); }
 
@@ -16892,7 +16894,7 @@ function spawnDragonProjectile(fromX, fromY, kind, angle, targetIdx) {
   for (let i = 0; i < MAX_DPROJ; i++) {
     if (!dprojActive[i]) { slot = i; break; }
   }
-  if (slot < 0) return;
+  if (slot < 0) return -1;   // v2.12.0: 使った添字を返す（呼んだ側が追う相手を足せるように）
 
   dprojActive[slot]  = 1;
   dprojX[slot]       = fromX;
@@ -16903,6 +16905,7 @@ function spawnDragonProjectile(fromX, fromY, kind, angle, targetIdx) {
   dprojKind[slot]    = kind;
   dprojLastHit[slot] = -1;
   dprojTarget[slot]  = targetIdx;
+  dprojTargetMover[slot] = null;   // 動く敵を追わせるときは呼んだ側で入れる
 
   if (kind === 0) {
     dprojVx[slot]  = Math.cos(angle) * BULLET_SPEED;
@@ -16915,6 +16918,7 @@ function spawnDragonProjectile(fromX, fromY, kind, angle, targetIdx) {
     dprojVy[slot]  = Math.sin(wobbled) * MISSILE_INIT_SPEED;
     dprojHits[slot] = 1;
   }
+  return slot;
 }
 
 // 近傍建物クエリ用の作業バッファ（自軍弾専用。既存バッファと分離して干渉を防ぐ）
@@ -16943,6 +16947,40 @@ function findNearestBuilding(wx, wy, maxDist, cellRadius, excludeWalls, boidIdx,
     bestD2 = d2; best = sIdx;
   }
   return best;
+}
+
+/** ミサイルが狙える動く敵か。潜っている敵は当たらないので狙わない。 */
+function isMissileTargetMover(m) {
+  return !!m && m.alive && !m.submerged;
+}
+
+/**
+ * v2.12.0: ミサイルの標的を選ぶ。**建物（城壁を除く）と動く敵のうち一番近いもの**。
+ * それまでは建物しか狙わなかったので、建物の無い所で敵に囲まれると1発も撃てず、
+ * 敵に当たるのは建物へ向かう途中でたまたま触れたときだけだった（Shooter指示で敵も狙う）。
+ * 結果は _missileTarget に入れる（{ sIdx, mover } のどちらか一方。無ければ両方 -1/null）。
+ */
+const _missileTarget = { sIdx: -1, mover: null };
+function findMissileTarget(wx, wy, maxDist, cellRadius, boidIdx, halfArc) {
+  const sIdx = findNearestBuilding(wx, wy, maxDist, cellRadius, true, boidIdx, halfArc);
+  let bestD2 = maxDist * maxDist;
+  if (sIdx >= 0) {
+    const st = settlements[sIdx];
+    bestD2 = (st.wx - wx) * (st.wx - wx) + (st.wy - wy) * (st.wy - wy);
+  }
+  let mover = null;
+  const arcOn = boidIdx !== undefined && halfArc !== undefined && halfArc < Math.PI;
+  for (const m of movers) {
+    if (!isMissileTargetMover(m)) continue;
+    const dx = m.wx - wx, dy = m.wy - wy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 >= bestD2) continue;
+    if (arcOn && !isInBreathArc(boidIdx, m.wx, m.wy, halfArc)) continue;
+    bestD2 = d2; mover = m;
+  }
+  _missileTarget.mover = mover;
+  _missileTarget.sIdx  = mover ? -1 : sIdx;
+  return _missileTarget;
 }
 
 /** BULLET: 射程内の最近建物へ直進弾を放つ（各個体、間隔 1.2s×連射機構） */
@@ -16983,13 +17021,15 @@ function updateMissileAttacks(dt) {
     if (boidFireTimer[i] > 0) continue;
 
     // v0.6-p3: ミサイルは城壁を狙わない（壁越しに内部の建物をロックする）
-    const targetIdx = findNearestBuilding(px[i], py[i], range, cellRadius, true, i, arcHalf);
-    if (targetIdx < 0) continue;
+    // v2.12.0: 動く敵も狙う（建物と敵のうち近いほう）
+    const tg = findMissileTarget(px[i], py[i], range, cellRadius, i, arcHalf);
+    if (tg.sIdx < 0 && !tg.mover) continue;
 
     boidFireTimer[i] = interval;
     // 発射方向は現在の進行方向（そこからゆらいで加速する軌道が気持ちよさの本体）
     const angle = Math.atan2(vy[i], vx[i]);
-    spawnDragonProjectile(px[i], py[i], 1, angle, targetIdx);
+    const slot = spawnDragonProjectile(px[i], py[i], 1, angle, tg.sIdx);
+    if (slot >= 0 && tg.mover) dprojTargetMover[slot] = tg.mover;
     applyFireKick(i, angle);   // v0.33: 竜種プロファイルの反動・硬直
   }
 }
@@ -17002,13 +17042,20 @@ function updateDragonProjectiles(dt) {
 
     if (dprojKind[i] === 1) {
       // ---- ミサイル: 加速＋旋回追尾 ----
-      let targetIdx = dprojTarget[i];
-      let target = (targetIdx >= 0) ? settlements[targetIdx] : null;
-      if (!target || target.fallen) {
-        // 対象消失: 現在位置周辺で再ロック（城壁は対象外。見つからなければ直進して寿命切れ）
-        targetIdx = findNearestBuilding(dprojX[i], dprojY[i], 250, 3, true);
-        dprojTarget[i] = targetIdx;
+      // v2.12.0: 追う相手は建物か動く敵のどちらか（target は wx/wy を持つ方）
+      let target = dprojTargetMover[i];
+      if (target && !isMissileTargetMover(target)) target = null;
+      if (!target) {
+        const targetIdx = dprojTarget[i];
         target = (targetIdx >= 0) ? settlements[targetIdx] : null;
+        if (target && target.fallen) target = null;
+      }
+      if (!target) {
+        // 対象消失: 現在位置周辺で再ロック（城壁は対象外。見つからなければ直進して寿命切れ）
+        const tg = findMissileTarget(dprojX[i], dprojY[i], 250, 3);
+        dprojTarget[i] = tg.sIdx;
+        dprojTargetMover[i] = tg.mover;
+        target = tg.mover || (tg.sIdx >= 0 ? settlements[tg.sIdx] : null);
       }
 
       const speed = Math.min(
