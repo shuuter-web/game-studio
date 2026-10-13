@@ -664,6 +664,16 @@
   .cx-legend { display: grid; grid-template-columns: auto 1fr; gap: 3px 7px; align-items: center;
                font-family: monospace; font-size: 10px; color: #8aa; margin: -4px 0 12px; }
   .cx-legend .cx-pw { justify-self: start; }
+  /* v2.14.0: その他ページ。行＝項目、列＝警戒度の段階（列を段階にすると375px幅に収まる） */
+  .cx-box { padding: 9px 10px; background: rgba(16,22,36,0.92); border: 1px solid #3a4a66; border-radius: 10px; }
+  .cx-box + .cx-box { margin-top: 7px; }
+  .cx-box .cx-name { margin-bottom: 3px; }
+  .cx-table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 10.5px; color: #dce8f6; }
+  .cx-table th, .cx-table td { padding: 4px 2px; border-bottom: 1px solid #26324a; text-align: right; white-space: nowrap; }
+  .cx-table th:first-child, .cx-table td:first-child { text-align: left; white-space: normal; color: #9fbad6; }
+  .cx-table thead th { color: #ffd08a; font-weight: normal; vertical-align: bottom; }
+  .cx-table .cx-tnote { display: block; font-size: 9px; color: #7d93ab; }
+  .cx-bullets { margin: 2px 0 0; padding-left: 16px; font-size: 11px; color: #9fbad6; line-height: 1.55; }
   /* v1.0.3: 強化カードの図鑑。絵札の代わりに絵文字を大きく出す */
   .cx-card-icon { width: 52px; height: 52px; flex: 0 0 52px; display: flex; align-items: center;
                   justify-content: center; font-size: 28px; border-radius: 8px;
@@ -677,7 +687,7 @@
   .cx-when { font-family: monospace; font-size: 10px; color: #8cd8ff; margin-top: 2px; }
   /* v0.68: 敵／建物／弾 のタブ */
   /* v2.9.0: 7タブになったので4列×2段に組む（1段のままだと375px幅で「特殊個体」が枠からはみ出す）。
-     上段＝相手側（敵・建物・地域・弾）、下段＝自分側（竜・特殊個体・カード） */
+     上段＝相手側（敵・建物・地域・弾）、下段＝自分側（竜・特殊個体・カード）＋その他（v2.14.0） */
   .cx-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 10px; }
   .cx-tab { padding: 8px 2px; font-family: monospace; font-size: 11px; white-space: nowrap; letter-spacing: 0;
             color: #9fbad6; background: rgba(16,22,36,0.92); border: 1px solid #3a4a66;
@@ -838,7 +848,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.13.0";
+const GAME_VERSION = "v2.14.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -20379,13 +20389,13 @@ function renderOptions() {
 }
 
 const codexOverlayEl = document.getElementById("codex-overlay");
-let codexTab = "enemy";   // "enemy" | "building" | "region" | "shot" | "dragon" | "special" | "card"
+let codexTab = "enemy";   // "enemy" | "building" | "region" | "shot" | "dragon" | "misc" | "special" | "card"
 function openCodex()  { codexTab = "enemy"; renderCodex(); codexOverlayEl.classList.add("visible"); }
 function closeCodex() { codexOverlayEl.classList.remove("visible"); refreshTitleMenu(); }
 
 function renderCodex() {
   const tabs = [["enemy", "敵"], ["building", "建物"], ["region", "地域"], ["shot", "弾"],
-                ["dragon", "竜"], ["special", "特殊個体"], ["card", "カード"]];
+                ["dragon", "竜"], ["special", "特殊個体"], ["card", "カード"], ["misc", "その他"]];
   let html =
     `<div class="tree-head">` +
       `<div class="tree-title">図鑑</div>` +
@@ -20400,6 +20410,7 @@ function renderCodex() {
   else if (codexTab === "region") html += codexRegionHtml();   // v1.6.0
   else if (codexTab === "shot") html += codexShotHtml();
   else if (codexTab === "dragon") html += codexDragonHtml();   // v2.9.0
+  else if (codexTab === "misc") html += codexMiscHtml();       // v2.14.0
   else if (codexTab === "special") html += codexSpecialHtml();
   else if (codexTab === "card") html += codexCardHtml();
   else html += codexEnemyHtml();
@@ -20657,6 +20668,88 @@ function codexShotHtml() {
 // 置いた上で、その周りに能力を表す形（光条・吸引の輪・ロケット）を描く。
 // canvas を後入れするのは innerHTML では中身を渡せないため（弾のページと同じ手）。
 // -----------------------------------------------------------------
+// -----------------------------------------------------------------
+// v2.14.0: 図鑑「その他」ページ（Shooter指示）
+// -----------------------------------------------------------------
+// どのタブにも入らない仕組みの説明を置く。まずは警戒度。
+// 数値はすべて定数から引く（POWER_TIER_BOOST / TIER_MOVER_* / TIER_FLOCK_CAP_FRACTION /
+// TIER_ADVANCE_TOWN_RATIO / BOSS_ENRAGE_*）。調整しても図鑑を書き直さなくてよい。
+// 項目を足すときは codexMiscHtml に節を1つ足す。
+
+/** 警戒度の段階ごとの表（行＝項目、列＝段階）。 */
+function codexTierTableHtml() {
+  const n = POWER_TIER_BOOST.length;
+  const cols = [...Array(n).keys()];
+  const head = cols.map(i => `<th>${i + 1}<br>${TIER_NAMES[i]}</th>`).join("");
+  const row = (label, note, f) =>
+    `<tr><td>${label}${note ? `<span class="cx-tnote">${note}</span>` : ""}</td>` +
+    cols.map(i => `<td>${f(i)}</td>`).join("") + `</tr>`;
+  const x = (v, d) => "×" + v.toFixed(d);
+  const pct = (v) => Math.round(v * 100) + "%";
+  return `<table class="cx-table"><thead><tr><th></th>${head}</tr></thead><tbody>` +
+    row("上がる条件", "陥落した町の割合",
+        i => i === 0 ? "開始時" : pct(TIER_ADVANCE_TOWN_RATIO[i])) +
+    row("建物の硬さ", "", i => x(POWER_TIER_BOOST[i].hp, 2)) +
+    row("建物の弾の威力", "", i => x(POWER_TIER_BOOST[i].dmg, 2)) +
+    row("建物の発射間隔", "小さいほど速く撃つ", i => x(POWER_TIER_BOOST[i].interval, 2)) +
+    row("一度に撃つ弾", "", i => "+" + POWER_TIER_BOOST[i].count) +
+    row("建物の射程", "", i => x(POWER_TIER_BOOST[i].range, 2)) +
+    row("動く敵の部隊数", "顔ぶれは文明のまま", i => x(TIER_MOVER_MULT[i], 1)) +
+    row("動く敵の苛烈さ", "発射の速さ・威力", i => x(TIER_MOVER_FEROCITY[i], 2)) +
+    row("群れの上限", "最大まで育てたときに対する割合", i => pct(TIER_FLOCK_CAP_FRACTION[i])) +
+    `</tbody></table>`;
+}
+
+function codexMiscHtml() {
+  // 町の数の例。大陸はおよそ50町（STAGE_CONFIGS の町数 × 面積で変わるので、例として固定の数で示す）
+  const EXAMPLE_TOWNS = 50;
+  const steps = TIER_ADVANCE_TOWN_RATIO.slice(1).map(r => Math.ceil(EXAMPLE_TOWNS * r));
+  const surrender = Math.round(TOWN_SURRENDER_RATIO * 10);
+  return (
+    `<div class="tree-hint">どのタブにも入らない仕組みの説明。</div>` +
+    `<div class="cx-era">警戒度（ラン中に${POWER_TIER_BOOST.length}段階で上がる）</div>` +
+    `<div class="cx-box">` +
+      `<div class="cx-atk">町を陥落させるほど、文明が警戒を強める。段階が上がるほど建物と動く敵が強く・多くなり、` +
+        `代わりに群れの上限が開く。今の段階は画面上の「警戒度N」、次の段階までの残りは「街あとN」。</div>` +
+      `<ul class="cx-bullets">` +
+        `<li><b>町の陥落</b>＝その町の建物の${surrender}割が壊れたとき。陥落した町の残りは撃つのをやめる（壊すことはできる）</li>` +
+        `<li>例：${EXAMPLE_TOWNS}町の大陸なら、陥落 ${steps.join("・")} 町で段階が上がる</li>` +
+      `</ul>` +
+    `</div>` +
+    `<div class="cx-box">${codexTierTableHtml()}</div>` +
+    `<div class="cx-box">` +
+      `<div class="cx-name">段階が上がった瞬間に起きること</div>` +
+      `<ul class="cx-bullets">` +
+        `<li>廃墟の${Math.round(TIER_REBUILD_RATIO * 100)}%が町ごと建ち直る</li>` +
+        `<li>残っている建物が新しい段階の強さで建て直される（HPは全快。色が一段暗くなる）</li>` +
+        `<li>城壁が張り直される</li>` +
+        `<li>動く敵の部隊が新しい段階の数で湧き直す</li>` +
+        `<li>群れの上限が開き、竜晶がもらえる</li>` +
+      `</ul>` +
+    `</div>` +
+    `<div class="cx-box">` +
+      `<div class="cx-name">段階が全体と違う建物</div>` +
+      `<ul class="cx-bullets">` +
+        `<li><b>格上の街</b>（町の約${Math.round(TOWN_ADVANCED_RATIO * 100)}%）：いつも全体より${TOWN_TIER_ADVANCED}段階上</li>` +
+        `<li><b>要塞都市・首都の区画・結界の祠</b>：最初から「${TIER_NAMES[maxPowerTier()]}」で固定。` +
+          `段階が上がっても建て直さない（削った傷が残る）</li>` +
+        `<li><b>首都</b>：「${TIER_NAMES[maxPowerTier()]}」のさらに ×${CAPITAL_POWER_MULT} の硬さ</li>` +
+      `</ul>` +
+    `</div>` +
+    `<div class="cx-era">最強モード</div>` +
+    `<div class="cx-box">` +
+      `<div class="cx-atk">町の${Math.round(BOSS_ENRAGE_TOWN_RATIO * 10)}割が陥落すると、首都が本気を出す（1回だけ・戻らない）。` +
+        `警戒度とは別の仕組みで、首都だけが強くなる。</div>` +
+      `<ul class="cx-bullets">` +
+        `<li>弾の威力 ×${BOSS_ENRAGE_DMG_MULT}</li>` +
+        `<li>発射間隔 ×${BOSS_ENRAGE_INTERVAL_MULT}（速くなる）</li>` +
+        `<li>一度に撃つ弾 +${BOSS_ENRAGE_COUNT_ADD}</li>` +
+        `<li>射程 ×${BOSS_ENRAGE_RANGE_MULT}</li>` +
+      `</ul>` +
+    `</div>`
+  );
+}
+
 // -----------------------------------------------------------------
 // v2.9.0: 竜図鑑（Shooter指示）
 // -----------------------------------------------------------------
