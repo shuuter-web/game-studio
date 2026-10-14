@@ -848,7 +848,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.0.1";
+const GAME_VERSION = "v3.1.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2010,7 +2010,8 @@ function effBreathArcDeg() {
   if (currentRunIsFirst) return BREATH_ARC_FULL_DEG;
   const base = sp().breathArcDeg;
   if (base === undefined || base >= BREATH_ARC_FULL_DEG) return BREATH_ARC_FULL_DEG;
-  return Math.min(BREATH_ARC_FULL_DEG, base + BREATH_ARC_PER_CARD * upCount("breath_arc"));
+  // v3.1.0: 角度は竜種の個性。三択では広げない（「見渡す顎」は撤去）
+  return Math.min(BREATH_ARC_FULL_DEG, base);
 }
 /** 判定に使う半角（rad）。π 以上なら全方位。 */
 function breathArcHalf() { return effBreathArcDeg() * Math.PI / 360; }
@@ -2136,7 +2137,9 @@ function hasChargeGuard() { return effChargeDamageReduction() > 0; }
  */
 function isChargeUnlocked() {
   // v0.92: 恒常ツリー「踏み出す足」を買っていれば、ラン開始時から解禁済み。
-  return upCount("charge_unlock") > 0 || permaBuff.chargeStart > 0;
+  // v3.1.0: 突進は竜種の個性（SPECIES_DEFS の charge を持つ竜種だけ最初から使える）。
+  // 三択の「一斉突撃」は撤去した。
+  return !!sp().charge || permaBuff.chargeStart > 0;
 }
 
 // ---- 状態 ----
@@ -2626,13 +2629,23 @@ const DRAGON_DAMAGE_RESIST = {};
 function impactFromPushDist(dist) { return kickSpeedForDistance(dist); }
 
 /** 攻撃のダメージ合計を、受け手の分類ごとの倍率込みで出す（衝撃は含まない）。 */
-function hitDamage(hit, resist) {
+function hitDamage(hit, resist, boost) {
   let sum = 0;
-  if (hit.direct) sum += hit.direct * (resist && resist.direct !== undefined ? resist.direct : 1);
-  if (hit.blast)  sum += hit.blast  * (resist && resist.blast  !== undefined ? resist.blast  : 1);
-  if (hit.shot)   sum += hit.shot   * (resist && resist.shot   !== undefined ? resist.shot   : 1);
+  if (hit.direct) sum += hit.direct * (resist && resist.direct !== undefined ? resist.direct : 1) * (boost ? boost.direct : 1);
+  if (hit.blast)  sum += hit.blast  * (resist && resist.blast  !== undefined ? resist.blast  : 1) * (boost ? boost.blast  : 1);
+  if (hit.shot)   sum += hit.shot   * (resist && resist.shot   !== undefined ? resist.shot   : 1) * (boost ? boost.shot   : 1);
   return sum;
 }
+
+// v3.1.0: 攻撃カテゴリの威力（三択「直撃の牙／烈火の喉／爆ぜる心臓」・Shooter指示）。
+// 竜側から移動敵・建物への当たりにだけ掛かる（hitMover / hitBuilding を呼ぶのは竜側だけ）。
+// 竜種の攻撃・特殊個体・突進・体当たりのどれでも、hit の分類どおりに乗る。
+const CATEGORY_DMG_PER_CARD = 0.12;
+const DRAGON_HIT_BOOST = {
+  get direct() { return 1 + CATEGORY_DMG_PER_CARD * upCount("cat_direct"); },
+  get shot()   { return 1 + CATEGORY_DMG_PER_CARD * upCount("cat_shot"); },
+  get blast()  { return 1 + CATEGORY_DMG_PER_CARD * upCount("cat_blast"); },
+};
 
 /**
  * 竜に当てる。(nx, ny) は押す向き（衝撃が無ければ使わない）。
@@ -2646,7 +2659,7 @@ function hitBoid(i, hit, nx, ny) {
 
 /** 移動敵に当てる。(fromX, fromY) は発生点（盾の向き・押す向き・関節の押し込みに使う）。 */
 function hitMover(m, hit, fromX, fromY) {
-  const dmg = hitDamage(hit, m.def.damageResist);
+  const dmg = hitDamage(hit, m.def.damageResist, DRAGON_HIT_BOOST);
   if (dmg > 0) damageMover(m, dmg, fromX, fromY);
   if (hit.impact > 0) applyImpactToMover(m, fromX, fromY, hit.impact);
 }
@@ -2655,7 +2668,7 @@ function hitMover(m, hit, fromX, fromY) {
 function hitBuilding(sIdx, hit, fromX, fromY) {
   const st = settlements[sIdx];
   if (!st || st.fallen) return;
-  const dmg = hitDamage(hit, st.damageResist);
+  const dmg = hitDamage(hit, st.damageResist, DRAGON_HIT_BOOST);
   if (dmg > 0) damageBuilding(sIdx, dmg);
   if (hit.impact > 0 && !st.fallen && st.hp > 0) applyImpactToBuilding(sIdx, hit.impact, fromX, fromY);
 }
@@ -16190,6 +16203,9 @@ const STRINGS = {
     magnet:    { name: "吸引域",   desc: "XP吸引範囲 +40%" },
     brood:     { name: "大繁殖",   desc: "群れ上限 +25、竜 +5" },
     resonance: { name: "竜鱗共鳴", desc: "被ダメージ -12%" },
+    cat_direct: { name: "直撃の牙",   desc: "直接攻撃（体当たり・爪・刃・舌など）の威力 +12%" },
+    cat_shot:   { name: "烈火の喉",   desc: "ブレス（炎・氷槍・影弾・羽根・光）の威力 +12%" },
+    cat_blast:  { name: "爆ぜる心臓", desc: "爆発（爆風・爆撃・ロケット）の威力 +12%" },
     dmg_beam:      { name: "火勢",     desc: "ブレス威力 +15%" },
     dmg_bullet:    { name: "氷威",     desc: "氷弾威力 +15%" },
     dmg_missile:   { name: "影炸",     desc: "ミサイル威力 +15%" },
@@ -16284,11 +16300,14 @@ let runTotalXp    = 0;
 const CARD_DEFS = [
   // A. 群れ強化
   { id: "scale",     icon: "\u{1F6E1}️", rarity: "common", max: 4 },
-  { id: "wind",      icon: "\u{1F4A8}",       rarity: "common", max: 3 },
   { id: "tide",      icon: "\u{1F4A7}",       rarity: "common", max: 3 },
   { id: "magnet",    icon: "✨",           rarity: "common", max: 2 },
   { id: "brood",     icon: "\u{1F95A}",       rarity: "rare",   max: 2 },
   { id: "resonance", icon: "\u{1F52E}",       rarity: "rare",   max: 3 },
+  // v3.1.0: 攻撃カテゴリの威力（hit の direct / shot / blast にそのまま掛かる）
+  { id: "cat_direct", icon: "\u{1F43E}", rarity: "common", max: 5 },
+  { id: "cat_shot",   icon: "\u{1F525}", rarity: "common", max: 5 },
+  { id: "cat_blast",  icon: "\u{1F4A5}", rarity: "common", max: 5 },
   // B. 武器強化（現在の武器タイプにのみ出現）
   { id: "dmg_beam",      icon: "\u{1F525}", rarity: "common", max: 4, weapon: "beam" },
   { id: "dmg_bullet",    icon: "❄️",     rarity: "common", max: 4, weapon: "bullet" },
@@ -16302,12 +16321,6 @@ const CARD_DEFS = [
   { id: "rate_missile",  icon: "⚙️",     rarity: "rare",   max: 3, weapon: "missile" },
   { id: "pierce",        icon: "\u{1F3F9}", rarity: "rare",   max: 3, weapon: "bullet" },
   { id: "blast",         icon: "\u{1F4A5}", rarity: "rare",   max: 3, weapon: "missile" },
-  // C. 進化（★・群れ100%全転換）
-  // v0.14: ランの最初のレベルアップでのみ提示される（3枚とも進化・他の強化は出ない）。
-  // 以降のレベルアップには一切出現しない＝ラン開始直後に「この竜で行く」を決める設計
-  { id: "evo_bullet",  icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "bullet"  },
-  { id: "evo_missile", icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "missile" },
-  { id: "evo_melee",   icon: "\u{1F409}", rarity: "star", max: Infinity, targetWeapon: "melee"   },
   // D. 母竜ブレス（v0.22。v0.31: 恒常ツリーでの解禁をやめ、ラン中に引いて手に入れる★カードに変更）
   // motherUnlock がラン内の解禁スイッチ。mother:true の強化2枚はこれを取った後のみプールに乗る。
   // v0.93: 解禁カードをやめ、**虹竜という特殊個体の加入**に変えた。
@@ -16336,16 +16349,7 @@ const CARD_DEFS = [
   { id: "sp_wedge",         icon: "\u{1FA93}", rarity: "star", max: 3, specialJoin: SPECIAL_WEDGE },
   { id: "sp_wedge_dmg",     icon: "\u{1F52A}", rarity: "rare", max: 4, specialOf: SPECIAL_WEDGE },
   { id: "sp_wedge_time",    icon: "\u23F3",    rarity: "rare", max: 3, specialOf: SPECIAL_WEDGE },
-  // F. 突進（v0.87）。発動条件は群れ全体の動きなので、竜種を問わず出る。
-  // v0.91: chargeUnlock がラン内の解禁スイッチ。charge:true の5枚はこれを取った後のみプールに乗る。
-  { id: "charge_unlock", icon: "\u{1F3C7}", rarity: "star", max: 1, chargeUnlock: true },
-  { id: "charge_dmg",   icon: "\u{1F4A5}", rarity: "rare",   max: 4, charge: true },
-  { id: "charge_reach", icon: "\u{1F300}", rarity: "common", max: 3, charge: true },
-  { id: "charge_ramp",  icon: "\u{1F4A8}", rarity: "rare",   max: 3, charge: true },
-  { id: "charge_ease",  icon: "\u{1FAB6}", rarity: "common", max: 3, charge: true },
-  { id: "charge_guard", icon: "\u{1F6E1}️", rarity: "rare", max: 3, charge: true },
-  // v0.90: 攻撃可能角度を広げる。**既に全方位な竜種では空振りになる**のでプールに乗せない。
-  { id: "breath_arc",   icon: "\u{1F4D0}", rarity: "common", max: 4, needsBreathArc: true },
+  // v3.1.0: 突進（一斉突撃と5枚）・ブレス角（見渡す顎）・速度（疾風）は竜種の個性に移した
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
@@ -16386,7 +16390,8 @@ let permaBuff = defaultPermaBuff();
 // ---- 効果の集計（取得回数から都度計算。ステージリセットで自然に戻る）----
 // v0.20: 末尾に permaBuff（恒常ツリー）を合流。
 function effHpMult()        { return (1 + 0.20 * upCount("scale")) * permaBuff.flockHp; }
-function effSpeedMult()     { return (1 + 0.08 * upCount("wind")) * permaBuff.flockSpeed; }
+// v3.1.0: 速度は竜種の個性（move）。三択の「疾風」は撤去した
+function effSpeedMult()     { return permaBuff.flockSpeed; }
 function effReviveMult()    { return Math.pow(0.85, upCount("tide")) * permaBuff.reviveMult; }
 function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * upCount("magnet")) * permaBuff.magnet; }
 // v0.51: 群れは時代をまたいでも削らない。代わりに時代ごとに天井が開く。
@@ -16675,6 +16680,11 @@ function maybeShowLevelUp() {
 
 /** 取得可能なカードから重み付きで3枚（重複なし）選んでDOMに並べる。 */
 function buildLevelUpCards() {
+  renderLevelUpCards(pickLevelUpCards());
+}
+
+/** 3択の中身を引く（描画しない。検証からも呼べるように分けた）。 */
+function pickLevelUpCards() {
   // v0.19: 竜種はラン開始メニューで確定済み（evolutionChosen=true）。
   // ラン中の初回4択は廃止し、レベルアップは純粋な強化のみ。
   const pool = CARD_DEFS.filter(def => {
@@ -16715,8 +16725,7 @@ function buildLevelUpCards() {
   }
   // プールが痩せた場合は竜玉（XP+50）で補充（最低1枚は必ず出す）
   if (picks.length < 3) picks.push(CARD_ORB);
-
-  renderLevelUpCards(picks);
+  return picks;
 }
 
 /** カード定義の配列をそのまま3択UIとしてDOMに並べる。 */
