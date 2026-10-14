@@ -466,6 +466,14 @@
     -webkit-user-select: none; user-select: none;
   }
   #tree-overlay.visible { display: flex; }
+  /* v3.3.0: 三択の下の「引き直し・封印」 */
+  .card-tools { display: flex; gap: 8px; justify-content: center; grid-column: 1 / -1; }
+  .card-tool {
+    font: inherit; font-size: 13px; color: #dfe8ff; background: rgba(20, 30, 50, 0.85);
+    border: 1px solid #5a6a90; border-radius: 10px; padding: 8px 14px; cursor: pointer;
+  }
+  .species-locked { opacity: 0.5; cursor: default; }
+  .card-tool.armed { border-color: #ff6a6a; color: #ffb0b0; box-shadow: 0 0 10px rgba(255,90,90,0.4); }
   #tree-overlay .tree-head {
     display: flex; align-items: center; gap: 12px; margin-bottom: 4px;
   }
@@ -848,7 +856,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.2.0";
+const GAME_VERSION = "v3.3.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -990,9 +998,11 @@ function debugUnlockAllContinents() {
   // 「初回ラン」扱いのままだと文明を選べないので、1回遊んだ状態にしておく
   if (profile.runsStarted <= 0) profile.runsStarted = 1;
   saveProfile();
-  // v3.0.0: 地域も全部解放する
-  if (!profile.unlocks) profile.unlocks = { species: {}, specials: {}, regions: {} };
-  for (let sh = 0; sh < STAGE_SHAPES.length; sh++) profile.unlocks.regions[sh] = true;
+  // v3.0.0: 地域も全部解放する（v3.3.0: 竜種・特殊個体も）
+  const u = ensureUnlocks();
+  for (let sh = 0; sh < STAGE_SHAPES.length; sh++) u.regions[sh] = true;
+  for (const id of Object.keys(SPECIES_DEFS)) u.species[id] = true;
+  for (const k of Object.keys(SPECIAL_DEFS)) u.specials[k] = true;
   saveProfile();
   if (gameState === "title") refreshTitleMenu();
 }
@@ -15441,6 +15451,10 @@ function settlementFall(settlementIndex) {
   const settlement = settlements[settlementIndex];
   settlement.fallen = true;
   settlement.hp = 0;
+  // v3.3.0: 穿つ楔の解放条件（要塞・首都区画の建物の累計）。保存はステージクリア等でまとめて
+  if (settlement._fixedTier != null && !settlement.isBoss && !settlement._isWall && profile) {
+    profile.fortressFallen = (profile.fortressFallen || 0) + 1;
+  }
 
   // v0.6: XPジェムを撒く＋撃破数を記録（仕様 §5.1）
   spawnXpGems(settlement.wx, settlement.wy, xpValueOf(settlement));
@@ -16160,6 +16174,11 @@ const STRINGS = {
   defeatReached: (n, total, eraName) => `STAGE ${n}/${total}（${eraName}）で力尽きた`,
   hudLives: (lives) => `残機${lives}`,
   speciesUnlocked: (name) => `🔓 ${name} が解放された（次のランから選べる）`,
+  rerollButton: (n) => `🎲 引き直す（残り${n}）`,
+  unlockedToast: (names) => `🔓 解放: ${names}`,
+  lockedSpeciesEvo: "種またぎ進化で出会う",
+  banishButton: (n) => `🚫 封印（残り${n}）`,
+  banishArmed: "封印するカードを選ぶ（やめる）",
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
@@ -16193,8 +16212,8 @@ const STRINGS = {
   continentUnlocked: (name) => `${name} が解放された`,
   startRun: "はじめる",
   backToTitle: "← もどる",
-  openTree: (crystals) => `強化ツリー　🔷${crystals}`,
-  openChallenges: (done, total) => `チャレンジ　${done}/${total}`,
+  openTree: (crystals) => `竜晶の強化　🔷${crystals}`,
+  openChallenges: (done, total) => `チャレンジ・解放　${done}/${total}`,
   openCodex: "図鑑",
   openOptions: "オプション",
   challengeDone: (name, reward) => `チャレンジ達成: ${name}  +${reward}🔷`,
@@ -16875,6 +16894,8 @@ function defaultPermaBuff() {
     chargeStart: 0,
     // v0.89: 突進中の被ダメージ軽減（加算。0.15 で 15%カット）。
     chargeGuard: 0,
+    // v3.3.0: 選択肢を広げる強化（加算）。引き直し／ステージ、封印／ラン、地域の選択肢の追加
+    rerolls: 0, banishes: 0, regionExtra: 0,
   };
 }
 let permaBuff = defaultPermaBuff();
@@ -16976,6 +16997,10 @@ function resetProgression() {
   runLives       = RUN_LIVES;
   regionChoices  = [];
   wipeGraceTimer = 0;
+  runRerollsLeft = 0;
+  runBanishesLeft = 0;
+  runBanished.clear();
+  banishArmed    = false;
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
   invalidateEvo();
   // v0.85: 加入済みの特殊個体もランごとにゼロへ（カードと同じ寿命）
@@ -17183,6 +17208,7 @@ function pickLevelUpCards() {
   // ラン中の初回4択は廃止し、レベルアップは純粋な強化のみ。
   const pool = CARD_DEFS.filter(def => {
     if (takenCount(def.id) >= def.max) return false;
+    if (runBanished.has(def.id)) return false;   // v3.3.0: 封印したカード
     // v0.31: 母竜ブレスの強化はラン中に「母なる吐息」を引いた後だけ出す（空振りカードを作らない）
 
     // v0.91: 突進の強化は解禁後だけ（空振りカードを作らない）
@@ -17192,6 +17218,7 @@ function pickLevelUpCards() {
     // v0.85: 特殊個体の加入は枠が空いているときだけ。
     // 強化はその種類を実際に連れているときだけ出す。
     if (def.specialJoin && runSpecials.length >= effSpecialSlots()) return false;
+    if (def.specialJoin && !isSpecialUnlocked(def.specialJoin)) return false;   // v3.3.0
     if (def.specialOf && !runSpecials.includes(def.specialOf)) return false;
     // v0.90: 角度拡大は「制限を持っていて、まだ 360° に達していない」ときだけ
     if (def.needsBreathArc && effBreathArcDeg() >= BREATH_ARC_FULL_DEG) return false;
@@ -17241,14 +17268,60 @@ function renderLevelUpCards(picks) {
     btn.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       e.preventDefault();
+      // v3.3.0: 封印を構えていたら、このカードを封印して引き直す（進化カードは封印できない）
+      if (banishArmed && !def.evo && def !== CARD_ORB) { banishCard(def); return; }
       chooseCard(def);
     });
     cardListEl.appendChild(btn);
   }
+  // v3.3.0: 引き直し・封印（竜晶の強化を買っているときだけ出る）
+  if (runRerollsLeft > 0 || runBanishesLeft > 0) {
+    const row = document.createElement("div");
+    row.className = "card-tools";
+    if (runRerollsLeft > 0) {
+      const b = document.createElement("button");
+      b.className = "card-tool";
+      b.textContent = STRINGS.rerollButton(runRerollsLeft);
+      b.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); rerollCards(); });
+      row.appendChild(b);
+    }
+    if (runBanishesLeft > 0) {
+      const b = document.createElement("button");
+      b.className = "card-tool" + (banishArmed ? " armed" : "");
+      b.textContent = banishArmed ? STRINGS.banishArmed : STRINGS.banishButton(runBanishesLeft);
+      b.addEventListener("pointerdown", (e) => {
+        e.stopPropagation(); e.preventDefault();
+        banishArmed = !banishArmed;
+        renderLevelUpCards(picks);
+      });
+      row.appendChild(b);
+    }
+    cardListEl.appendChild(row);
+  }
+}
+
+/** v3.3.0: 三択を引き直す（ステージごとの回数を1つ使う）。 */
+function rerollCards() {
+  if (!upgradeCardsVisible || runRerollsLeft <= 0) return;
+  runRerollsLeft--;
+  banishArmed = false;
+  renderLevelUpCards(pickLevelUpCards());
+  markRunSaveDirty();
+}
+
+/** v3.3.0: カードをそのランから消して引き直す（ラン通しの回数を1つ使う）。 */
+function banishCard(def) {
+  if (runBanishesLeft <= 0) return;
+  runBanishesLeft--;
+  runBanished.add(def.id);
+  banishArmed = false;
+  renderLevelUpCards(pickLevelUpCards());
+  markRunSaveDirty();
 }
 
 function chooseCard(def) {
   if (!upgradeCardsVisible) return;
+  banishArmed = false;   // v3.3.0
   // v0.14: 進化カードか「火竜を続ける」を選んだ（＝最初のレベルアップを消化した）ら
   // 以降は通常プールのみ。竜種の選択はラン開始時の一度きり
   if (def.targetWeapon || def.id === "stay_fire") evolutionChosen = true;
@@ -18083,6 +18156,8 @@ function addRunSpecial(kind) {
   }
   runSpecials.push(kind);
   markSpecial(idx, kind);
+  invalidateEvo();     // v3.2.0: 種またぎの条件が変わる
+  evaluateUnlocks();   // v3.3.0: 「特殊個体を3体同時に」
   const def = SPECIAL_DEFS[kind];
   pushWorldText(px[idx], py[idx] - 24, def.name + " 加入", def.color);
   triggerFlash("rgba(255,220,150,0.30)", 0.16);
@@ -19800,6 +19875,9 @@ function defaultProfile() {
     eraStars: {},
     // v1.2.0: 解放済みのパネル（key = "時代:列"）。無い旧データは migratePanelUnlocks が作る。
     unlockedPanels: null,
+    // v3.3.0: 解放（竜種・特殊個体・地域）。初期分は INITIAL_* にあるのでここには入れない
+    unlocks: { species: {}, specials: {}, regions: {} },
+    fortressFallen: 0,   // 穿つ楔の解放条件
   };
 }
 
@@ -19832,6 +19910,7 @@ function loadProfile() {
     // v0.99.1: 設定は項目が増えても古いプロファイルが壊れないよう既定で補完する
     p.options = Object.assign(defaultProfile().options, p.options || {});
     p.eraStars = p.eraStars || {};
+    p.unlocks = Object.assign({ species: {}, specials: {}, regions: {} }, p.unlocks || {});
   }
   migratePanelUnlocks(p);   // v1.2.0
   p.version = PROFILE_VERSION;
@@ -19975,68 +20054,37 @@ function awardCrystals(n) {
 // ライン：大群(swarm) / 不屈(resil) / 統率(command) / 恵み(bounty)。
 // フラット火力(weaponDmg)は属性を作らず大群ラインに散らす（属性相性は導入しない）。
 // 母竜(mother)ラインは Phase 5 で追加予定。
+// v3.3.0: 恒常強化は「選択肢を広げる」ものだけにした（docs/gdd/dragon-tide-run-cycle.md §8・Shooter判断 B案）。
+// HP・威力などの数値の積み上げは、8ステージの難度設計を毎回崩すので置かない。
+// 旧ノード（v3.2 まで）は id を変えたので効かなくなる（未サービスインのため返金・移行はしない）。
 const TREE_DEFS = [
-  // ── 突進（v0.87。発動条件を緩めるか、乗ったときの伸びを大きくするか）──
-  // v0.91: 突進自体がラン中の★カード解禁になったので、この4ノードは
-  // 母竜ラインと同じく**「引けた時の底上げ」**に役割が変わっている。
-  // 引けないランでは効かないので、母竜ライン（§2-1z 参照）と同じ賻けになる。
-  { id: "chg_unlock", cat: "charge", name: "踏み出す足", desc: "ラン開始時から突進が使える（★カード不要）", cost: 260, prereq: [], effect: { type: "chargeStart", value: 1 } },
-  { id: "chg_ease",  cat: "charge", name: "風を読む", desc: "突進に入る速度が -1.5%",   cost: 90,  prereq: [],           effect: { type: "chargeEase", value: 0.015 } },
-  { id: "chg_power", cat: "charge", name: "穿つ群れ", desc: "突進の伸び幅 +30%",       cost: 130, prereq: [],           effect: { type: "chargeDmg",  value: 1.30 } },
-  { id: "chg_ramp",  cat: "charge", name: "加速の術", desc: "溜まるのが 20% 速くなる", cost: 150, prereq: ["chg_ease"], effect: { type: "chargeRamp", value: 0.80 } },
-  { id: "chg_guard", cat: "charge", name: "風の鎧", desc: "突進中の被ダメージ -15%", cost: 140, prereq: [],           effect: { type: "chargeGuard", value: 0.15 } },
-  // ── 特殊個体（v0.85。加入はラン中の★カードなので、ツリーは「何体連れて歩けるか」と底上げだけ）──
-  { id: "sp_slot1", cat: "special", name: "変わり者の座", desc: "特殊個体の枠 +1", cost: 130, prereq: [],            effect: { type: "specialSlots", value: 1 } },
-  { id: "sp_slot2", cat: "special", name: "異端の群れ", desc: "特殊個体の枠 +1", cost: 240, prereq: ["sp_slot1"], effect: { type: "specialSlots", value: 1 } },
-  { id: "sp_power", cat: "special", name: "役割の覚醒", desc: "特殊個体の威力 +25%", cost: 110, prereq: [],      effect: { type: "specialDmg",   value: 1.25 } },
-  // ── 母竜（味方側の"ボス"を育てる）──
-  // v0.31: 母竜ブレスの解禁はラン中★カード「母なる吐息」に移したため、このノードは
-  // 「解禁」ではなく**引けた時の発動間隔の底上げ**に役割変更。
-  // 既存プロファイルの購入済みフラグを活かすため id は据え置き（cost は解禁料金 150 → 底上げ相応の 80 に）。
-  { id: "m_breath", cat: "mother", name: "轟く吐息", desc: "極光のブレスの間隔 -15%",          cost: 80,  prereq: [],            effect: { type: "motherRate",   value: 0.85 } },
-  { id: "m_dmg",    cat: "mother", name: "灼熱の虹",   desc: "極光のブレスの威力 +30%",        cost: 120, prereq: ["m_breath"], effect: { type: "motherDmg",    value: 1.30 } },
-  { id: "m_hp",     cat: "mother", name: "不朽の虹",   desc: "極光のHP +50%",                cost: 100, prereq: [],            effect: { type: "motherHp",     value: 1.50 } },
-  // ── 大群（数と物量で押す）──
-  { id: "flock_start1", cat: "swarm", name: "始祖の群れ",   desc: "各ステージ開始の竜 +5", cost: 40,  prereq: [],               effect: { type: "startFlock", value: 5 } },
-  { id: "flock_start2", cat: "swarm", name: "殖える始まり", desc: "各ステージ開始の竜 +5", cost: 120, prereq: ["flock_start1"], effect: { type: "startFlock", value: 5 } },
-  { id: "flock_cap",    cat: "swarm", name: "大群の器",     desc: "群れ上限 +20",          cost: 100, prereq: ["flock_start1"], effect: { type: "flockCap",   value: 20 } },
-  { id: "swarm_revive", cat: "swarm", name: "早鳴きの潮",   desc: "ダウン復帰 -20%",       cost: 60,  prereq: [],               effect: { type: "reviveMult", value: 0.80 } },
-  { id: "pow_dmg1",     cat: "swarm", name: "猛る吐息",     desc: "武器威力 +12%",         cost: 50,  prereq: [],               effect: { type: "weaponDmg",  value: 1.12 } },
-  { id: "pow_dmg2",     cat: "swarm", name: "業火の系譜",   desc: "武器威力 +15%",         cost: 140, prereq: ["pow_dmg1"],     effect: { type: "weaponDmg",  value: 1.15 } },
-  // ── 不屈（止まらず突っ込む）──
-  { id: "flock_hp",     cat: "resil", name: "硬鱗の血脈",   desc: "竜のHP +15%",           cost: 50,  prereq: [],               effect: { type: "flockHp",     value: 1.15 } },
-  { id: "resil_hp2",    cat: "resil", name: "鋼鱗の覚醒",   desc: "竜のHP +15%",           cost: 130, prereq: ["flock_hp"],     effect: { type: "flockHp",     value: 1.15 } },
-  { id: "resil_tough",  cat: "resil", name: "竜鱗の共鳴",   desc: "被ダメージ -12%",       cost: 90,  prereq: [],               effect: { type: "dmgTakenMult",value: 0.88 } },
-  // ── 統率（群れがキレる）──
-  { id: "pow_speed",    cat: "command", name: "疾風の翼",   desc: "群れの速度 +10%",       cost: 45,  prereq: [],               effect: { type: "flockSpeed",  value: 1.10 } },
-  { id: "cmd_speed2",   cat: "command", name: "颶風の統率", desc: "群れの速度 +8%",        cost: 110, prereq: ["pow_speed"],   effect: { type: "flockSpeed",  value: 1.08 } },
-  { id: "cmd_reach",    cat: "command", name: "見晴らす眼", desc: "武器の射程 +15%",       cost: 70,  prereq: [],               effect: { type: "weaponRange", value: 1.15 } },
-  // ── 恵み（周回の潤滑油）──
-  { id: "eco_magnet",   cat: "bounty", name: "宝玉の磁力",  desc: "XP吸引範囲 +30%",        cost: 40,  prereq: [],               effect: { type: "magnet",      value: 1.30 } },
-  { id: "bounty_xp",    cat: "bounty", name: "成長の律動",  desc: "獲得XP +20%",            cost: 80,  prereq: [],               effect: { type: "xpGain",      value: 1.20 } },
-  { id: "eco_gain",     cat: "bounty", name: "竜晶の嗅覚",  desc: "竜晶獲得 +25%",          cost: 70,  prereq: [],               effect: { type: "crystalGain", value: 1.25 } },
+  // ── 選択（三択への介入）──
+  { id: "v3_reroll1", cat: "choice", name: "迷いの爪",   desc: "三択を引き直せる（ステージごとに +1回）", cost: 80,  prereq: [],             effect: { type: "rerolls", value: 1 } },
+  { id: "v3_reroll2", cat: "choice", name: "迷いの爪・二", desc: "三択を引き直せる（ステージごとに +1回）", cost: 160, prereq: ["v3_reroll1"], effect: { type: "rerolls", value: 1 } },
+  { id: "v3_reroll3", cat: "choice", name: "迷いの爪・三", desc: "三択を引き直せる（ステージごとに +1回）", cost: 300, prereq: ["v3_reroll1"], effect: { type: "rerolls", value: 1 } },
+  { id: "v3_banish1", cat: "choice", name: "拒む牙",     desc: "三択のカード1枚を、そのランから消せる（+1回）", cost: 120, prereq: [],             effect: { type: "banishes", value: 1 } },
+  { id: "v3_banish2", cat: "choice", name: "拒む牙・二", desc: "三択のカード1枚を、そのランから消せる（+1回）", cost: 240, prereq: ["v3_banish1"], effect: { type: "banishes", value: 1 } },
+  // ── 地図（地域の選択）──
+  { id: "v3_widemap", cat: "map", name: "広い地図", desc: "地域の選択肢が 3 → 4 つ", cost: 200, prereq: [], effect: { type: "regionExtra", value: 1 } },
+  // ── 巣（数値寄り。実機で残すか判断する）──
+  { id: "v3_egg1",  cat: "nest", name: "卵の温もり",   desc: "ステージ開始時の竜 +2", cost: 100, prereq: [],          effect: { type: "startFlock",   value: 2 } },
+  { id: "v3_egg2",  cat: "nest", name: "卵の温もり・二", desc: "ステージ開始時の竜 +2", cost: 220, prereq: ["v3_egg1"], effect: { type: "startFlock",   value: 2 } },
+  { id: "v3_slot1", cat: "nest", name: "変わり者の座", desc: "特殊個体の枠 +1",      cost: 150, prereq: [],          effect: { type: "specialSlots", value: 1 } },
+  { id: "v3_slot2", cat: "nest", name: "異端の群れ",   desc: "特殊個体の枠 +1",      cost: 300, prereq: ["v3_slot1"], effect: { type: "specialSlots", value: 1 } },
 ];
 const TREE_CATEGORIES = [
-  { id: "charge",  label: "突進",     icon: "\u{1F4A8}" },
-  { id: "special", label: "特殊個体", icon: "\u{1F3AD}" },
-  { id: "mother",  label: "極光",     icon: "\u{1F308}" },
-  { id: "swarm",   label: "大群",     icon: "\u{1F409}" },
-  { id: "resil",   label: "不屈",     icon: "\u{1F6E1}" },
-  { id: "command", label: "統率",     icon: "\u{1F9ED}" },
-  { id: "bounty",  label: "恵み",     icon: "\u{1F340}" },
+  { id: "choice", label: "選択", icon: "\u{1F3B4}" },
+  { id: "map",    label: "地図", icon: "\u{1F5FA}" },
+  { id: "nest",   label: "巣",   icon: "\u{1FAB9}" },
 ];
 
 // v0.99: ノードの絵札。ツリーを絵で読めるようにするための見た目専用データ
 // （TREE_DEFS を汚さないように別表にしている。未登録の id は ◆ で出る）。
 const TREE_ICONS = {
-  chg_unlock: "\u{1F463}", chg_ease: "\u{1F343}", chg_power: "\u{1F5E1}", chg_ramp: "\u26A1", chg_guard: "\u{1F300}",
-  sp_slot1: "\u{1FAB6}", sp_slot2: "\u{1FAB9}", sp_power: "\u2728",
-  m_breath: "\u{1F32C}", m_dmg: "\u{1F525}", m_hp: "\u{1F497}",
-  flock_start1: "\u{1F95A}", flock_start2: "\u{1F423}", flock_cap: "\u{1F3F0}", swarm_revive: "\u{1F30A}",
-  pow_dmg1: "\u{1F4A5}", pow_dmg2: "\u2604",
-  flock_hp: "\u{1F6E1}", resil_hp2: "\u26F0", resil_tough: "\u{1F514}",
-  pow_speed: "\u{1FABD}", cmd_speed2: "\u{1F32A}", cmd_reach: "\u{1F441}",
-  eco_magnet: "\u{1F9F2}", bounty_xp: "\u{1F3B5}", eco_gain: "\u{1F48E}",
+  v3_reroll1: "\u{1F3B2}", v3_reroll2: "\u{1F3B2}", v3_reroll3: "\u{1F3B2}",
+  v3_banish1: "\u{1F6AB}", v3_banish2: "\u{1F6AB}",
+  v3_widemap: "\u{1F5FA}",
+  v3_egg1: "\u{1F95A}", v3_egg2: "\u{1F423}", v3_slot1: "\u{1FAB6}", v3_slot2: "\u2728",
 };
 function treeNodeIcon(id) { return TREE_ICONS[id] || "\u25C6"; }
 
@@ -20058,7 +20106,8 @@ function recomputePermaBuff() {
     const e = node.effect;
     if (e.type === "startFlock" || e.type === "flockCap" || e.type === "specialSlots" ||
         e.type === "chargeEase" || e.type === "chargeGuard" ||
-        e.type === "chargeStart") b[e.type] += e.value;
+        e.type === "chargeStart" ||
+        e.type === "rerolls" || e.type === "banishes" || e.type === "regionExtra") b[e.type] += e.value;
     else b[e.type] *= e.value;
   }
   permaBuff = b;
@@ -20316,7 +20365,7 @@ function renderTree() {
 
   treeOverlayEl.innerHTML =
     `<div class="tree-head">` +
-      `<div class="tree-title">恒常強化ツリー</div>` +
+      `<div class="tree-title">竜晶の強化</div>` +
       `<div class="tree-crystals">\u{1F537} ${profile.crystals}</div>` +
       `<button class="tree-close">\u2715</button>` +
     `</div>` +
@@ -20435,7 +20484,7 @@ function renderChallenges() {
   const rate = challengeCompletion();
   let html =
     `<div class="tree-head">` +
-      `<div class="tree-title">チャレンジ</div>` +
+      `<div class="tree-title">チャレンジ・解放</div>` +
       `<div class="tree-crystals">${rate.done}/${rate.total}</div>` +
       `<button class="tree-close">✕</button>` +
     `</div>` +
@@ -20450,6 +20499,33 @@ function renderChallenges() {
         `<div><div class="ch-name">${ch.name}${prog}</div>` +
         `<div class="ch-desc">${ch.desc}</div></div>` +
       `</div>`;
+  }
+  html += `</div>`;
+  // v3.3.0: 解放の一覧（竜種・特殊個体・地域）
+  html += `<div class="tree-hint">解放（竜種・特殊個体・地域）</div><div class="ch-list">`;
+  const evoSpecies = new Set(CROSS_EVOLUTIONS.map(c => c.to));
+  const rows = [];
+  for (const id of Object.keys(SPECIES_DEFS)) {
+    const cond = UNLOCK_DEFS.find(d => d.kind === "species" && d.id === id);
+    const text = INITIAL_SPECIES.includes(id) ? "初期" : cond ? cond.text : evoSpecies.has(id) ? STRINGS.lockedSpeciesEvo : "—";
+    const open = isSpeciesUnlocked(id);
+    rows.push({ open, name: (open || id !== "ufo") ? `${SPECIES_DEFS[id].icon} ${SPECIES_DEFS[id].ja}` : "？？？", text });
+  }
+  for (const k of Object.keys(SPECIAL_DEFS)) {
+    const kind = Number(k);
+    const cond = UNLOCK_DEFS.find(d => d.kind === "special" && d.id === kind);
+    const prog = cond && cond.cur && !isSpecialUnlocked(kind) ? ` (${cond.cur()}/${cond.goal})` : "";
+    rows.push({ open: isSpecialUnlocked(kind), name: SPECIAL_DEFS[kind].name,
+                text: INITIAL_SPECIALS.includes(kind) ? "初期" : (cond ? cond.text + prog : "—") });
+  }
+  for (let sh = 0; sh < STAGE_SHAPES.length; sh++) {
+    const cond = UNLOCK_DEFS.find(d => d.kind === "region" && d.id === sh);
+    rows.push({ open: isRegionUnlocked(sh), name: `${STAGE_SHAPES[sh].icon} ${STRINGS.shapeNames[sh]}`,
+                text: INITIAL_REGIONS.includes(sh) ? "初期" : (cond ? cond.text : "—") });
+  }
+  for (const r of rows) {
+    html += `<div class="ch-row ${r.open ? "done" : ""}"><div class="ch-badge">${r.open ? "🔓" : "🔒"}</div>` +
+            `<div><div class="ch-name">${r.name}</div><div class="ch-desc">${r.text}</div></div></div>`;
   }
   html += `</div>`;
   challengeOverlayEl.innerHTML = html;
@@ -22041,10 +22117,80 @@ let regionChoices  = [];         // 地域3択を出している最中だけ中�
 let regionPicking  = false;
 let wipeGraceTimer = 0;
 let stageStartTime = 0;          // このステージを始めた時刻（★とアンロック条件に使う）
+// v3.3.0: 竜晶で買う「選択肢を広げる」強化の残り回数
+let runRerollsLeft  = 0;         // 三択の引き直し（ステージごとに戻る）
+let runBanishesLeft = 0;         // 三択の封印（ラン通し）
+const runBanished   = new Set(); // 封印したカードid（そのランでは二度と出ない）
+let banishArmed     = false;     // 「封印」を押した後、次に触ったカードを封印する
 
 function isRegionUnlocked(shape) {
   if (INITIAL_REGIONS.includes(shape)) return true;
   return !!(profile && profile.unlocks && profile.unlocks.regions && profile.unlocks.regions[shape]);
+}
+
+// -----------------------------------------------------------------
+// v3.3.0: アンロック（docs/gdd/dragon-tide-run-cycle.md §7・Shooter指示）
+// -----------------------------------------------------------------
+// 竜種の入手手段は「種またぎ進化」か「条件」のどちらか一方だけ。
+// 進化先になれる竜種は進化でだけ解放される（unlockSpeciesForever）。ここに書くのはそれ以外。
+const INITIAL_SPECIES  = ["fire"];
+const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY];
+const FORTRESS_FALLEN_GOAL = 300;   // 穿つ楔：要塞・首都区画の建物を累計これだけ壊す
+
+// ctx = { clearedIdx: さっきクリアした時代の添字（無ければ -1）, runComplete: ラン完走か }
+const UNLOCK_DEFS = [
+  { kind: "species", id: "ice",     text: "1ランで時代 III をクリア",         done: (c) => c.clearedIdx >= 2 },
+  { kind: "species", id: "hornet",  text: "特殊個体を3体同時に連れる",         done: () => runSpecials.length >= 3 },
+  { kind: "species", id: "wayward", text: "爆竜で完走",                       done: (c) => c.runComplete && flockSpecies === "bomber" },
+  { kind: "special", id: SPECIAL_DEFLECT, text: "1ランで時代 II をクリア",     done: (c) => c.clearedIdx >= 1 },
+  { kind: "special", id: SPECIAL_MECHA,   text: "時代 V（産業）をクリア",      done: (c) => c.clearedIdx >= 4 },
+  { kind: "special", id: SPECIAL_WAKE,    text: "突進を持つ群れで時代 IV をクリア", done: (c) => c.clearedIdx >= 3 && isChargeUnlocked() },
+  { kind: "special", id: SPECIAL_WEDGE,   text: `要塞・首都区画の建物を累計${FORTRESS_FALLEN_GOAL}棟壊す`,
+    done: () => (profile.fortressFallen || 0) >= FORTRESS_FALLEN_GOAL,
+    cur: () => Math.min(profile.fortressFallen || 0, FORTRESS_FALLEN_GOAL), goal: FORTRESS_FALLEN_GOAL },
+  { kind: "region", id: SHAPE_FRONTLINE, text: "時代 III をクリア", done: (c) => c.clearedIdx >= 2 },
+  { kind: "region", id: SHAPE_SANCTUARY, text: "時代 V をクリア",   done: (c) => c.clearedIdx >= 4 },
+  { kind: "region", id: SHAPE_ASTEROIDS, text: "初めて完走",        done: () => (profile.clears || 0) >= 1 },
+  { kind: "region", id: SHAPE_RAILWAY,   text: "完走2回",           done: () => (profile.clears || 0) >= 2 },
+];
+
+function ensureUnlocks() {
+  if (!profile.unlocks) profile.unlocks = {};
+  for (const k of ["species", "specials", "regions"]) if (!profile.unlocks[k]) profile.unlocks[k] = {};
+  return profile.unlocks;
+}
+function isSpeciesUnlocked(id) {
+  return INITIAL_SPECIES.includes(id) || !!(profile && profile.unlocks && profile.unlocks.species && profile.unlocks.species[id]);
+}
+function isSpecialUnlocked(kind) {
+  return INITIAL_SPECIALS.includes(kind) || !!(profile && profile.unlocks && profile.unlocks.specials && profile.unlocks.specials[kind]);
+}
+function isUnlockedByDef(def) {
+  if (def.kind === "species") return isSpeciesUnlocked(def.id);
+  if (def.kind === "special") return isSpecialUnlocked(def.id);
+  return isRegionUnlocked(def.id);
+}
+function unlockLabel(def) {
+  if (def.kind === "species") return SPECIES_DEFS[def.id].ja;
+  if (def.kind === "special") return SPECIAL_DEFS[def.id].name;
+  return STRINGS.shapeNames[def.id];
+}
+
+/** 条件を満たしたものを解放してトーストを出す。ステージクリア・完走・敗北・加入のたびに呼ぶ。 */
+function evaluateUnlocks(ctx = {}) {
+  if (!profile) return;
+  const c = Object.assign({ clearedIdx: -1, runComplete: false }, ctx);
+  const u = ensureUnlocks();
+  const opened = [];
+  for (const def of UNLOCK_DEFS) {
+    if (isUnlockedByDef(def) || !def.done(c)) continue;
+    const bucket = def.kind === "species" ? u.species : def.kind === "special" ? u.specials : u.regions;
+    bucket[def.id] = true;
+    opened.push(unlockLabel(def));
+  }
+  if (opened.length === 0) return;
+  saveProfile();
+  showUnlockToast(STRINGS.unlockedToast(opened.join("・")));
 }
 
 /**
@@ -22068,7 +22214,7 @@ function rollRegionChoices(stageIdx, previousShape) {
     const j = Math.floor(nextRegionRandom() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
-  return pool.slice(0, REGION_CHOICE_COUNT);
+  return pool.slice(0, REGION_CHOICE_COUNT + permaBuff.regionExtra);   // v3.3.0: 広い地図
 }
 
 /** 地域3択（竜種選択と同じオーバーレイを流用）。regionChoices を出す。 */
@@ -22115,6 +22261,7 @@ function startStage(shape) {
   runWorldSeed  = stageWorldSeed(runStageIndex);
   regionChoices = [];
   wipeGraceTimer = 0;
+  runRerollsLeft = permaBuff.rerolls;   // v3.3.0: 引き直しはステージごとに戻る
 
   overlayEl.classList.remove("visible");
   overlayTitle.classList.remove("show");
@@ -22151,6 +22298,7 @@ function triggerStageCleared() {
   lastStageTimeMs = stageTimeMs;
   awardCrystals(crystalsForStageClear(runStageIndex));
   evaluateChallenges();
+  evaluateUnlocks({ clearedIdx: runStageIndex });   // v3.3.0
   saveProfile();
 
   const clearedNumber = runStageIndex + 1;
@@ -22255,6 +22403,7 @@ function triggerRunDefeat() {
   gameState = "all-clear";   // リザルト画面の状態（R キー・ボタンでタイトルへ）
   const runTimeMs = performance.now() - runStartTime;
   evaluateChallenges();
+  evaluateUnlocks();   // v3.3.0: 累計系（要塞の破壊数など）
   saveProfile();
   clearRunSave();
   dismissLevelUpCards();
@@ -22286,6 +22435,18 @@ function showSpeciesSelect() {
   for (const ch of SPECIES_CHOICES) {
     const s    = SPECIES_DEFS[ch.species];
     const btn  = document.createElement("button");
+    // v3.3.0: 未解放は鍵付きで、入手手段を出す（進化で出会う竜種は条件を伏せる）
+    if (!isSpeciesUnlocked(ch.species)) {
+      const cond = UNLOCK_DEFS.find(d => d.kind === "species" && d.id === ch.species);
+      const hidden = ch.species === "ufo";
+      btn.className = "upgrade-card species-locked";
+      btn.innerHTML =
+        `<span class="card-icon">🔒</span>` +
+        `<span><div class="card-name">${hidden ? "？？？" : s.ja}</div>` +
+        `<div class="card-desc">${cond ? cond.text : STRINGS.lockedSpeciesEvo}</div></span>`;
+      cardListEl.appendChild(btn);
+      continue;
+    }
     btn.className = "upgrade-card rarity-star";
     btn.innerHTML =
       `<span class="card-icon">${s.icon}</span>` +
@@ -22349,6 +22510,8 @@ function beginRun(speciesId) {
 
   runStageIndex = 0;
   runLives      = RUN_LIVES;
+  runBanishesLeft = permaBuff.banishes;   // v3.3.0
+  runBanished.clear();
   runStartTime  = performance.now();
   runKills      = 0;
   runMaxFlock   = 0;
@@ -22409,6 +22572,9 @@ function snapshotRunSave() {
     regionChoices: regionChoices.slice(), // 中身がある＝地域3択の最中に閉じた
     stageElapsedMs: performance.now() - stageStartTime,
     lastStageTimeMs: Number.isFinite(lastStageTimeMs) ? lastStageTimeMs : null,
+    runRerollsLeft,
+    runBanishesLeft,
+    runBanished:   [...runBanished],
   });
   runSaveDirty  = false;
   runSaveLastMs = performance.now();
@@ -22465,6 +22631,10 @@ function resumeRun() {
   runSpecials.length = 0;
   if (Array.isArray(save.runSpecials)) for (const k of save.runSpecials) runSpecials.push(k | 0);
   regionChoices = Array.isArray(save.regionChoices) ? save.regionChoices.map(clampShape) : [];
+  runRerollsLeft  = save.runRerollsLeft | 0;
+  runBanishesLeft = save.runBanishesLeft | 0;
+  runBanished.clear();
+  if (Array.isArray(save.runBanished)) for (const id of save.runBanished) runBanished.add(id);
 
   dismissSpeciesSelect();
   dismissLevelUpCards();
@@ -22554,6 +22724,7 @@ function triggerRunComplete() {
   // 最終ステージぶん＋完走ボーナスの竜晶（awardCrystals が saveProfile 済み）
   awardCrystals(crystalsForStageClear(runStageIndex) + CRYSTAL_ALLCLEAR_BONUS);
   evaluateChallenges();               // v0.25: 全クリア・累計系チャレンジを判定
+  evaluateUnlocks({ clearedIdx: RUN_STAGES - 1, runComplete: true });   // v3.3.0
   saveProfile();
   clearRunSave();            // 全クリア＝再開データは不要
 
