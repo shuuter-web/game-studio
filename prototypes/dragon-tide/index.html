@@ -297,6 +297,19 @@
   }
   .upgrade-card.card-locked:active { transform: none; }
   .upgrade-card .card-icon { font-size: 24px; flex-shrink: 0; }
+  /* v3.4.2: 進化カード。通常の強化と取り違えないよう、色の縁取り・札・段階の目盛りを付ける */
+  .upgrade-card.rarity-evo {
+    border: 2px solid var(--evo-color, #ffb060);
+    background: linear-gradient(100deg, rgba(60,30,10,0.92), rgba(16,20,34,0.92) 60%);
+    box-shadow: 0 0 14px rgba(255,170,90,0.35);
+  }
+  .upgrade-card.rarity-evo.evo-branch { box-shadow: 0 0 20px rgba(255,112,208,0.5); }
+  .upgrade-card .evo-tag {
+    display: inline-block; font-size: 10px; letter-spacing: 0.12em;
+    color: var(--evo-ink, #1a1008);
+    background: var(--evo-color, #ffb060); border-radius: 4px; padding: 1px 6px; margin-bottom: 2px;
+  }
+  .upgrade-card .evo-pips { font-size: 10px; letter-spacing: 1px; color: var(--evo-color, #ffb060); margin-left: 8px; }
   .upgrade-card .card-name { font-size: 15px; font-weight: bold; letter-spacing: 0.08em; }
   .upgrade-card .card-desc { font-size: 11px; color: #a8c4e0; margin-top: 2px; }
 
@@ -866,7 +879,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.4.1";
+const GAME_VERSION = "v3.4.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16191,6 +16204,11 @@ const STRINGS = {
   speciesUnlocked: (name) => `🔓 ${name} が解放された（次のランから選べる）`,
   rerollButton: (n) => `🎲 引き直す（残り${n}）`,
   unlockedToast: (names) => `🔓 解放: ${names}`,
+  // v3.4.2: 進化カードの札
+  evoTag: (def) => def.tag === "cross" ? "★ 種またぎ進化"
+                 : def.tag === "branch" ? "★ 進化 ─ 分岐"
+                 : def.tag === "special" ? `${def.tagOwner}の進化`
+                 : "竜の進化",
   evoRecorded: (name, reward) => `📖 進化図鑑に記録: ${name}  +${reward}🔷`,
   lockedSpeciesEvo: "種またぎ進化で出会う",
   banishButton: (n) => `🚫 封印（残り${n}）`,
@@ -16638,6 +16656,10 @@ function defineEvoNode(node) {
   return node;
 }
 
+// v3.4.2: 無分岐の段は「火竜 Lv2」のように段階で呼ぶ（Shooter指示）。
+// 竜種を選んだ時点を Lv1、分岐（または終点）の直前の段を Lv Max とする。
+function evoLvLabel(i, count) { return i === count - 1 ? "Lv Max" : `Lv${i + 2}`; }
+
 function sumEffects(list) {
   const out = {};
   for (const eff of list) for (const k in eff) out[k] = (out[k] || 0) + eff[k];
@@ -16654,7 +16676,9 @@ function sumEffects(list) {
     spec.L.forEach(([name, eff], i) => {
       const id = `evo.${sid}.L${i + 1}`;
       defineEvoNode({ id, owner: sid, kind, icon: def.icon, rarity: "common", effects: eff,
-        requires: prev ? [prev] : [], label: `${def.ja}：${name}`, desc: evoEffectText(eff, kind) });
+        requires: prev ? [prev] : [], label: `${def.ja} ${evoLvLabel(i, spec.L.length)}`,
+        desc: `${name} ／ ${evoEffectText(eff, kind)}`,
+        tag: "species", color: def.color, lv: i + 1, lvCount: spec.L.length });
       prev = id;
     });
     const L4 = prev;
@@ -16663,13 +16687,14 @@ function sumEffects(list) {
       const b = spec[br];
       const id = `evo.${sid}.${br}`;
       defineEvoNode({ id, owner: sid, kind, icon: "\u{1F409}", rarity: "star", effects: b.eff, requires: [L4],
-        branchGroup: group, visual: { tint: b.tint, scale: b.scale },
+        branchGroup: group, visual: { tint: b.tint, scale: b.scale }, tag: "branch", color: b.tint,
         label: `${def.ja}→【${b.name}】`, desc: "姿が変わる ／ " + evoEffectText(b.eff, kind) });
       let p = id;
       b.next.forEach(([name, eff], j) => {
         const nid = `evo.${sid}.${br}${j + 6}`;
         defineEvoNode({ id: nid, owner: sid, kind, icon: def.icon, rarity: "rare", effects: eff, requires: [p],
-          label: `${b.name}：${name}`, desc: evoEffectText(eff, kind) });
+          label: `${b.name} ${evoLvLabel(j, b.next.length)}`, desc: `${name} ／ ${evoEffectText(eff, kind)}`,
+          tag: "species", color: b.tint, lv: j + 1, lvCount: b.next.length });
         p = nid;
       });
     }
@@ -16682,7 +16707,7 @@ function sumEffects(list) {
       if (!to || !form) continue;
       const needText = Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・");
       defineEvoNode({ id: `evo.${sid}.C.${cx.to}`, owner: sid, kind, icon: to.icon, rarity: "star", effects: {},
-        requires: [L4], branchGroup: group, needsSpecials: cx.needs, becomes: cx.to,
+        requires: [L4], branchGroup: group, needsSpecials: cx.needs, becomes: cx.to, tag: "cross", color: form.tint,
         label: `${def.ja}→【${to.ja}「${form.name}」】`,
         desc: `種またぎ進化（${needText}）。群れごと${to.ja}になり、これまでの進化は引き継がない代わりに生まれつき強い` });
     }
@@ -16697,7 +16722,9 @@ function sumEffects(list) {
     form.next.forEach(([name, eff], j) => {
       const id = `evo.form.${sid}.C${j + 6}`;
       defineEvoNode({ id, owner: "form:" + sid, kind, icon: SPECIES_DEFS[sid].icon, rarity: "rare", effects: eff,
-        requires: p ? [p] : [], label: `${form.name}：${name}`, desc: evoEffectText(eff, kind) });
+        requires: p ? [p] : [], label: `${form.name} ${evoLvLabel(j, form.next.length)}`,
+        desc: `${name} ／ ${evoEffectText(eff, kind)}`,
+        tag: "species", color: form.tint, lv: j + 1, lvCount: form.next.length });
       p = id;
     });
   }
@@ -16714,13 +16741,15 @@ function sumEffects(list) {
     spec.L.forEach(([n, eff], i) => {
       const id = `evo.sp.${key}.L${i + 1}`;
       defineEvoNode({ id, owner, special: kindNum, icon, rarity: "common", effects: eff, requires: prev ? [prev] : [],
-        label: `${name}：${n}`, desc: evoEffectText(eff, null) });
+        label: `${name} ${evoLvLabel(i, spec.L.length)}`, desc: `${n} ／ ${evoEffectText(eff, null)}`,
+        tag: "special", tagOwner: name, color: SPECIAL_DEFS[kindNum].color, lv: i + 1, lvCount: spec.L.length });
       prev = id;
     });
     for (const br of ["A", "B"]) {
       const b = spec[br];
       defineEvoNode({ id: `evo.sp.${key}.${br}`, owner, special: kindNum, icon: "\u{1F409}", rarity: "star",
         effects: b.eff, requires: [prev], branchGroup: owner + ".branch", visual: { tint: b.tint, scale: 1 },
+        tag: "branch", color: b.tint,
         label: `${name}→【${b.name}】`, desc: "色が変わる ／ " + evoEffectText(b.eff, null) });
     }
   }
@@ -16845,6 +16874,12 @@ function applyEvoNode(node, oldMaxHp) {
     pushWorldText(c.x, c.y - 30, STRINGS.cards[node.id].name, tint);
   }
   updateHUDWeapon();
+}
+
+/** 相対輝度の目安（0〜1）。札の文字色を決めるのに使う。 */
+function hexLuminance(hex) {
+  const v = parseInt(hex.slice(1), 16);
+  return (0.299 * ((v >> 16) & 255) + 0.587 * ((v >> 8) & 255) + 0.114 * (v & 255)) / 255;
 }
 
 function hexToRgba(hex, alpha) {
@@ -17299,6 +17334,26 @@ function renderLevelUpCards(picks) {
     const text = STRINGS.cards[def.id];
     const btn  = document.createElement("button");
     btn.className = "upgrade-card rarity-" + def.rarity;
+    // v3.4.2: 進化カードは通常の強化と見た目を分ける（札・段階・目盛り・色の縁取り）
+    if (def.evo) {
+      btn.className = "upgrade-card rarity-evo" + (def.tag === "branch" || def.tag === "cross" ? " evo-branch" : "");
+      btn.style.setProperty("--evo-color", def.color || "#ffb060");
+      // 札の文字は色の明るさで黒／白を選ぶ（針蜂・冥炎竜など暗い色でも読めるように）
+      btn.style.setProperty("--evo-ink", hexLuminance(def.color || "#ffb060") > 0.5 ? "#1a1008" : "#ffffff");
+      const pips = def.lv ? `<span class="evo-pips">${"●".repeat(def.lv)}${"○".repeat(def.lvCount - def.lv)}</span>` : "";
+      btn.innerHTML =
+        `<span class="card-icon">${def.icon}</span>` +
+        `<span><div class="evo-tag">${STRINGS.evoTag(def)}</div>` +
+        `<div class="card-name">${text.name}${pips}</div>` +
+        `<div class="card-desc">${text.desc}</div></span>`;
+      btn.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        chooseCard(def);   // 進化カードは封印できない
+      });
+      cardListEl.appendChild(btn);
+      continue;
+    }
     const taken = takenCount(def.id);
     const stack = (def.max !== Infinity && def.max > 1) ? ` (${taken + 1}/${def.max})` : "";
     btn.innerHTML =
