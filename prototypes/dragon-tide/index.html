@@ -848,7 +848,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v2.15.5";
+const GAME_VERSION = "v3.0.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -943,12 +943,8 @@ reseedForNewRun();   // 起動直後のタイトル演出などにも乱数が�
 // 最終時代では大陸を作り直して時代1へ戻す（デバッグで回し続けられるように）。
 function debugAdvanceStage() {
   if (typeof gameState === "undefined" || gameState !== "playing") return;
-  // 最大段階なら次の文明へ回す（デバッグで全時代を見て回れるように）
-  if (isFinalTier()) {
-    runEra = (runEra + 1) % STAGE_CONFIGS.length;
-    buildContinent(0);
-    return;
-  }
+  // 最大段階ならそのステージをクリアして次の時代へ（v3.0.0: 正規のステージクリアを通す）
+  if (isFinalTier()) { onCapitalFallen(); return; }
   triggerTierAdvance();
 }
 
@@ -994,11 +990,11 @@ function debugUnlockAllContinents() {
   // 「初回ラン」扱いのままだと文明を選べないので、1回遊んだ状態にしておく
   if (profile.runsStarted <= 0) profile.runsStarted = 1;
   saveProfile();
-  if (gameState === "title") {
-    refreshTitleMenu();
-    // 大陸選択を開いている最中なら、その場で描き直して鍵を外す
-    if (continentSelecting) showContinentSelect();
-  }
+  // v3.0.0: 地域も全部解放する
+  if (!profile.unlocks) profile.unlocks = { species: {}, specials: {}, regions: {} };
+  for (let sh = 0; sh < STAGE_SHAPES.length; sh++) profile.unlocks.regions[sh] = true;
+  saveProfile();
+  if (gameState === "title") refreshTitleMenu();
 }
 
 function debugResetProfile() {
@@ -1196,8 +1192,9 @@ const DEBUG_ACTIONS = [
   { label: "🛸 動き切替",            run: () => debugCycleMoveProfile() },
   { label: "💥 反動切替",            run: () => debugCycleRecoil() },
   { label: "▶ 次ステージ",          run: () => debugAdvanceStage() },
-  { label: "★ このステージをクリア", run: () => { if (gameState === "playing") triggerStageClear(); } },
-  { label: "🏁 全クリア（即）",       run: () => { if (gameState === "playing") triggerAllClear(); } },
+  { label: "★ このステージをクリア", run: () => { if (gameState === "playing") onCapitalFallen(); } },
+  { label: "🏁 ラン完了（即）",       run: () => { if (gameState === "playing") triggerRunComplete(); } },
+  { label: "💀 全滅させる",           run: () => { if (gameState === "playing") triggerWipe(); } },
   { label: "⬆ レベル +1",            run: () => debugLevelUp(1) },
   { label: "⬆ レベル +5",            run: () => debugLevelUp(5) },
   { label: "🐉 竜 +10",              run: () => debugAddDragons(10) },
@@ -15510,7 +15507,7 @@ function settlementFall(settlementIndex) {
   // 「今の群れで挑むか、時代を進めて力をつけてから挑むか」の判断がランを貫く軸になる。
   // ただし待つほど首都も建て替わって強くなるので、待てば有利とは限らない。
   if (settlement.isBoss) {
-    triggerAllClear();
+    onCapitalFallen();   // v3.0.0: 8ステージ目ならラン完了、それ以外はステージクリア
     return;
   }
 
@@ -16124,6 +16121,18 @@ const STRINGS = {
   // v1.6.0: 呼び方を揃えた（Shooter指示）。1マス＝ステージ、列＝地域、行＝時代。
   // 竜は征服しに行くわけではないので「攻め込む」「制圧」は使わない。
   chooseContinent: "ステージを選ぶ",
+  // v3.0.0: 8ステージ構成（docs/gdd/dragon-tide-run-cycle.md）
+  chooseRegion: (n, total, eraName) => `STAGE ${n}/${total} ${eraName} — 地域を選ぶ`,
+  stageBanner: (n, total) => `STAGE ${n}/${total}`,
+  stageClearTitle: (n, total) => `STAGE ${n}/${total} CLEAR`,
+  nextEra: (eraName) => `次の時代へ — ${eraName}`,
+  statStageTime: "ステージ時間",
+  statLives: "残機",
+  wipeTitle: "全滅",
+  wipeSub: (lives) => `スタート地点へ戻された ／ 残機 ${lives}`,
+  defeatTitle: "力尽きた",
+  defeatReached: (n, total, eraName) => `STAGE ${n}/${total}（${eraName}）で力尽きた`,
+  hudLives: (lives) => `残機${lives}`,
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
@@ -16162,7 +16171,7 @@ const STRINGS = {
   openCodex: "図鑑",
   openOptions: "オプション",
   challengeDone: (name, reward) => `チャレンジ達成: ${name}  +${reward}🔷`,
-  continueRun: (stageNum) => `つづきから　STAGE ${stageNum}`,
+  continueRun: (stageNum) => `つづきから　STAGE ${stageNum}/8`,
   cards: {
     scale:     { name: "硬鱗",     desc: "竜のHP +20%" },
     wind:      { name: "疾風",     desc: "群れの速度 +8%" },
@@ -16453,6 +16462,11 @@ function resetProgression() {
   powerTier       = 0;
   tierSlowmoTimer = 0;
   evolutionChosen = false;   // v0.14: 新しいランでは再び最初のレベルアップで竜種を選ぶ
+  // v3.0.0: 8ステージ構成の進行もランごとにゼロへ
+  runStageIndex  = 0;
+  runLives       = RUN_LIVES;
+  regionChoices  = [];
+  wipeGraceTimer = 0;
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
   // v0.85: 加入済みの特殊個体もランごとにゼロへ（カードと同じ寿命）
   runSpecials.length = 0;
@@ -19228,7 +19242,7 @@ const BEST_KILLS_KEY = "dragonTide_bestKills";    // 旧キー（移行元とし
 const PROFILE_KEY     = "dragonTide_profile";
 const RUN_SAVE_KEY    = "dragonTide_run";
 const PROFILE_VERSION = 1;
-const RUN_SAVE_VERSION = 1;
+const RUN_SAVE_VERSION = 2;   // v3.0.0: 8ステージ構成（v1 は読み捨てる＝未サービスイン）
 
 function defaultProfile() {
   return {
@@ -19826,7 +19840,7 @@ function renderTree() {
 // =================================================================
 const CHALLENGE_DEFS = [
   { id: "reach3",   name: "三時代の覇者", desc: "STAGE 3 に到達する",       reward: 30,
-    done: () => currentStage >= 2 || (profile.clears || 0) > 0 },
+    done: () => runStageIndex >= 2 || (profile.clears || 0) > 0 },   // v3.0.0: 1ランで STAGE 3 に到達
   { id: "flock60",  name: "大群の主",     desc: "1ランで群れ 60 体に到達",  reward: 50,
     done: () => runMaxFlock >= 60, cur: () => Math.min(runMaxFlock, 60), goal: 60 },
   { id: "allclear", name: "全文明制覇",   desc: "全ステージをクリアする",    reward: 100,
@@ -21383,7 +21397,7 @@ function refreshTitleMenu() {
   if (save) {
     const cont = document.createElement("button");
     cont.className = "title-btn title-btn-primary";
-    cont.textContent = STRINGS.continueRun((save.stage | 0) + 1);
+    cont.textContent = STRINGS.continueRun((save.runStageIndex | 0) + 1);
     cont.addEventListener("pointerdown", (e) => { e.stopPropagation(); resumeRun(); });
     titleMenuEl.appendChild(cont);
   }
@@ -21460,110 +21474,265 @@ function stageStartFlockCount() {
 }
 
 // タイトルのタップ／「はじめる」の入口。
+// v3.0.0: 1ラン＝8ステージ。竜種を選んでから、ステージごとに地域を3択で選ぶ（Shooter指示）。
+// 初回だけは竜種も地域も選ばせず、火竜×大陸で即開始する。
 function onTitleStart() {
   if (gameState !== "title") return;
-  if (isFirstEverRun()) {
-    // 初回だけは特別ラン。大陸も竜種も選ばせず、黎明の大陸×火竜で即開始する。
-    pendingStartEra = 0;
-    pendingStartShape = SHAPE_CONTINENT;
-    beginRun("fire");
-  } else {
-    // v0.55: 2回目以降は「どの大陸から始めるか」→「どの竜で行くか」の2段階
-    showContinentSelect();
-  }
+  if (isFirstEverRun()) beginRun("fire");
+  else showSpeciesSelect();
 }
 
-// 次に始めるランの開始時代。大陸選択で確定し beginRun が読む。
-let pendingStartEra = 0;
-let pendingStartShape = SHAPE_CONTINENT;   // v1.2.0: パネルの列
-let continentSelecting = false;
+// -----------------------------------------------------------------
+// v3.0.0: ランサイクル（docs/gdd/dragon-tide-run-cycle.md §1）
+// ステージ n ＝ 時代 n。時代は選べず、クリアするたびに1つ進む。
+// ステージごとに戻るのは**竜の数だけ**。レベル・カード・特殊個体は持ち越す。
+// -----------------------------------------------------------------
+const RUN_STAGES          = TOTAL_STAGES;   // 8（時代の数と同じ）
+const RUN_LIVES           = 3;              // 1ラン通しの全滅の許容回数（ステージで回復しない）
+const REGION_CHOICE_COUNT = 3;
+// 最初から選べる地域。3つあるので初回から3択が成り立つ。残りは条件で解放（§7.4）
+const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL];
+// 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
+const WIPE_GRACE_SECONDS  = 2;
 
-// 大陸（開始時代）選択メニュー。竜種選択と同じオーバーレイを流用する。
-function showContinentSelect() {
-  if (gameState !== "title") return;
-  continentSelecting = true;
-  levelupTitleEl.textContent = STRINGS.chooseContinent;
-  // v1.2.0: パネル式。行＝時代（下へ進むほど後の文明）、列＝ステージの形。
-  // 24枚をスクロールなしで収めるため、カードではなく小さなマス目にする
-  // （スクロールさせると pointerdown 即選択とドラッグが喧嘩する。species-grid と同じ理由）。
+let runStageIndex  = 0;          // 0..RUN_STAGES-1（＝時代）
+let runLives       = RUN_LIVES;
+let runSeedBase    = 0;          // ランのシード。各ステージの地形と地域3択はここから作る
+let regionChoices  = [];         // 地域3択を出している最中だけ中身がある
+let regionPicking  = false;
+let wipeGraceTimer = 0;
+let stageStartTime = 0;          // このステージを始めた時刻（★とアンロック条件に使う）
+
+function isRegionUnlocked(shape) {
+  if (INITIAL_REGIONS.includes(shape)) return true;
+  return !!(profile && profile.unlocks && profile.unlocks.regions && profile.unlocks.regions[shape]);
+}
+
+/**
+ * ステージ stageIdx の地形の種。ランのシードから作るので、
+ * ゲーム中に random() を何回引いたかに左右されない（同じ ?seed なら同じ地形）。
+ */
+function stageWorldSeed(stageIdx) {
+  return (runSeedBase ^ Math.imul(stageIdx + 1, 0x9E3779B1)) >>> 0;
+}
+
+/**
+ * 地域の3択を引く。解放済みから重複なしで、直前のステージと同じ地域は出さない。
+ * 専用の乱数で引くので、同じシードなら遊び方に関係なく同じ3択になる。
+ */
+function rollRegionChoices(stageIdx, previousShape) {
+  const nextRegionRandom = makeRandomGenerator((stageWorldSeed(stageIdx) ^ 0x5BD1E995) >>> 0);
+  let pool = [];
+  for (let sh = 0; sh < STAGE_SHAPES.length; sh++) if (isRegionUnlocked(sh)) pool.push(sh);
+  if (previousShape != null && pool.length > 1) pool = pool.filter(sh => sh !== previousShape);
+  for (let i = pool.length - 1; i > 0; i--) {   // Fisher–Yates
+    const j = Math.floor(nextRegionRandom() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, REGION_CHOICE_COUNT);
+}
+
+/** 地域3択（竜種選択と同じオーバーレイを流用）。regionChoices を出す。 */
+function showRegionPick() {
+  regionPicking = true;
+  dismissLevelUpCards();
+  levelupTitleEl.textContent = STRINGS.chooseRegion(runStageIndex + 1, RUN_STAGES, CONTINENT_DEFS[runStageIndex].name);
   cardListEl.classList.remove("species-grid");
-  cardListEl.classList.add("panel-grid");
-  // v1.4.0: 列はステージの形の数だけ（行見出し＋形の数）
-  cardListEl.style.gridTemplateColumns = `minmax(54px, 0.85fr) repeat(${STAGE_SHAPES.length}, 1fr)`;
   cardListEl.innerHTML = "";
-
-  const addCell = (cls, html) => {
-    const el = document.createElement("div");
-    el.className = cls;
-    el.innerHTML = html;
-    cardListEl.appendChild(el);
-    return el;
-  };
-
-  // 見出し行（左上は空き）
-  addCell("panel-corner", STRINGS.panelAxes);
-  for (let sh = 0; sh < STAGE_SHAPES.length; sh++) {
-    addCell("panel-col-head", `${STAGE_SHAPES[sh].icon}<br>${STRINGS.shapeShortNames[sh]}`);
+  for (const sh of regionChoices) {
+    const text = STRINGS.regionCodex[sh] ?? { play: "", rule: "" };
+    const best = panelBestStars(runStageIndex, sh);
+    const btn  = document.createElement("button");
+    btn.className = "upgrade-card rarity-rare";
+    btn.innerHTML =
+      `<span class="card-icon">${STAGE_SHAPES[sh].icon}</span>` +
+      `<span><div class="card-name">${STRINGS.shapeNames[sh]}` +
+      ` <span class="${best > 0 ? "era-stars" : "era-stars-none"}">${starsText(best)}</span></div>` +
+      `<div class="card-desc">${text.play}<br>${text.rule}</div></span>`;
+    btn.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      dismissRegionPick();
+      startStage(sh);
+    });
+    cardListEl.appendChild(btn);
   }
-
-  for (let era = 0; era < CONTINENT_DEFS.length; era++) {
-    const c = CONTINENT_DEFS[era];
-    const eraBoost = STAGE_DIFFICULTY_BOOST[c.era];
-    addCell("panel-row-head",
-      `<b>${CONTINENT_NUMERALS[era]}</b> ${c.name}` +
-      `<span>${STRINGS.continentToughness("×" + (eraBoost ? eraBoost.hp : 1).toFixed(2))}</span>`);
-
-    for (let sh = 0; sh < STAGE_SHAPES.length; sh++) {
-      const unlocked = isPanelUnlocked(era, sh);
-      const btn = document.createElement("button");
-      btn.className = "panel-cell" + (unlocked ? "" : " panel-locked");
-      if (unlocked) {
-        const best = panelBestStars(era, sh);
-        btn.innerHTML =
-          `<span class="panel-icon">${STAGE_SHAPES[sh].icon}</span>` +
-          `<span class="${best > 0 ? "era-stars" : "era-stars-none"}">${starsText(best)}</span>`;
-        btn.addEventListener("pointerdown", (e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          pendingStartEra   = c.era;
-          pendingStartShape = sh;
-          dismissContinentSelect();
-          showSpeciesSelect();
-        });
-      } else {
-        btn.innerHTML = `<span class="panel-icon">🔒</span>`;
-      }
-      cardListEl.appendChild(btn);
-    }
-  }
-
-  addCell("panel-hint", STRINGS.panelHint);
-
-  const back = document.createElement("button");
-  back.className = "upgrade-card panel-back";
-  back.style.justifyContent = "center";
-  back.style.minHeight = "40px";
-  back.innerHTML = `<span class="card-name">${STRINGS.backToTitle}</span>`;
-  back.addEventListener("pointerdown", (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    dismissContinentSelect();
-    refreshTitleMenu();
-    titleOverlayEl.classList.add("visible");
-  });
-  cardListEl.appendChild(back);
-
   titleOverlayEl.classList.remove("visible");
+  overlayEl.classList.remove("visible");
   levelupOverlayEl.classList.add("visible");
 }
 
-function dismissContinentSelect() {
-  if (!continentSelecting) return;
-  continentSelecting = false;
-  cardListEl.classList.remove("panel-grid");   // v1.2.0
-  cardListEl.style.gridTemplateColumns = "";
+function dismissRegionPick() {
+  if (!regionPicking) return;
+  regionPicking = false;
   levelupTitleEl.textContent = STRINGS.levelUp;
   levelupOverlayEl.classList.remove("visible");
+}
+
+/** runStageIndex のステージを地域 shape で始める（新規・次の時代の共通入口）。 */
+function startStage(shape) {
+  runShape      = clampShape(shape);
+  runEra        = clampEra(runStageIndex);
+  runWorldSeed  = stageWorldSeed(runStageIndex);
+  regionChoices = [];
+  wipeGraceTimer = 0;
+
+  overlayEl.classList.remove("visible");
+  overlayTitle.classList.remove("show");
+  retryBtn.classList.remove("visible");
+  resultStatsEl.classList.remove("visible");
+  titleOverlayEl.classList.remove("visible");
+
+  buildContinent(0);                       // ワールド生成＋警戒度0＋竜の数を戻す（特殊個体は残る）
+  stageStartTime = performance.now();
+  runMaxFlock = Math.max(runMaxFlock, countAliveBoids());
+  updateHUDStage();
+
+  // 何ステージ目・どの時代・どの地域かを、プレイを止めずに見出しで出す
+  stageTextEl.textContent = STRINGS.stageBanner(runStageIndex + 1, RUN_STAGES);
+  stageSubEl.textContent  = `${CONTINENT_DEFS[runStageIndex].name} ／ ${STRINGS.shapeNames[runShape]}`;
+  stageOverlayEl.classList.add("visible");
+  setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
+  snapshotRunSave();
+  hapticPulse(30);
+}
+
+/** 首都が落ちた。最終ステージならラン完了、それ以外はステージクリア。 */
+function onCapitalFallen() {
+  if (runStageIndex >= RUN_STAGES - 1) triggerRunComplete();
+  else triggerStageCleared();
+}
+
+/** ステージクリア → 結果を見せて「次の時代へ」で地域3択へ。 */
+function triggerStageCleared() {
+  gameState = "stage-clear";
+  const stageTimeMs = performance.now() - stageStartTime;
+  const stars = clearStars();
+  const starsBest = recordPanelStars(runEra, runShape, stars);
+  lastStageTimeMs = stageTimeMs;
+  awardCrystals(crystalsForStageClear(runStageIndex));
+  evaluateChallenges();
+  saveProfile();
+
+  const clearedNumber = runStageIndex + 1;
+  // 次のステージへ進めた状態で保存する（ここで閉じても地域3択から再開できる）
+  runStageIndex++;
+  regionChoices = rollRegionChoices(runStageIndex, runShape);
+  snapshotRunSave();
+  dismissLevelUpCards();
+
+  overlayEl.classList.add("visible");
+  overlayTitle.textContent = STRINGS.stageClearTitle(clearedNumber, RUN_STAGES);
+  resultStatsEl.innerHTML =
+    `<div class="result-stars">${starsText(stars)}</div>` +
+    `<div class="result-rank">${clearRankName(stars)}` +
+      `${starsBest ? ' <span class="result-best">自己ベスト更新</span>' : ""}</div>` +
+    `${STRINGS.statStageTime}: <span class="stat-value">${formatRunTime(stageTimeMs)}</span><br>` +
+    `${STRINGS.statFlock}: <span class="stat-value">${countAliveBoids()}</span><br>` +
+    `${STRINGS.statLevel}: <span class="stat-value">Lv.${playerLevel}</span><br>` +
+    `${STRINGS.statLives}: <span class="stat-value">${runLives}</span>`;
+  resultStatsEl.classList.add("visible");
+  retryBtn.textContent = STRINGS.nextEra(CONTINENT_DEFS[runStageIndex].name);
+  setTimeout(() => overlayTitle.classList.add("show"), 300);
+  setTimeout(() => retryBtn.classList.add("visible"), 1200);
+  hapticPulse(200);
+}
+
+// 直前のステージのクリア時間（アンロック条件「5分以内」などで使う）
+let lastStageTimeMs = Infinity;
+
+/** 「次の時代へ」ボタン。 */
+function proceedToNextStage() {
+  if (gameState !== "stage-clear" || regionPicking) return;
+  overlayEl.classList.remove("visible");
+  overlayTitle.classList.remove("show");
+  retryBtn.classList.remove("visible");
+  resultStatsEl.classList.remove("visible");
+  showRegionPick();
+}
+
+// -----------------------------------------------------------------
+// v3.0.0: 全滅（docs/gdd/dragon-tide-run-cycle.md §1.1・Shooter指示）
+// 群れが全員ダウン中になったら、場所だけスタート地点へ戻す。3回でラン終了。
+// 頭数・街の破壊・警戒度・首都の傷はそのまま。
+// -----------------------------------------------------------------
+function checkFlockWipe(dt) {
+  if (wipeGraceTimer > 0) { wipeGraceTimer = Math.max(0, wipeGraceTimer - dt); return; }
+  let living = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+    living++;
+    if (!boidDowned[i]) return;   // 1体でも立っていれば全滅ではない
+  }
+  if (living === 0) return;
+  triggerWipe();
+}
+
+function triggerWipe() {
+  runLives--;
+  markRunSaveDirty();
+  if (runLives <= 0) { triggerRunDefeat(); return; }
+
+  // 戻った先で飛んできている弾に即やられないよう、敵の弾は消しておく
+  for (let i = 0; i < MAX_PROJECTILES; i++) projActive[i] = 0;
+  resetLeader();
+  resetCharge();
+  cam.x = START_X;
+  cam.y = START_Y;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+    const r = random() * 80;
+    const a = random() * Math.PI * 2;
+    px[i] = START_X + Math.cos(a) * r;
+    py[i] = START_Y + Math.sin(a) * r;
+    const ang = random() * Math.PI * 2;
+    vx[i] = Math.cos(ang) * mv().minSpeed;
+    vy[i] = Math.sin(ang) * mv().minSpeed;
+    boidDowned[i]      = 0;
+    boidDownTimer[i]   = 0;
+    boidReviveTimer[i] = 0;
+    boidFadeTimer[i]   = 0;
+    boidKnockStun[i]   = 0;
+    boidKickX[i]       = 0;
+    boidKickY[i]       = 0;
+    boidHp[i]          = effBoidMaxHpFor(i);
+    const base = i * TAIL_SEGS;
+    for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = ang;
+    spawnDragonAppearEffect(px[i], py[i]);
+  }
+  wipeGraceTimer = WIPE_GRACE_SECONDS;
+
+  triggerFlash("rgba(40,0,0,0.6)", 0.5);
+  hapticPulse(250);
+  stageTextEl.textContent = STRINGS.wipeTitle;
+  stageSubEl.textContent  = STRINGS.wipeSub(runLives);
+  stageOverlayEl.classList.add("visible");
+  setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
+  updateHUDStage();
+}
+
+/** 残機0。そこまでの竜晶と解放は残る。 */
+function triggerRunDefeat() {
+  gameState = "all-clear";   // リザルト画面の状態（R キー・ボタンでタイトルへ）
+  const runTimeMs = performance.now() - runStartTime;
+  evaluateChallenges();
+  saveProfile();
+  clearRunSave();
+  dismissLevelUpCards();
+
+  overlayEl.classList.add("visible");
+  overlayTitle.textContent = STRINGS.defeatTitle;
+  resultStatsEl.innerHTML =
+    `<div class="result-rank">${STRINGS.defeatReached(runStageIndex + 1, RUN_STAGES, CONTINENT_DEFS[runStageIndex].name)}</div>` +
+    `${STRINGS.statTime}: <span class="stat-value">${formatRunTime(runTimeMs)}</span><br>` +
+    `${STRINGS.statKills}: <span class="stat-value">${runKills}</span><br>` +
+    `${STRINGS.statFlock}: <span class="stat-value">${runMaxFlock}</span><br>` +
+    `${STRINGS.statLevel}: <span class="stat-value">Lv.${playerLevel}</span>`;
+  resultStatsEl.classList.add("visible");
+  retryBtn.textContent = STRINGS.toTitle;
+  setTimeout(() => overlayTitle.classList.add("show"), 300);
+  setTimeout(() => retryBtn.classList.add("visible"), 1500);
+  hapticPulse(300);
 }
 
 // 竜種選択メニュー（レベルアップ用オーバーレイを流用）。
@@ -21616,10 +21785,9 @@ function dismissSpeciesSelect() {
   levelupOverlayEl.classList.remove("visible");
 }
 
-// 竜種選択をやめる。v0.55: 2回目以降は1段前（大陸選択）へ戻す。
+// 竜種選択をやめてタイトルへ戻る。v3.0.0: 竜種がラン最初の選択になった
 function cancelSpeciesSelect() {
   dismissSpeciesSelect();
-  if (!isFirstEverRun()) { showContinentSelect(); return; }
   refreshTitleMenu();
   titleOverlayEl.classList.add("visible");
 }
@@ -21630,7 +21798,7 @@ function beginRun(speciesId) {
   // 乱数を引き直す。以降このランで使う乱数はすべてこのシードから決まるので、
   // 同じシード＋同じ操作なら同じランになる（不具合はシードとセットで報告する）。
   reseedForNewRun();
-  runWorldSeed = currentSeed;            // v1.0.0: この大陸の形を決める種（セーブに残す）
+  runSeedBase = currentSeed;              // v3.0.0: 各ステージの地形と地域3択はここから作る
   currentRunIsFirst = isFirstEverRun();   // runsStarted を増やす前に固定
   profile.runsStarted++;
   saveProfile();
@@ -21640,24 +21808,19 @@ function beginRun(speciesId) {
   evolutionChosen = true;                  // 竜種は開始前に確定（ラン中4択は廃止）
   updateHUDWeapon();
 
-  // v0.51: 大陸をこのランのシードから組み立てる。
-  // 以前はタイトル背景のワールドをそのまま使い回していたため、ランのシードと
-  // ワールドのシードが食い違っていた（?seed= 指定時だけ偶然一致していた）。
-  // ここで作り直すことで「同じシード＝同じ大陸」が常に成り立つ。
-  // v0.56: タイトルで選んだ文明（時代）に攻め込む。初回ランは石器時代で固定。
-  runEra = currentRunIsFirst ? 0 : clampEra(pendingStartEra);
-  runShape = currentRunIsFirst ? SHAPE_CONTINENT : clampShape(pendingStartShape);   // v1.2.0
-  buildContinent(0);                       // ワールド生成＋段階0の確定＋初期群れ
-
-  runStartTime = performance.now();
-  runKills     = 0;
-  runMaxFlock  = countAliveBoids();
-  runTotalXp   = 0;
+  runStageIndex = 0;
+  runLives      = RUN_LIVES;
+  runStartTime  = performance.now();
+  runKills      = 0;
+  runMaxFlock   = 0;
+  runTotalXp    = 0;
+  lastStageTimeMs = Infinity;
 
   dismissSpeciesSelect();
-  titleOverlayEl.classList.remove("visible");
-  gameState = "playing";
-  hapticPulse(30);
+  // v3.0.0: 初回ランの1ステージ目は大陸固定（3択なし）。それ以外は地域を3択で選ぶ
+  if (currentRunIsFirst) { startStage(SHAPE_CONTINENT); return; }
+  regionChoices = rollRegionChoices(runStageIndex, null);
+  showRegionPick();
 }
 
 // ---- ラン再開チェックポイント（ステージクリアごとのオートセーブ）----
@@ -21699,6 +21862,14 @@ function snapshotRunSave() {
     runMaxFlock,
     runTotalXp,
     elapsedMs:     performance.now() - runStartTime,
+    // v3.0.0: 8ステージ構成
+    runStageIndex,
+    runSeedBase,
+    runLives,
+    runSpecials:   runSpecials.slice(),   // v2 まで保存漏れ（再開すると特殊個体が消えていた）
+    regionChoices: regionChoices.slice(), // 中身がある＝地域3択の最中に閉じた
+    stageElapsedMs: performance.now() - stageStartTime,
+    lastStageTimeMs: Number.isFinite(lastStageTimeMs) ? lastStageTimeMs : null,
   });
   runSaveDirty  = false;
   runSaveLastMs = performance.now();
@@ -21746,11 +21917,28 @@ function resumeRun() {
   runTotalXp   = save.runTotalXp || 0;
   runStartTime = performance.now() - (save.elapsedMs || 0);
 
-  // 保存ステージを組み立てて再開（ステージ間リセット相当の体数）
+  // v3.0.0: 8ステージ構成の進行
+  runStageIndex = Math.max(0, Math.min(RUN_STAGES - 1, save.runStageIndex | 0));
+  runSeedBase   = (save.runSeedBase >>> 0);
+  runLives      = Math.max(1, (save.runLives ?? RUN_LIVES) | 0);
+  lastStageTimeMs = (typeof save.lastStageTimeMs === "number") ? save.lastStageTimeMs : Infinity;
+  runSpecials.length = 0;
+  if (Array.isArray(save.runSpecials)) for (const k of save.runSpecials) runSpecials.push(k | 0);
+  regionChoices = Array.isArray(save.regionChoices) ? save.regionChoices.map(clampShape) : [];
+
   dismissSpeciesSelect();
   dismissLevelUpCards();
+  // 地域3択の最中に閉じていたら、3択から再開する（ワールドはまだ作らない）
+  if (regionChoices.length > 0) {
+    updateHUDWeapon();
+    updateXpHud();
+    showRegionPick();
+    return;
+  }
+
+  // 保存ステージを組み立てて再開（ステージ間リセット相当の体数）
   setupStageForResume(powerTier, save.fallen);   // v0.56: 引数は警戒度
-  bossEnraged = !!save.bossEnraged;   // v1.0.0: 最強モードも引き継ぐ
+  stageStartTime = performance.now() - (save.stageElapsedMs || 0);
 
   updateHUDWeapon();
   updateXpHud();
@@ -21764,7 +21952,7 @@ function resumeRun() {
 // 最終時代なら全クリア扱いにする。
 function triggerStageClear() {
   if (gameState !== "playing") return;
-  if (isFinalTier()) { triggerAllClear(); return; }
+  if (isFinalTier()) { onCapitalFallen(); return; }
   triggerTierAdvance();
 }
 
@@ -21813,8 +22001,8 @@ function recordPanelStars(era, shape, stars) {
   return true;
 }
 
-// ---- 全制覇（STAGE 4 ボス撃破）→ リザルト表示 ----
-function triggerAllClear() {
+// ---- ラン完了（v3.0.0: 8ステージ目＝時代 VIII の首都撃破）→ リザルト表示 ----
+function triggerRunComplete() {
   gameState = "all-clear";
   const runTimeMs = performance.now() - runStartTime;
   // v0.99.8: 評価は**ボスが落ちた瞬間の状態**で決まる。後で powerTier を触られる前に取る。
@@ -21822,10 +22010,10 @@ function triggerAllClear() {
   const starsBest = recordPanelStars(runEra, runShape, stars);
   saveBestRecord(runTimeMs, runKills);
   profile.clears++;          // v0.19: 全クリア回数（チャレンジ/コンプ用の累計）
-  // v1.2.0: 制圧したパネルの上下左右を開く（大陸の列の「次の時代」もここに含まれる）
-  const openedPanels = unlockPanelNeighbors(runEra, runShape);
-  // v0.51: 最終時代ぶん＋大陸制覇ボーナスの竜晶（awardCrystals が saveProfile 済み）
-  awardCrystals(crystalsForStageClear(currentStage) + CRYSTAL_ALLCLEAR_BONUS);
+  lastStageTimeMs = performance.now() - stageStartTime;
+  // v3.0.0: パネルの上下左右を開く仕組みは廃止（地域は条件で解放する）。
+  // 最終ステージぶん＋完走ボーナスの竜晶（awardCrystals が saveProfile 済み）
+  awardCrystals(crystalsForStageClear(runStageIndex) + CRYSTAL_ALLCLEAR_BONUS);
   evaluateChallenges();               // v0.25: 全クリア・累計系チャレンジを判定
   saveProfile();
   clearRunSave();            // 全クリア＝再開データは不要
@@ -21840,9 +22028,7 @@ function triggerAllClear() {
     `${STRINGS.statKills}: <span class="stat-value">${runKills}</span><br>` +
     `${STRINGS.statFlock}: <span class="stat-value">${runMaxFlock}</span><br>` +
     `${STRINGS.statLevel}: <span class="stat-value">Lv.${playerLevel}</span><br>` +
-    `${STRINGS.statXp}: <span class="stat-value">${runTotalXp}</span>` +
-    openedPanels.map(o => `<br><span class="stat-value" style="color:#ffd060">🔓 ${
-          STRINGS.continentUnlocked(panelLabel(o.era, o.shape))}</span>`).join("");
+    `${STRINGS.statXp}: <span class="stat-value">${runTotalXp}</span>`;
   resultStatsEl.classList.add("visible");
   retryBtn.textContent = STRINGS.toTitle;
   setTimeout(() => overlayTitle.classList.add("show"), 300);
@@ -22545,7 +22731,9 @@ function returnToTitle() {
 
 retryBtn.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
-  returnToTitle();
+  // v3.0.0: ステージクリアの画面では「次の時代へ」、リザルトでは「タイトルへ」
+  if (gameState === "stage-clear") proceedToNextStage();
+  else returnToTitle();
 });
 
 // タイトル背景タップ：初回ランのみ即開始（2回目以降はメニューボタンで操作）。
@@ -22558,7 +22746,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "r" || e.key === "R") {
     if (gameState === "all-clear") returnToTitle();
   } else if (e.key === " " || e.key === "Enter") {
-    if (gameState === "title" && !speciesSelecting && !continentSelecting) onTitleStart();
+    if (gameState === "title" && !speciesSelecting && !regionPicking) onTitleStart();
   }
 });
 
@@ -23231,6 +23419,7 @@ function applyDamageToBoid(boidIndex, damage) {
   // 変更2: ダウン中・すでに dead の場合は何もしない
   if (boidDead[boidIndex] || boidDowned[boidIndex]) return;
   if (debugInvincible) return;   // v0.44: デバッグ「竜を無敵」中は落ちない（敵の観察用）
+  if (wipeGraceTimer > 0) return; // v3.0.0: 全滅で戻された直後の無敵
   // v0.6: 「竜鱗共鳴」カードで被ダメージ軽減
   // v0.89: 突進中の軽減（強化で手に入れたときだけ）。溜めに比例する。
   const dealt = damage * effDmgTakenMult() * (1 - chargeDamageReductionFor(boidIndex));
@@ -23252,8 +23441,7 @@ function applyDamageToBoid(boidIndex, damage) {
   }
 }
 
-// v0.6: 全滅チェック（checkGameConditions/triggerDefeat）は廃止。
-// ダウンした竜は必ず復帰するためゲームオーバーは存在しない（仕様 §2.2）。
+// v3.0.0: 全滅はある（checkFlockWipe）。ただし場所が戻るだけで、3回目でラン終了（Shooter指示）。
 
 // -----------------------------------------------------------------
 // Simulation step — 自軍Boids
@@ -25846,11 +26034,13 @@ function updateHUDStage() {
   // v0.56: 時代（文明名）はラン中ずっと固定のフレーバー。動くのは警戒度だけ。
   const config = STAGE_CONFIGS[currentStage];
   hudStage.textContent =
+    // v3.0.0: 何ステージ目か・残機を先頭に（ランが8ステージになったため）
+    (gameState === "title" ? "" : `${runStageIndex + 1}/${RUN_STAGES} ${STRINGS.hudLives(runLives)} ／ `) +
     // v1.0.0: 軸の名前（警戒度）を出す。段階名だけだと
     // 「動員 2/4」が何の2/4なのかが伝わらない。
     config.name +
-    // v1.2.0: 大陸以外の形なら形の名前も添える（同じ文明でもどのパネルにいるか分かるように）
-    (worldShape !== SHAPE_CONTINENT ? "・" + STRINGS.shapeShortNames[worldShape] : "") +
+    // v1.2.0: 地域の名前（v3.0.0: 地域を毎ステージ選ぶので大陸でも出す）
+    "・" + STRINGS.shapeShortNames[worldShape] +
     " / 警戒度" + (powerTier + 1) + " " + (TIER_NAMES[powerTier] ?? "");
 }
 
@@ -27173,6 +27363,7 @@ function tick() {
     updateBossReinforcements(wdt); // v0.58: 首都が兵を出し続ける（取り巻きを倒しても消化試合にしない）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
     updateDeathTimers(wdt);
+    checkFlockWipe(wdt);          // v3.0.0: 全員ダウンでスタート地点へ戻す（残機制）
     updateParticles(wdt);
     updateAppearEffects(wdt);     // 変更2: 竜出現エフェクト更新
     updateDownEffects(wdt);       // 変更2(追加): 竜やられエフェクト更新
