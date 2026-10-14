@@ -848,7 +848,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.1.1";
+const GAME_VERSION = "v3.2.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2010,8 +2010,9 @@ function effBreathArcDeg() {
   if (currentRunIsFirst) return BREATH_ARC_FULL_DEG;
   const base = sp().breathArcDeg;
   if (base === undefined || base >= BREATH_ARC_FULL_DEG) return BREATH_ARC_FULL_DEG;
-  // v3.1.0: 角度は竜種の個性。三択では広げない（「見渡す顎」は撤去）
-  return Math.min(BREATH_ARC_FULL_DEG, base);
+  // v3.1.0: 角度は竜種の個性。三択では広げない（「見渡す顎」は撤去）。
+  // v3.2.0: 進化の分岐（焔竜など）で広がる分だけ足す
+  return Math.min(BREATH_ARC_FULL_DEG, base + BREATH_ARC_PER_CARD * upCount("breath_arc"));
 }
 /** 判定に使う半角（rad）。π 以上なら全方位。 */
 function breathArcHalf() { return effBreathArcDeg() * Math.PI / 360; }
@@ -2139,7 +2140,8 @@ function isChargeUnlocked() {
   // v0.92: 恒常ツリー「踏み出す足」を買っていれば、ラン開始時から解禁済み。
   // v3.1.0: 突進は竜種の個性（SPECIES_DEFS の charge を持つ竜種だけ最初から使える）。
   // 三択の「一斉突撃」は撤去した。
-  return !!sp().charge || permaBuff.chargeStart > 0;
+  // v3.2.0: 進化の分岐（炉竜・重隼など）でも得られる
+  return !!sp().charge || upCount("charge_unlock") > 0 || permaBuff.chargeStart > 0;
 }
 
 // ---- 状態 ----
@@ -16157,6 +16159,7 @@ const STRINGS = {
   defeatTitle: "力尽きた",
   defeatReached: (n, total, eraName) => `STAGE ${n}/${total}（${eraName}）で力尽きた`,
   hudLives: (lives) => `残機${lives}`,
+  speciesUnlocked: (name) => `🔓 ${name} が解放された（次のランから選べる）`,
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
@@ -16308,47 +16311,21 @@ const CARD_DEFS = [
   { id: "cat_direct", icon: "\u{1F43E}", rarity: "common", max: 5 },
   { id: "cat_shot",   icon: "\u{1F525}", rarity: "common", max: 5 },
   { id: "cat_blast",  icon: "\u{1F4A5}", rarity: "common", max: 5 },
-  // B. 武器強化（現在の武器タイプにのみ出現）
-  { id: "dmg_beam",      icon: "\u{1F525}", rarity: "common", max: 4, weapon: "beam" },
-  { id: "dmg_bullet",    icon: "❄️",     rarity: "common", max: 4, weapon: "bullet" },
-  { id: "dmg_missile",   icon: "\u{1F4A5}", rarity: "common", max: 4, weapon: "missile" },
-  { id: "dmg_melee",     icon: "\u{1F43E}", rarity: "common", max: 4, weapon: "melee" },
-  { id: "range_beam",    icon: "\u{1F4CF}", rarity: "common", max: 3, weapon: "beam" },
-  { id: "range_bullet",  icon: "\u{1F4CF}", rarity: "common", max: 3, weapon: "bullet" },
-  { id: "range_missile", icon: "\u{1F4CF}", rarity: "common", max: 3, weapon: "missile" },
-  { id: "multibeam",     icon: "\u{1F3AF}", rarity: "rare",   max: 2, weapon: "beam" },
-  { id: "rate_bullet",   icon: "⚙️",     rarity: "rare",   max: 3, weapon: "bullet" },
-  { id: "rate_missile",  icon: "⚙️",     rarity: "rare",   max: 3, weapon: "missile" },
-  { id: "pierce",        icon: "\u{1F3F9}", rarity: "rare",   max: 3, weapon: "bullet" },
-  { id: "blast",         icon: "\u{1F4A5}", rarity: "rare",   max: 3, weapon: "missile" },
+  // v3.2.0: 武器別の強化（威力・射程・連射・貫通・爆風・多重照射）は竜種の進化ツリーへ移した
   // D. 母竜ブレス（v0.22。v0.31: 恒常ツリーでの解禁をやめ、ラン中に引いて手に入れる★カードに変更）
   // motherUnlock がラン内の解禁スイッチ。mother:true の強化2枚はこれを取った後のみプールに乗る。
   // v0.93: 解禁カードをやめ、**虹竜という特殊個体の加入**に変えた。
   // 他の特殊個体と同じ枠を使うので、max 1（虹竜は2匹居ても意味がない）。
   { id: "sp_rainbow",   icon: "\u{1F308}", rarity: "star", max: 1, specialJoin: SPECIAL_RAINBOW },
-  { id: "mbreath_dmg",  icon: "\u{1F432}", rarity: "rare", max: 5, specialOf: SPECIAL_RAINBOW },
-  { id: "mbreath_rate", icon: "\u{1F493}", rarity: "rare", max: 4, specialOf: SPECIAL_RAINBOW },
   // E. 特殊個体（v0.85）。specialJoin は「1匹加入させる★カード」で、
   // 連れ歩ける数（effSpecialSlots）に達したらプールから消える。
   // specialOf の強化カードは「その種類を連れているときだけ」出る（空振りを作らない）。
   { id: "sp_beacon",  icon: "\u{1F526}", rarity: "star", max: 3, specialJoin: SPECIAL_BEACON },
   { id: "sp_heavy",   icon: "\u{1FAA8}", rarity: "star", max: 3, specialJoin: SPECIAL_HEAVY },
   { id: "sp_deflect", icon: "\u{1F300}", rarity: "star", max: 3, specialJoin: SPECIAL_DEFLECT },
-  { id: "sp_beacon_len",    icon: "\u{1F4CF}", rarity: "rare", max: 3, specialOf: SPECIAL_BEACON },
-  { id: "sp_beacon_dmg",    icon: "\u2728",    rarity: "rare", max: 4, specialOf: SPECIAL_BEACON },
-  { id: "sp_heavy_dmg",     icon: "\u{1F4A2}", rarity: "rare", max: 4, specialOf: SPECIAL_HEAVY },
-  { id: "sp_heavy_size",    icon: "\u{1F411}", rarity: "rare", max: 3, specialOf: SPECIAL_HEAVY },
-  { id: "sp_deflect_cap",   icon: "\u{1F373}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
-  { id: "sp_deflect_range", icon: "\u{1F30A}", rarity: "rare", max: 3, specialOf: SPECIAL_DEFLECT },
   { id: "sp_mecha",         icon: "\u{1F680}", rarity: "star", max: 3, specialJoin: SPECIAL_MECHA },
-  { id: "sp_mecha_count",   icon: "\u{1F38B}", rarity: "rare", max: 4, specialOf: SPECIAL_MECHA },
-  { id: "sp_mecha_dmg",     icon: "\u{1F4A2}", rarity: "rare", max: 4, specialOf: SPECIAL_MECHA },
   { id: "sp_wake",          icon: "\u{1F4A8}", rarity: "star", max: 3, specialJoin: SPECIAL_WAKE },
-  { id: "sp_wake_dmg",      icon: "\u{1F4A5}", rarity: "rare", max: 4, specialOf: SPECIAL_WAKE },
-  { id: "sp_wake_life",     icon: "\u{1F300}", rarity: "rare", max: 3, specialOf: SPECIAL_WAKE },
   { id: "sp_wedge",         icon: "\u{1FA93}", rarity: "star", max: 3, specialJoin: SPECIAL_WEDGE },
-  { id: "sp_wedge_dmg",     icon: "\u{1F52A}", rarity: "rare", max: 4, specialOf: SPECIAL_WEDGE },
-  { id: "sp_wedge_time",    icon: "\u23F3",    rarity: "rare", max: 3, specialOf: SPECIAL_WEDGE },
   // v3.1.0: 突進（一斉突撃と5枚）・ブレス角（見渡す顎）・速度（疾風）は竜種の個性に移した
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
@@ -16357,7 +16334,522 @@ const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity
 const CARD_STAY_FIRE = { id: "stay_fire", icon: "\u{1F525}", rarity: "star", max: Infinity };
 const CARD_RARITY_WEIGHT = { common: 10, rare: 4, star: 3 };
 
-function upCount(id) { return upgradeCounts[id] || 0; }
+// v3.2.0: 「効いている枚数」＝三択で取った枚数 ＋ 進化ツリーの効果（旧カードの枚数に換算）。
+// eff* はすべてこれを読む。取った回数そのもの（上限の判定など）は takenCount を使う。
+function upCount(id) { return (upgradeCounts[id] || 0) + evoStack(id); }
+function takenCount(id) { return upgradeCounts[id] || 0; }
+// =================================================================
+// v3.2.0: 進化ツリー（docs/gdd/dragon-tide-run-cycle.md §5・§6・Shooter指示）
+// =================================================================
+// 竜種・特殊個体それぞれの専用強化を「進化」に一本化した。三択に出るのは
+//   今の竜種のツリー ＋ 加入中の特殊個体のツリー（＋汎用・カテゴリ威力・加入カード）。
+//
+// 骨格：L1→L2→L3→L4（無分岐・見た目そのまま）→ 分岐 A／B／C のどれか1つ → 続き2つ。
+//   C は「種またぎ進化」。特殊個体の加入数が条件を満たしたときだけ分岐に並ぶ。
+//   取った瞬間、群れ全体がその場で別の竜種の**進化形**になる。前の竜種のノードは
+//   一切引き継がない代わりに、進化形は生まれつき「進化先の L1〜L4 ＋威力+20%」を持つ。
+//
+// 効果は既存の eff* が読んでいる**旧カードの枚数（stack）**に換算して足し込む。
+// 例：「威力 +20%」＝ dmg_<攻撃の種類> を 0.2/0.15 枚。eff* の式（+15%/枚など）を
+// 変えずに進化へ載せ替えられ、竜種が変われば数え直すだけで効果が切り替わる。
+
+// 1枚あたりの効果（線形）。値は「+何割」で書き、枚数＝値÷これ
+const EVO_LINEAR = { dmg: 0.15, range: 0.15, hp: 0.20, speed: 0.08, arc: 40, aoe: 0.30,
+                     chgDmg: 0.35, chgReach: 0.30, chgGuard: 0.15 };
+// 掛け算で効く短縮（発射間隔 ×0.82/枚、溜め ×0.80/枚）。値は「何割短く」
+const EVO_GEOMETRIC = { rate: 0.82, chgRamp: 0.80 };
+// 分岐で群れの色を寄せる強さ（色相を残す程度）
+const EVO_TINT_ALPHA = 0.42;
+// 進化形の生まれつきの上乗せ（分岐1つ分。L1〜L4 に足す）
+const EVO_FORM_BONUS = { dmg: 0.20 };
+
+function evoCardId(key, kind) {
+  switch (key) {
+    case "dmg":      return "dmg_" + kind;
+    case "range":    return "range_" + kind;
+    case "rate":     return "rate_" + kind;
+    case "count":    return "count_" + kind;
+    case "targets":  return "multibeam";
+    case "pierce":   return "pierce";
+    case "aoe":      return "blast";
+    case "hp":       return "scale";
+    case "speed":    return "wind";
+    case "arc":      return "breath_arc";
+    case "charge":   return "charge_unlock";
+    case "chgDmg":   return "charge_dmg";
+    case "chgReach": return "charge_reach";
+    case "chgRamp":  return "charge_ramp";
+    case "chgEase":  return "charge_ease";
+    case "chgGuard": return "charge_guard";
+  }
+  return key;   // 特殊個体の効果は旧カードidで直接書く（値＝枚数）
+}
+function evoStacksOf(key, value) {
+  if (key in EVO_LINEAR)    return value / EVO_LINEAR[key];
+  if (key in EVO_GEOMETRIC) return Math.log(1 - value) / Math.log(EVO_GEOMETRIC[key]);
+  return value;
+}
+
+/** 効果の読める説明（カードの本文）。 */
+function evoEffectText(effects, kind) {
+  const pct = (v) => Math.round(v * 100) + "%";
+  const parts = [];
+  for (const k in effects) {
+    const v = effects[k];
+    switch (k) {
+      case "dmg":      parts.push("威力 +" + pct(v)); break;
+      case "range":    parts.push((kind === "bomb" || kind === "divebomb" ? "範囲 +" : "射程 +") + pct(v)); break;
+      case "rate":     parts.push("発射間隔 -" + pct(v)); break;
+      case "count":    parts.push((kind === "satellite" ? "衛星 +" : "弾数 +") + v); break;
+      case "targets":  parts.push("同時照射 +" + v); break;
+      case "pierce":   parts.push("貫通 +" + v); break;
+      case "aoe":      parts.push("爆風 +" + pct(v)); break;
+      case "hp":       parts.push("HP +" + pct(v)); break;
+      case "speed":    parts.push("速度 +" + pct(v)); break;
+      case "arc":      parts.push("ブレス角 +" + v + "°"); break;
+      case "charge":   parts.push("突進できるようになる"); break;
+      case "chgDmg":   parts.push("突進の威力 +" + pct(v)); break;
+      case "chgReach": parts.push("突進の届く範囲 +" + pct(v)); break;
+      case "chgRamp":  parts.push("突進の溜め -" + pct(v)); break;
+      case "chgEase":  parts.push("突進に入りやすく"); break;
+      case "chgGuard": parts.push("突進中の被ダメ -" + pct(v * EVO_LINEAR.chgGuard)); break;
+      default: {
+        const t = EVO_SPECIAL_EFFECT_TEXT[k];
+        if (t) parts.push(t(v));
+      }
+    }
+  }
+  return parts.join("、");
+}
+// 特殊個体の効果の書き方（値＝旧カードの枚数）
+const EVO_SPECIAL_EFFECT_TEXT = {
+  mbreath_dmg:      (n) => `威力 +${Math.round(30 * n)}%`,
+  mbreath_rate:     (n) => `間隔 -${Math.round((1 - Math.pow(0.82, n)) * 100)}%`,
+  sp_beacon_len:    (n) => `光条の長さ +${Math.round(25 * n)}%`,
+  sp_beacon_dmg:    (n) => `光条の威力 +${Math.round(30 * n)}%`,
+  sp_heavy_dmg:     (n) => `体当たり +${Math.round(35 * n)}%`,
+  sp_heavy_size:    (n) => `大きさ +${Math.round(15 * n)}%`,
+  sp_deflect_cap:   (n) => `溜められる弾 +${Math.round(8 * n)}`,
+  sp_deflect_range: (n) => `吸い込む範囲 +${Math.round(30 * n)}%`,
+  sp_deflect_dmg:   (n) => `撃ち返しの威力 +${Math.round(50 * n)}%`,
+  sp_mecha_count:   (n) => `発射数 +${Math.round(2 * n)}`,
+  sp_mecha_dmg:     (n) => `爆発の威力 +${Math.round(30 * n)}%`,
+  sp_wake_dmg:      (n) => `航跡の乗り +${(0.5 * n).toFixed(1)}倍`,
+  sp_wake_life:     (n) => `航跡の長さ +${Math.round(35 * n)}%`,
+  sp_wedge_dmg:     (n) => `ひびの割増し +${Math.round(15 * n)}%`,
+  sp_wedge_time:    (n) => `ひびの時間 +${Math.round(30 * n)}%`,
+};
+
+// ---- 竜種のツリー（§5.2）。[名前, 効果] / 分岐は { name, tint, scale, eff, next: [[名前, 効果] ×2] } ----
+const SPECIES_EVO_SPEC = {
+  fire: {
+    L: [["火勢", { dmg: 0.15 }], ["長い舌炎", { range: 0.15 }], ["火勢・二", { dmg: 0.15 }], ["多重照射", { targets: 1 }]],
+    A: { name: "焔竜", tint: "#ffd9a0", scale: 1.1, eff: { arc: 40, dmg: 0.20 },
+         next: [["焔の帳", { dmg: 0.20 }], ["天を焼く", { targets: 1, range: 0.15 }]] },
+    B: { name: "炉竜", tint: "#8a1a10", scale: 1.2, eff: { charge: 1, hp: 0.20 },
+         next: [["炉心", { chgDmg: 0.35 }], ["熱の角", { chgReach: 0.30, dmg: 0.20 }]] },
+  },
+  ice: {
+    L: [["氷威", { dmg: 0.15 }], ["連射機構", { rate: 0.18 }], ["遠く刺す", { range: 0.15 }], ["貫く氷", { pierce: 1 }]],
+    A: { name: "霜槍竜", tint: "#eaf6ff", scale: 1.0, eff: { pierce: 2, range: 0.20 },
+         next: [["研ぎ澄ます", { dmg: 0.25 }], ["氷柱の列", { pierce: 1, rate: 0.18 }]] },
+    B: { name: "氷河竜", tint: "#2a5cb0", scale: 1.25, eff: { hp: 0.30, charge: 1 },
+         next: [["凍てつく体", { dmg: 0.25 }], ["雪崩", { chgDmg: 0.35, rate: 0.18 }]] },
+  },
+  shadow: {
+    L: [["影炸", { dmg: 0.15 }], ["連射機構", { rate: 0.18 }], ["広域炸裂", { aoe: 0.30 }], ["深い影", { range: 0.15 }]],
+    A: { name: "冥炎竜", tint: "#3a1050", scale: 1.1, eff: { aoe: 0.40, dmg: 0.20 },
+         next: [["底なしの闇", { aoe: 0.30 }], ["冥府の門", { dmg: 0.25 }]] },
+    B: { name: "群影竜", tint: "#d8b8ff", scale: 0.9, eff: { rate: 0.25 },
+         next: [["影分身", { rate: 0.18, range: 0.20 }], ["黒い雨", { dmg: 0.20 }]] },
+  },
+  crimson: {
+    L: [["剛爪", { dmg: 0.15 }], ["硬い鱗", { hp: 0.15 }], ["剛爪・二", { dmg: 0.15 }], ["突進の牙", { chgDmg: 0.35 }]],
+    A: { name: "緋刃竜", tint: "#a00818", scale: 1.1, eff: { chgReach: 0.30, dmg: 0.20 },
+         next: [["衝角の壁", { chgGuard: 1 }], ["斬り裂く群れ", { dmg: 0.25 }]] },
+    B: { name: "血潮竜", tint: "#ff8040", scale: 0.95, eff: { speed: 0.10, chgRamp: 0.20 },
+         next: [["群れの息", { chgEase: 1 }], ["赤い奔流", { chgDmg: 0.35 }]] },
+  },
+  falcon: {
+    L: [["鋭い刃", { dmg: 0.15 }], ["長い翼", { range: 0.15 }], ["素早い羽ばたき", { rate: 0.18 }], ["鋭い刃・二", { dmg: 0.15 }]],
+    A: { name: "疾隼", tint: "#fff4c8", scale: 0.95, eff: { speed: 0.10, rate: 0.18 },
+         next: [["風切り", { dmg: 0.20 }], ["千の傷", { rate: 0.18, dmg: 0.15 }]] },
+    B: { name: "重隼", tint: "#6a7480", scale: 1.2, eff: { charge: 1, hp: 0.25 },
+         next: [["鉄の爪", { chgDmg: 0.35 }], ["急降下", { chgReach: 0.30, dmg: 0.20 }]] },
+  },
+  swallow: {
+    L: [["硬い羽根", { dmg: 0.15 }], ["散らす羽根", { count: 1 }], ["遠く散らす", { range: 0.15 }], ["連射機構", { rate: 0.18 }]],
+    A: { name: "風切燕", tint: "#40c080", scale: 1.0, eff: { count: 2, arc: 30 },
+         next: [["羽根嵐", { dmg: 0.25 }], ["渦巻く羽", { count: 1, rate: 0.18 }]] },
+    B: { name: "燕返し", tint: "#2840a0", scale: 1.0, eff: { range: 0.25, dmg: 0.20 },
+         next: [["一閃", { dmg: 0.25 }], ["返す刃", { rate: 0.18 }]] },
+  },
+  hornet: {
+    L: [["毒針", { dmg: 0.15 }], ["働き蜂", { count: 1 }], ["広い巣", { range: 0.15 }], ["毒針・二", { dmg: 0.15 }]],
+    A: { name: "女王蜂", tint: "#ffd040", scale: 1.15, eff: { count: 2, hp: 0.20 },
+         next: [["大きな巣", { range: 0.20 }], ["蜂の王国", { count: 1, dmg: 0.20 }]] },
+    B: { name: "針蜂", tint: "#303020", scale: 0.9, eff: { dmg: 0.30 },
+         next: [["痺れ毒", { dmg: 0.20 }], ["羽音", { speed: 0.10, range: 0.15 }]] },
+  },
+  gargoyle: {
+    L: [["重い拳", { dmg: 0.15 }], ["広がる衝撃", { range: 0.15 }], ["早い落下", { rate: 0.18 }], ["石の肌", { hp: 0.20 }]],
+    A: { name: "大岩", tint: "#e0dcd0", scale: 1.25, eff: { range: 0.25, dmg: 0.20 },
+         next: [["地割れ", { dmg: 0.25 }], ["落石", { range: 0.20 }]] },
+    B: { name: "石翼", tint: "#5a7a50", scale: 1.0, eff: { speed: 0.10, rate: 0.18 },
+         next: [["石の突撃", { chgDmg: 0.35 }], ["石雨", { rate: 0.18, dmg: 0.15 }]] },
+  },
+  ufo: {
+    L: [["出力上昇", { dmg: 0.15 }], ["長距離照射", { range: 0.15 }], ["多重照射", { targets: 1 }], ["出力上昇・二", { dmg: 0.15 }]],
+    A: { name: "母船", tint: "#c8ccd8", scale: 1.2, eff: { targets: 2, hp: 0.20 },
+         next: [["牽引光", { range: 0.20 }], ["殲滅光", { dmg: 0.25 }]] },
+    B: { name: "偵察機", tint: "#a8d8ff", scale: 0.9, eff: { speed: 0.10, range: 0.20 },
+         next: [["突入", { chgDmg: 0.35 }], ["焦点照射", { dmg: 0.25 }]] },
+  },
+  comet: {
+    L: [["硬い星屑", { dmg: 0.15 }], ["尾を伸ばす", { count: 1 }], ["速い瞬き", { rate: 0.18 }], ["遠い星", { range: 0.15 }]],
+    A: { name: "流星群", tint: "#ff9040", scale: 1.0, eff: { count: 2 },
+         next: [["隕石", { dmg: 0.25 }], ["星の雨", { count: 1, rate: 0.18 }]] },
+    B: { name: "箒星", tint: "#ffffff", scale: 1.1, eff: { range: 0.25, dmg: 0.20 },
+         next: [["長い尾", { range: 0.15 }], ["凶星", { dmg: 0.25 }]] },
+  },
+  bomber: {
+    L: [["火薬", { dmg: 0.15 }], ["広い爆風", { range: 0.15 }], ["早い投下", { rate: 0.18 }], ["火薬・二", { dmg: 0.15 }]],
+    A: { name: "戦略爆竜", tint: "#404448", scale: 1.25, eff: { range: 0.25, dmg: 0.20 },
+         next: [["焼夷弾", { dmg: 0.25 }], ["焦土", { range: 0.20 }]] },
+    B: { name: "急降下爆竜", tint: "#a05048", scale: 1.0, eff: { rate: 0.25 },
+         next: [["低空", { speed: 0.10 }], ["連続投下", { rate: 0.18, dmg: 0.15 }]] },
+  },
+  frog: {
+    L: [["強い舌", { dmg: 0.15 }], ["長い舌", { range: 0.15 }], ["素早い舌", { rate: 0.18 }], ["強い舌・二", { dmg: 0.15 }]],
+    A: { name: "大蝦蟇", tint: "#305028", scale: 1.25, eff: { hp: 0.30, range: 0.20 },
+         next: [["丸呑み", { dmg: 0.25 }], ["主の舌", { range: 0.15, dmg: 0.15 }]] },
+    B: { name: "毒蛙", tint: "#60ff40", scale: 0.9, eff: { rate: 0.25 },
+         next: [["毒の舌", { dmg: 0.20 }], ["跳ねる毒", { rate: 0.18, range: 0.15 }]] },
+  },
+};
+// 惑竜は爆竜と同じ体・同じ爆撃なので、同じツリー（分岐の名前だけ違う）
+SPECIES_EVO_SPEC.wayward = {
+  L: SPECIES_EVO_SPEC.bomber.L,
+  A: Object.assign({}, SPECIES_EVO_SPEC.bomber.A, { name: "彷徨う災い" }),
+  B: Object.assign({}, SPECIES_EVO_SPEC.bomber.B, { name: "気まぐれな雲" }),
+};
+
+// ---- 種またぎ進化＝分岐 C（§5.3）。needs は特殊個体の key → 頭数 ----
+const CROSS_EVOLUTIONS = [
+  { to: "shadow",   needs: { mecha: 3 },             from: ["fire", "ice", "crimson"] },
+  { to: "bomber",   needs: { mecha: 2, heavy: 1 },   from: "any" },
+  { to: "gargoyle", needs: { heavy: 2 },             from: ["crimson", "falcon"] },
+  { to: "swallow",  needs: { wake: 2 },              from: ["falcon", "fire"] },
+  { to: "falcon",   needs: { wedge: 2 },             from: ["crimson", "swallow"] },
+  { to: "crimson",  needs: { wake: 1, wedge: 1 },    from: "any" },
+  { to: "frog",     needs: { deflect: 2 },           from: ["ice", "hornet"] },
+  { to: "comet",    needs: { rainbow: 1, beacon: 2 }, from: ["swallow", "fire"] },
+  { to: "ufo",      needs: { beacon: 3 },            from: ["comet", "fire"] },
+];
+// 進化形（C で変わった後の姿と続き）
+const EVOLVED_FORMS = {
+  shadow:   { name: "機影竜",   tint: "#6a4a80", scale: 1.1,  next: [["鉄の翼", { rate: 0.18 }], ["誘爆", { aoe: 0.40, dmg: 0.20 }]] },
+  bomber:   { name: "重爆竜",   tint: "#9a5a30", scale: 1.25, next: [["大型爆弾", { range: 0.25 }], ["焦熱", { dmg: 0.25 }]] },
+  gargoyle: { name: "鉄塊の像", tint: "#707478", scale: 1.2,  next: [["鉄の体", { hp: 0.25, chgDmg: 0.35 }], ["鉄槌", { dmg: 0.25 }]] },
+  swallow:  { name: "疾風燕",   tint: "#c0f0c8", scale: 1.0,  next: [["風を孕む", { count: 1, speed: 0.10 }], ["風刃", { dmg: 0.25 }]] },
+  falcon:   { name: "楔隼",     tint: "#30a090", scale: 1.0,  next: [["楔の羽", { rate: 0.18 }], ["割り裂く", { dmg: 0.25 }]] },
+  crimson:  { name: "嵐の緋竜", tint: "#c02070", scale: 1.1,  next: [["嵐を呼ぶ", { chgRamp: 0.20, chgReach: 0.30 }], ["嵐の牙", { chgDmg: 0.35 }]] },
+  frog:     { name: "暴食蛙",   tint: "#b0e040", scale: 1.2,  next: [["大食らい", { range: 0.20, hp: 0.20 }], ["呑み砕く", { dmg: 0.25 }]] },
+  comet:    { name: "極光彗星", tint: "#f8f0ff", scale: 1.1,  next: [["極光の尾", { count: 2 }], ["虹の礫", { dmg: 0.25 }]] },
+  ufo:      { name: "光の円盤", tint: "#fff0c0", scale: 1.0,  next: [["光の網", { targets: 1 }], ["白い光", { dmg: 0.25, range: 0.20 }]] },
+};
+
+// ---- 特殊個体のツリー（§6）。効果は旧カードidと枚数で書く ----
+const SPECIAL_EVO_SPEC = {
+  rainbow: { L: [["虹の吐息", { mbreath_dmg: 1 }], ["虹の鼓動", { mbreath_rate: 1 }], ["虹の吐息・二", { mbreath_dmg: 1 }], ["虹の鼓動・二", { mbreath_rate: 1 }]],
+             A: { name: "白夜", tint: "#ffffff", eff: { mbreath_dmg: 2 } },
+             B: { name: "連なる虹", tint: "#ff80ff", eff: { mbreath_rate: 1.8 } } },
+  beacon:  { L: [["遠く届く光", { sp_beacon_len: 1 }], ["白熱の光", { sp_beacon_dmg: 1 }], ["遠く届く光・二", { sp_beacon_len: 1 }], ["白熱の光・二", { sp_beacon_dmg: 1 }]],
+             A: { name: "灼光", tint: "#fff0a0", eff: { sp_beacon_dmg: 2 } },
+             B: { name: "長光", tint: "#ffb020", eff: { sp_beacon_len: 2 } } },
+  heavy:   { L: [["砕く角", { sp_heavy_dmg: 1 }], ["肥える体", { sp_heavy_size: 1 }], ["砕く角・二", { sp_heavy_dmg: 1 }], ["肥える体・二", { sp_heavy_size: 1 }]],
+             A: { name: "城砕き", tint: "#8a6a48", eff: { sp_heavy_dmg: 2 } },
+             B: { name: "山", tint: "#d8c8a8", eff: { sp_heavy_size: 2 } } },
+  deflect: { L: [["大食らい", { sp_deflect_cap: 1 }], ["引き込む渦", { sp_deflect_range: 1 }], ["大食らい・二", { sp_deflect_cap: 1 }], ["引き込む渦・二", { sp_deflect_range: 1 }]],
+             A: { name: "毒返し", tint: "#a0ff80", eff: { sp_deflect_dmg: 1 } },
+             B: { name: "底なし", tint: "#4080ff", eff: { sp_deflect_cap: 2 } } },
+  mecha:   { L: [["多連装填", { sp_mecha_count: 1 }], ["弾頭強化", { sp_mecha_dmg: 1 }], ["多連装填・二", { sp_mecha_count: 1 }], ["弾頭強化・二", { sp_mecha_dmg: 1 }]],
+             A: { name: "飽和攻撃", tint: "#ffb080", eff: { sp_mecha_count: 1 } },
+             B: { name: "大型弾頭", tint: "#c03010", eff: { sp_mecha_dmg: 2 } } },
+  wake:    { L: [["後押し", { sp_wake_dmg: 1 }], ["長い尾", { sp_wake_life: 1 }], ["後押し・二", { sp_wake_dmg: 1 }], ["長い尾・二", { sp_wake_life: 1 }]],
+             A: { name: "暴風", tint: "#d0a0ff", eff: { sp_wake_dmg: 2 } },
+             B: { name: "尽きぬ風", tint: "#6040c0", eff: { sp_wake_life: 2 } } },
+  wedge:   { L: [["深い割れ", { sp_wedge_dmg: 1 }], ["戻らぬ傷", { sp_wedge_time: 1 }], ["深い割れ・二", { sp_wedge_dmg: 1 }], ["戻らぬ傷・二", { sp_wedge_time: 1 }]],
+             A: { name: "砕く楔", tint: "#20806a", eff: { sp_wedge_dmg: 2 } },
+             B: { name: "広がる亀裂", tint: "#a0f0d0", eff: { sp_wedge_time: 1.67 } } },
+};
+
+// ---- ノードの組み立て ----
+const EVO_NODES = {};          // id -> ノード（カードとしても使う: id / icon / rarity / max）
+const EVO_TREE_NODES = {};     // 持ち主 -> [ノード]（"fire" / "form:shadow" / "sp:beacon"）
+const EVO_BRANCH_GROUPS = {};  // 分岐グループ -> [ノードid]（どれか1つしか取れない）
+const SPECIAL_KIND_BY_KEY = {};
+for (const k in SPECIAL_DEFS) SPECIAL_KIND_BY_KEY[SPECIAL_DEFS[k].key] = Number(k);
+
+function speciesKind(speciesId) { return ATTACK_DEFS[SPECIES_DEFS[speciesId].attack].kind; }
+
+function defineEvoNode(node) {
+  node.max = 1;
+  node.evo = true;
+  EVO_NODES[node.id] = node;
+  (EVO_TREE_NODES[node.owner] ||= []).push(node);
+  if (node.branchGroup) (EVO_BRANCH_GROUPS[node.branchGroup] ||= []).push(node.id);
+  STRINGS.cards[node.id] = { name: node.label, desc: node.desc };
+  return node;
+}
+
+function sumEffects(list) {
+  const out = {};
+  for (const eff of list) for (const k in eff) out[k] = (out[k] || 0) + eff[k];
+  return out;
+}
+
+(function buildEvolutionTrees() {
+  for (const sid in SPECIES_EVO_SPEC) {
+    if (!SPECIES_DEFS[sid]) continue;
+    const spec = SPECIES_EVO_SPEC[sid];
+    const def  = SPECIES_DEFS[sid];
+    const kind = speciesKind(sid);
+    let prev = null;
+    spec.L.forEach(([name, eff], i) => {
+      const id = `evo.${sid}.L${i + 1}`;
+      defineEvoNode({ id, owner: sid, kind, icon: def.icon, rarity: "common", effects: eff,
+        requires: prev ? [prev] : [], label: `${def.ja}：${name}`, desc: evoEffectText(eff, kind) });
+      prev = id;
+    });
+    const L4 = prev;
+    const group = `${sid}.branch`;
+    for (const br of ["A", "B"]) {
+      const b = spec[br];
+      const id = `evo.${sid}.${br}`;
+      defineEvoNode({ id, owner: sid, kind, icon: "\u{1F409}", rarity: "star", effects: b.eff, requires: [L4],
+        branchGroup: group, visual: { tint: b.tint, scale: b.scale },
+        label: `${def.ja}→【${b.name}】`, desc: "姿が変わる ／ " + evoEffectText(b.eff, kind) });
+      let p = id;
+      b.next.forEach(([name, eff], j) => {
+        const nid = `evo.${sid}.${br}${j + 6}`;
+        defineEvoNode({ id: nid, owner: sid, kind, icon: def.icon, rarity: "rare", effects: eff, requires: [p],
+          label: `${b.name}：${name}`, desc: evoEffectText(eff, kind) });
+        p = nid;
+      });
+    }
+    // 分岐 C（種またぎ）。条件を満たしたときだけ出る
+    for (const cx of CROSS_EVOLUTIONS) {
+      if (cx.to === sid) continue;
+      if (cx.from !== "any" && !cx.from.includes(sid)) continue;
+      const to = SPECIES_DEFS[cx.to];
+      const form = EVOLVED_FORMS[cx.to];
+      if (!to || !form) continue;
+      const needText = Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・");
+      defineEvoNode({ id: `evo.${sid}.C.${cx.to}`, owner: sid, kind, icon: to.icon, rarity: "star", effects: {},
+        requires: [L4], branchGroup: group, needsSpecials: cx.needs, becomes: cx.to,
+        label: `${def.ja}→【${to.ja}「${form.name}」】`,
+        desc: `種またぎ進化（${needText}）。群れごと${to.ja}になり、これまでの進化は引き継がない代わりに生まれつき強い` });
+    }
+  }
+  // 進化形：生まれつき＝進化先の L1〜L4 ＋分岐1つ分。続き2つ
+  for (const sid in EVOLVED_FORMS) {
+    const form = EVOLVED_FORMS[sid];
+    const spec = SPECIES_EVO_SPEC[sid];
+    const kind = speciesKind(sid);
+    form.innate = sumEffects([...spec.L.map(l => l[1]), EVO_FORM_BONUS]);
+    let p = null;
+    form.next.forEach(([name, eff], j) => {
+      const id = `evo.form.${sid}.C${j + 6}`;
+      defineEvoNode({ id, owner: "form:" + sid, kind, icon: SPECIES_DEFS[sid].icon, rarity: "rare", effects: eff,
+        requires: p ? [p] : [], label: `${form.name}：${name}`, desc: evoEffectText(eff, kind) });
+      p = id;
+    });
+  }
+  // 特殊個体
+  for (const key in SPECIAL_EVO_SPEC) {
+    const kindNum = SPECIAL_KIND_BY_KEY[key];
+    if (kindNum === undefined) continue;
+    const spec = SPECIAL_EVO_SPEC[key];
+    const name = SPECIAL_DEFS[kindNum].name;
+    const owner = "sp:" + key;
+    const joinCard = CARD_DEFS.find(c => c.specialJoin === kindNum);
+    const icon = joinCard ? joinCard.icon : "✨";
+    let prev = null;
+    spec.L.forEach(([n, eff], i) => {
+      const id = `evo.sp.${key}.L${i + 1}`;
+      defineEvoNode({ id, owner, special: kindNum, icon, rarity: "common", effects: eff, requires: prev ? [prev] : [],
+        label: `${name}：${n}`, desc: evoEffectText(eff, null) });
+      prev = id;
+    });
+    for (const br of ["A", "B"]) {
+      const b = spec[br];
+      defineEvoNode({ id: `evo.sp.${key}.${br}`, owner, special: kindNum, icon: "\u{1F409}", rarity: "star",
+        effects: b.eff, requires: [prev], branchGroup: owner + ".branch", visual: { tint: b.tint, scale: 1 },
+        label: `${name}→【${b.name}】`, desc: "色が変わる ／ " + evoEffectText(b.eff, null) });
+    }
+  }
+})();
+
+// ---- 今効いている進化 ----
+/** 種またぎ進化を取っていれば、その進化先の竜種id。 */
+function currentEvolvedForm() {
+  for (const id in upgradeCounts) {
+    const n = EVO_NODES[id];
+    if (n && n.becomes && upgradeCounts[id] > 0) return n.becomes;
+  }
+  return null;
+}
+
+let evoStackCache = null;
+/** 進化の数え直しが必要になった（カード取得・竜種変更・リセット・再開）。 */
+function invalidateEvo() { evoStackCache = null; }
+
+function computeEvoStacks() {
+  const out = {};
+  const form = currentEvolvedForm();
+  const add = (eff, kind) => {
+    for (const k in eff) {
+      const cid = evoCardId(k, kind);
+      out[cid] = (out[cid] || 0) + evoStacksOf(k, eff[k]);
+    }
+  };
+  for (const id in upgradeCounts) {
+    const n = EVO_NODES[id];
+    if (!n || !(upgradeCounts[id] > 0)) continue;
+    if (n.special !== undefined) { add(n.effects, null); continue; }
+    // 種またぎ後は「進化形」のノードだけ。前の竜種のノードは一切数えない
+    const active = form ? n.owner === "form:" + form : n.owner === flockSpecies;
+    if (active) add(n.effects, n.kind);
+  }
+  if (form && EVOLVED_FORMS[form]) add(EVOLVED_FORMS[form].innate, speciesKind(form));
+  return out;
+}
+function evoStack(id) {
+  if (!evoStackCache) evoStackCache = computeEvoStacks();
+  return evoStackCache[id] || 0;
+}
+
+/** 加入中の特殊個体が needs（key→頭数）を満たすか。 */
+function specialsSatisfy(needs) {
+  for (const key in needs) {
+    const kind = SPECIAL_KIND_BY_KEY[key];
+    let have = 0;
+    for (const k of runSpecials) if (k === kind) have++;
+    if (have < needs[key]) return false;
+  }
+  return true;
+}
+
+function evoNodeAvailable(n) {
+  if (upgradeCounts[n.id]) return false;
+  for (const r of n.requires) if (!upgradeCounts[r]) return false;
+  if (n.branchGroup) for (const sib of EVO_BRANCH_GROUPS[n.branchGroup]) if (upgradeCounts[sib]) return false;
+  if (n.needsSpecials && !specialsSatisfy(n.needsSpecials)) return false;
+  return true;
+}
+
+/** 三択に出せる進化ノード（今の竜種 or 進化形 ＋ 加入中の特殊個体）。 */
+function evoCandidates() {
+  const form = currentEvolvedForm();
+  const owners = [form ? "form:" + form : flockSpecies];
+  for (const kind of new Set(runSpecials)) owners.push("sp:" + SPECIAL_DEFS[kind].key);
+  const out = [];
+  for (const o of owners) for (const n of (EVO_TREE_NODES[o] || [])) if (evoNodeAvailable(n)) out.push(n);
+  return out;
+}
+
+/** 群れの見た目（最後に取った分岐、または進化形）。無ければ null。 */
+function flockEvoVisual() {
+  const form = currentEvolvedForm();
+  if (form) return EVOLVED_FORMS[form];
+  for (const br of ["A", "B"]) {
+    const n = EVO_NODES[`evo.${flockSpecies}.${br}`];
+    if (n && upgradeCounts[n.id]) return n.visual;
+  }
+  return null;
+}
+/** 特殊個体の見た目（分岐の色）。 */
+function specialEvoVisual(kind) {
+  const def = SPECIAL_DEFS[kind];
+  if (!def) return null;
+  for (const br of ["A", "B"]) {
+    const n = EVO_NODES[`evo.sp.${def.key}.${br}`];
+    if (n && upgradeCounts[n.id]) return n.visual;
+  }
+  return null;
+}
+
+/** 進化カードを取った。ステージ中のその場で効かせる（変身は群れ全体）。 */
+function applyEvoNode(node, oldMaxHp) {
+  invalidateEvo();
+  if (node.becomes) {
+    setFlockSpecies(node.becomes);   // ここで竜種が変わり、数え直しで前の竜種の進化が外れる
+    for (let i = 0; i < N; i++) if (boidFireTimer) boidFireTimer[i] = random() * currentFireInterval();
+    unlockSpeciesForever(node.becomes);
+  }
+  // HP は新しい最大値の比率で引き上げる／下げる（取った瞬間に体感がある）
+  const newMax = effBoidMaxHp();
+  const ratio  = oldMaxHp > 0 ? newMax / oldMaxHp : 1;
+  if (ratio !== 1) for (let i = 0; i < N; i++) {
+    if (!boidDead[i] && !boidDowned[i] && boidSpecial[i] === SPECIAL_NONE) boidHp[i] = Math.min(newMax, boidHp[i] * ratio);
+  }
+  if (node.visual || node.becomes) {
+    // 変身の演出：群れの一部に出現リング＋フラッシュ
+    let fx = 0;
+    for (let i = 0; i < N && fx < 14; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      if (node.special !== undefined && boidSpecial[i] !== node.special) continue;
+      if (fxRandom() < 0.5) { spawnDragonAppearEffect(px[i], py[i]); fx++; }
+    }
+    const tint = node.becomes ? EVOLVED_FORMS[node.becomes].tint : node.visual.tint;
+    triggerFlash(hexToRgba(tint, 0.45), 0.35);
+    hapticPulse(120);
+    const c = calcFriendlyCentroid();
+    pushWorldText(c.x, c.y - 30, STRINGS.cards[node.id].name, tint);
+  }
+  updateHUDWeapon();
+}
+
+function hexToRgba(hex, alpha) {
+  const v = parseInt(hex.slice(1), 16);
+  return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${alpha})`;
+}
+
+/** 進化で初めてなった竜種を恒久解放する（次のランから竜種選択に出る）。 */
+function unlockSpeciesForever(speciesId) {
+  if (!profile) return;
+  if (!profile.unlocks) profile.unlocks = { species: {}, specials: {}, regions: {} };
+  if (!profile.unlocks.species) profile.unlocks.species = {};
+  if (profile.unlocks.species[speciesId]) return;
+  profile.unlocks.species[speciesId] = true;
+  saveProfile();
+  showUnlockToast(STRINGS.speciesUnlocked(SPECIES_DEFS[speciesId].ja));
+}
+
+// ---- 分岐の色を乗せたスプライト（竜種・特殊個体の共通）----
+// 色ごとに1回だけ作り、ランの間は持っておく（LRU の spriteCache とは別にして追い出されないように）。
+const tintedSpriteCache = new Map();
+function tintedSprites(baseKey, frames, tint) {
+  if (!frames || !tint) return frames;
+  const key = baseKey + "|" + tint;
+  let out = tintedSpriteCache.get(key);
+  if (out) return out;
+  out = frames.map(src => {
+    const c = document.createElement("canvas");
+    c.width = src.width; c.height = src.height;
+    const g = c.getContext("2d");
+    g.drawImage(src, 0, 0);
+    g.globalCompositeOperation = "source-atop";
+    g.globalAlpha = EVO_TINT_ALPHA;
+    g.fillStyle = tint;
+    g.fillRect(0, 0, c.width, c.height);
+    return c;
+  });
+  tintedSpriteCache.set(key, out);
+  return out;
+}
+
 
 // -----------------------------------------------------------------
 // v0.20: 恒常強化ツリー（永続バフ）の適用ハブ。
@@ -16391,7 +16883,8 @@ let permaBuff = defaultPermaBuff();
 // v0.20: 末尾に permaBuff（恒常ツリー）を合流。
 function effHpMult()        { return (1 + 0.20 * upCount("scale")) * permaBuff.flockHp; }
 // v3.1.0: 速度は竜種の個性（move）。三択の「疾風」は撤去した
-function effSpeedMult()     { return permaBuff.flockSpeed; }
+// v3.2.0: 進化の「速度 +」はここに乗る（三択の疾風は撤去したまま。wind は進化の換算先）
+function effSpeedMult()     { return (1 + 0.08 * upCount("wind")) * permaBuff.flockSpeed; }
 function effReviveMult()    { return Math.pow(0.85, upCount("tide")) * permaBuff.reviveMult; }
 function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * upCount("magnet")) * permaBuff.magnet; }
 // v0.51: 群れは時代をまたいでも削らない。代わりに時代ごとに天井が開く。
@@ -16484,6 +16977,7 @@ function resetProgression() {
   regionChoices  = [];
   wipeGraceTimer = 0;
   for (const key of Object.keys(upgradeCounts)) delete upgradeCounts[key];
+  invalidateEvo();
   // v0.85: 加入済みの特殊個体もランごとにゼロへ（カードと同じ寿命）
   runSpecials.length = 0;
   if (boidSpecial) boidSpecial.fill(SPECIAL_NONE);
@@ -16688,7 +17182,7 @@ function pickLevelUpCards() {
   // v0.19: 竜種はラン開始メニューで確定済み（evolutionChosen=true）。
   // ラン中の初回4択は廃止し、レベルアップは純粋な強化のみ。
   const pool = CARD_DEFS.filter(def => {
-    if (upCount(def.id) >= def.max) return false;
+    if (takenCount(def.id) >= def.max) return false;
     // v0.31: 母竜ブレスの強化はラン中に「母なる吐息」を引いた後だけ出す（空振りカードを作らない）
 
     // v0.91: 突進の強化は解禁後だけ（空振りカードを作らない）
@@ -16707,6 +17201,8 @@ function pickLevelUpCards() {
     if (def.targetWeapon) return false;
     return true;
   });
+  // v3.2.0: 進化ツリー（今の竜種 or 進化形 ＋ 加入中の特殊個体）
+  for (const n of evoCandidates()) pool.push(n);
 
   const picks = [];
   const candidates = pool.slice();
@@ -16736,7 +17232,7 @@ function renderLevelUpCards(picks) {
     const text = STRINGS.cards[def.id];
     const btn  = document.createElement("button");
     btn.className = "upgrade-card rarity-" + def.rarity;
-    const taken = upCount(def.id);
+    const taken = takenCount(def.id);
     const stack = (def.max !== Infinity && def.max > 1) ? ` (${taken + 1}/${def.max})` : "";
     btn.innerHTML =
       `<span class="card-icon">${def.icon}</span>` +
@@ -16756,8 +17252,11 @@ function chooseCard(def) {
   // v0.14: 進化カードか「火竜を続ける」を選んだ（＝最初のレベルアップを消化した）ら
   // 以降は通常プールのみ。竜種の選択はラン開始時の一度きり
   if (def.targetWeapon || def.id === "stay_fire") evolutionChosen = true;
-  upgradeCounts[def.id] = upCount(def.id) + 1;
-  applyCardImmediate(def.id);
+  const oldMaxHp = effBoidMaxHp();
+  upgradeCounts[def.id] = takenCount(def.id) + 1;
+  invalidateEvo();
+  if (def.evo) applyEvoNode(def, oldMaxHp);   // v3.2.0: 進化はその場で効かせる（変身は群れ全体）
+  else applyCardImmediate(def.id);
   pendingCards--;
   updateHUDLevel();
   hapticPulse(30);
@@ -16814,6 +17313,7 @@ let flockWeapon = "beam";
 function setFlockSpecies(speciesId) {
   flockSpecies = SPECIES_DEFS[speciesId] ? speciesId : "fire";
   flockWeapon  = ATTACK_DEFS[SPECIES_DEFS[flockSpecies].attack].kind;
+  invalidateEvo();   // v3.2.0: 進化の効き先が竜種で変わる
   // HUD をここで必ず追従させる（呼び出し側の更新漏れで表示がズレるのを防ぐ）
   updateHUDWeapon();
 }
@@ -16897,7 +17397,14 @@ function currentFireInterval() {
 const hudWeaponEl = document.getElementById("h-weapon");
 function updateHUDWeapon() {
   const s = sp();
-  hudWeaponEl.textContent = `${s.icon} ${s.ja}`;
+  // v3.2.0: 分岐・進化形の名前を出す（焔竜・機影竜など）
+  const form = currentEvolvedForm();
+  let name = form ? EVOLVED_FORMS[form].name : s.ja;
+  if (!form) for (const br of ["A", "B"]) {
+    const n = EVO_NODES[`evo.${flockSpecies}.${br}`];
+    if (n && upgradeCounts[n.id]) name = SPECIES_EVO_SPEC[flockSpecies][br].name;
+  }
+  hudWeaponEl.textContent = `${s.icon} ${name}`;
   hudWeaponEl.style.color = s.color;
 }
 
@@ -17521,7 +18028,7 @@ function effHeavyScale()    {
 }
 function effDeflectRadius() { return DEFLECT_RADIUS * (1 + 0.30 * upCount("sp_deflect_range")); }
 function effDeflectCap()    { return DEFLECT_CAPACITY + 8 * upCount("sp_deflect_cap"); }
-function effDeflectDmg()    { return DEFLECT_BOLT_DMG * permaBuff.specialDmg; }
+function effDeflectDmg()    { return DEFLECT_BOLT_DMG * (1 + 0.5 * upCount("sp_deflect_dmg")) * permaBuff.specialDmg; }
 
 // ---- ラン内で加入済みの特殊個体（種別の配列。ステージをまたいで持ち越す）----
 let runSpecials = [];
@@ -17994,7 +18501,7 @@ function effMechaInterval() {
   return MOTHER_BREATH_INTERVAL;
 }
 function effMechaSalvo() {
-  return Math.min(MECHA_SALVO_MAX, MECHA_SALVO_BASE + 2 * upCount("sp_mecha_count"));
+  return Math.min(MECHA_SALVO_MAX, MECHA_SALVO_BASE + Math.round(2 * upCount("sp_mecha_count")));
 }
 function effMechaDamage() {
   return MECHA_DAMAGE * (1 + 0.30 * upCount("sp_mecha_dmg")) * permaBuff.specialDmg;
@@ -18529,6 +19036,8 @@ function updateBladeAttacks(dt) {
 // 弾は既存の直進弾（dprojKind=0）を流用し、**3方向に散らす形**で見た目を差別化する。
 const SCATTER_SPREAD  = 0.30;  // 隣の羽根までの角度（rad）
 const SCATTER_COUNT   = 3;
+// v3.2.0: 進化の「弾数 +」（燕竜・彗星竜）
+function effScatterCount() { return SCATTER_COUNT + Math.round(upCount("count_scatter")); }
 const SCATTER_INTERVAL = 0.95;
 function updateScatterAttacks(dt) {
   const range = BULLET_RANGE * effWeaponRangeMult("scatter");
@@ -18548,8 +19057,9 @@ function updateScatterAttacks(dt) {
     const targetIdx = tg.sIdx;
     const t = aimTargetPos(tg);
     const base = Math.atan2(t.wy - py[i], t.wx - px[i]);
-    const half = (SCATTER_COUNT - 1) / 2;
-    for (let k = 0; k < SCATTER_COUNT; k++) {
+    const count = effScatterCount();
+    const half = (count - 1) / 2;
+    for (let k = 0; k < count; k++) {
       spawnDragonProjectile(px[i], py[i], 0, base + (k - half) * SCATTER_SPREAD, targetIdx);
     }
     applyFireKick(i, base);
@@ -18559,13 +19069,15 @@ function updateScatterAttacks(dt) {
 // ---- 衛星蜂（蜂竜）: 各個体の周囲を小さな蜂が周回し、触れたものを削る ----
 // 実体を持たせず「位置は時間から計算」する（プール管理なしで軽い）。
 const SAT_COUNT      = 2;     // 1個体あたりの衛星数
+// v3.2.0: 進化の「衛星 +」（蜂竜）
+function effSatCount() { return SAT_COUNT + Math.round(upCount("count_satellite")); }
 const SAT_ORBIT_R    = 26;    // 周回半径
 const SAT_ANGULAR    = 3.4;   // 角速度（rad/s）
 const SAT_HIT_R      = 16;    // 接触判定半径（v0.35: 13では届かず掃討速度が半分だった）
 const SAT_DPS        = 20;    // 触れている間の毎秒ダメージ（衛星1個あたり）
 /** 個体 i の衛星 k のワールド座標（描画とダメージで同じ式を使う）。 */
-function satellitePos(i, k, out) {
-  const ang = breathTime * SAT_ANGULAR + (k / SAT_COUNT) * Math.PI * 2 + i * 0.7;
+function satellitePos(i, k, out, count = SAT_COUNT) {
+  const ang = breathTime * SAT_ANGULAR + (k / count) * Math.PI * 2 + i * 0.7;
   out.x = px[i] + Math.cos(ang) * SAT_ORBIT_R;
   out.y = py[i] + Math.sin(ang) * SAT_ORBIT_R;
 }
@@ -18575,11 +19087,12 @@ function updateSatelliteAttacks(dt) {
   const hit = { direct: dmg };
   const targets = attackTargets();   // v2.13.0
   const hitR = SAT_HIT_R * effWeaponRangeMult("satellite");
+  const count = effSatCount();
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;   // v0.59: 押されている間は攻撃しない
     if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // v0.85: 巌竜は遠隔攻撃を持たない（体当たり一本）
-    for (let k = 0; k < SAT_COUNT; k++) {
-      satellitePos(i, k, _satPos);
+    for (let k = 0; k < count; k++) {
+      satellitePos(i, k, _satPos, count);
       hitInRadius(_satPos.x, _satPos.y, hitR, hit, targets);
     }
   }
@@ -18588,10 +19101,11 @@ function updateSatelliteAttacks(dt) {
 function drawSatellites() {
   if (flockWeapon !== "satellite") return;
   ctx.save();
+  const count = effSatCount();
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
-    for (let k = 0; k < SAT_COUNT; k++) {
-      satellitePos(i, k, _satPos);
+    for (let k = 0; k < count; k++) {
+      satellitePos(i, k, _satPos, count);
       ctx.globalAlpha = 0.9;
       ctx.fillStyle = "#ffd83a";
       ctx.beginPath();
@@ -19896,6 +20410,15 @@ function evaluateChallenges() {
 // ---- 達成トースト ----
 const challengeToastEl = document.getElementById("challenge-toast");
 let challengeToastTimer = null;
+/** v3.2.0: 解放の知らせ（チャレンジ達成と同じトーストを使う）。 */
+function showUnlockToast(text) {
+  if (!challengeToastEl) return;
+  challengeToastEl.textContent = text;
+  challengeToastEl.classList.add("show");
+  if (challengeToastTimer) clearTimeout(challengeToastTimer);
+  challengeToastTimer = setTimeout(() => challengeToastEl.classList.remove("show"), 2800);
+}
+
 function showChallengeToast(ch) {
   if (!challengeToastEl) return;
   challengeToastEl.textContent = STRINGS.challengeDone(ch.name, ch.reward);
@@ -21926,6 +22449,7 @@ function resumeRun() {
   evolutionChosen   = true;
   for (const k of Object.keys(upgradeCounts)) delete upgradeCounts[k];
   if (save.upgradeCounts) Object.assign(upgradeCounts, save.upgradeCounts);
+  invalidateEvo();
 
   // ラン統計の復元（経過時間を継続させる）
   runKills     = save.runKills || 0;
@@ -24836,11 +25360,17 @@ function drawBoids() {
   // ★混成群れ（個体ごとに種が違う）にするときは、この2行を個体ループの内側へ移し、
   //   getSpeciesSprites(boidSpecies[i]) を引く形にすればよい（キャッシュは複数種対応済み）。
   const element       = sp().element ?? "fire";
-  const sprites       = getSpeciesSprites(flockSpecies);
+  // v3.2.0: 進化の分岐・進化形の色と大きさ
+  const evoVis        = flockEvoVisual();
+  const evoScale      = evoVis ? evoVis.scale : 1;
+  const sprites       = evoVis ? tintedSprites(flockSpecies, getSpeciesSprites(flockSpecies), evoVis.tint)
+                               : getSpeciesSprites(flockSpecies);
   // v0.47.1: 跳躍ポーズの列（持っている竜種＝蛙竜だけ）。滞空中の個体はこちらを使う。
   const partsKeyNow   = dragonPartsKey(element);
   const hasAirPose    = !!(partsKeyNow && DRAGON_PART_SPRITES[partsKeyNow].bodyAir);
-  const spritesAir    = hasAirPose ? getSpeciesSprites(flockSpecies, "air") : null;
+  const spritesAir    = !hasAirPose ? null
+                      : evoVis ? tintedSprites(flockSpecies + ":air", getSpeciesSprites(flockSpecies, "air"), evoVis.tint)
+                      : getSpeciesSprites(flockSpecies, "air");
   const paletteFlock  = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
@@ -24901,7 +25431,10 @@ function drawBoids() {
     // v0.98: 特殊個体は**群れの竜種の絵を上書きして**専用スプライトで描く。
     // 足元リングだけだと群れの中で見失うので、本体ごと差し替える。
     const spKind    = boidSpecial[i];
-    const spSprites = spKind !== SPECIAL_NONE ? getSpecialSprites(spKind) : null;
+    const spVis     = spKind !== SPECIAL_NONE ? specialEvoVisual(spKind) : null;
+    const spSprites = spKind === SPECIAL_NONE ? null
+                    : spVis ? tintedSprites("sp:" + spKind, getSpecialSprites(spKind), spVis.tint)
+                    : getSpecialSprites(spKind);
     const sprite    = spSprites ? spSprites[frameIdx]
                     : (spritesAir && boidHopAir[i] > 0.15) ? spritesAir[frameIdx] : sprites[frameIdx];
     // 尾は毎フレーム描くので、胴体を差し替えたら尾の色も合わせる
@@ -24999,6 +25532,7 @@ function drawBoids() {
       ? breathTime * sp().spin + BOID_FLAP_PHASE[i] * Math.PI * 2
       : angle);
     if (unitScale !== 1) ctx.scale(unitScale, unitScale);  // v0.15: リーダーの体格成長
+    if (evoScale !== 1 && !spSprites) ctx.scale(evoScale, evoScale);   // v3.2.0: 進化の分岐の大きさ
     if (hopAir > 0.01) {
       const hopScale = 1 + HOP_DRAW_SCALE * hopAir;
       ctx.scale(hopScale, hopScale);
