@@ -866,7 +866,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.4.0";
+const GAME_VERSION = "v3.4.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1221,6 +1221,11 @@ const DEBUG_ACTIONS = [
   { label: "💠 XP +500",             run: () => { if (gameState === "playing") addXp(500); } },
   { label: "🔷 竜晶 +100",           run: () => { profile.crystals += 100; saveProfile(); } },
   { label: "🗺 全ステージを解放",     run: () => debugUnlockAllContinents() },
+  // v3.4.1: 図鑑「進化」タブにツリー全体を出す（表示だけ。進化図鑑の記録は書き換えない）
+  { label: "📖 進化ツリーを全部見る", run: () => {
+      debugRevealEvo = !debugRevealEvo;
+      if (codexOverlayEl.classList.contains("visible")) renderCodex();
+    } },
   { label: "🗑 再開データ削除",       run: () => { clearRunSave(); refreshTitleMenu(); } },
   { label: "♻ プロファイル初期化",   run: () => debugResetProfile() },
 ];
@@ -21932,8 +21937,61 @@ function codexRegionHtml() {
   return html + `</div>`;
 }
 
+// v3.4.1: デバッグ盤の「進化ツリーを全部見る」。保存しない（profile.evoSeen は触らない）
+let debugRevealEvo = false;
+
+/** v3.4.1: ツリー全体（デバッグ表示）。L1〜L4 → A／B／C と続き、進化形の生まれつき能力まで。 */
+function codexEvoFullHtml() {
+  const row = (n, cls = "") => {
+    const t = STRINGS.cards[n.id];
+    const tint = n.visual ? n.visual.tint : (n.becomes ? EVOLVED_FORMS[n.becomes].tint : null);
+    return `<div class="evo-line ${cls}">${tint ? `<span class="evo-swatch" style="background:${tint}"></span>` : ""}` +
+           `${t.name}<br>${t.desc}</div>`;
+  };
+  const head = (text) => `<div class="evo-line" style="color:#ffd08a;margin-top:6px">${text}</div>`;
+  const total = Object.keys(EVO_NODES).length;
+  let html = `<div class="tree-hint">（デバッグ表示）進化ツリーの全ノード ${total}。もう一度押すと元の表示に戻る。</div><div class="cx-list">`;
+  for (const sid of Object.keys(SPECIES_EVO_SPEC)) {
+    const def = SPECIES_DEFS[sid];
+    if (!def) continue;
+    const nodes = EVO_TREE_NODES[sid] || [];
+    const byId = (suffix) => EVO_NODES[`evo.${sid}.${suffix}`];
+    html += `<div class="cx-row"><div class="cx-body"><div class="cx-name">${def.icon} ${def.ja}` +
+            `${isSpeciesUnlocked(sid) ? "" : "　🔒"}</div>`;
+    html += head("無分岐");
+    for (const k of ["L1", "L2", "L3", "L4"]) if (byId(k)) html += row(byId(k));
+    for (const br of ["A", "B"]) {
+      html += head("分岐 " + br);
+      for (const k of [br, br + "6", br + "7"]) if (byId(k)) html += row(byId(k));
+    }
+    const cs = nodes.filter(n => n.becomes);
+    if (cs.length) {
+      html += head("分岐 C（種またぎ）");
+      for (const n of cs) {
+        const form = EVOLVED_FORMS[n.becomes];
+        html += row(n);
+        html += `<div class="evo-line" style="padding-left:14px">生まれつき：${evoEffectText(form.innate, speciesKind(n.becomes))}</div>`;
+        for (const f of (EVO_TREE_NODES["form:" + n.becomes] || [])) html += `<div style="padding-left:14px">${row(f)}</div>`;
+      }
+    }
+    html += `</div></div>`;
+  }
+  for (const k of Object.keys(SPECIAL_DEFS)) {
+    const key = SPECIAL_DEFS[k].key;
+    const nodes = EVO_TREE_NODES["sp:" + key] || [];
+    if (!nodes.length) continue;
+    html += `<div class="cx-row"><div class="cx-body"><div class="cx-name">${SPECIAL_DEFS[k].name}` +
+            `${isSpecialUnlocked(Number(k)) ? "" : "　🔒"}</div>`;
+    html += head("無分岐") + nodes.filter(n => !n.branchGroup).map(n => row(n)).join("");
+    html += head("分岐 A／B") + nodes.filter(n => n.branchGroup).map(n => row(n)).join("");
+    html += `</div></div>`;
+  }
+  return html + `</div>`;
+}
+
 // v3.4.0: 進化図鑑。見た分岐だけ名前・色・効果を出す。種またぎは条件も伏せる（見たら出す）
 function codexEvoHtml() {
+  if (debugRevealEvo) return codexEvoFullHtml();   // v3.4.1
   const seen = profile.evoSeen || {};
   const total = evoCodexNodes().length;
   let html = `<div class="tree-hint">進化の分岐を見るたびに記録される。初めての分岐で竜晶（種またぎは多め）。` +
