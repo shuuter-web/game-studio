@@ -696,7 +696,17 @@
   /* v0.68: 敵／建物／弾 のタブ */
   /* v2.9.0: 7タブになったので4列×2段に組む（1段のままだと375px幅で「特殊個体」が枠からはみ出す）。
      上段＝相手側（敵・建物・地域・弾）、下段＝自分側（竜・特殊個体・カード）＋その他（v2.14.0） */
-  .cx-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 10px; }
+  .cx-tabs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 10px; }
+  /* v3.4.0: 進化図鑑の色見本・踏破表 */
+  .evo-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; border: 1px solid #0008; }
+  .evo-line { font-size: 12px; color: #b8c8dc; margin-top: 3px; line-height: 1.4; }
+  .evo-line.unseen { color: #6a7a90; }
+  .map-grid { display: grid; gap: 3px; font-family: monospace; font-size: 10px; }
+  .map-grid .mh { color: #ffd08a; text-align: center; padding: 3px 0; }
+  .map-grid .mr { color: #c8d4e4; padding: 3px 2px; white-space: nowrap; overflow: hidden; }
+  .map-grid .mc { text-align: center; padding: 5px 0; border-radius: 4px; background: rgba(30,40,60,0.8); color: #ffd060; }
+  .map-grid .mc.none { color: #3a4a62; }
+  .map-grid .mc.locked { background: rgba(10,12,20,0.8); color: #2a3448; }
   .cx-tab { padding: 8px 2px; font-family: monospace; font-size: 11px; white-space: nowrap; letter-spacing: 0;
             color: #9fbad6; background: rgba(16,22,36,0.92); border: 1px solid #3a4a66;
             border-radius: 8px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
@@ -856,7 +866,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.3.0";
+const GAME_VERSION = "v3.4.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16176,6 +16186,7 @@ const STRINGS = {
   speciesUnlocked: (name) => `🔓 ${name} が解放された（次のランから選べる）`,
   rerollButton: (n) => `🎲 引き直す（残り${n}）`,
   unlockedToast: (names) => `🔓 解放: ${names}`,
+  evoRecorded: (name, reward) => `📖 進化図鑑に記録: ${name}  +${reward}🔷`,
   lockedSpeciesEvo: "種またぎ進化で出会う",
   banishButton: (n) => `🚫 封印（残り${n}）`,
   banishArmed: "封印するカードを選ぶ（やめる）",
@@ -16802,6 +16813,7 @@ function specialEvoVisual(kind) {
 /** 進化カードを取った。ステージ中のその場で効かせる（変身は群れ全体）。 */
 function applyEvoNode(node, oldMaxHp) {
   invalidateEvo();
+  if (node.branchGroup) recordEvoSeen(node);   // v3.4.0: 進化図鑑
   if (node.becomes) {
     setFlockSpecies(node.becomes);   // ここで竜種が変わり、数え直しで前の竜種の進化が外れる
     for (let i = 0; i < N; i++) if (boidFireTimer) boidFireTimer[i] = random() * currentFireInterval();
@@ -16833,6 +16845,29 @@ function applyEvoNode(node, oldMaxHp) {
 function hexToRgba(hex, alpha) {
   const v = parseInt(hex.slice(1), 16);
   return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${alpha})`;
+}
+
+// v3.4.0: 進化図鑑（docs/gdd/dragon-tide-run-cycle.md §9-B）。分岐を初めて見たら記録して竜晶
+const EVO_SEEN_REWARD       = 10;   // 分岐 A／B
+const EVO_SEEN_REWARD_CROSS = 30;   // 種またぎ（条件を探す手間に報いる）
+function recordEvoSeen(node) {
+  if (!profile) return;
+  if (!profile.evoSeen) profile.evoSeen = {};
+  if (profile.evoSeen[node.id]) return;
+  profile.evoSeen[node.id] = true;
+  awardCrystals(node.becomes ? EVO_SEEN_REWARD_CROSS : EVO_SEEN_REWARD);   // saveProfile 済み
+  showUnlockToast(STRINGS.evoRecorded(STRINGS.cards[node.id].name, node.becomes ? EVO_SEEN_REWARD_CROSS : EVO_SEEN_REWARD));
+  evaluateChallenges();
+}
+/** 図鑑に載る分岐ノードの全部（竜種の A／B／C ＋特殊個体の A／B）。 */
+function evoCodexNodes() { return Object.values(EVO_NODES).filter(n => n.branchGroup); }
+function evoSeenCount() { return evoCodexNodes().filter(n => profile.evoSeen && profile.evoSeen[n.id]).length; }
+/** 踏破表で★が付いたマスの数。 */
+function mapClearedCount() {
+  let n = 0;
+  for (let era = 0; era < CONTINENT_DEFS.length; era++)
+    for (let sh = 0; sh < STAGE_SHAPES.length; sh++) if (panelBestStars(era, sh) > 0) n++;
+  return n;
 }
 
 /** 進化で初めてなった竜種を恒久解放する（次のランから竜種選択に出る）。 */
@@ -19878,6 +19913,8 @@ function defaultProfile() {
     // v3.3.0: 解放（竜種・特殊個体・地域）。初期分は INITIAL_* にあるのでここには入れない
     unlocks: { species: {}, specials: {}, regions: {} },
     fortressFallen: 0,   // 穿つ楔の解放条件
+    // v3.4.0: 進化図鑑（見た分岐ノードid → true）
+    evoSeen: {},
   };
 }
 
@@ -19911,6 +19948,7 @@ function loadProfile() {
     p.options = Object.assign(defaultProfile().options, p.options || {});
     p.eraStars = p.eraStars || {};
     p.unlocks = Object.assign({ species: {}, specials: {}, regions: {} }, p.unlocks || {});
+    p.evoSeen = p.evoSeen || {};
   }
   migratePanelUnlocks(p);   // v1.2.0
   p.version = PROFILE_VERSION;
@@ -20432,6 +20470,11 @@ const CHALLENGE_DEFS = [
     done: () => (profile.eliteKills || 0) >= 3, cur: () => Math.min(profile.eliteKills || 0, 3), goal: 3 },
   { id: "fw10",     name: "花火師",       desc: "花火要塞を累計 10 棟破壊",  reward: 60,
     done: () => (profile.fireworksDestroyed || 0) >= 10, cur: () => Math.min(profile.fireworksDestroyed || 0, 10), goal: 10 },
+  // v3.4.0: 進化図鑑・踏破表
+  { id: "evo10",    name: "進化の探求者", desc: "進化図鑑に分岐を10種記録", reward: 80,
+    done: () => evoSeenCount() >= 10, cur: () => Math.min(evoSeenCount(), 10), goal: 10 },
+  { id: "map20",    name: "踏破者",       desc: "踏破表を20マス埋める",     reward: 100,
+    done: () => mapClearedCount() >= 20, cur: () => Math.min(mapClearedCount(), 20), goal: 20 },
   { id: "clears5",  name: "歴戦の母竜",   desc: "全クリアを累計 5 回",       reward: 150,
     done: () => (profile.clears || 0) >= 5, cur: () => Math.min(profile.clears || 0, 5), goal: 5 },
 ];
@@ -21046,7 +21089,8 @@ function closeCodex() { codexOverlayEl.classList.remove("visible"); refreshTitle
 
 function renderCodex() {
   const tabs = [["enemy", "敵"], ["building", "建物"], ["region", "地域"], ["shot", "弾"],
-                ["dragon", "竜"], ["special", "特殊個体"], ["card", "カード"], ["misc", "その他"]];
+                ["dragon", "竜"], ["special", "特殊個体"], ["card", "カード"], ["misc", "その他"],
+                ["evo", "進化"], ["map", "踏破"]];   // v3.4.0
   let html =
     `<div class="tree-head">` +
       `<div class="tree-title">図鑑</div>` +
@@ -21062,6 +21106,8 @@ function renderCodex() {
   else if (codexTab === "shot") html += codexShotHtml();
   else if (codexTab === "dragon") html += codexDragonHtml();   // v2.9.0
   else if (codexTab === "misc") html += codexMiscHtml();       // v2.14.0
+  else if (codexTab === "evo") html += codexEvoHtml();         // v3.4.0
+  else if (codexTab === "map") html += codexMapHtml();         // v3.4.0
   else if (codexTab === "special") html += codexSpecialHtml();
   else if (codexTab === "card") html += codexCardHtml();
   else html += codexEnemyHtml();
@@ -21882,6 +21928,65 @@ function codexRegionHtml() {
           `<div class="cx-when">${STRINGS.regionClears(clears, CONTINENT_DEFS.length)}</div>` +
         `</div>` +
       `</div>`;
+  }
+  return html + `</div>`;
+}
+
+// v3.4.0: 進化図鑑。見た分岐だけ名前・色・効果を出す。種またぎは条件も伏せる（見たら出す）
+function codexEvoHtml() {
+  const seen = profile.evoSeen || {};
+  const total = evoCodexNodes().length;
+  let html = `<div class="tree-hint">進化の分岐を見るたびに記録される。初めての分岐で竜晶（種またぎは多め）。` +
+             `　記録 ${evoSeenCount()}/${total}</div><div class="cx-list">`;
+  const line = (n) => {
+    const tint = n.visual ? n.visual.tint : (n.becomes ? EVOLVED_FORMS[n.becomes].tint : "#888");
+    if (!seen[n.id]) {
+      const hint = n.becomes ? "？？？ — 特殊個体の組み合わせで現れる" : "？？？";
+      return `<div class="evo-line unseen">${hint}</div>`;
+    }
+    return `<div class="evo-line"><span class="evo-swatch" style="background:${tint}"></span>` +
+           `${STRINGS.cards[n.id].name}<br>${STRINGS.cards[n.id].desc}</div>`;
+  };
+  for (const sid of Object.keys(SPECIES_EVO_SPEC)) {
+    const def = SPECIES_DEFS[sid];
+    if (!def) continue;
+    const nodes = (EVO_TREE_NODES[sid] || []).filter(n => n.branchGroup);
+    const got = nodes.filter(n => seen[n.id]).length;
+    const known = isSpeciesUnlocked(sid) || got > 0;
+    html += `<div class="cx-row"><div class="cx-body">` +
+            `<div class="cx-name">${known ? def.icon + " " + def.ja : "？？？"}　${got}/${nodes.length}</div>` +
+            (known ? nodes.map(line).join("") : "") + `</div></div>`;
+  }
+  for (const k of Object.keys(SPECIAL_DEFS)) {
+    const key = SPECIAL_DEFS[k].key;
+    const nodes = (EVO_TREE_NODES["sp:" + key] || []).filter(n => n.branchGroup);
+    if (!nodes.length) continue;
+    const got = nodes.filter(n => seen[n.id]).length;
+    html += `<div class="cx-row"><div class="cx-body">` +
+            `<div class="cx-name">${SPECIAL_DEFS[k].name}　${got}/${nodes.length}</div>` +
+            nodes.map(line).join("") + `</div></div>`;
+  }
+  return html + `</div>`;
+}
+
+// v3.4.0: 踏破表（行＝時代、列＝地域。マスは自己ベスト★）
+function codexMapHtml() {
+  const total = CONTINENT_DEFS.length * STAGE_SHAPES.length;
+  let html = `<div class="tree-hint">クリアした時代×地域に自己ベストの★が付く。` +
+             `　踏破 ${mapClearedCount()}/${total}</div>` +
+             `<div class="map-grid" style="grid-template-columns: 30px repeat(${STAGE_SHAPES.length}, 1fr)">` +
+             `<div class="mh"></div>`;
+  for (let sh = 0; sh < STAGE_SHAPES.length; sh++) {
+    html += `<div class="mh">${STAGE_SHAPES[sh].icon}<br>${STRINGS.shapeShortNames[sh]}</div>`;
+  }
+  for (let era = 0; era < CONTINENT_DEFS.length; era++) {
+    // 390px 幅に8列が並ぶので時代名は入らない。数字だけにして、名前は長押しの代わりに title で持つ
+    html += `<div class="mr" title="${CONTINENT_DEFS[era].name}">${CONTINENT_NUMERALS[era]}</div>`;
+    for (let sh = 0; sh < STAGE_SHAPES.length; sh++) {
+      if (!isRegionUnlocked(sh)) { html += `<div class="mc locked">🔒</div>`; continue; }
+      const st = panelBestStars(era, sh);
+      html += st > 0 ? `<div class="mc">★${st}</div>` : `<div class="mc none">·</div>`;
+    }
   }
   return html + `</div>`;
 }
