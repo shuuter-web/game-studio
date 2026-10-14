@@ -848,7 +848,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.0.0";
+const GAME_VERSION = "v3.0.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3589,12 +3589,21 @@ const TIER_FLOCK_CAP_FRACTION = [0.55, 0.70, 0.85, 1.0];
 //   interval … 発射間隔の倍率（小さいほど速い）＝**射撃頻度**
 //   count    … 一度に撃つ弾数への加算。1発しか撃たない民家ほど効く
 //   range    … 射程の倍率。**同時に撃ってくる棟数**が面積で効くので体感が一番大きい
+//
+// v3.0.1: **質から量へ寄せた**（Shooter判断「寄り道したら群れが強化される上に敵が
+// 弱くなったらダメ。湧く敵の数は増えるくらいのバランスが良い」）。
+// 町を落とすほど1棟ずつが何倍も硬くなるので、寄り道が損になっていた（決戦で HP×6.5・火力×7.0）。
+// 1棟の強さは控えめに上げ、増えるのは動く敵の数（TIER_MOVER_MULT・据え置き）にする。
+// 直行を止める壁（要塞・首都区画・首都）は FIXED_TIER_BOOST に旧・決戦の値を残す。
 const POWER_TIER_BOOST = [
   { hp: 1.00, dmg: 1.00, interval: 1.00, count: 0, range: 1.00 },   // 段階1 平時
-  { hp: 2.60, dmg: 2.90, interval: 0.60, count: 0, range: 1.16 },   // 段階2 動員
-  { hp: 4.20, dmg: 4.30, interval: 0.50, count: 1, range: 1.26 },   // 段階3 総力戦
-  { hp: 6.50, dmg: 7.00, interval: 0.36, count: 2, range: 1.40 },   // 段階4 決戦
+  { hp: 1.30, dmg: 1.20, interval: 0.85, count: 0, range: 1.05 },   // 段階2 動員
+  { hp: 1.60, dmg: 1.40, interval: 0.75, count: 1, range: 1.10 },   // 段階3 総力戦
+  { hp: 2.00, dmg: 1.60, interval: 0.65, count: 1, range: 1.15 },   // 段階4 決戦
 ];
+// 最初から最大段階で立っている陣営（_fixedTier）の強さ。v3.0.0 までの決戦の値。
+// 警戒度の表を緩めても、ボス直行の難しさは変えない。
+const FIXED_TIER_BOOST = { hp: 6.50, dmg: 7.00, interval: 0.36, count: 2, range: 1.40 };
 // 発射間隔の下限。これを割ると弾幕が壁になって「避ける」余地が消える
 // （それ以前に MAX_PROJECTILES を食い潰す）。
 const TIER_INTERVAL_FLOOR = 0.14;
@@ -3609,7 +3618,8 @@ const TIER_NAMES = ["平時", "動員", "総力戦", "決戦"];
 const TIER_MOVER_MULT = [1.0, 2.6, 4.2, 6.0];
 // 動く敵の攻撃の苛烈さ（発射間隔の短縮・ビームDPS）。時代ぶんの係数に掛ける。
 // 数だけ増やすと「撃ってこない置物が増えた」ようにしか見えないため。
-const TIER_MOVER_FEROCITY = [1.0, 1.35, 1.75, 2.25];
+// v3.0.1: 1体の苛烈さは控えめに（旧 1.0 / 1.35 / 1.75 / 2.25）。圧力は数で作る
+const TIER_MOVER_FEROCITY = [1.0, 1.15, 1.3, 1.45];
 
 // 段階が上がるほど建物の色を締める（同じ建築のまま「補強された」ことを見せる）。
 // 建て替えではないので形は変わらない。段階ごとの暗さの差。
@@ -3645,7 +3655,8 @@ function settlementTier(settlement, baseTier) {
 /** その建物に掛かる強さ倍率（時代の底上げ × 警戒度）。 */
 function settlementPowerBoost(settlement, baseTier) {
   const eraBoost  = STAGE_DIFFICULTY_BOOST[currentStage] || { hp: 1, dmg: 1 };
-  const tierBoost = POWER_TIER_BOOST[settlementTier(settlement, baseTier)];
+  const tierBoost = settlement._fixedTier != null ? FIXED_TIER_BOOST
+                  : POWER_TIER_BOOST[settlementTier(settlement, baseTier)];
   // 時代は硬さと威力だけを底上げする。連射・弾数・射程は警戒度だけの軸にして、
   // 「同じ文明が警戒を強めた」ことが読み取れるようにする。
   return { hp: eraBoost.hp * tierBoost.hp, dmg: eraBoost.dmg * tierBoost.dmg,
@@ -5258,7 +5269,7 @@ function generateStageLayout(stageIndex) {
   const boss = placeBossBuilding(stageIndex, config);
   boss._fixedTier = maxPowerTier();
   {
-    const tb = POWER_TIER_BOOST[maxPowerTier()];
+    const tb = FIXED_TIER_BOOST;   // v3.0.1: 警戒度の表とは切り離した「壁」の強さ
     boss.maxHp = Math.round(boss.maxHp * tb.hp * CAPITAL_POWER_MULT);
     boss.hp    = boss.maxHp;
     boss.projectileDamage *= tb.dmg;
@@ -20741,7 +20752,7 @@ function codexMiscHtml() {
     `<div class="tree-hint">どのタブにも入らない仕組みの説明。</div>` +
     `<div class="cx-era">警戒度（ラン中に${POWER_TIER_BOOST.length}段階で上がる）</div>` +
     `<div class="cx-box">` +
-      `<div class="cx-atk">町を陥落させるほど、文明が警戒を強める。段階が上がるほど建物と動く敵が強く・多くなり、` +
+      `<div class="cx-atk">町を陥落させるほど、文明が警戒を強める。段階が上がるほど動く敵が増え、建物も少し固くなる。` +
         `代わりに群れの上限が開く。今の段階は画面上の「警戒度N」、次の段階までの残りは「街あとN」。</div>` +
       `<ul class="cx-bullets">` +
         `<li><b>町の陥落</b>＝その町の建物の${surrender}割が壊れたとき。陥落した町の残りは撃つのをやめる（壊すことはできる）</li>` +
@@ -20763,20 +20774,16 @@ function codexMiscHtml() {
       `<div class="cx-name">段階が全体と違う建物</div>` +
       `<ul class="cx-bullets">` +
         `<li><b>格上の街</b>（町の約${Math.round(TOWN_ADVANCED_RATIO * 100)}%）：いつも全体より${TOWN_TIER_ADVANCED}段階上</li>` +
-        `<li><b>要塞都市・首都の区画・結界の祠</b>：最初から「${TIER_NAMES[maxPowerTier()]}」で固定。` +
+        `<li><b>要塞都市・首都の区画・結界の祠</b>：最初から別格の強さ（硬さ ×${FIXED_TIER_BOOST.hp}・威力 ×${FIXED_TIER_BOOST.dmg}）で固定。` +
           `段階が上がっても建て直さない（削った傷が残る）</li>` +
-        `<li><b>首都</b>：「${TIER_NAMES[maxPowerTier()]}」のさらに ×${CAPITAL_POWER_MULT} の硬さ</li>` +
+        `<li><b>首都</b>：別格のさらに ×${CAPITAL_POWER_MULT} の硬さ。ラン中ずっと変わらない</li>` +
       `</ul>` +
     `</div>` +
-    `<div class="cx-era">最強モード</div>` +
+    `<div class="cx-era">ステージの★</div>` +
     `<div class="cx-box">` +
-      `<div class="cx-atk">町の${Math.round(BOSS_ENRAGE_TOWN_RATIO * 10)}割が陥落すると、首都が本気を出す（1回だけ・戻らない）。` +
-        `警戒度とは別の仕組みで、首都だけが強くなる。</div>` +
+      `<div class="cx-atk">首都を落とすまでの時間で決まる。寄り道して群れを育てれば楽になるが、急ぐほど★が増える。</div>` +
       `<ul class="cx-bullets">` +
-        `<li>弾の威力 ×${BOSS_ENRAGE_DMG_MULT}</li>` +
-        `<li>発射間隔 ×${BOSS_ENRAGE_INTERVAL_MULT}（速くなる）</li>` +
-        `<li>一度に撃つ弾 +${BOSS_ENRAGE_COUNT_ADD}</li>` +
-        `<li>射程 ×${BOSS_ENRAGE_RANGE_MULT}</li>` +
+        CLEAR_STAR_MINUTES.map((m, k) => `<li>${"★".repeat(CLEAR_STARS_MAX - k)}：${m}分以内</li>`).join("") +
       `</ul>` +
     `</div>`
   );
@@ -21957,28 +21964,27 @@ function triggerStageClear() {
 }
 
 // -----------------------------------------------------------------
-// v0.99.8: 時代クリアの★評価（Shooter指示）
+// v3.0.1: ステージクリアの★評価は**クリア時間**（docs/gdd/dragon-tide-run-cycle.md §2）
 // -----------------------------------------------------------------
-// **どれだけ相手を追い込んでから本丸を落としたか**を評価にする。
-// 群れを育てずに首都へ直行すれば★1、動員を重ねさせてから落とすほど星が増え、
-// 街を一つ残らず陥落させてボスを最強モードに入れてから落とすのが最高評価。
-//   ★1 平時のまま撃破       （powerTier 0）
-//   ★2 動員まで進めてから    （powerTier 1）
-//   ★3 総力戦まで進めてから  （powerTier 2）
-//   ★4 決戦まで進めてから    （powerTier 3）
-//   ★5 完全壊滅（ボス最強モードでの撃破）
+// 寄り道すれば群れが育って楽になる。急いで首都を落とすのは難しい＝腕前の評価にする。
+// （v0.99.8〜v3.0.0 は「相手を追い込むほど★」＝寄り道と最強モードを評価していた）
 const CLEAR_STARS_MAX = 5;
+// ★5 / ★4 / ★3 / ★2 になる上限時間（分）。それより遅ければ★1。ステージは5〜20分が目安
+const CLEAR_STAR_MINUTES = [5, 8, 12, 16];
 
 /** 今この瞬間にボスを落としたら何★か。 */
 function clearStars() {
-  if (bossEnraged) return CLEAR_STARS_MAX;
-  return Math.min(CLEAR_STARS_MAX - 1, 1 + clampTier(powerTier));
+  const minutes = (performance.now() - stageStartTime) / 60000;
+  for (let k = 0; k < CLEAR_STAR_MINUTES.length; k++) {
+    if (minutes <= CLEAR_STAR_MINUTES[k]) return CLEAR_STARS_MAX - k;
+  }
+  return 1;
 }
 
 /** ★n の呼び名。 */
 function clearRankName(stars) {
-  if (stars >= CLEAR_STARS_MAX) return "完全壊滅";
-  return `${TIER_NAMES[stars - 1] ?? "平時"}で制圧`;
+  const k = CLEAR_STARS_MAX - stars;
+  return k < CLEAR_STAR_MINUTES.length ? `${CLEAR_STAR_MINUTES[k]}分以内に撃破` : "撃破";
 }
 
 /** ★★★☆☆ の文字列。 */
@@ -22288,6 +22294,7 @@ const BOSS_ENRAGE_INTERVAL_MULT = 0.45;  // 発射間隔（短くなる）
 const BOSS_ENRAGE_COUNT_ADD     = 2;     // 一度に撃つ弾数
 const BOSS_ENRAGE_RANGE_MULT    = 1.45;  // 射程
 let bossEnraged = false;
+const BOSS_ENRAGE_ENABLED = false;   // v3.0.1
 
 /** 陥落した町の数。警戒度も最強モードもこの1つの数だけを見る。 */
 function fallenTownCount() {
@@ -22333,6 +22340,9 @@ function townsLeftForEnrage() {
 
 /** 建物が落ちるたびに呼ぶ。最後の町が陥落した瞬間にボスを最強モードへ。 */
 function maybeEnrageBoss() {
+  // v3.0.1: 最強モードは廃止（寄り道するほど首都が強くなるのは逆向きだった・Shooter判断）。
+  // 首都はラン中ずっと一定。仕組みは残しておくが入らない。
+  if (!BOSS_ENRAGE_ENABLED) return;
   if (bossEnraged || gameState !== "playing") return;
   if (townsLeftForEnrage() > 0) return;
   const boss = settlements.find(s => s.isBoss);
@@ -26067,7 +26077,8 @@ function updateHUDBuildings() {
   // **次の区切りまであと何町か**を1つだけ出す。
   // 警戒度が上がりきっていれば、次の区切りは最強モードになる。
   const needTier = isFinalTier() ? Infinity : townsLeftForNextTier();
-  const needTowns = Number.isFinite(needTier) ? needTier : townsLeftForEnrage();
+  const needTowns = Number.isFinite(needTier) ? needTier
+                  : (BOSS_ENRAGE_ENABLED ? townsLeftForEnrage() : Infinity);
   const wardN = sanctuaryShrines.length > 0 ? sanctuaryShrinesAlive() : 0;
   hudBuildings.textContent = "BOSS " + hpPct + "% | " + smallRemaining + "/" + smallTotal +
     (wardN > 0 ? " | " + STRINGS.wardHud(wardN) : "") +   // v1.4.0: 聖地の結界
