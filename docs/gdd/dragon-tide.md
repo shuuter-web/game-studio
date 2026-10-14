@@ -1,5 +1,7 @@
 # 竜潮 / Dragon Tide
 
+> **2026-10-14 追記**: ラン構成（§6・§8 の「4文明縦断」など）は古い。現行は v3 の「1ラン＝8ステージ（時代 I→VIII）・地域3択・残機3・進化ツリー」。→ [dragon-tide-run-cycle.md](dragon-tide-run-cycle.md)
+
 > **Game Design Document v0.3**
 > 2026-06-21 / game-designer: Claude
 > 参考フレームワーク: Jesse Schell『The Art of Game Design』(Elemental Tetrad / MDA / Interest Curve / Flow / The Toy)
