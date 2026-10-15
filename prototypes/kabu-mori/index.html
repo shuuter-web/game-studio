@@ -125,7 +125,7 @@
 // 結果画面に「同じ日に、同じカブを誰かが売り・別の誰かが買った日（＝判断が割れた日）」を出す。
 // 爆弾カブ・崩落など他の突然変異はこの検証の後に足す。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.2.0";
+const GAME_VERSION = "v0.3.0";
 
 // ---- 調整値（データ駆動：ここだけ触ればバランスが変わる） ----
 const CONFIG = {
@@ -172,11 +172,13 @@ const SHOPS = [
 
 // 1周16マス。畑（買う）は止まったときだけ、市場（売る）は通りがかりでも寄れる。
 // 売り時をサイコロ任せにせず、プレイヤーの判断にするため。
+// カブマスにはカブが1個置いてあり、止まるとタダで拾える＋そのカブのうわさが聞こえる。
+// v0.2.0 まではカブを得る機会が畑（4/16マス）だけで少なかった（ユーザー判定）ため、道とうわさマスをカブマスにした。
 const BOARD = [
-  { kind: "field", type: 0 }, { kind: "road" },  { kind: "rumor" }, { kind: "market", shop: 0 },
-  { kind: "field", type: 1 }, { kind: "radio" }, { kind: "rumor" }, { kind: "market", shop: 1 },
-  { kind: "field", type: 2 }, { kind: "road" },  { kind: "rumor" }, { kind: "market", shop: 2 },
-  { kind: "field", type: 3 }, { kind: "radio" }, { kind: "rumor" }, { kind: "market", shop: 3 },
+  { kind: "field", type: 0 }, { kind: "kabu" },  { kind: "kabu" }, { kind: "market", shop: 0 },
+  { kind: "field", type: 1 }, { kind: "radio" }, { kind: "kabu" }, { kind: "market", shop: 1 },
+  { kind: "field", type: 2 }, { kind: "kabu" },  { kind: "kabu" }, { kind: "market", shop: 2 },
+  { kind: "field", type: 3 }, { kind: "radio" }, { kind: "kabu" }, { kind: "market", shop: 3 },
 ];
 
 const CHARACTERS = [
@@ -242,7 +244,8 @@ const game = {
   trends: [],      // [週][種類] 隠れトレンド。うわさはこれの「来週ぶん」を漏らす
   market: [],      // 種類ごとの { value, level, lastDelta, history }
   players: [],
-  actionLog: [],   // { round, player, type, kind: "buy"|"sell", level }
+  actionLog: [],   // { round, player, type, kind: "buy"|"sell"|"hold"|"pick"|"push"|"grab", level }
+  ground: {},      // カブマスの番号 → 置いてあるカブの種類（拾われたら null、日の終わりに補充）
   newsLog: [],
 };
 
@@ -275,6 +278,8 @@ function setupGame(mode, seed) {
     game.trends.push(TURNIP_TYPES.map(() => CONFIG.trendChoices[randomInt(CONFIG.trendChoices.length)]));
   }
   game.market = TURNIP_TYPES.map((type) => ({ value: type.start, level: type.start, lastDelta: 0, history: [type.start] }));
+  game.ground = {};
+  BOARD.forEach((tile, index) => { if (tile.kind === "kabu") game.ground[index] = randomInt(TURNIP_TYPES.length); });
 
   const personalitiesByMode = {
     solo:  ["human", "trend", "contrarian", "rumor"],
@@ -324,9 +329,8 @@ function applyNews(typeIndex, shift) {
   entry.lastDelta = entry.level - before;
 }
 
-function drawRumor(player) {
+function drawRumor(player, typeIndex) {
   const week = Math.min(currentWeekIndex() + 1, weekCount() - 1);
-  const typeIndex = randomInt(TURNIP_TYPES.length);
   const trueDirection = Math.sign(game.trends[week][typeIndex]);
   const isTrue = random() < CONFIG.rumorTruthRate;
   const rumor = { week, type: typeIndex, direction: isTrue ? trueDirection : -trueDirection, isTrue };
@@ -406,6 +410,7 @@ const view = {
   tweens: [],
   clock: 0,
   lookCenter: false,
+  groundMeshes: {},
   centerBlend: 0,
 };
 const turnipGeometry = {};
@@ -650,7 +655,7 @@ function buildWorld() {
   }
 
   // マス
-  const tileColors = { field: 0xc99a62, road: 0xf0e3c2, rumor: 0xf6d77a, market: 0xf3a17a, radio: 0x9cc8f0 };
+  const tileColors = { field: 0xc99a62, kabu: 0xf6d77a, market: 0xf3a17a, radio: 0x9cc8f0 };
   BOARD.forEach((tile, index) => {
     const position = tilePosition(index);
     const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.88, 0.94, 0.22, 28), standardMaterial(tileColors[tile.kind]));
@@ -687,8 +692,8 @@ function buildWorld() {
       stall.position.set(position.x + outward.x * 1.55, 0.05, position.z + outward.z * 1.55);
       stall.lookAt(0, 0.05, 0);
       scene.add(stall);
-    } else if (tile.kind === "rumor" || tile.kind === "radio") {
-      const icon = makeEmojiSprite(tile.kind === "rumor" ? "💬" : "📻", 0.75, "rgba(255,250,240,0.9)");
+    } else if (tile.kind === "kabu" || tile.kind === "radio") {
+      const icon = makeEmojiSprite(tile.kind === "kabu" ? "💬" : "📻", tile.kind === "kabu" ? 0.5 : 0.75, "rgba(255,250,240,0.9)");
       icon.position.set(position.x + outward.x * 1.25, 0.75, position.z + outward.z * 1.25);
       scene.add(icon);
     }
@@ -833,6 +838,26 @@ async function flyTurnip(typeIndex, from, to) {
     mesh.rotation.y = t * 6;
   });
   scene.remove(mesh);
+}
+
+// カブマスに置いてあるカブの見た目。マスの中心より少し外側に寝かせて置く（人と重ならないように）
+function groundTurnipWorld(tileIndex) {
+  const position = tilePosition(tileIndex);
+  return new THREE.Vector3(position.x + Math.sin(position.angle) * 0.55, 0.42, position.z + Math.cos(position.angle) * 0.55);
+}
+function updateGroundVisual(tileIndex) {
+  if (!hasThree || !scene) return;
+  const old = view.groundMeshes[tileIndex];
+  if (old) scene.remove(old);
+  view.groundMeshes[tileIndex] = null;
+  const typeIndex = game.ground[tileIndex];
+  if (typeIndex === null || typeIndex === undefined) return;
+  const mesh = makeTurnipMesh(typeIndex, 1.1);
+  mesh.position.copy(groundTurnipWorld(tileIndex));
+  mesh.rotation.z = 0.5;
+  mesh.rotation.y = tilePosition(tileIndex).angle;
+  scene.add(mesh);
+  view.groundMeshes[tileIndex] = mesh;
 }
 
 function marketStallWorld(tileIndex) {
@@ -1047,6 +1072,42 @@ async function meetOthers(player) {
   }
 }
 
+// カブマス：置いてあるカブをタダで拾い（頭が満杯なら拾えない）、そのカブのうわさも聞く
+async function visitKabuTile(player, tileIndex) {
+  const typeIndex = game.ground[tileIndex];
+  if (typeIndex === null || typeIndex === undefined) {
+    setMessage("このマスのカブは、もう誰かが拾っていった。");
+    await wait(TIMING.cpuThink);
+    return;
+  }
+  const canPick = player.stack.length < CONFIG.maxStack;
+  if (canPick) {
+    game.ground[tileIndex] = null;
+    const from = groundTurnipWorld(tileIndex);
+    updateGroundVisual(tileIndex);
+    await flyTurnip(typeIndex, from, stackTopWorld(player));
+    player.stack.push(typeIndex);
+    recordAction(player, typeIndex, "pick");
+    rebuildStackVisual(player);
+    if (player.visual) player.visual.swayImpulse += 0.03;
+    renderHud();
+  }
+  const rumor = drawRumor(player, typeIndex);
+  const secret = player.isCpu ? "（中身は本人だけが知っている）" : `💬「${rumorText(rumor)}」`;
+  await ask(player,
+    `${turnipLabel(typeIndex)}を${canPick ? "拾った！" : "見つけたが、頭がいっぱいで拾えない。"}<br>そのとき、うわさが聞こえた。${secret}<br><small>うわさは4回に1回ははずれる。</small>`,
+    [{ id: "ok", label: "ふむふむ" }], "ok");
+}
+
+function refillGround() {
+  BOARD.forEach((tile, index) => {
+    if (tile.kind === "kabu" && game.ground[index] === null) {
+      game.ground[index] = randomInt(TURNIP_TYPES.length);
+      updateGroundVisual(index);
+    }
+  });
+}
+
 async function playTurn(player) {
   game.currentPlayer = player.index;
   if (hasThree) focusPlayer(player);
@@ -1068,11 +1129,8 @@ async function playTurn(player) {
     await visitField(player, player.position);
   } else if (tile.kind === "market") {
     if (player.stack.length > 0) await visitMarket(player, player.position, false);
-  } else if (tile.kind === "rumor") {
-    const rumor = drawRumor(player);
-    const secret = player.isCpu ? "（中身は本人だけが知っている）" : `「${rumorText(rumor)}」`;
-    await ask(player, `💬 うわさを聞いた。${secret}<br><small>うわさは4回に1回ははずれる。</small>`,
-      [{ id: "ok", label: "ふむふむ" }], "ok");
+  } else if (tile.kind === "kabu") {
+    await visitKabuTile(player, player.position);
   } else if (tile.kind === "radio") {
     const typeIndex = randomInt(TURNIP_TYPES.length);
     const shift = random() < 0.5 ? -CONFIG.radioShift : CONFIG.radioShift;
@@ -1096,6 +1154,7 @@ async function runGame() {
     for (const player of game.players) await playTurn(player);
     updateMarketLogic();
     renderHud();
+    refillGround();
     if (hasThree) await showMarketChange();
   }
   game.round = CONFIG.totalRounds;
@@ -1131,6 +1190,7 @@ function summarize() {
   const sellDays = new Set(game.actionLog.filter((a) => a.kind === "sell").map((a) => `${a.round}-${a.type}`)).size;
   return { seed: currentSeed, splitDays, herdDays, tradeDays, sellDays, ranking,
            holds: game.actionLog.filter((a) => a.kind === "hold").length,
+           picks: game.actionLog.filter((a) => a.kind === "pick").length,
            sells: game.actionLog.filter((a) => a.kind === "sell").length,
            buys: game.actionLog.filter((a) => a.kind === "buy").length };
 }
@@ -1224,8 +1284,8 @@ function showTitle() {
       <li><b>頭のカブは、てっぺんからしか売れない。</b>抜いたカブはてっぺんに積まれる。積む順番に気をつけて。</li>
       <li><b>値段はカブの大きさ。</b>人気が出ると、島じゅうの同じカブが一斉に膨らむ。大きいほど高く売れる（5段階）。</li>
       <li><b>みんなの頭に多く乗っているカブほど縮んでいく。</b>みんなの頭を見て、次に膨らむカブを読もう。真ん中の見本台で4種の大きさを見比べられる。</li>
-      <li>畑は<b>止まったとき</b>だけ抜ける。市場は<b>通りがかりでも</b>寄って売れる。店主の好物は1段高く売れる。</li>
-      <li>💬うわさマスでは自分だけのうわさが聞ける（4回に1回はうそ）。📻ラジオマスでは相場が動く。</li>
+      <li><b>カブマス</b>に止まると、置いてあるカブを<b>タダで拾える</b>。そのカブのうわさも聞こえる（自分だけ。4回に1回はうそ）。</li>
+      <li>畑は止まると<b>まとめて買える</b>（1〜3こ）。市場は<b>通りがかりでも</b>寄って売れる。店主の好物は1段高く売れる。📻ラジオマスでは相場が動く。</li>
       <li>同じマスに止まったら、てっぺんのカブを<b>押し付ける</b>か<b>ひったくる</b>。</li>
       <li>${CONFIG.totalRounds}日後、頭に残ったカブはしおれて0。いちばんコインを持っていた人の勝ち。</li>
     </ol>
@@ -1248,6 +1308,7 @@ function startGame(mode, seed) {
   if (hasThree) {
     addCharactersToWorld();
     game.market.forEach((entry, t) => { view.sizes[t].value = targetSize(t); view.sizes[t].velocity = 0; });
+    Object.keys(game.ground).forEach((index) => updateGroundVisual(Number(index)));
   }
   renderHud();
   runGame();
@@ -1269,7 +1330,10 @@ if (hasThree) {
   setMessage("3D表示ライブラリ（three.js）を読み込めなかった。ネットにつながっているか確認して再読み込みしてください。");
 }
 setupGame("watch", pickSeed());
-if (hasThree) addCharactersToWorld();
+if (hasThree) {
+  addCharactersToWorld();
+  Object.keys(game.ground).forEach((index) => updateGroundVisual(Number(index)));
+}
 renderHud();
 if (!isHeadless) showTitle();
 </script>
