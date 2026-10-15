@@ -26,16 +26,7 @@
   #status .pill { background: var(--paper); border-radius: 999px; padding: 4px 10px; box-shadow: var(--shadow); }
   #status .meta { margin-left: auto; font-size: 10px; font-weight: 400; color: var(--ink-soft); background: rgba(255,250,240,0.8); }
   #speed { border: 0; font: inherit; cursor: pointer; }
-  #market { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
-  .mcell { background: var(--paper); border-radius: 12px; padding: 5px 6px; box-shadow: var(--shadow); min-width: 0; }
-  .mcell .row1 { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; }
   .dot { width: 11px; height: 11px; border-radius: 50%; flex: none; border: 1px solid rgba(0,0,0,0.18); }
-  .mcell .row2 { display: flex; align-items: baseline; gap: 3px; }
-  .mcell .face { font-size: 24px; line-height: 1.1; }
-  .mcell .arrow { font-size: 13px; font-weight: 700; }
-  .arrow.up { color: #d0473a; } .arrow.down { color: #3a74c9; } .arrow.flat { color: var(--ink-soft); }
-  .mcell .coin { font-size: 10px; color: var(--ink-soft); margin-left: auto; }
-  .mcell .held { font-size: 9px; color: var(--ink-soft); letter-spacing: -1px; white-space: nowrap; overflow: hidden; height: 11px; }
   #players { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
   .pcard { background: rgba(255,250,240,0.92); border-radius: 12px; padding: 4px 6px; box-shadow: var(--shadow);
     border: 2px solid transparent; min-width: 0; font-size: 11px; }
@@ -43,8 +34,8 @@
   .pcard .name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pcard .sub { color: var(--ink-soft); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pcard .coins { font-weight: 700; }
-  .ministack { display: flex; gap: 1px; height: 9px; margin-top: 2px; }
-  .ministack i { width: 8px; height: 8px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.2); flex: none; }
+  .ministack { display: flex; align-items: flex-end; gap: 1px; height: 12px; margin-top: 2px; }
+  .ministack i { border-radius: 50%; border: 1px solid rgba(0,0,0,0.2); flex: none; }
 
   /* 下：メッセージと選択肢 */
   #bottom { position: fixed; left: 0; right: 0; bottom: 0; padding: 0 10px calc(10px + env(safe-area-inset-bottom));
@@ -96,8 +87,6 @@
   .legend { font-size: 10px; color: var(--ink-soft); margin-top: 4px; }
 
   @media (max-width: 420px) {
-    .mcell .face { font-size: 20px; }
-    .mcell .coin { display: none; }
     #message { font-size: 13px; }
   }
 </style>
@@ -111,7 +100,6 @@
     <button class="pill" id="speed" type="button">⏩ ふつう</button>
     <span class="pill meta" id="metaLabel"></span>
   </div>
-  <div id="market"></div>
   <div id="players"></div>
 </div>
 
@@ -137,7 +125,7 @@
 // 結果画面に「同じ日に、同じカブを誰かが売り・別の誰かが買った日（＝判断が割れた日）」を出す。
 // 爆弾カブ・崩落など他の突然変異はこの検証の後に足す。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.1.0";
+const GAME_VERSION = "v0.2.0";
 
 // ---- 調整値（データ駆動：ここだけ触ればバランスが変わる） ----
 const CONFIG = {
@@ -149,7 +137,10 @@ const CONFIG = {
   maxBuyPerVisit: 3,
   diceSides: 6,
   priceByLevel: [1, 2, 3, 5, 8],   // 顔5段の値段。上の段ほど伸び幅が大きい＝🤩で売り抜ける価値を作る
-  faces: ["😱", "😟", "🙂", "😄", "🤩"],
+  faces: ["😱", "😟", "🙂", "😄", "🤩"],   // 結果画面の記録表だけで使う（遊んでいる間は大きさで見せる）
+  // 相場は数字やUIでなく、カブの大きさで見せる。島じゅうの同じ種類のカブが一斉に膨らむ／しぼむ。
+  // 1段ごとに約1.25倍：並べたときに段の違いが目で分かる最小の差
+  sizeByLevel: [0.62, 0.8, 1.0, 1.25, 1.55],
   supplyPressurePerTurnip: 0.11,   // 平均より1個多く頭に乗っているごとに、毎日これだけ下がる
   meanReversion: 0.07,             // 真ん中（🙂）へ戻ろうとする力。張り付き防止
   trendChoices: [-0.45, -0.25, 0.25, 0.45],   // 週ごとの流行の強さ。0を入れないのは、うわさが必ず方向を持つようにするため
@@ -159,7 +150,7 @@ const CONFIG = {
 };
 
 // 見た目・待ち時間（ミリ秒）。?headless=1 では全部0になる
-const TIMING = { hop: 230, cpuThink: 520, toast: 1100, fly: 380, marketTick: 700 };
+const TIMING = { hop: 230, cpuThink: 520, toast: 1100, fly: 380, marketTick: 900 };
 
 const TURNIP_TYPES = [
   { id: "white", name: "しろカブ", color: 0xf4efe4, css: "#f4efe4", volatility: 0.18, supplySensitivity: 1, start: 2,
@@ -411,9 +402,11 @@ const view = {
   targetAngle: 0,
   focus: null,          // THREE.Vector3
   tiles: [],            // 各マスの中心
-  pillars: [],          // 中央の相場の柱 { pillar, top, faceSprite, height }
+  sizes: TURNIP_TYPES.map(() => ({ value: 1, velocity: 0 })),   // 種類ごとの今のカブの大きさ（ばねで目標へ寄る）
   tweens: [],
   clock: 0,
+  lookCenter: false,
+  centerBlend: 0,
 };
 const turnipGeometry = {};
 const turnipMaterials = [];
@@ -450,19 +443,6 @@ function makeEmojiSprite(text, size, background) {
   sprite.userData.canvas = spriteCanvas;
   return sprite;
 }
-function redrawEmojiSprite(sprite, text) {
-  const spriteCanvas = sprite.userData.canvas;
-  const context = spriteCanvas.getContext("2d");
-  const pixel = spriteCanvas.width;
-  context.clearRect(0, 0, pixel, pixel);
-  context.fillStyle = "rgba(255,250,240,0.95)";
-  context.beginPath(); context.arc(pixel / 2, pixel / 2, pixel / 2 - 4, 0, Math.PI * 2); context.fill();
-  context.font = `${Math.round(pixel * 0.62)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
-  context.textAlign = "center"; context.textBaseline = "middle";
-  context.fillText(text, pixel / 2, pixel / 2 + 6);
-  sprite.material.map.needsUpdate = true;
-}
-
 function standardMaterial(color, extra) {
   return new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.75, metalness: 0 }, extra || {}));
 }
@@ -485,8 +465,11 @@ function buildTurnipAssets() {
 }
 
 const TURNIP_HEIGHT = 0.405;
-function makeTurnipMesh(typeIndex) {
+// baseScale は置き場所ごとの大きさ。実際の大きさは毎フレーム baseScale × 相場の大きさ になる
+function makeTurnipMesh(typeIndex, baseScale) {
   const group = new THREE.Group();
+  group.userData.turnipType = typeIndex;
+  group.userData.baseScale = baseScale || 1;
   const bulb = new THREE.Mesh(turnipGeometry.bulb, turnipMaterials[typeIndex]);
   bulb.castShadow = true;
   group.add(bulb);
@@ -594,12 +577,12 @@ function rebuildStackVisual(player) {
   let parent = visual.stackAnchor;
   player.stack.forEach((typeIndex, k) => {
     const node = new THREE.Group();
-    node.position.y = k === 0 ? 0 : TURNIP_HEIGHT * 0.86;
+    // 1段上のカブを置く高さは、下のカブの今の大きさで決まる（毎フレーム更新）
+    node.userData.belowType = k === 0 ? null : player.stack[k - 1];
     node.position.x = (fxRandom() - 0.5) * 0.05;
     node.position.z = (fxRandom() - 0.5) * 0.05;
-    const turnip = makeTurnipMesh(typeIndex);
+    const turnip = makeTurnipMesh(typeIndex, STACK_SCALE);
     turnip.rotation.y = fxRandom() * Math.PI * 2;
-    turnip.scale.setScalar(1.15);
     node.add(turnip);
     parent.add(node);
     visual.nodes.push(node);
@@ -613,9 +596,13 @@ function stackTopWorld(player) {
   const target = visual.nodes.length ? visual.nodes[visual.nodes.length - 1] : visual.stackAnchor;
   const position = new THREE.Vector3();
   target.getWorldPosition(position);
-  if (visual.nodes.length) position.y += TURNIP_HEIGHT;
+  if (visual.nodes.length) position.y += TURNIP_HEIGHT * STACK_SCALE * currentSize(player.stack[player.stack.length - 1]);
   return position;
 }
+
+const STACK_SCALE = 1.15;
+function currentSize(typeIndex) { return view.sizes[typeIndex].value; }
+function targetSize(typeIndex) { return CONFIG.sizeByLevel[game.market[typeIndex].level]; }
 
 function buildWorld() {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -676,8 +663,7 @@ function buildWorld() {
     if (tile.kind === "field") {
       // 畑：その種類のカブが植わっている
       for (const [dx, dz] of [[-0.3, 0.05], [0.3, 0.05], [0, -0.3]]) {
-        const planted = makeTurnipMesh(tile.type);
-        planted.scale.setScalar(0.85);
+        const planted = makeTurnipMesh(tile.type, 0.85);
         planted.position.set(position.x + dx, 0.18, position.z + dz);
         scene.add(planted);
       }
@@ -695,7 +681,7 @@ function buildWorld() {
       }
       const keeper = makeEmojiSprite(shop.emoji, 0.7);
       keeper.position.y = 0.85;
-      const favorite = makeTurnipMesh(shop.likes);
+      const favorite = makeTurnipMesh(shop.likes, 0.9);
       favorite.position.set(0.4, 0.56, 0.1);
       stall.add(counter, roof, keeper, favorite);
       stall.position.set(position.x + outward.x * 1.55, 0.05, position.z + outward.z * 1.55);
@@ -708,21 +694,15 @@ function buildWorld() {
     }
   });
 
-  // 中央の相場の柱：高さ＝値段の段。上に顔とそのカブ
+  // 中央の見本台：4種を同じ台に並べ、大きさの差（＝値段の差）を見比べられるようにする
+  const plinth = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.6, 0.35, 32), standardMaterial(0xfff6e2));
+  plinth.position.y = 0.17; plinth.castShadow = true; plinth.receiveShadow = true;
+  scene.add(plinth);
   TURNIP_TYPES.forEach((type, t) => {
     const angle = (t / TURNIP_TYPES.length) * Math.PI * 2 + Math.PI / 4;
-    const x = Math.sin(angle) * 1.5, z = Math.cos(angle) * 1.5;
-    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.48, 1, 20), standardMaterial(0xfff6e2));
-    pillar.position.set(x, 0, z); pillar.castShadow = true; pillar.receiveShadow = true;
-    scene.add(pillar);
-    const top = makeTurnipMesh(t);
-    top.scale.setScalar(1.6);
-    scene.add(top);
-    const faceSprite = makeEmojiSprite(CONFIG.faces[game.market[t] ? game.market[t].level : type.start], 0.8, "rgba(255,250,240,0.95)");
-    scene.add(faceSprite);
-    const entry = { pillar, top, faceSprite, x, z, height: 0 };
-    view.pillars.push(entry);
-    setPillarHeight(entry, pillarHeightFor(type.start));
+    const sample = makeTurnipMesh(t, 1.8);
+    sample.position.set(Math.sin(angle) * 1.55, 0.4, Math.cos(angle) * 1.55);
+    scene.add(sample);
   });
 
   view.focus = new THREE.Vector3(0, 0.8, 0);
@@ -730,14 +710,6 @@ function buildWorld() {
   window.addEventListener("resize", resizeRenderer);
 }
 
-function pillarHeightFor(level) { return 0.35 + level * 0.55; }
-function setPillarHeight(entry, height) {
-  entry.height = height;
-  entry.pillar.scale.y = height;
-  entry.pillar.position.y = height / 2;
-  entry.top.position.set(entry.x, height + 0.02, entry.z);
-  entry.faceSprite.position.set(entry.x, height + 1.25, entry.z);
-}
 
 function addCharactersToWorld() {
   for (const player of game.players) {
@@ -781,6 +753,23 @@ function frame(now) {
     if (progress >= 1) { view.tweens.splice(k, 1); tween.resolve(); }
   }
 
+  // 相場の大きさ：ばねで目標へ寄せる。少し行き過ぎて戻る「ぷくっ」で、値動きに気づかせる
+  if (game.market.length) {
+    view.sizes.forEach((size, t) => {
+      const force = (targetSize(t) - size.value) * 90 - size.velocity * 11;
+      size.velocity += force * deltaSeconds;
+      size.value += size.velocity * deltaSeconds;
+    });
+  }
+  scene.traverse((object) => {
+    const typeIndex = object.userData.turnipType;
+    if (typeIndex !== undefined) object.scale.setScalar(object.userData.baseScale * currentSize(typeIndex));
+    else if (object.userData.belowType !== undefined) {
+      object.position.y = object.userData.belowType === null ? 0
+        : TURNIP_HEIGHT * 0.86 * STACK_SCALE * currentSize(object.userData.belowType);
+    }
+  });
+
   // カブタワーの揺れ：入れ子なので、各段の小さな傾きが上へ行くほど積み重なる
   for (const player of game.players) {
     const visual = player.visual;
@@ -809,6 +798,9 @@ function frame(now) {
   const lookReach = view.ringRadius * (portrait ? 0.8 : 0.4);
   const lookTarget = new THREE.Vector3(Math.sin(view.cameraAngle) * lookReach, portrait ? -1.2 : 1.2,
                                        Math.cos(view.cameraAngle) * lookReach);
+  // 相場が動く瞬間は、中央の見本台へ視線を寄せて「膨らむ／しぼむ」を見せる
+  view.centerBlend += ((view.lookCenter ? 1 : 0) - view.centerBlend) * Math.min(1, deltaSeconds * 4);
+  lookTarget.lerp(new THREE.Vector3(0, portrait ? -2.2 : 0.8, 0), view.centerBlend * 0.85);
   camera.lookAt(lookTarget);
   renderer.render(scene, camera);
 }
@@ -833,8 +825,7 @@ async function hopTo(player, tileIndex) {
 // カブが飛んでいく演出（売る＝屋台へ、抜く＝畑から頭へ、押し付け／ひったくり＝頭から頭へ）
 async function flyTurnip(typeIndex, from, to) {
   if (!hasThree || !from || !to) return;
-  const mesh = makeTurnipMesh(typeIndex);
-  mesh.scale.setScalar(1.15);
+  const mesh = makeTurnipMesh(typeIndex, STACK_SCALE);
   scene.add(mesh);
   await animate(TIMING.fly, (t) => {
     mesh.position.lerpVectors(from, to, t);
@@ -849,14 +840,12 @@ function marketStallWorld(tileIndex) {
   return new THREE.Vector3(position.x + Math.sin(position.angle) * 1.55, 0.8, position.z + Math.cos(position.angle) * 1.55);
 }
 
-async function animatePillars() {
-  const starts = view.pillars.map((entry) => entry.height);
-  const targets = game.market.map((entry) => pillarHeightFor(entry.level));
-  game.market.forEach((entry, t) => redrawEmojiSprite(view.pillars[t].faceSprite, CONFIG.faces[entry.level]));
-  await animate(TIMING.marketTick, (progress) => {
-    const eased = 1 - Math.pow(1 - progress, 3);
-    view.pillars.forEach((entry, t) => setPillarHeight(entry, starts[t] + (targets[t] - starts[t]) * eased));
-  });
+// 大きさはフレームごとに相場へ寄っていくので、ここでは膨らむ／しぼむのを見せる時間だけ待つ。
+// 中央の見本台が映るようにカメラを島の中心へ少し寄せる
+async function showMarketChange() {
+  view.lookCenter = true;
+  await wait(TIMING.marketTick);
+  view.lookCenter = false;
 }
 
 // -----------------------------------------------------------------
@@ -865,7 +854,6 @@ async function animatePillars() {
 const elements = {
   dayLabel: document.getElementById("dayLabel"),
   metaLabel: document.getElementById("metaLabel"),
-  market: document.getElementById("market"),
   players: document.getElementById("players"),
   message: document.getElementById("message"),
   rumors: document.getElementById("rumors"),
@@ -875,27 +863,16 @@ const elements = {
   speed: document.getElementById("speed"),
 };
 
-function arrowFor(delta) {
-  if (delta > 0) return '<span class="arrow up">↑</span>';
-  if (delta < 0) return '<span class="arrow down">↓</span>';
-  return '<span class="arrow flat">→</span>';
-}
-
 function renderHud() {
   const week = currentWeekIndex() + 1;
   elements.dayLabel.textContent = game.round > 0 ? `${game.round}日目 / ${CONFIG.totalRounds}・第${week}週` : "カブ盛りバブル";
   elements.metaLabel.textContent = `${GAME_VERSION} seed ${currentSeed}`;
-  elements.market.innerHTML = TURNIP_TYPES.map((type, t) => {
-    const entry = game.market[t] || { level: type.start, lastDelta: 0 };
-    const held = game.players.length ? "●".repeat(totalHeld(t)) : "";
-    return `<div class="mcell" title="${type.note}">
-      <div class="row1"><span class="dot" style="background:${type.css}"></span>${type.name}</div>
-      <div class="row2"><span class="face">${CONFIG.faces[entry.level]}</span>${arrowFor(entry.lastDelta)}<span class="coin">${priceOf(entry.level)}🪙</span></div>
-      <div class="held" title="みんなの頭に乗っている数">${held}</div>
-    </div>`;
-  }).join("");
   elements.players.innerHTML = game.players.map((player) => {
-    const dots = player.stack.map((t) => `<i style="background:${TURNIP_TYPES[t].css}"></i>`).join("");
+    // 手元の一覧も大きさで描く（3Dと同じ読み方で済むように）
+    const dots = player.stack.map((t) => {
+      const diameter = Math.round(9 * CONFIG.sizeByLevel[game.market[t].level]) + 1;
+      return `<i style="width:${diameter}px;height:${diameter}px;background:${TURNIP_TYPES[t].css}"></i>`;
+    }).join("");
     const rumorCount = player.rumors.length ? ` 💬${player.rumors.length}` : "";
     const active = player.index === game.currentPlayer && game.round > 0 && !game.finished ? " active" : "";
     return `<div class="pcard${active}" style="--pc:${player.character.css}">
@@ -978,10 +955,10 @@ async function visitMarket(player, tileIndex, passingThrough) {
     const sellLevel = Math.min(CONFIG.faces.length - 1, game.market[top].level + bonus);
     const price = priceOf(sellLevel);
     const cpuChoice = player.isCpu && cpuWantsToSell(player, top, sellLevel) ? "sell" : "stop";
-    const favoriteNote = bonus ? `（${shop.name}の好物なので1段高い）` : "";
+    const favoriteNote = bonus ? `（${shop.name}の好物なので、ひと回り大きいカブの値段で買ってくれる）` : "";
     const choice = await ask(player,
-      `${shop.emoji} <b>${shop.name}</b>${passingThrough ? "の前を通りかかった" : "に着いた"}。<br>てっぺんは ${turnipLabel(top)} ${CONFIG.faces[sellLevel]}${favoriteNote}`,
-      [{ id: "sell", label: `てっぺんを売る ${CONFIG.faces[sellLevel]} +${price}🪙` },
+      `${shop.emoji} <b>${shop.name}</b>${passingThrough ? "の前を通りかかった" : "に着いた"}。<br>てっぺんは ${turnipLabel(top)}${favoriteNote}`,
+      [{ id: "sell", label: `てっぺんを売る +${price}🪙` },
        { id: "stop", label: passingThrough ? "素通りする" : "売らない", secondary: true }],
       cpuChoice);
     if (choice !== "sell") {
@@ -1015,7 +992,7 @@ async function visitField(player, tileIndex) {
   options.push({ id: "0", label: "抜かない", secondary: true });
   const cpuChoice = player.isCpu ? String(cpuBuyCount(player, typeIndex, maxBuy)) : "0";
   const choice = Number(await ask(player,
-    `${turnipLabel(typeIndex)}の畑。いまは ${CONFIG.faces[level]}（1こ ${price}🪙）。抜いた分は頭のてっぺんに積む。`,
+    `${turnipLabel(typeIndex)}の畑。いまの大きさなら1こ ${price}🪙。抜いた分は頭のてっぺんに積む。`,
     options, cpuChoice));
   for (let n = 0; n < choice; n++) {
     player.coins -= price;
@@ -1102,8 +1079,8 @@ async function playTurn(player) {
     applyNews(typeIndex, shift);
     game.newsLog.push({ round: game.round, type: typeIndex, shift });
     renderHud();
-    if (hasThree) await animatePillars();
-    await ask(player, `📻 島ラジオ速報：${turnipLabel(typeIndex)} ${shift > 0 ? "がテレビで紹介されて人気上昇！" : "に悪いうわさ、値下がり…"}`,
+    if (hasThree) await showMarketChange();
+    await ask(player, `📻 島ラジオ速報：${turnipLabel(typeIndex)} ${shift > 0 ? "がテレビで紹介されて人気上昇！ ぷくっと大きくなった" : "に悪いうわさ… しゅんと縮んだ"}`,
       [{ id: "ok", label: "なるほど" }], "ok");
   }
   renderHud();
@@ -1119,7 +1096,7 @@ async function runGame() {
     for (const player of game.players) await playTurn(player);
     updateMarketLogic();
     renderHud();
-    if (hasThree) await animatePillars();
+    if (hasThree) await showMarketChange();
   }
   game.round = CONFIG.totalRounds;
   game.finished = true;
@@ -1214,9 +1191,9 @@ function showResults() {
 
     <h2>相場と売買の記録</h2>
     <div class="timeline-wrap"><table class="timeline">${header}${timelineRows}</table></div>
-    <div class="legend">顔＝その日の朝の相場　▲買い ▼売り ・売れたのに持ち続けた（色＝プレイヤー）　<span style="background:#fff1c9">黄</span>＝売った人と、買った／持ち続けた人が分かれた日　<span style="background:#dbe8f8">青</span>＝3人以上が一斉に売った日</div>
+    <div class="legend">顔＝その日の朝のカブの大きさ（😱いちばん小さい〜🤩いちばん大きい）　▲買い ▼売り ・売れたのに持ち続けた（色＝プレイヤー）　<span style="background:#fff1c9">黄</span>＝売った人と、買った／持ち続けた人が分かれた日　<span style="background:#dbe8f8">青</span>＝3人以上が一斉に売った日</div>
 
-    <h2>平均で何の顔のときに買って、何の顔で売ったか</h2>
+    <h2>平均でどの大きさのときに買って、どの大きさで売ったか</h2>
     <table class="faces"><tr><th></th>${TURNIP_TYPES.map((_, t) => `<th>${turnipLabel(t)}</th>`).join("")}</tr>${faceRows}</table>
 
     <div class="actions">
@@ -1245,8 +1222,8 @@ function showTitle() {
     <p class="lead">突然変異カブが大発生！ 島はカブ取引ブーム。カブは頭に盛って運ぶのが流行中。</p>
     <ol>
       <li><b>頭のカブは、てっぺんからしか売れない。</b>抜いたカブはてっぺんに積まれる。積む順番に気をつけて。</li>
-      <li><b>値段は看板の顔で決まる。</b>😱→😟→🙂→😄→🤩。上ほど高い。</li>
-      <li><b>みんなの頭に多く乗っているカブほど値下がりする。</b>みんなの頭を見て、次に上がるカブを読もう。</li>
+      <li><b>値段はカブの大きさ。</b>人気が出ると、島じゅうの同じカブが一斉に膨らむ。大きいほど高く売れる（5段階）。</li>
+      <li><b>みんなの頭に多く乗っているカブほど縮んでいく。</b>みんなの頭を見て、次に膨らむカブを読もう。真ん中の見本台で4種の大きさを見比べられる。</li>
       <li>畑は<b>止まったとき</b>だけ抜ける。市場は<b>通りがかりでも</b>寄って売れる。店主の好物は1段高く売れる。</li>
       <li>💬うわさマスでは自分だけのうわさが聞ける（4回に1回はうそ）。📻ラジオマスでは相場が動く。</li>
       <li>同じマスに止まったら、てっぺんのカブを<b>押し付ける</b>か<b>ひったくる</b>。</li>
@@ -1270,8 +1247,7 @@ function startGame(mode, seed) {
   setupGame(mode, seed);
   if (hasThree) {
     addCharactersToWorld();
-    game.market.forEach((entry, t) => setPillarHeight(view.pillars[t], pillarHeightFor(entry.level)));
-    game.market.forEach((entry, t) => redrawEmojiSprite(view.pillars[t].faceSprite, CONFIG.faces[entry.level]));
+    game.market.forEach((entry, t) => { view.sizes[t].value = targetSize(t); view.sizes[t].velocity = 0; });
   }
   renderHud();
   runGame();
