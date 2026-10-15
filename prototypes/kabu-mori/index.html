@@ -128,7 +128,7 @@
 // v0.4.0：カブを「食べる」と突然変異ごとの効果が出る。頭の上では隣り合ったカブが増殖・合体・突然変異する
 // （＝たくさん積むほど当たりが出る）。売る・食べるはタワーのどの段でも選べる。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.4.1";
+const GAME_VERSION = "v0.4.2";
 
 // ---- 調整値（データ駆動：ここだけ触ればバランスが変わる） ----
 const CONFIG = {
@@ -167,7 +167,7 @@ const TRAITS = {
   run:     { icon: "👟", name: "はしり",   short: "サイコロ2回",  eat: "このターンはサイコロを2回振って足す" },
   magnet:  { icon: "🧲", name: "じしゃく", short: "引き寄せ",     eat: "好きな相手の頭から好きなカブを1個引き寄せる" },
   sparkle: { icon: "✨", name: "きらきら", short: "うわさ的中",   eat: "次に聞くうわさが必ず本当になる" },
-  bomb:    { icon: "💣", name: "ばくだん", short: "",             eat: "食べられない。5日で破裂して両隣ごと吹き飛ぶ。市場でタダで引き取ってもらうか、押し付けよう" },
+  bomb:    { icon: "💣", name: "ばくだん", short: "",             eat: "食べられない・売れない。5日で破裂して両隣ごと吹き飛ぶ。押し付けるしかない" },
 };
 // 違う色が隣り合うと付く突然変異（色の組み合わせで決まる）。順番は TURNIP_TYPES の添字の小さい方→大きい方
 const PAIR_TRAITS = { "0-1": "run", "0-2": "sparkle", "0-3": "wilt", "1-2": "puff", "1-3": "bomb", "2-3": "magnet" };
@@ -317,7 +317,7 @@ function setupGame(mode, seed) {
   game.ground = {};
   BOARD.forEach((tile, index) => { if (tile.kind === "kabu") game.ground[index] = makeGroundTurnip(); });
   game.maxHeight = 0;
-  game.stats = { disposed: 0, eats: 0, grows: 0, merges: 0, mutations: 0, explosions: 0, lostToBombs: 0 };
+  game.stats = { pushedBombs: 0, eats: 0, grows: 0, merges: 0, mutations: 0, explosions: 0, lostToBombs: 0 };
 
   const personalitiesByMode = {
     solo:  ["human", "trend", "contrarian", "rumor"],
@@ -1072,7 +1072,6 @@ function sellLevelOf(turnip, shop) {
   return Math.min(CONFIG.faces.length - 1, game.market[turnip.type].level + bonus);
 }
 function sellPriceOf(turnip, shop) {
-  if (turnip.trait === "bomb") return 0;   // 💣 は市場でタダで引き取ってもらえる（平和に処分する手段）
   return priceOf(sellLevelOf(turnip, shop)) * (turnip.big ? CONFIG.bigPriceMultiplier : 1);
 }
 // タワーをボタンの列にする（てっぺんを左に）。filter で選べないカブは押せなくする
@@ -1094,8 +1093,9 @@ function removeFromStack(player, index) {
 async function visitMarket(player, tileIndex, passingThrough) {
   const shop = SHOPS[BOARD[tileIndex].shop];
   const sellable = (turnip) => turnip.trait !== "bomb";
-  while (player.stack.length > 0) {
-    // CPU：💣があれば先に引き取ってもらい、あとは売りたいカブの中でいちばん高く売れるものから売る
+  // 💣 は市場では処分できない（v0.4.2：引き取りは簡単すぎて脅威が消えた）。手放すには押し付けるしかない
+  while (player.stack.some(sellable)) {
+    // CPU：売りたいカブの中でいちばん高く売れるものから売る
     let cpuChoice = "stop";
     if (player.isCpu) {
       let bestPrice = -1;
@@ -1104,13 +1104,11 @@ async function visitMarket(player, tileIndex, passingThrough) {
         const level = sellLevelOf(turnip, shop);
         if (cpuWantsToSell(player, turnip.type, level) && sellPriceOf(turnip, shop) > bestPrice) { bestPrice = sellPriceOf(turnip, shop); cpuChoice = String(index); }
       });
-      const bombIndex = player.stack.findIndex((turnip) => !sellable(turnip));
-      if (bombIndex >= 0) cpuChoice = String(bombIndex);
     }
-    const options = stackOptions(player, null, (turnip) => sellable(turnip) ? ` +${sellPriceOf(turnip, shop)}🪙` : " 引き取り");
+    const options = stackOptions(player, sellable, (turnip) => ` +${sellPriceOf(turnip, shop)}🪙`);
     options.push({ id: "stop", label: passingThrough ? "素通りする" : "売るのをやめる", secondary: true });
     const choice = await ask(player,
-      `${shop.emoji} <b>${shop.name}</b>${passingThrough ? "の前を通りかかった" : "に着いた"}。どのカブを売る？（どの段でも売れる）<br><small>${turnipLabel(shop.likes)}は好物なので高く買ってくれる。👑大カブは${CONFIG.bigPriceMultiplier}個分の値段。💣はタダで引き取ってくれる。</small>`,
+      `${shop.emoji} <b>${shop.name}</b>${passingThrough ? "の前を通りかかった" : "に着いた"}。どのカブを売る？（どの段でも売れる）<br><small>${turnipLabel(shop.likes)}は好物なので高く買ってくれる。👑大カブは${CONFIG.bigPriceMultiplier}個分の値段。💣は売れない。</small>`,
       options, cpuChoice);
     if (choice === "stop") {
       // 売れるのに売らなかった＝「まだ上がる」と読んだ記録。売った人との判断の割れを数えるのに使う
@@ -1122,8 +1120,7 @@ async function visitMarket(player, tileIndex, passingThrough) {
     const turnip = removeFromStack(player, index);
     const level = sellLevelOf(turnip, shop);
     player.coins += sellPriceOf(turnip, shop);
-    if (sellable(turnip)) game.actionLog.push({ round: game.round, player: player.index, type: turnip.type, kind: "sell", level });
-    else game.stats.disposed++;
+    game.actionLog.push({ round: game.round, player: player.index, type: turnip.type, kind: "sell", level });
     rebuildStackVisual(player);
     renderHud();
     await flyTurnip(turnip, from, marketStallWorld(tileIndex));
@@ -1198,6 +1195,7 @@ async function meetOthers(player) {
       rebuildStackVisual(player);
       await flyTurnip(turnip, from, stackTopWorld(other));
       other.stack.push(turnip);
+      if (turnip.trait === "bomb") game.stats.pushedBombs++;
       rebuildStackVisual(other);
       game.actionLog.push({ round: game.round, player: player.index, type: turnip.type, kind: "push", level: game.market[turnip.type].level });
       await showToast(`${player.character.emoji}→${other.character.emoji} ${TURNIP_TYPES[turnip.type].name}${turnip.trait ? TRAITS[turnip.trait].icon : ""}を押し付けた`);
@@ -1623,7 +1621,7 @@ function showTitle() {
       <li>手に入れたカブは<b>頭のてっぺんに積む</b>。売る・食べるは<b>どの段でも</b>選べる。</li>
       <li><b>自分の番の終わりに、頭の上で反応が起きる。</b>同じ色が隣り合うと🌱増える。3つ並ぶと👑大カブに合体（1個の${CONFIG.bigPriceMultiplier}倍で売れる）。違う色が隣り合うと🧬突然変異する（色の組み合わせで何になるか決まる）。<b>たくさん積むほど当たりが出る。</b></li>
       <li><b>番の最初に1個食べられる。</b>🎈ふくらみ＝その色が値上がり／🥀しおれ＝好きな色を値下げ／👟はしり＝サイコロ2回／🧲じしゃく＝好きな相手から1個引き寄せる／✨きらきら＝次のうわさが必ず本当。</li>
-      <li>💣ばくだん（べに×ほしの突然変異でまれに生まれる）は食べられない。${CONFIG.bombFuse}日で破裂して両隣ごと吹き飛ぶ。市場でタダで引き取ってもらうか、同じマスの相手に押し付けよう。</li>
+      <li>💣ばくだん（べに×ほしの突然変異でまれに生まれる）は食べられない。${CONFIG.bombFuse}日で破裂して両隣ごと吹き飛ぶ。売れないので、同じマスの相手に押し付けるしかない。</li>
       <li><b>値段はカブの大きさ。</b>人気が出ると、島じゅうの同じカブが一斉に膨らむ。大きいほど高く売れる（5段階）。</li>
       <li><b>みんなの頭に多く乗っているカブほど縮んでいく。</b>みんなの頭を見て、次に膨らむカブを読もう。真ん中の見本台で4種の大きさを見比べられる。</li>
       <li><b>カブマス</b>に止まると、置いてあるカブを<b>タダで拾える</b>。そのカブのうわさも聞こえる（自分だけ。4回に1回はうそ）。</li>
