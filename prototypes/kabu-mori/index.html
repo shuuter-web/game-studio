@@ -128,7 +128,7 @@
 // v0.4.0：カブを「食べる」と突然変異ごとの効果が出る。頭の上では隣り合ったカブが増殖・合体・突然変異する
 // （＝たくさん積むほど当たりが出る）。売る・食べるはタワーのどの段でも選べる。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.5.0";
+const GAME_VERSION = "v0.6.0";
 
 // ---- 調整値（データ駆動：ここだけ触ればバランスが変わる） ----
 const CONFIG = {
@@ -149,7 +149,6 @@ const CONFIG = {
   // 表の先も1段ごとに大きくなり続ける。値段ほど急に伸ばさないのは、タワーが画面からはみ出さないようにするため
   sizeGrowthBeyond: 1.18,
   supplyPressurePerTurnip: 0.11,   // 平均より1個多く頭に乗っているごとに、毎日これだけ下がる
-  meanReversion: 0.07,             // 真ん中（🙂）へ戻ろうとする力。張り付き防止
   trendChoices: [-0.45, -0.25, 0.25, 0.45],   // 週ごとの流行の強さ。0を入れないのは、うわさが必ず方向を持つようにするため
   rumorTruthRate: 0.75,            // うわさが本当である確率
   radioShift: 1,                   // ラジオのニュースで動く段数
@@ -161,7 +160,8 @@ const CONFIG = {
   bombMutationRate: 0.35,          // べに×ほし の突然変異が💣になる確率（外れたら何も起きない）。v0.4.1で出現を減らした
   bigSizeFactor: 1.4,              // 同じ色3連が合体した「大カブ」の見た目の大きさ
   bigPriceMultiplier: 4,           // 大カブは同じ色1個の4倍で売れる。3個を合体させたので、3倍を超えないと合体が損になる
-  groundTraitChance: 0.4,          // カブマスに置かれるカブが突然変異つきである確率
+  groundTraitChance: 0.4,
+  labBombChance: 0.15,             // 🧪 けんきゅうじょの突然変異が失敗して💣になる確率          // カブマスに置かれるカブが突然変異つきである確率
 };
 
 // 突然変異。食べたときの効果と、頭の上での見分け方（アイコン）
@@ -171,11 +171,13 @@ const TRAITS = {
   run:     { icon: "👟", name: "はしり",   short: "サイコロ2回",  eat: "このターンはサイコロを2回振って足す" },
   magnet:  { icon: "🧲", name: "じしゃく", short: "引き寄せ",     eat: "好きな相手の頭から好きなカブを1個引き寄せる" },
   sparkle: { icon: "✨", name: "きらきら", short: "うわさ的中",   eat: "次に聞くうわさが必ず本当になる" },
+  wings:   { icon: "🪽", name: "はね",     short: "好きなマスへ", eat: "サイコロを振らずに、好きなマスへ飛んでいける" },
   bomb:    { icon: "💣", name: "ばくだん", short: "",             eat: "食べられない・売れない。5日で破裂して両隣ごと吹き飛ぶ。押し付けるしかない" },
 };
 // 違う色が隣り合うと付く突然変異（色の組み合わせで決まる）。順番は TURNIP_TYPES の添字の小さい方→大きい方
+// 🪽はね は色の組み合わせでは生まれない（カブマスとけんきゅうじょで手に入る）
 const PAIR_TRAITS = { "0-1": "run", "0-2": "sparkle", "0-3": "wilt", "1-2": "puff", "1-3": "bomb", "2-3": "magnet" };
-const GROUND_TRAITS = ["puff", "puff", "wilt", "run", "magnet", "sparkle"];   // カブマスに出る突然変異（💣は頭の上の突然変異でしか生まれない）
+const GROUND_TRAITS = ["puff", "puff", "wilt", "run", "magnet", "sparkle", "wings", "wings"];   // カブマスに出る突然変異（💣は頭の上の突然変異でしか生まれない）
 
 // 見た目・待ち時間（ミリ秒）。?headless=1 では全部0になる
 const TIMING = { hop: 230, cpuThink: 520, toast: 1100, fly: 380, marketTick: 900 };
@@ -202,12 +204,17 @@ const SHOPS = [
 // 売り時をサイコロ任せにせず、プレイヤーの判断にするため。
 // カブマスにはカブが1個置いてあり、止まるとタダで拾える＋そのカブのうわさが聞こえる。
 // v0.2.0 まではカブを得る機会が畑（4/16マス）だけで少なかった（ユーザー判定）ため、道とうわさマスをカブマスにした。
+// v0.6.0：20マスに広げ、ならべかえ／けんきゅうじょ／ひりょう を足した（マスのバリエーション）
 const BOARD = [
-  { kind: "field", type: 0 }, { kind: "kabu" },  { kind: "kabu" }, { kind: "market", shop: 0 },
-  { kind: "field", type: 1 }, { kind: "radio" }, { kind: "kabu" }, { kind: "market", shop: 1 },
-  { kind: "field", type: 2 }, { kind: "kabu" },  { kind: "kabu" }, { kind: "market", shop: 2 },
-  { kind: "field", type: 3 }, { kind: "radio" }, { kind: "kabu" }, { kind: "market", shop: 3 },
+  { kind: "field", type: 0 }, { kind: "kabu" },  { kind: "swap" },  { kind: "kabu" }, { kind: "market", shop: 0 },
+  { kind: "field", type: 1 }, { kind: "radio" }, { kind: "kabu" },  { kind: "lab" },  { kind: "market", shop: 1 },
+  { kind: "field", type: 2 }, { kind: "kabu" },  { kind: "fert" },  { kind: "kabu" }, { kind: "market", shop: 2 },
+  { kind: "field", type: 3 }, { kind: "radio" }, { kind: "kabu" },  { kind: "swap" }, { kind: "market", shop: 3 },
 ];
+const TILE_ICONS = { kabu: "💬", radio: "📻", swap: "🔀", lab: "🧪", fert: "🌧" };
+const TILE_NAMES = { kabu: "カブマス", radio: "ラジオ", swap: "ならべかえ", lab: "けんきゅうじょ", fert: "ひりょう", field: "畑", market: "市場" };
+const LAB_TRAITS = ["puff", "wilt", "run", "magnet", "sparkle", "wings"];
+
 
 const CHARACTERS = [
   { name: "くま",   emoji: "🐻", kind: "bear",   body: 0xb3794c, inner: 0xe8c9a4, css: "#b3794c" },
@@ -332,7 +339,7 @@ function setupGame(mode, seed) {
   game.ground = {};
   BOARD.forEach((tile, index) => { if (tile.kind === "kabu") game.ground[index] = makeGroundTurnip(); });
   game.maxHeight = 0;
-  game.stats = { pushedBombs: 0, eats: 0, grows: 0, merges: 0, mutations: 0, explosions: 0, lostToBombs: 0 };
+  game.stats = { warps: 0, pushedBombs: 0, eats: 0, grows: 0, merges: 0, mutations: 0, explosions: 0, lostToBombs: 0 };
 
   const personalitiesByMode = {
     solo:  ["human", "trend", "contrarian", "rumor"],
@@ -353,6 +360,8 @@ function setupGame(mode, seed) {
       stack,                // 下→上（末尾がてっぺん）。売る・食べるはどの段でも選べる
       rumors: [],           // { week, type, direction }
       extraRoll: false,     // 👟 を食べたターンはサイコロ2回
+      warpTo: null,         // 🪽 を食べたターンはサイコロの代わりにここへ飛ぶ
+      fertilized: false,    // 🌧 ひりょうマスに止まった番は、同じ色の隣り合いが必ず増える
       nextRumorTrue: false, // ✨ を食べると次のうわさが必ず本当
     };
   });
@@ -368,8 +377,8 @@ function updateMarketLogic() {
     const before = entry.level;
     const supplyPressure = (totals[t] - average) * CONFIG.supplyPressurePerTurnip * type.supplySensitivity;
     const noise = (random() * 2 - 1) * type.volatility;
-    const reversion = CONFIG.meanReversion * (2 - entry.value);
-    entry.value = Math.max(-0.4, entry.value + game.trends[week][t] - supplyPressure + noise + reversion);
+    // 真ん中へ戻す力は持たない（v0.6.0）。値は流行・需給・ゆらぎと、食べる/ラジオだけで動く
+    entry.value = Math.max(-0.4, entry.value + game.trends[week][t] - supplyPressure + noise);
     entry.level = levelOf(entry.value);
     entry.lastDelta = entry.level - before;
     entry.history.push(entry.level);
@@ -457,7 +466,7 @@ const canvas = document.getElementById("scene");
 const hasThree = typeof THREE !== "undefined";
 let renderer = null, scene = null, camera = null;
 const view = {
-  ringRadius: 7,
+  ringRadius: 7.6,   // 20マスが重ならない半径
   cameraAngle: 0,
   targetAngle: 0,
   focus: null,          // THREE.Vector3
@@ -743,7 +752,7 @@ function buildWorld() {
   }
 
   // マス
-  const tileColors = { field: 0xc99a62, kabu: 0xf6d77a, market: 0xf3a17a, radio: 0x9cc8f0 };
+  const tileColors = { field: 0xc99a62, kabu: 0xf6d77a, market: 0xf3a17a, radio: 0x9cc8f0, swap: 0xb9e3a8, lab: 0xd9c2f2, fert: 0x9fd8d0 };
   BOARD.forEach((tile, index) => {
     const position = tilePosition(index);
     const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.88, 0.94, 0.22, 28), standardMaterial(tileColors[tile.kind]));
@@ -780,8 +789,8 @@ function buildWorld() {
       stall.position.set(position.x + outward.x * 1.55, 0.05, position.z + outward.z * 1.55);
       stall.lookAt(0, 0.05, 0);
       scene.add(stall);
-    } else if (tile.kind === "kabu" || tile.kind === "radio") {
-      const icon = makeEmojiSprite(tile.kind === "kabu" ? "💬" : "📻", tile.kind === "kabu" ? 0.5 : 0.75, "rgba(255,250,240,0.9)");
+    } else if (TILE_ICONS[tile.kind]) {
+      const icon = makeEmojiSprite(TILE_ICONS[tile.kind], tile.kind === "kabu" ? 0.5 : 0.75, "rgba(255,250,240,0.9)");
       icon.position.set(position.x + outward.x * 1.25, 0.75, position.z + outward.z * 1.25);
       scene.add(icon);
     }
@@ -903,16 +912,16 @@ function focusPlayer(player) {
   view.targetAngle = tilePosition(player.position).angle;
 }
 
-async function hopTo(player, tileIndex) {
+async function hopTo(player, tileIndex, durationScale, arcHeight) {
   if (!player.visual) return;
   const visual = player.visual;
   const from = visual.root.position.clone();
   const to = standingPoint(tileIndex, player.index);
   visual.root.rotation.y = Math.atan2(to.x - from.x, to.z - from.z);
   visual.swayImpulse = Math.min(0.12, visual.swayImpulse + 0.04);
-  await animate(TIMING.hop, (t) => {
+  await animate(TIMING.hop * (durationScale || 1), (t) => {
     visual.root.position.lerpVectors(from, to, t);
-    visual.root.position.y = to.y + Math.sin(Math.PI * t) * 0.55;
+    visual.root.position.y = to.y + Math.sin(Math.PI * t) * (arcHeight || 0.55);
   });
 }
 
@@ -1268,6 +1277,7 @@ function cpuEatChoice(player) {
     else if (turnip.trait === "magnet") score = game.players.some((other) => other !== player && other.stack.some((t) => t.trait !== "bomb")) ? 0.75 : 0;
     else if (turnip.trait === "run") score = 0.45;
     else if (turnip.trait === "sparkle") score = 0.3;
+    else if (turnip.trait === "wings") score = cpuBestDestination(player).score - 0.4;
     if (score > best) { best = score; choice = String(index); }
   });
   return choice;
@@ -1351,6 +1361,15 @@ async function applyEatEffect(player, turnip) {
       await showToast(`🧲 ${player.character.emoji}←${victim.character.emoji} ${TURNIP_TYPES[pulled.type].name}`);
       break;
     }
+    case "wings": {
+      const best = cpuBestDestination(player);
+      const options = BOARD.map((tile, index) => ({ id: String(index), chip: true, disabled: index === player.position,
+        label: `${index}${tileShortLabel(index)}` }));
+      const target = Number(await ask(player, `${name}を食べた！ 背中に羽が生えた。どのマスへ飛ぶ？（サイコロは振らない）`, options, String(best.index)));
+      player.warpTo = target;
+      game.stats.warps++;
+      break;
+    }
     case "sparkle":
       player.nextRumorTrue = true;
       await ask(player, `${name}を食べた！ 耳がよく聞こえる。次に聞くうわさは必ず本当。`, [{ id: "ok", label: "ふむ" }], "ok");
@@ -1359,6 +1378,109 @@ async function applyEatEffect(player, turnip) {
       setMessage(`${name}を食べた。むしゃむしゃ。頭が少し軽くなった。`);
       await wait(TIMING.cpuThink);
   }
+}
+
+// ---- マスの短い名前（🪽の行き先選び用） ----
+function tileShortLabel(index) {
+  const tile = BOARD[index];
+  if (tile.kind === "field") return `🌱${TURNIP_TYPES[tile.type].name}畑`;
+  if (tile.kind === "market") return `${SHOPS[tile.shop].emoji}${SHOPS[tile.shop].name}`;
+  if (tile.kind === "kabu") {
+    const ground = game.ground[index];
+    return ground ? `💬${ground.trait ? TRAITS[ground.trait].icon : ""}${TURNIP_TYPES[ground.type].name}` : "💬(空)";
+  }
+  return `${TILE_ICONS[tile.kind]}${TILE_NAMES[tile.kind]}`;
+}
+
+function sameColorPairs(stack) {
+  let count = 0;
+  for (let k = 0; k + 1 < stack.length; k++) if (stack[k].type === stack[k + 1].type && stack[k].trait !== "bomb" && stack[k + 1].trait !== "bomb") count++;
+  return count;
+}
+
+// CPU：どのマスに行くと得か（🪽の行き先）
+function cpuTileScore(player, index) {
+  const tile = BOARD[index];
+  const room = player.stack.length < CONFIG.maxStack;
+  if (tile.kind === "market") {
+    const shop = SHOPS[tile.shop];
+    let value = 0;
+    for (const turnip of player.stack) {
+      if (turnip.trait === "bomb") continue;
+      if (cpuWantsToSell(player, turnip.type, sellLevelOf(turnip, shop))) value += sellPriceOf(turnip, shop);
+    }
+    return value / 6;
+  }
+  if (tile.kind === "kabu") { const ground = game.ground[index]; return ground && room ? 1 + (ground.trait && ground.trait !== "bomb" ? 0.5 : 0) : 0; }
+  if (tile.kind === "field") return room && cpuBuyCount(player, tile.type, 3) > 0 ? 0.9 : 0;
+  if (tile.kind === "lab") return player.stack.some((t) => !t.trait) ? 0.8 : 0;
+  if (tile.kind === "fert") return sameColorPairs(player.stack) * 0.5;
+  if (tile.kind === "swap") return player.stack.length >= 3 ? 0.4 : 0;
+  return 0.2;
+}
+function cpuBestDestination(player) {
+  let best = { index: (player.position + 1) % BOARD.length, score: -1 };
+  BOARD.forEach((_, index) => {
+    if (index === player.position) return;
+    const score = cpuTileScore(player, index);
+    if (score > best.score) best = { index, score };
+  });
+  return best;
+}
+
+// ---- 新しいマス ----
+async function visitSwapTile(player) {
+  if (player.stack.length < 2) { setMessage("🔀 ならべかえマス。入れ替えるカブがない。"); await wait(TIMING.cpuThink); return; }
+  // CPU：同じ色の隣り合いがいちばん増える入れ替えを選ぶ（なければ入れ替えない）
+  let cpuChoice = "none", bestGain = 0;
+  for (let k = 0; k + 1 < player.stack.length; k++) {
+    const trial = player.stack.slice();
+    [trial[k], trial[k + 1]] = [trial[k + 1], trial[k]];
+    const gain = sameColorPairs(trial) - sameColorPairs(player.stack);
+    if (gain > bestGain) { bestGain = gain; cpuChoice = String(k); }
+  }
+  const options = [];
+  for (let k = player.stack.length - 2; k >= 0; k--) {
+    options.push({ id: String(k), chip: true, label: `${turnipName(player.stack[k + 1])}⇅${turnipName(player.stack[k])}` });
+  }
+  options.push({ id: "none", label: "入れ替えない", secondary: true });
+  const choice = await ask(player, "🔀 ならべかえマス。頭の上の隣り合った2つを入れ替えられる（上が左）。", options, cpuChoice);
+  if (choice === "none") return;
+  const k = Number(choice);
+  [player.stack[k], player.stack[k + 1]] = [player.stack[k + 1], player.stack[k]];
+  rebuildStackVisual(player);
+  if (player.visual) player.visual.swayImpulse += 0.05;
+  popEmoji(player, "🔀");
+  renderHud();
+}
+
+async function visitLabTile(player) {
+  const candidates = (turnip) => !turnip.trait;
+  if (!player.stack.some(candidates)) { setMessage("🧪 けんきゅうじょ。突然変異させられるカブがない。"); await wait(TIMING.cpuThink); return; }
+  // CPU：いちばん数の多い色のカブを選ぶ（🎈が付けば得が大きい）
+  let cpuChoice = "none", bestCount = 0;
+  player.stack.forEach((turnip, index) => {
+    if (!candidates(turnip)) return;
+    const count = player.stack.filter((t) => t.type === turnip.type).length;
+    if (count > bestCount) { bestCount = count; cpuChoice = String(index); }
+  });
+  const options = stackOptions(player, candidates, null);
+  options.push({ id: "none", label: "やめておく", secondary: true });
+  const choice = await ask(player, `🧪 けんきゅうじょ。頭のカブを1個、突然変異させてもらえる（何になるかはお楽しみ。${Math.round(CONFIG.labBombChance * 100)}%で💣になる）。`, options, cpuChoice);
+  if (choice === "none") return;
+  const turnip = player.stack[Number(choice)];
+  turnip.trait = random() < CONFIG.labBombChance ? "bomb" : LAB_TRAITS[randomInt(LAB_TRAITS.length)];
+  game.stats.mutations++;
+  rebuildStackVisual(player);
+  popEmoji(player, TRAITS[turnip.trait].icon);
+  renderHud();
+  await ask(player, `${turnipLabel(turnip.type)}が ${TRAITS[turnip.trait].icon}${TRAITS[turnip.trait].name} になった！<br><small>${TRAITS[turnip.trait].eat}</small>`,
+    [{ id: "ok", label: turnip.trait === "bomb" ? "うわっ" : "やった" }], "ok");
+}
+
+async function visitFertTile(player) {
+  player.fertilized = true;
+  await ask(player, "🌧 ひりょうマス。この番の終わりは、同じ色が隣り合っていれば<b>必ず</b>増える。", [{ id: "ok", label: "そだて〜" }], "ok");
 }
 
 // ---- 頭の上の反応（自分の手番の終わり）：💣の導火線 → 増殖 → 合体 → 突然変異 ----
@@ -1410,7 +1532,7 @@ async function headReactions(player) {
     const lower = before[k], upper = before[k + 1];
     if (lower.type !== upper.type || lower.trait === "bomb" || upper.trait === "bomb") continue;
     if (player.stack.length >= CONFIG.maxStack) break;
-    if (random() < CONFIG.growChance) {
+    if (player.fertilized || random() < CONFIG.growChance) {
       const index = player.stack.indexOf(upper);
       player.stack.splice(index + 1, 0, makeTurnip(lower.type));
       game.stats.grows++;
@@ -1418,6 +1540,7 @@ async function headReactions(player) {
       emojis.push("🌱");
     }
   }
+  player.fertilized = false;
   mergeTriples(player, events);
   // 突然変異：違う色が隣り合ったペアごとに、組み合わせで決まる変異が付く
   for (let k = 0; k + 1 < player.stack.length; k++) {
@@ -1457,18 +1580,25 @@ async function playTurn(player) {
   if (hasThree) focusPlayer(player);
   renderHud();
   await eatPhase(player);
-  await ask(player, `<b>${player.name}</b> の番。`, [{ id: "roll", label: player.extraRoll ? "🎲🎲 サイコロを2回ふる" : "🎲 サイコロをふる" }], "roll");
-  const rolls = [1 + randomInt(CONFIG.diceSides)];
-  if (player.extraRoll) rolls.push(1 + randomInt(CONFIG.diceSides));
-  player.extraRoll = false;
-  const steps = rolls.reduce((a, b) => a + b, 0);
-  await showToast(rolls.map((r) => `🎲 ${r}`).join(" + "));
-  for (let step = 1; step <= steps; step++) {
-    player.position = (player.position + 1) % BOARD.length;
-    if (hasThree) { await hopTo(player, player.position); focusPlayer(player); }
-    const passing = BOARD[player.position];
-    if (step < steps && passing.kind === "market" && player.stack.length > 0) {
-      await visitMarket(player, player.position, true);
+  if (player.warpTo !== null) {
+    // 🪽：サイコロを振らずに選んだマスへ飛ぶ（途中の市場には寄れない）
+    player.position = player.warpTo;
+    player.warpTo = null;
+    if (hasThree) { focusPlayer(player); await hopTo(player, player.position, 4, 3.5); }
+  } else {
+    await ask(player, `<b>${player.name}</b> の番。`, [{ id: "roll", label: player.extraRoll ? "🎲🎲 サイコロを2回ふる" : "🎲 サイコロをふる" }], "roll");
+    const rolls = [1 + randomInt(CONFIG.diceSides)];
+    if (player.extraRoll) rolls.push(1 + randomInt(CONFIG.diceSides));
+    player.extraRoll = false;
+    const steps = rolls.reduce((a, b) => a + b, 0);
+    await showToast(rolls.map((r) => `🎲 ${r}`).join(" + "));
+    for (let step = 1; step <= steps; step++) {
+      player.position = (player.position + 1) % BOARD.length;
+      if (hasThree) { await hopTo(player, player.position); focusPlayer(player); }
+      const passing = BOARD[player.position];
+      if (step < steps && passing.kind === "market" && player.stack.some((turnip) => turnip.trait !== "bomb")) {
+        await visitMarket(player, player.position, true);
+      }
     }
   }
   const tile = BOARD[player.position];
@@ -1479,6 +1609,12 @@ async function playTurn(player) {
     if (player.stack.length > 0) await visitMarket(player, player.position, false);
   } else if (tile.kind === "kabu") {
     await visitKabuTile(player, player.position);
+  } else if (tile.kind === "swap") {
+    await visitSwapTile(player);
+  } else if (tile.kind === "lab") {
+    await visitLabTile(player);
+  } else if (tile.kind === "fert") {
+    await visitFertTile(player);
   } else if (tile.kind === "radio") {
     const typeIndex = randomInt(TURNIP_TYPES.length);
     const shift = random() < 0.5 ? -CONFIG.radioShift : CONFIG.radioShift;
@@ -1636,11 +1772,12 @@ function showTitle() {
     <ol>
       <li>手に入れたカブは<b>頭のてっぺんに積む</b>。売る・食べるは<b>どの段でも</b>選べる。</li>
       <li><b>自分の番の終わりに、頭の上で反応が起きる。</b>同じ色が隣り合うと🌱増える。3つ並ぶと👑大カブに合体（1個の${CONFIG.bigPriceMultiplier}倍で売れる）。違う色が隣り合うと🧬突然変異する（色の組み合わせで何になるか決まる）。<b>たくさん積むほど当たりが出る。</b></li>
-      <li><b>番の最初に1個食べられる。</b>🎈ふくらみ＝その色が値上がり／🥀しおれ＝好きな色を値下げ／👟はしり＝サイコロ2回／🧲じしゃく＝好きな相手から1個引き寄せる／✨きらきら＝次のうわさが必ず本当。</li>
+      <li><b>番の最初に1個食べられる。</b>🎈ふくらみ＝その色が値上がり／🥀しおれ＝好きな色を値下げ／👟はしり＝サイコロ2回／🧲じしゃく＝好きな相手から1個引き寄せる／✨きらきら＝次のうわさが必ず本当／🪽はね＝サイコロを振らずに好きなマスへ飛ぶ。</li>
       <li>💣ばくだん（べに×ほしの突然変異でまれに生まれる）は食べられない。${CONFIG.bombFuse}日で破裂して両隣ごと吹き飛ぶ。売れないので、同じマスの相手に押し付けるしかない。</li>
       <li><b>値段はカブの大きさ。</b>人気が出ると、島じゅうの同じカブが一斉に膨らむ。大きいほど高く売れる。<b>値段に上限はない</b>（膨らみ続ければどこまでも高くなる）。</li>
       <li><b>みんなの頭に多く乗っているカブほど縮んでいく。</b>みんなの頭を見て、次に膨らむカブを読もう。真ん中の見本台で4種の大きさを見比べられる。</li>
       <li><b>カブマス</b>に止まると、置いてあるカブを<b>タダで拾える</b>。そのカブのうわさも聞こえる（自分だけ。4回に1回はうそ）。</li>
+      <li>🔀ならべかえ＝頭の隣り合った2つを入れ替え／🧪けんきゅうじょ＝好きなカブを突然変異させる（たまに💣）／🌧ひりょう＝その番は同じ色の隣り合いが必ず増える。</li>
       <li>畑は止まると<b>まとめて買える</b>（1〜3こ）。市場は<b>通りがかりでも</b>寄って売れる。店主の好物は1段高く売れる。📻ラジオマスでは相場が動く。</li>
       <li>同じマスに止まったら、自分のカブを1個（どれでも）<b>押し付ける</b>か、相手のてっぺんを<b>ひったくる</b>。</li>
       <li>${CONFIG.totalRounds}日後、頭に残ったカブはしおれて0。いちばんコインを持っていた人の勝ち。</li>
