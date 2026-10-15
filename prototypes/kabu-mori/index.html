@@ -1,0 +1,1301 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>カブ盛りバブル — 相場検証プロト</title>
+<style>
+  :root {
+    --paper: #fffaf0;
+    --ink: #3b3326;
+    --ink-soft: #7a6d58;
+    --line: #e4d8bf;
+    --accent: #6fae4b;
+    --accent-ink: #ffffff;
+    --shadow: 0 4px 14px rgba(60, 45, 20, 0.18);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #8fd3df; color: var(--ink);
+    font-family: "Hiragino Maru Gothic ProN", "M PLUS Rounded 1c", "Yu Gothic", system-ui, sans-serif; }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  /* 上：日付・相場・プレイヤー */
+  #top { position: fixed; top: 0; left: 0; right: 0; padding: 8px 10px 0; pointer-events: none;
+    display: flex; flex-direction: column; gap: 6px; max-width: 760px; margin: 0 auto; }
+  #status { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; pointer-events: auto; }
+  #status .pill { background: var(--paper); border-radius: 999px; padding: 4px 10px; box-shadow: var(--shadow); }
+  #status .meta { margin-left: auto; font-size: 10px; font-weight: 400; color: var(--ink-soft); background: rgba(255,250,240,0.8); }
+  #speed { border: 0; font: inherit; cursor: pointer; }
+  #market { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+  .mcell { background: var(--paper); border-radius: 12px; padding: 5px 6px; box-shadow: var(--shadow); min-width: 0; }
+  .mcell .row1 { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; flex: none; border: 1px solid rgba(0,0,0,0.18); }
+  .mcell .row2 { display: flex; align-items: baseline; gap: 3px; }
+  .mcell .face { font-size: 24px; line-height: 1.1; }
+  .mcell .arrow { font-size: 13px; font-weight: 700; }
+  .arrow.up { color: #d0473a; } .arrow.down { color: #3a74c9; } .arrow.flat { color: var(--ink-soft); }
+  .mcell .coin { font-size: 10px; color: var(--ink-soft); margin-left: auto; }
+  .mcell .held { font-size: 9px; color: var(--ink-soft); letter-spacing: -1px; white-space: nowrap; overflow: hidden; height: 11px; }
+  #players { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+  .pcard { background: rgba(255,250,240,0.92); border-radius: 12px; padding: 4px 6px; box-shadow: var(--shadow);
+    border: 2px solid transparent; min-width: 0; font-size: 11px; }
+  .pcard.active { border-color: var(--pc); }
+  .pcard .name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pcard .sub { color: var(--ink-soft); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pcard .coins { font-weight: 700; }
+  .ministack { display: flex; gap: 1px; height: 9px; margin-top: 2px; }
+  .ministack i { width: 8px; height: 8px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.2); flex: none; }
+
+  /* 下：メッセージと選択肢 */
+  #bottom { position: fixed; left: 0; right: 0; bottom: 0; padding: 0 10px calc(10px + env(safe-area-inset-bottom));
+    max-width: 760px; margin: 0 auto; }
+  #panel { background: var(--paper); border-radius: 16px; padding: 10px 12px; box-shadow: var(--shadow); }
+  #message { font-size: 14px; line-height: 1.5; min-height: 21px; }
+  #rumors { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  #rumors:empty { display: none; }
+  .rumor { font-size: 11px; background: #fff1c9; border-radius: 8px; padding: 2px 7px; }
+  #buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  #buttons:empty { display: none; }
+  #buttons button { flex: 1 1 140px; min-height: 44px; border: 0; border-radius: 12px; font: inherit; font-size: 14px; font-weight: 700;
+    background: var(--accent); color: var(--accent-ink); cursor: pointer; padding: 6px 10px; }
+  #buttons button.secondary { background: #e9e0cc; color: var(--ink); }
+  #buttons button:disabled { opacity: 0.55; cursor: default; }
+
+  #toast { position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%) scale(0.9); opacity: 0;
+    background: var(--paper); border-radius: 18px; padding: 12px 20px; font-size: 20px; font-weight: 700; box-shadow: var(--shadow);
+    transition: opacity 0.2s, transform 0.2s; pointer-events: none; text-align: center; max-width: 86vw; }
+  #toast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+
+  /* タイトル・結果 */
+  #overlay { position: fixed; inset: 0; background: rgba(40, 60, 50, 0.45); display: flex; align-items: center; justify-content: center;
+    padding: 16px; overflow-y: auto; }
+  #overlay.hidden { display: none; }
+  .sheet { background: var(--paper); border-radius: 20px; padding: 18px 18px 16px; max-width: 560px; width: 100%; box-shadow: var(--shadow);
+    max-height: calc(100vh - 32px); overflow-y: auto; }
+  .sheet h1 { margin: 0 0 2px; font-size: 26px; }
+  .sheet h2 { font-size: 15px; margin: 16px 0 6px; }
+  .sheet p, .sheet li { font-size: 13px; line-height: 1.6; }
+  .sheet ol { padding-left: 20px; margin: 6px 0; }
+  .sheet .lead { color: var(--ink-soft); margin-top: 0; }
+  .sheet .actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  .sheet .actions button { min-height: 48px; border: 0; border-radius: 14px; font: inherit; font-size: 15px; font-weight: 700;
+    background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  .sheet .actions button.secondary { background: #e9e0cc; color: var(--ink); }
+  .sheet .foot { font-size: 10px; color: var(--ink-soft); margin-top: 10px; }
+  table.rank, table.faces { border-collapse: collapse; width: 100%; font-size: 12px; }
+  table.rank td, table.faces td, table.faces th { padding: 4px 4px; border-bottom: 1px solid var(--line); text-align: center; }
+  table.rank td:nth-child(2) { text-align: left; }
+  .timeline-wrap { overflow-x: auto; }
+  table.timeline { border-collapse: collapse; font-size: 10px; }
+  table.timeline td, table.timeline th { border: 1px solid var(--line); padding: 1px 2px; text-align: center; min-width: 26px; vertical-align: top; }
+  table.timeline th.typehead { text-align: left; white-space: nowrap; }
+  table.timeline td.split { background: #fff1c9; }
+  table.timeline td.herd { background: #dbe8f8; }
+  .mark { display: block; line-height: 1.1; font-weight: 700; }
+  .verdict { background: #f4f0e4; border-radius: 12px; padding: 8px 10px; font-size: 13px; line-height: 1.6; }
+  .legend { font-size: 10px; color: var(--ink-soft); margin-top: 4px; }
+
+  @media (max-width: 420px) {
+    .mcell .face { font-size: 20px; }
+    .mcell .coin { display: none; }
+    #message { font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="top">
+  <div id="status">
+    <span class="pill" id="dayLabel">—</span>
+    <button class="pill" id="speed" type="button">⏩ ふつう</button>
+    <span class="pill meta" id="metaLabel"></span>
+  </div>
+  <div id="market"></div>
+  <div id="players"></div>
+</div>
+
+<div id="bottom">
+  <div id="panel">
+    <div id="message"></div>
+    <div id="rumors"></div>
+    <div id="buttons"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="overlay"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+// -----------------------------------------------------------------
+// カブ盛りバブル — 相場検証プロト（PS-053）
+//
+// 検証したい最大の賭け：「頭を見て相場を読む」が駆け引きになるか。
+// つまり、需給（全員の頭に乗っている数）で値が動くとき、売り時がプレイヤーごとに割れるか。
+// 結果画面に「同じ日に、同じカブを誰かが売り・別の誰かが買った日（＝判断が割れた日）」を出す。
+// 爆弾カブ・崩落など他の突然変異はこの検証の後に足す。
+// -----------------------------------------------------------------
+const GAME_VERSION = "v0.1.0";
+
+// ---- 調整値（データ駆動：ここだけ触ればバランスが変わる） ----
+const CONFIG = {
+  totalRounds: 16,            // 16日＝4週。1日＝全員が1手番
+  roundsPerWeek: 4,           // 流行（隠れトレンド）が切り替わる単位
+  startCoins: 12,
+  startStackSize: 2,          // 最初から頭に乗っているカブ。頭が空だと序盤に「読む」材料がない
+  maxStack: 10,               // これ以上は積めない（タワーの見た目の上限でもある）
+  maxBuyPerVisit: 3,
+  diceSides: 6,
+  priceByLevel: [1, 2, 3, 5, 8],   // 顔5段の値段。上の段ほど伸び幅が大きい＝🤩で売り抜ける価値を作る
+  faces: ["😱", "😟", "🙂", "😄", "🤩"],
+  supplyPressurePerTurnip: 0.11,   // 平均より1個多く頭に乗っているごとに、毎日これだけ下がる
+  meanReversion: 0.07,             // 真ん中（🙂）へ戻ろうとする力。張り付き防止
+  trendChoices: [-0.45, -0.25, 0.25, 0.45],   // 週ごとの流行の強さ。0を入れないのは、うわさが必ず方向を持つようにするため
+  rumorTruthRate: 0.75,            // うわさが本当である確率
+  radioShift: 1,                   // ラジオのニュースで動く段数
+  favoriteShopBonus: 1,            // 店主の好きなカブは顔が1段上で売れる
+};
+
+// 見た目・待ち時間（ミリ秒）。?headless=1 では全部0になる
+const TIMING = { hop: 230, cpuThink: 520, toast: 1100, fly: 380, marketTick: 700 };
+
+const TURNIP_TYPES = [
+  { id: "white", name: "しろカブ", color: 0xf4efe4, css: "#f4efe4", volatility: 0.18, supplySensitivity: 1, start: 2,
+    note: "値動き小さめ" },
+  { id: "red",   name: "べにカブ", color: 0xe0485e, css: "#e0485e", volatility: 0.32, supplySensitivity: 1, start: 2,
+    note: "ふつう" },
+  { id: "gold",  name: "きんカブ", color: 0xf2c230, css: "#f2c230", volatility: 0.3, supplySensitivity: 2, start: 3,
+    note: "高い。みんなが持つと2倍の速さで下がる" },
+  { id: "star",  name: "ほしカブ", color: 0x8a63e0, css: "#8a63e0", volatility: 0.6, supplySensitivity: 1, start: 1,
+    note: "値動きが荒い" },
+];
+
+const SHOPS = [
+  { name: "ひつじ屋",   emoji: "🐑", likes: 0 },
+  { name: "りす商店",   emoji: "🐿️", likes: 1 },
+  { name: "ペンギン堂", emoji: "🐧", likes: 2 },
+  { name: "かめ屋",     emoji: "🐢", likes: 3 },
+];
+
+// 1周16マス。畑（買う）は止まったときだけ、市場（売る）は通りがかりでも寄れる。
+// 売り時をサイコロ任せにせず、プレイヤーの判断にするため。
+const BOARD = [
+  { kind: "field", type: 0 }, { kind: "road" },  { kind: "rumor" }, { kind: "market", shop: 0 },
+  { kind: "field", type: 1 }, { kind: "radio" }, { kind: "rumor" }, { kind: "market", shop: 1 },
+  { kind: "field", type: 2 }, { kind: "road" },  { kind: "rumor" }, { kind: "market", shop: 2 },
+  { kind: "field", type: 3 }, { kind: "radio" }, { kind: "rumor" }, { kind: "market", shop: 3 },
+];
+
+const CHARACTERS = [
+  { name: "くま",   emoji: "🐻", kind: "bear",   body: 0xb3794c, inner: 0xe8c9a4, css: "#b3794c" },
+  { name: "うさぎ", emoji: "🐰", kind: "rabbit", body: 0xf5ecef, inner: 0xf3b6c6, css: "#e58fb0" },
+  { name: "ねこ",   emoji: "🐱", kind: "cat",    body: 0xf2a65a, inner: 0xfbe3c4, css: "#e8902f" },
+  { name: "いぬ",   emoji: "🐶", kind: "dog",    body: 0xd9c29b, inner: 0x8a6a48, css: "#5d8fd0" },
+];
+
+const PERSONALITIES = {
+  human:      { label: "プレイヤー" },
+  trend:      { label: "順張り" },
+  contrarian: { label: "逆張り" },
+  rumor:      { label: "うわさ好き" },
+  whim:       { label: "気まぐれ" },
+};
+
+// -----------------------------------------------------------------
+// 乱数（スタジオ共通ルール）
+//   random()   … ゲーム状態に影響する乱数（サイコロ・流行・うわさ）。?seed= で再現する対象
+//   fxRandom() … 見た目だけの乱数（カブの傾き等）
+// -----------------------------------------------------------------
+function makeRandomGenerator(seedValue) {   // mulberry32
+  let state = seedValue >>> 0;
+  return function nextRandom() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let currentSeed = 0;
+let nextLogicRandom = null;
+let nextFxRandom = null;
+function reseedRandom(seed) {
+  currentSeed = seed >>> 0;
+  nextLogicRandom = makeRandomGenerator(currentSeed);
+  nextFxRandom = makeRandomGenerator((currentSeed ^ 0x9E3779B9) >>> 0);
+}
+function random()   { return nextLogicRandom(); }
+function fxRandom() { return nextFxRandom(); }
+function randomInt(count) { return Math.floor(random() * count); }
+
+const params = new URLSearchParams(location.search);
+const isHeadless = params.has("headless");   // 自動検証用：演出待ちを0にする
+let speedFactor = isHeadless ? 0 : 1;
+
+function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
+function wait(ms) {
+  const scaled = ms * speedFactor;
+  return scaled <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, scaled));
+}
+
+// -----------------------------------------------------------------
+// ゲーム状態
+// -----------------------------------------------------------------
+const game = {
+  mode: "solo",
+  round: 0,
+  currentPlayer: 0,
+  finished: false,
+  trends: [],      // [週][種類] 隠れトレンド。うわさはこれの「来週ぶん」を漏らす
+  market: [],      // 種類ごとの { value, level, lastDelta, history }
+  players: [],
+  actionLog: [],   // { round, player, type, kind: "buy"|"sell", level }
+  newsLog: [],
+};
+
+function currentWeekIndex() { return Math.floor((Math.max(game.round, 1) - 1) / CONFIG.roundsPerWeek); }
+function weekCount() { return Math.ceil(CONFIG.totalRounds / CONFIG.roundsPerWeek); }
+function roundsLeft() { return CONFIG.totalRounds - game.round; }
+function levelOf(value) { return clamp(Math.round(value), 0, CONFIG.faces.length - 1); }
+function priceOf(level) { return CONFIG.priceByLevel[level]; }
+
+function totalHeld(typeIndex) {
+  let count = 0;
+  for (const player of game.players) for (const t of player.stack) if (t === typeIndex) count++;
+  return count;
+}
+function averageHeld() {
+  let sum = 0;
+  for (let t = 0; t < TURNIP_TYPES.length; t++) sum += totalHeld(t);
+  return sum / TURNIP_TYPES.length;
+}
+
+function setupGame(mode, seed) {
+  reseedRandom(seed);
+  game.mode = mode;
+  game.round = 0;
+  game.finished = false;
+  game.actionLog = [];
+  game.newsLog = [];
+  game.trends = [];
+  for (let w = 0; w < weekCount(); w++) {
+    game.trends.push(TURNIP_TYPES.map(() => CONFIG.trendChoices[randomInt(CONFIG.trendChoices.length)]));
+  }
+  game.market = TURNIP_TYPES.map((type) => ({ value: type.start, level: type.start, lastDelta: 0, history: [type.start] }));
+
+  const personalitiesByMode = {
+    solo:  ["human", "trend", "contrarian", "rumor"],
+    party: ["human", "human", "human", "human"],
+    watch: ["trend", "contrarian", "rumor", "whim"],
+  };
+  game.players = CHARACTERS.map((character, index) => {
+    const personality = personalitiesByMode[mode][index];
+    const stack = [];
+    for (let k = 0; k < CONFIG.startStackSize; k++) stack.push(randomInt(TURNIP_TYPES.length));
+    return {
+      index, character, personality,
+      isCpu: personality !== "human",
+      name: mode === "party" ? `${character.emoji} ${character.name}` :
+            (personality === "human" ? `${character.emoji} あなた` : `${character.emoji} ${character.name}`),
+      coins: CONFIG.startCoins,
+      position: 0,
+      stack,                // 下→上。触れるのはいちばん上（末尾）だけ
+      rumors: [],           // { week, type, direction }
+    };
+  });
+}
+
+// ---- 相場：毎日の終わりに、流行＋需給＋ゆらぎで動く ----
+function updateMarketLogic() {
+  const week = currentWeekIndex();
+  const average = averageHeld();
+  const totals = TURNIP_TYPES.map((_, t) => totalHeld(t));
+  TURNIP_TYPES.forEach((type, t) => {
+    const entry = game.market[t];
+    const before = entry.level;
+    const supplyPressure = (totals[t] - average) * CONFIG.supplyPressurePerTurnip * type.supplySensitivity;
+    const noise = (random() * 2 - 1) * type.volatility;
+    const reversion = CONFIG.meanReversion * (2 - entry.value);
+    entry.value = clamp(entry.value + game.trends[week][t] - supplyPressure + noise + reversion, -0.4, 4.4);
+    entry.level = levelOf(entry.value);
+    entry.lastDelta = entry.level - before;
+    entry.history.push(entry.level);
+  });
+}
+
+function applyNews(typeIndex, shift) {
+  const entry = game.market[typeIndex];
+  const before = entry.level;
+  entry.value = clamp(entry.value + shift, -0.4, 4.4);
+  entry.level = levelOf(entry.value);
+  entry.lastDelta = entry.level - before;
+}
+
+function drawRumor(player) {
+  const week = Math.min(currentWeekIndex() + 1, weekCount() - 1);
+  const typeIndex = randomInt(TURNIP_TYPES.length);
+  const trueDirection = Math.sign(game.trends[week][typeIndex]);
+  const isTrue = random() < CONFIG.rumorTruthRate;
+  const rumor = { week, type: typeIndex, direction: isTrue ? trueDirection : -trueDirection, isTrue };
+  player.rumors.push(rumor);
+  return rumor;
+}
+function rumorText(rumor) {
+  const when = rumor.week > currentWeekIndex() ? "来週" : "今週";
+  const type = TURNIP_TYPES[rumor.type].name;
+  return rumor.direction > 0 ? `${when}、${type}が流行るらしい` : `${when}、${type}は飽きられるらしい`;
+}
+
+function recordAction(player, typeIndex, kind) {
+  game.actionLog.push({ round: game.round, player: player.index, type: typeIndex, kind, level: game.market[typeIndex].level });
+}
+
+// -----------------------------------------------------------------
+// CPU の読み方（性格ごとに見るものが違う＝判断が割れる余地を作る）
+// -----------------------------------------------------------------
+function cpuOutlook(player, typeIndex) {
+  const entry = game.market[typeIndex];
+  const surplus = totalHeld(typeIndex) - averageHeld();
+  const sensitivity = TURNIP_TYPES[typeIndex].supplySensitivity;
+  switch (player.personality) {
+    case "trend": {
+      const history = entry.history;
+      const recent = history.length >= 3 ? history[history.length - 1] - history[history.length - 3] : 0;
+      return entry.lastDelta * 0.8 + recent * 0.3 - surplus * 0.04 * sensitivity;
+    }
+    case "contrarian":
+      return (2 - entry.level) * 0.5 - surplus * 0.22 * sensitivity;
+    case "rumor": {
+      let belief = 0;
+      for (const rumor of player.rumors) {
+        if (rumor.type !== typeIndex) continue;
+        if (rumor.week === currentWeekIndex()) belief += rumor.direction * 0.8;
+        else if (rumor.week === currentWeekIndex() + 1) belief += rumor.direction * 0.5;
+      }
+      return belief + (2 - entry.level) * 0.2 - surplus * 0.06 * sensitivity;
+    }
+    case "whim":
+      return random() * 2 - 1;
+    default:
+      return 0;
+  }
+}
+
+function cpuWantsToSell(player, typeIndex, sellLevel) {
+  if (roundsLeft() <= 1) return true;                // 最終日はしおれる前に全部売る
+  if (sellLevel >= 4) return true;                   // 🤩 は誰でも売る
+  if (player.personality === "contrarian" && sellLevel >= 3) return true;
+  return cpuOutlook(player, typeIndex) < -0.15;
+}
+
+function cpuBuyCount(player, typeIndex, maxBuy) {
+  if (maxBuy <= 0 || roundsLeft() <= 2) return 0;
+  const level = game.market[typeIndex].level;
+  if (level >= 4) return 0;
+  const outlook = cpuOutlook(player, typeIndex);
+  if (outlook <= 0.05) return 0;
+  return Math.min(maxBuy, outlook > 0.6 ? 3 : outlook > 0.3 ? 2 : 1);
+}
+
+// -----------------------------------------------------------------
+// 3D（three.js r128）
+// -----------------------------------------------------------------
+const canvas = document.getElementById("scene");
+const hasThree = typeof THREE !== "undefined";
+let renderer = null, scene = null, camera = null;
+const view = {
+  ringRadius: 7,
+  cameraAngle: 0,
+  targetAngle: 0,
+  focus: null,          // THREE.Vector3
+  tiles: [],            // 各マスの中心
+  pillars: [],          // 中央の相場の柱 { pillar, top, faceSprite, height }
+  tweens: [],
+  clock: 0,
+};
+const turnipGeometry = {};
+const turnipMaterials = [];
+
+function tilePosition(index) {
+  const angle = (index / BOARD.length) * Math.PI * 2;
+  return { x: Math.sin(angle) * view.ringRadius, z: Math.cos(angle) * view.ringRadius, angle };
+}
+
+// 同じマスに複数人いても重ならないよう、人ごとに決まった位置にずらす
+const SLOT_OFFSETS = [[-0.32, -0.3], [0.32, -0.3], [-0.32, 0.3], [0.32, 0.3]];
+function standingPoint(tileIndex, playerIndex) {
+  const tile = tilePosition(tileIndex);
+  const [dx, dz] = SLOT_OFFSETS[playerIndex];
+  const cos = Math.cos(tile.angle), sin = Math.sin(tile.angle);
+  return new THREE.Vector3(tile.x + dx * cos + dz * sin, 0.32, tile.z - dx * sin + dz * cos);
+}
+
+function makeEmojiSprite(text, size, background) {
+  const pixel = 128;
+  const spriteCanvas = document.createElement("canvas");
+  spriteCanvas.width = spriteCanvas.height = pixel;
+  const context = spriteCanvas.getContext("2d");
+  if (background) {
+    context.fillStyle = background;
+    context.beginPath(); context.arc(pixel / 2, pixel / 2, pixel / 2 - 4, 0, Math.PI * 2); context.fill();
+  }
+  context.font = `${Math.round(pixel * 0.62)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+  context.textAlign = "center"; context.textBaseline = "middle";
+  context.fillText(text, pixel / 2, pixel / 2 + 6);
+  const texture = new THREE.CanvasTexture(spriteCanvas);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
+  sprite.scale.set(size, size, size);
+  sprite.userData.canvas = spriteCanvas;
+  return sprite;
+}
+function redrawEmojiSprite(sprite, text) {
+  const spriteCanvas = sprite.userData.canvas;
+  const context = spriteCanvas.getContext("2d");
+  const pixel = spriteCanvas.width;
+  context.clearRect(0, 0, pixel, pixel);
+  context.fillStyle = "rgba(255,250,240,0.95)";
+  context.beginPath(); context.arc(pixel / 2, pixel / 2, pixel / 2 - 4, 0, Math.PI * 2); context.fill();
+  context.font = `${Math.round(pixel * 0.62)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+  context.textAlign = "center"; context.textBaseline = "middle";
+  context.fillText(text, pixel / 2, pixel / 2 + 6);
+  sprite.material.map.needsUpdate = true;
+}
+
+function standardMaterial(color, extra) {
+  return new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.75, metalness: 0 }, extra || {}));
+}
+
+function buildTurnipAssets() {
+  // カブの胴：下がとがった玉ねぎ型を回転体で作る
+  const profile = [[0.002, 0], [0.025, 0.035], [0.07, 0.08], [0.15, 0.14], [0.205, 0.21], [0.215, 0.27],
+                   [0.18, 0.335], [0.11, 0.38], [0.04, 0.4], [0.002, 0.405]];
+  turnipGeometry.bulb = new THREE.LatheGeometry(profile.map(([x, y]) => new THREE.Vector2(x, y)), 20);
+  turnipGeometry.leaf = new THREE.SphereGeometry(1, 10, 8);
+  turnipGeometry.root = new THREE.ConeGeometry(0.018, 0.12, 6);
+  turnipGeometry.leafMaterial = standardMaterial(0x5aa83c);
+  turnipGeometry.stemMaterial = standardMaterial(0x7cc24f);
+  TURNIP_TYPES.forEach((type) => {
+    const extra = type.id === "gold" ? { metalness: 0.55, roughness: 0.32, emissive: 0x4a3300 } :
+                  type.id === "star" ? { emissive: 0x24105a, roughness: 0.45 } :
+                  type.id === "white" ? { roughness: 0.6 } : { roughness: 0.55 };
+    turnipMaterials.push(standardMaterial(type.color, extra));
+  });
+}
+
+const TURNIP_HEIGHT = 0.405;
+function makeTurnipMesh(typeIndex) {
+  const group = new THREE.Group();
+  const bulb = new THREE.Mesh(turnipGeometry.bulb, turnipMaterials[typeIndex]);
+  bulb.castShadow = true;
+  group.add(bulb);
+  const root = new THREE.Mesh(turnipGeometry.root, turnipGeometry.stemMaterial);
+  root.rotation.x = Math.PI; root.position.y = -0.04;
+  group.add(root);
+  for (let k = 0; k < 3; k++) {
+    const leaf = new THREE.Mesh(turnipGeometry.leaf, k === 1 ? turnipGeometry.stemMaterial : turnipGeometry.leafMaterial);
+    leaf.scale.set(0.05, 0.17, 0.1);
+    const yaw = (k - 1) * 0.9;
+    leaf.position.set(Math.sin(yaw) * 0.07, 0.5, Math.cos(yaw) * 0.02);
+    leaf.rotation.z = -(k - 1) * 0.55;
+    leaf.castShadow = true;
+    group.add(leaf);
+  }
+  if (TURNIP_TYPES[typeIndex].id === "star") {
+    const sparkle = makeEmojiSprite("✨", 0.26);
+    sparkle.position.set(0.2, 0.32, 0.1);
+    group.add(sparkle);
+  }
+  return group;
+}
+
+function buildCharacter(character) {
+  const root = new THREE.Group();
+  const bodyMaterial = standardMaterial(character.body);
+  const innerMaterial = standardMaterial(character.inner);
+  const darkMaterial = standardMaterial(0x2b2420, { roughness: 0.4 });
+  const cheekMaterial = standardMaterial(0xf4a0a8);
+
+  const body = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 16), bodyMaterial);
+  body.scale.set(0.36, 0.42, 0.33); body.position.y = 0.42; body.castShadow = true;
+  root.add(body);
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), innerMaterial);
+  belly.scale.set(0.24, 0.28, 0.12); belly.position.set(0, 0.38, 0.24);
+  root.add(belly);
+  for (const side of [-1, 1]) {
+    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), bodyMaterial);
+    foot.scale.set(1, 0.6, 1.3); foot.position.set(side * 0.16, 0.06, 0.06); foot.castShadow = true;
+    root.add(foot);
+    const arm = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 10), bodyMaterial);
+    arm.scale.set(0.8, 1.3, 0.8); arm.position.set(side * 0.36, 0.5, 0.05); arm.rotation.z = side * 0.5;
+    root.add(arm);
+  }
+
+  const head = new THREE.Group();
+  head.position.y = 1.08;
+  root.add(head);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.44, 24, 18), bodyMaterial);
+  skull.scale.set(1.08, 0.95, 1); skull.castShadow = true;
+  head.add(skull);
+  const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.17, 16, 12), innerMaterial);
+  muzzle.scale.set(1.2, 0.8, 0.8); muzzle.position.set(0, -0.12, 0.36);
+  head.add(muzzle);
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), darkMaterial);
+  nose.position.set(0, -0.07, 0.49);
+  head.add(nose);
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), darkMaterial);
+    eye.scale.set(1, 1.3, 0.6); eye.position.set(side * 0.17, 0.05, 0.4);
+    head.add(eye);
+    const cheek = new THREE.Mesh(new THREE.CircleGeometry(0.06, 14), cheekMaterial);
+    cheek.position.set(side * 0.28, -0.1, 0.35); cheek.rotation.y = side * 0.55;
+    head.add(cheek);
+
+    let ear;
+    if (character.kind === "bear") {
+      ear = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10), bodyMaterial);
+      ear.position.set(side * 0.34, 0.32, -0.02);
+    } else if (character.kind === "rabbit") {
+      // 長い耳は外へ倒しておく（頭の上をカブタワーに空けるため）
+      ear = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 10), bodyMaterial);
+      ear.scale.set(0.09, 0.33, 0.06); ear.position.set(side * 0.33, 0.52, -0.04); ear.rotation.z = -side * 0.55;
+      const innerEar = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), innerMaterial);
+      innerEar.scale.set(0.5, 0.8, 0.4); innerEar.position.z = 0.6;
+      ear.add(innerEar);
+    } else if (character.kind === "cat") {
+      ear = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.24, 4), bodyMaterial);
+      ear.position.set(side * 0.3, 0.38, 0); ear.rotation.z = -side * 0.35; ear.rotation.y = Math.PI / 4;
+    } else {
+      ear = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 10), innerMaterial);
+      ear.scale.set(0.09, 0.22, 0.13); ear.position.set(side * 0.45, 0.05, -0.02); ear.rotation.z = side * 0.25;
+    }
+    ear.castShadow = true;
+    head.add(ear);
+  }
+
+  // カブタワーの付け根（頭のてっぺん）。ここに入れ子でカブを積み、上ほど大きく揺れるようにする
+  const stackAnchor = new THREE.Group();
+  stackAnchor.position.y = 0.4;
+  head.add(stackAnchor);
+
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.5, 28), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.02;
+  root.add(ring);
+
+  return { root, head, stackAnchor, ring, nodes: [], swayPhase: fxRandom() * Math.PI * 2, swayImpulse: 0, bob: 0 };
+}
+
+function rebuildStackVisual(player) {
+  const visual = player.visual;
+  if (!visual) return;
+  while (visual.stackAnchor.children.length) visual.stackAnchor.remove(visual.stackAnchor.children[0]);
+  visual.nodes = [];
+  let parent = visual.stackAnchor;
+  player.stack.forEach((typeIndex, k) => {
+    const node = new THREE.Group();
+    node.position.y = k === 0 ? 0 : TURNIP_HEIGHT * 0.86;
+    node.position.x = (fxRandom() - 0.5) * 0.05;
+    node.position.z = (fxRandom() - 0.5) * 0.05;
+    const turnip = makeTurnipMesh(typeIndex);
+    turnip.rotation.y = fxRandom() * Math.PI * 2;
+    turnip.scale.setScalar(1.15);
+    node.add(turnip);
+    parent.add(node);
+    visual.nodes.push(node);
+    parent = node;
+  });
+}
+
+function stackTopWorld(player) {
+  const visual = player.visual;
+  if (!visual) return null;   // ヘッドレス検証ではキャラを作らない
+  const target = visual.nodes.length ? visual.nodes[visual.nodes.length - 1] : visual.stackAnchor;
+  const position = new THREE.Vector3();
+  target.getWorldPosition(position);
+  if (visual.nodes.length) position.y += TURNIP_HEIGHT;
+  return position;
+}
+
+function buildWorld() {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x8fd3df);
+  scene.fog = new THREE.Fog(0x8fd3df, 30, 60);
+  camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+
+  scene.add(new THREE.HemisphereLight(0xfff8e8, 0x6a8f5a, 0.75));
+  const sun = new THREE.DirectionalLight(0xfff1d6, 0.95);
+  sun.position.set(8, 16, 6);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, { left: -13, right: 13, top: 13, bottom: -13, near: 1, far: 50 });
+  sun.shadow.bias = -0.0008;
+  scene.add(sun);
+
+  const sea = new THREE.Mesh(new THREE.CircleGeometry(80, 48), standardMaterial(0x6cc4d6, { roughness: 0.35 }));
+  sea.rotation.x = -Math.PI / 2; sea.position.y = -0.35;
+  scene.add(sea);
+  const sand = new THREE.Mesh(new THREE.CylinderGeometry(10.6, 11.2, 0.5, 48), standardMaterial(0xf1e2b0));
+  sand.position.y = -0.25; sand.receiveShadow = true;
+  scene.add(sand);
+  const grass = new THREE.Mesh(new THREE.CylinderGeometry(9.6, 9.9, 0.5, 48), standardMaterial(0x9fd06a));
+  grass.position.y = -0.12; grass.receiveShadow = true;
+  scene.add(grass);
+
+  // 木（飾り）
+  const trunkMaterial = standardMaterial(0x9a6b45);
+  const leafMaterials = [standardMaterial(0x5fae4a), standardMaterial(0x78bf55)];
+  for (let k = 0; k < 9; k++) {
+    const angle = (k / 9) * Math.PI * 2 + 0.17;
+    const radius = k % 2 ? 9.1 : 4.4;
+    const tree = new THREE.Group();
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 0.7, 8), trunkMaterial);
+    trunk.position.y = 0.35; trunk.castShadow = true;
+    const crown = new THREE.Mesh(new THREE.SphereGeometry(0.55, 12, 10), leafMaterials[k % 2]);
+    crown.position.y = 1.05; crown.scale.set(1, 1.15, 1); crown.castShadow = true;
+    tree.add(trunk, crown);
+    tree.position.set(Math.sin(angle) * radius, 0.13, Math.cos(angle) * radius);
+    scene.add(tree);
+  }
+
+  // マス
+  const tileColors = { field: 0xc99a62, road: 0xf0e3c2, rumor: 0xf6d77a, market: 0xf3a17a, radio: 0x9cc8f0 };
+  BOARD.forEach((tile, index) => {
+    const position = tilePosition(index);
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.88, 0.94, 0.22, 28), standardMaterial(tileColors[tile.kind]));
+    disc.position.set(position.x, 0.2, position.z);
+    disc.receiveShadow = true;
+    scene.add(disc);
+    view.tiles.push(new THREE.Vector3(position.x, 0.32, position.z));
+    const outward = new THREE.Vector3(Math.sin(position.angle), 0, Math.cos(position.angle));
+
+    if (tile.kind === "field") {
+      // 畑：その種類のカブが植わっている
+      for (const [dx, dz] of [[-0.3, 0.05], [0.3, 0.05], [0, -0.3]]) {
+        const planted = makeTurnipMesh(tile.type);
+        planted.scale.setScalar(0.85);
+        planted.position.set(position.x + dx, 0.18, position.z + dz);
+        scene.add(planted);
+      }
+    } else if (tile.kind === "market") {
+      const shop = SHOPS[tile.shop];
+      const stall = new THREE.Group();
+      const counter = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.55, 0.5), standardMaterial(0xc98b5a));
+      counter.position.y = 0.28; counter.castShadow = true;
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(0.95, 0.5, 4), standardMaterial(TURNIP_TYPES[shop.likes].color));
+      roof.position.y = 1.35; roof.rotation.y = Math.PI / 4; roof.castShadow = true;
+      for (const side of [-1, 1]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.9, 6), trunkMaterial);
+        post.position.set(side * 0.58, 0.85, 0);
+        stall.add(post);
+      }
+      const keeper = makeEmojiSprite(shop.emoji, 0.7);
+      keeper.position.y = 0.85;
+      const favorite = makeTurnipMesh(shop.likes);
+      favorite.position.set(0.4, 0.56, 0.1);
+      stall.add(counter, roof, keeper, favorite);
+      stall.position.set(position.x + outward.x * 1.55, 0.05, position.z + outward.z * 1.55);
+      stall.lookAt(0, 0.05, 0);
+      scene.add(stall);
+    } else if (tile.kind === "rumor" || tile.kind === "radio") {
+      const icon = makeEmojiSprite(tile.kind === "rumor" ? "💬" : "📻", 0.75, "rgba(255,250,240,0.9)");
+      icon.position.set(position.x + outward.x * 1.25, 0.75, position.z + outward.z * 1.25);
+      scene.add(icon);
+    }
+  });
+
+  // 中央の相場の柱：高さ＝値段の段。上に顔とそのカブ
+  TURNIP_TYPES.forEach((type, t) => {
+    const angle = (t / TURNIP_TYPES.length) * Math.PI * 2 + Math.PI / 4;
+    const x = Math.sin(angle) * 1.5, z = Math.cos(angle) * 1.5;
+    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.48, 1, 20), standardMaterial(0xfff6e2));
+    pillar.position.set(x, 0, z); pillar.castShadow = true; pillar.receiveShadow = true;
+    scene.add(pillar);
+    const top = makeTurnipMesh(t);
+    top.scale.setScalar(1.6);
+    scene.add(top);
+    const faceSprite = makeEmojiSprite(CONFIG.faces[game.market[t] ? game.market[t].level : type.start], 0.8, "rgba(255,250,240,0.95)");
+    scene.add(faceSprite);
+    const entry = { pillar, top, faceSprite, x, z, height: 0 };
+    view.pillars.push(entry);
+    setPillarHeight(entry, pillarHeightFor(type.start));
+  });
+
+  view.focus = new THREE.Vector3(0, 0.8, 0);
+  resizeRenderer();
+  window.addEventListener("resize", resizeRenderer);
+}
+
+function pillarHeightFor(level) { return 0.35 + level * 0.55; }
+function setPillarHeight(entry, height) {
+  entry.height = height;
+  entry.pillar.scale.y = height;
+  entry.pillar.position.y = height / 2;
+  entry.top.position.set(entry.x, height + 0.02, entry.z);
+  entry.faceSprite.position.set(entry.x, height + 1.25, entry.z);
+}
+
+function addCharactersToWorld() {
+  for (const player of game.players) {
+    if (player.visual) scene.remove(player.visual.root);
+    player.visual = buildCharacter(player.character);
+    const point = standingPoint(player.position, player.index);
+    player.visual.root.position.copy(point);
+    player.visual.root.rotation.y = tilePosition(player.position).angle + Math.PI / 2;
+    scene.add(player.visual.root);
+    rebuildStackVisual(player);
+  }
+}
+
+function resizeRenderer() {
+  if (!renderer) return;
+  const width = window.innerWidth, height = window.innerHeight;
+  renderer.setSize(width, height, false);
+  camera.aspect = width / Math.max(height, 1);
+  camera.updateProjectionMatrix();
+}
+
+// ---- tween：演出の待ち合わせ。headless では即時に終わる ----
+function animate(duration, update) {
+  const scaled = duration * speedFactor;
+  if (!hasThree || scaled <= 0) { update(1); return Promise.resolve(); }
+  return new Promise((resolve) => view.tweens.push({ elapsed: 0, duration: scaled, update, resolve }));
+}
+
+let lastFrameTime = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const deltaSeconds = Math.min(0.05, (now - lastFrameTime) / 1000 || 0);
+  lastFrameTime = now;
+  view.clock += deltaSeconds;
+
+  for (let k = view.tweens.length - 1; k >= 0; k--) {
+    const tween = view.tweens[k];
+    tween.elapsed += deltaSeconds * 1000;
+    const progress = Math.min(1, tween.elapsed / tween.duration);
+    tween.update(progress);
+    if (progress >= 1) { view.tweens.splice(k, 1); tween.resolve(); }
+  }
+
+  // カブタワーの揺れ：入れ子なので、各段の小さな傾きが上へ行くほど積み重なる
+  for (const player of game.players) {
+    const visual = player.visual;
+    if (!visual) continue;
+    visual.swayImpulse *= Math.pow(0.12, deltaSeconds);
+    const height = visual.nodes.length;
+    const amplitude = 0.012 + height * 0.004 + visual.swayImpulse;
+    visual.nodes.forEach((node, k) => {
+      node.rotation.z = Math.sin(view.clock * 1.9 + visual.swayPhase + k * 0.45) * amplitude;
+      node.rotation.x = Math.cos(view.clock * 1.5 + visual.swayPhase + k * 0.3) * amplitude * 0.6;
+    });
+    const isActive = player.index === game.currentPlayer && !game.finished && game.round > 0;
+    visual.ring.material.opacity = isActive ? 0.65 + Math.sin(view.clock * 5) * 0.25 : 0;
+    visual.ring.material.color.set(player.character.css);
+  }
+
+  // カメラ：手番の人の外側から、島の中央（相場の柱）も入るように見る
+  let angleDifference = view.targetAngle - view.cameraAngle;
+  angleDifference = Math.atan2(Math.sin(angleDifference), Math.cos(angleDifference));
+  view.cameraAngle += angleDifference * Math.min(1, deltaSeconds * 2.2);
+  const portrait = camera.aspect < 0.9;
+  const distance = view.ringRadius + (portrait ? 13 : 9);
+  const heightAbove = portrait ? 13 : 9.5;
+  camera.position.set(Math.sin(view.cameraAngle) * distance, heightAbove, Math.cos(view.cameraAngle) * distance);
+  // 縦長画面は下のパネルが画面の下1/4を覆うので、注視点を手番の人の側へ寄せて人を画面中央に出す
+  const lookReach = view.ringRadius * (portrait ? 0.8 : 0.4);
+  const lookTarget = new THREE.Vector3(Math.sin(view.cameraAngle) * lookReach, portrait ? -1.2 : 1.2,
+                                       Math.cos(view.cameraAngle) * lookReach);
+  camera.lookAt(lookTarget);
+  renderer.render(scene, camera);
+}
+
+function focusPlayer(player) {
+  view.targetAngle = tilePosition(player.position).angle;
+}
+
+async function hopTo(player, tileIndex) {
+  if (!player.visual) return;
+  const visual = player.visual;
+  const from = visual.root.position.clone();
+  const to = standingPoint(tileIndex, player.index);
+  visual.root.rotation.y = Math.atan2(to.x - from.x, to.z - from.z);
+  visual.swayImpulse = Math.min(0.12, visual.swayImpulse + 0.04);
+  await animate(TIMING.hop, (t) => {
+    visual.root.position.lerpVectors(from, to, t);
+    visual.root.position.y = to.y + Math.sin(Math.PI * t) * 0.55;
+  });
+}
+
+// カブが飛んでいく演出（売る＝屋台へ、抜く＝畑から頭へ、押し付け／ひったくり＝頭から頭へ）
+async function flyTurnip(typeIndex, from, to) {
+  if (!hasThree || !from || !to) return;
+  const mesh = makeTurnipMesh(typeIndex);
+  mesh.scale.setScalar(1.15);
+  scene.add(mesh);
+  await animate(TIMING.fly, (t) => {
+    mesh.position.lerpVectors(from, to, t);
+    mesh.position.y += Math.sin(Math.PI * t) * 1.4;
+    mesh.rotation.y = t * 6;
+  });
+  scene.remove(mesh);
+}
+
+function marketStallWorld(tileIndex) {
+  const position = tilePosition(tileIndex);
+  return new THREE.Vector3(position.x + Math.sin(position.angle) * 1.55, 0.8, position.z + Math.cos(position.angle) * 1.55);
+}
+
+async function animatePillars() {
+  const starts = view.pillars.map((entry) => entry.height);
+  const targets = game.market.map((entry) => pillarHeightFor(entry.level));
+  game.market.forEach((entry, t) => redrawEmojiSprite(view.pillars[t].faceSprite, CONFIG.faces[entry.level]));
+  await animate(TIMING.marketTick, (progress) => {
+    const eased = 1 - Math.pow(1 - progress, 3);
+    view.pillars.forEach((entry, t) => setPillarHeight(entry, starts[t] + (targets[t] - starts[t]) * eased));
+  });
+}
+
+// -----------------------------------------------------------------
+// UI
+// -----------------------------------------------------------------
+const elements = {
+  dayLabel: document.getElementById("dayLabel"),
+  metaLabel: document.getElementById("metaLabel"),
+  market: document.getElementById("market"),
+  players: document.getElementById("players"),
+  message: document.getElementById("message"),
+  rumors: document.getElementById("rumors"),
+  buttons: document.getElementById("buttons"),
+  toast: document.getElementById("toast"),
+  overlay: document.getElementById("overlay"),
+  speed: document.getElementById("speed"),
+};
+
+function arrowFor(delta) {
+  if (delta > 0) return '<span class="arrow up">↑</span>';
+  if (delta < 0) return '<span class="arrow down">↓</span>';
+  return '<span class="arrow flat">→</span>';
+}
+
+function renderHud() {
+  const week = currentWeekIndex() + 1;
+  elements.dayLabel.textContent = game.round > 0 ? `${game.round}日目 / ${CONFIG.totalRounds}・第${week}週` : "カブ盛りバブル";
+  elements.metaLabel.textContent = `${GAME_VERSION} seed ${currentSeed}`;
+  elements.market.innerHTML = TURNIP_TYPES.map((type, t) => {
+    const entry = game.market[t] || { level: type.start, lastDelta: 0 };
+    const held = game.players.length ? "●".repeat(totalHeld(t)) : "";
+    return `<div class="mcell" title="${type.note}">
+      <div class="row1"><span class="dot" style="background:${type.css}"></span>${type.name}</div>
+      <div class="row2"><span class="face">${CONFIG.faces[entry.level]}</span>${arrowFor(entry.lastDelta)}<span class="coin">${priceOf(entry.level)}🪙</span></div>
+      <div class="held" title="みんなの頭に乗っている数">${held}</div>
+    </div>`;
+  }).join("");
+  elements.players.innerHTML = game.players.map((player) => {
+    const dots = player.stack.map((t) => `<i style="background:${TURNIP_TYPES[t].css}"></i>`).join("");
+    const rumorCount = player.rumors.length ? ` 💬${player.rumors.length}` : "";
+    const active = player.index === game.currentPlayer && game.round > 0 && !game.finished ? " active" : "";
+    return `<div class="pcard${active}" style="--pc:${player.character.css}">
+      <div class="name">${player.name}</div>
+      <div class="sub">${PERSONALITIES[player.personality].label}${rumorCount}</div>
+      <div class="coins">🪙${player.coins}</div>
+      <div class="ministack" title="左が下・右がてっぺん">${dots}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderRumorsFor(player) {
+  // うわさは本人にしか見えない。CPUの番に人間のうわさを出し続けるのは、ひとり用で読み返せるようにするため
+  const viewer = player && !player.isCpu ? player : game.players.find((p) => !p.isCpu);
+  if (!viewer) { elements.rumors.innerHTML = ""; return; }
+  const current = currentWeekIndex();
+  elements.rumors.innerHTML = viewer.rumors
+    .filter((rumor) => rumor.week >= current)
+    .map((rumor) => `<span class="rumor">💬 ${rumorText(rumor)}</span>`).join("");
+}
+
+function setMessage(html) { elements.message.innerHTML = html; }
+
+async function showToast(html) {
+  if (isHeadless) return;
+  elements.toast.innerHTML = html;
+  elements.toast.classList.add("show");
+  await wait(TIMING.toast);
+  elements.toast.classList.remove("show");
+}
+
+// 人間なら押されたボタン、CPUなら少し待ってから cpuChoice を返す
+function ask(player, html, options, cpuChoice) {
+  setMessage(html);
+  renderRumorsFor(player);
+  elements.buttons.innerHTML = "";
+  const buttons = options.map((option) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.innerHTML = option.label;
+    if (option.secondary) button.className = "secondary";
+    elements.buttons.appendChild(button);
+    return { button, option };
+  });
+  if (player.isCpu) {
+    buttons.forEach(({ button, option }) => {
+      button.disabled = true;
+      if (option.id === cpuChoice) button.style.outline = "3px solid #3b3326";
+    });
+    return wait(TIMING.cpuThink).then(() => { elements.buttons.innerHTML = ""; return cpuChoice; });
+  }
+  return new Promise((resolve) => {
+    buttons.forEach(({ button, option }) => button.addEventListener("click", () => {
+      elements.buttons.innerHTML = "";
+      resolve(option.id);
+    }, { once: true }));
+  });
+}
+
+elements.speed.addEventListener("click", () => {
+  if (isHeadless) return;
+  const fast = speedFactor === 1;
+  speedFactor = fast ? 0.35 : 1;
+  elements.speed.textContent = fast ? "⏩ はやい" : "⏩ ふつう";
+});
+
+// -----------------------------------------------------------------
+// 手番
+// -----------------------------------------------------------------
+function turnipLabel(typeIndex) {
+  const type = TURNIP_TYPES[typeIndex];
+  return `<span class="dot" style="display:inline-block;vertical-align:-1px;background:${type.css}"></span>${type.name}`;
+}
+
+async function visitMarket(player, tileIndex, passingThrough) {
+  const shop = SHOPS[BOARD[tileIndex].shop];
+  while (player.stack.length > 0) {
+    const top = player.stack[player.stack.length - 1];
+    const bonus = shop.likes === top ? CONFIG.favoriteShopBonus : 0;
+    const sellLevel = Math.min(CONFIG.faces.length - 1, game.market[top].level + bonus);
+    const price = priceOf(sellLevel);
+    const cpuChoice = player.isCpu && cpuWantsToSell(player, top, sellLevel) ? "sell" : "stop";
+    const favoriteNote = bonus ? `（${shop.name}の好物なので1段高い）` : "";
+    const choice = await ask(player,
+      `${shop.emoji} <b>${shop.name}</b>${passingThrough ? "の前を通りかかった" : "に着いた"}。<br>てっぺんは ${turnipLabel(top)} ${CONFIG.faces[sellLevel]}${favoriteNote}`,
+      [{ id: "sell", label: `てっぺんを売る ${CONFIG.faces[sellLevel]} +${price}🪙` },
+       { id: "stop", label: passingThrough ? "素通りする" : "売らない", secondary: true }],
+      cpuChoice);
+    if (choice !== "sell") {
+      // 売れるのに売らなかった＝「まだ上がる」と読んだ記録。売った人との判断の割れを数えるのに使う
+      recordAction(player, top, "hold");
+      break;
+    }
+    const from = stackTopWorld(player);
+    player.stack.pop();
+    player.coins += price;
+    game.actionLog.push({ round: game.round, player: player.index, type: top, kind: "sell", level: sellLevel });
+    rebuildStackVisual(player);
+    renderHud();
+    await flyTurnip(top, from, marketStallWorld(tileIndex));
+  }
+}
+
+async function visitField(player, tileIndex) {
+  const typeIndex = BOARD[tileIndex].type;
+  const level = game.market[typeIndex].level;
+  const price = priceOf(level);
+  const room = CONFIG.maxStack - player.stack.length;
+  const maxBuy = Math.min(CONFIG.maxBuyPerVisit, Math.floor(player.coins / price), room);
+  if (maxBuy <= 0) {
+    setMessage(`${turnipLabel(typeIndex)}の畑。${room <= 0 ? "頭がいっぱいで積めない" : "コインが足りない"}。`);
+    await wait(TIMING.cpuThink);
+    return;
+  }
+  const options = [];
+  for (let n = 1; n <= maxBuy; n++) options.push({ id: String(n), label: `${n}こ抜く −${price * n}🪙` });
+  options.push({ id: "0", label: "抜かない", secondary: true });
+  const cpuChoice = player.isCpu ? String(cpuBuyCount(player, typeIndex, maxBuy)) : "0";
+  const choice = Number(await ask(player,
+    `${turnipLabel(typeIndex)}の畑。いまは ${CONFIG.faces[level]}（1こ ${price}🪙）。抜いた分は頭のてっぺんに積む。`,
+    options, cpuChoice));
+  for (let n = 0; n < choice; n++) {
+    player.coins -= price;
+    player.stack.push(typeIndex);
+    recordAction(player, typeIndex, "buy");
+    const from = view.tiles[tileIndex] ? view.tiles[tileIndex].clone() : null;
+    await flyTurnip(typeIndex, from, stackTopWorld(player));
+    rebuildStackVisual(player);
+    if (player.visual) player.visual.swayImpulse += 0.03;
+    renderHud();
+  }
+}
+
+async function meetOthers(player) {
+  const others = game.players.filter((other) => other !== player && other.position === player.position);
+  for (const other of others) {
+    const canPush = player.stack.length > 0 && other.stack.length < CONFIG.maxStack;
+    const canGrab = other.stack.length > 0 && player.stack.length < CONFIG.maxStack;
+    if (!canPush && !canGrab) continue;
+    const options = [];
+    if (canPush) options.push({ id: "push", label: `押し付ける（${TURNIP_TYPES[player.stack[player.stack.length - 1]].name}→${other.character.name}）` });
+    if (canGrab) options.push({ id: "grab", label: `ひったくる（${other.character.name}の${TURNIP_TYPES[other.stack[other.stack.length - 1]].name}）` });
+    options.push({ id: "none", label: "なにもしない", secondary: true });
+    let cpuChoice = "none";
+    if (player.isCpu) {
+      const myTopOutlook = canPush ? cpuOutlook(player, player.stack[player.stack.length - 1]) : 0;
+      const theirTopOutlook = canGrab ? cpuOutlook(player, other.stack[other.stack.length - 1]) : 0;
+      if (canGrab && theirTopOutlook > 0.2 && theirTopOutlook >= -myTopOutlook) cpuChoice = "grab";
+      else if (canPush && myTopOutlook < -0.2) cpuChoice = "push";
+    }
+    const choice = await ask(player, `${other.name} とすれ違った！ てっぺんのカブをどうする？`, options, cpuChoice);
+    if (choice === "push") {
+      const from = stackTopWorld(player);
+      const typeIndex = player.stack.pop();
+      rebuildStackVisual(player);
+      if (from) await flyTurnip(typeIndex, from, stackTopWorld(other));
+      other.stack.push(typeIndex);
+      rebuildStackVisual(other);
+      game.actionLog.push({ round: game.round, player: player.index, type: typeIndex, kind: "push", level: game.market[typeIndex].level });
+      await showToast(`${player.character.emoji}→${other.character.emoji} ${TURNIP_TYPES[typeIndex].name}を押し付けた`);
+    } else if (choice === "grab") {
+      const from = stackTopWorld(other);
+      const typeIndex = other.stack.pop();
+      rebuildStackVisual(other);
+      if (from) await flyTurnip(typeIndex, from, stackTopWorld(player));
+      player.stack.push(typeIndex);
+      rebuildStackVisual(player);
+      game.actionLog.push({ round: game.round, player: player.index, type: typeIndex, kind: "grab", level: game.market[typeIndex].level });
+      await showToast(`${player.character.emoji}←${other.character.emoji} ${TURNIP_TYPES[typeIndex].name}をひったくった`);
+    }
+    renderHud();
+  }
+}
+
+async function playTurn(player) {
+  game.currentPlayer = player.index;
+  if (hasThree) focusPlayer(player);
+  renderHud();
+  await ask(player, `<b>${player.name}</b> の番。`, [{ id: "roll", label: "🎲 サイコロをふる" }], "roll");
+  const steps = 1 + randomInt(CONFIG.diceSides);
+  await showToast(`🎲 ${steps}`);
+  for (let step = 1; step <= steps; step++) {
+    player.position = (player.position + 1) % BOARD.length;
+    if (hasThree) { await hopTo(player, player.position); focusPlayer(player); }
+    const passing = BOARD[player.position];
+    if (step < steps && passing.kind === "market" && player.stack.length > 0) {
+      await visitMarket(player, player.position, true);
+    }
+  }
+  const tile = BOARD[player.position];
+  await meetOthers(player);
+  if (tile.kind === "field") {
+    await visitField(player, player.position);
+  } else if (tile.kind === "market") {
+    if (player.stack.length > 0) await visitMarket(player, player.position, false);
+  } else if (tile.kind === "rumor") {
+    const rumor = drawRumor(player);
+    const secret = player.isCpu ? "（中身は本人だけが知っている）" : `「${rumorText(rumor)}」`;
+    await ask(player, `💬 うわさを聞いた。${secret}<br><small>うわさは4回に1回ははずれる。</small>`,
+      [{ id: "ok", label: "ふむふむ" }], "ok");
+  } else if (tile.kind === "radio") {
+    const typeIndex = randomInt(TURNIP_TYPES.length);
+    const shift = random() < 0.5 ? -CONFIG.radioShift : CONFIG.radioShift;
+    applyNews(typeIndex, shift);
+    game.newsLog.push({ round: game.round, type: typeIndex, shift });
+    renderHud();
+    if (hasThree) await animatePillars();
+    await ask(player, `📻 島ラジオ速報：${turnipLabel(typeIndex)} ${shift > 0 ? "がテレビで紹介されて人気上昇！" : "に悪いうわさ、値下がり…"}`,
+      [{ id: "ok", label: "なるほど" }], "ok");
+  }
+  renderHud();
+}
+
+async function runGame() {
+  for (game.round = 1; game.round <= CONFIG.totalRounds; game.round++) {
+    renderHud();
+    if ((game.round - 1) % CONFIG.roundsPerWeek === 0) {
+      await showToast(`📅 第${currentWeekIndex() + 1}週${currentWeekIndex() + 1 === weekCount() ? "（最終週）" : ""}`);
+    }
+    if (roundsLeft() === 0) await showToast("最終日！ 残ったカブは今夜しおれる");
+    for (const player of game.players) await playTurn(player);
+    updateMarketLogic();
+    renderHud();
+    if (hasThree) await animatePillars();
+  }
+  game.round = CONFIG.totalRounds;
+  game.finished = true;
+  renderHud();
+  setMessage("シーズン終了！ 頭に残ったカブはしおれてしまった。");
+  elements.buttons.innerHTML = "";
+  showResults();
+}
+
+// -----------------------------------------------------------------
+// 結果：勝敗と「売り時が割れたか」の検証表示
+// -----------------------------------------------------------------
+function summarize() {
+  const splitDays = [];   // 同じ日・同じカブで、売った人と「買った／売れるのに持ち続けた」人が別にいる
+  const herdDays = [];    // 同じ日・同じカブを3人以上が売った（＝一斉に同じ判断）
+  for (let round = 1; round <= CONFIG.totalRounds; round++) {
+    TURNIP_TYPES.forEach((_, t) => {
+      const sellers = new Set(), bulls = new Set();
+      for (const action of game.actionLog) {
+        if (action.round !== round || action.type !== t) continue;
+        if (action.kind === "sell") sellers.add(action.player);
+        if (action.kind === "buy" || action.kind === "hold") bulls.add(action.player);
+      }
+      const split = sellers.size > 0 && [...bulls].some((b) => !sellers.has(b));
+      if (split) splitDays.push({ round, type: t });
+      if (sellers.size >= 3) herdDays.push({ round, type: t });
+    });
+  }
+  const tradeDays = new Set(game.actionLog.filter((a) => a.kind === "sell" || a.kind === "buy").map((a) => `${a.round}-${a.type}`)).size;
+  const ranking = [...game.players].sort((a, b) => b.coins - a.coins)
+    .map((p) => ({ index: p.index, name: p.name, personality: p.personality, coins: p.coins, leftover: p.stack.length }));
+  const sellDays = new Set(game.actionLog.filter((a) => a.kind === "sell").map((a) => `${a.round}-${a.type}`)).size;
+  return { seed: currentSeed, splitDays, herdDays, tradeDays, sellDays, ranking,
+           holds: game.actionLog.filter((a) => a.kind === "hold").length,
+           sells: game.actionLog.filter((a) => a.kind === "sell").length,
+           buys: game.actionLog.filter((a) => a.kind === "buy").length };
+}
+
+function averageFace(levels) {
+  if (!levels.length) return "—";
+  return CONFIG.faces[clamp(Math.round(levels.reduce((a, b) => a + b, 0) / levels.length), 0, CONFIG.faces.length - 1)];
+}
+
+function showResults() {
+  const summary = summarize();
+  window.__kabuResult = summary;
+  if (isHeadless) return;
+  const medals = ["🥇", "🥈", "🥉", "4"];
+  const rankingRows = summary.ranking.map((row, k) =>
+    `<tr><td>${medals[k]}</td><td>${row.name} <small>${PERSONALITIES[row.personality].label}</small></td><td>🪙${row.coins}</td><td><small>しおれ ${row.leftover}</small></td></tr>`).join("");
+
+  const faceRows = game.players.map((player) => `<tr><td style="text-align:left">${player.character.emoji}</td>${TURNIP_TYPES.map((_, t) => {
+    const buys = game.actionLog.filter((a) => a.player === player.index && a.type === t && a.kind === "buy").map((a) => a.level);
+    const sells = game.actionLog.filter((a) => a.player === player.index && a.type === t && a.kind === "sell").map((a) => a.level);
+    return `<td>${averageFace(buys)}→${averageFace(sells)}</td>`;
+  }).join("")}</tr>`).join("");
+
+  const splitKey = new Set(summary.splitDays.map((d) => `${d.round}-${d.type}`));
+  const herdKey = new Set(summary.herdDays.map((d) => `${d.round}-${d.type}`));
+  let header = '<tr><th class="typehead">日</th>';
+  for (let round = 1; round <= CONFIG.totalRounds; round++) header += `<th>${round}</th>`;
+  header += "</tr>";
+  const timelineRows = TURNIP_TYPES.map((type, t) => {
+    let row = `<tr><th class="typehead">${turnipLabel(t)}</th>`;
+    for (let round = 1; round <= CONFIG.totalRounds; round++) {
+      const face = CONFIG.faces[game.market[t].history[round - 1]];
+      const symbols = { buy: "▲", sell: "▼", hold: "・" };
+      const marks = game.actionLog.filter((a) => a.round === round && a.type === t && symbols[a.kind])
+        .map((a) => `<span class="mark" style="color:${game.players[a.player].character.css}">${symbols[a.kind]}</span>`);
+      const uniqueMarks = [...new Set(marks)].join("");
+      const cls = splitKey.has(`${round}-${t}`) ? "split" : herdKey.has(`${round}-${t}`) ? "herd" : "";
+      row += `<td class="${cls}">${face}${uniqueMarks}</td>`;
+    }
+    return row + "</tr>";
+  }).join("");
+
+  const splitRate = summary.sellDays ? summary.splitDays.length / summary.sellDays : 0;
+  const verdict = splitRate >= 0.3 && summary.herdDays.length <= summary.splitDays.length
+    ? "売り時が割れている：同じ日に「売る人」と「買う／持ち続ける人」が分かれた場面が多い。頭を見て読む駆け引きが起きている。"
+    : splitRate >= 0.15
+      ? "少し割れている：判断が分かれた日はあるが、まだ少ない。需給の効き（supplyPressurePerTurnip）かうわさの頻度を上げる余地あり。"
+      : "割れていない：全員がほぼ同じ判断をしている。需給・うわさ・店主の好みのどれかを強める必要がある。";
+
+  elements.overlay.innerHTML = `<div class="sheet">
+    <h1>シーズン終了</h1>
+    <p class="lead">頭に残ったカブはしおれて0🪙。いちばん稼いだ人の勝ち。</p>
+    <table class="rank">${rankingRows}</table>
+
+    <h2>🔍 検証：売り時は割れたか</h2>
+    <div class="verdict">${verdict}<br>
+      <small>判断が割れた日 ${summary.splitDays.length}／誰かが売った日 ${summary.sellDays}（${Math.round(splitRate * 100)}%）・一斉売りの日 ${summary.herdDays.length}</small></div>
+
+    <h2>相場と売買の記録</h2>
+    <div class="timeline-wrap"><table class="timeline">${header}${timelineRows}</table></div>
+    <div class="legend">顔＝その日の朝の相場　▲買い ▼売り ・売れたのに持ち続けた（色＝プレイヤー）　<span style="background:#fff1c9">黄</span>＝売った人と、買った／持ち続けた人が分かれた日　<span style="background:#dbe8f8">青</span>＝3人以上が一斉に売った日</div>
+
+    <h2>平均で何の顔のときに買って、何の顔で売ったか</h2>
+    <table class="faces"><tr><th></th>${TURNIP_TYPES.map((_, t) => `<th>${turnipLabel(t)}</th>`).join("")}</tr>${faceRows}</table>
+
+    <div class="actions">
+      <button type="button" data-action="again">同じシードでもう一度</button>
+      <button type="button" class="secondary" data-action="title">タイトルへ</button>
+    </div>
+    <div class="foot">${GAME_VERSION}・seed ${currentSeed}（URL に ?seed=${currentSeed} を付けると同じ流行とサイコロで再現）</div>
+  </div>`;
+  elements.overlay.classList.remove("hidden");
+  elements.overlay.querySelector('[data-action="again"]').addEventListener("click", () => startGame(game.mode, currentSeed));
+  elements.overlay.querySelector('[data-action="title"]').addEventListener("click", showTitle);
+}
+
+// -----------------------------------------------------------------
+// タイトル・開始
+// -----------------------------------------------------------------
+function pickSeed() {
+  const fixed = params.get("seed");
+  if (fixed !== null && /^\d+$/.test(fixed)) return Number(fixed) >>> 0;
+  return (Date.now() ^ 0x5bd1e995) >>> 0;
+}
+
+function showTitle() {
+  elements.overlay.innerHTML = `<div class="sheet">
+    <h1>🥬 カブ盛りバブル</h1>
+    <p class="lead">突然変異カブが大発生！ 島はカブ取引ブーム。カブは頭に盛って運ぶのが流行中。</p>
+    <ol>
+      <li><b>頭のカブは、てっぺんからしか売れない。</b>抜いたカブはてっぺんに積まれる。積む順番に気をつけて。</li>
+      <li><b>値段は看板の顔で決まる。</b>😱→😟→🙂→😄→🤩。上ほど高い。</li>
+      <li><b>みんなの頭に多く乗っているカブほど値下がりする。</b>みんなの頭を見て、次に上がるカブを読もう。</li>
+      <li>畑は<b>止まったとき</b>だけ抜ける。市場は<b>通りがかりでも</b>寄って売れる。店主の好物は1段高く売れる。</li>
+      <li>💬うわさマスでは自分だけのうわさが聞ける（4回に1回はうそ）。📻ラジオマスでは相場が動く。</li>
+      <li>同じマスに止まったら、てっぺんのカブを<b>押し付ける</b>か<b>ひったくる</b>。</li>
+      <li>${CONFIG.totalRounds}日後、頭に残ったカブはしおれて0。いちばんコインを持っていた人の勝ち。</li>
+    </ol>
+    <div class="actions">
+      <button type="button" data-mode="solo">ひとりで遊ぶ（CPU 3人）</button>
+      <button type="button" class="secondary" data-mode="party">みんなで遊ぶ（4人で1台）</button>
+      <button type="button" class="secondary" data-mode="watch">観戦する（CPU 4人）</button>
+    </div>
+    <div class="foot">相場の検証用プロト ${GAME_VERSION}。爆弾カブ・崩落などの突然変異はまだ入っていない。</div>
+  </div>`;
+  elements.overlay.classList.remove("hidden");
+  elements.overlay.querySelectorAll("[data-mode]").forEach((button) => {
+    button.addEventListener("click", () => startGame(button.dataset.mode, pickSeed()));
+  });
+}
+
+function startGame(mode, seed) {
+  elements.overlay.classList.add("hidden");
+  setupGame(mode, seed);
+  if (hasThree) {
+    addCharactersToWorld();
+    game.market.forEach((entry, t) => setPillarHeight(view.pillars[t], pillarHeightFor(entry.level)));
+    game.market.forEach((entry, t) => redrawEmojiSprite(view.pillars[t].faceSprite, CONFIG.faces[entry.level]));
+  }
+  renderHud();
+  runGame();
+}
+
+// 自動検証用：?headless=1 で開くと window.__kabuSimulate(seed, mode) が使える
+window.__kabuSimulate = async function simulate(seed, mode) {
+  setupGame(mode || "watch", seed);
+  await runGame();
+  return window.__kabuResult;
+};
+window.__kabuGame = game;
+
+if (hasThree) {
+  buildTurnipAssets();
+  buildWorld();
+  requestAnimationFrame(frame);
+} else {
+  setMessage("3D表示ライブラリ（three.js）を読み込めなかった。ネットにつながっているか確認して再読み込みしてください。");
+}
+setupGame("watch", pickSeed());
+if (hasThree) addCharactersToWorld();
+renderHud();
+if (!isHeadless) showTitle();
+</script>
+</body>
+</html>
