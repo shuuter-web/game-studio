@@ -51,6 +51,8 @@
     background: var(--accent); color: var(--accent-ink); cursor: pointer; padding: 6px 10px; }
   #buttons button.secondary { background: #e9e0cc; color: var(--ink); }
   #buttons button:disabled { opacity: 0.55; cursor: default; }
+  #buttons button.chip { flex: 0 1 auto; min-height: 40px; font-size: 13px; background: #ffffff; color: var(--ink);
+    border: 2px solid var(--line); padding: 4px 9px; }
 
   #toast { position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%) scale(0.9); opacity: 0;
     background: var(--paper); border-radius: 18px; padding: 12px 20px; font-size: 20px; font-weight: 700; box-shadow: var(--shadow);
@@ -123,17 +125,18 @@
 // 検証したい最大の賭け：「頭を見て相場を読む」が駆け引きになるか。
 // つまり、需給（全員の頭に乗っている数）で値が動くとき、売り時がプレイヤーごとに割れるか。
 // 結果画面に「同じ日に、同じカブを誰かが売り・別の誰かが買った日（＝判断が割れた日）」を出す。
-// 爆弾カブ・崩落など他の突然変異はこの検証の後に足す。
+// v0.4.0：カブを「食べる」と突然変異ごとの効果が出る。頭の上では隣り合ったカブが増殖・合体・突然変異する
+// （＝たくさん積むほど当たりが出る）。売る・食べるはタワーのどの段でも選べる。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.3.0";
+const GAME_VERSION = "v0.4.0";
 
 // ---- 調整値（データ駆動：ここだけ触ればバランスが変わる） ----
 const CONFIG = {
   totalRounds: 16,            // 16日＝4週。1日＝全員が1手番
   roundsPerWeek: 4,           // 流行（隠れトレンド）が切り替わる単位
   startCoins: 12,
-  startStackSize: 2,          // 最初から頭に乗っているカブ。頭が空だと序盤に「読む」材料がない
-  maxStack: 10,               // これ以上は積めない（タワーの見た目の上限でもある）
+  startStackSize: 3,          // 最初から頭に乗っているカブ。隣り合い（増殖・突然変異）を序盤から起こすため3個
+  maxStack: 12,               // これ以上は積めない（タワーの見た目の上限でもある）
   maxBuyPerVisit: 3,
   diceSides: 6,
   priceByLevel: [1, 2, 3, 5, 8],   // 顔5段の値段。上の段ほど伸び幅が大きい＝🤩で売り抜ける価値を作る
@@ -147,7 +150,27 @@ const CONFIG = {
   rumorTruthRate: 0.75,            // うわさが本当である確率
   radioShift: 1,                   // ラジオのニュースで動く段数
   favoriteShopBonus: 1,            // 店主の好きなカブは顔が1段上で売れる
+  // ---- 頭の上の反応（自分の手番の終わりに、自分の頭だけで起きる） ----
+  growChance: 0.35,                // 同じ色が隣り合ったペアごとに、その色が1個増える確率
+  mutateChance: 0.25,              // 違う色が隣り合ったペアごとに、どちらかに突然変異が付く確率
+  bombFuse: 3,                     // 💣 は持ち主の手番の終わりを3回迎えると破裂し、両隣ごと吹き飛ぶ
+  bigSizeFactor: 1.4,              // 同じ色3連が合体した「大カブ」の見た目の大きさ
+  bigSellBonus: 1,                 // 大カブは1段上の値段で売れる
+  groundTraitChance: 0.4,          // カブマスに置かれるカブが突然変異つきである確率
 };
+
+// 突然変異。食べたときの効果と、頭の上での見分け方（アイコン）
+const TRAITS = {
+  puff:    { icon: "🎈", name: "ふくらみ", short: "値上げ",       eat: "このカブの色が島じゅうで1段大きくなる" },
+  wilt:    { icon: "🥀", name: "しおれ",   short: "値下げ",       eat: "好きな色を1段小さくする" },
+  run:     { icon: "👟", name: "はしり",   short: "サイコロ2回",  eat: "このターンはサイコロを2回振って足す" },
+  magnet:  { icon: "🧲", name: "じしゃく", short: "引き寄せ",     eat: "好きな相手の頭から好きなカブを1個引き寄せる" },
+  sparkle: { icon: "✨", name: "きらきら", short: "うわさ的中",   eat: "次に聞くうわさが必ず本当になる" },
+  bomb:    { icon: "💣", name: "ばくだん", short: "",             eat: "食べられない。3日で破裂して両隣ごと吹き飛ぶ。押し付けよう" },
+};
+// 違う色が隣り合うと付く突然変異（色の組み合わせで決まる）。順番は TURNIP_TYPES の添字の小さい方→大きい方
+const PAIR_TRAITS = { "0-1": "run", "0-2": "sparkle", "0-3": "wilt", "1-2": "puff", "1-3": "bomb", "2-3": "magnet" };
+const GROUND_TRAITS = ["puff", "puff", "wilt", "run", "magnet", "sparkle", "bomb"];   // カブマスに出る突然変異（ばくだんは控えめ）
 
 // 見た目・待ち時間（ミリ秒）。?headless=1 では全部0になる
 const TIMING = { hop: 230, cpuThink: 520, toast: 1100, fly: 380, marketTick: 900 };
@@ -245,7 +268,8 @@ const game = {
   market: [],      // 種類ごとの { value, level, lastDelta, history }
   players: [],
   actionLog: [],   // { round, player, type, kind: "buy"|"sell"|"hold"|"pick"|"push"|"grab", level }
-  ground: {},      // カブマスの番号 → 置いてあるカブの種類（拾われたら null、日の終わりに補充）
+  ground: {},      // カブマスの番号 → 置いてあるカブ（拾われたら null、日の終わりに補充）
+  stats: {},       // 食べた・増えた・合体・突然変異・破裂の回数（検証用）
   newsLog: [],
 };
 
@@ -255,9 +279,20 @@ function roundsLeft() { return CONFIG.totalRounds - game.round; }
 function levelOf(value) { return clamp(Math.round(value), 0, CONFIG.faces.length - 1); }
 function priceOf(level) { return CONFIG.priceByLevel[level]; }
 
+// 頭の上のカブ1個。type＝色（値段）、trait＝突然変異、big＝合体した大カブ、age＝💣の導火線
+let nextTurnipId = 1;
+function makeTurnip(type, trait) {
+  return { id: nextTurnipId++, type, trait: trait || null, big: false, age: 0 };
+}
+function makeGroundTurnip() {
+  const type = randomInt(TURNIP_TYPES.length);
+  const trait = random() < CONFIG.groundTraitChance ? GROUND_TRAITS[randomInt(GROUND_TRAITS.length)] : null;
+  return makeTurnip(type, trait);
+}
+
 function totalHeld(typeIndex) {
   let count = 0;
-  for (const player of game.players) for (const t of player.stack) if (t === typeIndex) count++;
+  for (const player of game.players) for (const turnip of player.stack) if (turnip.type === typeIndex) count++;
   return count;
 }
 function averageHeld() {
@@ -279,7 +314,9 @@ function setupGame(mode, seed) {
   }
   game.market = TURNIP_TYPES.map((type) => ({ value: type.start, level: type.start, lastDelta: 0, history: [type.start] }));
   game.ground = {};
-  BOARD.forEach((tile, index) => { if (tile.kind === "kabu") game.ground[index] = randomInt(TURNIP_TYPES.length); });
+  BOARD.forEach((tile, index) => { if (tile.kind === "kabu") game.ground[index] = makeGroundTurnip(); });
+  game.maxHeight = 0;
+  game.stats = { eats: 0, grows: 0, merges: 0, mutations: 0, explosions: 0, lostToBombs: 0 };
 
   const personalitiesByMode = {
     solo:  ["human", "trend", "contrarian", "rumor"],
@@ -289,7 +326,7 @@ function setupGame(mode, seed) {
   game.players = CHARACTERS.map((character, index) => {
     const personality = personalitiesByMode[mode][index];
     const stack = [];
-    for (let k = 0; k < CONFIG.startStackSize; k++) stack.push(randomInt(TURNIP_TYPES.length));
+    for (let k = 0; k < CONFIG.startStackSize; k++) stack.push(makeTurnip(randomInt(TURNIP_TYPES.length)));
     return {
       index, character, personality,
       isCpu: personality !== "human",
@@ -297,8 +334,10 @@ function setupGame(mode, seed) {
             (personality === "human" ? `${character.emoji} あなた` : `${character.emoji} ${character.name}`),
       coins: CONFIG.startCoins,
       position: 0,
-      stack,                // 下→上。触れるのはいちばん上（末尾）だけ
+      stack,                // 下→上（末尾がてっぺん）。売る・食べるはどの段でも選べる
       rumors: [],           // { week, type, direction }
+      extraRoll: false,     // 👟 を食べたターンはサイコロ2回
+      nextRumorTrue: false, // ✨ を食べると次のうわさが必ず本当
     };
   });
 }
@@ -332,7 +371,8 @@ function applyNews(typeIndex, shift) {
 function drawRumor(player, typeIndex) {
   const week = Math.min(currentWeekIndex() + 1, weekCount() - 1);
   const trueDirection = Math.sign(game.trends[week][typeIndex]);
-  const isTrue = random() < CONFIG.rumorTruthRate;
+  const isTrue = player.nextRumorTrue || random() < CONFIG.rumorTruthRate;
+  player.nextRumorTrue = false;
   const rumor = { week, type: typeIndex, direction: isTrue ? trueDirection : -trueDirection, isTrue };
   player.rumors.push(rumor);
   return rumor;
@@ -430,7 +470,15 @@ function standingPoint(tileIndex, playerIndex) {
   return new THREE.Vector3(tile.x + dx * cos + dz * sin, 0.32, tile.z - dx * sin + dz * cos);
 }
 
+const emojiTextureCache = {};
 function makeEmojiSprite(text, size, background) {
+  // 頭の上のカブは何度も作り直すので、同じ絵文字のテクスチャは使い回す
+  const cacheKey = `${text}|${background || ""}`;
+  if (emojiTextureCache[cacheKey]) {
+    const cached = new THREE.Sprite(new THREE.SpriteMaterial({ map: emojiTextureCache[cacheKey], transparent: true, depthWrite: false }));
+    cached.scale.set(size, size, size);
+    return cached;
+  }
   const pixel = 128;
   const spriteCanvas = document.createElement("canvas");
   spriteCanvas.width = spriteCanvas.height = pixel;
@@ -443,6 +491,7 @@ function makeEmojiSprite(text, size, background) {
   context.textAlign = "center"; context.textBaseline = "middle";
   context.fillText(text, pixel / 2, pixel / 2 + 6);
   const texture = new THREE.CanvasTexture(spriteCanvas);
+  emojiTextureCache[cacheKey] = texture;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
   sprite.scale.set(size, size, size);
   sprite.userData.canvas = spriteCanvas;
@@ -471,7 +520,7 @@ function buildTurnipAssets() {
 
 const TURNIP_HEIGHT = 0.405;
 // baseScale は置き場所ごとの大きさ。実際の大きさは毎フレーム baseScale × 相場の大きさ になる
-function makeTurnipMesh(typeIndex, baseScale) {
+function makeTurnipMesh(typeIndex, baseScale, turnip) {
   const group = new THREE.Group();
   group.userData.turnipType = typeIndex;
   group.userData.baseScale = baseScale || 1;
@@ -495,8 +544,21 @@ function makeTurnipMesh(typeIndex, baseScale) {
     sparkle.position.set(0.2, 0.32, 0.1);
     group.add(sparkle);
   }
+  if (turnip && turnip.trait) {
+    // 突然変異はカブの横にアイコンを付けて見分ける。💣 は導火線が短くなるほど大きくなる
+    const iconSize = turnip.trait === "bomb" ? 0.3 + turnip.age * 0.09 : 0.3;
+    const icon = makeEmojiSprite(TRAITS[turnip.trait].icon, iconSize);
+    icon.position.set(0.24, 0.24, 0.16);
+    group.add(icon);
+  }
+  if (turnip && turnip.big) {
+    const crown = makeEmojiSprite("👑", 0.26);
+    crown.position.set(-0.2, 0.36, 0.14);
+    group.add(crown);
+  }
   return group;
 }
+function turnipScale(turnip) { return turnip.big ? CONFIG.bigSizeFactor : 1; }
 
 function buildCharacter(character) {
   const root = new THREE.Group();
@@ -580,15 +642,15 @@ function rebuildStackVisual(player) {
   while (visual.stackAnchor.children.length) visual.stackAnchor.remove(visual.stackAnchor.children[0]);
   visual.nodes = [];
   let parent = visual.stackAnchor;
-  player.stack.forEach((typeIndex, k) => {
+  player.stack.forEach((turnip, k) => {
     const node = new THREE.Group();
     // 1段上のカブを置く高さは、下のカブの今の大きさで決まる（毎フレーム更新）
-    node.userData.belowType = k === 0 ? null : player.stack[k - 1];
+    node.userData.below = k === 0 ? null : player.stack[k - 1];
     node.position.x = (fxRandom() - 0.5) * 0.05;
     node.position.z = (fxRandom() - 0.5) * 0.05;
-    const turnip = makeTurnipMesh(typeIndex, STACK_SCALE);
-    turnip.rotation.y = fxRandom() * Math.PI * 2;
-    node.add(turnip);
+    const mesh = makeTurnipMesh(turnip.type, STACK_SCALE * turnipScale(turnip), turnip);
+    mesh.rotation.y = fxRandom() * Math.PI * 2;
+    node.add(mesh);
     parent.add(node);
     visual.nodes.push(node);
     parent = node;
@@ -601,7 +663,17 @@ function stackTopWorld(player) {
   const target = visual.nodes.length ? visual.nodes[visual.nodes.length - 1] : visual.stackAnchor;
   const position = new THREE.Vector3();
   target.getWorldPosition(position);
-  if (visual.nodes.length) position.y += TURNIP_HEIGHT * STACK_SCALE * currentSize(player.stack[player.stack.length - 1]);
+  const top = player.stack[player.stack.length - 1];
+  if (visual.nodes.length && top) position.y += TURNIP_HEIGHT * STACK_SCALE * turnipScale(top) * currentSize(top.type);
+  return position;
+}
+
+// タワーの k 段目の位置（食べる・売るで真ん中から抜くとき、そこから飛ばす）
+function stackNodeWorld(player, index) {
+  const visual = player.visual;
+  if (!visual || !visual.nodes[index]) return stackTopWorld(player);
+  const position = new THREE.Vector3();
+  visual.nodes[index].getWorldPosition(position);
   return position;
 }
 
@@ -769,9 +841,10 @@ function frame(now) {
   scene.traverse((object) => {
     const typeIndex = object.userData.turnipType;
     if (typeIndex !== undefined) object.scale.setScalar(object.userData.baseScale * currentSize(typeIndex));
-    else if (object.userData.belowType !== undefined) {
-      object.position.y = object.userData.belowType === null ? 0
-        : TURNIP_HEIGHT * 0.86 * STACK_SCALE * currentSize(object.userData.belowType);
+    else if (object.userData.below !== undefined) {
+      const below = object.userData.below;
+      object.position.y = below === null ? 0
+        : TURNIP_HEIGHT * 0.86 * STACK_SCALE * turnipScale(below) * currentSize(below.type);
     }
   });
 
@@ -828,9 +901,9 @@ async function hopTo(player, tileIndex) {
 }
 
 // カブが飛んでいく演出（売る＝屋台へ、抜く＝畑から頭へ、押し付け／ひったくり＝頭から頭へ）
-async function flyTurnip(typeIndex, from, to) {
+async function flyTurnip(turnip, from, to) {
   if (!hasThree || !from || !to) return;
-  const mesh = makeTurnipMesh(typeIndex, STACK_SCALE);
+  const mesh = makeTurnipMesh(turnip.type, STACK_SCALE * turnipScale(turnip), turnip);
   scene.add(mesh);
   await animate(TIMING.fly, (t) => {
     mesh.position.lerpVectors(from, to, t);
@@ -838,6 +911,20 @@ async function flyTurnip(typeIndex, from, to) {
     mesh.rotation.y = t * 6;
   });
   scene.remove(mesh);
+}
+
+// 頭の上で何か起きたときに、絵文字をふわっと浮かせる（増えた・合体・突然変異・破裂）
+function popEmoji(player, text) {
+  if (!hasThree || !player.visual || speedFactor <= 0) return;
+  const sprite = makeEmojiSprite(text, 0.7);
+  const start = stackTopWorld(player);
+  sprite.position.copy(start);
+  scene.add(sprite);
+  animate(900, (t) => {
+    sprite.position.y = start.y + 0.3 + t * 1.2;
+    sprite.material.opacity = 1 - t * t;
+    if (t >= 1) scene.remove(sprite);
+  });
 }
 
 // カブマスに置いてあるカブの見た目。マスの中心より少し外側に寝かせて置く（人と重ならないように）
@@ -850,9 +937,9 @@ function updateGroundVisual(tileIndex) {
   const old = view.groundMeshes[tileIndex];
   if (old) scene.remove(old);
   view.groundMeshes[tileIndex] = null;
-  const typeIndex = game.ground[tileIndex];
-  if (typeIndex === null || typeIndex === undefined) return;
-  const mesh = makeTurnipMesh(typeIndex, 1.1);
+  const groundTurnip = game.ground[tileIndex];
+  if (!groundTurnip) return;
+  const mesh = makeTurnipMesh(groundTurnip.type, 1.1, groundTurnip);
   mesh.position.copy(groundTurnipWorld(tileIndex));
   mesh.rotation.z = 0.5;
   mesh.rotation.y = tilePosition(tileIndex).angle;
@@ -894,9 +981,10 @@ function renderHud() {
   elements.metaLabel.textContent = `${GAME_VERSION} seed ${currentSeed}`;
   elements.players.innerHTML = game.players.map((player) => {
     // 手元の一覧も大きさで描く（3Dと同じ読み方で済むように）
-    const dots = player.stack.map((t) => {
-      const diameter = Math.round(9 * CONFIG.sizeByLevel[game.market[t].level]) + 1;
-      return `<i style="width:${diameter}px;height:${diameter}px;background:${TURNIP_TYPES[t].css}"></i>`;
+    const dots = player.stack.map((turnip) => {
+      const diameter = Math.round(9 * CONFIG.sizeByLevel[game.market[turnip.type].level] * turnipScale(turnip)) + 1;
+      const ring = turnip.trait === "bomb" ? "box-shadow:0 0 0 2px #2b2420;" : turnip.trait ? "box-shadow:0 0 0 2px #f5b400;" : "";
+      return `<i style="width:${diameter}px;height:${diameter}px;background:${TURNIP_TYPES[turnip.type].css};${ring}"></i>`;
     }).join("");
     const rumorCount = player.rumors.length ? ` 💬${player.rumors.length}` : "";
     const active = player.index === game.currentPlayer && game.round > 0 && !game.finished ? " active" : "";
@@ -939,6 +1027,8 @@ function ask(player, html, options, cpuChoice) {
     button.type = "button";
     button.innerHTML = option.label;
     if (option.secondary) button.className = "secondary";
+    if (option.chip) button.className = "chip";
+    if (option.disabled) button.disabled = true;
     elements.buttons.appendChild(button);
     return { button, option };
   });
@@ -950,7 +1040,7 @@ function ask(player, html, options, cpuChoice) {
     return wait(TIMING.cpuThink).then(() => { elements.buttons.innerHTML = ""; return cpuChoice; });
   }
   return new Promise((resolve) => {
-    buttons.forEach(({ button, option }) => button.addEventListener("click", () => {
+    buttons.forEach(({ button, option }) => !option.disabled && button.addEventListener("click", () => {
       elements.buttons.innerHTML = "";
       resolve(option.id);
     }, { once: true }));
@@ -971,33 +1061,64 @@ function turnipLabel(typeIndex) {
   const type = TURNIP_TYPES[typeIndex];
   return `<span class="dot" style="display:inline-block;vertical-align:-1px;background:${type.css}"></span>${type.name}`;
 }
+// 1個のカブの呼び名（色＋突然変異＋大カブ）
+function turnipName(turnip) {
+  const trait = turnip.trait ? `${TRAITS[turnip.trait].icon}` : "";
+  return `${trait}${turnipLabel(turnip.type)}${turnip.big ? "👑" : ""}`;
+}
+function sellLevelOf(turnip, shop) {
+  const bonus = (shop && shop.likes === turnip.type ? CONFIG.favoriteShopBonus : 0) + (turnip.big ? CONFIG.bigSellBonus : 0);
+  return Math.min(CONFIG.faces.length - 1, game.market[turnip.type].level + bonus);
+}
+// タワーをボタンの列にする（てっぺんを左に）。filter で選べないカブは押せなくする
+function stackOptions(player, filter, suffix) {
+  const options = [];
+  for (let index = player.stack.length - 1; index >= 0; index--) {
+    const turnip = player.stack[index];
+    const allowed = !filter || filter(turnip);
+    options.push({ id: String(index), chip: true, disabled: !allowed,
+      label: `${index === player.stack.length - 1 ? "⬆" : ""}${turnipName(turnip)}${allowed && suffix ? suffix(turnip) : ""}` });
+  }
+  return options;
+}
+function removeFromStack(player, index) {
+  const [turnip] = player.stack.splice(index, 1);
+  return turnip;
+}
 
 async function visitMarket(player, tileIndex, passingThrough) {
   const shop = SHOPS[BOARD[tileIndex].shop];
-  while (player.stack.length > 0) {
-    const top = player.stack[player.stack.length - 1];
-    const bonus = shop.likes === top ? CONFIG.favoriteShopBonus : 0;
-    const sellLevel = Math.min(CONFIG.faces.length - 1, game.market[top].level + bonus);
-    const price = priceOf(sellLevel);
-    const cpuChoice = player.isCpu && cpuWantsToSell(player, top, sellLevel) ? "sell" : "stop";
-    const favoriteNote = bonus ? `（${shop.name}の好物なので、ひと回り大きいカブの値段で買ってくれる）` : "";
+  const sellable = (turnip) => turnip.trait !== "bomb";
+  while (player.stack.some(sellable)) {
+    // CPU：売りたいカブの中でいちばん高く売れるものから売る
+    let cpuChoice = "stop";
+    if (player.isCpu) {
+      let bestPrice = -1;
+      player.stack.forEach((turnip, index) => {
+        if (!sellable(turnip)) return;
+        const level = sellLevelOf(turnip, shop);
+        if (cpuWantsToSell(player, turnip.type, level) && priceOf(level) > bestPrice) { bestPrice = priceOf(level); cpuChoice = String(index); }
+      });
+    }
+    const options = stackOptions(player, sellable, (turnip) => ` +${priceOf(sellLevelOf(turnip, shop))}🪙`);
+    options.push({ id: "stop", label: passingThrough ? "素通りする" : "売るのをやめる", secondary: true });
     const choice = await ask(player,
-      `${shop.emoji} <b>${shop.name}</b>${passingThrough ? "の前を通りかかった" : "に着いた"}。<br>てっぺんは ${turnipLabel(top)}${favoriteNote}`,
-      [{ id: "sell", label: `てっぺんを売る +${price}🪙` },
-       { id: "stop", label: passingThrough ? "素通りする" : "売らない", secondary: true }],
-      cpuChoice);
-    if (choice !== "sell") {
+      `${shop.emoji} <b>${shop.name}</b>${passingThrough ? "の前を通りかかった" : "に着いた"}。どのカブを売る？（どの段でも売れる）<br><small>${turnipLabel(shop.likes)}は好物なので高く買ってくれる。👑大カブも高い。💣は売れない。</small>`,
+      options, cpuChoice);
+    if (choice === "stop") {
       // 売れるのに売らなかった＝「まだ上がる」と読んだ記録。売った人との判断の割れを数えるのに使う
-      recordAction(player, top, "hold");
+      new Set(player.stack.filter(sellable).map((turnip) => turnip.type)).forEach((type) => recordAction(player, type, "hold"));
       break;
     }
-    const from = stackTopWorld(player);
-    player.stack.pop();
-    player.coins += price;
-    game.actionLog.push({ round: game.round, player: player.index, type: top, kind: "sell", level: sellLevel });
+    const index = Number(choice);
+    const from = stackNodeWorld(player, index);
+    const turnip = removeFromStack(player, index);
+    const level = sellLevelOf(turnip, shop);
+    player.coins += priceOf(level);
+    game.actionLog.push({ round: game.round, player: player.index, type: turnip.type, kind: "sell", level });
     rebuildStackVisual(player);
     renderHud();
-    await flyTurnip(top, from, marketStallWorld(tileIndex));
+    await flyTurnip(turnip, from, marketStallWorld(tileIndex));
   }
 }
 
@@ -1021,10 +1142,11 @@ async function visitField(player, tileIndex) {
     options, cpuChoice));
   for (let n = 0; n < choice; n++) {
     player.coins -= price;
-    player.stack.push(typeIndex);
-    recordAction(player, typeIndex, "buy");
+    const bought = makeTurnip(typeIndex);
     const from = view.tiles[tileIndex] ? view.tiles[tileIndex].clone() : null;
-    await flyTurnip(typeIndex, from, stackTopWorld(player));
+    await flyTurnip(bought, from, stackTopWorld(player));
+    player.stack.push(bought);
+    recordAction(player, typeIndex, "buy");
     rebuildStackVisual(player);
     if (player.visual) player.visual.swayImpulse += 0.03;
     renderHud();
@@ -1037,36 +1159,49 @@ async function meetOthers(player) {
     const canPush = player.stack.length > 0 && other.stack.length < CONFIG.maxStack;
     const canGrab = other.stack.length > 0 && player.stack.length < CONFIG.maxStack;
     if (!canPush && !canGrab) continue;
+    const theirTop = other.stack[other.stack.length - 1];
     const options = [];
-    if (canPush) options.push({ id: "push", label: `押し付ける（${TURNIP_TYPES[player.stack[player.stack.length - 1]].name}→${other.character.name}）` });
-    if (canGrab) options.push({ id: "grab", label: `ひったくる（${other.character.name}の${TURNIP_TYPES[other.stack[other.stack.length - 1]].name}）` });
+    if (canPush) options.push({ id: "push", label: `押し付ける（どれでも1個）→${other.character.emoji}` });
+    if (canGrab) options.push({ id: "grab", label: `ひったくる（${other.character.emoji}のてっぺん ${turnipName(theirTop)}）` });
     options.push({ id: "none", label: "なにもしない", secondary: true });
     let cpuChoice = "none";
+    let cpuPushIndex = -1;
     if (player.isCpu) {
-      const myTopOutlook = canPush ? cpuOutlook(player, player.stack[player.stack.length - 1]) : 0;
-      const theirTopOutlook = canGrab ? cpuOutlook(player, other.stack[other.stack.length - 1]) : 0;
-      if (canGrab && theirTopOutlook > 0.2 && theirTopOutlook >= -myTopOutlook) cpuChoice = "grab";
-      else if (canPush && myTopOutlook < -0.2) cpuChoice = "push";
+      // 💣 があれば最優先で押し付ける。なければ見通しの悪いカブを押し付ける
+      const bombIndex = player.stack.findIndex((turnip) => turnip.trait === "bomb");
+      let worst = 0;
+      player.stack.forEach((turnip, index) => {
+        const outlook = cpuOutlook(player, turnip.type);
+        if (outlook < worst) { worst = outlook; cpuPushIndex = index; }
+      });
+      if (bombIndex >= 0) cpuPushIndex = bombIndex;
+      const theirTopOutlook = canGrab && theirTop.trait !== "bomb" ? cpuOutlook(player, theirTop.type) + (theirTop.trait ? 0.3 : 0) + (theirTop.big ? 0.5 : 0) : -9;
+      if (canPush && bombIndex >= 0) cpuChoice = "push";
+      else if (canGrab && theirTopOutlook > 0.2) cpuChoice = "grab";
+      else if (canPush && worst < -0.2) cpuChoice = "push";
     }
-    const choice = await ask(player, `${other.name} とすれ違った！ てっぺんのカブをどうする？`, options, cpuChoice);
+    const choice = await ask(player, `${other.name} と同じマスになった！`, options, cpuChoice);
     if (choice === "push") {
-      const from = stackTopWorld(player);
-      const typeIndex = player.stack.pop();
+      const pick = await ask(player, `どのカブを ${other.name} の頭に押し付ける？（相手のてっぺんに乗る）`,
+        stackOptions(player, null, null), String(cpuPushIndex >= 0 ? cpuPushIndex : player.stack.length - 1));
+      const index = Number(pick);
+      const from = stackNodeWorld(player, index);
+      const turnip = removeFromStack(player, index);
       rebuildStackVisual(player);
-      if (from) await flyTurnip(typeIndex, from, stackTopWorld(other));
-      other.stack.push(typeIndex);
+      await flyTurnip(turnip, from, stackTopWorld(other));
+      other.stack.push(turnip);
       rebuildStackVisual(other);
-      game.actionLog.push({ round: game.round, player: player.index, type: typeIndex, kind: "push", level: game.market[typeIndex].level });
-      await showToast(`${player.character.emoji}→${other.character.emoji} ${TURNIP_TYPES[typeIndex].name}を押し付けた`);
+      game.actionLog.push({ round: game.round, player: player.index, type: turnip.type, kind: "push", level: game.market[turnip.type].level });
+      await showToast(`${player.character.emoji}→${other.character.emoji} ${TURNIP_TYPES[turnip.type].name}${turnip.trait ? TRAITS[turnip.trait].icon : ""}を押し付けた`);
     } else if (choice === "grab") {
       const from = stackTopWorld(other);
-      const typeIndex = other.stack.pop();
+      const turnip = other.stack.pop();
       rebuildStackVisual(other);
-      if (from) await flyTurnip(typeIndex, from, stackTopWorld(player));
-      player.stack.push(typeIndex);
+      await flyTurnip(turnip, from, stackTopWorld(player));
+      player.stack.push(turnip);
       rebuildStackVisual(player);
-      game.actionLog.push({ round: game.round, player: player.index, type: typeIndex, kind: "grab", level: game.market[typeIndex].level });
-      await showToast(`${player.character.emoji}←${other.character.emoji} ${TURNIP_TYPES[typeIndex].name}をひったくった`);
+      game.actionLog.push({ round: game.round, player: player.index, type: turnip.type, kind: "grab", level: game.market[turnip.type].level });
+      await showToast(`${player.character.emoji}←${other.character.emoji} ${TURNIP_TYPES[turnip.type].name}${turnip.trait ? TRAITS[turnip.trait].icon : ""}をひったくった`);
     }
     renderHud();
   }
@@ -1074,19 +1209,20 @@ async function meetOthers(player) {
 
 // カブマス：置いてあるカブをタダで拾い（頭が満杯なら拾えない）、そのカブのうわさも聞く
 async function visitKabuTile(player, tileIndex) {
-  const typeIndex = game.ground[tileIndex];
-  if (typeIndex === null || typeIndex === undefined) {
+  const groundTurnip = game.ground[tileIndex];
+  if (!groundTurnip) {
     setMessage("このマスのカブは、もう誰かが拾っていった。");
     await wait(TIMING.cpuThink);
     return;
   }
+  const typeIndex = groundTurnip.type;
   const canPick = player.stack.length < CONFIG.maxStack;
   if (canPick) {
     game.ground[tileIndex] = null;
     const from = groundTurnipWorld(tileIndex);
     updateGroundVisual(tileIndex);
-    await flyTurnip(typeIndex, from, stackTopWorld(player));
-    player.stack.push(typeIndex);
+    await flyTurnip(groundTurnip, from, stackTopWorld(player));
+    player.stack.push(groundTurnip);
     recordAction(player, typeIndex, "pick");
     rebuildStackVisual(player);
     if (player.visual) player.visual.swayImpulse += 0.03;
@@ -1094,15 +1230,199 @@ async function visitKabuTile(player, tileIndex) {
   }
   const rumor = drawRumor(player, typeIndex);
   const secret = player.isCpu ? "（中身は本人だけが知っている）" : `💬「${rumorText(rumor)}」`;
+  const traitNote = groundTurnip.trait ? `<br><small>${TRAITS[groundTurnip.trait].icon}${TRAITS[groundTurnip.trait].name}：${TRAITS[groundTurnip.trait].eat}</small>` : "";
   await ask(player,
-    `${turnipLabel(typeIndex)}を${canPick ? "拾った！" : "見つけたが、頭がいっぱいで拾えない。"}<br>そのとき、うわさが聞こえた。${secret}<br><small>うわさは4回に1回ははずれる。</small>`,
+    `${turnipName(groundTurnip)}を${canPick ? "拾った！" : "見つけたが、頭がいっぱいで拾えない。"}${traitNote}<br>そのとき、うわさが聞こえた。${secret}<br><small>うわさは4回に1回ははずれる。</small>`,
     [{ id: "ok", label: "ふむふむ" }], "ok");
+}
+
+// ---- 食べる（手番の最初に1個まで。どの段でも選べる） ----
+function cpuEatChoice(player) {
+  let best = 0.5, choice = "skip";
+  player.stack.forEach((turnip, index) => {
+    let score = 0;
+    if (turnip.trait === "puff") score = player.stack.filter((t) => t.type === turnip.type).length * 0.4 + cpuOutlook(player, turnip.type) * 0.2;
+    else if (turnip.trait === "wilt") score = cpuWiltTarget(player).score;
+    else if (turnip.trait === "magnet") score = game.players.some((other) => other !== player && other.stack.some((t) => t.trait !== "bomb")) ? 0.75 : 0;
+    else if (turnip.trait === "run") score = 0.45;
+    else if (turnip.trait === "sparkle") score = 0.3;
+    if (score > best) { best = score; choice = String(index); }
+  });
+  return choice;
+}
+// しおれを使うなら「ライバルが多く持っていて自分は少ない色」
+function cpuWiltTarget(player) {
+  let best = { type: 0, score: -9 };
+  TURNIP_TYPES.forEach((_, t) => {
+    const mine = player.stack.filter((turnip) => turnip.type === t).length;
+    const score = (totalHeld(t) - mine * 2) * 0.25;
+    if (score > best.score) best = { type: t, score };
+  });
+  return best;
+}
+
+async function eatPhase(player) {
+  const edible = (turnip) => turnip.trait !== "bomb";
+  if (!player.stack.some(edible)) return;
+  const options = stackOptions(player, edible, (turnip) => turnip.trait ? `（${TRAITS[turnip.trait].short}）` : "");
+  options.push({ id: "skip", label: "食べない", secondary: true });
+  const choice = await ask(player,
+    `<b>${player.name}</b> の番。サイコロの前に、頭のカブを1個食べられる（どの段でも）。<br><small>突然変異カブは食べると効果が出る。ふつうのカブは頭が軽くなるだけ。</small>`,
+    options, player.isCpu ? cpuEatChoice(player) : "skip");
+  if (choice === "skip") return;
+  const index = Number(choice);
+  const from = stackNodeWorld(player, index);
+  const turnip = removeFromStack(player, index);
+  game.stats.eats++;
+  rebuildStackVisual(player);
+  renderHud();
+  popEmoji(player, "😋");
+  if (from && hasThree) await flyTurnip(turnip, from, from.clone().add(new THREE.Vector3(0, -1.2, 0.3)));
+  await applyEatEffect(player, turnip);
+  renderHud();
+}
+
+async function applyEatEffect(player, turnip) {
+  const name = turnipName(turnip);
+  switch (turnip.trait) {
+    case "puff": {
+      applyNews(turnip.type, 1);
+      if (hasThree) await showMarketChange();
+      await ask(player, `${name}を食べた！ ${turnipLabel(turnip.type)}が島じゅうでぷくっと大きくなった。`, [{ id: "ok", label: "やった" }], "ok");
+      break;
+    }
+    case "wilt": {
+      const options = TURNIP_TYPES.map((_, t) => ({ id: String(t), label: turnipLabel(t) }));
+      const target = Number(await ask(player, `${name}を食べた！ どの色を小さくする？`, options, String(cpuWiltTarget(player).type)));
+      applyNews(target, -1);
+      if (hasThree) await showMarketChange();
+      setMessage(`${turnipLabel(target)}が島じゅうでしゅんと縮んだ。`);
+      await wait(TIMING.cpuThink);
+      break;
+    }
+    case "run":
+      player.extraRoll = true;
+      await ask(player, `${name}を食べた！ 足が速くなった。このターンはサイコロを2回振る。`, [{ id: "ok", label: "いくぞ" }], "ok");
+      break;
+    case "magnet": {
+      const targets = game.players.filter((other) => other !== player && other.stack.length > 0);
+      if (!targets.length || player.stack.length >= CONFIG.maxStack) { setMessage(`${name}を食べたが、引き寄せられるカブがない。`); await wait(TIMING.cpuThink); break; }
+      // CPU：いちばん高く売れそうな（💣以外の）カブを持っている相手から取る
+      let cpuTarget = targets[0], cpuIndex = targets[0].stack.length - 1, bestValue = -9;
+      for (const other of targets) other.stack.forEach((t, index) => {
+        if (t.trait === "bomb") return;
+        const value = priceOf(sellLevelOf(t, null)) + cpuOutlook(player, t.type) + (t.trait ? 1 : 0);
+        if (value > bestValue) { bestValue = value; cpuTarget = other; cpuIndex = index; }
+      });
+      const whoId = await ask(player, `${name}を食べた！ 誰の頭から引き寄せる？`,
+        targets.map((other) => ({ id: String(other.index), label: `${other.name}` })), String(cpuTarget.index));
+      const victim = game.players[Number(whoId)];
+      const pick = Number(await ask(player, `${victim.name} の頭のどのカブを引き寄せる？`, stackOptions(victim, null, null),
+        String(victim === cpuTarget ? cpuIndex : victim.stack.length - 1)));
+      const from = stackNodeWorld(victim, pick);
+      const pulled = removeFromStack(victim, pick);
+      rebuildStackVisual(victim);
+      await flyTurnip(pulled, from, stackTopWorld(player));
+      player.stack.push(pulled);
+      rebuildStackVisual(player);
+      game.actionLog.push({ round: game.round, player: player.index, type: pulled.type, kind: "grab", level: game.market[pulled.type].level });
+      await showToast(`🧲 ${player.character.emoji}←${victim.character.emoji} ${TURNIP_TYPES[pulled.type].name}`);
+      break;
+    }
+    case "sparkle":
+      player.nextRumorTrue = true;
+      await ask(player, `${name}を食べた！ 耳がよく聞こえる。次に聞くうわさは必ず本当。`, [{ id: "ok", label: "ふむ" }], "ok");
+      break;
+    default:
+      setMessage(`${name}を食べた。むしゃむしゃ。頭が少し軽くなった。`);
+      await wait(TIMING.cpuThink);
+  }
+}
+
+// ---- 頭の上の反応（自分の手番の終わり）：💣の導火線 → 増殖 → 合体 → 突然変異 ----
+function pairKey(a, b) { return a < b ? `${a}-${b}` : `${b}-${a}`; }
+
+function mergeTriples(player, events) {
+  // 同じ色が3つ並んだら合体して👑大カブに（💣と大カブ同士は合体しない）
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let k = 0; k + 2 < player.stack.length; k++) {
+      const trio = player.stack.slice(k, k + 3);
+      if (trio.every((t) => t.type === trio[0].type && t.trait !== "bomb" && !t.big)) {
+        const big = makeTurnip(trio[0].type, (trio.find((t) => t.trait) || {}).trait || null);
+        big.big = true;
+        player.stack.splice(k, 3, big);
+        game.stats.merges++;
+        events.push(`👑 ${TURNIP_TYPES[big.type].name}が3つ合体して大カブになった`);
+        merged = true;
+        break;
+      }
+    }
+  }
+}
+
+async function headReactions(player) {
+  const events = [];
+  const emojis = [];
+  // 💣：導火線を進め、尽きたら両隣ごと吹き飛ぶ
+  for (let k = 0; k < player.stack.length; k++) {
+    const turnip = player.stack[k];
+    if (turnip.trait !== "bomb") continue;
+    turnip.age++;
+    if (turnip.age >= CONFIG.bombFuse) {
+      const start = Math.max(0, k - 1);
+      const end = Math.min(player.stack.length, k + 2);
+      const blown = player.stack.splice(start, end - start);
+      game.stats.explosions++;
+      game.stats.lostToBombs += blown.length - 1;
+      events.push(`💥 ばくだんが破裂！ ${blown.length - 1}個のカブが吹き飛んだ`);
+      emojis.push("💥");
+      if (player.visual) player.visual.swayImpulse += 0.15;
+      k = start - 1;
+    }
+  }
+  // 増殖：同じ色が隣り合ったペアごとに、その色が1個増える
+  const before = player.stack.slice();
+  for (let k = 0; k + 1 < before.length; k++) {
+    const lower = before[k], upper = before[k + 1];
+    if (lower.type !== upper.type || lower.trait === "bomb" || upper.trait === "bomb") continue;
+    if (player.stack.length >= CONFIG.maxStack) break;
+    if (random() < CONFIG.growChance) {
+      const index = player.stack.indexOf(upper);
+      player.stack.splice(index + 1, 0, makeTurnip(lower.type));
+      game.stats.grows++;
+      events.push(`🌱 ${TURNIP_TYPES[lower.type].name}が増えた`);
+      emojis.push("🌱");
+    }
+  }
+  mergeTriples(player, events);
+  // 突然変異：違う色が隣り合ったペアごとに、組み合わせで決まる変異が付く
+  for (let k = 0; k + 1 < player.stack.length; k++) {
+    const lower = player.stack[k], upper = player.stack[k + 1];
+    if (lower.type === upper.type) continue;
+    const candidates = [lower, upper].filter((t) => !t.trait);
+    if (!candidates.length) continue;
+    if (random() < CONFIG.mutateChance) {
+      const target = candidates[randomInt(candidates.length)];
+      target.trait = PAIR_TRAITS[pairKey(lower.type, upper.type)];
+      game.stats.mutations++;
+      events.push(`🧬 ${TURNIP_TYPES[target.type].name}が突然変異 → ${TRAITS[target.trait].icon}${TRAITS[target.trait].name}`);
+      emojis.push(TRAITS[target.trait].icon);
+    }
+  }
+  if (!events.length) return;
+  rebuildStackVisual(player);
+  renderHud();
+  emojis.slice(0, 4).forEach((emoji, k) => setTimeout(() => popEmoji(player, emoji), k * 220 * speedFactor));
+  if (player.visual) player.visual.swayImpulse += 0.05;
+  await ask(player, `${player.name} の頭の上で…<br>${events.join("<br>")}`, [{ id: "ok", label: "おお" }], "ok");
 }
 
 function refillGround() {
   BOARD.forEach((tile, index) => {
     if (tile.kind === "kabu" && game.ground[index] === null) {
-      game.ground[index] = randomInt(TURNIP_TYPES.length);
+      game.ground[index] = makeGroundTurnip();
       updateGroundVisual(index);
     }
   });
@@ -1112,9 +1432,13 @@ async function playTurn(player) {
   game.currentPlayer = player.index;
   if (hasThree) focusPlayer(player);
   renderHud();
-  await ask(player, `<b>${player.name}</b> の番。`, [{ id: "roll", label: "🎲 サイコロをふる" }], "roll");
-  const steps = 1 + randomInt(CONFIG.diceSides);
-  await showToast(`🎲 ${steps}`);
+  await eatPhase(player);
+  await ask(player, `<b>${player.name}</b> の番。`, [{ id: "roll", label: player.extraRoll ? "🎲🎲 サイコロを2回ふる" : "🎲 サイコロをふる" }], "roll");
+  const rolls = [1 + randomInt(CONFIG.diceSides)];
+  if (player.extraRoll) rolls.push(1 + randomInt(CONFIG.diceSides));
+  player.extraRoll = false;
+  const steps = rolls.reduce((a, b) => a + b, 0);
+  await showToast(rolls.map((r) => `🎲 ${r}`).join(" + "));
   for (let step = 1; step <= steps; step++) {
     player.position = (player.position + 1) % BOARD.length;
     if (hasThree) { await hopTo(player, player.position); focusPlayer(player); }
@@ -1141,6 +1465,9 @@ async function playTurn(player) {
     await ask(player, `📻 島ラジオ速報：${turnipLabel(typeIndex)} ${shift > 0 ? "がテレビで紹介されて人気上昇！ ぷくっと大きくなった" : "に悪いうわさ… しゅんと縮んだ"}`,
       [{ id: "ok", label: "なるほど" }], "ok");
   }
+  renderHud();
+  await headReactions(player);
+  game.maxHeight = Math.max(game.maxHeight || 0, player.stack.length);
   renderHud();
 }
 
@@ -1191,6 +1518,8 @@ function summarize() {
   return { seed: currentSeed, splitDays, herdDays, tradeDays, sellDays, ranking,
            holds: game.actionLog.filter((a) => a.kind === "hold").length,
            picks: game.actionLog.filter((a) => a.kind === "pick").length,
+           stats: Object.assign({}, game.stats),
+           maxHeight: game.maxHeight,
            sells: game.actionLog.filter((a) => a.kind === "sell").length,
            buys: game.actionLog.filter((a) => a.kind === "buy").length };
 }
@@ -1281,12 +1610,15 @@ function showTitle() {
     <h1>🥬 カブ盛りバブル</h1>
     <p class="lead">突然変異カブが大発生！ 島はカブ取引ブーム。カブは頭に盛って運ぶのが流行中。</p>
     <ol>
-      <li><b>頭のカブは、てっぺんからしか売れない。</b>抜いたカブはてっぺんに積まれる。積む順番に気をつけて。</li>
+      <li>手に入れたカブは<b>頭のてっぺんに積む</b>。売る・食べるは<b>どの段でも</b>選べる。</li>
+      <li><b>自分の番の終わりに、頭の上で反応が起きる。</b>同じ色が隣り合うと🌱増える。3つ並ぶと👑大カブに合体（高く売れる）。違う色が隣り合うと🧬突然変異する（色の組み合わせで何になるか決まる）。<b>たくさん積むほど当たりが出る。</b></li>
+      <li><b>番の最初に1個食べられる。</b>🎈ふくらみ＝その色が値上がり／🥀しおれ＝好きな色を値下げ／👟はしり＝サイコロ2回／🧲じしゃく＝好きな相手から1個引き寄せる／✨きらきら＝次のうわさが必ず本当。</li>
+      <li>💣ばくだんは食べられず売れない。3日で破裂して両隣ごと吹き飛ぶ。同じマスの相手に押し付けよう。</li>
       <li><b>値段はカブの大きさ。</b>人気が出ると、島じゅうの同じカブが一斉に膨らむ。大きいほど高く売れる（5段階）。</li>
       <li><b>みんなの頭に多く乗っているカブほど縮んでいく。</b>みんなの頭を見て、次に膨らむカブを読もう。真ん中の見本台で4種の大きさを見比べられる。</li>
       <li><b>カブマス</b>に止まると、置いてあるカブを<b>タダで拾える</b>。そのカブのうわさも聞こえる（自分だけ。4回に1回はうそ）。</li>
       <li>畑は止まると<b>まとめて買える</b>（1〜3こ）。市場は<b>通りがかりでも</b>寄って売れる。店主の好物は1段高く売れる。📻ラジオマスでは相場が動く。</li>
-      <li>同じマスに止まったら、てっぺんのカブを<b>押し付ける</b>か<b>ひったくる</b>。</li>
+      <li>同じマスに止まったら、自分のカブを1個（どれでも）<b>押し付ける</b>か、相手のてっぺんを<b>ひったくる</b>。</li>
       <li>${CONFIG.totalRounds}日後、頭に残ったカブはしおれて0。いちばんコインを持っていた人の勝ち。</li>
     </ol>
     <div class="actions">
@@ -1294,7 +1626,7 @@ function showTitle() {
       <button type="button" class="secondary" data-mode="party">みんなで遊ぶ（4人で1台）</button>
       <button type="button" class="secondary" data-mode="watch">観戦する（CPU 4人）</button>
     </div>
-    <div class="foot">相場の検証用プロト ${GAME_VERSION}。爆弾カブ・崩落などの突然変異はまだ入っていない。</div>
+    <div class="foot">検証用プロト ${GAME_VERSION}。崩落ルールはまだ入っていない。</div>
   </div>`;
   elements.overlay.classList.remove("hidden");
   elements.overlay.querySelectorAll("[data-mode]").forEach((button) => {
