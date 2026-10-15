@@ -128,7 +128,7 @@
 // v0.4.0：カブを「食べる」と突然変異ごとの効果が出る。頭の上では隣り合ったカブが増殖・合体・突然変異する
 // （＝たくさん積むほど当たりが出る）。売る・食べるはタワーのどの段でも選べる。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.4.2";
+const GAME_VERSION = "v0.5.0";
 
 // ---- 調整値（データ駆動：ここだけ触ればバランスが変わる） ----
 const CONFIG = {
@@ -139,11 +139,15 @@ const CONFIG = {
   maxStack: 12,               // これ以上は積めない（タワーの見た目の上限でもある）
   maxBuyPerVisit: 3,
   diceSides: 6,
-  priceByLevel: [1, 2, 3, 5, 8],   // 顔5段の値段。上の段ほど伸び幅が大きい＝🤩で売り抜ける価値を作る
-  faces: ["😱", "😟", "🙂", "😄", "🤩"],   // 結果画面の記録表だけで使う（遊んでいる間は大きさで見せる）
+  priceByLevel: [1, 2, 3, 5, 8],   // 段ごとの値段。上の段ほど伸び幅が大きい＝高値で売り抜ける価値を作る
+  // 値段に上限はない（v0.5.0）。表の先は1段ごとに priceGrowthBeyond 倍で伸び続ける（8→13→21→33…）
+  priceGrowthBeyond: 1.6,
+  faces: ["😱", "😟", "🙂", "😄", "🤩"],   // 結果画面の記録表だけで使う（遊んでいる間は大きさで見せる）。🤩より上は🚀
   // 相場は数字やUIでなく、カブの大きさで見せる。島じゅうの同じ種類のカブが一斉に膨らむ／しぼむ。
   // 1段ごとに約1.25倍：並べたときに段の違いが目で分かる最小の差
   sizeByLevel: [0.62, 0.8, 1.0, 1.25, 1.55],
+  // 表の先も1段ごとに大きくなり続ける。値段ほど急に伸ばさないのは、タワーが画面からはみ出さないようにするため
+  sizeGrowthBeyond: 1.18,
   supplyPressurePerTurnip: 0.11,   // 平均より1個多く頭に乗っているごとに、毎日これだけ下がる
   meanReversion: 0.07,             // 真ん中（🙂）へ戻ろうとする力。張り付き防止
   trendChoices: [-0.45, -0.25, 0.25, 0.45],   // 週ごとの流行の強さ。0を入れないのは、うわさが必ず方向を持つようにするため
@@ -277,8 +281,19 @@ const game = {
 function currentWeekIndex() { return Math.floor((Math.max(game.round, 1) - 1) / CONFIG.roundsPerWeek); }
 function weekCount() { return Math.ceil(CONFIG.totalRounds / CONFIG.roundsPerWeek); }
 function roundsLeft() { return CONFIG.totalRounds - game.round; }
-function levelOf(value) { return clamp(Math.round(value), 0, CONFIG.faces.length - 1); }
-function priceOf(level) { return CONFIG.priceByLevel[level]; }
+// 段は下にだけ底がある（0＝いちばん小さい）。上には上限がない
+function levelOf(value) { return Math.max(0, Math.round(value)); }
+function priceOf(level) {
+  const table = CONFIG.priceByLevel;
+  if (level < table.length) return table[level];
+  return Math.round(table[table.length - 1] * Math.pow(CONFIG.priceGrowthBeyond, level - (table.length - 1)));
+}
+function sizeOfLevel(level) {
+  const table = CONFIG.sizeByLevel;
+  if (level < table.length) return table[level];
+  return table[table.length - 1] * Math.pow(CONFIG.sizeGrowthBeyond, level - (table.length - 1));
+}
+function faceOf(level) { return level < CONFIG.faces.length ? CONFIG.faces[level] : "🚀"; }
 
 // 頭の上のカブ1個。type＝色（値段）、trait＝突然変異、big＝合体した大カブ、age＝💣の導火線
 let nextTurnipId = 1;
@@ -354,7 +369,7 @@ function updateMarketLogic() {
     const supplyPressure = (totals[t] - average) * CONFIG.supplyPressurePerTurnip * type.supplySensitivity;
     const noise = (random() * 2 - 1) * type.volatility;
     const reversion = CONFIG.meanReversion * (2 - entry.value);
-    entry.value = clamp(entry.value + game.trends[week][t] - supplyPressure + noise + reversion, -0.4, 4.4);
+    entry.value = Math.max(-0.4, entry.value + game.trends[week][t] - supplyPressure + noise + reversion);
     entry.level = levelOf(entry.value);
     entry.lastDelta = entry.level - before;
     entry.history.push(entry.level);
@@ -364,7 +379,7 @@ function updateMarketLogic() {
 function applyNews(typeIndex, shift) {
   const entry = game.market[typeIndex];
   const before = entry.level;
-  entry.value = clamp(entry.value + shift, -0.4, 4.4);
+  entry.value = Math.max(-0.4, entry.value + shift);
   entry.level = levelOf(entry.value);
   entry.lastDelta = entry.level - before;
 }
@@ -680,7 +695,7 @@ function stackNodeWorld(player, index) {
 
 const STACK_SCALE = 1.15;
 function currentSize(typeIndex) { return view.sizes[typeIndex].value; }
-function targetSize(typeIndex) { return CONFIG.sizeByLevel[game.market[typeIndex].level]; }
+function targetSize(typeIndex) { return sizeOfLevel(game.market[typeIndex].level); }
 
 function buildWorld() {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -983,7 +998,8 @@ function renderHud() {
   elements.players.innerHTML = game.players.map((player) => {
     // 手元の一覧も大きさで描く（3Dと同じ読み方で済むように）
     const dots = player.stack.map((turnip) => {
-      const diameter = Math.round(9 * CONFIG.sizeByLevel[game.market[turnip.type].level] * turnipScale(turnip)) + 1;
+      // 手元の一覧は枠に収めるため20pxで止める（3Dのカブは上限なく大きくなる）
+      const diameter = Math.min(20, Math.round(9 * sizeOfLevel(game.market[turnip.type].level) * turnipScale(turnip)) + 1);
       const ring = turnip.trait === "bomb" ? "box-shadow:0 0 0 2px #2b2420;" : turnip.trait ? "box-shadow:0 0 0 2px #f5b400;" : "";
       return `<i style="width:${diameter}px;height:${diameter}px;background:${TURNIP_TYPES[turnip.type].css};${ring}"></i>`;
     }).join("");
@@ -1069,7 +1085,7 @@ function turnipName(turnip) {
 }
 function sellLevelOf(turnip, shop) {
   const bonus = shop && shop.likes === turnip.type ? CONFIG.favoriteShopBonus : 0;
-  return Math.min(CONFIG.faces.length - 1, game.market[turnip.type].level + bonus);
+  return game.market[turnip.type].level + bonus;
 }
 function sellPriceOf(turnip, shop) {
   return priceOf(sellLevelOf(turnip, shop)) * (turnip.big ? CONFIG.bigPriceMultiplier : 1);
@@ -1534,7 +1550,7 @@ function summarize() {
 
 function averageFace(levels) {
   if (!levels.length) return "—";
-  return CONFIG.faces[clamp(Math.round(levels.reduce((a, b) => a + b, 0) / levels.length), 0, CONFIG.faces.length - 1)];
+  return faceOf(Math.round(levels.reduce((a, b) => a + b, 0) / levels.length));
 }
 
 function showResults() {
@@ -1559,7 +1575,7 @@ function showResults() {
   const timelineRows = TURNIP_TYPES.map((type, t) => {
     let row = `<tr><th class="typehead">${turnipLabel(t)}</th>`;
     for (let round = 1; round <= CONFIG.totalRounds; round++) {
-      const face = CONFIG.faces[game.market[t].history[round - 1]];
+      const face = faceOf(game.market[t].history[round - 1]);
       const symbols = { buy: "▲", sell: "▼", hold: "・" };
       const marks = game.actionLog.filter((a) => a.round === round && a.type === t && symbols[a.kind])
         .map((a) => `<span class="mark" style="color:${game.players[a.player].character.css}">${symbols[a.kind]}</span>`);
@@ -1588,7 +1604,7 @@ function showResults() {
 
     <h2>相場と売買の記録</h2>
     <div class="timeline-wrap"><table class="timeline">${header}${timelineRows}</table></div>
-    <div class="legend">顔＝その日の朝のカブの大きさ（😱いちばん小さい〜🤩いちばん大きい）　▲買い ▼売り ・売れたのに持ち続けた（色＝プレイヤー）　<span style="background:#fff1c9">黄</span>＝売った人と、買った／持ち続けた人が分かれた日　<span style="background:#dbe8f8">青</span>＝3人以上が一斉に売った日</div>
+    <div class="legend">顔＝その日の朝のカブの大きさ（😱いちばん小さい→😟→🙂→😄→🤩→🚀それより上）　▲買い ▼売り ・売れたのに持ち続けた（色＝プレイヤー）　<span style="background:#fff1c9">黄</span>＝売った人と、買った／持ち続けた人が分かれた日　<span style="background:#dbe8f8">青</span>＝3人以上が一斉に売った日</div>
 
     <h2>平均でどの大きさのときに買って、どの大きさで売ったか</h2>
     <table class="faces"><tr><th></th>${TURNIP_TYPES.map((_, t) => `<th>${turnipLabel(t)}</th>`).join("")}</tr>${faceRows}</table>
@@ -1622,7 +1638,7 @@ function showTitle() {
       <li><b>自分の番の終わりに、頭の上で反応が起きる。</b>同じ色が隣り合うと🌱増える。3つ並ぶと👑大カブに合体（1個の${CONFIG.bigPriceMultiplier}倍で売れる）。違う色が隣り合うと🧬突然変異する（色の組み合わせで何になるか決まる）。<b>たくさん積むほど当たりが出る。</b></li>
       <li><b>番の最初に1個食べられる。</b>🎈ふくらみ＝その色が値上がり／🥀しおれ＝好きな色を値下げ／👟はしり＝サイコロ2回／🧲じしゃく＝好きな相手から1個引き寄せる／✨きらきら＝次のうわさが必ず本当。</li>
       <li>💣ばくだん（べに×ほしの突然変異でまれに生まれる）は食べられない。${CONFIG.bombFuse}日で破裂して両隣ごと吹き飛ぶ。売れないので、同じマスの相手に押し付けるしかない。</li>
-      <li><b>値段はカブの大きさ。</b>人気が出ると、島じゅうの同じカブが一斉に膨らむ。大きいほど高く売れる（5段階）。</li>
+      <li><b>値段はカブの大きさ。</b>人気が出ると、島じゅうの同じカブが一斉に膨らむ。大きいほど高く売れる。<b>値段に上限はない</b>（膨らみ続ければどこまでも高くなる）。</li>
       <li><b>みんなの頭に多く乗っているカブほど縮んでいく。</b>みんなの頭を見て、次に膨らむカブを読もう。真ん中の見本台で4種の大きさを見比べられる。</li>
       <li><b>カブマス</b>に止まると、置いてあるカブを<b>タダで拾える</b>。そのカブのうわさも聞こえる（自分だけ。4回に1回はうそ）。</li>
       <li>畑は止まると<b>まとめて買える</b>（1〜3こ）。市場は<b>通りがかりでも</b>寄って売れる。店主の好物は1段高く売れる。📻ラジオマスでは相場が動く。</li>
