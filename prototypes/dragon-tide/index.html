@@ -879,7 +879,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.7.0";
+const GAME_VERSION = "v3.8.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1813,6 +1813,12 @@ const ATTACK_DEFS = {
   // v0.45: 彗星竜。止まらず線をなぞる竜なので、**すれ違いざまに撒く**散弾が合う。
   // kind は scatter（羽根散弾と同じ処理）だが、反動を持たせて「撒いた反作用で加速する」感触にする。
   stardust:       { ja: "星屑",       en: "Stardust",          kind: "scatter",   recoilDist: 14, fireStun: 0    },
+  // v3.8.0: 鮫竜。緋竜と同じ「体当たりが主武装」（kind melee＝体当たりの威力と HP の上乗せを共有）
+  sharkbite:      { ja: "噛み裂き",   en: "Shark Bite",        kind: "melee",     recoilDist: 0,  fireStun: 0.10 },
+  // v3.8.0: 亀竜。自分を中心に周期的に揺れを起こす（爆発）。向きも照準も持たない
+  quake:          { ja: "震波",       en: "Quake",             kind: "quake",     recoilDist: 0,  fireStun: 0    },
+  // v3.8.0: 雷雲竜。最寄りの相手に落ち、そこから次の相手へ飛び移る（ブレス）
+  thunderchain:   { ja: "連なる雷",   en: "Chain Lightning",   kind: "chain",     recoilDist: 0,  fireStun: 0    },
 };
 
 /** 攻撃の対象の設定（書いていなければ全部 aim）。def を省くと今の群れの攻撃。 */
@@ -1970,6 +1976,36 @@ const SPECIES_DEFS = {
       leaderSpeed: 190, pathEndMode: "stop",
       hopPeriod: 0.7, hopFlightFrac: 0.42, hopGroundFrac: 0.06, hopPathSkip: 12,
     },
+  },
+
+  // ---- v3.8.0: 種またぎで入る3種（docs/gdd/dragon-tide-run-cycle.md §10・Shooter指示）----
+  // 専用スプライトは Shooter の環境で作る。それまでは既存の絵（DRAGON_PARTS_ALIAS）を
+  // spriteTint の色に寄せて仮に出す。
+  // 種またぎは何も引き継がないので、3種とも**入った瞬間から戦える**個性を最初から持たせる。
+  shark: {    // 旋回半径 100。止まれない・最速の突進
+    ja: "鮫竜", en: "Shark Dragon", icon: "\u{1F988}", color: "#6aa8e0", element: "shark",
+    attack: "sharkbite", spriteTint: "#3a78b8",
+    desc: "止まれず泳ぎ続ける。全竜種で一番速く溜まる突進で噛み裂く",
+    // minSpeed 170 ＝ 指を離しても止まれない。揃いやすいので突進のしきい値も低めにする
+    move: { maxSpeed: 240, minSpeed: 170, accel: 420, turnRate: 2.4, leaderSpeed: 270, pathEndMode: "straight" },
+    charge: { enterSpeedFrac: 0.97, exitSpeedFrac: 0.955, rampSeconds: 1.0, damageMult: 4.0,
+              reachBonus: 26, knockback: 260, fxScale: 1.25 },
+  },
+  tortoise: { // 旋回半径 68。超鈍重
+    ja: "亀竜", en: "Tortoise Dragon", icon: "\u{1F422}", color: "#8cc070", element: "tortoise",
+    attack: "quake", spriteTint: "#4a7a40",
+    desc: "とても遅いが硬い。自分の周りに周期的に揺れを起こし、まとめて崩す",
+    // 遅いぶん HP を最初から厚くする（種またぎで入って即落ちないように）
+    hpMult: 1.6,
+    move: { maxSpeed: 95, minSpeed: 0, accel: 140, turnRate: 1.4, leaderSpeed: 120, leaderPull: 2.0, pathEndMode: "stop" },
+  },
+  thunder: {  // 旋回半径 73
+    ja: "雷雲竜", en: "Thunderhead Dragon", icon: "\u{1F329}️", color: "#ffe070", element: "thunder",
+    attack: "thunderchain", spriteTint: "#e0c030",
+    desc: "近くの相手に雷を落とし、そこから次の相手へ飛び移らせる",
+    // 雷は落ちる先を選ぶので、向きの制限は緩め
+    breathArcDeg: 160,
+    move: { maxSpeed: 160, accel: 320, turnRate: 2.2, pathEndMode: "wander" },
   },
 };
 
@@ -8526,6 +8562,7 @@ function hazardRadiusAt(h) {
 // v0.43: 連鎖電撃の表示FX（折れ線をそのまま描く）
 const chainFxList = [];
 const CHAIN_FX_DURATION = 0.28;
+const CHAIN_FX_PAL_ENEMY = [[6, "#a0d8ff", 0.30], [2.2, "#eaf6ff", 0.95]];
 
 function updateChainFx(dt) {
   for (let k = chainFxList.length - 1; k >= 0; k--) {
@@ -8542,7 +8579,7 @@ function drawChainFx() {
   ctx.lineJoin = "round";
   for (const fx of chainFxList) {
     const a = Math.max(0, fx.life / CHAIN_FX_DURATION);
-    for (const [w, col, alpha] of [[6, "#a0d8ff", 0.30], [2.2, "#eaf6ff", 0.95]]) {
+    for (const [w, col, alpha] of (fx.pal || CHAIN_FX_PAL_ENEMY)) {   // v3.8.0: 雷雲竜の雷は黄色
       ctx.globalAlpha = alpha * a;
       ctx.strokeStyle = col;
       ctx.lineWidth = w;
@@ -9894,7 +9931,8 @@ function updateMovers(dt) {
 
     // v0.61: 画面外から来る増援は、群れに近づくまで行軍速度で走る
     const moveSpeed = laserLocked ? 0
-      : def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
+      : def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1)
+        * (frostFields.length ? frostSpeedMultAt(m.wx, m.wy) : 1);   // v3.8.0: 凍て霧
     m.wx += moveX * moveSpeed * dt;
     m.wy += moveY * moveSpeed * dt;
 
@@ -14948,8 +14986,10 @@ function updateProjectiles(dt) {
     projTailX[i] = projWx[i];
     projTailY[i] = projWy[i];
 
-    projWx[i] += projVx[i] * dt;
-    projWy[i] += projVy[i] * dt;
+    // v3.8.0: 凍て霧の中では遅くなる（速度そのものは変えない＝霧を出れば元の速さ）
+    const pdt = frostFields.length ? dt * frostSpeedMultAt(projWx[i], projWy[i]) : dt;
+    projWx[i] += projVx[i] * pdt;
+    projWy[i] += projVy[i] * pdt;
 
     if (projWx[i] < -50 || projWx[i] > WORLD_W + 50 || projWy[i] < -50 || projWy[i] > WORLD_H + 50) {
       projActive[i] = 0;
@@ -15662,6 +15702,10 @@ const SPECIAL_WAKE    = 6;
 // （docs/gdd/dragon-tide-vanguard-special.md 案3）。ひびが入っている間は
 // 誰の攻撃でも余計に通る＝先陣が壁を崩して本隊が雪崩れ込む形。
 const SPECIAL_WEDGE   = 7;
+// v3.8.0: 癒し手。周りの竜を周期的に回復する（Shooter指示）
+const SPECIAL_HEAL    = 8;
+// v3.8.0: 凍て霧。冷たい霧をまとい、中に入った敵の弾と動く敵を遅くする＝既存7体に無い「足止め」
+const SPECIAL_FROST   = 9;
 
 // v2.15.0: 名前を「竜」を付けない二つ名にした（Shooter指示）。
 // v2.15.1: 効果・見た目に合うかっこよさで付け直した。コメントや設計メモには旧名が残っているので対応表:
@@ -15689,6 +15733,9 @@ const SPECIAL_DEFS = {
   [SPECIAL_MECHA]:   { key: "mecha",   name: "ロケットマン", color: "#ff7a4d", hpMult: 2.0 },
   [SPECIAL_WAKE]:    { key: "wake",    name: "煽る風", color: "#9b7bff", hpMult: 1.6 },
   [SPECIAL_WEDGE]:   { key: "wedge",   name: "穿つ楔", color: "#5fbfa0", hpMult: 2.2 },
+  // v3.8.0: 専用スプライトは後で作る。それまでは既存の絵（DRAGON_PARTS_ALIAS）を色替えして出す
+  [SPECIAL_HEAL]:    { key: "heal",    name: "癒し手", color: "#8ff0a8", hpMult: 1.8, spriteTint: "#60e080" },
+  [SPECIAL_FROST]:   { key: "frost",   name: "凍て霧", color: "#c8ecff", hpMult: 2.0, spriteTint: "#e0f4ff" },
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -16302,6 +16349,8 @@ const STRINGS = {
     sp_wedge:          { name: "穿つ楔",     desc: "群れの前を飛び、触れた相手にひびを入れる（誰の攻撃も余計に通る）" },
     sp_wedge_dmg:      { name: "深い割れ", desc: "ひびの割増し +15%" },
     sp_wedge_time:     { name: "戻らぬ傷", desc: "ひびが残る時間 +30%／範囲 +18%" },
+    sp_heal:           { name: "癒し手",     desc: "周りの竜を周期的に回復する特殊個体が加わる" },
+    sp_frost:          { name: "凍て霧",     desc: "冷たい霧をまとい、中に入った敵の弾と動く敵を遅くする特殊個体が加わる" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
     charge_reach: { name: "突進の角", desc: "突進中の体当たりの届く範囲 +30%" },
@@ -16388,6 +16437,9 @@ const CARD_DEFS = [
   { id: "sp_mecha",         icon: "\u{1F680}", rarity: "star", max: 3, specialJoin: SPECIAL_MECHA, weight: 6 },
   { id: "sp_wake",          icon: "\u{1F4A8}", rarity: "star", max: 3, specialJoin: SPECIAL_WAKE, weight: 6 },
   { id: "sp_wedge",         icon: "\u{1FA93}", rarity: "star", max: 3, specialJoin: SPECIAL_WEDGE, weight: 6 },
+  // v3.8.0
+  { id: "sp_heal",          icon: "\u{1F49A}", rarity: "star", max: 3, specialJoin: SPECIAL_HEAL, weight: 6 },
+  { id: "sp_frost",         icon: "\u{1F32B}\uFE0F", rarity: "star", max: 3, specialJoin: SPECIAL_FROST, weight: 6 },
   // v3.1.0: 突進（一斉突撃と5枚）・ブレス角（見渡す顎）・速度（疾風）は竜種の個性に移した
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
@@ -16461,9 +16513,9 @@ function evoEffectText(effects, kind) {
     switch (k) {
       // v3.5.1: 何がどう変わるかが読めば分かる言い方に（Shooter指示「分かりやすい文言に」）
       case "dmg":      parts.push("攻撃の威力 +" + pct(v)); break;
-      case "range":    parts.push((kind === "bomb" || kind === "divebomb" ? "攻撃が届く範囲 +" : "攻撃が届く距離 +") + pct(v)); break;
+      case "range":    parts.push((kind === "bomb" || kind === "divebomb" || kind === "quake" ? "攻撃が届く範囲 +" : "攻撃が届く距離 +") + pct(v)); break;
       case "rate":     parts.push("攻撃の間隔 -" + pct(v) + "（手数が増える）"); break;
-      case "count":    parts.push((kind === "satellite" ? "周りを飛ぶ蜂 +" : "一度に撒く弾 +") + v); break;
+      case "count":    parts.push((kind === "satellite" ? "周りを飛ぶ蜂 +" : kind === "chain" ? "雷が飛び移る回数 +" : "一度に撒く弾 +") + v); break;
       case "targets":  parts.push("同時に焼ける相手 +" + v); break;
       case "pierce":   parts.push("弾が貫いて当たる数 +" + v); break;
       case "aoe":      parts.push("爆発の広さ +" + pct(v)); break;
@@ -16503,6 +16555,11 @@ const EVO_SPECIAL_EFFECT_TEXT = {
   sp_wake_life:     (n) => `航跡が消えるまでの時間 +${Math.round(35 * n)}%（長く伸びる）`,
   sp_wedge_dmg:     (n) => `ひびの入った相手が受けるダメージの上乗せ +${Math.round(15 * n)}%（基本 +${Math.round((WEDGE_CRACK_MULT - 1) * 100)}%）`,
   sp_wedge_time:    (n) => `ひびが残る時間 +${Math.round(30 * n)}%・ひびを入れる範囲 +${Math.round(18 * n)}%`,
+  sp_heal_amt:      (n) => `1回に回復する量 +${Math.round(25 * n)}%（基本 最大HPの${Math.round(HEAL_FRAC * 100)}%）`,
+  sp_heal_rate:     (n) => `回復する間隔 -${Math.round((1 - Math.pow(0.85, n)) * 100)}%（基本 ${HEAL_INTERVAL}秒ごと）`,
+  sp_heal_range:    (n) => `回復が届く範囲 +${Math.round(20 * n)}%（基本 半径${HEAL_RADIUS}px）`,
+  sp_frost_slow:    (n) => `霧の中の敵の弾と動く敵を遅くする割合 +${Math.round(FROST_SLOW_PER * 100 * n)}%（基本 ${Math.round(FROST_SLOW * 100)}%・最大 ${Math.round(FROST_SLOW_MAX * 100)}%）`,
+  sp_frost_range:   (n) => `霧の広さ +${Math.round(20 * n)}%（基本 半径${FROST_RADIUS}px）`,
 };
 
 // ---- 竜種のツリー（§5.2）。[名前, 効果] / 分岐は { name, tint, scale, eff, next: [[名前, 効果] ×2] } ----
@@ -16592,6 +16649,28 @@ const SPECIES_EVO_SPEC = {
          next: [["毒の舌", { dmg: 0.20 }], ["跳ねる毒", { rate: 0.18, range: 0.15 }]] },
   },
 };
+// v3.8.0: 種またぎで入る3種
+SPECIES_EVO_SPEC.shark = {
+  L: [["鋭い歯", { dmg: 0.15 }], ["突進の牙", { chgDmg: 0.35 }], ["鋭い歯・二", { dmg: 0.15 }], ["速い溜め", { chgRamp: 0.20 }]],
+  A: { name: "大白鮫", tint: "#e8f0f8", scale: 1.25, eff: { hp: 0.30, chgDmg: 0.35 },
+       next: [["顎の圧", { dmg: 0.25 }], ["血の匂い", { chgDmg: 0.35 }]] },
+  B: { name: "撞木鮫", tint: "#305070", scale: 1.0, eff: { chgReach: 0.30, speed: 0.10 },
+       next: [["広い頭", { chgReach: 0.30 }], ["群れ狩り", { dmg: 0.20, chgRamp: 0.20 }]] },
+};
+SPECIES_EVO_SPEC.tortoise = {
+  L: [["重い甲羅", { hp: 0.20 }], ["大きな揺れ", { range: 0.15 }], ["地鳴り", { dmg: 0.15 }], ["早い脈動", { rate: 0.18 }]],
+  A: { name: "玄武", tint: "#304030", scale: 1.3, eff: { hp: 0.30, dmg: 0.20 },
+       next: [["不動", { hp: 0.30 }], ["大地震", { dmg: 0.25, range: 0.15 }]] },
+  B: { name: "火山亀", tint: "#c08040", scale: 1.1, eff: { rate: 0.25 },
+       next: [["連なる揺れ", { rate: 0.18 }], ["噴火", { dmg: 0.25 }]] },
+};
+SPECIES_EVO_SPEC.thunder = {
+  L: [["強い雷", { dmg: 0.15 }], ["枝分かれ", { count: 1 }], ["遠雷", { range: 0.15 }], ["連続放電", { rate: 0.18 }]],
+  A: { name: "雷神竜", tint: "#fff080", scale: 1.15, eff: { count: 2, dmg: 0.20 },
+       next: [["万雷", { count: 1 }], ["神鳴り", { dmg: 0.25 }]] },
+  B: { name: "嵐雲竜", tint: "#404880", scale: 1.05, eff: { rate: 0.25, range: 0.20 },
+       next: [["豪雨", { rate: 0.18 }], ["雷雲の目", { range: 0.20, dmg: 0.15 }]] },
+};
 // 惑竜は爆竜と同じ体・同じ爆撃なので、同じツリー（分岐の名前だけ違う）
 SPECIES_EVO_SPEC.wayward = {
   L: SPECIES_EVO_SPEC.bomber.L,
@@ -16611,6 +16690,10 @@ const CROSS_EVOLUTIONS = [
   { to: "frog",     needs: { deflect: 2 },           from: "any" },
   { to: "comet",    needs: { rainbow: 1, beacon: 1 }, from: "any" },
   { to: "ufo",      needs: { beacon: 2 },            from: "any" },
+  // v3.8.0: 既存の行と重ならない組み合わせ。新しい特殊個体（癒し手・凍て霧）も条件に使う
+  { to: "shark",    needs: { wake: 1, mecha: 1 },    from: "any" },
+  { to: "tortoise", needs: { heal: 1, heavy: 1 },    from: "any" },
+  { to: "thunder",  needs: { frost: 1, beacon: 1 },  from: "any" },
 ];
 // v3.6.0: 種またぎは同じレベルのまま行き来するので、専用の「進化形」は持たない（EVOLVED_FORMS は撤去）
 
@@ -16637,6 +16720,13 @@ const SPECIAL_EVO_SPEC = {
   wedge:   { L: [["深い割れ", { sp_wedge_dmg: 1 }], ["戻らぬ傷", { sp_wedge_time: 1 }], ["深い割れ・二", { sp_wedge_dmg: 1 }], ["戻らぬ傷・二", { sp_wedge_time: 1 }]],
              A: { name: "砕く楔", tint: "#20806a", eff: { sp_wedge_dmg: 2 } },
              B: { name: "広がる亀裂", tint: "#a0f0d0", eff: { sp_wedge_time: 1.67 } } },
+  // v3.8.0
+  heal:    { L: [["厚い癒し", { sp_heal_amt: 1 }], ["早い脈", { sp_heal_rate: 1 }], ["広い手", { sp_heal_range: 1 }], ["厚い癒し・二", { sp_heal_amt: 1 }]],
+             A: { name: "慈雨", tint: "#d0ffd8", eff: { sp_heal_amt: 2 } },
+             B: { name: "癒しの輪", tint: "#30a060", eff: { sp_heal_range: 1, sp_heal_rate: 1 } } },
+  frost:   { L: [["凍える霧", { sp_frost_slow: 1 }], ["広がる霧", { sp_frost_range: 1 }], ["凍える霧・二", { sp_frost_slow: 1 }], ["広がる霧・二", { sp_frost_range: 1 }]],
+             A: { name: "氷結", tint: "#80c8ff", eff: { sp_frost_slow: 2 } },
+             B: { name: "濃霧", tint: "#f0f0f0", eff: { sp_frost_range: 2 } } },
 };
 
 // ---- v3.6.0: 竜のレベル・特殊個体のレベル（docs/gdd/dragon-tide-run-cycle.md §5・Shooter指示）----
@@ -16672,6 +16762,7 @@ function speciesKind(speciesId) { return ATTACK_DEFS[SPECIES_DEFS[speciesId].att
 const SPECIES_CATEGORY = {
   fire: "shot", ice: "shot", shadow: "blast", crimson: "direct", falcon: "direct", swallow: "shot",
   hornet: "direct", gargoyle: "direct", ufo: "shot", comet: "shot", bomber: "blast", wayward: "blast", frog: "direct",
+  shark: "direct", tortoise: "blast", thunder: "shot",   // v3.8.0
 };
 const CATEGORY_NAMES = { direct: "直接", shot: "ブレス", blast: "爆発" };
 function flockCategory() { return SPECIES_CATEGORY[flockSpecies] || "shot"; }
@@ -16680,11 +16771,14 @@ function flockCategory() { return SPECIES_CATEGORY[flockSpecies] || "shot"; }
 const SPECIAL_CROSS = {
   beacon:  { blast: "mecha",   direct: "wedge" },
   heavy:   { direct: "wedge",  shot: "rainbow" },
-  deflect: { shot: "rainbow",  blast: "mecha" },
+  deflect: { shot: "rainbow",  blast: "mecha", direct: "frost" },
   mecha:   { shot: "beacon",   direct: "heavy" },
   wake:    { direct: "heavy",  blast: "deflect" },
   wedge:   { shot: "wake",     blast: "beacon" },
-  rainbow: { blast: "deflect", direct: "wake" },
+  rainbow: { blast: "deflect", direct: "wake", shot: "heal" },
+  // v3.8.0
+  heal:    { blast: "frost",   direct: "heavy" },
+  frost:   { shot: "heal",     direct: "wedge" },
 };
 
 function sumEffects(list) {
@@ -17157,7 +17251,7 @@ function effBeamTargets()   { return 1 + upCount("multibeam"); }
 function effBulletPierce()  { return 1 + upCount("pierce"); }
 function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
 // v0.6-p2: 緋竜（MELEE）は個体HP +50%（仕様 §6.4）
-function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1); }
+function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1) * (sp().hpMult || 1); }   // v3.8.0: 亀竜は素で硬い
 // v0.22: 個体別の最大HP。母竜だけ恒常ツリーの motherHp 倍率が乗る。
 // v0.85: 特殊個体は役割ごとのHP倍率を持つ（巌竜は轢進む前提なので 3 倍）。
 function effBoidMaxHpFor(i) {
@@ -17672,6 +17766,9 @@ const SPECIES_FLASH_COLOR = {
   ice:     "rgba(160,232,255,0.6)",
   shadow:  "rgba(192,128,255,0.6)",
   crimson: "rgba(255,64,48,0.6)",
+  shark:   "rgba(106,168,224,0.6)",
+  tortoise:"rgba(140,192,112,0.6)",
+  thunder: "rgba(255,240,120,0.7)",
 };
 
 // ---- BULLET（氷竜・直進弾丸）基礎性能（仕様 §6.2）----
@@ -17739,6 +17836,9 @@ function currentFireInterval() {
   // v0.37.1: 極端枠
   if (flockWeapon === "bomb")     return BOMB_INTERVAL * effFireIntervalMult("bomb");
   if (flockWeapon === "tongue")   return TONGUE_INTERVAL * effFireIntervalMult("tongue");
+  // v3.8.0
+  if (flockWeapon === "quake")    return QUAKE_INTERVAL * effFireIntervalMult("quake");
+  if (flockWeapon === "chain")    return THUNDER_INTERVAL * effFireIntervalMult("chain");
   return 1.0;   // beam / melee / satellite は発射タイマーを使わない
 }
 
@@ -18361,6 +18461,39 @@ function effWedgeCrackMult() {
 function effWedgeCrackTime() { return WEDGE_CRACK_TIME * (1 + 0.30 * upCount("sp_wedge_time")); }
 function effWedgeCrackRadius() { return WEDGE_CRACK_RADIUS * (1 + 0.18 * upCount("sp_wedge_time")); }
 
+// ---- v3.8.0: 癒し手 ----
+// 周りの竜（自分も含む）を、周期的に最大HPの一定割合だけ回復する。ダウン中の竜は起こさない
+// （起こすのは時間で戻る従来の仕組みに任せる＝回復役が蘇生まで持つと全滅が起きなくなる）。
+const HEAL_INTERVAL = 2.5;    // 何秒ごとに癒すか
+const HEAL_FRAC     = 0.10;   // 1回に回復する量（最大HPに対する割合）
+const HEAL_RADIUS   = 130;    // 届く半径 px（群れの広がり σ 64〜114px をおおむね覆う）
+function effHealInterval() { return HEAL_INTERVAL * Math.pow(0.85, upCount("sp_heal_rate")); }
+function effHealFrac()     { return HEAL_FRAC * (1 + 0.25 * upCount("sp_heal_amt")) * permaBuff.specialDmg; }
+function effHealRadius()   { return HEAL_RADIUS * (1 + 0.20 * upCount("sp_heal_range")); }
+let runHealTotal = 0;         // このランで回復した合計（図鑑・検証用）
+
+// ---- v3.8.0: 凍て霧 ----
+// 自分の周りに霧をまとい、中に入った**敵の弾と動く敵**の速さを落とす。
+// 後半の弾幕・部隊が濃くなるほど効くので、終盤まで役目が残る。
+// 竜の弾や味方は遅くしない。線路の敵（列車）は線路の進み方が別なので対象外。
+const FROST_RADIUS   = 140;
+const FROST_SLOW     = 0.35;  // 遅くする割合（速さ ×0.65）
+const FROST_SLOW_PER = 0.06;  // 強化1段ぶん
+const FROST_SLOW_MAX = 0.70;  // 上限（止めてしまうと弾が画面に溜まり続ける）
+function effFrostSlow()   { return Math.min(FROST_SLOW_MAX, FROST_SLOW + FROST_SLOW_PER * upCount("sp_frost_slow")); }
+function effFrostRadius() { return FROST_RADIUS * (1 + 0.20 * upCount("sp_frost_range")); }
+// 今フレームの霧（updateSpecials で作り直す）。{ x, y, r2 }
+const frostFields = [];
+/** (x, y) の速さの倍率。霧の中なら 1 − 遅くする割合、外なら 1。 */
+function frostSpeedMultAt(x, y) {
+  for (let k = 0; k < frostFields.length; k++) {
+    const f = frostFields[k];
+    const dx = x - f.x, dy = y - f.y;
+    if (dx * dx + dy * dy <= f.r2) return 1 - effFrostSlow();
+  }
+  return 1;
+}
+
 // ---- ラン中カードによる強化（都度計算。ステージリセットでは消えない）----
 function effBeaconLength()  { return BEACON_LENGTH * (1 + 0.25 * upCount("sp_beacon_len")); }
 function effBeaconDps()     { return BEACON_DPS * (1 + 0.30 * upCount("sp_beacon_dmg")) * permaBuff.specialDmg; }
@@ -18709,10 +18842,12 @@ function updateSpecials(dt) {
   // 呑竜のスロットを先に集め直す。tryDeflectAbsorb は弾1発ごとに呼ばれるので、
   // 群れ全体（最大150）を走査させると 弾900 x 150 になってしまう。
   deflectSlots.length = 0;
+  frostFields.length = 0;   // v3.8.0
   for (let i = 0; i < N; i++) {
     if (boidSpecial[i] === SPECIAL_DEFLECT) deflectSlots.push(i);
   }
   if (gameState !== "playing") return;
+  updateHealFx(dt);
   for (let i = 0; i < N; i++) {
     const kind = boidSpecial[i];
     if (kind === SPECIAL_NONE) continue;
@@ -18729,11 +18864,81 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_MECHA)   updateMechaDragon(i, dt);
     else if (kind === SPECIAL_WAKE)    updateWakeDragon(i, dt);
     else if (kind === SPECIAL_WEDGE)   updateWedgeDragon(i, dt);
+    else if (kind === SPECIAL_HEAL)    updateHealDragon(i, dt);
+    else if (kind === SPECIAL_FROST)   updateFrostDragon(i);
   }
   updateWakeTrail(dt);      // v1.1.0: 航跡の寿命と、中に居る竜への印付け
   updateCrackBursts(dt);    // v1.1.2: ひびが入った瞬間の弾け
   updateSpecialBolts(dt);
   updateMechaRockets(dt);   // v0.95: 飛んでいるロケットは機竜が落ちても進む
+}
+
+// ---- v3.8.0: 癒し手・凍て霧 ----
+const healFxList = [];       // { x, y, r, t }
+const HEAL_FX_LIFE = 0.6;
+function updateHealFx(dt) {
+  for (let k = healFxList.length - 1; k >= 0; k--) {
+    healFxList[k].t -= dt;
+    if (healFxList[k].t <= 0) healFxList.splice(k, 1);
+  }
+}
+function updateHealDragon(i, dt) {
+  boidSpecialTimer[i] += dt;
+  const inter = effHealInterval();
+  if (boidSpecialTimer[i] < inter) return;
+  boidSpecialTimer[i] -= inter;
+  const r = effHealRadius(), r2 = r * r, frac = effHealFrac();
+  for (let j = 0; j < N; j++) {
+    if (boidDead[j] || boidDowned[j]) continue;
+    const dx = px[j] - px[i], dy = py[j] - py[i];
+    if (dx * dx + dy * dy > r2) continue;
+    const max = effBoidMaxHpFor(j);
+    const add = Math.min(max - boidHp[j], max * frac);
+    if (add <= 0) continue;
+    boidHp[j] += add;
+    runHealTotal += add;
+  }
+  healFxList.push({ x: px[i], y: py[i], r, t: HEAL_FX_LIFE });
+}
+function updateFrostDragon(i) {
+  const r = effFrostRadius();
+  frostFields.push({ x: px[i], y: py[i], r2: r * r });
+}
+/** 霧（竜の下）と、癒しの輪。 */
+function drawFrostAndHeal() {
+  if (frostFields.length === 0 && healFxList.length === 0) return;
+  ctx.save();
+  const fr = effFrostRadius();
+  for (const f of frostFields) {
+    const g = ctx.createRadialGradient(f.x, f.y, fr * 0.15, f.x, f.y, fr);
+    g.addColorStop(0, "rgba(220,240,255,0.20)");
+    g.addColorStop(0.75, "rgba(200,230,255,0.13)");
+    g.addColorStop(1, "rgba(200,230,255,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, fr, 0, Math.PI * 2);
+    ctx.fill();
+    // 縁をうっすら回す破線＝霧の境目が読める
+    ctx.strokeStyle = "rgba(220,240,255,0.35)";
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([6, 8]);
+    ctx.lineDashOffset = -breathTime * 12;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, fr * 0.97, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  for (const h of healFxList) {
+    const prog = 1 - h.t / HEAL_FX_LIFE;
+    ctx.globalAlpha = 0.6 * (1 - prog);
+    ctx.strokeStyle = SPECIAL_DEFS[SPECIAL_HEAL].color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, h.r * (0.3 + 0.7 * prog), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 /**
@@ -19156,6 +19361,7 @@ function drawWakeCharged() {
 }
 
 function drawSpecialUnder() {
+  drawFrostAndHeal();   // v3.8.0: 凍て霧の霧・癒し手の輪
   drawWakeTrail();   // v1.1.0: 航跡は足元リングよりさらに下
   for (let i = 0; i < N; i++) {
     const kind = boidSpecial[i];
@@ -19656,6 +19862,101 @@ function drawTongueFx() {
   ctx.restore();
 }
 
+// ---- v3.8.0: 震波（亀竜）: 自分を中心に、周期的に周りをまとめて揺らす（爆発）----
+// 向きも照準も無い。遅くて硬い体で街の中に居座り、周りを崩す。
+// 1体ごとに揺れるので、群れが固まっているほど同じ場所に重なって効く。
+const QUAKE_RADIUS   = 74;    // 揺れの届く半径 px（叩きつけ56・絨毯爆撃92の間）
+const QUAKE_DAMAGE   = 20;
+const QUAKE_INTERVAL = 1.5;
+const QUAKE_IMPACT   = 60;    // 動く敵を外へ押す強さ
+const QUAKE_FX_MAX   = 48;    // 同時に出す揺れの輪の上限（群れ100体でも画面を埋めない）
+function updateQuakeAttacks(dt) {
+  const targets = attackTargets();
+  const radius = QUAKE_RADIUS * effWeaponRangeMult("quake");
+  const dmg    = QUAKE_DAMAGE * effWeaponDmgMult("quake");
+  const inter  = QUAKE_INTERVAL * effFireIntervalMult("quake");
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // 巌竜は遠隔攻撃を持たない
+    boidFireTimer[i] -= dt;
+    if (boidFireTimer[i] > 0) continue;
+    if (hitInRadius(px[i], py[i], radius, null, targets) === 0) continue;   // 空振りしない
+    boidFireTimer[i] = inter;
+    hitInRadius(px[i], py[i], radius, { blast: dmg, impact: QUAKE_IMPACT }, targets);
+    if (shockwaveFxList.length < QUAKE_FX_MAX) {
+      shockwaveFxList.push({ x: px[i], y: py[i], maxR: radius, life: SHOCKWAVE_FX_DURATION, color: "#a8d088" });
+    }
+  }
+}
+
+// ---- v3.8.0: 連なる雷（雷雲竜）: 最寄りの相手に落ち、そこから次の相手へ飛び移る（ブレス）----
+// 1発目は自分の前（攻撃できる向きの内側）の最寄り。2発目からは**直前に当たった相手**から近いものへ。
+// 同じ相手には1回の雷で二度当たらない。飛び移るたびに少しずつ弱まる。
+const THUNDER_RANGE      = 150;   // 最初の1発が届く距離 px
+const THUNDER_JUMP_RANGE = 96;    // 飛び移れる距離 px
+const THUNDER_DAMAGE     = 12;
+const THUNDER_JUMPS      = 2;     // 1発目のあと何回飛び移るか（進化の「枝分かれ」で増える）
+const THUNDER_FALLOFF    = 0.85;  // 飛び移るたびの威力の残り
+const THUNDER_INTERVAL   = 1.3;
+const THUNDER_FX_PAL     = [[6, "#fff080", 0.32], [2.2, "#fffbe0", 0.95]];
+function effThunderJumps() { return THUNDER_JUMPS + Math.round(upCount("count_chain")); }
+
+const _thunderHitB = new Set();
+const _thunderHitM = new Set();
+/** (x, y) から maxR 以内で一番近い、まだ当てていない相手。i>=0 なら個体 i の攻撃できる向きの内側だけ。 */
+function findThunderTarget(x, y, maxR, targets, i, halfArc) {
+  let best = null, bestD2 = maxR * maxR;
+  const cell = Math.max(1, Math.ceil(maxR / BUILDING_GRID_CELL));
+  buildingGridQueryRadius(x, y, cell, _buildingNeighbourBuf);
+  for (const sIdx of _buildingNeighbourBuf) {
+    if (_thunderHitB.has(sIdx)) continue;
+    const s = settlements[sIdx];
+    if (!s || s.fallen) continue;
+    if (!targetHittable(targets, settlementTargetClass(s))) continue;
+    const d2 = (s.wx - x) * (s.wx - x) + (s.wy - y) * (s.wy - y);
+    if (d2 >= bestD2) continue;
+    if (i >= 0 && !isInBreathArc(i, s.wx, s.wy, halfArc)) continue;
+    bestD2 = d2; best = { b: sIdx, x: s.wx, y: s.wy };
+  }
+  if (targetHittable(targets, "mover")) for (const m of movers) {
+    if (!m.alive || _thunderHitM.has(m)) continue;
+    const d2 = (m.wx - x) * (m.wx - x) + (m.wy - y) * (m.wy - y);
+    if (d2 >= bestD2) continue;
+    if (i >= 0 && !isInBreathArc(i, m.wx, m.wy, halfArc)) continue;
+    bestD2 = d2; best = { m, x: m.wx, y: m.wy };
+  }
+  return best;
+}
+function updateThunderAttacks(dt) {
+  const targets = attackTargets();
+  const range   = THUNDER_RANGE * effWeaponRangeMult("chain");
+  const jumpR   = THUNDER_JUMP_RANGE * effWeaponRangeMult("chain");
+  const dmg0    = THUNDER_DAMAGE * effWeaponDmgMult("chain");
+  const inter   = THUNDER_INTERVAL * effFireIntervalMult("chain");
+  const jumps   = effThunderJumps();
+  const halfArc = breathArcHalf();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;
+    boidFireTimer[i] -= dt;
+    if (boidFireTimer[i] > 0) continue;
+    _thunderHitB.clear(); _thunderHitM.clear();
+    let t = findThunderTarget(px[i], py[i], range, targets, i, halfArc);
+    if (!t) continue;   // 空振りでは撃たない
+    boidFireTimer[i] = inter;
+    const segs = [];
+    let fromX = px[i], fromY = py[i], dmg = dmg0;
+    for (let k = 0; k <= jumps && t; k++) {
+      if (t.m) { _thunderHitM.add(t.m); hitMover(t.m, { shot: dmg }, fromX, fromY); }
+      else     { _thunderHitB.add(t.b); hitBuilding(t.b, { shot: dmg }, fromX, fromY); }
+      segs.push([fromX, fromY, t.x, t.y]);
+      fromX = t.x; fromY = t.y; dmg *= THUNDER_FALLOFF;
+      if (k < jumps) t = findThunderTarget(fromX, fromY, jumpR, targets, -1, Math.PI);
+    }
+    chainFxList.push({ segs, life: CHAIN_FX_DURATION, pal: THUNDER_FX_PAL });
+  }
+}
+
 function updateWeaponAttacks(dt) {
   if (gameState !== "playing") return;
   breathTime += dt;
@@ -19679,6 +19980,10 @@ function updateWeaponAttacks(dt) {
     updateBombDrops(dt);
   } else if (flockWeapon === "tongue") {
     updateTongueAttacks(dt);
+  } else if (flockWeapon === "quake") {
+    updateQuakeAttacks(dt);
+  } else if (flockWeapon === "chain") {
+    updateThunderAttacks(dt);
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
 
@@ -21735,6 +22040,13 @@ function codexDragonMainAttack(def) {
     case "tongue":
       return { power: { label, direct: TONGUE_DAMAGE },
                stat: `正面まっすぐ ${TONGUE_RANGE}px ／ ${TONGUE_INTERVAL}秒ごと（跳躍1回に1度）` };
+    // v3.8.0
+    case "quake":
+      return { power: { label, blast: QUAKE_DAMAGE, impact: QUAKE_IMPACT },
+               stat: `自分の周り 半径${QUAKE_RADIUS}px ／ ${QUAKE_INTERVAL}秒ごと` + (def.hpMult ? ` ／ HP ×${def.hpMult}` : "") };
+    case "chain":
+      return { power: { label: label + "（1発目）", shot: THUNDER_DAMAGE },
+               stat: `射程 ${THUNDER_RANGE} ／ ${THUNDER_JUMPS}回飛び移る（${THUNDER_JUMP_RANGE}px以内・1回ごとに×${THUNDER_FALLOFF}） ／ ${THUNDER_INTERVAL}秒ごと${arc}` };
   }
   return { power: null, stat: "" };
 }
@@ -21813,7 +22125,7 @@ function codexDragonCanvas(species) {
   return cv;
 }
 
-const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE];
+const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST];
 
 function codexSpecialHtml() {
   let html =
@@ -21870,6 +22182,8 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_MECHA]:   "★ロケットマン／遅れて届く遠距離の爆発",
   [SPECIAL_WAKE]:    "★煽る風／群れの前を飛ぶ。自分では打たない",
   [SPECIAL_WEDGE]:   "★穿つ楔／先陣。相手を柔らかくして本隊に渡す",
+  [SPECIAL_HEAL]:    "★癒し手／周りの竜を回復する。自分では打たない",
+  [SPECIAL_FROST]:   "★凍て霧／足止め。敵の弾と動く敵を遅くする。自分では打たない",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_BEACON]:
@@ -21898,8 +22212,20 @@ const CODEX_SPECIAL_DESC = {
     "その間は<b>誰の攻撃でも余計に通る</b>——ブレスも弾も体当たりも、群れ全員ぶんが乗る。" +
     "常に一番先に触るので、本隊は柔らかくなった的を叩くことになる。" +
     "ひびは相手の輪郭に線で出るので、どれが崩れかけているか見て分かる。",
+  [SPECIAL_HEAL]:
+    "<b>自分では攻撃しない。</b>一定の間隔で、周りの竜（自分も含む）のHPを最大HPの一定割合ずつ戻す。" +
+    "ダウンした竜は起こさない。群れが固まっているほど一度に多くの竜に届く。",
+  [SPECIAL_FROST]:
+    "<b>自分では攻撃しない。</b>周りに冷たい霧をまとい、霧の中に入った<b>敵の弾と動く敵</b>を遅くする。" +
+    "弾は霧を出れば元の速さに戻る。竜の弾や味方は遅くならない。線路を走る列車には効かない。" +
+    "弾幕と部隊が濃くなる後半ほど効く。",
 };
 const CODEX_SPECIAL_STAT = {
+  [SPECIAL_HEAL]: () =>
+    `${HEAL_INTERVAL}秒ごとに 最大HPの${Math.round(HEAL_FRAC * 100)}% ／ 半径 ${HEAL_RADIUS}px ／ HP ×${SPECIAL_DEFS[SPECIAL_HEAL].hpMult}`,
+  [SPECIAL_FROST]: () =>
+    `霧の半径 ${FROST_RADIUS}px ／ 中の敵の弾と動く敵の速さ -${Math.round(FROST_SLOW * 100)}%（強化で最大 -${Math.round(FROST_SLOW_MAX * 100)}%） ／ ` +
+    `HP ×${SPECIAL_DEFS[SPECIAL_FROST].hpMult}`,
   [SPECIAL_BEACON]: () =>
     `長さ ${BEACON_LENGTH}px ／ 毎秒 ${BEACON_DPS} ダメージ ／ 1回転に約 3.6秒 ／ HP ×${SPECIAL_DEFS[SPECIAL_BEACON].hpMult}`,
   [SPECIAL_HEAVY]: () =>
@@ -22020,6 +22346,17 @@ function codexSpecialCanvas(kind) {
     c.moveTo(0, -3.4); c.lineTo(22, -1.5); c.lineTo(22, 1.5); c.lineTo(0, 3.4);
     c.closePath(); c.fill();
     c.restore();
+    codexDrawSpecialDragon(c, kind, 44);
+  } else if (kind === SPECIAL_HEAL || kind === SPECIAL_FROST) {
+    // v3.8.0: 癒しの輪／霧の円
+    c.fillStyle = kind === SPECIAL_HEAL ? "rgba(140,240,170,0.18)" : "rgba(210,236,255,0.25)";
+    c.beginPath(); c.arc(0, 0, 22, 0, Math.PI * 2); c.fill();
+    c.strokeStyle = def.color;
+    c.globalAlpha = 0.6;
+    if (kind === SPECIAL_FROST) c.setLineDash([3, 3.5]);
+    c.beginPath(); c.arc(0, 0, 21, 0, Math.PI * 2); c.stroke();
+    c.setLineDash([]);
+    c.globalAlpha = 1;
     codexDrawSpecialDragon(c, kind, 44);
   } else if (kind === SPECIAL_HEAVY) {
     // 巨体（他の2種より明らかに大きい丸）と砕けた破片
@@ -22470,6 +22807,10 @@ const SPECIES_CHOICES = [
   { species: "bomber" },
   { species: "wayward" },   // v0.40: 爆竜の旧操作（線をなぞる）版
   { species: "frog" },
+  // v3.8.0: 種またぎで入る3種（解放は進化でだけ）
+  { species: "shark" },
+  { species: "tortoise" },
+  { species: "thunder" },
 ];
 let speciesSelecting = false;
 
@@ -22531,7 +22872,8 @@ function isRegionUnlocked(shape) {
 // 進化先になれる竜種は進化でだけ解放される（unlockSpeciesForever）。ここに書くのはそれ以外。
 const INITIAL_SPECIES  = ["fire"];
 // v3.5.0: 今の7体は全部最初から（Shooter「最初の要素が少なすぎる」）。解放条件は今後足す特殊個体に使う
-const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE];
+const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE,
+                          SPECIAL_HEAL, SPECIAL_FROST];   // v3.8.0: 癒し手・凍て霧も最初から
 const FORTRESS_FALLEN_GOAL = 300;   // 穿つ楔：要塞・首都区画の建物を累計これだけ壊す
 
 // ctx = { clearedIdx: さっきクリアした時代の添字（無ければ -1）, runComplete: ラン完走か }
@@ -27264,6 +27606,12 @@ const DRAGON_ELEMENT_COLORS = {
   deflect:  { body: "rgba(159, 216, 255, 1.0)", wing: "rgba(100, 165, 215, 1.0)", rim: "rgba(50, 95, 135, 0.0)" },
   rainbow:  { body: "rgba(240, 168, 255, 1.0)", wing: "rgba(180, 150, 240, 1.0)", rim: "rgba(110, 85, 150, 0.0)" },
   mecha:    { body: "rgba(255, 122, 77, 1.0)",  wing: "rgba(150, 158, 168, 1.0)", rim: "rgba(80, 86, 94, 0.0)" },
+  // v3.8.0: 新しい竜種・特殊個体（仮の絵の色に合わせる）
+  shark:    { body: "rgba(106, 168, 224, 1.0)", wing: "rgba(58, 120, 184, 1.0)",  rim: "rgba(30, 60, 100, 0.0)" },
+  tortoise: { body: "rgba(140, 192, 112, 1.0)", wing: "rgba(74, 122, 64, 1.0)",   rim: "rgba(40, 70, 35, 0.0)" },
+  thunder:  { body: "rgba(255, 224, 112, 1.0)", wing: "rgba(200, 170, 50, 1.0)",  rim: "rgba(110, 90, 20, 0.0)" },
+  heal:     { body: "rgba(150, 240, 170, 1.0)", wing: "rgba(90, 190, 120, 1.0)",  rim: "rgba(40, 110, 60, 0.0)" },
+  frost:    { body: "rgba(200, 236, 255, 1.0)", wing: "rgba(140, 190, 230, 1.0)", rim: "rgba(70, 110, 150, 0.0)" },
 };
 
 // プリレンダ設定
@@ -27819,7 +28167,11 @@ const DRAGON_PART_SPRITES = {
 // 分離方式の属性を別の属性の画像で描く場合の対応。
 // v0.36.2: 緋竜に専用アセットができたので空になった（以前は火竜の絵を赤ティントして流用）。
 // 新竜種の絵が用意できるまで既存の絵で仮に出したいときに使える。
-const DRAGON_PARTS_ALIAS = {};
+// v3.8.0: 新しい竜種・特殊個体の仮の絵（専用スプライトができたら行ごと消す）。色は spriteTint で寄せる
+const DRAGON_PARTS_ALIAS = {
+  shark: "swallow", tortoise: "gargoyle", thunder: "shadow",
+  heal: "rainbow", frost: "deflect",
+};
 /** 属性 element を描くのに使うパーツ定義のキー（無ければ null）。 */
 function dragonPartsKey(element) {
   const key = DRAGON_PARTS_ALIAS[element] ?? element;
@@ -28347,6 +28699,8 @@ function getSpeciesSprites(speciesId, variant) {
   }
   const def = SPECIES_DEFS[speciesId] || SPECIES_DEFS.fire;
   frames = buildElementSprites(def.element, variant);
+  // v3.8.0: 仮の絵（別の竜種の絵を借りている）は色を寄せて見分けられるようにする
+  if (def.spriteTint) frames = tintedSprites("base:" + cacheKey, frames, def.spriteTint);
   spriteCache.set(cacheKey, frames);
   while (spriteCache.size > SPRITE_CACHE_MAX) {
     spriteCache.delete(spriteCache.keys().next().value);   // 最古から破棄
@@ -28370,6 +28724,7 @@ function getSpecialSprites(kind) {
     return frames;
   }
   frames = buildElementSprites(def.key);
+  if (def.spriteTint) frames = tintedSprites("base:" + cacheKey, frames, def.spriteTint);   // v3.8.0: 仮の絵
   spriteCache.set(cacheKey, frames);
   while (spriteCache.size > SPRITE_CACHE_MAX) {
     spriteCache.delete(spriteCache.keys().next().value);
