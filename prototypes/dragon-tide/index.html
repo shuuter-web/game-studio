@@ -879,7 +879,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.9.0";
+const GAME_VERSION = "v3.9.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -8591,11 +8591,15 @@ function makeSoftDot(stops) {
   g.fillRect(0, 0, EXPL_SPRITE_PX, EXPL_SPRITE_PX);
   return c;
 }
+// v3.9.1: 丸の縁はぼかすので、**はっきり見えるのは画像の内側 EXPL_SOLID まで**。
+// 粒の半径は「はっきり見える半径」で持ち、描くときにこれで割って大きく描く
+// （Shooter判定「外側は半透明でダメージがあるように見えない」＝見た目が当たり判定より小さく見えていた）。
+const EXPL_SOLID = 0.72;
 function getExplSprites() {
   if (!explSprites) explSprites = {
-    fire:  makeSoftDot([[0, "rgba(255,240,190,0.95)"], [0.3, "rgba(255,180,70,0.8)"], [0.6, "rgba(240,90,20,0.5)"], [1, "rgba(180,30,0,0)"]]),
-    smoke: makeSoftDot([[0, "rgba(70,64,60,0.85)"], [0.6, "rgba(60,56,54,0.45)"], [1, "rgba(50,48,46,0)"]]),
-    dust:  makeSoftDot([[0, "rgba(150,128,96,0.85)"], [0.6, "rgba(130,112,84,0.45)"], [1, "rgba(120,100,76,0)"]]),
+    fire:  makeSoftDot([[0, "rgba(255,240,190,0.95)"], [0.35, "rgba(255,180,70,0.85)"], [EXPL_SOLID, "rgba(240,100,25,0.6)"], [1, "rgba(180,30,0,0)"]]),
+    smoke: makeSoftDot([[0, "rgba(70,64,60,0.8)"], [EXPL_SOLID, "rgba(60,56,54,0.55)"], [1, "rgba(50,48,46,0)"]]),
+    dust:  makeSoftDot([[0, "rgba(150,128,96,0.8)"], [EXPL_SOLID, "rgba(130,112,84,0.55)"], [1, "rgba(120,100,76,0)"]]),
   };
   return explSprites;
 }
@@ -8614,7 +8618,9 @@ function explPut(kind, x, y, vx, vy, life, r0, r1, a, delay) {
 }
 
 /**
- * 爆発を1つ出す。r は爆風の半径（当たり判定と同じ値を渡すと見た目と一致する）。
+ * 爆発を1つ出す。r は爆風の半径（当たり判定と同じ値を渡す）。
+ * **炎がはっきり見える範囲 ＝ r** になるように置く：中心の閃光が r まで膨らみ、
+ * 火の玉は円の中に散らして縁まで埋める。煙はその外側へ少しはみ出して残る。
  * opts.fire: 炎の量 0〜1（既定 1）／ opts.dust: 煙を土煙にする（震波など地面の揺れ）
  */
 function spawnExplosionFx(x, y, r, opts) {
@@ -8622,22 +8628,26 @@ function spawnExplosionFx(x, y, r, opts) {
   const dust    = !!(opts && opts.dust);
   const busy    = explCount > EXPL_BUSY;
   const rr      = Math.max(10, r);
-  // 中心の閃光
-  if (fireAmt > 0) explPut(1, x, y, 0, 0, 0.20, rr * 0.5 * fireAmt + 4, rr * 0.95 * Math.max(0.5, fireAmt), 0.8, 0);
-  // 外へ飛ぶ火の玉
-  const nFire = busy ? 0 : Math.round(5 * fireAmt);
+  // 中心の閃光：0.5r → r
+  if (fireAmt > 0) explPut(1, x, y, 0, 0, 0.24, rr * 0.5, rr, 0.85 * Math.max(0.6, fireAmt), 0);
+  // 火の玉：円の中（中心から 0.3〜0.75r）に散らし、縁が r に届く大きさにする
+  const nFire = Math.round((busy ? 3 : 7) * fireAmt);
   for (let n = 0; n < nFire; n++) {
-    const a = fxRandom() * Math.PI * 2, sp = rr * (1.2 + fxRandom() * 1.4);
-    explPut(1, x + Math.cos(a) * rr * 0.15, y + Math.sin(a) * rr * 0.15, Math.cos(a) * sp, Math.sin(a) * sp,
-            0.28 + fxRandom() * 0.18, rr * 0.28, rr * 0.5, 0.75, fxRandom() * 0.05);
+    const a = (n / Math.max(1, nFire)) * Math.PI * 2 + fxRandom() * 0.8;
+    const d = rr * (0.3 + fxRandom() * 0.45);
+    const pr = rr - d;   // 縁がちょうど r
+    explPut(1, x + Math.cos(a) * d, y + Math.sin(a) * d, Math.cos(a) * rr * 0.4, Math.sin(a) * rr * 0.4,
+            0.3 + fxRandom() * 0.18, pr * 0.7, pr * 1.05, 0.8, fxRandom() * 0.06);
   }
-  // 煙（炎の後ろから膨らみ、ゆっくり昇る）
-  const nSmoke = busy ? 2 : 5;
+  // 煙（炎の後ろから膨らみ、ゆっくり昇る）。縁は r を少し越える
+  const nSmoke = busy ? 3 : 6;
   for (let n = 0; n < nSmoke; n++) {
-    const a = fxRandom() * Math.PI * 2, d = rr * (0.2 + fxRandom() * 0.5);
+    const a = (n / nSmoke) * Math.PI * 2 + fxRandom() * 0.9;
+    const d = rr * (0.35 + fxRandom() * 0.4);
+    const pr = rr * 1.1 - d;
     explPut(dust ? 3 : 2, x + Math.cos(a) * d, y + Math.sin(a) * d,
-            Math.cos(a) * rr * 0.35, Math.sin(a) * rr * 0.35 - 14,
-            0.8 + fxRandom() * 0.5, rr * 0.35, rr * (0.8 + fxRandom() * 0.3), dust ? 0.55 : 0.5, 0.06 + fxRandom() * 0.08);
+            Math.cos(a) * rr * 0.25, Math.sin(a) * rr * 0.25 - 14,
+            0.8 + fxRandom() * 0.5, pr * 0.6, pr * 1.1, dust ? 0.6 : 0.5, 0.08 + fxRandom() * 0.08);
   }
 }
 
@@ -8668,7 +8678,7 @@ function drawExplosionFx() {
       if (!kind || explAge[k] < 0) continue;
       if ((pass === 0) !== (kind !== 1)) continue;
       const t = explAge[k] / explLife[k];
-      const rad = explR0[k] + (explR1[k] - explR0[k]) * (1 - (1 - t) * (1 - t));
+      const rad = (explR0[k] + (explR1[k] - explR0[k]) * (1 - (1 - t) * (1 - t))) / EXPL_SOLID;
       // 炎は最初に一番明るく、煙は少し遅れて濃くなってから薄れる
       ctx.globalAlpha = explA[k] * (kind === 1 ? (1 - t) * (1 - t) : Math.min(1, t * 4) * (1 - t));
       const img = kind === 1 ? spr.fire : kind === 2 ? spr.smoke : spr.dust;
@@ -20005,7 +20015,7 @@ function updateQuakeAttacks(dt) {
     if (shockwaveFxList.length < QUAKE_FX_MAX) {
       shockwaveFxList.push({ x: px[i], y: py[i], maxR: radius, life: SHOCKWAVE_FX_DURATION, color: "#c8a878" });
     }
-    spawnExplosionFx(px[i], py[i], radius * 0.8, { fire: 0.35, dust: true });
+    spawnExplosionFx(px[i], py[i], radius, { fire: 0.6, dust: true });
   }
 }
 
