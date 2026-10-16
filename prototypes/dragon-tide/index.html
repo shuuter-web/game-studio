@@ -879,7 +879,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.9.1";
+const GAME_VERSION = "v3.9.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -8600,6 +8600,8 @@ function getExplSprites() {
     fire:  makeSoftDot([[0, "rgba(255,240,190,0.95)"], [0.35, "rgba(255,180,70,0.85)"], [EXPL_SOLID, "rgba(240,100,25,0.6)"], [1, "rgba(180,30,0,0)"]]),
     smoke: makeSoftDot([[0, "rgba(70,64,60,0.8)"], [EXPL_SOLID, "rgba(60,56,54,0.55)"], [1, "rgba(50,48,46,0)"]]),
     dust:  makeSoftDot([[0, "rgba(150,128,96,0.8)"], [EXPL_SOLID, "rgba(130,112,84,0.55)"], [1, "rgba(120,100,76,0)"]]),
+    // v3.9.2: 燃え残りの赤黒い炎。炎の後半に通常合成で重ね、「光って消える」ではなく「燃えて燻る」にする
+    ember: makeSoftDot([[0, "rgba(200,70,20,0.9)"], [0.45, "rgba(150,40,10,0.7)"], [EXPL_SOLID, "rgba(90,25,8,0.45)"], [1, "rgba(60,15,5,0)"]]),
   };
   return explSprites;
 }
@@ -8628,26 +8630,26 @@ function spawnExplosionFx(x, y, r, opts) {
   const dust    = !!(opts && opts.dust);
   const busy    = explCount > EXPL_BUSY;
   const rr      = Math.max(10, r);
-  // 中心の閃光：0.5r → r
-  if (fireAmt > 0) explPut(1, x, y, 0, 0, 0.24, rr * 0.5, rr, 0.85 * Math.max(0.6, fireAmt), 0);
+  // 中心の炎：0.5r → r。v3.9.2: 0.24秒の閃光 → 0.5秒かけて燃える（Shooter「フラッシュみたいに軽い」）
+  if (fireAmt > 0) explPut(1, x, y, 0, -6, 0.5, rr * 0.55, rr, 0.8 * Math.max(0.6, fireAmt), 0);
   // 火の玉：円の中（中心から 0.3〜0.75r）に散らし、縁が r に届く大きさにする
   const nFire = Math.round((busy ? 3 : 7) * fireAmt);
   for (let n = 0; n < nFire; n++) {
     const a = (n / Math.max(1, nFire)) * Math.PI * 2 + fxRandom() * 0.8;
     const d = rr * (0.3 + fxRandom() * 0.45);
     const pr = rr - d;   // 縁がちょうど r
-    explPut(1, x + Math.cos(a) * d, y + Math.sin(a) * d, Math.cos(a) * rr * 0.4, Math.sin(a) * rr * 0.4,
-            0.3 + fxRandom() * 0.18, pr * 0.7, pr * 1.05, 0.8, fxRandom() * 0.06);
+    explPut(1, x + Math.cos(a) * d, y + Math.sin(a) * d, Math.cos(a) * rr * 0.2, Math.sin(a) * rr * 0.2 - 10,
+            0.55 + fxRandom() * 0.25, pr * 0.75, pr * 1.05, 0.75, fxRandom() * 0.08);
   }
-  // 煙（炎の後ろから膨らみ、ゆっくり昇る）。縁は r を少し越える
-  const nSmoke = busy ? 3 : 6;
+  // 煙：v3.9.2 で控えめに（Shooter「煙が鬱陶しい」）。少なく・薄く・短く、炎が消える頃に縁へ少し残る程度
+  const nSmoke = busy ? 1 : 3;
   for (let n = 0; n < nSmoke; n++) {
     const a = (n / nSmoke) * Math.PI * 2 + fxRandom() * 0.9;
-    const d = rr * (0.35 + fxRandom() * 0.4);
-    const pr = rr * 1.1 - d;
+    const d = rr * (0.3 + fxRandom() * 0.3);
+    const pr = rr * 0.95 - d;
     explPut(dust ? 3 : 2, x + Math.cos(a) * d, y + Math.sin(a) * d,
-            Math.cos(a) * rr * 0.25, Math.sin(a) * rr * 0.25 - 14,
-            0.8 + fxRandom() * 0.5, pr * 0.6, pr * 1.1, dust ? 0.6 : 0.5, 0.08 + fxRandom() * 0.08);
+            Math.cos(a) * rr * 0.12, Math.sin(a) * rr * 0.12 - 10,
+            0.6 + fxRandom() * 0.25, pr * 0.7, pr * 1.0, dust ? 0.32 : 0.25, 0.3 + fxRandom() * 0.1);
   }
 }
 
@@ -8659,7 +8661,7 @@ function updateExplosionFx(dt) {
     if (explAge[k] >= explLife[k]) { explKind[k] = 0; explCount--; continue; }
     if (explAge[k] < 0) continue;
     // 飛ぶ速さは寿命とともに落とす（ぱっと広がって、すっと止まる）
-    const damp = Math.exp(-dt * (explKind[k] === 1 ? 6 : 2.2));
+    const damp = Math.exp(-dt * (explKind[k] === 1 ? 3 : 2.2));
     explVx[k] *= damp; explVy[k] *= damp;
     explX[k] += explVx[k] * dt; explY[k] += explVy[k] * dt;
   }
@@ -8676,13 +8678,26 @@ function drawExplosionFx() {
     for (let k = 0; k < EXPL_MAX; k++) {
       const kind = explKind[k];
       if (!kind || explAge[k] < 0) continue;
-      if ((pass === 0) !== (kind !== 1)) continue;
       const t = explAge[k] / explLife[k];
       const rad = (explR0[k] + (explR1[k] - explR0[k]) * (1 - (1 - t) * (1 - t))) / EXPL_SOLID;
-      // 炎は最初に一番明るく、煙は少し遅れて濃くなってから薄れる
-      ctx.globalAlpha = explA[k] * (kind === 1 ? (1 - t) * (1 - t) : Math.min(1, t * 4) * (1 - t));
-      const img = kind === 1 ? spr.fire : kind === 2 ? spr.smoke : spr.dust;
-      ctx.drawImage(img, explX[k] - rad, explY[k] - rad, rad * 2, rad * 2);
+      if (kind === 1) {
+        if (pass === 0) {
+          // 燃え残り（通常合成）：後半に赤黒く残ってから消える
+          const ea = t < 0.25 ? 0 : Math.sin(Math.PI * (t - 0.25) / 0.75);
+          if (ea <= 0) continue;
+          ctx.globalAlpha = explA[k] * 0.55 * ea;
+          ctx.drawImage(spr.ember, explX[k] - rad, explY[k] - rad, rad * 2, rad * 2);
+        } else {
+          // 光る炎（加算）：明るさを保ってから落ちる（1−t³）。明るい色ほど早く引く
+          ctx.globalAlpha = explA[k] * (1 - t * t * t) * (1 - t * 0.5);
+          ctx.drawImage(spr.fire, explX[k] - rad, explY[k] - rad, rad * 2, rad * 2);
+        }
+        continue;
+      }
+      if (pass !== 0) continue;
+      // 煙は少し遅れて濃くなってから薄れる
+      ctx.globalAlpha = explA[k] * Math.min(1, t * 4) * (1 - t);
+      ctx.drawImage(kind === 2 ? spr.smoke : spr.dust, explX[k] - rad, explY[k] - rad, rad * 2, rad * 2);
     }
   }
   ctx.restore();
