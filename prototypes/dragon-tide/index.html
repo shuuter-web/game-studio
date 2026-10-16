@@ -879,7 +879,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.6.0";
+const GAME_VERSION = "v3.7.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16325,11 +16325,18 @@ const STRINGS = {
 //   同時に敵XPのステージスケール（moverStageXpMult）を廃止し、
 //   レベル進行はこの曲線だけでコントロールする（Shooter指示）
 // ============================================================
-const XP_LEVEL_BASE   = 160;
-const XP_LEVEL_GROWTH = 1.35;
-const XP_LEVEL_CAP    = 10;
+// v3.7.0: 8ステージ構成・竜のレベル（1〜30）に合わせて作り直した（Shooter「ステージ5で竜も特殊個体も上限に達した」）。
+// 狙い：ラン全体のレベルアップが 60〜70回（6割破壊で約60・8割で約70）、ステージ1で約11〜13回。
+//   竜のカードを半分くらい選べば、竜の Lv30 はステージ7前後。
+// 実測（8時代×6地域の平均）：1ステージの建物XP 約67,000〜92,000、動く敵（平時）約2,800〜19,000。
+// 旧（v3.6 まで）: BASE 160・×1.35・Lv10 以降は一定 2384/回 → 1ステージで30回以上上がっていた。
+const XP_LEVEL_BASE        = 1800;
+const XP_LEVEL_GROWTH      = 1.15;
+const XP_LEVEL_CAP         = 10;
+const XP_LEVEL_LATE_GROWTH = 1.02;   // Lv10 以降も1回ごとに2%ずつ重くなる（頭打ちにしない）
 function xpForNext(level) {
-  return Math.ceil(XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, Math.min(level, XP_LEVEL_CAP) - 1));
+  const early = XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, Math.min(level, XP_LEVEL_CAP) - 1);
+  return Math.ceil(early * Math.pow(XP_LEVEL_LATE_GROWTH, Math.max(0, level - XP_LEVEL_CAP)));
 }
 
 // ---- 進行状態（ステージ開始ごとに resetProgression で全消去）----
@@ -22494,7 +22501,8 @@ const RUN_STAGES          = TOTAL_STAGES;   // 8（時代の数と同じ）
 const RUN_LIVES           = 3;              // 1ラン通しの全滅の許容回数（ステージで回復しない）
 const REGION_CHOICE_COUNT = 3;
 // 最初から選べる地域。3つあるので初回から3択が成り立つ。残りは条件で解放（§7.4）
-const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL];
+// v3.7.0: 列車（軌道）以外は最初から全部（Shooter指示）。列車だけは初めてステージ5に着いたときに解放する
+const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL, SHAPE_FRONTLINE, SHAPE_SANCTUARY, SHAPE_ASTEROIDS];
 // 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
 const WIPE_GRACE_SECONDS  = 2;
 
@@ -22531,10 +22539,8 @@ const UNLOCK_DEFS = [
   { kind: "species", id: "ice",     text: "1ランで時代 III をクリア",         done: (c) => c.clearedIdx >= 2 },
   { kind: "species", id: "hornet",  text: "特殊個体を3体同時に連れる",         done: () => runSpecials.length >= 3 },
   { kind: "species", id: "wayward", text: "爆竜で完走",                       done: (c) => c.runComplete && flockSpecies === "bomber" },
-  { kind: "region", id: SHAPE_FRONTLINE, text: "時代 III をクリア", done: (c) => c.clearedIdx >= 2 },
-  { kind: "region", id: SHAPE_SANCTUARY, text: "時代 V をクリア",   done: (c) => c.clearedIdx >= 4 },
-  { kind: "region", id: SHAPE_ASTEROIDS, text: "初めて完走",        done: () => (profile.clears || 0) >= 1 },
-  { kind: "region", id: SHAPE_RAILWAY,   text: "完走2回",           done: () => (profile.clears || 0) >= 2 },
+  // v3.7.0: 地域の解放は列車だけ。4ステージ目をクリア＝5ステージ目の地域3択の直前に開く
+  { kind: "region", id: SHAPE_RAILWAY, text: "ステージ5に到達", done: (c) => c.clearedIdx >= 3 },
 ];
 
 function ensureUnlocks() {
@@ -22681,13 +22687,17 @@ function triggerStageCleared() {
   lastStageTimeMs = stageTimeMs;
   awardCrystals(crystalsForStageClear(runStageIndex));
   evaluateChallenges();
+  const railwayBefore = isRegionUnlocked(SHAPE_RAILWAY);
   evaluateUnlocks({ clearedIdx: runStageIndex });   // v3.3.0
+  const railwayJustOpened = !railwayBefore && isRegionUnlocked(SHAPE_RAILWAY);
   saveProfile();
 
   const clearedNumber = runStageIndex + 1;
   // 次のステージへ進めた状態で保存する（ここで閉じても地域3択から再開できる）
   runStageIndex++;
   regionChoices = rollRegionChoices(runStageIndex, runShape);
+  // v3.7.0: 列車が今開いたなら、この3択に必ず入れて見せる（解放の手応え）
+  if (railwayJustOpened && !regionChoices.includes(SHAPE_RAILWAY)) regionChoices[regionChoices.length - 1] = SHAPE_RAILWAY;
   snapshotRunSave();
   dismissLevelUpCards();
 
