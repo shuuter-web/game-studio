@@ -254,6 +254,20 @@
     pointer-events: none;
   }
   #levelup-overlay.visible { display: flex; }
+  /* v3.12.0: ランの道のり（地域3択の上） */
+  .run-path { display: flex; justify-content: center; gap: 4px; width: 100%; margin: 0 0 10px; }
+  .run-path .rp-cell { display: flex; flex-direction: column; align-items: center; width: 40px; }
+  .run-path .rp-box {
+    width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+    font-size: 20px; box-sizing: border-box;
+  }
+  .run-path .rp-done .rp-box  { background: rgba(40,60,90,0.85); border: 1px solid rgba(160,200,255,0.45); }
+  .run-path .rp-now .rp-box   { background: rgba(60,50,20,0.9); border: 2px solid #ffd060; color: #ffe090; font-size: 18px;
+                                 box-shadow: 0 0 10px rgba(255,208,96,0.7); }
+  .run-path .rp-future .rp-box{ border: 1px dashed rgba(200,220,255,0.35); background: rgba(10,16,28,0.4); }
+  .run-path .rp-stars { font-size: 8px; line-height: 1.2; height: 10px; color: #ffd060; letter-spacing: -1px; white-space: nowrap; }
+  .run-path .rp-now .rp-stars { font-size: 9px; letter-spacing: 0; }
+  .run-path .rp-era { font-size: 9px; color: rgba(200,220,255,0.6); font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
   /* v3.11.1: レベルアップで自動で上がった竜のレベル（メニューの一番上に1行） */
   #levelup-dragon {
     font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
@@ -892,7 +906,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.11.7";
+const GAME_VERSION = "v3.12.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -23440,6 +23454,7 @@ let runStageIndex  = 0;          // 0..RUN_STAGES-1（＝時代）
 let runLives       = RUN_LIVES;
 let runSeedBase    = 0;          // ランのシード。各ステージの地形と地域3択はここから作る
 let regionChoices  = [];         // 地域3択を出している最中だけ中身がある
+let runHistory     = [];         // v3.12.0: クリアしたステージ（{ shape, stars }）。地域3択の上の「道のり」に出す
 let regionPicking  = false;
 let wipeGraceTimer = 0;
 let stageStartTime = 0;          // このステージを始めた時刻（★とアンロック条件に使う）
@@ -23544,6 +23559,7 @@ function showRegionPick() {
   levelupTitleEl.textContent = STRINGS.chooseRegion(runStageIndex + 1, RUN_STAGES, CONTINENT_DEFS[runStageIndex].name);
   cardListEl.classList.remove("species-grid");
   cardListEl.innerHTML = "";
+  cardListEl.appendChild(buildRunPathEl());   // v3.12.0: ランの道のり（済み・今回・この先）
   for (const sh of regionChoices) {
     const text = STRINGS.regionCodex[sh] ?? { play: "", rule: "" };
     const best = panelBestStars(runStageIndex, sh);
@@ -23565,6 +23581,34 @@ function showRegionPick() {
   titleOverlayEl.classList.remove("visible");
   overlayEl.classList.remove("visible");
   levelupOverlayEl.classList.add("visible");
+}
+
+/**
+ * v3.12.0: 地域3択の上に出す「ランの道のり」（Shooter指示）。8マスを横一列に。
+ * 済み＝地域のアイコン＋★、今回＝光る「？」、この先＝空の点線の枠。下に時代の番号（I〜VIII）。
+ */
+const RUN_PATH_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
+function buildRunPathEl() {
+  const wrap = document.createElement("div");
+  wrap.className = "run-path";
+  for (let k = 0; k < RUN_STAGES; k++) {
+    const cell = document.createElement("div");
+    const h = runHistory[k];
+    if (k < runStageIndex) {
+      cell.className = "rp-cell rp-done";
+      cell.innerHTML = `<div class="rp-box">${h ? STAGE_SHAPES[h.shape].icon : "✓"}</div>` +
+                       `<div class="rp-stars">${h ? "★".repeat(h.stars) : ""}</div>`;
+    } else if (k === runStageIndex) {
+      cell.className = "rp-cell rp-now";
+      cell.innerHTML = `<div class="rp-box">？</div><div class="rp-stars">今回</div>`;
+    } else {
+      cell.className = "rp-cell rp-future";
+      cell.innerHTML = `<div class="rp-box"></div><div class="rp-stars"></div>`;
+    }
+    cell.innerHTML += `<div class="rp-era">${RUN_PATH_ROMAN[k] || k + 1}</div>`;
+    wrap.appendChild(cell);
+  }
+  return wrap;
 }
 
 function dismissRegionPick() {
@@ -23614,6 +23658,7 @@ function triggerStageCleared() {
   gameState = "stage-clear";
   const stageTimeMs = performance.now() - stageStartTime;
   const stars = clearStars();
+  runHistory.push({ shape: runShape, stars });   // v3.12.0: ランの道のり
   const starsBest = recordPanelStars(runEra, runShape, stars);
   lastStageTimeMs = stageTimeMs;
   awardCrystals(crystalsForStageClear(runStageIndex));
@@ -23834,6 +23879,7 @@ function beginRun(speciesId) {
   updateHUDWeapon();
 
   runStageIndex = 0;
+  runHistory    = [];   // v3.12.0
   runLives      = RUN_LIVES;
   runBanishesLeft = permaBuff.banishes;   // v3.3.0
   runBanished.clear();
@@ -23896,6 +23942,7 @@ function snapshotRunSave() {
     runLives,
     runSpecials:   runSpecials.slice(),   // v2 まで保存漏れ（再開すると特殊個体が消えていた）
     regionChoices: regionChoices.slice(), // 中身がある＝地域3択の最中に閉じた
+    runHistory:    runHistory.map(h => ({ shape: h.shape, stars: h.stars })),   // v3.12.0
     stageElapsedMs: performance.now() - stageStartTime,
     lastStageTimeMs: Number.isFinite(lastStageTimeMs) ? lastStageTimeMs : null,
     runRerollsLeft,
@@ -23973,6 +24020,9 @@ function resumeRun() {
   runSpecials.length = 0;
   if (Array.isArray(save.runSpecials)) for (const k of save.runSpecials) runSpecials.push(k | 0);
   regionChoices = Array.isArray(save.regionChoices) ? save.regionChoices.map(clampShape) : [];
+  runHistory = Array.isArray(save.runHistory)
+    ? save.runHistory.map(h => ({ shape: clampShape((h && h.shape) | 0), stars: Math.max(0, Math.min(CLEAR_STARS_MAX, (h && h.stars) | 0)) }))
+    : [];
   runRerollsLeft  = save.runRerollsLeft | 0;
   runBanishesLeft = save.runBanishesLeft | 0;
   runBanished.clear();
