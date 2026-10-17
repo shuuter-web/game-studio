@@ -879,7 +879,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.10.0";
+const GAME_VERSION = "v3.10.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -19156,7 +19156,7 @@ function updateSpecials(dt) {
 }
 
 // ---- v3.10.0: 天穿（光剣＋極光の合成個体）: 前方へ極太の光線 ----
-// 待つ → 照準（細い線で予告）→ 照射（太い光線が進行方向へゆっくり追従。線上の全部に毎秒ダメージ）。
+// 待つ → 照準（細い線で予告）→ 照射（太い光線が進行方向へゆっくり追従。線上の全部に毎秒ダメージ）。v3.10.1: 向きは常に前方
 // 光剣（回る細い光条）・極光（周りへ虹の線）と違い、**一方向へ太く長く**。群れを振ると薙げる。
 // 個体の状態：boidSpecialStock＝段階（0 待ち／1 照準／2 照射）、boidSpecialCd＝段階の経過、boidSpecialAngle＝光線の向き
 const SKYLANCE_INTERVAL  = 4.0;   // 撃ち終わってから次を狙うまで
@@ -19170,25 +19170,44 @@ function effLaserDps()   { return SKYLANCE_DPS * (1 + 0.30 * upCount("sp_laser_d
 function effLaserTime()  { return SKYLANCE_FIRE_TIME * (1 + 0.25 * upCount("sp_laser_time")); }
 function effLaserHalfW() { return SKYLANCE_HALF_W * (1 + 0.20 * upCount("sp_laser_width")); }
 const _laserBuf = [];
+/** 向き a の光線（長さ・太さ）の中に、当てられる相手が1つでもいるか。 */
+function skylanceHasTarget(ox, oy, a, halfW) {
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const cx = ox + ca * SKYLANCE_LEN / 2, cy = oy + sa * SKYLANCE_LEN / 2;
+  buildingGridQueryRadius(cx, cy, Math.max(1, Math.ceil((SKYLANCE_LEN / 2 + halfW) / BUILDING_GRID_CELL)), _laserBuf);
+  for (const sIdx of _laserBuf) {
+    const st = settlements[sIdx];
+    if (!st || st.fallen) continue;
+    const dx = st.wx - ox, dy = st.wy - oy, along = dx * ca + dy * sa;
+    if (along >= 0 && along <= SKYLANCE_LEN && Math.abs(-dx * sa + dy * ca) <= halfW + st.radius) return true;
+  }
+  for (const m of movers) {
+    if (!m.alive) continue;
+    const dx = m.wx - ox, dy = m.wy - oy, along = dx * ca + dy * sa;
+    if (along >= 0 && along <= SKYLANCE_LEN && Math.abs(-dx * sa + dy * ca) <= halfW + moverRadiusOf(m)) return true;
+  }
+  return false;
+}
 function updateLaserDragon(i, dt) {
+  // v3.10.1: 狙う向きは最寄りの相手ではなく**進行方向**（Shooter指示「前向きがいい」）。
+  // 撃ち始めるのは、前方の光線の範囲に相手が1つでもいるときだけ（空振りしない）
   const phase = boidSpecialStock[i];
+  const head = Math.atan2(vy[i], vx[i]);
   if (phase === 0) {
     boidSpecialTimer[i] += dt;
     if (boidSpecialTimer[i] < SKYLANCE_INTERVAL) return;
-    const tg = findNearestAimTarget(px[i], py[i], SKYLANCE_LEN, TARGETS_ALL_AIM);
-    if (!tg) return;   // 相手が来るまで待つ（タイマーはそのまま）
-    const t = aimTargetPos(tg);
-    boidSpecialAngle[i] = Math.atan2(t.wy - py[i], t.wx - px[i]);
+    if (!skylanceHasTarget(px[i], py[i], head, effLaserHalfW())) return;   // 前に何も無ければ待つ
+    boidSpecialAngle[i] = head;
     boidSpecialStock[i] = 1; boidSpecialCd[i] = 0;
     return;
   }
   boidSpecialCd[i] += dt;
   if (phase === 1) {
+    boidSpecialAngle[i] = head;   // 予告線は今の進行方向を指す
     if (boidSpecialCd[i] >= SKYLANCE_AIM_TIME) { boidSpecialStock[i] = 2; boidSpecialCd[i] = 0; }
     return;
   }
   // 照射：向きを進行方向へゆっくり寄せる
-  const head = Math.atan2(vy[i], vx[i]);
   const diff = wrapAngle(head - boidSpecialAngle[i]);
   boidSpecialAngle[i] = wrapAngle(boidSpecialAngle[i] + Math.max(-SKYLANCE_TURN * dt, Math.min(SKYLANCE_TURN * dt, diff)));
   const a = boidSpecialAngle[i], ca = Math.cos(a), sa = Math.sin(a);
@@ -22642,6 +22661,10 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_LASER]:   "★天穿／合成（光剣＋極光）。前方へ極太の光線",
 };
 const CODEX_SPECIAL_DESC = {
+  [SPECIAL_LASER]:
+    "<b>合成でだけ生まれる</b>（光剣＋極光）。一定の間隔で、<b>自分の前方</b>へ極太の光線を撃つ。" +
+    "撃つ前に細い予告線が出て、照射中は進行方向へゆっくり向きを寄せる＝群れを振ると薙ぎ払える。" +
+    "前方に何もいないときは撃たずに待つ。",
   [SPECIAL_BEACON]:
     "自分の周りを回る光条を持つ。触れた建物と敵が焼ける。" +
     "進行方向を向いている間は回転が遅く、後ろ向きでは速い＝直進すると前で粘り、旋回すると薙ぎ払いになる。",
