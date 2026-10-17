@@ -879,7 +879,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.9.11";
+const GAME_VERSION = "v3.10.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -15867,6 +15867,8 @@ const SPECIAL_WEDGE   = 7;
 const SPECIAL_HEAL    = 8;
 // v3.8.0: 凍て霧。冷たい霧をまとい、中に入った敵の弾と動く敵を遅くする＝既存7体に無い「足止め」
 const SPECIAL_FROST   = 9;
+// v3.10.0: 合成でだけ生まれる特殊個体（光剣＋極光）。前方へ極太の光線を撃つ
+const SPECIAL_LASER   = 10;
 
 // v2.15.0: 名前を「竜」を付けない二つ名にした（Shooter指示）。
 // v2.15.1: 効果・見た目に合うかっこよさで付け直した。コメントや設計メモには旧名が残っているので対応表:
@@ -15897,6 +15899,8 @@ const SPECIAL_DEFS = {
   // v3.8.0: 専用スプライトは後で作る。それまでは既存の絵（DRAGON_PARTS_ALIAS）を色替えして出す
   [SPECIAL_HEAL]:    { key: "heal",    name: "癒し手", color: "#8ff0a8", hpMult: 1.8, spriteTint: "#60e080" },
   [SPECIAL_FROST]:   { key: "frost",   name: "凍て霧", color: "#c8ecff", hpMult: 2.0, spriteTint: "#e0f4ff" },
+  // v3.10.0: 合成個体（加入カードは無い。FUSION_RECIPES でだけ生まれる）
+  [SPECIAL_LASER]:   { key: "laser",   name: "天穿",   color: "#fff0b8", hpMult: 2.5, spriteTint: "#fff6d0", fused: true },
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -16414,12 +16418,14 @@ const STRINGS = {
   unlockedToast: (names) => `🔓 解放: ${names}`,
   // v3.4.2: 進化カードの札
   // v3.9.9: 「種またぎ進化」→「突然変異」（Shooter指示）。竜と特殊個体で呼び分ける
-  evoTag: (def) => def.tag === "cross" ? (def.special !== undefined ? "★ 特殊個体の突然変異" : "★ 竜の突然変異")
+  evoTag: (def) => def.tag === "fuse" ? "★ 特殊個体の合成"
+                 : def.tag === "cross" ? (def.special !== undefined ? "★ 特殊個体の突然変異" : "★ 竜の突然変異")
                  : def.tag === "branch" ? "★ 進化 ─ 分岐"
                  : def.tag === "special" ? `${def.tagOwner}の進化`
                  : "竜の進化",
   branchTitle: "進化の分岐",
   crossTitle: "竜の突然変異",
+  fuseTitle: "特殊個体の合成",
   evoRecorded: (name, reward) => `📖 進化図鑑に記録: ${name}  +${reward}🔷`,
   lockedSpeciesEvo: "竜の突然変異で出会う",
   banishButton: (n) => `🚫 封印（残り${n}）`,
@@ -16594,7 +16600,7 @@ const CARD_DEFS = [
   // motherUnlock がラン内の解禁スイッチ。mother:true の強化2枚はこれを取った後のみプールに乗る。
   // v0.93: 解禁カードをやめ、**虹竜という特殊個体の加入**に変えた。
   // 他の特殊個体と同じ枠を使うので、max 1（虹竜は2匹居ても意味がない）。
-  { id: "sp_rainbow",   icon: "\u{1F308}", rarity: "star", max: 1, specialJoin: SPECIAL_RAINBOW, weight: 6 },
+  { id: "sp_rainbow",   icon: "\u{1F308}", rarity: "star", max: 3, specialJoin: SPECIAL_RAINBOW, weight: 6 },   // v3.10.0: 他と同じ max 3
   // E. 特殊個体（v0.85）。specialJoin は「1匹加入させる★カード」で、
   // 連れ歩ける数（effSpecialSlots）に達したらプールから消える。
   // specialOf の強化カードは「その種類を連れているときだけ」出る（空振りを作らない）。
@@ -16727,6 +16733,9 @@ const EVO_SPECIAL_EFFECT_TEXT = {
   sp_heal_range:    (n) => `回復が届く範囲 +${Math.round(20 * n)}%（基本 半径${HEAL_RADIUS}px）`,
   sp_frost_slow:    (n) => `霧の中の敵の弾と動く敵を遅くする割合 +${Math.round(FROST_SLOW_PER * 100 * n)}%（基本 ${Math.round(FROST_SLOW * 100)}%・最大 ${Math.round(FROST_SLOW_MAX * 100)}%）`,
   sp_frost_range:   (n) => `霧の広さ +${Math.round(20 * n)}%（基本 半径${FROST_RADIUS}px）`,
+  sp_laser_dmg:     (n) => `光線の威力 +${Math.round(30 * n)}%（基本 毎秒${SKYLANCE_DPS}）`,
+  sp_laser_time:    (n) => `光線を照らし続ける時間 +${Math.round(25 * n)}%（基本 ${SKYLANCE_FIRE_TIME}秒）`,
+  sp_laser_width:   (n) => `光線の太さ +${Math.round(20 * n)}%（基本 ${SKYLANCE_HALF_W * 2}px）`,
 };
 
 // ---- 竜種のツリー（§5.2）。[名前, 効果] / 分岐は { name, tint, scale, eff, next: [[名前, 効果] ×2] } ----
@@ -16894,6 +16903,10 @@ const SPECIAL_EVO_SPEC = {
   frost:   { L: [["凍える霧", { sp_frost_slow: 1 }], ["広がる霧", { sp_frost_range: 1 }], ["凍える霧・二", { sp_frost_slow: 1 }], ["広がる霧・二", { sp_frost_range: 1 }]],
              A: { name: "氷結", tint: "#80c8ff", eff: { sp_frost_slow: 2 } },
              B: { name: "濃霧", tint: "#f0f0f0", eff: { sp_frost_range: 2 } } },
+  // v3.10.0: 合成個体
+  laser:   { L: [["灼く光", { sp_laser_dmg: 1 }], ["長い照射", { sp_laser_time: 1 }], ["灼く光・二", { sp_laser_dmg: 1 }], ["太い光", { sp_laser_width: 1 }]],
+             A: { name: "長閃", tint: "#ffe080", eff: { sp_laser_time: 2 } },
+             B: { name: "大穿", tint: "#ffffff", eff: { sp_laser_width: 2 } } },
 };
 
 // ---- v3.6.0: 竜のレベル・特殊個体のレベル（docs/gdd/dragon-tide-run-cycle.md §5・Shooter指示）----
@@ -16948,7 +16961,20 @@ const SPECIAL_CROSS = {
   // v3.8.0
   heal:    { blast: "frost",   direct: "heavy" },
   frost:   { shot: "heal",     direct: "wedge" },
+  // 合成個体（laser）は突然変異しない・突然変異の行き先にもならない（v3.10.0）
 };
+
+// ---- v3.10.0: 特殊個体の合成（Shooter指示）----
+// 材料 a・b を1体ずつ使って、合成個体 to を1体作る（連れ歩きの枠が1つ空く）。
+// 材料のどちらかが Lv10 以上になった次のレベルアップで「特殊個体の合成」画面を1回だけ出す。
+// 合成個体のレベルは材料2種類のレベルの合算（上限30）。材料の分岐は引き継がない。
+// 竜の突然変異の条件では、合成個体を材料2体ぶんに数える（FUSION_PARTS）。
+const FUSION_RECIPES = [
+  { id: "beacon+rainbow", a: "beacon", b: "rainbow", to: "laser" },
+];
+const FUSION_PARTS = {};   // 合成個体の key -> { 材料 key: 頭数 }
+for (const r of FUSION_RECIPES) FUSION_PARTS[r.to] = { [r.a]: 1, [r.b]: 1 };
+const FUSION_LEVEL = 10;   // 材料のどちらかがこのレベル以上で出る
 
 function sumEffects(list) {
   const out = {};
@@ -17001,6 +17027,7 @@ let runSpBranch      = {};   // 特殊個体の種類 key -> "A"|"B"
 // v3.9.6: 種またぎは**分岐の画面で1回だけ**並ぶ（Shooter「選びたくない種またぎが延々出続ける」）。
 // 分岐の段（10・20）ごとに、種またぎを一度でも見せたら true。見送っても A/B を選んでも、その段ではもう出ない。
 let runCrossOffered  = {};
+let runFuseOffered   = {};   // v3.10.0: 合成の画面を出したレシピ（id -> true）
 
 function initEvoForRun() {
   runDragonLv = 1;
@@ -17008,6 +17035,7 @@ function initEvoForRun() {
   runSpLv = {};
   runSpBranch = {};
   runCrossOffered = {};
+  runFuseOffered = {};
   invalidateEvo();
 }
 
@@ -17060,7 +17088,12 @@ function specialsSatisfy(needs) {
   for (const key in needs) {
     const kind = SPECIAL_KIND_BY_KEY[key];
     let have = 0;
-    for (const k of runSpecials) if (k === kind) have++;
+    for (const k of runSpecials) {
+      if (k === kind) have++;
+      // v3.10.0: 合成個体は材料2体ぶんに数える（合成しても竜の突然変異の道が閉じないように）
+      const parts = FUSION_PARTS[SPECIAL_DEFS[k]?.key];
+      if (parts && parts[key]) have += parts[key];
+    }
     if (have < needs[key]) return false;
   }
   return true;
@@ -17145,7 +17178,53 @@ function lvText(L) { return L >= EVO_LV_MAX ? "Lv Max" : `Lv${L}`; }
         desc: `特殊個体の突然変異（${CATEGORY_NAMES[cat]}の群れ）。この種類が全員${SPECIAL_DEFS[toKind].name}になる。レベルはそのまま` });
     }
   }
+  // v3.10.0: 特殊個体の合成
+  for (const r of FUSION_RECIPES) {
+    const A = SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[r.a]], B = SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[r.b]];
+    const T = SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[r.to]];
+    defineEvoCard(`evo.fuse.${r.id}`, { fuse: r, icon: "\u{1F52F}", rarity: "star", tag: "fuse", color: T.color,
+      label: () => `${A.name}＋${B.name}→【${T.name} ${lvText(fusionLevel(r))}】`,
+      desc: () => `特殊個体の合成。${A.name}1体と${B.name}1体が、1体の${T.name}になる（連れ歩きの枠が1つ空く）。` +
+                  `レベルは2体の合算・材料の分岐は引き継がない` });
+  }
 })();
+
+/** 合成したときのレベル（材料2種類のレベルの合算・上限30）。 */
+function fusionLevel(r) { return Math.min(EVO_LV_MAX, spLevel(r.a) + spLevel(r.b)); }
+/** 今のレベルアップで出す合成（無ければ null）。材料が両方いて、どちらかが Lv10 以上で、まだ出していないもの。 */
+function pendingFusion() {
+  for (const r of FUSION_RECIPES) {
+    if (runFuseOffered[r.id]) continue;
+    const ka = SPECIAL_KIND_BY_KEY[r.a], kb = SPECIAL_KIND_BY_KEY[r.b];
+    if (!runSpecials.includes(ka) || !runSpecials.includes(kb)) continue;
+    if (Math.max(spLevel(r.a), spLevel(r.b)) < FUSION_LEVEL) continue;
+    return r;
+  }
+  return null;
+}
+/** 合成する：材料を1体ずつ使い、合成個体を1体作る。 */
+function doFusion(r) {
+  const ka = SPECIAL_KIND_BY_KEY[r.a], kb = SPECIAL_KIND_BY_KEY[r.b], kt = SPECIAL_KIND_BY_KEY[r.to];
+  const lv = fusionLevel(r);
+  const ia = runSpecials.indexOf(ka); if (ia >= 0) runSpecials.splice(ia, 1);
+  const ib = runSpecials.indexOf(kb); if (ib >= 0) runSpecials.splice(ib, 1);
+  runSpecials.push(kt);
+  // 群れの中の体：a の1体が合成個体に、b の1体は普通の竜に戻る（＝群れの数は変わらない）
+  const pick = (kind) => {
+    let alt = -1;
+    for (let i = 0; i < N; i++) if (boidSpecial[i] === kind) { if (!boidDead[i] && !boidDowned[i]) return i; if (alt < 0) alt = i; }
+    return alt;
+  };
+  const sa = pick(ka);
+  if (sa >= 0) markSpecial(sa, kt);
+  const sb = pick(kb);
+  if (sb >= 0) { boidSpecial[sb] = SPECIAL_NONE; boidHp[sb] = Math.min(boidHp[sb], effBoidMaxHpFor(sb)); }
+  runSpLv[r.to] = lv;
+  // 加入カードの「取った回数」を戻す（抜けたぶんはまた加入させられる）
+  for (const k of [r.a, r.b]) if (upgradeCounts["sp_" + k] > 0) upgradeCounts["sp_" + k]--;
+  recordEvoSeen(`fz:${r.to}`, EVO_NODES[`evo.fuse.${r.id}`]);
+  if (sa >= 0) pushWorldText(px[sa], py[sa] - 24, SPECIAL_DEFS[kt].name + " 誕生", SPECIAL_DEFS[kt].color);
+}
 
 /** 竜が分岐のレベルに着いていて、まだ選んでいなければ、その選択肢。 */
 function dragonBranchOptions() {
@@ -17235,7 +17314,10 @@ function spFormName(key) {
 /** 進化カードを取った。ステージ中のその場で効かせる（変身は群れ全体）。 */
 function applyEvoNode(node, oldMaxHp) {
   let flashTint = null;
-  if (node.id === "evo.dlv") {
+  if (node.fuse) {             // v3.10.0: 特殊個体の合成
+    doFusion(node.fuse);
+    flashTint = node.color;
+  } else if (node.id === "evo.dlv") {
     runDragonLv = Math.min(EVO_LV_MAX, runDragonLv + 1);
   } else if (node.tier) {
     const br = speciesBranch(node.sid);
@@ -17324,6 +17406,7 @@ function evoCodexEntries() {
     const e = "sx:" + SPECIAL_CROSS[key][cat];
     if (!out.includes(e)) out.push(e);
   }
+  for (const r of FUSION_RECIPES) out.push(`fz:${r.to}`);   // v3.10.0: 合成
   return out;
 }
 function recordEvoSeen(entry, node) {
@@ -17394,7 +17477,7 @@ function defaultPermaBuff() {
     reviveMult: 1, dmgTakenMult: 1, weaponRange: 1, xpGain: 1,
     // v0.30: 母竜ライン。母竜ブレスは常時発動（解禁フラグ廃止）なので、ツリーは全て乗算の底上げ。
     // motherRate は発動間隔の倍率（<1 で高頻度化）。
-    motherHp: 1, motherDmg: 1, motherRate: 1,
+    // v3.10.0: motherHp/motherDmg/motherRate は撤去（極光は特殊個体共通の specialDmg を使う）
     // v0.85: 特殊個体ライン。specialSlots は加算（同時に連れ歩ける数）、specialDmg は乗算。
     specialSlots: 0, specialDmg: 1,
     // v0.87: 突進ライン。chargeEase はしきい値からの**減算**（下げるほど入りやすい）、
@@ -17437,12 +17520,12 @@ function effBulletPierce()  { return 1 + upCount("pierce"); }
 function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
 // v0.6-p2: 緋竜（MELEE）は個体HP +50%（仕様 §6.4）
 function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1) * (sp().hpMult || 1); }   // v3.8.0: 亀竜は素で硬い
-// v0.22: 個体別の最大HP。母竜だけ恒常ツリーの motherHp 倍率が乗る。
 // v0.85: 特殊個体は役割ごとのHP倍率を持つ（巌竜は轢進む前提なので 3 倍）。
+// v3.10.0: 極光（旧母竜）だけに掛かっていた専用の倍率 motherHp は撤去（他の特殊個体と同じ扱い）
 function effBoidMaxHpFor(i) {
   const spDef = boidSpecial && SPECIAL_DEFS[boidSpecial[i]];
   const spMult = spDef ? spDef.hpMult : 1;
-  return effBoidMaxHp() * (isMotherDragon(i) ? permaBuff.motherHp : 1) * spMult;
+  return effBoidMaxHp() * spMult;
 }
 
 // ---- カード取得時の即時効果（倍率系は eff* で都度参照するため不要）----
@@ -17729,6 +17812,16 @@ function buildLevelUpCards() {
     runCrossOffered[runDragonLv] = true;
     const stay = runDragonLv < EVO_LV_MAX ? [EVO_NODES["evo.dlv"]] : [];
     renderBranchScreen(stay.concat(crosses), STRINGS.crossTitle);
+    return;
+  }
+  // v3.10.0: 特殊個体の合成。竜の画面が無いときだけ（あれば次のレベルアップへ回る）。
+  // 並ぶのは「合成する」と「そのままレベルアップ」（Lv10 に届いた方の材料のレベル）だけ
+  const fr = pendingFusion();
+  if (fr) {
+    runFuseOffered[fr.id] = true;
+    const hiKey = spLevel(fr.a) >= spLevel(fr.b) ? fr.a : fr.b;
+    const stay = spLevel(hiKey) < EVO_LV_MAX ? [EVO_NODES[`evo.slv.${hiKey}`]] : [];
+    renderBranchScreen([EVO_NODES[`evo.fuse.${fr.id}`]].concat(stay), STRINGS.fuseTitle);
     return;
   }
   renderLevelUpCards(pickLevelUpCards());
@@ -18487,14 +18580,13 @@ function drawDragonProjectiles() {
 // （＝毎ランの引き次第。恒常ツリーは引けた時の底上げに徹する）。
 // 母竜(スロット0)が周期的に、周囲の建物/移動敵を最大 N 体まとめて薙ぐ特大バースト。
 // 通常の群れブレス（母竜も1個体として撃つ）に上乗せされる"必殺"。
-// 威力 = 基礎 × permaBuff.motherDmg（ツリー下限強化）× effMotherBreathDmg()（ラン中カード）。
-// 間隔 = 基礎 × permaBuff.motherRate（ツリー下限強化）× effMotherBreathRate()（ラン中カード）。
+// 威力 = 基礎 × effMotherBreathDmg()（極光のレベル）× permaBuff.specialDmg（特殊個体共通）。
+// 間隔 = 基礎 × effMotherBreathRate()（極光のレベル）。v3.10.0: 1体ごとに撃つ（updateRainbowDragon）
 // -----------------------------------------------------------------
 const MOTHER_BREATH_INTERVAL = 7.0;   // 発動間隔（秒。v0.22.1: デフォルト頻度を半分に）
 const MOTHER_BREATH_RANGE    = 220;   // 効果半径（通常ブレスより広い）
 const MOTHER_BREATH_TARGETS  = 6;     // 同時に薙ぐ対象数
 const MOTHER_BREATH_DAMAGE   = 60;    // 1発の基礎バーストダメージ
-let motherBreathTimer = 0;
 const _motherBreathBuf = [];
 
 // v0.24.1: 母竜ブレスの残像FX。発射線をしばらく残し、ネオン虹色をゆっくりフェードアウトさせる。
@@ -18508,31 +18600,25 @@ function pushMotherBreathFx(x0, y0, x1, y1, hue) {
   }
 }
 
-// v0.31: このランで母竜ブレスを解禁済みか（★カード「母なる吐息」の取得有無）
-// v0.93: 虹竜が居ればブレスも使える（別途の解禁カードは無くなった）。
-function isMotherBreathUnlocked() { return rainbowSlot() >= 0; }
-
 // ラン中強化カード「母竜の吐息」による威力倍率（都度計算）
 function effMotherBreathDmg()  { return 1 + 0.30 * upCount("mbreath_dmg"); }
 // v0.28: 母竜ブレスの発動間隔倍率（<1で高頻度化）。ラン中カード「母竜の鼓動」で1枚ごとに短縮。
 function effMotherBreathRate() { return Math.pow(0.82, upCount("mbreath_rate")); }
 
-function updateMotherBreath(dt) {
-  // v0.93: 解禁フラグを廃止。虹竜が群れに居ることそのものが発動条件。
-  const _rb = rainbowSlot();
-  if (_rb < 0) { motherBreathTimer = 0; return; }
-  motherBreathTimer -= dt;
-  if (motherBreathTimer > 0) return;
-  // v0.28: ラン中強化で高頻度化／v0.30: ツリー「轟く吐息」の底上げも合流
-  motherBreathTimer = MOTHER_BREATH_INTERVAL * permaBuff.motherRate * effMotherBreathRate();
+/**
+ * 極光（個体 i）の虹のブレス。周期的に、周囲の建物・動く敵を最大 N 体まとめて薙ぐ。
+ * v3.10.0: 旧母竜の名残で「群れで最初の1体だけが全体のタイマーで撃つ」だったのを、
+ * 他の特殊個体と同じく**1体ごと**（boidSpecialTimer）に撃つ形にした。威力には特殊個体共通の specialDmg が乗る。
+ */
+function updateRainbowDragon(i, dt) {
+  boidSpecialTimer[i] += dt;
+  const inter = MOTHER_BREATH_INTERVAL * effMotherBreathRate();
+  if (boidSpecialTimer[i] < inter) return;
+  boidSpecialTimer[i] -= inter;
 
-  const mx = px[_rb], my = py[_rb];
-  const R2  = MOTHER_BREATH_RANGE * MOTHER_BREATH_RANGE;
-  const dmg = MOTHER_BREATH_DAMAGE * permaBuff.motherDmg * effMotherBreathDmg();
-  const cellRadius = Math.max(1, Math.ceil(MOTHER_BREATH_RANGE / BUILDING_GRID_CELL));
-
+  const mx = px[i], my = py[i];
+  const dmg = MOTHER_BREATH_DAMAGE * effMotherBreathDmg() * permaBuff.specialDmg;
   // v2.13.0: 建物・動く敵・城壁を混ぜて近い順に最大 MOTHER_BREATH_TARGETS 件薙ぐ
-  // （それまでは建物を先に取り、余った枠だけ動く敵に回していた）
   collectAimTargets(mx, my, MOTHER_BREATH_RANGE, TARGETS_ALL_AIM, undefined, undefined,
                     MOTHER_BREATH_TARGETS, _motherBreathBuf);
   let hits = 0;
@@ -18714,7 +18800,7 @@ function isSpecialActive(i) {
 /** 描画・当たり判定に使う体格倍率（母竜の成長と巌竜の巨体を一本化）。 */
 function boidBodyScale(i) {
   if (boidSpecial[i] === SPECIAL_HEAVY && !boidDowned[i] && !boidDead[i]) return effHeavyScale();
-  if (isMotherDragon(i) && isMotherActive()) return motherBodyScale();
+  // v3.10.0: 極光（旧母竜）だけプレイヤーレベルで育っていたのは撤去（他の特殊個体と同じ大きさ）
   return 1;
 }
 
@@ -19053,6 +19139,7 @@ function updateSpecials(dt) {
       continue;
     }
     if (kind === SPECIAL_BEACON)       updateBeaconDragon(i, dt);
+    else if (kind === SPECIAL_RAINBOW) updateRainbowDragon(i, dt);   // v3.10.0: 1体ごと
     else if (kind === SPECIAL_HEAVY)   updateHeavyDragon(i, dt);
     else if (kind === SPECIAL_DEFLECT) updateDeflectDragon(i, dt);
     else if (kind === SPECIAL_MECHA)   updateMechaDragon(i, dt);
@@ -19060,11 +19147,108 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_WEDGE)   updateWedgeDragon(i, dt);
     else if (kind === SPECIAL_HEAL)    updateHealDragon(i, dt);
     else if (kind === SPECIAL_FROST)   updateFrostDragon(i);
+    else if (kind === SPECIAL_LASER)   updateLaserDragon(i, dt);
   }
   updateWakeTrail(dt);      // v1.1.0: 航跡の寿命と、中に居る竜への印付け
   updateCrackBursts(dt);    // v1.1.2: ひびが入った瞬間の弾け
   updateSpecialBolts(dt);
   updateMechaRockets(dt);   // v0.95: 飛んでいるロケットは機竜が落ちても進む
+}
+
+// ---- v3.10.0: 天穿（光剣＋極光の合成個体）: 前方へ極太の光線 ----
+// 待つ → 照準（細い線で予告）→ 照射（太い光線が進行方向へゆっくり追従。線上の全部に毎秒ダメージ）。
+// 光剣（回る細い光条）・極光（周りへ虹の線）と違い、**一方向へ太く長く**。群れを振ると薙げる。
+// 個体の状態：boidSpecialStock＝段階（0 待ち／1 照準／2 照射）、boidSpecialCd＝段階の経過、boidSpecialAngle＝光線の向き
+const SKYLANCE_INTERVAL  = 4.0;   // 撃ち終わってから次を狙うまで
+const SKYLANCE_AIM_TIME  = 0.4;   // 予告の細い線
+const SKYLANCE_FIRE_TIME = 1.2;   // 照射
+const SKYLANCE_LEN       = 360;
+const SKYLANCE_HALF_W    = 22;    // 太さの半分（当たり判定）
+const SKYLANCE_DPS       = 70;
+const SKYLANCE_TURN      = 0.8;   // 照射中に進行方向へ寄る速さ rad/s
+function effLaserDps()   { return SKYLANCE_DPS * (1 + 0.30 * upCount("sp_laser_dmg")) * permaBuff.specialDmg; }
+function effLaserTime()  { return SKYLANCE_FIRE_TIME * (1 + 0.25 * upCount("sp_laser_time")); }
+function effLaserHalfW() { return SKYLANCE_HALF_W * (1 + 0.20 * upCount("sp_laser_width")); }
+const _laserBuf = [];
+function updateLaserDragon(i, dt) {
+  const phase = boidSpecialStock[i];
+  if (phase === 0) {
+    boidSpecialTimer[i] += dt;
+    if (boidSpecialTimer[i] < SKYLANCE_INTERVAL) return;
+    const tg = findNearestAimTarget(px[i], py[i], SKYLANCE_LEN, TARGETS_ALL_AIM);
+    if (!tg) return;   // 相手が来るまで待つ（タイマーはそのまま）
+    const t = aimTargetPos(tg);
+    boidSpecialAngle[i] = Math.atan2(t.wy - py[i], t.wx - px[i]);
+    boidSpecialStock[i] = 1; boidSpecialCd[i] = 0;
+    return;
+  }
+  boidSpecialCd[i] += dt;
+  if (phase === 1) {
+    if (boidSpecialCd[i] >= SKYLANCE_AIM_TIME) { boidSpecialStock[i] = 2; boidSpecialCd[i] = 0; }
+    return;
+  }
+  // 照射：向きを進行方向へゆっくり寄せる
+  const head = Math.atan2(vy[i], vx[i]);
+  const diff = wrapAngle(head - boidSpecialAngle[i]);
+  boidSpecialAngle[i] = wrapAngle(boidSpecialAngle[i] + Math.max(-SKYLANCE_TURN * dt, Math.min(SKYLANCE_TURN * dt, diff)));
+  const a = boidSpecialAngle[i], ca = Math.cos(a), sa = Math.sin(a);
+  const halfW = effLaserHalfW(), dmg = effLaserDps() * dt;
+  const ox = px[i], oy = py[i];
+  const cx = ox + ca * SKYLANCE_LEN / 2, cy = oy + sa * SKYLANCE_LEN / 2;
+  buildingGridQueryRadius(cx, cy, Math.max(1, Math.ceil((SKYLANCE_LEN / 2 + halfW) / BUILDING_GRID_CELL)), _laserBuf);
+  for (const sIdx of _laserBuf) {
+    const st = settlements[sIdx];
+    if (!st || st.fallen) continue;
+    const dx = st.wx - ox, dy = st.wy - oy;
+    const along = dx * ca + dy * sa;
+    if (along < 0 || along > SKYLANCE_LEN) continue;
+    if (Math.abs(-dx * sa + dy * ca) > halfW + st.radius) continue;
+    hitBuilding(sIdx, { shot: dmg }, ox, oy);
+  }
+  for (const m of movers) {
+    if (!m.alive) continue;
+    const dx = m.wx - ox, dy = m.wy - oy;
+    const along = dx * ca + dy * sa;
+    if (along < 0 || along > SKYLANCE_LEN) continue;
+    if (Math.abs(-dx * sa + dy * ca) > halfW + moverRadiusOf(m)) continue;
+    hitMover(m, { shot: dmg }, ox, oy);
+  }
+  if (boidSpecialCd[i] >= effLaserTime()) { boidSpecialStock[i] = 0; boidSpecialCd[i] = 0; boidSpecialTimer[i] = 0; }
+}
+/** 照準の細い線と、照射の太い光線（加算合成。芯は白、外は金）。 */
+function drawLaserBeams() {
+  let any = false;
+  for (let i = 0; i < N; i++) if (boidSpecial[i] === SPECIAL_LASER && boidSpecialStock[i] > 0 && !boidDead[i] && !boidDowned[i]) { any = true; break; }
+  if (!any) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  const halfW = effLaserHalfW();
+  for (let i = 0; i < N; i++) {
+    if (boidSpecial[i] !== SPECIAL_LASER || boidDead[i] || boidDowned[i]) continue;
+    const ph = boidSpecialStock[i];
+    if (ph === 0) continue;
+    const a = boidSpecialAngle[i];
+    const x0 = px[i], y0 = py[i], x1 = x0 + Math.cos(a) * SKYLANCE_LEN, y1 = y0 + Math.sin(a) * SKYLANCE_LEN;
+    if (ph === 1) {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 0.35 + 0.4 * (boidSpecialCd[i] / SKYLANCE_AIM_TIME);
+      ctx.strokeStyle = "#fff0b8"; ctx.lineWidth = 1.6;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      ctx.setLineDash([]);
+      continue;
+    }
+    const t = boidSpecialCd[i] / effLaserTime();
+    const fade = t < 0.1 ? t / 0.1 : t > 0.85 ? (1 - t) / 0.15 : 1;
+    const flick = 0.9 + 0.1 * Math.sin(breathTime * 40 + i);
+    ctx.globalCompositeOperation = "lighter";
+    for (const [w, col, al] of [[halfW * 2.4, "#ffb840", 0.25], [halfW * 2, "#ffe080", 0.45], [halfW * 1.1, "#fff6d8", 0.75], [halfW * 0.45, "#ffffff", 0.95]]) {
+      ctx.globalAlpha = al * fade * flick;
+      ctx.strokeStyle = col; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 
 // ---- v3.8.0: 癒し手・凍て霧 ----
@@ -19555,6 +19739,7 @@ function drawWakeCharged() {
 
 function drawSpecialUnder() {
   drawFrostAndHeal();   // v3.8.0: 凍て霧の霧・癒し手の輪
+  drawLaserBeams();     // v3.10.0: 天穿の光線
   drawWakeTrail();   // v1.1.0: 航跡は足元リングよりさらに下
   for (let i = 0; i < N; i++) {
     const kind = boidSpecial[i];
@@ -20257,7 +20442,6 @@ function updateWeaponAttacks(dt) {
 
   updateBombFuses(dt);   // 投下済みの爆弾は竜種が変わっても炸裂させきる
 
-  updateMotherBreath(dt);   // v0.22: 母竜の署名ブレス（v0.31: ラン中に「母なる吐息」を引いた時のみ）
   updateSpecials(dt);       // v0.85: 特殊個体（灯竜の光条・巌竜の轢き・呑竜の溜め）
   updateDragonProjectiles(dt);
   updateBoulders(dt);       // v3.9.11: 亀竜の甲羅弾（竜種が変わっても飛びきる）
@@ -22395,7 +22579,7 @@ function codexDragonCanvas(species) {
   return cv;
 }
 
-const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST];
+const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST, SPECIAL_LASER];
 
 function codexSpecialHtml() {
   let html =
@@ -22443,6 +22627,7 @@ const CODEX_SPECIAL_POWERS = {
   [SPECIAL_DEFLECT]: () => [{ label: "撃ち返し（1発）", shot: DEFLECT_BOLT_DMG }],
   [SPECIAL_MECHA]:   () => [{ label: "ロケット", blast: MECHA_DAMAGE, note: `半径${MECHA_BLAST_R}` }],
   [SPECIAL_WEDGE]:   () => [{ label: "体当たり", direct: WEDGE_RAM_DAMAGE }],
+  [SPECIAL_LASER]:   () => [{ label: "光線", shot: SKYLANCE_DPS, perSec: true }],
 };
 const CODEX_SPECIAL_TAG = {
   [SPECIAL_BEACON]:  "★光剣／向きを選ばない削り役",
@@ -22454,6 +22639,7 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_WEDGE]:   "★穿つ楔／先陣。相手を柔らかくして本隊に渡す",
   [SPECIAL_HEAL]:    "★癒し手／周りの竜を回復する。自分では打たない",
   [SPECIAL_FROST]:   "★凍て霧／足止め。敵の弾と動く敵を遅くする。自分では打たない",
+  [SPECIAL_LASER]:   "★天穿／合成（光剣＋極光）。前方へ極太の光線",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_BEACON]:
@@ -22465,8 +22651,7 @@ const CODEX_SPECIAL_DESC = {
     "周囲に来た通常弾を吸って溜める。満杯になると少し間を置いて前方へ束にして撃ち返す。" +
     "撃った後はしばらく吸えない。",
   [SPECIAL_RAINBOW]:
-    "周期的に、周囲の建物と敵をまとめて虹色の線で薙ぎ払う。" +
-    "レベルが上がるとこの1匹だけ体格が育つので、群れの中で一目で分かる。",
+    "周期的に、周囲の建物と敵をまとめて虹色の線で薙ぎ払う。複数連れていれば1体ずつ撃つ。",
   [SPECIAL_MECHA]:
     "初速 0 から加速する大きなロケットを<b>真正面へ</b>連射する。誘導は無く、撃った向きにまっすぐ進む。" +
     "着弾したところで爆発して周囲ごと巻き込む。" +
@@ -22491,6 +22676,9 @@ const CODEX_SPECIAL_DESC = {
     "弾幕と部隊が濃くなる後半ほど効く。",
 };
 const CODEX_SPECIAL_STAT = {
+  [SPECIAL_LASER]: () =>
+    `${SKYLANCE_INTERVAL}秒ごとに ${SKYLANCE_FIRE_TIME}秒照射（${SKYLANCE_AIM_TIME}秒の予告） ／ 長さ ${SKYLANCE_LEN}px・太さ ${SKYLANCE_HALF_W * 2}px ／ ` +
+    `毎秒 ${SKYLANCE_DPS} ／ HP ×${SPECIAL_DEFS[SPECIAL_LASER].hpMult}`,
   [SPECIAL_HEAL]: () =>
     `${HEAL_INTERVAL}秒ごとに 最大HPの${Math.round(HEAL_FRAC * 100)}% ／ 半径 ${HEAL_RADIUS}px ／ HP ×${SPECIAL_DEFS[SPECIAL_HEAL].hpMult}`,
   [SPECIAL_FROST]: () =>
@@ -22520,7 +22708,7 @@ const CODEX_SPECIAL_STAT = {
     `最高速 ×1.14・加速 ×1.35 ／ HP ×${SPECIAL_DEFS[SPECIAL_WEDGE].hpMult}`,
   [SPECIAL_RAINBOW]: () =>
     `${MOTHER_BREATH_INTERVAL}秒ごと ／ 半径 ${MOTHER_BREATH_RANGE}px の最大 ${MOTHER_BREATH_TARGETS} 体 ／ ` +
-    `1発 ${MOTHER_BREATH_DAMAGE} ／ 体格はレベルごと +${Math.round(MOTHER_DRAGON.growthPerLevel * 100)}%（最大 +${Math.round(MOTHER_DRAGON.growthMax * 100)}%） ／ ` +
+    `1発 ${MOTHER_BREATH_DAMAGE} ／ ` +
     `HP ×${SPECIAL_DEFS[SPECIAL_RAINBOW].hpMult}`,
 };
 
@@ -22615,6 +22803,14 @@ function codexSpecialCanvas(kind) {
     c.beginPath();
     c.moveTo(0, -3.4); c.lineTo(22, -1.5); c.lineTo(22, 1.5); c.lineTo(0, 3.4);
     c.closePath(); c.fill();
+    c.restore();
+    codexDrawSpecialDragon(c, kind, 44);
+  } else if (kind === SPECIAL_LASER) {
+    // v3.10.0: 右上へ伸びる太い光線
+    c.save(); c.rotate(-0.5); c.lineCap = "round";
+    for (const [w, col] of [[10, "rgba(255,200,90,0.35)"], [6, "rgba(255,236,160,0.8)"], [2.4, "#ffffff"]]) {
+      c.strokeStyle = col; c.lineWidth = w; c.beginPath(); c.moveTo(4, 0); c.lineTo(26, 0); c.stroke();
+    }
     c.restore();
     codexDrawSpecialDragon(c, kind, 44);
   } else if (kind === SPECIAL_HEAL || kind === SPECIAL_FROST) {
@@ -22853,14 +23049,20 @@ function codexEvoHtml() {
     const kind = SPECIAL_KIND_BY_KEY[key];
     if (kind === undefined) continue;
     const name = SPECIAL_DEFS[kind].name;
-    const entries = [`s:${key}.A`, `s:${key}.B`, `sx:${key}`];
+    const fusedFrom = FUSION_RECIPES.find(r => r.to === key);   // v3.10.0: 合成個体は「合成で生まれた」を載せる
+    const entries = [`s:${key}.A`, `s:${key}.B`, fusedFrom ? `fz:${key}` : `sx:${key}`];
     const got = entries.filter(e => seen[e]).length;
     html += `<div class="cx-row"><div class="cx-body"><div class="cx-name">${name}　${got}/${entries.length}</div>`;
     for (const br of ["A", "B"]) {
       const b = SPECIAL_EVO_SPEC[key][br];
       html += entryLine(`s:${key}.${br}`, b.name, b.tint, evoEffectText(b.eff, null), false);
     }
-    html += entryLine(`sx:${key}`, `突然変異で${name}になった`, SPECIAL_DEFS[kind].color, "別の特殊個体から、群れの攻撃の種類しだいで変わる", true);
+    if (fusedFrom) {
+      const nm = (k) => SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name;
+      html += entryLine(`fz:${key}`, `合成で${name}が生まれた`, SPECIAL_DEFS[kind].color, `${nm(fusedFrom.a)}＋${nm(fusedFrom.b)}（どちらかが Lv${FUSION_LEVEL} で1回）`, true);
+    } else {
+      html += entryLine(`sx:${key}`, `突然変異で${name}になった`, SPECIAL_DEFS[kind].color, "別の特殊個体から、群れの攻撃の種類しだいで変わる", true);
+    }
     html += `</div></div>`;
   }
   return html + `</div>`;
@@ -23583,7 +23785,7 @@ function snapshotRunSave() {
     runBanished:   [...runBanished],
     // v3.5.0: 進化の形態
     // v3.6.0: 竜のレベル・特殊個体のレベル・分岐
-    runDragonLv, runSpeciesBranch: JSON.parse(JSON.stringify(runSpeciesBranch)), runCrossOffered: Object.assign({}, runCrossOffered),
+    runDragonLv, runSpeciesBranch: JSON.parse(JSON.stringify(runSpeciesBranch)), runCrossOffered: Object.assign({}, runCrossOffered), runFuseOffered: Object.assign({}, runFuseOffered),
     runSpLv: Object.assign({}, runSpLv), runSpBranch: Object.assign({}, runSpBranch),
   });
   runSaveDirty  = false;
@@ -23631,6 +23833,7 @@ function resumeRun() {
   runSpLv          = (save.runSpLv && typeof save.runSpLv === "object") ? save.runSpLv : {};
   runSpBranch      = (save.runSpBranch && typeof save.runSpBranch === "object") ? save.runSpBranch : {};
   runCrossOffered  = (save.runCrossOffered && typeof save.runCrossOffered === "object") ? save.runCrossOffered : {};
+  runFuseOffered   = (save.runFuseOffered && typeof save.runFuseOffered === "object") ? save.runFuseOffered : {};
   invalidateEvo();
 
   // ラン統計の復元（経過時間を継続させる）
@@ -26497,11 +26700,10 @@ function drawBreathAttacks(now) {
 }
 
 // -----------------------------------------------------------------
-// 虹竜＝極光（v0.18 では「母竜」だったもの）— レベルで体格が育つ特殊個体
+// 虹竜＝極光（v0.18 では「母竜」だったもの）
 // v0.93 で「群れの長」の扱い（スロット0固定）は廃止し、ほかと同じ特殊個体の1種になった。
+// v3.10.0: 体格の成長も撤去（Shooter「極光だけの特別扱いはすべてやめる」）
 // -----------------------------------------------------------------
-// 全員を大きくすると相対比が変わらず成長が見えないので、
-// 基準となる1匹に成長を集約する（Shooter指示、v0.18）。
 //
 // **v0.93 でスロット0固定を廃止し、特殊個体の1種（虹竜）に統合した。**
 // v0.92 まではスロット0の竜が**ブレスの有無に関わらず常に育っていた**が、
@@ -26512,35 +26714,7 @@ function drawBreathAttacks(now) {
 // ダウン中は能力ごと消える（復帰するまで体格成長もブレスもかからない）。
 // これは v0.18 から変わっていない。
 
-// 虹竜専用パラメータ（通常竜とは別系統）。
-// HP 倍率は SPECIAL_DEFS[SPECIAL_RAINBOW].hpMult 側にあるのでここには置かない。
-const MOTHER_DRAGON = {
-  growthPerLevel: 0.07,   // レベルごとの体格増分（虹竜のみ育つ）
-  growthMax:      0.70,   // 体格の最大 +70%（Lv11で到達）
-};
-
-/**
- * v0.93: 母竜（虹竜）はスロット0固定をやめ、特殊個体の1種になった。
- * 古い名前のまま残しているのは呼び出し側を全部書き換えないため。
- */
-function isMotherDragon(i) { return boidSpecial && boidSpecial[i] === SPECIAL_RAINBOW; }
-
-/** 生きている虹竜のスロット番号。居なければ -1。 */
-function rainbowSlot() {
-  if (!boidSpecial) return -1;
-  for (let i = 0; i < N; i++) {
-    if (boidSpecial[i] === SPECIAL_RAINBOW && !boidDead[i] && !boidDowned[i]) return i;
-  }
-  return -1;
-}
-
-/** 母竜が「今この瞬間に存在するか」。ダウン中・未生成中は false（＝母竜ナシ）。 */
-function isMotherActive() { return rainbowSlot() >= 0; }
-
-/** 母竜の体格倍率。健在なときのみ育つ（ダウン中＝母竜ナシは呼び出し側で1に落とす）。 */
-function motherBodyScale() {
-  return 1 + Math.min(MOTHER_DRAGON.growthPerLevel * (playerLevel - 1), MOTHER_DRAGON.growthMax);
-}
+// v3.10.0: 極光（旧母竜・虹竜）専用の体格成長・「最初の1体」探しは撤去した（他の特殊個体と同じ扱い）。
 
 function drawBoids() {
   // プリレンダスプライトのDPR（createDragonSprites で使ったものと一致させる）
@@ -26606,9 +26780,7 @@ function drawBoids() {
 
     const wx    = px[i], wy = py[i];
     const angle = Math.atan2(vy[i], vx[i]);
-    // v0.18: 母竜だけレベルに応じて体格が育つ（尻尾・本体の描画に一律適用）。
-    // 母竜がダウン中（＝母竜ナシ）は成長を適用せず通常サイズで描く。
-    // v0.85: 母竜の成長と巌竜の巨体を boidBodyScale に一本化（当たり判定と共通）
+    // 体格（巌竜の巨体など）。当たり判定と共通の boidBodyScale
     const unitScale = boidBodyScale(i);
 
     // ---- 羽ばたきフレーム選択 ----
@@ -27886,6 +28058,7 @@ const DRAGON_ELEMENT_COLORS = {
   thunder:  { body: "rgba(255, 224, 112, 1.0)", wing: "rgba(200, 170, 50, 1.0)",  rim: "rgba(110, 90, 20, 0.0)" },
   heal:     { body: "rgba(150, 240, 170, 1.0)", wing: "rgba(90, 190, 120, 1.0)",  rim: "rgba(40, 110, 60, 0.0)" },
   frost:    { body: "rgba(200, 236, 255, 1.0)", wing: "rgba(140, 190, 230, 1.0)", rim: "rgba(70, 110, 150, 0.0)" },
+  laser:    { body: "rgba(255, 240, 184, 1.0)", wing: "rgba(230, 200, 120, 1.0)", rim: "rgba(140, 110, 40, 0.0)" },
 };
 
 // プリレンダ設定
@@ -28444,7 +28617,7 @@ const DRAGON_PART_SPRITES = {
 // v3.8.0: 新しい竜種・特殊個体の仮の絵（専用スプライトができたら行ごと消す）。色は spriteTint で寄せる
 const DRAGON_PARTS_ALIAS = {
   shark: "swallow", tortoise: "gargoyle", thunder: "shadow",
-  heal: "rainbow", frost: "deflect",
+  heal: "rainbow", frost: "deflect", laser: "beacon",
 };
 /** 属性 element を描くのに使うパーツ定義のキー（無ければ null）。 */
 function dragonPartsKey(element) {
