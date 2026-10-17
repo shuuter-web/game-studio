@@ -1,5 +1,7 @@
 # Dragon Tide — ラン構成「1ラン＝1文明 / 時代はフレーバー、強化は動員段階」
 
+> **2026-10-14 追記**: ラン構成は v3 で「1ラン＝8ステージ（時代 I→VIII）・地域3択・残機3」に変わった。本書の §1〜§10 と「最強モード」は現行ではない。→ [dragon-tide-run-cycle.md](dragon-tide-run-cycle.md)
+
 > ステータス: v0.56.0 で確定 / 起案 2026-08-29 / 大幅改訂 2026-08-31
 > 関連: [dragon-tide.md](dragon-tide.md)（GDD本体） /
 > [dragon-tide-meta.md](dragon-tide-meta.md)（メタ進行） /
