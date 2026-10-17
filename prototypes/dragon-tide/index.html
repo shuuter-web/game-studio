@@ -879,7 +879,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.9.6";
+const GAME_VERSION = "v3.9.7";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16417,6 +16417,7 @@ const STRINGS = {
                  : def.tag === "special" ? `${def.tagOwner}の進化`
                  : "竜の進化",
   branchTitle: "進化の分岐",
+  crossTitle: "種またぎ進化",
   branchSkip: "今は見送る（通常の強化を選ぶ）",
   evoRecorded: (name, reward) => `📖 進化図鑑に記録: ${name}  +${reward}🔷`,
   lockedSpeciesEvo: "種またぎ進化で出会う",
@@ -16905,7 +16906,8 @@ const SPECIAL_EVO_SPEC = {
 //
 // 同系統の分岐は Lv10 と Lv20：Lv10 で A／B（焔竜／炉竜など）、Lv20 でその分岐の2つの型から1つ。
 // 分岐は竜種ごとに覚えておく（種またぎして戻ってきても、その竜種で選んだ分岐のまま）。
-// 種またぎは、特殊個体の条件を満たしていれば、竜の分岐（Lv10・Lv20）の画面に A／B と並んで1回だけ出る（v3.9.6）。
+// 種またぎは竜の Lv5・Lv15・Lv25 に固定（v3.9.7・Shooter指示）。そのレベルにいる間に条件を満たしていれば、
+// 「種またぎ進化」の画面が1回だけ出る。見送るか、次のレベルに上がったら、その段の種またぎはもう出ない。
 
 const EVO_NODES = {};          // id -> カード（id / icon / rarity / max）。名前と本文は読むたびに作る
 const SPECIAL_KIND_BY_KEY = {};
@@ -16914,6 +16916,7 @@ for (const k in SPECIAL_DEFS) SPECIAL_KIND_BY_KEY[SPECIAL_DEFS[k].key] = Number(
 const EVO_LV_MAX        = 30;
 const EVO_LV_PER_SLOPE  = 9;          // この段数で「傾き」1つぶん伸びる（Lv10 = 旧 L1〜L4）
 const EVO_BRANCH_LEVELS = [10, 20];   // 同系統の分岐が来るレベル
+const EVO_CROSS_LEVELS  = [5, 15, 25];// 種またぎが出るレベル（v3.9.7）
 const EVO_TIER2_MULT    = 2;          // Lv20 の型は旧ツリーの続き（1段ぶん）の2倍
 const EVO_TIER2_SCALE   = 1.08;       // Lv20 の型を選ぶと少し大きくなる
 // 数で数える効果（切り捨てる）
@@ -17114,7 +17117,7 @@ function lvText(L) { return L >= EVO_LV_MAX ? "Lv Max" : `Lv${L}`; }
       desc: () => `種またぎ進化（${needText}）。群れごと${to.ja}になる。竜のレベルはそのまま` +
                   (runSpeciesBranch[cx.to]?.t10 ? `（前に選んだ分岐のまま）` : "") });
   }
-  // 特殊個体：レベル・分岐（Lv10）・種またぎ
+  // 特殊個体：レベル・分岐（Lv10）・種またぎ（Lv5・15・25）
   for (const key in SPECIAL_EVO_SPEC) {
     const kindNum = SPECIAL_KIND_BY_KEY[key];
     if (kindNum === undefined) continue;
@@ -17172,10 +17175,10 @@ function dragonCrossOptions() {
   }
   return out;
 }
-/** 分岐の画面に並べる種またぎ。その段でまだ見せていないときだけ。 */
-function branchCrossOptions() {
-  const tier = dragonBranchTier();
-  if (!tier || runCrossOffered[tier]) return [];
+/** 種またぎの画面に並べるもの。竜が Lv5・15・25 にいて、その段でまだ見せていないときだけ。 */
+function crossScreenOptions() {
+  const L = runDragonLv;
+  if (!EVO_CROSS_LEVELS.includes(L) || runCrossOffered[L]) return [];
   return dragonCrossOptions();
 }
 
@@ -17192,10 +17195,10 @@ function evoCandidates() {
     if (spLevel(key) >= EVO_BRANCH_LEVELS[0] && !runSpBranch[key]) {
       special.push(EVO_NODES[`evo.sbr.${key}.A`], EVO_NODES[`evo.sbr.${key}.B`]);
     }
-    // v3.9.6: 特殊個体の種またぎも、その個体の分岐（Lv10 の A／B）が待っている間だけ並ぶ。
-    // 分岐を選んだら、もう出ない（延々と出続けないように）
+    // v3.9.7: 特殊個体の種またぎも竜と同じ Lv5・15・25 に固定。そのレベルにいる間だけ3択に並ぶ
+    // （レベルを上げたら、その段の種またぎはもう出ない）
     const toKey = SPECIAL_CROSS[key]?.[flockCategory()];
-    if (toKey && spLevel(key) >= EVO_BRANCH_LEVELS[0] && !runSpBranch[key] && EVO_NODES[`evo.scx.${key}.${toKey}`]) {
+    if (toKey && EVO_CROSS_LEVELS.includes(spLevel(key)) && EVO_NODES[`evo.scx.${key}.${toKey}`]) {
       special.push(EVO_NODES[`evo.scx.${key}.${toKey}`]);
     }
   }
@@ -17287,8 +17290,8 @@ function convertSpecialType(fromKind, toKind) {
 }
 
 /** 竜が分岐のレベルに着いたら、次のレベルアップを「進化の分岐」画面にする。 */
-function renderBranchScreen(options) {
-  levelupTitleEl.textContent = STRINGS.branchTitle;
+function renderBranchScreen(options, title) {
+  levelupTitleEl.textContent = title || STRINGS.branchTitle;
   renderLevelUpCards(options, { branchScreen: true });
   const skip = document.createElement("button");
   skip.className = "card-tool";
@@ -17727,11 +17730,12 @@ function maybeShowLevelUp() {
 function buildLevelUpCards() {
   // v3.5.0: 竜が分岐点にいれば「進化の分岐」画面（見送ったらこの回だけ通常の3択）
   const branches = branchSkipOnce ? [] : dragonBranchOptions();
-  if (branches.length > 0) {
-    // v3.9.6: 種またぎは分岐と並べて1回だけ見せる（4つ以上並んでよい）
-    const crosses = branchCrossOptions();
-    if (crosses.length > 0) runCrossOffered[dragonBranchTier()] = true;
-    renderBranchScreen(branches.concat(crosses));
+  if (branches.length > 0) { renderBranchScreen(branches); return; }
+  // v3.9.7: 種またぎは Lv5・15・25 に固定。その段で1回だけ専用の画面で出す（条件を満たしたものが全部並ぶ）
+  const crosses = branchSkipOnce ? [] : crossScreenOptions();
+  if (crosses.length > 0) {
+    runCrossOffered[runDragonLv] = true;
+    renderBranchScreen(crosses, STRINGS.crossTitle);
     return;
   }
   renderLevelUpCards(pickLevelUpCards());
@@ -22722,12 +22726,12 @@ function codexEvoFullHtml() {
     for (const L of [10, 20, 30]) html += line(`Lv${L}：${evoEffectText(levelEffects(SPECIES_SLOPE[sid], L), kind)}`);
     for (const br of ["A", "B"]) {
       const b = spec[br];
-      html += head(`${swatch(b.tint)}Lv10 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, kind));
-      for (const o of tier2Options(sid, br)) html += line(`${swatch(o.tint)}Lv20 型：${o.name} ／ ${evoEffectText(o.eff, kind)}`, 16);
+      html += head(`${swatch(b.tint)}Lv${EVO_BRANCH_LEVELS[0]} 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, kind));
+      for (const o of tier2Options(sid, br)) html += line(`${swatch(o.tint)}Lv${EVO_BRANCH_LEVELS[1]} 型：${o.name} ／ ${evoEffectText(o.eff, kind)}`, 16);
     }
     const cx = CROSS_EVOLUTIONS.find(c => c.to === sid);
     if (cx) html += head("この竜種への種またぎ") +
-      line(Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・") + " を連れていれば、どの竜種からでも（竜の Lv10・Lv20 の分岐の画面に1回だけ並ぶ）");
+      line(Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・") + ` を連れていれば、どの竜種からでも（竜の Lv${EVO_CROSS_LEVELS.join("・Lv")} で1回ずつ）`);
     html += `</div></div>`;
   }
   for (const key in SPECIAL_EVO_SPEC) {
@@ -22738,7 +22742,7 @@ function codexEvoFullHtml() {
     for (const L of [10, 20, 30]) html += line(`Lv${L}：${evoEffectText(levelEffects(SPECIAL_SLOPE[key], L), null)}`);
     for (const br of ["A", "B"]) {
       const b = SPECIAL_EVO_SPEC[key][br];
-      html += head(`${swatch(b.tint)}Lv10 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, null));
+      html += head(`${swatch(b.tint)}Lv${EVO_BRANCH_LEVELS[0]} 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, null));
     }
     const crosses = SPECIAL_CROSS[key] || {};
     html += head("種またぎ") + line(Object.keys(crosses).map(c => `${CATEGORY_NAMES[c]}の群れ→${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[crosses[c]]].name}`).join("／"));
@@ -22765,8 +22769,8 @@ function codexEvoHtml() {
     const spec = SPECIES_EVO_SPEC[sid];
     const entries = [];
     for (const br of ["A", "B"]) {
-      entries.push({ e: `d:${sid}.${br}`, name: `Lv10 ${spec[br].name}`, tint: spec[br].tint, desc: evoEffectText(spec[br].eff, kind) });
-      for (const o of tier2Options(sid, br)) entries.push({ e: `d:${sid}.${o.id}`, name: `Lv20 ${o.name}`, tint: o.tint, desc: evoEffectText(o.eff, kind) });
+      entries.push({ e: `d:${sid}.${br}`, name: `Lv${EVO_BRANCH_LEVELS[0]} ${spec[br].name}`, tint: spec[br].tint, desc: evoEffectText(spec[br].eff, kind) });
+      for (const o of tier2Options(sid, br)) entries.push({ e: `d:${sid}.${o.id}`, name: `Lv${EVO_BRANCH_LEVELS[1]} ${o.name}`, tint: o.tint, desc: evoEffectText(o.eff, kind) });
     }
     const cx = CROSS_EVOLUTIONS.find(c => c.to === sid);
     if (cx) entries.push({ e: `x:${sid}`, name: `種またぎで${def.ja}に`, tint: def.color, cross: true,
