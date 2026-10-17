@@ -892,7 +892,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.11.5";
+const GAME_VERSION = "v3.11.6";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16742,7 +16742,9 @@ const EVO_SPECIAL_EFFECT_TEXT = {
   sp_wedge_dmg:     (n) => `ひびの入った相手が受けるダメージの上乗せ +${Math.round(15 * n)}%（基本 +${Math.round((WEDGE_CRACK_MULT - 1) * 100)}%）`,
   sp_wedge_time:    (n) => `ひびが残る時間 +${Math.round(30 * n)}%・ひびを入れる範囲 +${Math.round(18 * n)}%`,
   sp_heal_revive:   (n) => `特殊個体がダウンから戻るまでの時間 -${Math.round(HEAL_REVIVE_PER * 100 * n)}%（基本 ${Math.round(HEAL_REVIVE_BASE * 100)}%・最短 ${Math.round(HEAL_REVIVE_MIN * 100)}%）`,
-  sp_heal_guard:    (n) => `特殊個体のHP +${Math.round(HEAL_GUARD_PER * 100 * n)}%`,
+  sp_heal_amt:      (n) => `1回に回復する量 +${Math.round(25 * n)}%（基本 最大HPの${Math.round(HEAL_FRAC * 100)}%）`,
+  sp_heal_rate:     (n) => `回復する間隔 -${Math.round((1 - Math.pow(0.85, n)) * 100)}%（基本 ${HEAL_INTERVAL}秒ごと）`,
+  sp_heal_range:    (n) => `回復が届く範囲 +${Math.round(20 * n)}%（基本 半径${HEAL_RADIUS}px）`,
   sp_frost_slow:    (n) => `霧の中の敵の弾と動く敵を遅くする割合 +${Math.round(FROST_SLOW_PER * 100 * n)}%（基本 ${Math.round(FROST_SLOW * 100)}%・最大 ${Math.round(FROST_SLOW_MAX * 100)}%）`,
   sp_frost_range:   (n) => `霧の広さ +${Math.round(20 * n)}%（基本 半径${FROST_RADIUS}px）`,
   sp_laser_dmg:     (n) => `光線の威力 +${Math.round(30 * n)}%（基本 毎秒${SKYLANCE_DPS}）`,
@@ -16909,10 +16911,11 @@ const SPECIAL_EVO_SPEC = {
              A: { name: "砕く楔", tint: "#20806a", eff: { sp_wedge_dmg: 2 } },
              B: { name: "広がる亀裂", tint: "#a0f0d0", eff: { sp_wedge_time: 1.67 } } },
   // v3.8.0
-  // v3.11.4: 回復をやめ「特殊個体の復活を早める」に（Shooter指示）
-  heal:    { L: [["呼び声", { sp_heal_revive: 1 }], ["目覚めの歌", { sp_heal_revive: 1 }], ["呼び声・二", { sp_heal_revive: 1 }], ["目覚めの歌・二", { sp_heal_revive: 1 }]],
-             A: { name: "慈雨", tint: "#d0ffd8", eff: { sp_heal_revive: 2 } },
-             B: { name: "守りの手", tint: "#30a060", eff: { sp_heal_guard: 1 } } },
+  // v3.11.6: 以前の回復の伸び（量・間隔・範囲）＋特殊個体の復活の早さ（Shooter指示）
+  heal:    { L: [["厚い癒し", { sp_heal_amt: 1, sp_heal_revive: 1 }], ["早い脈", { sp_heal_rate: 1, sp_heal_revive: 1 }],
+                 ["広い手", { sp_heal_range: 1, sp_heal_revive: 1 }], ["厚い癒し・二", { sp_heal_amt: 1, sp_heal_revive: 1 }]],
+             A: { name: "慈雨", tint: "#d0ffd8", eff: { sp_heal_amt: 2, sp_heal_revive: 2 } },
+             B: { name: "癒しの輪", tint: "#30a060", eff: { sp_heal_range: 1, sp_heal_rate: 1, sp_heal_revive: 2 } } },
   frost:   { L: [["凍える霧", { sp_frost_slow: 1 }], ["広がる霧", { sp_frost_range: 1 }], ["凍える霧・二", { sp_frost_slow: 1 }], ["広がる霧・二", { sp_frost_range: 1 }]],
              A: { name: "氷結", tint: "#80c8ff", eff: { sp_frost_slow: 2 } },
              B: { name: "濃霧", tint: "#f0f0f0", eff: { sp_frost_range: 2 } } },
@@ -17557,9 +17560,7 @@ function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon ==
 function effBoidMaxHpFor(i) {
   const spDef = boidSpecial && SPECIAL_DEFS[boidSpecial[i]];
   const spMult = spDef ? spDef.hpMult : 1;
-  // v3.11.4: 癒し手の分岐 B「守りの手」は特殊個体の HP を上げる
-  const guard = spDef && hasHealer() ? 1 + HEAL_GUARD_PER * upCount("sp_heal_guard") : 1;
-  return effBoidMaxHp() * spMult * guard;
+  return effBoidMaxHp() * spMult;
 }
 
 // ---- カード取得時の即時効果（倍率系は eff* で都度参照するため不要）----
@@ -18809,13 +18810,14 @@ function effWedgeCrackRadius() { return WEDGE_CRACK_RADIUS * (1 + 0.18 * upCount
 const HEAL_REVIVE_BASE = 0.80;
 const HEAL_REVIVE_PER  = 0.035;   // 強化1段ぶん（Lv30 で約 35%、分岐 A で最短に届く）
 const HEAL_REVIVE_MIN  = 0.30;
-const HEAL_GUARD_PER   = 0.25;    // 分岐 B「守りの手」：特殊個体の HP
 function hasHealer() { return runSpecials.includes(SPECIAL_HEAL); }
-// v3.11.5: 周りの竜を回復する効果と緑の輪は残す（Shooter「効果は薄いが見た目的に必要」）。
-// 数値は固定（レベルで伸びるのは復活の早さのほう）
+// 周りの竜を回復する効果と緑の輪（v3.8.0）。v3.11.6: レベルでの伸びも以前のまま（量・間隔・範囲）
 const HEAL_INTERVAL = 2.5;    // 何秒ごとに癒すか
 const HEAL_FRAC     = 0.10;   // 1回に回復する量（最大HPに対する割合）
 const HEAL_RADIUS   = 130;    // 届く半径 px
+function effHealInterval() { return HEAL_INTERVAL * Math.pow(0.85, upCount("sp_heal_rate")); }
+function effHealFrac()     { return HEAL_FRAC * (1 + 0.25 * upCount("sp_heal_amt")) * permaBuff.specialDmg; }
+function effHealRadius()   { return HEAL_RADIUS * (1 + 0.20 * upCount("sp_heal_range")); }
 let runHealTotal = 0;         // このランで回復した合計（検証用）
 /** 特殊個体のダウン時間の倍率（癒し手がいなければ 1）。 */
 function effHealReviveMult() {
@@ -19354,15 +19356,16 @@ function updateHealFx(dt) {
 }
 function updateHealDragon(i, dt) {
   boidSpecialTimer[i] += dt;
-  if (boidSpecialTimer[i] < HEAL_INTERVAL) return;
-  boidSpecialTimer[i] -= HEAL_INTERVAL;
-  const r = HEAL_RADIUS, r2 = r * r;
+  const inter = effHealInterval();
+  if (boidSpecialTimer[i] < inter) return;
+  boidSpecialTimer[i] -= inter;
+  const r = effHealRadius(), r2 = r * r, frac = effHealFrac();
   for (let j = 0; j < N; j++) {
     if (boidDead[j] || boidDowned[j]) continue;
     const dx = px[j] - px[i], dy = py[j] - py[i];
     if (dx * dx + dy * dy > r2) continue;
     const max = effBoidMaxHpFor(j);
-    const add = Math.min(max - boidHp[j], max * HEAL_FRAC);
+    const add = Math.min(max - boidHp[j], max * frac);
     if (add <= 0) continue;
     boidHp[j] += add;
     runHealTotal += add;
