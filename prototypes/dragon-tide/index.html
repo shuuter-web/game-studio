@@ -892,7 +892,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.11.6";
+const GAME_VERSION = "v3.11.7";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -17061,6 +17061,8 @@ function initEvoForRun() {
   runSpBranch = {};
   runCrossOffered = {};
   runFuseOffered = {};
+  pendingOfferMark = null;
+  dragonLvPendingApplied = false;
   invalidateEvo();
 }
 
@@ -17830,7 +17832,9 @@ function maybeShowLevelUp() {
   upgradeCardsVisible = true;
   slowmoTimer = SLOWMO_DURATION;
   levelupTitleEl.textContent = STRINGS.levelUp;  // 竜種選択で書き換わったタイトルを戻す
-  const up = autoDragonLevelUp();   // v3.11.0: 竜のレベルはレベルアップのたびに自動で上がる
+  // v3.11.0: 竜のレベルはレベルアップのたびに自動で上がる（v3.11.7: 開き直しでは上げない）
+  const up = dragonLvPendingApplied ? null : autoDragonLevelUp();
+  dragonLvPendingApplied = true;
   // v3.11.1: メニューの一番上に「火竜 Lv1→2　攻撃の威力 +2%」を1行で出す
   levelupDragonEl.innerHTML = up
     ? `${up.icon} <span class="lv" style="color:${up.color}">${up.name} Lv${up.from}→${up.to === DRAGON_LV_MAX ? "Max" : up.to}</span>` +
@@ -17841,6 +17845,12 @@ function maybeShowLevelUp() {
   triggerFlash("rgba(160,236,255,0.35)", 0.15);
   hapticPulse(60);
 }
+
+// v3.11.7: 竜の突然変異・合成の画面を出している最中か（選んだら「出した」に記録する）
+let pendingOfferMark = null;
+// v3.11.7: 今開いている（または開いたまま閉じた）レベルアップで、竜のレベルをもう上げたか。
+// 途中セーブから再開してメニューを開き直したとき、二重に上げないため
+let dragonLvPendingApplied = false;
 
 /**
  * v3.11.0: レベルアップ1回につき竜のレベル +1（Shooter指示）。三択は特殊個体と汎用の強化だけになる。
@@ -17872,7 +17882,7 @@ function buildLevelUpCards() {
   // 並ぶのは「そのままレベルアップ」と条件を満たした種またぎだけ。見送り・ほかの強化は無し。どれを選んでもその段は終わり
   const crosses = crossScreenOptions();
   if (crosses.length > 0) {
-    runCrossOffered[runDragonLv] = true;
+    pendingOfferMark = { kind: "cross", key: runDragonLv };   // v3.11.7: 選んだ時点で「出した」にする（途中で閉じても再開で出し直せる）
     renderBranchScreen([EVO_NODES["evo.keep"]].concat(crosses), STRINGS.crossTitle);   // v3.11.0: 「このまま」か突然変異
     return;
   }
@@ -17880,7 +17890,7 @@ function buildLevelUpCards() {
   // 並ぶのは「合成する」と「そのままレベルアップ」（Lv10 に届いた方の材料のレベル）だけ
   const fr = pendingFusion();
   if (fr) {
-    runFuseOffered[fr.id] = true;
+    pendingOfferMark = { kind: "fuse", key: fr.id };
     const hiKey = spLevel(fr.a) >= spLevel(fr.b) ? fr.a : fr.b;
     const stay = spLevel(hiKey) < EVO_LV_MAX ? [EVO_NODES[`evo.slv.${hiKey}`]] : [];
     renderBranchScreen([EVO_NODES[`evo.fuse.${fr.id}`]].concat(stay), STRINGS.fuseTitle);
@@ -18048,7 +18058,14 @@ function chooseCard(def) {
   invalidateEvo();
   if (def.evo) applyEvoNode(def, oldMaxHp);   // v3.2.0: 進化はその場で効かせる（変身は群れ全体）
   else applyCardImmediate(def.id);
+  if (pendingOfferMark) {   // v3.11.7
+    if (pendingOfferMark.kind === "cross") runCrossOffered[pendingOfferMark.key] = true;
+    else runFuseOffered[pendingOfferMark.key] = true;
+    pendingOfferMark = null;
+  }
+  dragonLvPendingApplied = false;
   pendingCards--;
+  markRunSaveDirty();
   updateHUDLevel();
   hapticPulse(30);
 
@@ -23846,7 +23863,8 @@ function markRunSaveDirty() { runSaveDirty = true; }
 
 /** tick から毎フレーム呼ぶ。間隔を空けて、汚れているときだけ書く。 */
 function maybeAutoSaveRun(nowMs) {
-  if (!runSaveDirty || gameState !== "playing") return;
+  // v3.11.7: 群れの数・卵・経験値など建物以外の変化も残すため、汚れていなくても間隔ごとに書く
+  if (gameState !== "playing") return;
   if (nowMs - runSaveLastMs < RUN_SAVE_INTERVAL_MS) return;
   snapshotRunSave();
 }
@@ -23887,15 +23905,20 @@ function snapshotRunSave() {
     // v3.6.0: 竜のレベル・特殊個体のレベル・分岐
     runDragonLv, runSpeciesBranch: JSON.parse(JSON.stringify(runSpeciesBranch)), runCrossOffered: Object.assign({}, runCrossOffered), runFuseOffered: Object.assign({}, runFuseOffered),
     runSpLv: Object.assign({}, runSpLv), runSpBranch: Object.assign({}, runSpBranch),
+    // v3.11.7: 途中セーブで抜けていたもの（Shooter「竜の数がセーブされていない」）
+    flockCount:    N,                      // 群れの数（特殊個体込み）。位置とHPは保存しない＝開始地点から満タンで再開
+    eggs:          totalEggCount,          // 拾った卵（HUD）
+    lvUpApplied:   dragonLvPendingApplied, // 開いていたレベルアップで竜のレベルを上げ済みか
+    bossEnragedSaved: bossEnraged,
   });
   runSaveDirty  = false;
   runSaveLastMs = performance.now();
 }
 
 // 閉じる・裏に回る瞬間は間隔を待たずに書く（ここを逃すと直前の破壊が消える）
-window.addEventListener("pagehide", () => { if (runSaveDirty) snapshotRunSave(); });
+window.addEventListener("pagehide", () => { if (gameState === "playing") snapshotRunSave(); });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden" && runSaveDirty) snapshotRunSave();
+  if (document.visibilityState === "hidden" && gameState === "playing") snapshotRunSave();
 });
 
 // タイトルの「つづきから」。保存済みステージ開始状態を復元して再開する。
@@ -23965,15 +23988,24 @@ function resumeRun() {
     return;
   }
 
-  // 保存ステージを組み立てて再開（ステージ間リセット相当の体数）
+  // 保存ステージを組み立てて再開
   setupStageForResume(powerTier, save.fallen);   // v0.56: 引数は警戒度
   stageStartTime = performance.now() - (save.stageElapsedMs || 0);
+  // v3.11.7: 群れの数・卵・ボスの状態を戻す（位置は開始地点・HPは満タンから）
+  if ((save.flockCount | 0) > 0) { resetBoidsForStageStart(Math.min(MAX_BOIDS, save.flockCount | 0)); resetLeader(); }
+  totalEggCount = save.eggs | 0;
+  bossEnraged = !!save.bossEnragedSaved;
+  dragonLvPendingApplied = !!save.lvUpApplied;
+  updateHUDEggs();
 
   updateHUDWeapon();
   updateXpHud();
+  updateHUDLevel();
   titleOverlayEl.classList.remove("visible");
   gameState = "playing";
   hapticPulse(30);
+  // v3.11.7: 選び終えていないレベルアップがあれば開き直す（以前は次のレベルアップまで出なかった）
+  if (pendingCards > 0) maybeShowLevelUp();
 }
 
 // v0.51: ステージ送り（ワールドごと差し替え）は廃止。
