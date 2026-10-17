@@ -892,7 +892,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.11.4";
+const GAME_VERSION = "v3.11.5";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16530,7 +16530,7 @@ const STRINGS = {
     sp_wedge:          { name: "穿つ楔",     desc: "群れの前を飛び、触れた相手にひびを入れる（誰の攻撃も余計に通る）" },
     sp_wedge_dmg:      { name: "深い割れ", desc: "ひびの割増し +15%" },
     sp_wedge_time:     { name: "戻らぬ傷", desc: "ひびが残る時間 +30%／範囲 +18%" },
-    sp_heal:           { name: "癒し手",     desc: "特殊個体がダウンから早く戻るようになる特殊個体が加わる" },
+    sp_heal:           { name: "癒し手",     desc: "特殊個体がダウンから早く戻り、周りの竜を少し回復する特殊個体が加わる" },
     sp_frost:          { name: "凍て霧",     desc: "冷たい霧をまとい、中に入った敵の弾と動く敵を遅くする特殊個体が加わる" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
@@ -18811,6 +18811,12 @@ const HEAL_REVIVE_PER  = 0.035;   // 強化1段ぶん（Lv30 で約 35%、分岐
 const HEAL_REVIVE_MIN  = 0.30;
 const HEAL_GUARD_PER   = 0.25;    // 分岐 B「守りの手」：特殊個体の HP
 function hasHealer() { return runSpecials.includes(SPECIAL_HEAL); }
+// v3.11.5: 周りの竜を回復する効果と緑の輪は残す（Shooter「効果は薄いが見た目的に必要」）。
+// 数値は固定（レベルで伸びるのは復活の早さのほう）
+const HEAL_INTERVAL = 2.5;    // 何秒ごとに癒すか
+const HEAL_FRAC     = 0.10;   // 1回に回復する量（最大HPに対する割合）
+const HEAL_RADIUS   = 130;    // 届く半径 px
+let runHealTotal = 0;         // このランで回復した合計（検証用）
 /** 特殊個体のダウン時間の倍率（癒し手がいなければ 1）。 */
 function effHealReviveMult() {
   if (!hasHealer()) return 1;
@@ -19193,6 +19199,7 @@ function updateSpecials(dt) {
     if (boidSpecial[i] === SPECIAL_DEFLECT) deflectSlots.push(i);
   }
   if (gameState !== "playing") return;
+  updateHealFx(dt);
   for (let i = 0; i < N; i++) {
     const kind = boidSpecial[i];
     if (kind === SPECIAL_NONE) continue;
@@ -19210,7 +19217,7 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_MECHA)   updateMechaDragon(i, dt);
     else if (kind === SPECIAL_WAKE)    updateWakeDragon(i, dt);
     else if (kind === SPECIAL_WEDGE)   updateWedgeDragon(i, dt);
-    // 癒し手（SPECIAL_HEAL）は毎フレームの処理を持たない（ダウンしたときに効く。v3.11.4）
+    else if (kind === SPECIAL_HEAL)    updateHealDragon(i, dt);   // 回復の輪（復活の早さはダウン時に効く）
     else if (kind === SPECIAL_FROST)   updateFrostDragon(i);
     else if (kind === SPECIAL_LASER)   updateLaserDragon(i, dt);
   }
@@ -19336,14 +19343,39 @@ function drawLaserBeams() {
 }
 
 // ---- v3.8.0: 癒し手・凍て霧 ----
-// v3.11.4: 癒し手の回復の輪（healFxList / updateHealDragon）は撤去
+// 癒し手：周期的に周りの竜（自分も含む）を回復し、緑の輪を広げる（v3.8.0。v3.11.5 で数値固定）
+const healFxList = [];       // { x, y, r, t }
+const HEAL_FX_LIFE = 0.6;
+function updateHealFx(dt) {
+  for (let k = healFxList.length - 1; k >= 0; k--) {
+    healFxList[k].t -= dt;
+    if (healFxList[k].t <= 0) healFxList.splice(k, 1);
+  }
+}
+function updateHealDragon(i, dt) {
+  boidSpecialTimer[i] += dt;
+  if (boidSpecialTimer[i] < HEAL_INTERVAL) return;
+  boidSpecialTimer[i] -= HEAL_INTERVAL;
+  const r = HEAL_RADIUS, r2 = r * r;
+  for (let j = 0; j < N; j++) {
+    if (boidDead[j] || boidDowned[j]) continue;
+    const dx = px[j] - px[i], dy = py[j] - py[i];
+    if (dx * dx + dy * dy > r2) continue;
+    const max = effBoidMaxHpFor(j);
+    const add = Math.min(max - boidHp[j], max * HEAL_FRAC);
+    if (add <= 0) continue;
+    boidHp[j] += add;
+    runHealTotal += add;
+  }
+  healFxList.push({ x: px[i], y: py[i], r, t: HEAL_FX_LIFE });
+}
 function updateFrostDragon(i) {
   const r = effFrostRadius();
   frostFields.push({ x: px[i], y: py[i], r2: r * r });
 }
 /** 霧（竜の下）と、癒しの輪。 */
 function drawFrostAndHeal() {
-  if (frostFields.length === 0) return;
+  if (frostFields.length === 0 && healFxList.length === 0) return;
   ctx.save();
   const fr = effFrostRadius();
   for (const f of frostFields) {
@@ -19364,6 +19396,15 @@ function drawFrostAndHeal() {
     ctx.arc(f.x, f.y, fr * 0.97, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+  for (const h of healFxList) {
+    const prog = 1 - h.t / HEAL_FX_LIFE;
+    ctx.globalAlpha = 0.6 * (1 - prog);
+    ctx.strokeStyle = SPECIAL_DEFS[SPECIAL_HEAL].color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, h.r * (0.3 + 0.7 * prog), 0, Math.PI * 2);
+    ctx.stroke();
   }
   ctx.restore();
   ctx.globalAlpha = 1;
@@ -22687,7 +22728,7 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_MECHA]:   "★ロケットマン／遅れて届く遠距離の爆発",
   [SPECIAL_WAKE]:    "★煽る風／群れの前を飛ぶ。自分では打たない",
   [SPECIAL_WEDGE]:   "★穿つ楔／先陣。相手を柔らかくして本隊に渡す",
-  [SPECIAL_HEAL]:    "★癒し手／特殊個体がダウンから早く戻る。自分では打たない",
+  [SPECIAL_HEAL]:    "★癒し手／特殊個体がダウンから早く戻る・周りの竜を少し回復。自分では打たない",
   [SPECIAL_FROST]:   "★凍て霧／足止め。敵の弾と動く敵を遅くする。自分では打たない",
   [SPECIAL_LASER]:   "★天穿／合成（光剣＋極光）。前方へ極太の光線",
 };
@@ -22723,7 +22764,8 @@ const CODEX_SPECIAL_DESC = {
     "ひびは相手の輪郭に線で出るので、どれが崩れかけているか見て分かる。",
   [SPECIAL_HEAL]:
     "<b>自分では攻撃しない。</b>連れている間、<b>特殊個体</b>がダウンしてから戻るまでの時間が短くなる" +
-    "（普通の竜には効かない）。最初から8割、レベルで最短3割まで。複数連れても効果は重ならない。",
+    "（普通の竜には効かない）。最初から8割、レベルで最短3割まで。複数連れても効果は重ならない。" +
+    "あわせて、周期的に周りの竜（自分も含む）の HP を少し戻す（緑の輪）。",
   [SPECIAL_FROST]:
     "<b>自分では攻撃しない。</b>周りに冷たい霧をまとい、霧の中に入った<b>敵の弾と動く敵</b>を遅くする。" +
     "弾は霧を出れば元の速さに戻る。竜の弾や味方は遅くならない。線路を走る列車には効かない。" +
@@ -22734,7 +22776,8 @@ const CODEX_SPECIAL_STAT = {
     `${SKYLANCE_INTERVAL}秒ごとに ${SKYLANCE_FIRE_TIME}秒照射（${SKYLANCE_AIM_TIME}秒の予告） ／ 長さ ${SKYLANCE_LEN}px・太さ ${SKYLANCE_HALF_W * 2}px ／ ` +
     `毎秒 ${SKYLANCE_DPS} ／ HP ×${SPECIAL_DEFS[SPECIAL_LASER].hpMult}`,
   [SPECIAL_HEAL]: () =>
-    `特殊個体のダウン ${BOID_DOWN_DURATION}秒 → ${Math.round(BOID_DOWN_DURATION * HEAL_REVIVE_BASE)}秒（レベルで最短 ${Math.round(BOID_DOWN_DURATION * HEAL_REVIVE_MIN)}秒） ／ HP ×${SPECIAL_DEFS[SPECIAL_HEAL].hpMult}`,
+    `特殊個体のダウン ${BOID_DOWN_DURATION}秒 → ${Math.round(BOID_DOWN_DURATION * HEAL_REVIVE_BASE)}秒（レベルで最短 ${Math.round(BOID_DOWN_DURATION * HEAL_REVIVE_MIN)}秒） ／ ` +
+    `${HEAL_INTERVAL}秒ごとに周りの竜を最大HPの${Math.round(HEAL_FRAC * 100)}%回復（半径 ${HEAL_RADIUS}px） ／ HP ×${SPECIAL_DEFS[SPECIAL_HEAL].hpMult}`,
   [SPECIAL_FROST]: () =>
     `霧の半径 ${FROST_RADIUS}px ／ 中の敵の弾と動く敵の速さ -${Math.round(FROST_SLOW * 100)}%（強化で最大 -${Math.round(FROST_SLOW_MAX * 100)}%） ／ ` +
     `HP ×${SPECIAL_DEFS[SPECIAL_FROST].hpMult}`,
