@@ -211,6 +211,20 @@
     letter-spacing: 0.12em;
     text-align: center;
   }
+  /* v3.13.0: 全滅の一文（最後の竜を落とした相手）。見出しより静かに、相手の名だけ色を付ける */
+  #stage-epitaph {
+    max-width: min(86vw, 520px);
+    margin: 14px auto 0;
+    font-family: -apple-system, BlinkMacSystemFont, serif;
+    font-size: 16px;
+    line-height: 1.6;
+    color: #e8dcd0;
+    text-shadow: 0 0 10px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
+    letter-spacing: 0.06em;
+    text-align: center;
+  }
+  #stage-epitaph:empty { display: none; }
+  #stage-epitaph .killer { color: #ff8a6a; font-weight: bold; }
   #stage-sub {
     font-family: -apple-system, BlinkMacSystemFont, monospace;
     font-size: 18px;
@@ -884,6 +898,7 @@
 <div id="stage-overlay">
   <div>
     <div id="stage-text">STAGE 2</div>
+    <div id="stage-epitaph"></div>
     <div id="stage-sub">ANCIENT CIVILIZATION</div>
   </div>
 </div>
@@ -929,7 +944,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.12.2";
+const GAME_VERSION = "v3.13.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2794,7 +2809,7 @@ const DRAGON_HIT_BOOST = {
  */
 function hitBoid(i, hit, nx, ny) {
   const dmg = hitDamage(hit, DRAGON_DAMAGE_RESIST);
-  if (dmg > 0) applyDamageToBoid(i, dmg);
+  if (dmg > 0) applyDamageToBoid(i, dmg, hit);
   if (hit.impact > 0 && !boidDowned[i]) applyImpactToBoid(i, nx, ny, hit.impact);
 }
 
@@ -8201,7 +8216,7 @@ const laserStrikes = [];
  * @param {number} dps     照射中の毎秒ダメージ
  */
 function spawnLaserStrike(x, y, angle, width, length, dps, color) {
-  laserStrikes.push({ x, y, angle, width, length, dps, color,
+  laserStrikes.push({ x, y, angle, width, length, dps, color, src: attackerNow,
                       t: 0, tick: 0, total: LASER_WARN_TIME + LASER_FIRE_TIME });
 }
 
@@ -8226,7 +8241,8 @@ function updateLaserStrikes(dt) {
       if (Math.abs(perp) > half) continue;
       // 軸の外へ押し出す＝「なぎ払われる」感触
       const sgn = perp >= 0 ? 1 : -1;
-      hitBoid(i, { shot: L.dps * LASER_TICK, impact: impactFromPushDist(LASER_PUSH_DIST) },
+      attackerNow = L.src;
+      hitBoid(i, { shot: L.dps * LASER_TICK, impact: impactFromPushDist(LASER_PUSH_DIST), tone: "light" },
               -ay * sgn, ax * sgn);
     }
   }
@@ -8594,7 +8610,7 @@ function spawnHazard(x, y, radius, life, dps, color, growFrom = radius, fromX, f
     }
   }
   if (hazards.length >= HAZARD_MAX) hazards.shift();
-  hazards.push({ x, y, r: radius, r0: growFrom, life, maxLife: life, dps, color, tick: 0 });
+  hazards.push({ x, y, r: radius, r0: growFrom, life, maxLife: life, dps, color, tick: 0, src: attackerNow });
 }
 
 function updateHazards(dt) {
@@ -8610,7 +8626,8 @@ function updateHazards(dt) {
     h.tick = HAZARD_TICK;
     const rNow = hazardRadiusAt(h);
     const r2 = rNow * rNow;
-    const hit = { blast: h.dps * HAZARD_TICK };
+    const hit = { blast: h.dps * HAZARD_TICK, tone: "fire" };
+    attackerNow = h.src;
     for (let i = 0; i < N; i++) {
       if (boidDead[i] || boidDowned[i]) continue;
       const dx = px[i] - h.x, dy = py[i] - h.y;
@@ -9720,7 +9737,7 @@ function emitChainLightning(fromX, fromY, atk, ferocity = 1) {
       if (ndx2 * ndx2 + ndy2 * ndy2 < dRange2) neighbours++;
     }
     const mult = Math.min(atk.densityMax, 1 + neighbours * atk.densityScale);
-    hitBoid(idx, { shot: atk.damage * ferocity * mult });
+    hitBoid(idx, { shot: atk.damage * ferocity * mult, tone: "thunder" });
   }
   chainFxList.push({ segs, life: CHAIN_FX_DURATION });
   return true;
@@ -10010,6 +10027,7 @@ function updateMovers(dt) {
   for (const m of movers) {
     if (!m.alive) continue;
     const def = m.def;
+    attackerNow = moverAttacker(m);   // v3.13.0: この敵が出す攻撃はこの敵のもの
 
     // v0.26: 巨獣の腕はコアに追従して浮遊し、独自ロジックで叩きつける
     if (def.part === "arm") { updateBehemothArm(m, dt); continue; }
@@ -10498,7 +10516,11 @@ function updateBossArt(dt) {
   if (dx * dx + dy * dy > BOSS_ART_RANGE * BOSS_ART_RANGE) { bossArtTimer = 0.6; return; }
 
   bossArtTimer = BOSS_ART_INTERVAL;
-  fireBossArt(boss, stageFeatures(currentStage).bossArt, c.x, c.y,
+  // v3.13.0: 大技は「首都の◯◯」と名乗らせる（予兆の後に当たるものも、出した時点のこれを持ち歩く）
+  const art = stageFeatures(currentStage).bossArt;
+  attackerNow = { name: settlementAttacker(boss).name, weapon: CODEX_BOSS_ART_NAMES[art],
+                  tone: BOSS_ART_EPITAPH_TONES[art] };
+  fireBossArt(boss, art, c.x, c.y,
               Math.atan2(dy, dx), boss._bossGlowColor ?? "#ff8800");
   triggerShake(3.5, 0.25);
   hapticPulse(60);
@@ -10622,6 +10644,7 @@ function updateBossNova(dt) {
     // 中心に近いほど強く弾き飛ばす。v0.34.1: 位置変位＋速度上書きをやめ、
     // 減衰する外力に一本化（ワープに見えず、押し出されて戻ってくる動きになる）。
     const pushDist = BOSS_NOVA_PUSH_MIN + (1 - d / BOSS_NOVA_RADIUS) * BOSS_NOVA_PUSH_EXTRA;
+    attackerNow = { name: settlementAttacker(boss).name, weapon: STRINGS.attackerBossNova };
     hitBoid(i, shockwaveHit(BOSS_NOVA_DAMAGE, pushDist), nx, ny);
   }
   triggerFlash("rgba(255,140,40,0.18)", 0.15);
@@ -10925,11 +10948,11 @@ function updateBossReinforcements(dt) {
   triggerFlash("rgba(255,170,60,0.14)", 0.24);
   hapticPulse(90);
   // 初回だけ非モーダルのバナーで知らせる（毎回出すとテンポを壊す）
-  if (bossReinforceWave === 1) {
+  if (bossReinforceWave === 1 && wipeShowTimer <= 0) {   // v3.13.0: 全滅の表示を上書きしない
     stageTextEl.textContent = STRINGS.bossReinforceTitle;
     stageSubEl.textContent  = STRINGS.bossReinforceSub;
     stageOverlayEl.classList.add("visible");
-    setTimeout(() => stageOverlayEl.classList.remove("visible"), 1600);
+    setTimeout(() => hideStageBannerUnlessWipe(), 1600);
   }
 }
 
@@ -12357,7 +12380,10 @@ function updateEnemyGroups(dt) {
     if (g.removed) { enemyGroups.splice(i, 1); continue; }
     let anyAlive = false;
     for (const u of g.units) if (u.alive) { anyAlive = true; break; }
-    if (anyAlive) { if (g.update) g.update(g, dt); continue; }
+    if (anyAlive) {
+      if (g.update) { attackerNow = g.units[0] ? moverAttacker(g.units[0]) : null; g.update(g, dt); }   // v3.13.0
+      continue;
+    }
     if (!g.dead) { g.dead = true; if (g.onDestroyed) g.onDestroyed(g); }
     if (g.onDead) g.onDead(g, dt);
   }
@@ -14529,6 +14555,7 @@ const projStartWx   = new Float32Array(MAX_PROJECTILES);
 const projStartWy   = new Float32Array(MAX_PROJECTILES);
 // 変更5: 投射物種別 SoA（0=arrow 通常矢弾、1=catapult カタパルト弾）
 // Uint8Array: 0 or 1 で表現。初期化漏れなし（new Uint8Array はゼロ初期化される）
+const projSrc       = new Array(MAX_PROJECTILES).fill(null); // v3.13.0: 撃ち手（全滅の一文用）
 const projKind      = new Uint8Array(MAX_PROJECTILES); // 0=arrow, 1=catapult, 2=ボス重弾, 3=ロケット, 4=着弾弾
 // v0.57: 着弾弾（kind=4）の落下点。飛行中は竜に当たらず、**この点まで飛んでから炸裂**する。
 // 「線に当たるか」ではなく「円から退けるか」を問う弾で、予告円とセットで使う。
@@ -14659,13 +14686,14 @@ const barrageQueue = [];
 const BARRAGE_QUEUE_MAX = 96;
 function queueShell(delay, fromWx, fromWy, tx, ty, speed, damage, aoe, color) {
   if (barrageQueue.length >= BARRAGE_QUEUE_MAX) return;
-  barrageQueue.push({ t: delay, fx: fromWx, fy: fromWy, tx, ty, speed, damage, aoe, color });
+  barrageQueue.push({ t: delay, fx: fromWx, fy: fromWy, tx, ty, speed, damage, aoe, color, src: attackerNow });
 }
 function updateBarrageQueue(dt) {
   for (let i = barrageQueue.length - 1; i >= 0; i--) {
     const q = barrageQueue[i];
     q.t -= dt;
     if (q.t > 0) continue;
+    attackerNow = q.src;
     spawnShell(q.fx, q.fy, q.tx, q.ty, q.speed, q.damage, q.aoe, q.color);
     barrageQueue.splice(i, 1);
   }
@@ -14679,7 +14707,7 @@ function takeProjectileSlot() {
   for (let k = 0; k < MAX_PROJECTILES; k++) {
     const i = _projScanCursor;
     _projScanCursor = (_projScanCursor + 1) % MAX_PROJECTILES;
-    if (!projActive[i]) return i;
+    if (!projActive[i]) { projSrc[i] = attackerNow; return i; }   // v3.13.0: 撃ち手を持たせる
   }
   return -1;   // 満杯（この弾は出ない）
 }
@@ -15062,6 +15090,7 @@ function updateSettlementAttacks(dt) {
 
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
+    attackerNow = settlementAttacker(settlement);   // v3.13.0: ここから出る弾・技はこの建物のもの
 
     // v0.81: 前哨堡は通常弾を「扇で連射」する。狙う向きへ面で撃つので、
     // 表から入ると弾の壁を抜けることになる（横へ回れば射界から外れる）。
@@ -15193,6 +15222,7 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind
 function updateProjectiles(dt) {
   for (let i = 0; i < MAX_PROJECTILES; i++) {
     if (!projActive[i]) continue;
+    attackerNow = projSrc[i];   // v3.13.0: 当たり・炸裂は撃った相手のぶんとして数える
 
     if (projTracking[i] && projTargetIdx[i] >= 0 && !boidDead[projTargetIdx[i]]) {
       const dx = px[projTargetIdx[i]] - projWx[i];
@@ -16472,6 +16502,33 @@ const STRINGS = {
   wipeTitle: "全滅",
   wipeSub: (lives) => `残機 ${lives} ／ スタート地点から立て直す`,
   wipeLast: "残機が尽きた",
+  // v3.13.0: 全滅の一文（最後の竜を落とした相手。Terraria の死亡文のように、ただしコミカルにしない）
+  // {d}=竜（「最後の火竜」）、{k}=相手。手の種類（tone）ごとに数本から選ぶ
+  epitaphSubject: (name) => `最後の${name}`,
+  epitaphKiller: (name, weapon) => weapon ? `${name}の${weapon}` : name,
+  epitaphs: {
+    pierce:  ["{d}は{k}の射線に捉えられ、翼を折られて墜ちた",
+              "{k}の一撃が、{d}の胸を貫いた",
+              "{d}は{k}に翼を裂かれ、大地へ還った"],
+    blast:   ["{d}は{k}の爆炎に呑まれ、灰となって散った",
+              "{k}の炸裂が、{d}を空から引き剥がした",
+              "{d}は{k}の火柱の中に消えた"],
+    crush:   ["{d}は{k}に打ち据えられ、二度と羽ばたかなかった",
+              "{k}の重みが、{d}を地に縫いとめた",
+              "{d}は{k}に砕かれ、群れの名を呼ぶ声も途絶えた"],
+    fire:    ["{d}は{k}の残り火に焼かれ、静かに墜ちた",
+              "{k}の炎が、{d}の鱗を焼き尽くした"],
+    miasma:  ["{d}は{k}の瘴気に肺を焼かれ、空で息絶えた",
+              "{k}の毒霧が、{d}の羽ばたきを止めた"],
+    thunder: ["{k}の雷が、{d}の心臓を止めた",
+              "{d}は{k}の稲妻に撃たれ、黒く焦げて墜ちた"],
+    light:   ["{d}は{k}の光に灼かれ、影さえ残らなかった",
+              "{k}の光条が、{d}を断ち切った"],
+    unknown: ["{d}は力尽き、群れの最後の羽音が途絶えた"],
+  },
+  // 名前の無い建物（役割も時代兵器も持たないもの）の呼び名
+  attackerHouse: "民家", attackerTownBuilding: "町の建物", attackerLargeBuilding: "大型の建物",
+  attackerCapital: "首都", attackerRailBoss: "司令列車", attackerBossNova: "反発衝撃波",
   defeatTitle: "力尽きた",
   defeatReached: (n, total, eraName) => `STAGE ${n}/${total}（${eraName}）で力尽きた`,
   hudLives: (lives) => `残機${lives}`,
@@ -17677,6 +17734,7 @@ function resetProgression() {
   regionChoices  = [];
   wipeGraceTimer = 0;
   wipeShowTimer  = 0;   // v3.12.2
+  lastDownBy = null; attackerNow = null; stageEpitaphEl.textContent = "";   // v3.13.0
   runRerollsLeft = 0;
   runBanishesLeft = 0;
   runBanished.clear();
@@ -21024,6 +21082,7 @@ const resultStatsEl = document.getElementById("result-stats");
 const stageOverlayEl = document.getElementById("stage-overlay");
 const stageTextEl    = document.getElementById("stage-text");
 const stageSubEl     = document.getElementById("stage-sub");
+const stageEpitaphEl = document.getElementById("stage-epitaph");   // v3.13.0
 
 const titleOverlayEl = document.getElementById("title-overlay");
 const titleBestEl    = document.getElementById("title-best");
@@ -23675,6 +23734,7 @@ function startStage(shape) {
   regionChoices = [];
   wipeGraceTimer = 0;
   wipeShowTimer  = 0;   // v3.12.2: 全滅の見せ場の途中でステージが変わっても持ち越さない
+  stageEpitaphEl.textContent = "";   // v3.13.0
   runRerollsLeft = permaBuff.rerolls;   // v3.3.0: 引き直しはステージごとに戻る
 
   overlayEl.classList.remove("visible");
@@ -23692,7 +23752,7 @@ function startStage(shape) {
   stageTextEl.textContent = STRINGS.stageBanner(runStageIndex + 1, RUN_STAGES);
   stageSubEl.textContent  = `${CONTINENT_DEFS[runStageIndex].name} ／ ${STRINGS.shapeNames[runShape]}`;
   stageOverlayEl.classList.add("visible");
-  setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
+  setTimeout(() => hideStageBannerUnlessWipe(), TIER_BANNER_DURATION_MS);
   snapshotRunSave();
   hapticPulse(30);
 }
@@ -23788,13 +23848,25 @@ function triggerWipe() {
   hapticPulse(250);
   stageTextEl.textContent = STRINGS.wipeTitle;
   stageSubEl.textContent  = runLives > 0 ? STRINGS.wipeSub(runLives) : STRINGS.wipeLast;
+  renderWipeEpitaph(stageEpitaphEl);   // v3.13.0: 最後の竜を落とした相手
+  lastDownBy = null;
   stageOverlayEl.classList.add("visible");
   updateHUDStage();
+}
+
+/**
+ * v3.13.0: 見出し（ステージ名・時代の帯など）を時間差で消す。全滅の見せ場の最中は消さない
+ * （見出しの直後に全滅すると、見出しのタイマーが全滅の表示まで消していた）。
+ */
+function hideStageBannerUnlessWipe() {
+  if (wipeShowTimer > 0) return;
+  stageOverlayEl.classList.remove("visible");
 }
 
 /** 全滅の見せ場が終わった：残機があればスタート地点から立て直す、無ければランの終わり。 */
 function finishWipe() {
   stageOverlayEl.classList.remove("visible");
+  stageEpitaphEl.textContent = "";   // v3.13.0: ステージの見出しなど他の表示に残さない
   if (runLives <= 0) { triggerRunDefeat(); return; }
 
   // 戻った先で飛んできている弾に即やられないよう、敵の弾は消しておく
@@ -24534,7 +24606,7 @@ function maybeEnrageBoss() {
       `火力×${BOSS_ENRAGE_DMG_MULT} ／ 連射×${(1 / BOSS_ENRAGE_INTERVAL_MULT).toFixed(1)} ／ ` +
       `弾数+${BOSS_ENRAGE_COUNT_ADD} ／ 射程×${BOSS_ENRAGE_RANGE_MULT}`;
     stageOverlayEl.classList.add("visible");
-    setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
+    setTimeout(() => hideStageBannerUnlessWipe(), TIER_BANNER_DURATION_MS);
   }, 0);
 }
 
@@ -24743,7 +24815,7 @@ function triggerTierAdvance() {
   stageTextEl.textContent = TIER_NAMES[powerTier] ?? ("PHASE " + (powerTier + 1));
   stageSubEl.textContent  = parts.join(" ／ ");
   stageOverlayEl.classList.add("visible");
-  setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
+  setTimeout(() => hideStageBannerUnlessWipe(), TIER_BANNER_DURATION_MS);
 
   // 復活した街の上にも目印を出す。どこが戻ったのかは
   // 画面の中央のバナーでは伝わらないため。
@@ -24862,6 +24934,7 @@ function returnToTitle() {
   gameState       = "title";
   regionPicking   = false;   // v3.12.1: 地域選択の最中に戻っても HUD を隠したままにしない
   wipeShowTimer   = 0;       // v3.12.2
+  stageEpitaphEl.textContent = "";   // v3.13.0
   stageOverlayEl.classList.remove("visible");
   document.body.classList.remove("region-picking");
   levelupOverlayEl.classList.remove("region-mode");
@@ -25599,7 +25672,97 @@ function updateDeathTimers(dt) {
   }
 }
 
-function applyDamageToBoid(boidIndex, damage) {
+// =====================================================================
+// v3.13.0: 最後の竜を落とした相手（全滅の一文に出す。Shooter指示）
+// =====================================================================
+// 竜への当たりは全部 hitBoid → applyDamageToBoid を通るが、そこからは「誰の攻撃か」が
+// 見えない。そこで、敵が攻撃を出す間だけ attackerNow に「今の撃ち手」を置き、
+// 後から当たるもの（弾・危険地帯・レーザー・時間差の斉射）は**出した時点の撃ち手を持ち歩く**。
+// 撃ち手は { name, weapon?, tone? }。tone は一文の言い回し（手の種類）で、無ければ一撃の分類から決める。
+let attackerNow = null;
+let lastDownBy  = null;   // { attacker, tone, dragonName } 最後にダウンした竜のぶん
+
+// 敵ごとの言い回し（一撃の分類より、その敵らしさを優先したいものだけ）
+const ENEMY_EPITAPH_TONES = {
+  miasma: "miasma", flamewagon: "fire", teslawagon: "thunder", teslagiant: "thunder",
+};
+const EMPLACEMENT_EPITAPH_TONES = { tesla: "thunder", prism: "light", ember: "fire" };
+const BOSS_ART_EPITAPH_TONES = {
+  boulders: "crush", pillars: "light", arrowRain: "pierce", volley: "pierce",
+  carpet: "blast", laser: "light", flakStorm: "blast", prismCross: "light",
+};
+
+/** 移動敵の撃ち手（個体ごとに1回だけ作って使い回す。毎フレーム呼ばれるため）。 */
+function moverAttacker(m) {
+  if (!m._attacker) {
+    const key = m.def.name;
+    m._attacker = { name: CODEX_ENEMY_NAMES[key] ?? key, tone: ENEMY_EPITAPH_TONES[key] };
+  }
+  return m._attacker;
+}
+
+/** 建物の撃ち手。時代兵器・役割の名があればそれ、無ければ大きさで呼ぶ。 */
+function settlementAttacker(s) {
+  if (!s._attacker) {
+    let name, tone;
+    if (s.isBoss) name = s._railRide ? STRINGS.attackerRailBoss : STRINGS.attackerCapital;
+    else if (s._emplacement && EMPLACEMENT_DEFS[s._emplacement]) {
+      name = EMPLACEMENT_DEFS[s._emplacement].label;
+      tone = EMPLACEMENT_EPITAPH_TONES[s._emplacement];
+    }
+    else if (s._townRole && TOWN_ROLE_DEFS[s._townRole]) name = TOWN_ROLE_DEFS[s._townRole].label;
+    else if (s._isCapital) name = STRINGS.attackerCapital;
+    else name = s.size === "large"  ? STRINGS.attackerLargeBuilding
+              : s.size === "medium" ? STRINGS.attackerTownBuilding : STRINGS.attackerHouse;
+    s._attacker = { name, tone };
+  }
+  return s._attacker;
+}
+
+/** 一撃の言い回し。撃ち手の指定 → 攻撃側の指定 → 一番大きい分類、の順で決める。 */
+function epitaphToneFor(attacker, hit) {
+  if (attacker && attacker.tone) return attacker.tone;
+  if (hit && hit.tone) return hit.tone;
+  if (!hit) return "unknown";
+  const d = hit.direct || 0, b = hit.blast || 0, s = hit.shot || 0;
+  if (b >= d && b >= s && b > 0) return "blast";
+  if (d >= s && d > 0) return "crush";
+  return s > 0 ? "pierce" : "unknown";
+}
+
+/** 竜の呼び名（特殊個体はその名、それ以外は今の竜種）。 */
+function dragonEpitaphName(i) {
+  const sp = boidSpecial[i];
+  if (sp !== SPECIAL_NONE && SPECIAL_DEFS[sp]) return SPECIAL_DEFS[sp].name;
+  return SPECIES_DEFS[flockSpecies]?.ja ?? "";
+}
+
+/**
+ * 全滅の一文を el に組み立てる（相手の名前だけ色を付けるので、文字列ではなく要素で組む）。
+ * 選び方は fxRandom（見た目だけの乱数。ランの再現を崩さない）。
+ */
+function renderWipeEpitaph(el) {
+  el.textContent = "";
+  const rec = lastDownBy;
+  const tone = rec ? rec.tone : "unknown";
+  const pool = STRINGS.epitaphs[tone] ?? STRINGS.epitaphs.unknown;
+  const usable = rec && rec.attacker ? pool : STRINGS.epitaphs.unknown;
+  const tpl = usable[Math.floor(fxRandom() * usable.length) % usable.length];
+  const subject = STRINGS.epitaphSubject(rec ? rec.dragonName : dragonEpitaphName(0));
+  const killer = rec && rec.attacker ? STRINGS.epitaphKiller(rec.attacker.name, rec.attacker.weapon) : "";
+  // {d} と {k} で切って、{k} だけ span にする
+  for (const part of tpl.split(/(\{d\}|\{k\})/)) {
+    if (part === "{d}") el.append(subject);
+    else if (part === "{k}") {
+      const span = document.createElement("span");
+      span.className = "killer";
+      span.textContent = killer;
+      el.append(span);
+    } else if (part) el.append(part);
+  }
+}
+
+function applyDamageToBoid(boidIndex, damage, hit) {
   // 変更2: ダウン中・すでに dead の場合は何もしない
   if (boidDead[boidIndex] || boidDowned[boidIndex]) return;
   if (debugInvincible) return;   // v0.44: デバッグ「竜を無敵」中は落ちない（敵の観察用）
@@ -25620,6 +25783,9 @@ function applyDamageToBoid(boidIndex, damage) {
     // フェードアウトは boidFadeTimer で表現する
     boidFadeTimer[boidIndex] = FADE_DURATION;
     boidHp[boidIndex]        = 0;
+    // v3.13.0: 全滅の一文のために、誰に落とされたかを覚えておく（最後の1体のぶんが残る）
+    lastDownBy = { attacker: attackerNow, tone: epitaphToneFor(attackerNow, hit),
+                   dragonName: dragonEpitaphName(boidIndex) };
     // 変更2(追加): やられた瞬間に死亡FX（灰/暗赤）を出す。
     // 出現FX（金色・弾ける）と色味を明確に変えて「やられた」と認識させる。
     spawnDragonDownEffect(px[boidIndex], py[boidIndex]);
