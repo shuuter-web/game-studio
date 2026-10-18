@@ -955,7 +955,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.15.0";
+const GAME_VERSION = "v3.15.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -23839,17 +23839,23 @@ function startStage(shape) {
  * ゲームは止めない。放置すれば出たままになるだけ。
  */
 let stageIntroShowing = false;
+let stageIntroShownAt = 0;
+// v3.15.1: 出した直後の入力では消さない。iPhone では竜種などのボタンを押した指の
+// 後追いの mousedown が、ボタンが消えた後の canvas に届き、文が一瞬で消えていた
+const STAGE_INTRO_INPUT_GRACE_MS = 700;
 function showStageStartBanner() {
   stageTextEl.textContent = STRINGS.stageBanner(runStageIndex + 1, RUN_STAGES);
   stageSubEl.textContent  = `${CONTINENT_DEFS[runStageIndex].name} ／ ${STRINGS.shapeNames[runShape]}`;
   renderStageStory(stageStartStoryLines());   // v3.14.0: 卵を奪った文明へ、竜たちが集う
   stageOverlayEl.classList.add("visible");
   stageIntroShowing = true;
+  stageIntroShownAt = performance.now();
 }
 
 /** 操作を始めたら開始の見出しを下げる（全滅など別の表示に置き換わっていたら触らない）。 */
 function dismissStageIntro() {
   if (!stageIntroShowing) return;
+  if (performance.now() - stageIntroShownAt < STAGE_INTRO_INPUT_GRACE_MS) return;
   stageIntroShowing = false;
   stageOverlayEl.classList.remove("visible");
   stageEpitaphEl.textContent = "";
@@ -25403,7 +25409,16 @@ canvas.addEventListener("touchcancel", (e) => {
   e.preventDefault();
 }, { passive: false });
 
-canvas.addEventListener("mousedown",  (e) => inputStart(e.clientX, e.clientY, performance.now()));
+// v3.15.1: タッチ端末では、タッチの後に同じ指から mousedown が後追いで届く（ボタンを押した指が、
+// ボタンが消えた後の canvas に届く）。タッチの直後の mousedown は本物の操作ではないので無視する
+const EMULATED_MOUSE_IGNORE_MS = 1000;
+let lastTouchTs = -Infinity;
+window.addEventListener("touchstart", () => { lastTouchTs = performance.now(); }, { capture: true, passive: true });
+window.addEventListener("touchend",   () => { lastTouchTs = performance.now(); }, { capture: true, passive: true });
+canvas.addEventListener("mousedown",  (e) => {
+  if (performance.now() - lastTouchTs < EMULATED_MOUSE_IGNORE_MS) return;
+  inputStart(e.clientX, e.clientY, performance.now());
+});
 canvas.addEventListener("mousemove",  (e) => { if (isDrawing) inputMove(e.clientX, e.clientY, performance.now()); });
 canvas.addEventListener("mouseup",    () => inputEnd());
 canvas.addEventListener("mouseleave", () => inputEnd());
