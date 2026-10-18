@@ -929,7 +929,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.12.1";
+const GAME_VERSION = "v3.12.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1078,6 +1078,15 @@ function debugUnlockAllContinents() {
   for (const k of Object.keys(SPECIAL_DEFS)) u.specials[k] = true;
   saveProfile();
   if (gameState === "title") refreshTitleMenu();
+}
+
+// v3.12.2: 本当に全員をダウンさせる（全滅の見せ場まで本物と同じ流れで確かめるため）
+function debugDownAll() {
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    boidDowned[i] = 1; boidDownTimer[i] = BOID_DOWN_DURATION; boidReviveTimer[i] = 0;
+    boidFadeTimer[i] = FADE_DURATION; boidHp[i] = 0;
+  }
 }
 
 function debugResetProfile() {
@@ -1277,7 +1286,7 @@ const DEBUG_ACTIONS = [
   { label: "▶ 次ステージ",          run: () => debugAdvanceStage() },
   { label: "★ このステージをクリア", run: () => { if (gameState === "playing") onCapitalFallen(); } },
   { label: "🏁 ラン完了（即）",       run: () => { if (gameState === "playing") triggerRunComplete(); } },
-  { label: "💀 全滅させる",           run: () => { if (gameState === "playing") triggerWipe(); } },
+  { label: "💀 全滅させる",           run: () => { if (gameState === "playing") debugDownAll(); } },
   { label: "⬆ レベル +1",            run: () => debugLevelUp(1) },
   { label: "⬆ レベル +5",            run: () => debugLevelUp(5) },
   { label: "🐉 竜 +10",              run: () => debugAddDragons(10) },
@@ -16461,7 +16470,8 @@ const STRINGS = {
   statStageTime: "ステージ時間",
   statLives: "残機",
   wipeTitle: "全滅",
-  wipeSub: (lives) => `スタート地点へ戻された ／ 残機 ${lives}`,
+  wipeSub: (lives) => `残機 ${lives} ／ スタート地点から立て直す`,
+  wipeLast: "残機が尽きた",
   defeatTitle: "力尽きた",
   defeatReached: (n, total, eraName) => `STAGE ${n}/${total}（${eraName}）で力尽きた`,
   hudLives: (lives) => `残機${lives}`,
@@ -17666,6 +17676,7 @@ function resetProgression() {
   runLives       = RUN_LIVES;
   regionChoices  = [];
   wipeGraceTimer = 0;
+  wipeShowTimer  = 0;   // v3.12.2
   runRerollsLeft = 0;
   runBanishesLeft = 0;
   runBanished.clear();
@@ -23482,6 +23493,10 @@ let regionChoices  = [];         // 地域3択を出している最中だけ中�
 let runHistory     = [];         // v3.12.0: クリアしたステージ（{ shape, stars }）。地域3択の上の「道のり」に出す
 let regionPicking  = false;
 let wipeGraceTimer = 0;
+// v3.12.2: 全滅したら、その場の全滅の様子を数秒見せてからスタート地点へ戻す（Shooter指示）。
+// 見せている間は竜を復活させない（ダウンの時間を進めない）。
+const WIPE_SHOW_SECONDS = 3.0;
+let wipeShowTimer = 0;
 let stageStartTime = 0;          // このステージを始めた時刻（★とアンロック条件に使う）
 // v3.3.0: 竜晶で買う「選択肢を広げる」強化の残り回数
 let runRerollsLeft  = 0;         // 三択の引き直し（ステージごとに戻る）
@@ -23659,6 +23674,7 @@ function startStage(shape) {
   runWorldSeed  = stageWorldSeed(runStageIndex);
   regionChoices = [];
   wipeGraceTimer = 0;
+  wipeShowTimer  = 0;   // v3.12.2: 全滅の見せ場の途中でステージが変わっても持ち越さない
   runRerollsLeft = permaBuff.rerolls;   // v3.3.0: 引き直しはステージごとに戻る
 
   overlayEl.classList.remove("visible");
@@ -23747,6 +23763,11 @@ function proceedToNextStage() {
 // 頭数・街の破壊・警戒度・首都の傷はそのまま。
 // -----------------------------------------------------------------
 function checkFlockWipe(dt) {
+  if (wipeShowTimer > 0) {   // v3.12.2: 全滅の見せ場。終わったらスタート地点へ
+    wipeShowTimer -= dt;
+    if (wipeShowTimer <= 0) { wipeShowTimer = 0; finishWipe(); }
+    return;
+  }
   if (wipeGraceTimer > 0) { wipeGraceTimer = Math.max(0, wipeGraceTimer - dt); return; }
   let living = 0;
   for (let i = 0; i < N; i++) {
@@ -23761,6 +23782,19 @@ function checkFlockWipe(dt) {
 function triggerWipe() {
   runLives--;
   markRunSaveDirty();
+  // v3.12.2: すぐには戻さず、その場で全滅の様子を見せる（この間は復活しない）
+  wipeShowTimer = WIPE_SHOW_SECONDS;
+  triggerFlash("rgba(40,0,0,0.6)", 0.5);
+  hapticPulse(250);
+  stageTextEl.textContent = STRINGS.wipeTitle;
+  stageSubEl.textContent  = runLives > 0 ? STRINGS.wipeSub(runLives) : STRINGS.wipeLast;
+  stageOverlayEl.classList.add("visible");
+  updateHUDStage();
+}
+
+/** 全滅の見せ場が終わった：残機があればスタート地点から立て直す、無ければランの終わり。 */
+function finishWipe() {
+  stageOverlayEl.classList.remove("visible");
   if (runLives <= 0) { triggerRunDefeat(); return; }
 
   // 戻った先で飛んできている弾に即やられないよう、敵の弾は消しておく
@@ -23791,13 +23825,6 @@ function triggerWipe() {
     spawnDragonAppearEffect(px[i], py[i]);
   }
   wipeGraceTimer = WIPE_GRACE_SECONDS;
-
-  triggerFlash("rgba(40,0,0,0.6)", 0.5);
-  hapticPulse(250);
-  stageTextEl.textContent = STRINGS.wipeTitle;
-  stageSubEl.textContent  = STRINGS.wipeSub(runLives);
-  stageOverlayEl.classList.add("visible");
-  setTimeout(() => stageOverlayEl.classList.remove("visible"), TIER_BANNER_DURATION_MS);
   updateHUDStage();
 }
 
@@ -24834,6 +24861,8 @@ function setupStageForResume(tier, fallenPacked) {
 function returnToTitle() {
   gameState       = "title";
   regionPicking   = false;   // v3.12.1: 地域選択の最中に戻っても HUD を隠したままにしない
+  wipeShowTimer   = 0;       // v3.12.2
+  stageOverlayEl.classList.remove("visible");
   document.body.classList.remove("region-picking");
   levelupOverlayEl.classList.remove("region-mode");
   stageClearPhase = "none";
@@ -25532,6 +25561,8 @@ function updateDeathTimers(dt) {
     if (boidFadeTimer[i] > 0) boidFadeTimer[i] = Math.max(0, boidFadeTimer[i] - dt);
 
     // 変更2: ダウンタイマーが進み、0になったら復帰開始
+    // v3.12.2: 全滅の見せ場の間は復活させない（ダウンの時間を止める）
+    if (boidDowned[i] && wipeShowTimer > 0) continue;
     if (boidDowned[i]) {
       boidDownTimer[i] = Math.max(0, boidDownTimer[i] - dt);
       if (boidDownTimer[i] <= 0 && boidReviveTimer[i] <= 0) {
