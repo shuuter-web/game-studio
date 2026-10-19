@@ -990,7 +990,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.16.0";
+const GAME_VERSION = "v3.16.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1344,7 +1344,8 @@ const DEBUG_ACTIONS = [
   { label: "🎯 ボス手前へワープ",     run: () => debugWarpToBoss() },
   { label: "🛸 動き切替",            run: () => debugCycleMoveProfile() },
   { label: "💥 反動切替",            run: () => debugCycleRecoil() },
-  { label: "▶ 次ステージ",          run: () => debugAdvanceStage() },
+  { label: "▶ 警戒度を上げる（決戦ならクリア）", run: () => debugAdvanceStage() },
+  { label: "⚡ ラッシュを起こす…",     run: () => { debugPage = "rush"; }, keepOpen: true },   // v3.16.1
   { label: "★ このステージをクリア", run: () => { if (gameState === "playing") onCapitalFallen(); } },
   { label: "🏁 ラン完了（即）",       run: () => { if (gameState === "playing") triggerRunComplete(); } },
   { label: "💀 全滅させる",           run: () => { if (gameState === "playing") debugDownAll(); } },
@@ -1426,6 +1427,7 @@ function debugStatusLine() {
 function renderDebugPanel() {
   const title = debugPage === "enemies" ? "ENEMIES"
               : debugPage === "specials" ? "SPECIALS"
+              : debugPage === "rush" ? "RUSH"
               : `DEBUG ${GAME_VERSION}`;
   debugPanelEl.innerHTML =
     `<div class="dbg-title">${title}<span class="dbg-close">✕</span></div>` +
@@ -1477,6 +1479,27 @@ function renderDebugPanel() {
     });
     grid.appendChild(clear);
 
+    debugPanelEl.querySelector(".dbg-close").addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      toggleDebugPanel(false);
+    });
+    return;
+  }
+
+  // v3.16.1: 警戒度ラッシュのページ — 押すとその種類がすぐ予告から始まる
+  if (debugPage === "rush") {
+    grid.classList.add("enemies");
+    const addBtn = (text, fn, full) => {
+      const b = document.createElement("button");
+      b.className = "dbg-btn";
+      if (full) b.style.gridColumn = "1 / -1";
+      b.textContent = text;
+      b.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); fn(); });
+      grid.appendChild(b);
+    };
+    addBtn("← もどる", () => { debugPage = "main"; renderDebugPanel(); }, true);
+    addBtn("⬆ 警戒度を上げる（ラッシュも起きる）", () => { debugAdvanceStage(); toggleDebugPanel(false); }, true);
+    for (const kind of TR_KINDS) addBtn(trName(kind), () => { debugForceTierRush(kind); toggleDebugPanel(false); });
     debugPanelEl.querySelector(".dbg-close").addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       toggleDebugPanel(false);
@@ -10293,7 +10316,8 @@ function updateMovers(dt) {
     if (m.submerged) continue; // v0.42: 潜行中は撃たない
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
     // v1.0.5: 警戒度ぶんも掛ける（TIER_MOVER_FEROCITY）。
-    const ferocity = moverFerocity();
+    // v3.16.1: 警戒度ラッシュの精鋭は連射も威力も別格
+    const ferocity = moverFerocity() * (m._trElite ? TR_ELITE_FEROCITY : 1);
     if (atk.type === "laser") {
       // v0.76: 巨人型のレーザー（Shooter指示「常時照射はやめて極太ビームの細い版を」）。
       // 首都の大技と同じ spawnLaserStrike を使うので作法も同じ＝**予兆1.3秒 → 照射0.9秒**。
@@ -10807,11 +10831,16 @@ const TR_HORDE_COUNT   = [0, 24, 24, 14];
 const TR_HORDE_ROW     = 6;     // 1列の頭数
 const TR_HORDE_GAP     = 40;    // 隊列の間隔(px)
 const TR_HORDE_STAGGER = 0.12;  // 1列ずつ出す間隔（一度に湧かせない）
-const TR_ELITE_HP      = 2.5;   // 精鋭の体力倍率
-const TR_ELITE_SPEED   = 1.35;
-const TR_ELITE_XP      = 4;
-const TR_ELITE_HEAL    = 0.25;
-const TR_ELITE_CRYSTALS = 15;
+// v3.16.1: 精鋭を「ガッツリ」強く（Shooter指示「弱すぎた」）。大型の敵はもともと22〜34px/sと遅く、
+// 倍率で速めても群れに追いつけない置物だったので、速さは下限で決める。攻撃は連射も威力も上げる。
+const TR_ELITE_HP      = 8;     // 精鋭の体力倍率
+const TR_ELITE_SPEED   = 1.35;  // 速さの倍率の下限
+const TR_ELITE_MIN_SPEED = 120; // 速さの下限(px/s)。群れ（150〜200）より少し遅い＝逃げ続けるのは難しい
+const TR_ELITE_FEROCITY = 2.5;  // 攻撃の苛烈さ（間隔÷・威力×）
+const TR_ELITE_CHASE_TIME = 60; // この間は追い続ける
+const TR_ELITE_XP      = 8;
+const TR_ELITE_HEAL    = 0.4;
+const TR_ELITE_CRYSTALS = 30;
 // 強風
 const TR_WIND_SPEED    = 55;    // 竜を流す速さ(px/s)。竜の最高速（150〜200）の3割ほど
 const TR_WIND_PROJ     = 0.35;  // 敵の弾を流す割合
@@ -11021,10 +11050,11 @@ function startTierRush() {
       const r = offscreenSpawnRadius();
       const m = spawnTrMover(def, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
       m.maxHp = m.hp = def.hp * TR_ELITE_HP;
-      m.speedMult = TR_ELITE_SPEED;
+      m.speedMult = Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed);
       m.xpValue = def.xp * TR_ELITE_XP;
       m._trChase = true; m._trElite = true; m._trReward = "elite";
       d.total = 1;
+      tr.dur = TR_ELITE_CHASE_TIME;
       break;
     }
     case "night":
@@ -11288,10 +11318,16 @@ function drawTierRushUnder() {
       const pulse = 0.5 + 0.5 * Math.sin(breathTime * 6);
       ctx.globalAlpha = 0.45 + 0.35 * pulse;
       ctx.strokeStyle = m._trElite ? "#ffd040" : "#ffe9a0";
-      ctx.lineWidth = 3;
+      ctx.lineWidth = m._trElite ? 5 : 3;
       ctx.beginPath();
-      ctx.arc(m.wx, m.wy, def.radius * (1.6 + 0.2 * pulse), 0, Math.PI * 2);
+      ctx.arc(m.wx, m.wy, def.radius * (m._trElite ? 2.0 + 0.3 * pulse : 1.6 + 0.2 * pulse), 0, Math.PI * 2);
       ctx.stroke();
+      if (m._trElite) {   // 二重の輪＝別格の目印
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(m.wx, m.wy, def.radius * (2.6 + 0.3 * pulse), 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
     if (hasteVis > 0.05 && drawn < 60) {
       drawn++;
