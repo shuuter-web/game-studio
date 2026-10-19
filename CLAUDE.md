@@ -77,6 +77,21 @@ GDD化の前段。「お題1つ → 種10件 → 採用2件」のバッチで回
 - **採用後は GDD化より先に「最大の賭け」を最小プロトで潰す**。
 - 月次で `dropped` を見返し、市場が動いて化けた種を拾い直す。
 
+### Dragon Tide の追加要素の案は「案帳」に1案1チケットで出す
+
+地域・竜種・特殊個体・ラッシュイベント・敵などの案は、チャットに並べて終わらせず、
+案チケットボード「Dragon Tide 案帳」に1案1チケットで足す（Shooter が採用・保留・要修正・不採用とコメントを書き込む場所）。
+
+https://claude.ai/artifact/QCAvoU291kLKCVQsKuQahX
+
+- 読み書きは `ArtifactData`（コレクション `tickets`、doc id ＝ `DT-001` からの通し番号）。
+  項目：`no` `kind` `batch` `title` `hook` `star` `fields`（`{label, text}` の配列）`status` `thread` `order` `createdAt` `updatedAt`
+- **作業を始める前に判定を読む**。採用＝GDD/実装へ、要修正＝修正版を `fields` に反映して `thread` に
+  `{by: "claude", text, at}` で何を変えたかを返し、`status` を「未判定」に戻す、不採用＝そのまま残す（消さない）
+- 判定前の案はリポジトリに書かない（案帳が正本）。採用になった案だけ GDD に書き写す
+- 案の中身の決まりは各ゲームの設計書に従う（Dragon Tide の地域なら `docs/gdd/dragon-tide-next-steps.md` §3-x）。
+  ただし決まりだけに寄せず、ゲームの芯（線を描く→群れがなぞる→薙ぐ→卵で増える→ジオラマ化）から発想した案も必ず混ぜる
+
 ### 企画書をWebに上げるときの手順（毎回）
 
 Seed Sprint の結果を企画書として公開するときは、**各案の全文も必ず一緒に公開してリンクする**
