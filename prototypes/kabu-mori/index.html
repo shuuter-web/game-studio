@@ -128,7 +128,7 @@
 // v0.4.0：カブを「食べる」と突然変異ごとの効果が出る。頭の上では隣り合ったカブが増殖・合体・突然変異する
 // （＝たくさん積むほど当たりが出る）。売る・食べるはタワーのどの段でも選べる。
 // -----------------------------------------------------------------
-const GAME_VERSION = "v0.6.1";
+const GAME_VERSION = "v0.7.0";
 
 // ---- 調整値（データ駆動：ここだけ触ればバランスが変わる） ----
 const CONFIG = {
@@ -466,9 +466,10 @@ const canvas = document.getElementById("scene");
 const hasThree = typeof THREE !== "undefined";
 let renderer = null, scene = null, camera = null;
 const view = {
-  ringRadius: 7.6,   // 20マスが重ならない半径
-  cameraAngle: 0,
-  targetAngle: 0,
+  // 盤はモノポリー型の正方形（1辺6マス・四隅は畑）。円形だと同じ絵が続き、どこに何があるかの手がかりがなかった（v0.7.0）
+  tileSpacing: 2.1,
+  camFocus: null,       // カメラが追っている地点（手番の人へ向かって平行移動する）
+  focusTileIndex: 0,
   focus: null,          // THREE.Vector3
   tiles: [],            // 各マスの中心
   sizes: TURNIP_TYPES.map(() => ({ value: 1, velocity: 0 })),   // 種類ごとの今のカブの大きさ（ばねで目標へ寄る）
@@ -482,9 +483,20 @@ const view = {
 const turnipGeometry = {};
 const turnipMaterials = [];
 
+// マスの位置と「外向き」の向き（angle：外向きベクトルが (sin, cos) になる角度）。
+// 0番＝手前左の角から右へ進み、右の列を奥へ、奥の行を左へ、左の列を手前へ戻る
+const TILES_PER_SIDE = 5;   // 角から次の角の手前まで。20マス＝4辺×5
 function tilePosition(index) {
-  const angle = (index / BOARD.length) * Math.PI * 2;
-  return { x: Math.sin(angle) * view.ringRadius, z: Math.cos(angle) * view.ringRadius, angle };
+  const half = (TILES_PER_SIDE * view.tileSpacing) / 2;
+  const side = Math.floor(index / TILES_PER_SIDE);
+  const step = (index % TILES_PER_SIDE) * view.tileSpacing;
+  const isCorner = index % TILES_PER_SIDE === 0;
+  let x, z, outX, outZ;
+  if (side === 0)      { x = -half + step; z = half;          outX = 0;  outZ = 1;  if (isCorner) outX = -1; }
+  else if (side === 1) { x = half;         z = half - step;   outX = 1;  outZ = 0;  if (isCorner) outZ = 1; }
+  else if (side === 2) { x = half - step;  z = -half;         outX = 0;  outZ = -1; if (isCorner) outX = 1; }
+  else                 { x = -half;        z = -half + step;  outX = -1; outZ = 0;  if (isCorner) outZ = -1; }
+  return { x, z, angle: Math.atan2(outX, outZ), isCorner };
 }
 
 // 同じマスに複数人いても重ならないよう、人ごとに決まった位置にずらす
@@ -729,34 +741,46 @@ function buildWorld() {
   const sea = new THREE.Mesh(new THREE.CircleGeometry(80, 48), standardMaterial(0x6cc4d6, { roughness: 0.35 }));
   sea.rotation.x = -Math.PI / 2; sea.position.y = -0.35;
   scene.add(sea);
-  const sand = new THREE.Mesh(new THREE.CylinderGeometry(10.6, 11.2, 0.5, 48), standardMaterial(0xf1e2b0));
+  // 島も正方形。角に向かって少し丸めた板（盤の外側に屋台と木が並ぶ余白を取る）
+  const sand = new THREE.Mesh(new THREE.BoxGeometry(20.5, 0.5, 20.5), standardMaterial(0xf1e2b0));
   sand.position.y = -0.25; sand.receiveShadow = true;
   scene.add(sand);
-  const grass = new THREE.Mesh(new THREE.CylinderGeometry(9.6, 9.9, 0.5, 48), standardMaterial(0x9fd06a));
+  const grass = new THREE.Mesh(new THREE.BoxGeometry(18.6, 0.5, 18.6), standardMaterial(0x9fd06a));
   grass.position.y = -0.12; grass.receiveShadow = true;
   scene.add(grass);
+  // 盤の内側の小道（マスとマスをつなぐ帯）。どの辺にいるかを分かりやすくする
+  const roadHalf = (TILES_PER_SIDE * view.tileSpacing) / 2;
+  const roadMaterial = standardMaterial(0xe9dcb8);
+  for (const [w, d, x, z] of [[roadHalf * 2, 0.9, 0, roadHalf], [roadHalf * 2, 0.9, 0, -roadHalf], [0.9, roadHalf * 2, roadHalf, 0], [0.9, roadHalf * 2, -roadHalf, 0]]) {
+    const road = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), roadMaterial);
+    road.position.set(x, 0.14, z); road.receiveShadow = true;
+    scene.add(road);
+  }
 
   // 木（飾り）
   const trunkMaterial = standardMaterial(0x9a6b45);
   const leafMaterials = [standardMaterial(0x5fae4a), standardMaterial(0x78bf55)];
-  for (let k = 0; k < 9; k++) {
-    const angle = (k / 9) * Math.PI * 2 + 0.17;
-    const radius = k % 2 ? 9.1 : 4.4;
+  // 木は盤の内側の四隅と、外側の縁に。辺ごとに並びを変えて「どの辺か」の目印にする
+  const treeSpots = [[3.4, 3.4], [-3.4, 3.4], [3.4, -3.4], [-3.4, -3.4], [-8.4, 2.5], [-8.4, -1.5], [8.4, 3.8],
+                     [8.4, -3.2], [-2.6, -8.4], [3.2, -8.4], [0.6, -8.4], [-8.4, -6.2]];
+  treeSpots.forEach(([treeX, treeZ], k) => {
     const tree = new THREE.Group();
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 0.7, 8), trunkMaterial);
     trunk.position.y = 0.35; trunk.castShadow = true;
     const crown = new THREE.Mesh(new THREE.SphereGeometry(0.55, 12, 10), leafMaterials[k % 2]);
     crown.position.y = 1.05; crown.scale.set(1, 1.15, 1); crown.castShadow = true;
     tree.add(trunk, crown);
-    tree.position.set(Math.sin(angle) * radius, 0.13, Math.cos(angle) * radius);
+    tree.position.set(treeX, 0.13, treeZ);
+    tree.scale.setScalar(0.85 + (k % 3) * 0.2);
     scene.add(tree);
-  }
+  });
 
   // マス
   const tileColors = { field: 0xc99a62, kabu: 0xf6d77a, market: 0xf3a17a, radio: 0x9cc8f0, swap: 0xb9e3a8, lab: 0xd9c2f2, fert: 0x9fd8d0 };
   BOARD.forEach((tile, index) => {
     const position = tilePosition(index);
-    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.88, 0.94, 0.22, 28), standardMaterial(tileColors[tile.kind]));
+    const tileSize = position.isCorner ? 1.95 : 1.8;
+    const disc = new THREE.Mesh(new THREE.BoxGeometry(tileSize, 0.22, tileSize), standardMaterial(tileColors[tile.kind]));
     disc.position.set(position.x, 0.2, position.z);
     disc.receiveShadow = true;
     scene.add(disc);
@@ -809,6 +833,7 @@ function buildWorld() {
   });
 
   view.focus = new THREE.Vector3(0, 0.8, 0);
+  view.camFocus = new THREE.Vector3(0, 0, 0);
   resizeRenderer();
   window.addEventListener("resize", resizeRenderer);
 }
@@ -894,27 +919,28 @@ function frame(now) {
     visual.ring.material.color.set(player.character.css);
   }
 
-  // カメラ：手番の人の外側から、島の中央（相場の柱）も入るように見る
-  let angleDifference = view.targetAngle - view.cameraAngle;
-  angleDifference = Math.atan2(Math.sin(angleDifference), Math.cos(angleDifference));
-  view.cameraAngle += angleDifference * Math.min(1, deltaSeconds * 2.2);
+  // カメラ：向きは固定（手前＝南から見下ろす）。手番の人を追って平行移動するので、
+  // 盤のどこにいるか（手前の辺か奥の辺か）が画面の動きで分かる
   const portrait = camera.aspect < 0.9;
-  const distance = view.ringRadius + (portrait ? 13 : 9);
-  const heightAbove = portrait ? 13 : 9.5;
-  camera.position.set(Math.sin(view.cameraAngle) * distance, heightAbove, Math.cos(view.cameraAngle) * distance);
-  // 縦長画面は下のパネルが画面の下1/4を覆うので、注視点を手番の人の側へ寄せて人を画面中央に出す
-  const lookReach = view.ringRadius * (portrait ? 0.8 : 0.4);
-  const lookTarget = new THREE.Vector3(Math.sin(view.cameraAngle) * lookReach, portrait ? -1.2 : 1.2,
-                                       Math.cos(view.cameraAngle) * lookReach);
-  // 相場が動く瞬間は、中央の見本台へ視線を寄せて「膨らむ／しぼむ」を見せる
+  const active = game.players[game.currentPlayer];
+  const desired = new THREE.Vector3();
+  if (active && active.visual) desired.copy(active.visual.root.position);
+  else if (view.tiles[view.focusTileIndex]) desired.copy(view.tiles[view.focusTileIndex]);
+  desired.y = 0;
+  // 相場が動く瞬間は、中央の見本台へ寄って「膨らむ／しぼむ」を見せる
   view.centerBlend += ((view.lookCenter ? 1 : 0) - view.centerBlend) * Math.min(1, deltaSeconds * 4);
-  lookTarget.lerp(new THREE.Vector3(0, portrait ? -2.2 : 0.8, 0), view.centerBlend * 0.85);
+  desired.lerp(new THREE.Vector3(0, 0, 0), view.centerBlend * 0.8);
+  view.camFocus.lerp(desired, Math.min(1, deltaSeconds * 2.5));
+  const offset = portrait ? new THREE.Vector3(0, 13.5, 11.5) : new THREE.Vector3(0, 9.5, 9);
+  camera.position.copy(view.camFocus).add(offset);
+  // 縦長画面は下のパネルが画面の下1/4を覆うので、注視点を手前にずらして人を画面の中ほどに出す
+  const lookTarget = view.camFocus.clone().add(new THREE.Vector3(0, portrait ? -0.3 : 0.9, portrait ? 0.7 : 0));
   camera.lookAt(lookTarget);
   renderer.render(scene, camera);
 }
 
 function focusPlayer(player) {
-  view.targetAngle = tilePosition(player.position).angle;
+  view.focusTileIndex = player.position;
 }
 
 async function hopTo(player, tileIndex, durationScale, arcHeight) {
