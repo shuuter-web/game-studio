@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.17.0";
+const GAME_VERSION = "v3.18.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1204,7 +1204,7 @@ const DEBUG_ENEMY_LABELS = {
   walker_hull: "🕷多脚戦車(脚6本つき)", walker_leg: "🕷多脚戦車の脚",
   railgun_loco: "🚂列車砲列(砲車4両つき)", railgun_car: "🚃列車砲列の砲車",
   railcar: "🚈装甲軌道車", railram: "🚞衝角機関車",
-  canopy_archer: "🏹樹上弓兵", lumberjack: "🪚伐採機械", forest_giant: "🌳森番の巨人",
+  forest_ambusher: "🌿森の伏兵", forest_giant: "🌳森番の巨人",
   // v0.57: 文明ごとの看板ユニット
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
   grenadiers: "💣擲弾兵隊", armortrain: "🚄装甲列車", teslagiant: "⚡雷公",
@@ -1230,7 +1230,7 @@ const DEBUG_ENEMY_ORDER = [
   // v2.0.0: 軌道の敵。線路が無い地域では湧かせられない（押しても何も起きない）
   "railgun_loco", "railcar", "railram",
   // v3.17.0: 大樹海の敵（樹冠が無い地域では隠れも切り拓きも起きない）
-  "canopy_archer", "lumberjack", "forest_giant",
+  "forest_ambusher", "forest_giant",
 ];
 
 /** 群れのすぐ横に敵を湧かせる。隊（packCount）は隊ごと、巨獣はコア＋腕2本まとめて。 */
@@ -1945,7 +1945,7 @@ function targetAimable(targets, cls) { return targets[cls] === TARGET_AIM; }
 /** その分類に当たるか（狙う・狙わないが当たる のどちらでも当たる）。 */
 function targetHittable(targets, cls) { return targets[cls] !== TARGET_NONE; }
 /** 動く敵が今狙える状態か（潜っている敵は当たらないので狙わない）。 */
-function moverAimable(m) { return !!m && m.alive && !m.submerged && !canopyHidesMover(m); }   // v3.17.0: 樹冠の下も狙えない
+function moverAimable(m) { return !!m && m.alive && !m.submerged; }
 
 // v3.17.0: 攻撃の属性（案帳 DT-035・Shooter指示）。
 // 攻撃カテゴリ（直接／衝撃／爆発／射撃）＝「どう当たるか」とは別の軸で、属性＝「攻撃が何でできているか」。
@@ -2708,7 +2708,6 @@ function splitImpact(dirX, dirY, impulse, resist, mass, axis) {
  */
 function applyImpactToMover(m, fromX, fromY, impulse) {
   if (!m.alive || impulse <= 0) return;
-  if (canopyHidesMover(m)) return;   // v3.17.0: 樹冠の下は押せない（触れない）
   const dx = m.wx - fromX, dy = m.wy - fromY;
   const d  = Math.sqrt(dx * dx + dy * dy) || 1;
   const axis = impactFreeAxis(m, _impactAxis) ? _impactAxis : null;
@@ -5975,6 +5974,11 @@ function generateStageLayout(stageIndex) {
   forestClusters = generateForests(result, boss);
   if (worldShape === SHAPE_ASTEROIDS) forestClusters = [];
 
+  // v3.18.0: 大樹海の樹冠（見た目だけ）。町ごとに覆う量を決めるので建物の後、
+  // 森の伏兵が樹冠の下に隠れるので動く敵の前に敷く。他の地域では前の樹冠を消す
+  if (worldShape === SHAPE_FOREST) buildCanopy(result);
+  else clearCanopy();
+
   // --- (7) v0.6-p4: 移動敵ユニット（文明別・ステージ数に応じた混成編成） ---
   movers = generateMovers(stageIndex, boss);
   shockwaveFxList.length = 0;
@@ -6031,10 +6035,6 @@ function generateStageLayout(stageIndex) {
   // **必ず最後に**。首都の位置を基準に町・街道・城壁・鉄路・動く敵を並べているので、
   // それが全部終わってからでないと世界ごと列車について行ってしまう。
   if (worldShape === SHAPE_RAILWAY) attachBossToRail(boss);
-
-  // v3.17.0: 大樹海の樹冠（首都と開始地点が決まってから敷く）。他の地域では前の樹冠を消す
-  if (worldShape === SHAPE_FOREST) buildCanopy(boss);
-  else clearCanopy();
 
   return result;
 }
@@ -8145,32 +8145,21 @@ const MOVER_DEFS = {
   },
 
   // ===================================================================
-  // v3.17.0 大樹海の敵（案帳 DT-005）。全文明に出るが**大樹海の地域だけ**。
-  // 樹冠の下にいる間は狙えず撃たない、という地域の決まりに、それぞれ違う向きで乗る。
+  // v3.17.0→v3.18.0 大樹海の敵（案帳 DT-005／DT-039）。全文明に出るが**大樹海の地域だけ**。
+  // 樹冠は見た目だけになったので、樹冠を使うのは森の伏兵だけ。
   // ===================================================================
-  // 樹上弓兵: 樹冠の下に潜んだまま矢を射る（canopyShooter）。こちらからは狙えないので、
-  // 樹冠を剥がして引きずり出すか、射線から離れるしかない。4人の組で動く
-  canopy_archer: {
-    name: "canopy_archer", sprite: "raider", canopyShooter: true,
-    hp: 30, speed: 30, xp: 22, eggDrop: 0, eggChance: 0.3, radius: 10,
-    packCount: 4,
+  // 森の伏兵: 樹冠の下で待ち、群れが近づくと飛び出して数秒戦い、また近くの樹冠へ戻って潜る。
+  // 潜っていても攻撃は当たる（樹冠は判定に効かない）が、樹冠に隠れて見えない＝**どこから来るか分からない**。
+  // 火で隠れ場所の樹冠を焼くと、もう潜れずに出たままになる。
+  forest_ambusher: {
+    name: "forest_ambusher", sprite: "raider", ambush: true,
+    hp: 40, speed: 92, xp: 26, eggDrop: 0, eggChance: 0.35, radius: 11,
     color: "#3a6a2a", glowColor: "#9fe070", moveType: "pingpong",
-    attack: { type: "fan", interval: 2.0, count: 1, damage: 1.3, speed: 80, range: 380 },
+    attack: { type: "fan", interval: 1.4, count: 1, damage: 1.4, speed: 85, range: 320 },
   },
-  // 伐採機械: 首都へ向かって樹冠を切り拓きながら進む（canopyCutter）。群れを追わない（noPursue）。
-  // 拓いた跡は隠れ場所でなくなる。倒すと鋸が爆ぜて周りの樹冠を抉る
-  // ＝火も爆発も持たない竜種でも、伐採機械を追えば首都の樹冠に届く（詰み防止）
-  lumberjack: {
-    name: "lumberjack", sprite: "batteringram", canopyCutter: true, noPursue: true, turnRate: 0.7,
-    showHpBar: true,
-    hp: 320, speed: 26, xp: 160, eggDrop: 2, radius: 24,
-    color: "#6a4a2a", glowColor: "#c8ff80", moveType: "pingpong",
-    attack: { type: "fan", interval: 2.4, count: 3, damage: 1.5, speed: 80, range: 320 },
-  },
-  // 森番の巨人: 樹冠より背が高い（tallCanopy）＝いつでも見えていて、いつでも殴れる。
-  // そのかわり重い踏み鳴らしで群れを押し返す。樹冠の上に頭だけ出ている見た目
+  // 森番の巨人: 大樹海を歩く大物。重い踏み鳴らしで群れを押し返す
   forest_giant: {
-    name: "forest_giant", sprite: "colossus", tallCanopy: true, elite: true, showHpBar: true,
+    name: "forest_giant", sprite: "colossus", elite: true, showHpBar: true,
     hp: 650, speed: 22, xp: 280, eggDrop: 4, radius: 30,
     color: "#2f5a2a", glowColor: "#8fe060", moveType: "patrol",
     attack: { type: "shockwave", interval: 2.8, radius: 140, damage: 4, push: 75 },
@@ -9392,7 +9381,6 @@ function drawEmplacements() {
   ctx.save();
   for (const s of settlements) {
     if (!s || s.fallen) continue;
-    if (canopyHidesSettlement(s)) continue;   // v3.17.0: 樹冠の下の砲台は輪も見せない（隠れている）
     // v0.78: 役割を持つ建物（鐘楼・穀倉・兵舎）も同じ作法で輪を出す。
     // 絵だけだと町の中で埋もれるので、「ここは普通の建物ではない」を輪で予告する。
     if (!s._emplacement && s._townRole) {
@@ -10220,8 +10208,7 @@ function updateMovers(dt) {
       targetX = m._trGoal.wx;
       targetY = m._trGoal.wy;
       pursuing = true;
-    } else if (!def.noPursue &&   // v3.17.0: 伐採機械は群れを追わず首都へ向かい続ける
-               (m._trChase || dist2(m.wx, m.wy, centroid.x, centroid.y) < MOVER_PURSUIT_RANGE * MOVER_PURSUIT_RANGE)) {
+    } else if (m._trChase || dist2(m.wx, m.wy, centroid.x, centroid.y) < MOVER_PURSUIT_RANGE * MOVER_PURSUIT_RANGE) {
       // v3.16.0: ラッシュの敵は画面の外（反応距離より遠く）から来るので、距離によらず追う
       if (def.fleer) {
         // v0.25.1: 財宝馬車は群れから離れる方向へ逃げる（追いかける楽しさ）
@@ -10261,6 +10248,13 @@ function updateMovers(dt) {
           targetY = (targetY + cy * 2) / 3;
         }
       }
+    }
+
+    // v3.18.0: 森の伏兵は潜る・飛び出す・戻るを自前で決める（出たままになったら普通の敵と同じ）
+    m._ambushHold = false;
+    if (def.ambush) {
+      const goal = updateAmbusher(m, centroid, dt);
+      if (goal) { targetX = goal.x; targetY = goal.y; }
     }
 
     const dx = targetX - m.wx;
@@ -10327,7 +10321,7 @@ function updateMovers(dt) {
     if (m.shoveX) { m.wx -= m.shoveX; m.wy -= m.shoveY; }
 
     // v0.61: 画面外から来る増援は、群れに近づくまで行軍速度で走る
-    const moveSpeed = laserLocked ? 0
+    const moveSpeed = (laserLocked || m._ambushHold) ? 0
       : def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1)
         * (frostFields.length ? frostSpeedMultAt(m.wx, m.wy) : 1);   // v3.8.0: 凍て霧
     m.wx += moveX * moveSpeed * dt;
@@ -10375,9 +10369,6 @@ function updateMovers(dt) {
       }
     }
 
-    // v3.17.0: 伐採機械は通った跡の樹冠を切り拓く
-    if (def.canopyCutter) canopyCutAt(m.wx, m.wy);
-
     // ---- 攻撃 ----
     const nearestIdx = findNearestAliveBoid(m.wx, m.wy);
     if (nearestIdx < 0) continue;
@@ -10389,8 +10380,7 @@ function updateMovers(dt) {
     if (!atk) continue;        // v0.25.1: 財宝馬車など無攻撃ユニット
     if (def.manualAttack) continue;   // v1.9.0: 自前で撃つ敵（多脚戦車の主砲）
     if (m.submerged) continue; // v0.42: 潜行中は撃たない
-    // v3.17.0: 樹冠の下では撃たない。樹上弓兵（canopyShooter）だけは樹冠の下から撃つ
-    if (!def.canopyShooter && canopyHidesMover(m)) continue;
+    if (m.ambushState === "hide") continue;   // v3.18.0: 森の伏兵は潜っている間は撃たない
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
     // v1.0.5: 警戒度ぶんも掛ける（TIER_MOVER_FEROCITY）。
     // v3.16.1: 警戒度ラッシュの精鋭は連射も威力も別格
@@ -10672,7 +10662,6 @@ function updateBossArt(dt) {
   if (bossSettlementIdx < 0) return;
   const boss = settlements[bossSettlementIdx];
   if (!boss || boss.fallen) return;
-  if (canopyHidesSettlement(boss)) return;   // v3.17.0: 大樹の樹冠の下にいる間は大技を出さない
 
   bossArtTimer -= dt;
   if (bossArtTimer > 0) return;
@@ -10777,7 +10766,6 @@ function updateBossNova(dt) {
   if (bossSettlementIdx < 0) return;
   const boss = settlements[bossSettlementIdx];
   if (!boss || boss.fallen) return;
-  if (canopyHidesSettlement(boss)) return;   // v3.17.0: 大樹の樹冠の下
 
   bossNovaTimer -= dt;
   if (bossNovaTimer > 0) return;
@@ -12148,11 +12136,6 @@ function drawDamageNumbers() {
 
 function damageMover(m, damage, srcX, srcY) {
   if (!m.alive) return;
-  // v3.17.0: 大樹海の樹冠の下は無敵（潜行と同じ扱い。土煙ではなく葉が散る）
-  if (canopyHidesMover(m)) {
-    if (fxRandom() < 0.08) spawnHitParticles(m.wx + (fxRandom() - 0.5) * 20, m.wy + (fxRandom() - 0.5) * 20);
-    return;
-  }
   // v0.42: 潜行中は無敵（浮上した時だけ殴れる）
   if (m.submerged) {
     // 手応えが無いと「当たっていないのかバグなのか」が分からないので土煙だけ返す
@@ -12185,11 +12168,6 @@ function damageMover(m, damage, srcX, srcY) {
   if (m.hp <= 0) {
     m.alive = false;
     m.hp = 0;
-    // v3.17.0: 伐採機械は倒れると鋸が爆ぜて周りの樹冠を抉る
-    if (m.def.canopyCutter) {
-      canopyApplyBlast(m.wx, m.wy, CANOPY_CUTTER_DEATH_R);
-      spawnExplosionFx(m.wx, m.wy, CANOPY_CUTTER_DEATH_R * 0.5, { fire: 0.4 });
-    }
     // v2.6.0: 大きい敵はすぐ消えず、崩れて倒れ込んで残骸になる
     if (moverLeavesWreck(m.def)) beginMoverDeath(m);
     runKills++;
@@ -13790,48 +13768,81 @@ const RAIL_GENERIC_MULT = 0.15;   // 軌道では普通の巡回敵をこの割�
 // 代わりに**鉄路の側が警戒度ぶん増える**（遺された自動機械が反応して動き出す）。
 const RAIL_GENERIC_TIER_CAP = 2.6;
 
-// v3.17.0: 大樹海の敵を湧かせる（樹上弓兵の組・伐採機械・森番の巨人）
-const FOREST_ARCHER_PACKS   = 2;   // 基準の広さでの組の数（面積で増える。8400四方で6組前後）
-const FOREST_LUMBER_BASE    = 2;   // 伐採機械の数（時代3つごとに1台増える）
-const FOREST_GIANT_BASE     = 1;   // 森番の巨人の数（時代V から1体増える）
+// v3.18.0: 大樹海の敵を湧かせる（森の伏兵の組・森番の巨人）
+const AMBUSH_GROUP_SIZE      = 3;     // 伏兵は3人で1か所に潜む
+const AMBUSH_GROUP_MAX       = 14;    // 1ステージの伏兵の組の上限
+const AMBUSH_TOWN_MIN_COVER  = 0.15;  // これより覆われていない町には潜まない
+const AMBUSH_DENSE_COVER     = 0.50;  // これより覆われた町には2組
+const AMBUSH_TRIGGER_R       = 320;   // 群れがここまで近づくと飛び出す
+const AMBUSH_OUT_SECONDS     = 6.0;   // 飛び出して戦う時間
+const AMBUSH_RETURN_R        = 700;   // 戻る樹冠を探す距離（無ければ出たまま）
+const AMBUSH_ARRIVE_R        = 24;    // 隠れ場所に着いたとみなす距離
+const FOREST_GIANT_BASE      = 1;     // 森番の巨人の数（時代V から1体増える）
 function generateForestMovers(stageIndex, result, bossSettlement) {
-  const boss = bossSettlement || { wx: WORLD_W * 0.5, wy: WORLD_H * 0.5 };
   const randPoint = () => ({ x: randRange(300, WORLD_W - 300), y: randRange(300, WORLD_H - 300) });
-  const finish = (mv) => { mv.maxHp = mv.def.hp; mv.hp = mv.def.hp; mv.xpValue = mv.def.xp; result.push(mv); };
+  const finish = (mv) => { mv.maxHp = mv.def.hp; mv.hp = mv.def.hp; mv.xpValue = mv.def.xp; result.push(mv); return mv; };
 
-  const archerDef = MOVER_DEFS.canopy_archer;
-  const packs = scaledForWorld(FOREST_ARCHER_PACKS, MOVER_DENSITY_FACTOR);
-  for (let k = 0; k < packs; k++) {
-    const leader = makeMover(archerDef, randPoint);
-    const pid = nextPackId++;
-    for (let p = 0; p < archerDef.packCount; p++) {
-      const mv = p === 0 ? leader : makeMover(archerDef, randPoint);
-      if (p > 0) {
-        mv.waypoints = leader.waypoints; mv.wpIdx = leader.wpIdx; mv.wpDir = leader.wpDir;
-        mv.wx = leader.wx + randRange(-60, 60); mv.wy = leader.wy + randRange(-60, 60);
+  // 覆われた町ほど伏兵が多い。潜む点は町の中の樹冠のマス
+  let groups = 0;
+  const towns = canopyTownCover.filter(t => t.cover >= AMBUSH_TOWN_MIN_COVER).sort((a, b) => b.cover - a.cover);
+  for (const t of towns) {
+    const want = t.cover >= AMBUSH_DENSE_COVER ? 2 : 1;
+    for (let g = 0; g < want && groups < AMBUSH_GROUP_MAX; g++) {
+      const a = random() * Math.PI * 2, rr = random() * t.r * 0.7;
+      const spot = canopyNearestLeaf(t.x + Math.cos(a) * rr, t.y + Math.sin(a) * rr, t.r);
+      if (!spot) continue;
+      for (let k = 0; k < AMBUSH_GROUP_SIZE; k++) {
+        const mv = finish(makeMover(MOVER_DEFS.forest_ambusher, randPoint));
+        const hide = canopyNearestLeaf(spot.x + randRange(-120, 120), spot.y + randRange(-120, 120), 260) || spot;
+        mv.hideAt = hide;
+        mv.wx = hide.x; mv.wy = hide.y;
+        mv.ambushState = "hide";
       }
-      mv.packId = pid;
-      mv.speedMult = randRange(0.92, 1.08);
-      finish(mv);
+      groups++;
     }
-  }
-
-  // 伐採機械は森の外れから首都の真ん中へ向かう往復路を持つ（首都の樹冠を外側から切り進む）
-  const lumberCount = FOREST_LUMBER_BASE + Math.floor(stageIndex / 3);
-  for (let k = 0; k < lumberCount; k++) {
-    const mv = makeMover(MOVER_DEFS.lumberjack, randPoint);
-    const a = (k / lumberCount) * Math.PI * 2 + randRange(-0.3, 0.3);
-    const far = Math.min(WORLD_W, WORLD_H) * 0.42;
-    const from = { x: Math.max(300, Math.min(WORLD_W - 300, boss.wx + Math.cos(a) * far)),
-                   y: Math.max(300, Math.min(WORLD_H - 300, boss.wy + Math.sin(a) * far)) };
-    mv.waypoints = [from, { x: boss.wx, y: boss.wy }];
-    mv.wpIdx = 1; mv.wpDir = 1;
-    mv.wx = from.x; mv.wy = from.y;
-    finish(mv);
   }
 
   const giantCount = FOREST_GIANT_BASE + (stageIndex >= 4 ? 1 : 0);
   for (let k = 0; k < giantCount; k++) finish(makeMover(MOVER_DEFS.forest_giant, randPoint));
+}
+
+/** 葉が散る（伏兵が樹冠から飛び出す・戻る合図）。 */
+function spawnLeafBurst(x, y) {
+  for (let k = 0; k < 6; k++) spawnHitParticles(x + (fxRandom() - 0.5) * 50, y + (fxRandom() - 0.5) * 50);
+}
+
+/**
+ * 森の伏兵の状態を進め、向かう先を返す（null なら普通の敵と同じ動き）。
+ *   hide    … 隠れ場所（樹冠のマス）へ戻って待つ。撃たない。群れが近づくと out へ
+ *   out     … 群れへ向かって戦う。時間が来たら近くの樹冠へ戻る（無ければ exposed）
+ *   exposed … 隠れ場所を焼かれた・近くに樹冠が無い。普通の敵として戦い続ける
+ */
+function updateAmbusher(m, centroid, dt) {
+  if (m.ambushState === "hide") {
+    if (!m.hideAt || !canopyLeafAt(m.hideAt.x, m.hideAt.y)) {
+      m.ambushState = "exposed";   // 隠れ場所の樹冠が燃えた
+      spawnLeafBurst(m.wx, m.wy);
+      return null;
+    }
+    if (dist2(m.wx, m.wy, centroid.x, centroid.y) < AMBUSH_TRIGGER_R * AMBUSH_TRIGGER_R) {
+      m.ambushState = "out";
+      m.ambushTimer = AMBUSH_OUT_SECONDS;
+      m.attackTimer = Math.min(m.attackTimer, 0.25);   // 飛び出した直後に一射
+      spawnLeafBurst(m.wx, m.wy);
+      return centroid;
+    }
+    m._ambushHold = dist2(m.wx, m.wy, m.hideAt.x, m.hideAt.y) < AMBUSH_ARRIVE_R * AMBUSH_ARRIVE_R;
+    return m.hideAt;
+  }
+  if (m.ambushState === "out") {
+    m.ambushTimer -= dt;
+    if (m.ambushTimer > 0) return centroid;
+    const leaf = canopyNearestLeaf(m.wx, m.wy, AMBUSH_RETURN_R);
+    if (leaf) { m.hideAt = leaf; m.ambushState = "hide"; return leaf; }
+    m.ambushState = "exposed";
+    return null;
+  }
+  return null;
 }
 
 function generateRailMovers(stageIndex, result, tierForCount = 0) {
@@ -14260,48 +14271,43 @@ const TERRAIN_SPRITE_ALPHA = { rock: 0.55, lake: 0.55, forest: 0.40 };
 // v0.17: 森クラスタ（非ブロッキングの自然装飾。竜も敵も上を飛び越える＝当たり判定なし）。
 // 「文明の外側に広がる自然」を描いてアクアリウム感（世界の生命感）を足す。
 // =====================================================================
-// v3.17.0: 大樹海（SHAPE_FOREST・案帳 DT-005）— 樹冠
+// v3.17.0→v3.18.0: 大樹海（SHAPE_FOREST・案帳 DT-005／DT-039）— 樹冠
 // =====================================================================
-// 地図を樹冠の格子で覆う。**樹冠の下にいる敵と街は狙えず、攻撃も通らない**
-// （真上から見えるのは樹冠の緑だけ）。竜は樹冠の上を飛ぶので、竜の動きには何も効かない
-// ＝ next-steps §3-x の1つ目「地形は敵の側にだけ効く」。
-// 樹冠を剥がせるのは **火属性の攻撃**（燃え広がる。広いが時間がかかる）と
-// **爆発カテゴリの攻撃**（その場を大きく抉る。すぐだが狭い）だけ（Shooter指示「火だけでは厳しいので爆発も」）。
-// 首都は地図の中央を覆う「大樹の樹冠」の下にあり、ここは**外側からしか剥がせない**
-// （開いたマスの隣だけが剥がれる）＝剥いだぶんだけ下の街が輪切りに現れ、最後に首都の本体が出る。
-// これが §3-x の2つ目「ボスも地形のルールに乗る」。
-// 火も爆発も持たない竜種のために、伐採機械（専用の敵）が首都へ向かって樹冠を切り拓き、
-// 倒すと鋸が爆ぜて周りを抉る（詰み防止）。
+// v3.18.0（Shooter判定）: 樹冠は**見た目だけ**。判定には何も効かず、下の敵も竜も普通に攻撃できる。
+// v3.17.0 では「樹冠の下は狙えず攻撃も通らない」にしたが、火竜以外ではほぼ攻撃できず攻撃もされず、
+// ゲームとして成り立たなかった。森に覆われて見える雰囲気だけを残す。
+// - 覆う量は町ごとに 0〜80%、平均30%前後（どの町も全部は覆わない）
+// - 火属性のブレスが敵に当たったとき、そこに樹冠があれば燃える（樹冠そのものは狙わない）
+// - 樹冠を使うのは専用の敵「森の伏兵」だけ：樹冠の下で待ち、群れが近づくと飛び出す
 const SHAPE_FOREST_CANOPY_CELL = 160;     // 樹冠1マスの大きさ（px）
 const CANOPY_OPEN    = 0;
 const CANOPY_LEAF    = 1;
 const CANOPY_BURNING = 2;
-const CANOPY_START_CLEAR_R   = 950;       // 開始地点の周りは開けておく（最初の卵が拾えないと育たない）
-const CANOPY_CROWN_R         = 1150;      // 首都を覆う大樹の樹冠の半径
-const CANOPY_GLADE_COUNT     = 9;         // 森の中の空き地の数（基準の広さ 8400×8400 での数）
-const CANOPY_GLADE_R_MIN     = 260;
-const CANOPY_GLADE_R_MAX     = 480;
-const CANOPY_IGNITE_HEAT     = 2.4;       // 火属性のブレスがこれだけ当たると燃え始める（ブレス毎秒3なので1体で約0.8秒）
+const CANOPY_COVER_MEAN      = 0.27;      // 町の覆われ方を引く平均（建物単位に丸めると少し増え、実測で平均30%前後になる）
+const CANOPY_COVER_MAX       = 0.80;      // 一番覆われた町でもこれまで（全部は覆わない）
+// 割合は MAX × u^k（u は一様乱数）で引く。平均が MAX/(k+1) になるので、k はそこから逆算する
+const CANOPY_COVER_EXP       = CANOPY_COVER_MAX / CANOPY_COVER_MEAN - 1;
+const CANOPY_TOWN_PAD        = 220;       // 町の建物の外側どこまでを町の土地とみなすか
+const CANOPY_WILD_COVER      = 0.30;      // 町に属さない土地の覆われ方
+const CANOPY_START_CLEAR_R   = 700;       // 開始地点の周りは開けておく
+const CANOPY_NOISE_CELLS     = 5;         // 樹冠のまとまりの大きさ（この数のマスごとに濃淡の山が1つ）
+const CANOPY_IGNITE_HEAT     = 0.6;       // 火属性のブレスがこれだけ当たると燃え始める（ブレス毎秒3なので1体で0.2秒）
 const CANOPY_BURN_SECONDS    = 2.2;       // 燃えてから開くまで
-const CANOPY_SPREAD_PER_SEC  = 0.55;      // 燃えているマスが隣を燃やす率（毎秒・隣1マスあたり）
-const CANOPY_SPREAD_DEPTH    = 3;         // 火が火元から燃え広がる最大のマス数（無制限だと1つの火で森が全部消える）
-const CANOPY_BLAST_MIN_R     = 90;        // 小さい爆発でも最低1マスは抉る
-const CANOPY_CUTTER_R        = 120;       // 伐採機械が通り道を切り拓く幅（半径）
-const CANOPY_CUTTER_DEATH_R  = 260;       // 伐採機械が倒れたとき鋸が爆ぜて抉る半径
-const CANOPY_BREATH_REACH    = 0.8;       // ブレスの先端（射程のこの割合の点）で樹冠を炙る
+const CANOPY_SPREAD_PER_SEC  = 0.45;      // 燃えているマスが隣を燃やす率（毎秒・隣1マスあたり）
+const CANOPY_SPREAD_DEPTH    = 2;         // 火が火元から燃え広がる最大のマス数
 const CANOPY_COLORS = {
-  leafDark: "#1f4a24", leafLight: "#3d7a3a", crownDark: "#163a1c", crownLight: "#2f6630",
+  leafDark: "#1f4a24", leafLight: "#3d7a3a",
   burnOuter: "#ff7a2a", burnInner: "#ffd36a",
 };
 
 let forestActive = false;
 let canopyCols = 0, canopyRows = 0;
 let canopyState = new Uint8Array(0);
-let canopyCrown = new Uint8Array(0);      // 1 = 首都を覆う大樹の樹冠（外側からしか剥がせない）
 let canopyGen   = new Uint8Array(0);      // 燃えているマスの「火元からの距離」
 let canopyHeat  = new Float32Array(0);
 let canopyBurnT = new Float32Array(0);
 const canopyBurningList = [];             // 燃えているマスの番号（毎フレーム全マスを舐めないため）
+let canopyTownCover = [];                 // 町ごとの覆われ方（{ x, y, r, cover }。伏兵を置く町を選ぶのに使う）
 
 function canopyIndexAt(x, y) {
   const c = Math.floor(x / SHAPE_FOREST_CANOPY_CELL), r = Math.floor(y / SHAPE_FOREST_CANOPY_CELL);
@@ -14309,135 +14315,151 @@ function canopyIndexAt(x, y) {
   return r * canopyCols + c;
 }
 
-/** その地点が樹冠の下か（燃えている間もまだ下は見えない）。 */
-function canopyHides(x, y) {
+/** その地点が葉の樹冠の下か（見た目の話。判定には使わない。伏兵の隠れ場所探しに使う）。 */
+function canopyLeafAt(x, y) {
   if (!forestActive) return false;
   const i = canopyIndexAt(x, y);
-  return i >= 0 && canopyState[i] !== CANOPY_OPEN;
+  return i >= 0 && canopyState[i] === CANOPY_LEAF;
 }
-function canopyHidesSettlement(st) { return forestActive && canopyHides(st.wx, st.wy); }
-/** 森番の巨人のように樹冠より背の高い敵は隠れない。 */
-function canopyHidesMover(m) { return forestActive && !m.def.tallCanopy && canopyHides(m.wx, m.wy); }
 
-function canopyHasOpenNeighbour(i) {
-  const c = i % canopyCols, r = (i - c) / canopyCols;
-  return (c > 0 && canopyState[i - 1] === CANOPY_OPEN) ||
-         (c < canopyCols - 1 && canopyState[i + 1] === CANOPY_OPEN) ||
-         (r > 0 && canopyState[i - canopyCols] === CANOPY_OPEN) ||
-         (r < canopyRows - 1 && canopyState[i + canopyCols] === CANOPY_OPEN);
+/** (x, y) から maxR 以内で一番近い葉のマスの中心。無ければ null。 */
+function canopyNearestLeaf(x, y, maxR) {
+  if (!forestActive) return null;
+  const cell = SHAPE_FOREST_CANOPY_CELL, half = cell * 0.5;
+  const reach = Math.ceil(maxR / cell);
+  const c0 = Math.floor(x / cell), r0 = Math.floor(y / cell);
+  let best = null, bestD2 = maxR * maxR;
+  for (let r = Math.max(0, r0 - reach); r <= Math.min(canopyRows - 1, r0 + reach); r++) {
+    for (let c = Math.max(0, c0 - reach); c <= Math.min(canopyCols - 1, c0 + reach); c++) {
+      if (canopyState[r * canopyCols + c] !== CANOPY_LEAF) continue;
+      const cx = c * cell + half, cy = r * cell + half;
+      const d2 = dist2(cx, cy, x, y);
+      if (d2 < bestD2) { bestD2 = d2; best = { x: cx, y: cy }; }
+    }
+  }
+  return best;
 }
 
 function clearCanopy() {
   forestActive = false;
   canopyCols = canopyRows = 0;
-  canopyState = new Uint8Array(0); canopyCrown = new Uint8Array(0); canopyGen = new Uint8Array(0);
+  canopyState = new Uint8Array(0); canopyGen = new Uint8Array(0);
   canopyHeat = new Float32Array(0); canopyBurnT = new Float32Array(0);
   canopyBurningList.length = 0;
+  canopyTownCover = [];
 }
 
-/** 大樹海の樹冠を敷く。首都の位置と開始地点が決まった後に呼ぶ。 */
-function buildCanopy(boss) {
+/**
+ * 大樹海の樹冠を敷く。建物の配置が決まった後に呼ぶ（町ごとに覆う量を決めるため）。
+ * まとまった林になるよう、粗い格子の乱数を滑らかにつないだ濃淡を作り、
+ * 濃淡の順位（0〜1 に均した値）が町の覆われ方より小さいマスを葉にする＝覆う割合がほぼその値になる。
+ */
+function buildCanopy(buildings) {
   clearCanopy();
   forestActive = true;
-  canopyCols = Math.ceil(WORLD_W / SHAPE_FOREST_CANOPY_CELL);
-  canopyRows = Math.ceil(WORLD_H / SHAPE_FOREST_CANOPY_CELL);
+  const cell = SHAPE_FOREST_CANOPY_CELL, half = cell * 0.5;
+  canopyCols = Math.ceil(WORLD_W / cell);
+  canopyRows = Math.ceil(WORLD_H / cell);
   const n = canopyCols * canopyRows;
-  canopyState = new Uint8Array(n).fill(CANOPY_LEAF);
-  canopyCrown = new Uint8Array(n);
+  canopyState = new Uint8Array(n);
   canopyGen   = new Uint8Array(n);
   canopyHeat  = new Float32Array(n);
   canopyBurnT = new Float32Array(n);
-  const glades = [];
-  const gladeCount = scaledForWorld(CANOPY_GLADE_COUNT);
-  for (let k = 0; k < gladeCount * 4 && glades.length < gladeCount; k++) {
-    const g = { x: randRange(400, WORLD_W - 400), y: randRange(400, WORLD_H - 400),
-                r: randRange(CANOPY_GLADE_R_MIN, CANOPY_GLADE_R_MAX) };
-    // 空き地は大樹の樹冠に食い込ませない（首都が最初から見えてしまう）
-    if (dist2(g.x, g.y, boss.wx, boss.wy) < (CANOPY_CROWN_R + g.r + 200) ** 2) continue;
-    glades.push(g);
+
+  // 町ごとの土地（建物の重心と、一番遠い建物までの距離）と覆う割合
+  const towns = new Map();
+  for (const b of buildings) {
+    if (b._townIndex === undefined || b._townIndex < 0 || b.isBoss || b._isWall) continue;
+    let t = towns.get(b._townIndex);
+    if (!t) { t = { sx: 0, sy: 0, n: 0, list: [] }; towns.set(b._townIndex, t); }
+    t.sx += b.wx; t.sy += b.wy; t.n++; t.list.push(b);
   }
-  const half = SHAPE_FOREST_CANOPY_CELL * 0.5;
+  canopyTownCover = [];
+  for (const t of towns.values()) {
+    const x = t.sx / t.n, y = t.sy / t.n;
+    let r = 0;
+    for (const b of t.list) r = Math.max(r, Math.sqrt(dist2(b.wx, b.wy, x, y)));
+    canopyTownCover.push({ x, y, r: r + CANOPY_TOWN_PAD, list: t.list,
+                           cover: CANOPY_COVER_MAX * Math.pow(random(), CANOPY_COVER_EXP), cut: 0 });
+  }
+
+  // 滑らかな濃淡（粗い格子の乱数を双線形でつなぐ）
+  const gc = Math.ceil(canopyCols / CANOPY_NOISE_CELLS) + 2, gr = Math.ceil(canopyRows / CANOPY_NOISE_CELLS) + 2;
+  const grid = new Float32Array(gc * gr);
+  for (let k = 0; k < grid.length; k++) grid[k] = random();
+  const noise = new Float32Array(n);
+  for (let r = 0; r < canopyRows; r++) {
+    for (let c = 0; c < canopyCols; c++) {
+      const fx = c / CANOPY_NOISE_CELLS, fy = r / CANOPY_NOISE_CELLS;
+      const ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy;
+      const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+      const a = grid[iy * gc + ix], b = grid[iy * gc + ix + 1];
+      const d = grid[(iy + 1) * gc + ix], e = grid[(iy + 1) * gc + ix + 1];
+      noise[r * canopyCols + c] = (a + (b - a) * sx) * (1 - sy) + (d + (e - d) * sx) * sy;
+    }
+  }
+  // 順位で 0〜1 に均す（つないだ乱数は真ん中に寄るので、そのままだと割合がずれる）
+  const order = Array.from({ length: n }, (_, k) => k).sort((p, q) => noise[p] - noise[q]);
+  const rank = new Float32Array(n);
+  for (let k = 0; k < n; k++) rank[order[k]] = k / n;
+  // 町の中は**建物の数で**割合を合わせる。建物は濃淡の濃い所に固まることがあり、
+  // 土地の割合で切ると建物が全部覆われる町が出た（実測: 30%のつもりで100%）。
+  // 建物の下のマスの順位を並べ、覆う割合ぶんの順位を町のしきい値にする
+  for (const t of canopyTownCover) {
+    const ranks = t.list.map(b => { const i = canopyIndexAt(b.wx, b.wy); return i >= 0 ? rank[i] : 1; }).sort((a, b) => a - b);
+    // 覆う棟数。最大の割合を超えず、町の全部は覆わない
+    const k = Math.min(Math.round(t.cover * ranks.length), Math.floor(CANOPY_COVER_MAX * ranks.length), ranks.length - 1);
+    t.cut = k <= 0 ? -1 : ranks[k - 1];   // この順位「以下」のマスを葉にする
+  }
+
   for (let r = 0; r < canopyRows; r++) {
     for (let c = 0; c < canopyCols; c++) {
       const i = r * canopyCols + c;
-      const x = c * SHAPE_FOREST_CANOPY_CELL + half, y = r * SHAPE_FOREST_CANOPY_CELL + half;
-      if (dist2(x, y, boss.wx, boss.wy) < CANOPY_CROWN_R * CANOPY_CROWN_R) { canopyCrown[i] = 1; continue; }
-      if (dist2(x, y, START_X, START_Y) < CANOPY_START_CLEAR_R * CANOPY_START_CLEAR_R) { canopyState[i] = CANOPY_OPEN; continue; }
-      for (const g of glades) {
-        if (dist2(x, y, g.x, g.y) < g.r * g.r) { canopyState[i] = CANOPY_OPEN; break; }
+      const x = c * cell + half, y = r * cell + half;
+      if (dist2(x, y, START_X, START_Y) < CANOPY_START_CLEAR_R * CANOPY_START_CLEAR_R) continue;
+      let cut = CANOPY_WILD_COVER, nearest = Infinity;   // 町の外は土地の割合で切る
+      for (const t of canopyTownCover) {
+        const d2 = dist2(x, y, t.x, t.y);
+        if (d2 < t.r * t.r && d2 < nearest) { nearest = d2; cut = t.cut; }
       }
+      if (rank[i] <= cut) canopyState[i] = CANOPY_LEAF;
     }
+  }
+  // 仕上げ：同じマスに建物が何棟も乗る・隣の町の林がかかる、で上限を超えた町は、
+  // 覆われた建物のうち順位の一番高い（林の縁の）マスから開けて上限に収める
+  for (const t of canopyTownCover) {
+    const limit = Math.min(Math.floor(CANOPY_COVER_MAX * t.list.length), t.list.length - 1);
+    for (let guard = 0; guard < t.list.length; guard++) {
+      let covered = 0, worst = -1;
+      for (const b of t.list) {
+        const i = canopyIndexAt(b.wx, b.wy);
+        if (i < 0 || canopyState[i] !== CANOPY_LEAF) continue;
+        covered++;
+        if (worst < 0 || rank[i] > rank[worst]) worst = i;
+      }
+      if (covered <= limit || worst < 0) break;
+      canopyState[worst] = CANOPY_OPEN;
+    }
+    delete t.list;
   }
 }
 
-/** そのマスに火を付けられるか。大樹の樹冠は開いたマスか燃えているマスの隣だけ（外側から）。 */
-function canopyCanCatch(i) {
-  if (canopyState[i] !== CANOPY_LEAF) return false;
-  if (!canopyCrown[i]) return true;
-  if (canopyHasOpenNeighbour(i)) return true;
-  const c = i % canopyCols, r = (i - c) / canopyCols;
-  return (c > 0 && canopyState[i - 1] === CANOPY_BURNING) ||
-         (c < canopyCols - 1 && canopyState[i + 1] === CANOPY_BURNING) ||
-         (r > 0 && canopyState[i - canopyCols] === CANOPY_BURNING) ||
-         (r < canopyRows - 1 && canopyState[i + canopyCols] === CANOPY_BURNING);
-}
-
 function canopyIgnite(i, gen) {
-  if (!canopyCanCatch(i)) return;
+  if (canopyState[i] !== CANOPY_LEAF) return;
   canopyState[i] = CANOPY_BURNING;
   canopyGen[i]   = gen;
   canopyBurnT[i] = CANOPY_BURN_SECONDS;
   canopyBurningList.push(i);
 }
 
-/** 火属性の攻撃が (x, y) を炙った。熱が溜まると燃え始める。 */
+/** 火属性の攻撃が (x, y) の敵に当たった。そこに樹冠があれば熱が溜まって燃え始める。 */
 function canopyApplyFire(x, y, heat) {
   if (!forestActive) return false;
   const i = canopyIndexAt(x, y);
   if (i < 0 || canopyState[i] !== CANOPY_LEAF) return false;
-  if (!canopyCanCatch(i)) return false;
   canopyHeat[i] += heat;
   if (canopyHeat[i] >= CANOPY_IGNITE_HEAT) canopyIgnite(i, 0);
   return true;
-}
-
-/** 爆発カテゴリの攻撃が (x, y) 半径 radius を抉った。大樹の樹冠は外側から順にしか剥がれない。 */
-function canopyApplyBlast(x, y, radius) {
-  if (!forestActive) return;
-  const rr = Math.max(radius, CANOPY_BLAST_MIN_R);
-  const half = SHAPE_FOREST_CANOPY_CELL * 0.5;
-  const c0 = Math.max(0, Math.floor((x - rr) / SHAPE_FOREST_CANOPY_CELL));
-  const c1 = Math.min(canopyCols - 1, Math.floor((x + rr) / SHAPE_FOREST_CANOPY_CELL));
-  const r0 = Math.max(0, Math.floor((y - rr) / SHAPE_FOREST_CANOPY_CELL));
-  const r1 = Math.min(canopyRows - 1, Math.floor((y + rr) / SHAPE_FOREST_CANOPY_CELL));
-  const reach2 = (rr + half * 0.5) * (rr + half * 0.5);
-  let opened = 0, changed = true;
-  // 大樹の樹冠は「開いたマスの隣」だけが剥がれるので、開いたぶんだけ内側へ進めるよう何度か回す
-  while (changed) {
-    changed = false;
-    for (let r = r0; r <= r1; r++) {
-      for (let c = c0; c <= c1; c++) {
-        const i = r * canopyCols + c;
-        if (canopyState[i] === CANOPY_OPEN) continue;
-        const cx = c * SHAPE_FOREST_CANOPY_CELL + half, cy = r * SHAPE_FOREST_CANOPY_CELL + half;
-        if (dist2(cx, cy, x, y) > reach2) continue;
-        if (canopyCrown[i] && !canopyHasOpenNeighbour(i)) continue;
-        canopyState[i] = CANOPY_OPEN;
-        opened++; changed = true;
-      }
-    }
-  }
-  if (opened > 0) {
-    for (let k = 0; k < Math.min(opened, 6); k++) {
-      spawnHitParticles(x + (fxRandom() - 0.5) * rr, y + (fxRandom() - 0.5) * rr);
-    }
-  }
-}
-
-/** 伐採機械の通り道。大樹の樹冠も外側から切り進む（火も爆発も無い竜種の詰み防止）。 */
-function canopyCutAt(x, y) {
-  if (!forestActive) return;
-  canopyApplyBlast(x, y, CANOPY_CUTTER_R);
 }
 
 function updateCanopy(dt) {
@@ -14483,10 +14505,8 @@ function drawCanopy() {
   const t = breathTime;
   // 濃い房（葉の塊）→ 明るい房（日の当たる上面。左上へずらして小さく）の順に重ねる
   const passes = [
-    { crown: 0, color: CANOPY_COLORS.leafDark,   rMul: 1.00, off: 0 },
-    { crown: 0, color: CANOPY_COLORS.leafLight,  rMul: 0.55, off: -0.07 },
-    { crown: 1, color: CANOPY_COLORS.crownDark,  rMul: 1.08, off: 0 },
-    { crown: 1, color: CANOPY_COLORS.crownLight, rMul: 0.55, off: -0.07 },
+    { color: CANOPY_COLORS.leafDark,  rMul: 1.00, off: 0 },
+    { color: CANOPY_COLORS.leafLight, rMul: 0.55, off: -0.07 },
   ];
   ctx.save();
   for (const p of passes) {
@@ -14495,7 +14515,7 @@ function drawCanopy() {
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) {
         const i = r * canopyCols + c;
-        if (canopyState[i] !== CANOPY_LEAF || canopyCrown[i] !== p.crown) continue;
+        if (canopyState[i] !== CANOPY_LEAF) continue;
         // 葉むらの揺れ（マスごとに位相をずらす）
         const sway = Math.sin(t * 1.3 + i * 0.7) * cell * 0.025;
         const cx = c * cell + half + sway, cy = r * cell + half;
@@ -16324,7 +16344,6 @@ function updateSettlementAttacks(dt) {
     const settlement = settlements[s];
     if (!settlement || settlement.fallen) continue;
     if (settlement._noAttack) continue;   // v0.41: 城下の民家は撃たない（弾量を街と同等に保つ）
-    if (canopyHidesSettlement(settlement)) continue;   // v3.17.0: 樹冠の下の街は撃たない（隠れている）
     // v0.79: 陥落した町は撃たない（壊せるし報酬も出るが、危険だけ消える）
     if (isTownSurrendered(settlement._townIndex)) continue;
 
@@ -16695,7 +16714,7 @@ function updateBeamAttacks(dt) {
   const damageThisFrame = BREATH_DAMAGE_PER_SEC * effWeaponDmgMult("beam") * dt;
   const arcHalf = breathArcHalf();   // v0.90: 攻撃可能角度の半角（ループ外で1回）
   const targets = attackTargets();   // v2.13.0: 狙う分類
-  const fireBreath = attackAttribute(sp().attack) === ATTRIBUTE_FIRE;   // v3.17.0: 樹冠を燃やせるか
+  const fireBreath = forestActive && attackAttribute(sp().attack) === ATTRIBUTE_FIRE;   // v3.18.0: 当たった所の樹冠を燃やせるか
 
   // Spatial Hash を使ってブレス射程内の建物候補を絞る
   for (let i = 0; i < N; i++) {
@@ -16707,22 +16726,12 @@ function updateBeamAttacks(dt) {
     // それまでは建物を優先し、射程内に建物が1棟も無いときだけ動く敵を照らしていた。
     collectAimTargets(px[i], py[i], effRange, targets, i, arcHalf, maxTargets, _breathTargetBuf);
 
-    // v3.17.0: 火属性のブレスは、狙う相手が居なくても先端で樹冠を炙る（大樹海）。
-    // 樹冠の下は狙えないので、これが無いと森の上でブレスが一度も出ない
-    if (forestActive && fireBreath && _breathTargetBuf.length === 0) {
-      const sp2 = vx[i] * vx[i] + vy[i] * vy[i];
-      if (sp2 > 1) {
-        const inv = 1 / Math.sqrt(sp2);
-        const tx = px[i] + vx[i] * inv * effRange * CANOPY_BREATH_REACH;
-        const ty = py[i] + vy[i] * inv * effRange * CANOPY_BREATH_REACH;
-        if (canopyApplyFire(tx, ty, damageThisFrame)) activeBreaths.push({ boidIdx: i, targetWx: tx, targetWy: ty });
-      }
-    }
-
     for (const tg of _breathTargetBuf) {
       if (tg.mover) {
         if (!tg.mover.alive) continue;   // 同フレーム内で先の照射により撃破済み
         hitMover(tg.mover, { shot: damageThisFrame }, px[i], py[i]);
+        // v3.18.0: 火属性のブレスが当たった所に樹冠があれば燃える（樹冠そのものは狙わない）
+        if (fireBreath) canopyApplyFire(tg.mover.wx, tg.mover.wy, damageThisFrame);
         activeBreaths.push({ boidIdx: i, targetWx: tg.mover.wx, targetWy: tg.mover.wy });
         continue;
       }
@@ -16732,6 +16741,7 @@ function updateBeamAttacks(dt) {
 
       // ダメージ適用（v1.1.1: 楔竜のひびはブレスにも乗る＝hitBuilding の中）
       hitBuilding(sIdx, { shot: damageThisFrame }, px[i], py[i]);
+      if (fireBreath) canopyApplyFire(settlement.wx, settlement.wy, damageThisFrame);   // v3.18.0
 
       // ヒットパーティクル（0.2秒間引き）
       settlement._breathParticleTimer -= dt;
@@ -17914,7 +17924,7 @@ const STRINGS = {
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
-               "無人列車の走る軌道", "樹冠に覆われた大樹海"],
+               "無人列車の走る軌道", "森に覆われた大樹海"],
   shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
@@ -17937,8 +17947,8 @@ const STRINGS = {
       rule: "内側の軌道ほど格上。地面が無いので散らばった家は無い" },
     { route: "角 → 中心のターミナル", play: "滅びた文明の鉄路が放射6本と環状2本。無人の列車が今も走り続けている。",
       rule: "列車は線路の上しか走れない。線路から離れれば追ってこない" },
-    { route: "角 → 中心の大樹", play: "森が樹冠で覆われ、その下の敵と街は狙えない。火で燃やすか爆発で抉って樹冠を剥がす。",
-      rule: "火は燃え広がる・爆発はその場だけ。首都を覆う大樹の樹冠は外側からしか剥がれない" },
+    { route: "角 → 中心", play: "町に林がかかった森の土地。樹冠の下にも攻撃は届く。樹冠の下には森の伏兵が潜む。",
+      rule: "伏兵は近づくと飛び出す。火のブレスが当たった所の樹冠は燃える" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -19693,11 +19703,6 @@ function updateHUDWeapon() {
 function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
-  // v3.17.0: 大樹海の樹冠の下には攻撃が通らない（樹冠を剥がしてから）
-  if (canopyHidesSettlement(settlement)) {
-    if (fxRandom() < 0.08) spawnHitParticles(settlement.wx + (fxRandom() - 0.5) * 30, settlement.wy + (fxRandom() - 0.5) * 30);
-    return;
-  }
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   settlement.hp -= damage;
   reportDamage(settlement, settlement.wx, settlement.wy, damage);
@@ -19836,7 +19841,6 @@ function collectAimTargets(wx, wy, maxDist, targets, boidIdx, halfArc, maxCount,
       const st = settlements[sIdx];
       if (!st || st.fallen) continue;
       if (!(st._isWall ? aimWall : aimBuilding)) continue;
-      if (canopyHidesSettlement(st)) continue;   // v3.17.0: 大樹海の樹冠の下は狙えない
       const dx = st.wx - wx, dy = st.wy - wy;
       const d2 = dx * dx + dy * dy;
       if (d2 >= r2) continue;
@@ -20067,7 +20071,6 @@ function updateDragonProjectiles(dt) {
           }
         }
         spawnExplosionFx(dprojX[i], dprojY[i], aoeR, { fire: 0.7 });   // v3.9.0: 影弾の爆ぜ
-        canopyApplyBlast(dprojX[i], dprojY[i], aoeR);                  // v3.17.0: 爆発は樹冠を抉る
         hapticPulse(12);
         dprojActive[i] = 0;
         break;
@@ -21473,7 +21476,6 @@ function drawSpecialBolts() {
  */
 function hitInRadius(wx, wy, radius, hit, targets = TARGETS_ALL_AIM) {
   let hits = 0;
-  if (hit && hit.blast > 0) canopyApplyBlast(wx, wy, radius);   // v3.17.0: 爆発カテゴリは樹冠を抉る
   const cellRadius = Math.max(1, Math.ceil(radius / BUILDING_GRID_CELL));
   buildingGridQueryRadius(wx, wy, cellRadius, _buildingNeighbourBuf);
   const r2 = radius * radius;
@@ -23191,7 +23193,7 @@ const CODEX_ENEMY_NAMES = {
   walker_hull: "多脚戦車", walker_leg: "多脚戦車の脚",
   railgun_loco: "列車砲列（機関車）", railgun_car: "列車砲列の砲車",
   railcar: "装甲軌道車", railram: "衝角機関車",
-  canopy_archer: "樹上弓兵", lumberjack: "伐採機械", forest_giant: "森番の巨人",
+  forest_ambusher: "森の伏兵", forest_giant: "森番の巨人",
   raider: "レイダー", treasure: "財宝馬車", eggconvoy: "竜卵の輸送隊",
 };
 
@@ -23208,9 +23210,8 @@ const CODEX_SPECIAL_ERA = {
   railgun_car:    "軌道（全文明） — 機関車の後ろに4両",
   railcar:        "軌道（全文明） — 時代が進むほど増える",
   railram:        "軌道（全文明） — 放射線を行き来する",
-  canopy_archer:  "大樹海（全文明） — 樹冠の下から射る",
-  lumberjack:     "大樹海（全文明） — 首都へ向かって樹冠を切り拓く",
-  forest_giant:   "大樹海（全文明） — 樹冠より背が高い",
+  forest_ambusher: "大樹海（全文明） — 樹冠の下で待ち、近づくと飛び出す",
+  forest_giant:   "大樹海（全文明） — 森を歩く大物",
   splitter_mid:   "分裂体を壊すと出る",
   splitter_small: "分裂体（中）を壊すと出る",
 };
@@ -24804,14 +24805,12 @@ function codexRegionCanvas(shape) {
     diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
   } else if (shape === SHAPE_FOREST) {
     // 樹冠の緑で覆い、空き地と開始地点の周りだけ地面を見せる。中央の濃い円が大樹の樹冠
-    c.fillStyle = CANOPY_COLORS.leafDark; c.fillRect(0, 0, S, S);
-    c.fillStyle = CODEX_RG.ground;
-    for (const [x, y, r] of [[6, 46, 9], [14, 12, 4], [42, 10, 5], [44, 40, 4], [10, 28, 3.5]]) {
+    // 町（点）の上に林（緑の塊）が所々かかる
+    for (const [x, y] of [[12, 10], [34, 8], [10, 30], [30, 26], [16, 42], [40, 42], [44, 20]]) dot(x, y, 3, CODEX_RG.town);
+    c.fillStyle = CANOPY_COLORS.leafDark;
+    for (const [x, y, r] of [[14, 12, 5], [32, 10, 3], [28, 28, 6], [42, 44, 4], [46, 20, 3.5], [20, 36, 3]]) {
       c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
     }
-    dot(14, 12, 1.6, CODEX_RG.town); dot(42, 10, 1.6, CODEX_RG.town); dot(44, 40, 1.6, CODEX_RG.town);
-    c.fillStyle = CANOPY_COLORS.crownDark;
-    c.beginPath(); c.arc(26, 26, 9, 0, Math.PI * 2); c.fill();
     diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
   }
   return cv;
