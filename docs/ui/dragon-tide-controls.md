@@ -643,7 +643,7 @@ v0.33 は開いた線では折り返さず、終端に着いたら `pathEndMode`
 
 `MOVE_PROFILE_PRESETS` に `hover` / `ground` を定義済み。**竜種には割り当てていない**ので、
 実機の手触り確認は**デバッグパネルの「🛸 動き切替」**で行う
-（左下バージョンを3タップ → パネル。`種:xxx` → `hover` → `ground` を巡回。現在値はステータス行に出る）。
+（左下バージョンを1回タップ → パネル。`種:xxx` → `hover` → `ground` を巡回。現在値はステータス行に出る）。
 
 - `hover`: `accel`/`turnRate` ともに `INSTANT`、`minSpeed: 0`、`pathEndMode: "stop"`。
   指に対して向きと速さが即時に変わり、**止まれる**。

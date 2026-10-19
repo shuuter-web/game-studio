@@ -216,8 +216,9 @@
     font-family: -apple-system, BlinkMacSystemFont, monospace;
     font-size: 10px;
     color: rgba(120, 180, 255, 0.45);
-    /* v0.16.1: デバッグ用に3連タップを受ける（ステージ送り）。タップ域も少し広げる */
+    /* v0.16.1: デバッグ用にタップを受ける（v3.16.2: 1回タップで開閉）。タップ域も少し広げる */
     pointer-events: auto;
+    touch-action: manipulation;   /* ダブルタップズームを起こさない */
     padding: 10px 14px 6px 6px;
     letter-spacing: 0.05em;
   }
@@ -835,7 +836,7 @@
   }
   #challenge-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-  /* v0.19.2: デバッグパネル（左下バージョンを800ms以内に3回タップでトグル） */
+  /* v0.19.2: デバッグパネル（v3.16.2: 左下バージョンを1回タップでトグル） */
   #debug-panel {
     position: fixed;
     top: 8px; left: 50%; transform: translateX(-50%);
@@ -851,6 +852,8 @@
     z-index: 60;
     pointer-events: auto;
     box-shadow: 0 6px 30px rgba(0,0,0,0.6);
+    touch-action: pan-y;            /* v3.16.2: 縦スクロールだけ許す */
+    overscroll-behavior: contain;   /* 端まで行ってもページを引っ張らない */
   }
   #debug-panel.visible { display: flex; }
   #debug-panel .dbg-title {
@@ -867,10 +870,10 @@
     font-family: monospace; font-size: 12px; color: #e8f4ff;
     padding: 10px 6px; background: rgba(30,40,60,0.9); border: 1px solid #5a7a9a;
     border-radius: 7px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
   #debug-panel .dbg-btn:active { transform: scale(0.96); background: rgba(50,66,92,0.95); }
-  /* v0.44: 敵図鑑は3列。ボタンは pointerdown で即発火するので、
-     スクロールが要るとドラッグが「湧かせる」に化ける。画面内に収める。 */
+  /* v0.44: 敵図鑑は3列（v3.16.2: ボタンは指を離したときに発火するのでスクロールしても押されない） */
   #debug-panel .dbg-grid.enemies { grid-template-columns: repeat(3, 1fr); gap: 5px; }
   #debug-panel .dbg-grid.enemies .dbg-btn { font-size: 11px; padding: 8px 3px; line-height: 1.35; }
 
@@ -981,7 +984,7 @@
 <!-- v0.25: チャレンジ達成トースト -->
 <div id="challenge-toast"></div>
 
-<!-- v0.19.2: デバッグパネル（バージョン3タップでトグル） -->
+<!-- v0.19.2: デバッグパネル（v3.16.2: バージョンを1回タップでトグル） -->
 <div id="debug-panel"></div>
 
 <script>
@@ -990,7 +993,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.16.1";
+const GAME_VERSION = "v3.16.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1073,7 +1076,7 @@ reseedForNewRun();   // 起動直後のタイトル演出などにも乱数が�
 
 // -----------------------------------------------------------------
 // v0.16.1 / v0.19.2: デバッグパネル（テスト用・Shooter依頼）
-// 左下のバージョン表示を800ms以内に3回タップでパネルをトグル（モバイル対応）。
+// 左下のバージョン表示を1回タップでパネルをトグル（v3.16.2。以前は3回タップ）。
 // N キーは従来通り「次ステージ」の即実行（デスクトップ用ショートカット）。
 //
 // 既存の「次ステージ送り」は advanceToNextStage を直接呼ぶため正規のクリア処理
@@ -1424,6 +1427,17 @@ function debugStatusLine() {
          `seed:${debugGetSeed()}${fixedSeedParam !== null ? "(固定)" : ""}`;
 }
 
+/**
+ * v3.16.2: デバッグパネルのボタンは**指を離したとき**に発火させる（Shooter指示）。
+ * 以前は pointerdown で即発火していたので、縦にスクロールしようと触っただけで押されてしまった。
+ * click はスクロールになった操作では来ないので、スクロールと両立する。
+ * pointerdown は盤面へ抜けないように止めるだけ（preventDefault するとスクロールが止まる）。
+ */
+function dbgTap(el, fn) {
+  el.addEventListener("pointerdown", (e) => e.stopPropagation());
+  el.addEventListener("click", (e) => { e.stopPropagation(); fn(e); });
+}
+
 function renderDebugPanel() {
   const title = debugPage === "enemies" ? "ENEMIES"
               : debugPage === "specials" ? "SPECIALS"
@@ -1444,7 +1458,7 @@ function renderDebugPanel() {
     back.className = "dbg-btn";
     back.style.gridColumn = "1 / -1";
     back.textContent = "← もどる";
-    back.addEventListener("pointerdown", (e) => {
+    dbgTap(back, (e) => {
       e.stopPropagation(); e.preventDefault();
       debugPage = "main"; renderDebugPanel();
     });
@@ -1460,7 +1474,7 @@ function renderDebugPanel() {
       // 今何匹連れているかを出す（押した手応えが数で見える）
       const have = runSpecials.filter(k => k === kind).length;
       b.textContent = def.name + (have ? ` ×${have}` : "");
-      b.addEventListener("pointerdown", (e) => {
+      dbgTap(b, (e) => {
         e.stopPropagation(); e.preventDefault();
         if (gameState !== "playing") return;
         addRunSpecial(kind);
@@ -1473,13 +1487,13 @@ function renderDebugPanel() {
     clear.className = "dbg-btn";
     clear.style.gridColumn = "1 / -1";
     clear.textContent = "🧹 連れている特殊個体を全部外す";
-    clear.addEventListener("pointerdown", (e) => {
+    dbgTap(clear, (e) => {
       e.stopPropagation(); e.preventDefault();
       debugClearSpecials(); renderDebugPanel();
     });
     grid.appendChild(clear);
 
-    debugPanelEl.querySelector(".dbg-close").addEventListener("pointerdown", (e) => {
+    dbgTap(debugPanelEl.querySelector(".dbg-close"), (e) => {
       e.stopPropagation();
       toggleDebugPanel(false);
     });
@@ -1494,13 +1508,13 @@ function renderDebugPanel() {
       b.className = "dbg-btn";
       if (full) b.style.gridColumn = "1 / -1";
       b.textContent = text;
-      b.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); fn(); });
+      dbgTap(b, (e) => { e.stopPropagation(); e.preventDefault(); fn(); });
       grid.appendChild(b);
     };
     addBtn("← もどる", () => { debugPage = "main"; renderDebugPanel(); }, true);
     addBtn("⬆ 警戒度を上げる（ラッシュも起きる）", () => { debugAdvanceStage(); toggleDebugPanel(false); }, true);
     for (const kind of TR_KINDS) addBtn(trName(kind), () => { debugForceTierRush(kind); toggleDebugPanel(false); });
-    debugPanelEl.querySelector(".dbg-close").addEventListener("pointerdown", (e) => {
+    dbgTap(debugPanelEl.querySelector(".dbg-close"), (e) => {
       e.stopPropagation();
       toggleDebugPanel(false);
     });
@@ -1514,7 +1528,7 @@ function renderDebugPanel() {
     back.className = "dbg-btn";
     back.style.gridColumn = "1 / -1";
     back.textContent = "← もどる";
-    back.addEventListener("pointerdown", (e) => {
+    dbgTap(back, (e) => {
       e.stopPropagation(); e.preventDefault();
       debugPage = "main"; renderDebugPanel();
     });
@@ -1528,14 +1542,14 @@ function renderDebugPanel() {
       // HPは現場の名札に出るので、ここは名前だけにして高さを詰める（スクロール回避）
       const packNote = def.packCount ? `×${def.packCount}` : "";
       b.textContent = `${DEBUG_ENEMY_LABELS[key] ?? key}${packNote}`;
-      b.addEventListener("pointerdown", (e) => {
+      dbgTap(b, (e) => {
         e.stopPropagation(); e.preventDefault();
         debugSpawnEnemy(key);
         renderDebugPanel();
       });
       grid.appendChild(b);
     }
-    debugPanelEl.querySelector(".dbg-close").addEventListener("pointerdown", (e) => {
+    dbgTap(debugPanelEl.querySelector(".dbg-close"), (e) => {
       e.stopPropagation();
       toggleDebugPanel(false);
     });
@@ -1550,7 +1564,7 @@ function renderDebugPanel() {
     if (act.label.startsWith("🏷")) label += debugShowEnemyLabels ? "：ON" : "：OFF";
     if (act.label.startsWith("🛡")) label += debugInvincible ? "：ON" : "：OFF";
     b.textContent = label;
-    b.addEventListener("pointerdown", (e) => {
+    dbgTap(b, (e) => {
       e.stopPropagation();
       e.preventDefault();
       act.run();
@@ -1561,7 +1575,7 @@ function renderDebugPanel() {
     });
     grid.appendChild(b);
   }
-  debugPanelEl.querySelector(".dbg-close").addEventListener("pointerdown", (e) => {
+  dbgTap(debugPanelEl.querySelector(".dbg-close"), (e) => {
     e.stopPropagation();
     toggleDebugPanel(false);
   });
@@ -1574,18 +1588,8 @@ function toggleDebugPanel(force) {
 }
 
 {
-  let tapCount = 0;
-  let lastTapTime = 0;
-  document.getElementById("hud-version").addEventListener("pointerdown", (e) => {
-    e.stopPropagation();   // タップが線描画（canvas入力）へ抜けないように
-    const now = performance.now();
-    if (now - lastTapTime > 800) tapCount = 0;
-    lastTapTime = now;
-    if (++tapCount >= 3) {
-      tapCount = 0;
-      toggleDebugPanel();   // v0.19.2: 3タップでデバッグパネルをトグル
-    }
-  });
+  // v3.16.2: 1回のタップで開閉（3連タップは iPhone のダブルタップズームが暴発していた。Shooter指示）
+  dbgTap(document.getElementById("hud-version"), () => toggleDebugPanel());
   window.addEventListener("keydown", (e) => {
     if (e.key === "n" || e.key === "N") debugAdvanceStage();
   });
