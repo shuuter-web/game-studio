@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.18.1";
+const GAME_VERSION = "v3.18.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1125,6 +1125,17 @@ function debugAddDragons(n) {
  *   - 大陸選択が開いたままだと、その場では鍵アイコンが消えない
  * どちらもここで面倒を見る。
  */
+// v3.18.2: デバッグ「地域・時代を選んで始める」で選んでいる時代（0..RUN_STAGES-1）
+let debugStageEra = 0;
+const ERA_NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
+
+/** 時代 era・地域 shape のステージをすぐ始める（デバッグ）。 */
+function debugStartStage(era, shape) {
+  if (gameState !== "playing") beginRun(flockSpecies);   // ラン外なら今の竜種でランを始めてから差し替える
+  runStageIndex = Math.max(0, Math.min(RUN_STAGES - 1, era));
+  startStage(shape);
+}
+
 function debugUnlockAllContinents() {
   if (!profile) return;
   profile.unlockedContinents = CONTINENT_DEFS.length;
@@ -1353,6 +1364,7 @@ const DEBUG_ACTIONS = [
   { label: "💥 反動切替",            run: () => debugCycleRecoil() },
   { label: "▶ 警戒度を上げる（決戦ならクリア）", run: () => debugAdvanceStage() },
   { label: "⚡ ラッシュを起こす…",     run: () => { debugPage = "rush"; }, keepOpen: true },   // v3.16.1
+  { label: "🗺 地域・時代を選んで始める…", run: () => { debugPage = "stage"; debugStageEra = runStageIndex; }, keepOpen: true },   // v3.18.2
   { label: "★ このステージをクリア", run: () => { if (gameState === "playing") onCapitalFallen(); } },
   { label: "🏁 ラン完了（即）",       run: () => { if (gameState === "playing") triggerRunComplete(); } },
   { label: "💀 全滅させる",           run: () => { if (gameState === "playing") debugDownAll(); } },
@@ -1446,6 +1458,7 @@ function renderDebugPanel() {
   const title = debugPage === "enemies" ? "ENEMIES"
               : debugPage === "specials" ? "SPECIALS"
               : debugPage === "rush" ? "RUSH"
+              : debugPage === "stage" ? "STAGE"
               : `DEBUG ${GAME_VERSION}`;
   debugPanelEl.innerHTML =
     `<div class="dbg-title">${title}<span class="dbg-close">✕</span></div>` +
@@ -1497,6 +1510,48 @@ function renderDebugPanel() {
     });
     grid.appendChild(clear);
 
+    dbgTap(debugPanelEl.querySelector(".dbg-close"), (e) => {
+      e.stopPropagation();
+      toggleDebugPanel(false);
+    });
+    return;
+  }
+
+  // v3.18.2: 地域・時代を選んで始めるページ（Shooter指示）。
+  // 上で時代を選び（押しても始まらない）、下の地域を押すとその組み合わせのステージがすぐ始まる。
+  // ランの途中ならそのまま差し替える（レベル・カード・特殊個体は持ち越す）。ラン外なら今の竜種で新しいランを始める
+  if (debugPage === "stage") {
+    grid.classList.add("enemies");
+    const addBtn = (text, fn, opts = {}) => {
+      const b = document.createElement("button");
+      b.className = "dbg-btn";
+      if (opts.full) b.style.gridColumn = "1 / -1";
+      if (opts.on) { b.style.borderColor = "#ffd08a"; b.style.color = "#ffd08a"; }
+      b.textContent = text;
+      dbgTap(b, (e) => { e.stopPropagation(); e.preventDefault(); fn(); });
+      grid.appendChild(b);
+    };
+    // 時代と地域の段を見出しで分ける（3列に流すと続けて並んで見分けられない）
+    const addHead = (text) => {
+      const h = document.createElement("div");
+      h.style.gridColumn = "1 / -1";
+      h.style.fontSize = "11px";
+      h.style.color = "#c8d6e6";
+      h.style.marginTop = "4px";
+      h.textContent = text;
+      grid.appendChild(h);
+    };
+    addBtn("← もどる", () => { debugPage = "main"; renderDebugPanel(); }, { full: true });
+    addHead("① 時代を選ぶ（押しても始まらない）");
+    for (let era = 0; era < RUN_STAGES; era++) {
+      addBtn(`${ERA_NUMERALS[era] ?? era + 1} ${CONTINENT_DEFS[era].name}`,
+             () => { debugStageEra = era; renderDebugPanel(); }, { on: era === debugStageEra });
+    }
+    addHead(`② 地域を押すと ${ERA_NUMERALS[debugStageEra] ?? debugStageEra + 1} で始まる`);
+    for (let sh = 0; sh < STAGE_SHAPES.length; sh++) {
+      addBtn(`▶ ${STAGE_SHAPES[sh].icon} ${STRINGS.shapeShortNames[sh]}`,
+             () => { debugStartStage(debugStageEra, sh); toggleDebugPanel(false); });
+    }
     dbgTap(debugPanelEl.querySelector(".dbg-close"), (e) => {
       e.stopPropagation();
       toggleDebugPanel(false);
