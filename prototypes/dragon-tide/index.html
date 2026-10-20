@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.24.0";
+const GAME_VERSION = "v3.25.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5845,7 +5845,6 @@ function generateStageLayout(stageIndex) {
       byTown.get(b._townIndex).push(b);
     }
     for (const [townIndex, pool] of byTown) {
-      if (metroSkipsTownRoles(townIndex)) continue;   // v3.24.0: 大都会は街4つに1つだけ
       const meta = metaMap.get(townIndex);
       const back = meta.frontAngle + Math.PI;
       // 表向き/裏向きの度合いを出しておく（-1=裏 〜 +1=表）
@@ -5955,8 +5954,7 @@ function generateStageLayout(stageIndex) {
       if (!byTown.has(key)) byTown.set(key, []);
       byTown.get(key).push(b);
     }
-    for (const [townKey, buildings] of byTown) {
-      if (metroSkipsTownRoles(townKey)) continue;   // v3.24.0: 大都会は街4つに1つだけ
+    for (const [, buildings] of byTown) {
       // 要塞都市＝最初から最大段階で固定。格上の街＝警戒度が1つ先
       const isFortress = buildings.some(b => b._fixedTier != null);
       const isAdvanced = buildings.some(b => (b._tierOffset || 0) > 0);
@@ -15422,17 +15420,18 @@ function drawWorldTree() {
 // 2×2 ブロックを1つの「街」として扱う（卵・要塞化・陥落の既存の仕組みにそのまま乗せる）。
 // v3.23.0: 完全な碁盤の目をやめ、ところどころ道路の1区間を抜いて大きな区画を作る。公園のブロックも混ぜる（Shooter指示）
 const METRO_BLOCK          = 420;   // 道路の間隔（道路の中心から中心まで）
-const METRO_ROAD_W         = 56;    // ふつうの道路の幅
-const METRO_AVENUE_W       = 92;    // 大通りの幅
+// v3.25.0: 街の境の道路を太く、街の中の道路を細くして、どこまでが1つの街か見て分かるようにした（Shooter指示）
+const METRO_ROAD_W         = 38;    // 街の中の道路の幅
+const METRO_BORDER_W       = 84;    // 街と街の境の道路の幅
+const METRO_AVENUE_W       = 108;   // 大通りの幅（街の境の1本おき）
 const METRO_AVENUE_EVERY   = 4;     // この本数ごとに大通り
-// v3.24.0: 道路で囲まれた見た目のブロック1つ＝街1つ（Shooter指示）。道路を抜いてつながったブロックはまとめて1つの街。
-// 2×2 ブロック（v3.23.0）でも街の境目が見えず、どこを壊せば陥落するのか分からなかった。
-// 警戒度の区切りは「街の数の割合」なので、街が小さく多くなっても、上がるまでに壊す棟数の合計はほぼ変わらない
-const METRO_MIN_TOWN       = 6;     // これより建物が少ないブロック（開始地点・首都の際）は街にしない（散らばった家と同じ扱い）
-const METRO_ROLE_EVERY     = 4;     // 前哨堡・鐘楼・穀倉・衝撃砲台は街4つに1つだけ置く（街が他の地域の4倍あるので総数をそろえる）
+// v3.24.0 でブロック1つ＝街1つにしたが、v3.25.0 で 2×2 ブロックに戻し、かわりに街の境の道路を太くした（Shooter指示）。
+// 街の境の道路は抜かない（＝道路を抜いてつながるのは街の中のブロックどうしだけ）
+const METRO_DISTRICT       = 2;     // 1つの街＝この数×この数のブロック
+const METRO_MIN_TOWN       = 6;     // これより建物が少ない街（開始地点・首都の際）は街にしない（散らばった家と同じ扱い）
 const METRO_LOT_SIZE       = 108;   // 区画の一辺の目安（ブロックの内側をこの大きさで割る）
 const METRO_LOT_MARGIN     = 10;    // 道路の縁から建物までの余白
-const METRO_GAP_CHANCE     = 0.16;  // 大通り以外の道路の1区間を抜く確率（抜いた所は隣のブロックとつながる）
+const METRO_GAP_CHANCE     = 0.24;  // 街の中の道路の1区間を抜く確率（抜いた所は隣のブロックとつながる。v3.25.0: 抜ける道路が半分になったので 0.16→0.24）
 const METRO_PARK_CHANCE    = 0.07;  // 公園になるブロックの割合
 const METRO_PARK_TREE_STEP = 34;    // 公園の木の間隔
 const METRO_LARGE_CHANCE   = 0.08;  // 区画が大型1棟になる確率
@@ -15469,7 +15468,8 @@ let metroPlan = null;
 
 function metroLines() { return Math.floor(WORLD_W / METRO_BLOCK); }   // 道路は 1..metroLines()-1 番
 function metroIsAvenue(k) { return k % METRO_AVENUE_EVERY === 0; }
-function metroRoadW(k) { return metroIsAvenue(k) ? METRO_AVENUE_W : METRO_ROAD_W; }
+function metroIsBorder(k) { return k % METRO_DISTRICT === 0; }
+function metroRoadW(k) { return metroIsAvenue(k) ? METRO_AVENUE_W : metroIsBorder(k) ? METRO_BORDER_W : METRO_ROAD_W; }
 function metroKey(a, b) { return a * 1024 + b; }
 /** 縦の道路 k 番の、y が j 番目のブロックの区間が抜けているか */
 function metroGapV(k, j) { return !!metroPlan && metroPlan.gapV.has(metroKey(k, j)); }
@@ -15489,10 +15489,6 @@ function metroOnRoad(x, y, pad = 0) {
   if (Math.abs(x - kx * METRO_BLOCK) < metroRoadW(kx) / 2 + pad && !metroGapV(kx, Math.floor(y / METRO_BLOCK))) return true;
   return Math.abs(y - ky * METRO_BLOCK) < metroRoadW(ky) / 2 + pad && !metroGapH(ky, Math.floor(x / METRO_BLOCK));
 }
-/** 大都会で、この街には役割の建物（前哨堡・鐘楼・穀倉・衝撃砲台）を置かないか。乱数を使わず街の番号で決める */
-function metroSkipsTownRoles(townIndex) {
-  return worldShape === SHAPE_METRO && metroHash(townIndex, 17, 3) % METRO_ROLE_EVERY !== 0;
-}
 function metroNearCapital(x, y, boss, pad = 0) {
   return boss && dist2(x, y, boss.wx, boss.wy) < (METRO_CAPITAL_CLEAR + pad) * (METRO_CAPITAL_CLEAR + pad);
 }
@@ -15507,7 +15503,7 @@ function planMetro(boss) {
                                 dist2(x, y, START_X, START_Y) < (METRO_START_CLEAR + METRO_BLOCK) ** 2;
   for (const vertical of [true, false]) {
     for (let k = 1; k < n; k++) {
-      if (metroIsAvenue(k)) continue;   // 大通りは抜かない（戦車の道・街の背骨）
+      if (metroIsBorder(k)) continue;   // 街の境の道路（大通りを含む）は抜かない
       for (let j = 1; j < n - 1; j++) {   // 地図の端の区間は残す
         const mx = vertical ? k * METRO_BLOCK : (j + 0.5) * METRO_BLOCK;
         const my = vertical ? (j + 0.5) * METRO_BLOCK : k * METRO_BLOCK;
@@ -15541,47 +15537,22 @@ function metroBlockInner(bx, by, margin) {
   };
 }
 
-/** 街＝道路で囲まれたブロック（道路を抜いてつながったブロックはまとめて1つ）。先に道路の抜けと公園を決める */
+/** 街（2×2ブロック。境は太い道路）の中心を並べる。先に道路の抜けと公園を決める（区画割りがそれを読む） */
 function placeMetroTownCenters(boss) {
   planMetro(boss);
-  const n = metroLines();
-  const group = new Map();   // ブロック → 街の番号
-  const out = [];
-  for (let by = 0; by < n; by++) {
-    for (let bx = 0; bx < n; bx++) {
-      const key = metroKey(bx, by);
-      if (metroIsPark(bx, by) || group.has(key)) continue;
-      // 抜いた区間でつながったブロックを塗りつぶしで集める（公園はつながっていても街に入れない）
-      const blocks = [], stack = [[bx, by]];
-      group.set(key, out.length);
-      while (stack.length) {
-        const [x, y] = stack.pop();
-        blocks.push([x, y]);
-        const next = [];
-        if (metroGapV(x + 1, y)) next.push([x + 1, y]);
-        if (metroGapV(x, y))     next.push([x - 1, y]);
-        if (metroGapH(y + 1, x)) next.push([x, y + 1]);
-        if (metroGapH(y, x))     next.push([x, y - 1]);
-        for (const [nx, ny] of next) {
-          const k = metroKey(nx, ny);
-          if (nx < 0 || ny < 0 || nx >= n || ny >= n || metroIsPark(nx, ny) || group.has(k)) continue;
-          group.set(k, out.length);
-          stack.push([nx, ny]);
-        }
-      }
-      let sx = 0, sy = 0, bx0 = n, by0 = n, bx1 = 0, by1 = 0;
-      for (const [x, y] of blocks) {
-        sx += x + 0.5; sy += y + 0.5;
-        bx0 = Math.min(bx0, x); by0 = Math.min(by0, y); bx1 = Math.max(bx1, x + 1); by1 = Math.max(by1, y + 1);
-      }
-      out.push({ x: sx / blocks.length * METRO_BLOCK, y: sy / blocks.length * METRO_BLOCK,
-                 metro: { blocks, bx0, by0, bx1, by1 } });
+  const n = metroLines(), D = METRO_DISTRICT, out = [];
+  for (let by0 = 0; by0 < n; by0 += D) {
+    for (let bx0 = 0; bx0 < n; bx0 += D) {
+      const bx1 = Math.min(n, bx0 + D), by1 = Math.min(n, by0 + D);
+      const blocks = [];
+      for (let by = by0; by < by1; by++) for (let bx = bx0; bx < bx1; bx++) if (!metroIsPark(bx, by)) blocks.push([bx, by]);
+      out.push({ x: (bx0 + bx1) / 2 * METRO_BLOCK, y: (by0 + by1) / 2 * METRO_BLOCK, metro: { blocks, bx0, by0, bx1, by1 } });
     }
   }
   return out;
 }
 
-/** 1つの街（ブロック1つ、またはつながったブロック）を建物で埋める。区画ごとに中型1棟・小型4棟・まれに大型1棟 */
+/** 1つの街（2×2ブロック。公園のブロックは除く）を建物で埋める。区画ごとに中型1棟・小型4棟・まれに大型1棟 */
 function generateMetroDistrict(center, config, townIndex, boss) {
   const res = [];
   const m = center.metro;
@@ -15617,7 +15588,7 @@ function generateMetroDistrict(center, config, townIndex, boss) {
       }
     }
   }
-  // 開始地点・首都の際で建物がほとんど残らなかったブロックは街にしない（数棟で「陥落」が数えられてしまう）
+  // 開始地点・首都の際で建物がほとんど残らなかった街は街にしない（数棟で「陥落」が数えられてしまう）
   if (res.length < METRO_MIN_TOWN) {
     for (const b of res) delete b._townIndex;
     return res;
