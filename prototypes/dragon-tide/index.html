@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.23.0";
+const GAME_VERSION = "v3.24.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3890,10 +3890,6 @@ const TIER_ADVANCE_TOWN_RATIO = [0, 0.18, 0.35, 0.52];
 // 警戒度が上がるたびに廃墟のこの割合が建て直る（街ごと・丸ごと）。
 const TIER_REBUILD_RATIO = 0.3;
 
-// 段階ごとの群れ上限（effFlockCap への係数）。
-// 群れは段階をまたいでも削らない代わりに、天井が段階的に開く＝解放の快感にする。
-const TIER_FLOCK_CAP_FRACTION = [0.55, 0.70, 0.85, 1.0];
-
 // 警戒度ごとの強さ倍率。**時代とは独立した純粋な強さの軸**。
 // 建物の見た目（建築・色の系統）はこの段階では変わらない。
 // v0.94: 「動員で敵が強くなった感じがあまりない」（Shooter判定）のため引き上げた。
@@ -5849,6 +5845,7 @@ function generateStageLayout(stageIndex) {
       byTown.get(b._townIndex).push(b);
     }
     for (const [townIndex, pool] of byTown) {
+      if (metroSkipsTownRoles(townIndex)) continue;   // v3.24.0: 大都会は街4つに1つだけ
       const meta = metaMap.get(townIndex);
       const back = meta.frontAngle + Math.PI;
       // 表向き/裏向きの度合いを出しておく（-1=裏 〜 +1=表）
@@ -5958,7 +5955,8 @@ function generateStageLayout(stageIndex) {
       if (!byTown.has(key)) byTown.set(key, []);
       byTown.get(key).push(b);
     }
-    for (const [, buildings] of byTown) {
+    for (const [townKey, buildings] of byTown) {
+      if (metroSkipsTownRoles(townKey)) continue;   // v3.24.0: 大都会は街4つに1つだけ
       // 要塞都市＝最初から最大段階で固定。格上の街＝警戒度が1つ先
       const isFortress = buildings.some(b => b._fixedTier != null);
       const isAdvanced = buildings.some(b => (b._tierOffset || 0) > 0);
@@ -15427,9 +15425,11 @@ const METRO_BLOCK          = 420;   // 道路の間隔（道路の中心から�
 const METRO_ROAD_W         = 56;    // ふつうの道路の幅
 const METRO_AVENUE_W       = 92;    // 大通りの幅
 const METRO_AVENUE_EVERY   = 4;     // この本数ごとに大通り
-// v3.23.0: 3→2。3×3 では1つの街が約170棟あって7割崩すのが遠く、街の陥落（＝警戒度の区切り）が
-// ほとんど起きなかった。他の地域の町（90〜120棟）と同じくらいにする
-const METRO_DISTRICT       = 2;     // 1つの街＝この数×この数のブロック
+// v3.24.0: 道路で囲まれた見た目のブロック1つ＝街1つ（Shooter指示）。道路を抜いてつながったブロックはまとめて1つの街。
+// 2×2 ブロック（v3.23.0）でも街の境目が見えず、どこを壊せば陥落するのか分からなかった。
+// 警戒度の区切りは「街の数の割合」なので、街が小さく多くなっても、上がるまでに壊す棟数の合計はほぼ変わらない
+const METRO_MIN_TOWN       = 6;     // これより建物が少ないブロック（開始地点・首都の際）は街にしない（散らばった家と同じ扱い）
+const METRO_ROLE_EVERY     = 4;     // 前哨堡・鐘楼・穀倉・衝撃砲台は街4つに1つだけ置く（街が他の地域の4倍あるので総数をそろえる）
 const METRO_LOT_SIZE       = 108;   // 区画の一辺の目安（ブロックの内側をこの大きさで割る）
 const METRO_LOT_MARGIN     = 10;    // 道路の縁から建物までの余白
 const METRO_GAP_CHANCE     = 0.16;  // 大通り以外の道路の1区間を抜く確率（抜いた所は隣のブロックとつながる）
@@ -15443,9 +15443,13 @@ const METRO_CAPITAL_CLEAR  = CAPITAL_EXCLUSION_RADIUS;   // 首都区画には�
 const METRO_LANE_OFFSET    = 0.24;  // 車は道路の中心から幅のこの割合だけ右へ寄って走る（すれ違えるように）
 // v3.23.0: 26→54。詰めすぎて車列がムカデに見えた（Shooter判定。ムカデ車列は案帳に別の案として残した）
 const METRO_CONVOY_SPACING = 54;    // 車列の車間
-// v3.23.0: 10→140。道路に対して車が少なすぎて大都会に見えなかった（Shooter指示「10倍くらい」）。8400四方で車2000台前後
-const METRO_CONVOYS        = 140;   // 車列の数（基準の広さ）
-const METRO_CONVOY_LEN_MIN = 2, METRO_CONVOY_LEN_MAX = 7;
+// v3.23.0: 道路に対して車が少なすぎて大都会に見えなかった（Shooter指示「10倍くらい」）。
+// v3.24.0: 車列は1台がいちばん多く、次が2台。長い列はたまにいるアクセント（Shooter指示「長い車列はすごく変」）。
+// 列が短くなったぶん列の数を増やして、車の総数（8400四方で約1900台）は保つ
+const METRO_CONVOYS        = 400;   // 車列の数（基準の広さ）
+// 車列の長さの出やすさ [台数の下限, 上限, 重み]
+const METRO_CONVOY_LENS    = [[1, 1, 70], [2, 2, 22], [3, 4, 5], [5, 7, 3]];
+const METRO_CONVOY_SLOT    = 60;    // 同じ車線に重ねて湧かせないための区切りの長さ
 const METRO_FOLLOW_GAP     = 46;    // 前の車にこれより近づくと止まる（交差点の先が詰まると渋滞になる）
 const METRO_FOLLOW_CELL    = 64;    // 前の車を探す格子の一辺
 const METRO_CAR_SPEED_JITTER = 0.12; // 車列ごとの速さのばらつき（全部が同じ速さだと流れが単調）
@@ -15484,6 +15488,10 @@ function metroOnRoad(x, y, pad = 0) {
   const kx = Math.round(x / METRO_BLOCK), ky = Math.round(y / METRO_BLOCK);
   if (Math.abs(x - kx * METRO_BLOCK) < metroRoadW(kx) / 2 + pad && !metroGapV(kx, Math.floor(y / METRO_BLOCK))) return true;
   return Math.abs(y - ky * METRO_BLOCK) < metroRoadW(ky) / 2 + pad && !metroGapH(ky, Math.floor(x / METRO_BLOCK));
+}
+/** 大都会で、この街には役割の建物（前哨堡・鐘楼・穀倉・衝撃砲台）を置かないか。乱数を使わず街の番号で決める */
+function metroSkipsTownRoles(townIndex) {
+  return worldShape === SHAPE_METRO && metroHash(townIndex, 17, 3) % METRO_ROLE_EVERY !== 0;
 }
 function metroNearCapital(x, y, boss, pad = 0) {
   return boss && dist2(x, y, boss.wx, boss.wy) < (METRO_CAPITAL_CLEAR + pad) * (METRO_CAPITAL_CLEAR + pad);
@@ -15533,21 +15541,47 @@ function metroBlockInner(bx, by, margin) {
   };
 }
 
-/** 街（2×2ブロック）の中心を並べる。先に道路の抜けと公園を決める（区画割りがそれを読む） */
+/** 街＝道路で囲まれたブロック（道路を抜いてつながったブロックはまとめて1つ）。先に道路の抜けと公園を決める */
 function placeMetroTownCenters(boss) {
   planMetro(boss);
-  const n = metroLines(), D = METRO_DISTRICT, out = [];
-  for (let by = 0; by < n; by += D) {
-    for (let bx = 0; bx < n; bx += D) {
-      const x0 = bx * METRO_BLOCK, y0 = by * METRO_BLOCK;
-      const x1 = Math.min(n, bx + D) * METRO_BLOCK, y1 = Math.min(n, by + D) * METRO_BLOCK;
-      out.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, metro: { bx0: bx, by0: by, bx1: Math.min(n, bx + D), by1: Math.min(n, by + D) } });
+  const n = metroLines();
+  const group = new Map();   // ブロック → 街の番号
+  const out = [];
+  for (let by = 0; by < n; by++) {
+    for (let bx = 0; bx < n; bx++) {
+      const key = metroKey(bx, by);
+      if (metroIsPark(bx, by) || group.has(key)) continue;
+      // 抜いた区間でつながったブロックを塗りつぶしで集める（公園はつながっていても街に入れない）
+      const blocks = [], stack = [[bx, by]];
+      group.set(key, out.length);
+      while (stack.length) {
+        const [x, y] = stack.pop();
+        blocks.push([x, y]);
+        const next = [];
+        if (metroGapV(x + 1, y)) next.push([x + 1, y]);
+        if (metroGapV(x, y))     next.push([x - 1, y]);
+        if (metroGapH(y + 1, x)) next.push([x, y + 1]);
+        if (metroGapH(y, x))     next.push([x, y - 1]);
+        for (const [nx, ny] of next) {
+          const k = metroKey(nx, ny);
+          if (nx < 0 || ny < 0 || nx >= n || ny >= n || metroIsPark(nx, ny) || group.has(k)) continue;
+          group.set(k, out.length);
+          stack.push([nx, ny]);
+        }
+      }
+      let sx = 0, sy = 0, bx0 = n, by0 = n, bx1 = 0, by1 = 0;
+      for (const [x, y] of blocks) {
+        sx += x + 0.5; sy += y + 0.5;
+        bx0 = Math.min(bx0, x); by0 = Math.min(by0, y); bx1 = Math.max(bx1, x + 1); by1 = Math.max(by1, y + 1);
+      }
+      out.push({ x: sx / blocks.length * METRO_BLOCK, y: sy / blocks.length * METRO_BLOCK,
+                 metro: { blocks, bx0, by0, bx1, by1 } });
     }
   }
   return out;
 }
 
-/** 1つの街（2×2ブロック）を建物で埋める。区画ごとに中型1棟・小型4棟・まれに大型1棟。公園のブロックは空ける */
+/** 1つの街（ブロック1つ、またはつながったブロック）を建物で埋める。区画ごとに中型1棟・小型4棟・まれに大型1棟 */
 function generateMetroDistrict(center, config, townIndex, boss) {
   const res = [];
   const m = center.metro;
@@ -15562,31 +15596,33 @@ function generateMetroDistrict(center, config, townIndex, boss) {
     b.radius *= METRO_BUILDING_SCALE;
     res.push(b);
   };
-  for (let by = m.by0; by < m.by1; by++) {
-    for (let bx = m.bx0; bx < m.bx1; bx++) {
-      if (metroIsPark(bx, by)) continue;
-      const inner = metroBlockInner(bx, by, METRO_LOT_MARGIN);
-      const nx = Math.max(1, Math.round((inner.x1 - inner.x0) / METRO_LOT_SIZE));
-      const ny = Math.max(1, Math.round((inner.y1 - inner.y0) / METRO_LOT_SIZE));
-      const lw = (inner.x1 - inner.x0) / nx, lh = (inner.y1 - inner.y0) / ny;
-      const largeChance = inner.merged ? METRO_BIG_LOT_LARGE : METRO_LARGE_CHANCE;
-      for (let ly = 0; ly < ny; ly++) {
-        for (let lx = 0; lx < nx; lx++) {
-          const cx = inner.x0 + (lx + 0.5) * lw, cy = inner.y0 + (ly + 0.5) * lh;
-          const roll = random();
-          if (roll < largeChance && lx < nx - 1 && ly < ny - 1) {
-            put(cx + lw / 2, cy + lh / 2, "large", bL);   // 2×2区画ぶんの大型（隣の区画は小型で埋まって重なってもよい）
-          } else if (roll < largeChance + METRO_MEDIUM_CHANCE) {
-            put(cx, cy, "medium", bM);
-          } else {
-            const o = Math.min(lw, lh) * 0.24;
-            for (const [dx, dy] of [[-o, -o], [o, -o], [-o, o], [o, o]]) put(cx + dx, cy + dy, "small", bS);
-          }
+  for (const [bx, by] of m.blocks) {
+    const inner = metroBlockInner(bx, by, METRO_LOT_MARGIN);
+    const nx = Math.max(1, Math.round((inner.x1 - inner.x0) / METRO_LOT_SIZE));
+    const ny = Math.max(1, Math.round((inner.y1 - inner.y0) / METRO_LOT_SIZE));
+    const lw = (inner.x1 - inner.x0) / nx, lh = (inner.y1 - inner.y0) / ny;
+    const largeChance = inner.merged ? METRO_BIG_LOT_LARGE : METRO_LARGE_CHANCE;
+    for (let ly = 0; ly < ny; ly++) {
+      for (let lx = 0; lx < nx; lx++) {
+        const cx = inner.x0 + (lx + 0.5) * lw, cy = inner.y0 + (ly + 0.5) * lh;
+        const roll = random();
+        if (roll < largeChance && lx < nx - 1 && ly < ny - 1) {
+          put(cx + lw / 2, cy + lh / 2, "large", bL);   // 2×2区画ぶんの大型（隣の区画は小型で埋まって重なってもよい）
+        } else if (roll < largeChance + METRO_MEDIUM_CHANCE) {
+          put(cx, cy, "medium", bM);
+        } else {
+          const o = Math.min(lw, lh) * 0.24;
+          for (const [dx, dy] of [[-o, -o], [o, -o], [-o, o], [o, o]]) put(cx + dx, cy + dy, "small", bS);
         }
       }
     }
   }
-  if (res.length > 0) {
+  // 開始地点・首都の際で建物がほとんど残らなかったブロックは街にしない（数棟で「陥落」が数えられてしまう）
+  if (res.length < METRO_MIN_TOWN) {
+    for (const b of res) delete b._townIndex;
+    return res;
+  }
+  {
     const x0 = m.bx0 * METRO_BLOCK, y0 = m.by0 * METRO_BLOCK, x1 = m.bx1 * METRO_BLOCK, y1 = m.by1 * METRO_BLOCK;
     res[0]._townMeta = {
       cx: center.x, cy: center.y, plazaR: 0, ringR: 0, townR: Math.max(x1 - x0, y1 - y0) / 2,
@@ -15638,6 +15674,11 @@ function drawMetroParksOnLayer(bctx, bounds) {
 function drawMetroRoadsOnLayer(bctx, bounds) {
   if (worldShape !== SHAPE_METRO) return;
   const n = metroLines(), B = METRO_BLOCK;
+  // 敷地（地図全体）→ 公園 → 道路の順に敷く
+  bctx.globalAlpha = METRO_LOT_ALPHA;
+  bctx.fillStyle = METRO_COLORS.lot;
+  bctx.fillRect(bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0);
+  bctx.globalAlpha = 1;
   drawMetroParksOnLayer(bctx, bounds);
   bctx.save();
   // 区間ごとの長方形。交差する道路の幅の半分だけ両端を伸ばす（抜いた区間の角に欠けが出ないように）
@@ -15797,31 +15838,40 @@ function updateMetroCar(m, dt) {
 function generateMetroMovers(stageIndex, result, boss) {
   const n = metroLines();
   let convoyId = 1;
-  const usedSlots = new Set();
   const finish = (mv) => { mv.maxHp = mv.def.hp; mv.hp = mv.def.hp; mv.xpValue = mv.def.xp; result.push(mv); return mv; };
+  // 車列は交差点 (ix, iy) へ向かう区間の途中に置く。先頭が交差点から s の位置、後ろの車はさらに後ろへ並ぶ。
+  // 同じ車線の同じ区切り（METRO_CONVOY_SLOT ごと）には1列だけ
+  const usedLane = new Set();
   const spawnOnRoad = (pickDef, len, spacing) => {
+    const span = (len - 1) * spacing;
     for (let tries = 0; tries < 40; tries++) {
       const def = pickDef();
       const ix = 1 + Math.floor(random() * (n - 1)), iy = 1 + Math.floor(random() * (n - 1));
-      if (!metroIntersectionOk(ix, iy, def, boss)) continue;
-      if (dist2(ix * METRO_BLOCK, iy * METRO_BLOCK, START_X, START_Y) < (METRO_START_CLEAR + 300) ** 2) continue;
       const horizontal = random() < 0.5;
       const dx = horizontal ? (random() < 0.5 ? 1 : -1) : 0, dy = horizontal ? 0 : (random() < 0.5 ? 1 : -1);
+      const sMin = METRO_ROAD_W, sMax = METRO_BLOCK - METRO_ROAD_W - span;
+      if (sMax <= sMin) continue;
+      const sHead = sMin + random() * (sMax - sMin);
+      if (!metroIntersectionOk(ix, iy, def, boss) || !metroIntersectionOk(ix - dx, iy - dy, def, boss)) continue;
+      if (!metroSegOpen(ix, iy, -dx, -dy)) continue;   // 交差点 (ix, iy) へ来る区間が道路であること
+      const hx = ix * METRO_BLOCK - dx * sHead, hy = iy * METRO_BLOCK - dy * sHead;
+      if (dist2(hx, hy, START_X, START_Y) < (METRO_START_CLEAR + 300) ** 2) continue;
       if (def.avenueOnly && ((dx !== 0 && !metroIsAvenue(iy)) || (dy !== 0 && !metroIsAvenue(ix)))) continue;
-      if (!metroSegOpen(ix, iy, dx, dy) || !metroIntersectionOk(ix + dx, iy + dy, def, boss)) continue;
-      if (len > 1 && !metroSegOpen(ix, iy, -dx, -dy)) continue;   // 後ろの車が抜いた区間（建物の中）に並ばないように
-      const slot = (ix * 64 + iy) * 4 + (dx + 1) * 2 + (dy + 1) / 2;
-      if (usedSlots.has(slot)) continue;
-      usedSlots.add(slot);
+      const laneKey = ((ix * 64 + iy) * 4 + (dx + 1) * 2 + (dy + 1) / 2) * 16;
+      const s0 = Math.floor(sHead / METRO_CONVOY_SLOT), s1 = Math.floor((sHead + span) / METRO_CONVOY_SLOT);
+      let busy = false;
+      for (let q = s0; q <= s1; q++) if (usedLane.has(laneKey + q)) { busy = true; break; }
+      if (busy) continue;
+      for (let q = s0; q <= s1; q++) usedLane.add(laneKey + q);
       const id = convoyId++;
       const lane = metroRoadW(dx !== 0 ? iy : ix) * METRO_LANE_OFFSET;
       const speedMult = 1 + (random() * 2 - 1) * METRO_CAR_SPEED_JITTER;
       for (let k = 0; k < len; k++) {
         const kd = k === 0 ? def : pickDef();
-        const mv = makeMover(kd, () => ({ x: ix * METRO_BLOCK, y: iy * METRO_BLOCK }));
-        mv.road = { ix: ix + dx, iy: iy + dy, dx, dy, convoy: id };
-        mv.wx = ix * METRO_BLOCK - dx * k * spacing - dy * lane;
-        mv.wy = iy * METRO_BLOCK - dy * k * spacing + dx * lane;
+        const mv = makeMover(kd, () => ({ x: hx, y: hy }));
+        mv.road = { ix, iy, dx, dy, convoy: id };
+        mv.wx = hx - dx * k * spacing - dy * lane;
+        mv.wy = hy - dy * k * spacing + dx * lane;
         mv.headingX = dx; mv.headingY = dy;
         mv.speedMult = speedMult;   // 列の中は同じ速さ（列がほどけない）
         finish(mv);
@@ -15830,11 +15880,16 @@ function generateMetroMovers(stageIndex, result, boss) {
     }
   };
   const carDef = () => random() < 0.3 ? MOVER_DEFS.metro_truck : MOVER_DEFS.metro_car;
+  const lenTotal = METRO_CONVOY_LENS.reduce((t, e) => t + e[2], 0);
+  const pickLen = () => {
+    let r = random() * lenTotal;
+    for (const [lo, hi, w] of METRO_CONVOY_LENS) {
+      if ((r -= w) < 0) return lo + Math.floor(random() * (hi - lo + 1));
+    }
+    return 1;
+  };
   const convoys = scaledForWorld(METRO_CONVOYS, MOVER_DENSITY_FACTOR);
-  for (let k = 0; k < convoys; k++) {
-    const len = METRO_CONVOY_LEN_MIN + Math.floor(random() * (METRO_CONVOY_LEN_MAX - METRO_CONVOY_LEN_MIN + 1));
-    spawnOnRoad(carDef, len, METRO_CONVOY_SPACING);
-  }
+  for (let k = 0; k < convoys; k++) spawnOnRoad(carDef, pickLen(), METRO_CONVOY_SPACING);
   for (let k = 0; k < METRO_POLICE; k++) spawnOnRoad(() => MOVER_DEFS.metro_police, 1, 0);
   const tanks = METRO_TANKS_BASE + Math.floor(stageIndex / 3);
   for (let k = 0; k < tanks; k++) spawnOnRoad(() => MOVER_DEFS.metro_tank, 1, 0);
@@ -16532,15 +16587,8 @@ function drawTownBasesOnLayer(bctx, bounds) {
     const meta = settlements[s]._townMeta;
     if (!meta || meta._rock) continue;   // v1.5.0: 岩塊の町は地面に焼かない
     if (!layerBoundsHitCircle(bounds, meta.cx, meta.cy, townMetaLayerReach(meta))) continue;
-    // v3.22.0: 大都会の街区は四角い敷地を平らに敷くだけ（広場・通りは描かない。道路は別に焼く）
-    if (meta._metro) {
-      const o = meta.outline;
-      bctx.globalAlpha = METRO_LOT_ALPHA;
-      bctx.fillStyle = METRO_COLORS.lot;
-      bctx.fillRect(o[0].x, o[0].y, o[2].x - o[0].x, o[2].y - o[0].y);
-      bctx.globalAlpha = 1;
-      continue;
-    }
+    // v3.22.0: 大都会の街区の敷地は drawMetroRoadsOnLayer が地図全体に敷く（街にならなかったブロックも同じ色にするため）
+    if (meta._metro) continue;
     const { cx, cy, plazaR, streets, townR, fields } = meta;
     const ringRadii = meta.ringRadii ?? [meta.ringR];
     const gridRoads = meta.gridRoads ?? [];
@@ -20478,12 +20526,11 @@ function effReviveMult()    { return Math.pow(0.85, upCount("tide")) * permaBuff
 function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * upCount("magnet")) * permaBuff.magnet; }
 // v0.51: 群れは時代をまたいでも削らない。代わりに時代ごとに天井が開く。
 // 「敵が強くなる」と同時に「増やせる数が増える」ので、遷移が損ではなく解放になる。
-function eraFlockCapFraction() {
-  return TIER_FLOCK_CAP_FRACTION[Math.min(powerTier, TIER_FLOCK_CAP_FRACTION.length - 1)];
-}
+// v3.24.0: 警戒度で上限が開く仕組み（55%→70%→85%→100%）をやめ、最初から最大まで育てられるようにした
+// （Shooter指示「群れの上限を警戒度によって上げる理由がよくわからない」）
 function effFlockCap()      {
   const base = BASE_FLOCK_CAP + 25 * upCount("brood") + permaBuff.flockCap;
-  return Math.max(1, Math.min(MAX_BOIDS, Math.round(base * eraFlockCapFraction())));
+  return Math.max(1, Math.min(MAX_BOIDS, Math.round(base)));
 }
 function effDmgTakenMult()  { return Math.pow(0.88, upCount("resonance")) * permaBuff.dmgTakenMult; }
 // 武器別強化はタイプ別に保持される（転換しても消えず、そのタイプに戻れば効く。§5.4-C）
@@ -25438,7 +25485,7 @@ function codexShotHtml() {
 // v2.14.0: 図鑑「その他」ページ（Shooter指示）
 // -----------------------------------------------------------------
 // どのタブにも入らない仕組みの説明を置く。まずは警戒度。
-// 数値はすべて定数から引く（POWER_TIER_BOOST / TIER_MOVER_* / TIER_FLOCK_CAP_FRACTION /
+// 数値はすべて定数から引く（POWER_TIER_BOOST / TIER_MOVER_* /
 // TIER_ADVANCE_TOWN_RATIO / BOSS_ENRAGE_*）。調整しても図鑑を書き直さなくてよい。
 // 項目を足すときは codexMiscHtml に節を1つ足す。
 
@@ -25462,7 +25509,6 @@ function codexTierTableHtml() {
     row("建物の射程", "", i => x(POWER_TIER_BOOST[i].range, 2)) +
     row("動く敵の部隊数", "顔ぶれは文明のまま", i => x(TIER_MOVER_MULT[i], 1)) +
     row("動く敵の苛烈さ", "発射の速さ・威力", i => x(TIER_MOVER_FEROCITY[i], 2)) +
-    row("群れの上限", "最大まで育てたときに対する割合", i => pct(TIER_FLOCK_CAP_FRACTION[i])) +
     `</tbody></table>`;
 }
 
@@ -25476,7 +25522,7 @@ function codexMiscHtml() {
     `<div class="cx-era">警戒度（ラン中に${POWER_TIER_BOOST.length}段階で上がる）</div>` +
     `<div class="cx-box">` +
       `<div class="cx-atk">町を陥落させるほど、文明が警戒を強める。段階が上がるほど動く敵が増え、建物も少し固くなる。` +
-        `代わりに群れの上限が開く。今の段階は画面上の「警戒度N」、次の段階までの残りは「街あとN」。</div>` +
+        `今の段階は画面上の「警戒度N」、次の段階までの残りは「街あとN」。</div>` +
       `<ul class="cx-bullets">` +
         `<li><b>町の陥落</b>＝その町の建物の${surrender}割が壊れたとき。陥落した町の残りは撃つのをやめる（壊すことはできる）</li>` +
         `<li>例：${EXAMPLE_TOWNS}町の大陸なら、陥落 ${steps.join("・")} 町で段階が上がる</li>` +
@@ -25490,7 +25536,7 @@ function codexMiscHtml() {
         `<li>残っている建物が新しい段階の強さで建て直される（HPは全快。色が一段暗くなる）</li>` +
         `<li>城壁が張り直される</li>` +
         `<li>動く敵の部隊が新しい段階の数で湧き直す</li>` +
-        `<li>群れの上限が開き、竜晶がもらえる</li>` +
+        `<li>竜晶がもらえる</li>` +
       `</ul>` +
     `</div>` +
     `<div class="cx-box">` +
