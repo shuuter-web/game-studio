@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.21.3";
+const GAME_VERSION = "v3.22.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1216,6 +1216,7 @@ const DEBUG_ENEMY_LABELS = {
   railgun_loco: "🚂列車砲列(砲車4両つき)", railgun_car: "🚃列車砲列の砲車",
   railcar: "🚈装甲軌道車", railram: "🚞衝角機関車",
   forest_ambusher: "🌿森の伏兵", forest_giant: "🌳森番の巨人",
+  metro_car: "🚕渋滞の車", metro_truck: "🚐渋滞の箱バン", metro_police: "🚓パトカー", metro_tank: "🪖戦車",
   // v0.57: 文明ごとの看板ユニット
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
   grenadiers: "💣擲弾兵隊", armortrain: "🚄装甲列車", teslagiant: "⚡雷公",
@@ -1242,6 +1243,8 @@ const DEBUG_ENEMY_ORDER = [
   "railgun_loco", "railcar", "railram",
   // v3.17.0: 大樹海の敵（樹冠が無い地域では隠れも切り拓きも起きない）
   "forest_ambusher", "forest_giant",
+  // v3.22.0: 大都会の敵（道路が無い地域では走れない）
+  "metro_car", "metro_truck", "metro_police", "metro_tank",
 ];
 
 /** 群れのすぐ横に敵を湧かせる。隊（packCount）は隊ごと、巨獣はコア＋腕2本まとめて。 */
@@ -1714,6 +1717,9 @@ const STAGE_SHAPES = [
   // v3.17.0: 大樹海（正方形・案帳 DT-005）… 地図を樹冠が覆い、その下の敵と街は狙えない。
   // 火属性か爆発で樹冠を剥がし、中央の大樹の樹冠を外側から剥いで首都に届く
   { id: "forest",    w: 8400, h: 8400,  icon: "🌲" },
+  // v3.22.0: 大都会（正方形・案帳 DT-022）… 地図全体が碁盤の目の道路と建物で埋まった都市。
+  // 道路を車の列が流れる。首都は巨大な高層ビル
+  { id: "metro",     w: 8400, h: 8400,  icon: "🌆" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
@@ -1723,6 +1729,7 @@ const SHAPE_SANCTUARY = 4;
 const SHAPE_ASTEROIDS = 5;
 const SHAPE_RAILWAY   = 6;
 const SHAPE_FOREST    = 7;
+const SHAPE_METRO     = 8;
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
 
 function clampShape(v) {
@@ -4388,7 +4395,8 @@ let START_Y = WORLD_H * 0.5;
 /** 形 shape の群れの開始地点。首都から一番遠い辺・角に置く。 */
 function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
-  if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST) {
+  if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST ||
+      shape === SHAPE_METRO) {
     return { x: 320, y: h - 320 };   // 角（首都は中心）
   }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
@@ -5612,6 +5620,7 @@ function generateStageLayout(stageIndex) {
                     : worldShape === SHAPE_SANCTUARY ? placeSanctuaryTownCenters(boss)
                     : worldShape === SHAPE_ASTEROIDS ? placeAsteroidTownCenters(boss)
                     : worldShape === SHAPE_RAILWAY   ? placeRailwayTownCenters(boss)
+                    : worldShape === SHAPE_METRO     ? placeMetroTownCenters(boss)   // v3.22.0: 3×3ブロックずつ
                     : placeTownCenters(townWanted, boss.wx, boss.wy);
 
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
@@ -5623,8 +5632,8 @@ function generateStageLayout(stageIndex) {
     townRoadEdges = buildFrontlineRoadNetwork(townCenters, boss, frontlinePlan);
   } else if (worldShape === SHAPE_SANCTUARY) {
     townRoadEdges = buildSanctuaryRoadNetwork(townCenters, boss);
-  } else if (worldShape === SHAPE_ASTEROIDS) {
-    townRoadEdges = [];   // 岩塊どうしは道でつながらない
+  } else if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO) {
+    townRoadEdges = [];   // 岩塊どうしは道でつながらない／大都会は碁盤の目の道路を別に焼く
   } else if (worldShape === SHAPE_RAILWAY) {
     townRoadEdges = buildRailwayRoadNetwork(townCenters, boss);
   } else {
@@ -5704,7 +5713,7 @@ function generateStageLayout(stageIndex) {
     // 差がつくのは警戒度＝強さと、それに伴う色の締まり具合だけ。
     const offset     = townTierOffset.get(t) || 0;
     const isFortress = fortifiedSet.has(t);
-    const townBuildings = generateTown(
+    const townBuildings = worldShape === SHAPE_METRO ? generateMetroDistrict(center, config, t, boss) : generateTown(
       center.x, center.y,
       Math.round(config.smallPerTown  * BUILDING_DENSITY_MULT * s2),
       Math.round(config.mediumPerTown * BUILDING_DENSITY_MULT * s2),
@@ -5734,7 +5743,9 @@ function generateStageLayout(stageIndex) {
   // placeCapitalDistrict は config が必要なため、ここで仮実行して座標を取得する。
   // 首都建物と重なるクラスタ建物は remove してから result に残す。
   // v0.56: 首都区画は同じ文明の建築のまま、最初から最大段階で固定。
-  const capitalBuildings = placeCapitalDistrict(boss, config);
+  let capitalBuildings = placeCapitalDistrict(boss, config);
+  // v3.22.0: 大都会は首都区画も碁盤の目の上。道路に掛かる首都の建物は建てない（高層ビル本体は残す）
+  if (worldShape === SHAPE_METRO) capitalBuildings = capitalBuildings.filter(b => !metroOnRoad(b.wx, b.wy, b.radius * 0.6));
   for (const b of capitalBuildings) b._fixedTier = maxPowerTier();
 
   // 首都建物の占有エリアを「除去対象」として各小集落建物をフィルタリングする。
@@ -5973,6 +5984,7 @@ function generateStageLayout(stageIndex) {
   const keepLoose = (b) => {
     if (worldShape === SHAPE_CONTINENT) return true;
     if (worldShape === SHAPE_ASTEROIDS) return false;   // 宇宙に地面は無い＝散らばった家も無い
+    if (worldShape === SHAPE_METRO) return false;       // v3.22.0: 大都会は区画の建物だけ（道路に家を建てない）
     // v2.0.0: 線路の上に家が建つと列車がそこを突っ切って見えるので退ける
     if (onRail(b.wx, b.wy, RAIL_CLEAR + (b.radius || 0))) return false;
     if (riverPolyline.length > 1 &&
@@ -5994,11 +6006,13 @@ function generateStageLayout(stageIndex) {
   for (const b of startHouses) result.push(b);
 
   // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
-  const wallSegments = generateWallRing(boss, stageIndex);   // v0.56: 城壁の量は文明（時代）で決まる
+  // v3.22.0: 大都会は城壁を立てない（碁盤の目の街に輪の壁は合わない。首都は高層ビル）
+  const wallSegments = worldShape === SHAPE_METRO ? [] : generateWallRing(boss, stageIndex);   // v0.56: 城壁の量は文明（時代）で決まる
   for (const w of wallSegments) result.push(w);
 
   // --- (5b) v0.29: 一部の町にも部分的な城壁（STAGE3以降。rect町は長方形の壁）---
-  const townWalls = generateTownWalls(townMetas.filter(m => !m._rock), stageIndex);   // v1.5.0: 動く町に壁は付けない
+  const townWalls = worldShape === SHAPE_METRO ? []
+    : generateTownWalls(townMetas.filter(m => !m._rock), stageIndex);   // v1.5.0: 動く町に壁は付けない
   for (const w of townWalls) result.push(w);
 
   // v2.0.0: 線路の上に乗ってしまった建物をまとめて退ける。
@@ -6019,7 +6033,7 @@ function generateStageLayout(stageIndex) {
   // --- (6) v0.6-p3: 地形障害物（岩山・湖）を空白地帯へ散布 ---
   // settlements とは別系統（破壊不可）。モジュールスコープの terrainObstacles を更新する。
   terrainObstacles = generateTerrainObstacles(result, boss);
-  if (worldShape === SHAPE_ASTEROIDS) terrainObstacles = [];   // v1.5.0: 宇宙に岩山・湖は無い
+  if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO) terrainObstacles = [];   // v1.5.0: 宇宙に岩山・湖は無い／v3.22.0: 都会に空き地は無い
   // v2.0.0: 岩山が線路を塞ぐと「通れないはずの線路を列車が走る」ことになる
   if (worldShape === SHAPE_RAILWAY) {
     terrainObstacles = terrainObstacles.filter(o => !onRail(o.wx, o.wy, RAIL_CLEAR + (o.radius || 0)));
@@ -6027,7 +6041,7 @@ function generateStageLayout(stageIndex) {
 
   // v0.17: 森（非ブロッキングの自然装飾。竜は上を飛ぶ）を空白地帯へ散布
   forestClusters = generateForests(result, boss);
-  if (worldShape === SHAPE_ASTEROIDS) forestClusters = [];
+  if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO) forestClusters = [];
 
   // v3.18.0: 大樹海の樹冠（見た目だけ）。町ごとに覆う量を決めるので建物の後、
   // 森の伏兵が樹冠の下に隠れるので動く敵の前に敷く。他の地域では前の樹冠を消す
@@ -7390,7 +7404,8 @@ function placeBossBuilding(stageIndex, config) {
   const bossTheme = config.boss;
   // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
   if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY ||
-      worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_RAILWAY || worldShape === SHAPE_FOREST) {
+      worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_RAILWAY || worldShape === SHAPE_FOREST ||
+      worldShape === SHAPE_METRO) {
     return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
   }
   if (worldShape === SHAPE_FRONTLINE) {
@@ -8224,6 +8239,36 @@ const MOVER_DEFS = {
     hp: 650, speed: 22, xp: 280, eggDrop: 4, radius: 30,
     color: "#2f5a2a", glowColor: "#8fe060", moveType: "patrol",
     attack: { type: "shockwave", interval: 2.8, radius: 140, damage: 4, push: 75 },
+  },
+
+  // ===================================================================
+  // v3.22.0 大都会の敵（案帳 DT-022）。全文明に出るが**大都会の地域だけ**。
+  // どれも道路の上しか走らない（roadRunner）。車列は同じ角で同じ向きに曲がるので列のまま流れる。
+  // ===================================================================
+  // 渋滞の車列: 撃ってこない的。つながって流れるので一筆でまとめて薙げる。1台は軽く、経験値も少し
+  metro_car: {
+    name: "metro_car", roadRunner: true, turnRate: 5,
+    hp: 8, speed: 62, xp: 4, eggDrop: 0, eggChance: 0.04, radius: 9,
+    color: "#d0b030", glowColor: "#ffe070", moveType: "patrol",
+  },
+  metro_truck: {
+    name: "metro_truck", roadRunner: true, turnRate: 4,
+    hp: 16, speed: 54, xp: 7, eggDrop: 0, eggChance: 0.06, radius: 11,
+    color: "#d8d8d8", glowColor: "#ffffff", moveType: "patrol",
+  },
+  // パトカー: 道路を走りながら撃ってくる
+  metro_police: {
+    name: "metro_police", roadRunner: true, turnRate: 5,
+    hp: 45, speed: 88, xp: 24, eggDrop: 1, radius: 10,
+    color: "#20242c", glowColor: "#80a0ff", moveType: "patrol",
+    attack: { type: "fan", interval: 1.2, count: 1, damage: 1.2, speed: 140, range: 300 },
+  },
+  // 戦車: 大通りだけを走る硬い敵
+  metro_tank: {
+    name: "metro_tank", roadRunner: true, avenueOnly: true, elite: true, showHpBar: true, turnRate: 2.5,
+    hp: 520, speed: 34, xp: 220, eggDrop: 3, radius: 18,
+    color: "#4a5a30", glowColor: "#c0d070", moveType: "patrol",
+    attack: { type: "fan", interval: 2.6, count: 1, damage: 5, speed: 170, range: 420 },
   },
 
   // v0.25.1 財宝馬車: 竜ではない運搬体。群れから逃げ回り、倒すと竜晶/XPが大量に弾ける当たり枠。
@@ -9651,6 +9696,8 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
     generateForestMovers(stageIndex, result, boss);
     relocateMeleeOutOfCrown(result);   // v3.21.3: 樹冠の下に湧いた近接の敵は最初から外へ
   }
+  // v3.22.0: 大都会の道路は、時代に関係なく車の列が流れている
+  if (worldShape === SHAPE_METRO) generateMetroMovers(stageIndex, result, boss);
 
   // v1.8.0: 多脚戦車を大戦（STAGE7）と最終（STAGE8）に1体。
   if (stageIndex === 6 || stageIndex === 7) {
@@ -10228,6 +10275,9 @@ function updateMovers(dt) {
     c.x += m.wx; c.y += m.wy; c.n++;
   }
 
+  // v3.22.0: 群れの重心は1フレームで変わらないので先に1回だけ求める
+  // （大都会は車が数百台走るので、敵ごとに群れ全体を数え直すと重い）
+  const centroid = calcFriendlyCentroid();
   for (const m of movers) {
     if (!m.alive) continue;
     const def = m.def;
@@ -10266,7 +10316,6 @@ function updateMovers(dt) {
     // いなければ各自の経路（往復/巡回/外周）を回る。
     let targetX, targetY;
     let pursuing = false;
-    const centroid = calcFriendlyCentroid();
     if (m._trGoal) {
       // v3.16.0: 竜卵の輸送隊は首都へまっすぐ向かう（列車の首都は動くので毎回見る）
       targetX = m._trGoal.wx;
@@ -10323,6 +10372,8 @@ function updateMovers(dt) {
     // v3.21.3: 飛び道具を持たない敵は、巨大樹の消えない樹冠の下から外へ出る（出た後は入らない＝下の位置の補正）
     const crownExit = worldTreeCrownExitTarget(m);
     if (crownExit) { targetX = crownExit.x; targetY = crownExit.y; }
+    // v3.22.0: 大都会の車は道路の上だけを走る（群れを追わない。交差点で曲がる）
+    if (def.roadRunner && m.road) { const g = metroRoadTarget(m); targetX = g.x; targetY = g.y; }
 
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
@@ -10616,12 +10667,12 @@ function updateMovers(dt) {
     // v1.8.0: 関節パーツ（巨獣の腕・多脚戦車の脚）は押し合いの対象外。
     // 親に付いて動くものを押すと、関節の計算と喧嘩して暴れる
     if (!a.alive || a.def.part === "arm" || a.def.part === "leg" ||
-        isRailVehicle(a.def) || a.submerged) continue;
+        isRailVehicle(a.def) || a.submerged || a.def.roadRunner) continue;
     const aMovable = a.def.speed > 0;
     for (let j = i + 1; j < movers.length; j++) {
       const b = movers[j];
       if (!b.alive || b.def.part === "arm" || b.def.part === "leg" ||
-          isRailVehicle(b.def) || b.submerged) continue;
+          isRailVehicle(b.def) || b.submerged || b.def.roadRunner) continue;
       const bMovable = b.def.speed > 0;
       if (!aMovable && !bMovable) continue;   // 動かない者同士は押し合わない
       const samePack = a.packId !== undefined && a.packId === b.packId;
@@ -15277,6 +15328,246 @@ function drawWorldTree() {
   ctx.restore();
 }
 
+// =====================================================================
+// v3.22.0: 大都会（SHAPE_METRO・案帳 DT-022）
+// =====================================================================
+// 地図全体を碁盤の目の道路と、その間をぎっしり埋める建物で作る（キング・オブ・ザ・モンスターズのような街壊し）。
+// 道路には車がつながって流れ、渋滞の列ごとまとめて薙げる。車は道路の上しか走れない。
+// 首都は巨大な高層ビル。壊れた区画は立て直さない。
+// 3×3 ブロックを1つの「街」として扱う（卵・要塞化・陥落の既存の仕組みにそのまま乗せる）。
+const METRO_BLOCK          = 420;   // 道路の間隔（道路の中心から中心まで）
+const METRO_ROAD_W         = 56;    // ふつうの道路の幅
+const METRO_AVENUE_W       = 92;    // 大通りの幅
+const METRO_AVENUE_EVERY   = 4;     // この本数ごとに大通り
+const METRO_DISTRICT       = 3;     // 1つの街＝この数×この数のブロック
+const METRO_LOT_GRID       = 3;     // 1ブロックの区画割り（3×3）
+const METRO_LOT_MARGIN     = 10;    // 道路の縁から建物までの余白
+const METRO_START_CLEAR    = 460;   // 開始地点の周りは建てない
+const METRO_CAPITAL_CLEAR  = CAPITAL_EXCLUSION_RADIUS;   // 首都区画には街を置かない（首都区画の建物がある）
+const METRO_LANE_OFFSET    = 0.24;  // 車は道路の中心から幅のこの割合だけ右へ寄って走る（すれ違えるように）
+const METRO_CONVOY_SPACING = 26;    // 車列の車間
+const METRO_CONVOYS        = 10;    // 車列の数（基準の広さ。8400四方で約30列＝車200台前後）
+const METRO_CONVOY_LEN_MIN = 5, METRO_CONVOY_LEN_MAX = 9;
+const METRO_POLICE         = 6;     // パトカーの数
+const METRO_TANKS_BASE     = 1;     // 戦車の数（時代3つごとに1台増える）
+const METRO_LOT_ALPHA      = 0.85;  // 街区の敷地の濃さ。地面の緑がほぼ見えない＝空き地が無い
+const METRO_BUILDING_SCALE = 1.8;   // 区画の建物をこの倍の大きさにして隙間なく詰める（ぎっしり埋まった街）
+const METRO_COLORS = { lot: "#58554e", road: "#3a3a42", avenue: "#34343c", line: "#d8d0a0", walk: "#5a5a64" };
+
+function metroLines() { return Math.floor(WORLD_W / METRO_BLOCK); }   // 道路は 1..metroLines()-1 番
+function metroIsAvenue(k) { return k % METRO_AVENUE_EVERY === 0; }
+function metroRoadW(k) { return metroIsAvenue(k) ? METRO_AVENUE_W : METRO_ROAD_W; }
+/** (x, y) が道路（縦か横）に掛かるか。pad＝建物の半径など */
+function metroOnRoad(x, y, pad = 0) {
+  const kx = Math.round(x / METRO_BLOCK), ky = Math.round(y / METRO_BLOCK);
+  return Math.abs(x - kx * METRO_BLOCK) < metroRoadW(kx) / 2 + pad ||
+         Math.abs(y - ky * METRO_BLOCK) < metroRoadW(ky) / 2 + pad;
+}
+function metroNearCapital(x, y, boss, pad = 0) {
+  return boss && dist2(x, y, boss.wx, boss.wy) < (METRO_CAPITAL_CLEAR + pad) * (METRO_CAPITAL_CLEAR + pad);
+}
+
+/** 街（3×3ブロック）の中心を並べる。首都区画と開始地点に重なる区画も、中の建てられる所だけ使う。 */
+function placeMetroTownCenters(boss) {
+  const n = metroLines(), D = METRO_DISTRICT, out = [];
+  for (let by = 0; by < n; by += D) {
+    for (let bx = 0; bx < n; bx += D) {
+      const x0 = bx * METRO_BLOCK, y0 = by * METRO_BLOCK;
+      const x1 = Math.min(n, bx + D) * METRO_BLOCK, y1 = Math.min(n, by + D) * METRO_BLOCK;
+      out.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, metro: { bx0: bx, by0: by, bx1: Math.min(n, bx + D), by1: Math.min(n, by + D) } });
+    }
+  }
+  return out;
+}
+
+/** 1つの街（3×3ブロック）を建物で埋める。区画ごとに中型1棟・小型4棟・まれに大型1棟。 */
+function generateMetroDistrict(center, config, townIndex, boss) {
+  const res = [];
+  const m = center.metro;
+  const bS = config.buildings.small, bM = config.buildings.medium, bL = config.buildings.large;
+  const hpOf = (size) => randInt(BUILDING_SIZE_PARAMS[size].hpMin, BUILDING_SIZE_PARAMS[size].hpMax);
+  const put = (x, y, size, conf) => {
+    if (metroNearCapital(x, y, boss, 30)) return;
+    if (dist2(x, y, START_X, START_Y) < METRO_START_CLEAR * METRO_START_CLEAR) return;
+    const b = makeBuilding(x, y, size, randChoice(conf.colors), conf, hpOf(size));
+    b._townIndex = townIndex;
+    b._metro = true;
+    b.radius *= METRO_BUILDING_SCALE;
+    res.push(b);
+  };
+  for (let by = m.by0; by < m.by1; by++) {
+    for (let bx = m.bx0; bx < m.bx1; bx++) {
+      // ブロックの内側（左右上下の道路の縁＋余白の内側）
+      const ix0 = bx * METRO_BLOCK + metroRoadW(bx) / 2 + METRO_LOT_MARGIN;
+      const ix1 = (bx + 1) * METRO_BLOCK - metroRoadW(bx + 1) / 2 - METRO_LOT_MARGIN;
+      const iy0 = by * METRO_BLOCK + metroRoadW(by) / 2 + METRO_LOT_MARGIN;
+      const iy1 = (by + 1) * METRO_BLOCK - metroRoadW(by + 1) / 2 - METRO_LOT_MARGIN;
+      if (bx === 0) { /* 地図の端のブロックは左に道路が無いが、そのまま余白にする */ }
+      const lw = (ix1 - ix0) / METRO_LOT_GRID, lh = (iy1 - iy0) / METRO_LOT_GRID;
+      for (let ly = 0; ly < METRO_LOT_GRID; ly++) {
+        for (let lx = 0; lx < METRO_LOT_GRID; lx++) {
+          const cx = ix0 + (lx + 0.5) * lw, cy = iy0 + (ly + 0.5) * lh;
+          const roll = random();
+          if (roll < 0.08 && lx < METRO_LOT_GRID - 1 && ly < METRO_LOT_GRID - 1) {
+            put(cx + lw / 2, cy + lh / 2, "large", bL);   // 2×2区画ぶんの大型（隣の区画は小型で埋まって重なってもよい）
+          } else if (roll < 0.55) {
+            put(cx, cy, "medium", bM);
+          } else {
+            const o = Math.min(lw, lh) * 0.24;
+            for (const [dx, dy] of [[-o, -o], [o, -o], [-o, o], [o, o]]) put(cx + dx, cy + dy, "small", bS);
+          }
+        }
+      }
+    }
+  }
+  if (res.length > 0) {
+    const x0 = m.bx0 * METRO_BLOCK, y0 = m.by0 * METRO_BLOCK, x1 = m.bx1 * METRO_BLOCK, y1 = m.by1 * METRO_BLOCK;
+    res[0]._townMeta = {
+      cx: center.x, cy: center.y, plazaR: 0, ringR: 0, townR: Math.max(x1 - x0, y1 - y0) / 2,
+      layout: "grid", shapeType: "rect", _metro: true,
+      outline: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }],
+      maxExtent: Math.hypot(x1 - x0, y1 - y0) / 2, frontAngle: 0,
+      streets: [], ringRadii: [], gridRoads: [], decor: [], fields: [],
+    };
+  }
+  return res;
+}
+
+/** 道路を地面に焼く（街区の下地の上・建物の下）。歩道の縁・中央線つき。 */
+function drawMetroRoadsOnLayer(bctx, bounds) {
+  if (worldShape !== SHAPE_METRO) return;
+  const n = metroLines();
+  bctx.save();
+  for (let k = 1; k < n; k++) {
+    const p = k * METRO_BLOCK, w = metroRoadW(k);
+    if (p + w < bounds.x0 && p + w < bounds.y0) continue;
+    for (const vertical of [true, false]) {
+      bctx.fillStyle = METRO_COLORS.walk;
+      if (vertical) bctx.fillRect(p - w / 2 - 6, 0, w + 12, WORLD_H); else bctx.fillRect(0, p - w / 2 - 6, WORLD_W, w + 12);
+      bctx.fillStyle = metroIsAvenue(k) ? METRO_COLORS.avenue : METRO_COLORS.road;
+      if (vertical) bctx.fillRect(p - w / 2, 0, w, WORLD_H); else bctx.fillRect(0, p - w / 2, WORLD_W, w);
+    }
+  }
+  // 中央線（破線）。交差点の中は描かない
+  bctx.strokeStyle = METRO_COLORS.line;
+  bctx.lineWidth = 3;
+  bctx.setLineDash([22, 18]);
+  bctx.globalAlpha = 0.6;
+  for (let k = 1; k < n; k++) {
+    const p = k * METRO_BLOCK;
+    for (let j = 0; j < n; j++) {
+      const a = j * METRO_BLOCK + metroRoadW(j) / 2 + 8, b = (j + 1) * METRO_BLOCK - metroRoadW(j + 1) / 2 - 8;
+      bctx.beginPath(); bctx.moveTo(p, a); bctx.lineTo(p, b); bctx.stroke();
+      bctx.beginPath(); bctx.moveTo(a, p); bctx.lineTo(b, p); bctx.stroke();
+    }
+  }
+  bctx.setLineDash([]);
+  bctx.restore();
+}
+
+// ---- 道路を走る敵（車列・パトカー・戦車）----
+// 道路の交差点から交差点へ走り、交差点で曲がる。曲がる向きは「車列の番号と交差点の位置」から決めるので、
+// 同じ車列の車は全員同じ角で同じ向きに曲がる＝列のまま流れる（乱数を使わないのでランもずれない）。
+// 首都区画の中の交差点は通らない。戦車は大通りだけを走る。
+function metroHash(a, b, c) {
+  let h = (a * 73856093) ^ (b * 19349663) ^ (c * 83492791);
+  h = (h ^ (h >>> 13)) * 1274126177;
+  return (h ^ (h >>> 16)) >>> 0;
+}
+function metroIntersectionOk(ix, iy, def, boss) {
+  const n = metroLines();
+  if (ix < 1 || iy < 1 || ix > n - 1 || iy > n - 1) return false;
+  return !metroNearCapital(ix * METRO_BLOCK, iy * METRO_BLOCK, boss, 40);
+}
+/** 交差点 (ix, iy) に着いた車の次の向き。来た向きへは戻らない（行き止まりのときだけ戻る）。 */
+function metroChooseDir(m, ix, iy) {
+  const boss = settlements[bossSettlementIdx];
+  const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+  const ok = dirs.filter(([dx, dy]) => {
+    if (dx === -m.road.dx && dy === -m.road.dy) return false;
+    if (!metroIntersectionOk(ix + dx, iy + dy, m.def, boss)) return false;
+    if (m.def.avenueOnly) {
+      // 横へ走るなら今いる横の道路が、縦へ走るなら縦の道路が大通りであること
+      if (dx !== 0 && !metroIsAvenue(iy)) return false;
+      if (dy !== 0 && !metroIsAvenue(ix)) return false;
+    }
+    return true;
+  });
+  if (ok.length === 0) return [-m.road.dx, -m.road.dy];
+  // 直進を少し多めに（街を流れて見える）
+  const weighted = [];
+  for (const d of ok) { weighted.push(d); if (d[0] === m.road.dx && d[1] === m.road.dy) weighted.push(d, d); }
+  return weighted[metroHash(m.road.convoy, ix, iy) % weighted.length];
+}
+/** 車の目標点（次の交差点の手前の車線上）。着いたら次の向きを決める。 */
+function metroRoadTarget(m) {
+  const r = m.road;
+  const tx = r.ix * METRO_BLOCK, ty = r.iy * METRO_BLOCK;
+  const lane = metroRoadW(r.dx !== 0 ? r.iy : r.ix) * METRO_LANE_OFFSET;
+  // 進む向きの右側の車線（画面座標で右＝(−dy, dx)）
+  const ox = -r.dy * lane, oy = r.dx * lane;
+  if (dist2(m.wx, m.wy, tx + ox, ty + oy) < 22 * 22) {
+    const [ndx, ndy] = metroChooseDir(m, r.ix, r.iy);
+    r.dx = ndx; r.dy = ndy; r.ix += ndx; r.iy += ndy;
+    return metroRoadTarget(m);
+  }
+  return { x: tx + ox, y: ty + oy };
+}
+
+/** 大都会の道路の敵を湧かせる。車列は先頭の後ろに同じ向きで並べる。 */
+function generateMetroMovers(stageIndex, result, boss) {
+  const n = metroLines();
+  let convoyId = 1;
+  const finish = (mv) => { mv.maxHp = mv.def.hp; mv.hp = mv.def.hp; mv.xpValue = mv.def.xp; result.push(mv); return mv; };
+  const spawnOnRoad = (def, len, spacing) => {
+    for (let tries = 0; tries < 40; tries++) {
+      const ix = 1 + Math.floor(random() * (n - 1)), iy = 1 + Math.floor(random() * (n - 1));
+      if (!metroIntersectionOk(ix, iy, def, boss)) continue;
+      if (dist2(ix * METRO_BLOCK, iy * METRO_BLOCK, START_X, START_Y) < (METRO_START_CLEAR + 300) ** 2) continue;
+      const horizontal = random() < 0.5;
+      const dx = horizontal ? (random() < 0.5 ? 1 : -1) : 0, dy = horizontal ? 0 : (random() < 0.5 ? 1 : -1);
+      if (def.avenueOnly && ((dx !== 0 && !metroIsAvenue(iy)) || (dy !== 0 && !metroIsAvenue(ix)))) continue;
+      if (!metroIntersectionOk(ix + dx, iy + dy, def, boss)) continue;
+      const id = convoyId++;
+      const lane = metroRoadW(dx !== 0 ? iy : ix) * METRO_LANE_OFFSET;
+      for (let k = 0; k < len; k++) {
+        const mv = makeMover(def, () => ({ x: ix * METRO_BLOCK, y: iy * METRO_BLOCK }));
+        mv.road = { ix: ix + dx, iy: iy + dy, dx, dy, convoy: id };
+        mv.wx = ix * METRO_BLOCK - dx * k * spacing - dy * lane;
+        mv.wy = iy * METRO_BLOCK - dy * k * spacing + dx * lane;
+        mv.headingX = dx; mv.headingY = dy;
+        finish(mv);
+      }
+      return;
+    }
+  };
+  const convoys = scaledForWorld(METRO_CONVOYS, MOVER_DENSITY_FACTOR);
+  for (let k = 0; k < convoys; k++) {
+    const len = METRO_CONVOY_LEN_MIN + Math.floor(random() * (METRO_CONVOY_LEN_MAX - METRO_CONVOY_LEN_MIN + 1));
+    spawnOnRoad(random() < 0.3 ? MOVER_DEFS.metro_truck : MOVER_DEFS.metro_car, len, METRO_CONVOY_SPACING);
+  }
+  for (let k = 0; k < METRO_POLICE; k++) spawnOnRoad(MOVER_DEFS.metro_police, 1, 0);
+  const tanks = METRO_TANKS_BASE + Math.floor(stageIndex / 3);
+  for (let k = 0; k < tanks; k++) spawnOnRoad(MOVER_DEFS.metro_tank, 1, 0);
+}
+
+/** 首都＝巨大な高層ビルの屋上（城の絵の代わり）。 */
+function drawMetroTower(boss) {
+  const img = enemyImages.metro_tower;
+  if (!img) return false;
+  const size = boss.radius * METRO_TOWER_DRAW_MUL;
+  const bounds = getViewBoundsWorld(size);
+  if (boss.wx < bounds.minX || boss.wx > bounds.maxX || boss.wy < bounds.minY || boss.wy > bounds.maxY) return true;
+  ctx.save();
+  ctx.fillStyle = "rgba(0, 0, 0, 0.35)";   // ビルの影（右下へ）
+  ctx.fillRect(boss.wx - size / 2 + size * 0.08, boss.wy - size / 2 + size * 0.1, size, size);
+  ctx.drawImage(img, boss.wx - size / 2, boss.wy - size / 2, size, size);
+  ctx.restore();
+  return true;
+}
+const METRO_TOWER_DRAW_MUL = 4.4;   // 首都の半径に対するビルの屋上の一辺
+
+
 let forestClusters = [];
 const FOREST_COUNT_MIN = 8;
 const FOREST_COUNT_MAX = 16;
@@ -15538,6 +15829,7 @@ function paintGroundTile(bctx, bounds) {
 
   // 道路ラインを先に描く（建物の下に来る）
   drawRoadsOnLayer(bctx, bounds);
+  drawMetroRoadsOnLayer(bctx, bounds);   // v3.22.0: 大都会の碁盤の目の道路
 
   // v2.0.0: 鉄路は町の下地・道路の上（線路は街を貫いて敷かれている）
   drawRailsOnLayer(bctx, bounds);
@@ -15807,6 +16099,15 @@ function drawTownBasesOnLayer(bctx, bounds) {
     const meta = settlements[s]._townMeta;
     if (!meta || meta._rock) continue;   // v1.5.0: 岩塊の町は地面に焼かない
     if (!layerBoundsHitCircle(bounds, meta.cx, meta.cy, townMetaLayerReach(meta))) continue;
+    // v3.22.0: 大都会の街区は四角い敷地を平らに敷くだけ（広場・通りは描かない。道路は別に焼く）
+    if (meta._metro) {
+      const o = meta.outline;
+      bctx.globalAlpha = METRO_LOT_ALPHA;
+      bctx.fillStyle = METRO_COLORS.lot;
+      bctx.fillRect(o[0].x, o[0].y, o[2].x - o[0].x, o[2].y - o[0].y);
+      bctx.globalAlpha = 1;
+      continue;
+    }
     const { cx, cy, plazaR, streets, townR, fields } = meta;
     const ringRadii = meta.ringRadii ?? [meta.ringR];
     const gridRoads = meta.gridRoads ?? [];
@@ -15951,6 +16252,7 @@ function drawTownBasesOnLayer(bctx, bounds) {
 }
 
 function drawTownRoadsOnLayer(bctx, meta) {
+  if (meta._metro) return;   // v3.22.0: 大都会の街区に町の中の道は無い（碁盤の目の道路だけ）
   const { cx, cy, plazaR, streets, townR } = meta;
   const ringRadii = meta.ringRadii ?? [meta.ringR];
   const gridRoads = meta.gridRoads ?? [];
@@ -18645,8 +18947,8 @@ const STRINGS = {
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
-               "無人列車の走る軌道", "森に覆われた大樹海"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海"],
+               "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
   regionHint: "地域ごとに土地の形と遊び方が変わる。時代（建物・敵・兵器）はどの地域でも同じ。",
@@ -18670,6 +18972,8 @@ const STRINGS = {
       rule: "列車は線路の上しか走れない。線路から離れれば追ってこない" },
     { route: "角 → 中心の巨大樹", play: "町に林がかかった森の土地。樹冠の下にも攻撃は届く。首都は人の住む巨大樹で、樹冠の灯から魔法が飛んでくる。",
       rule: "灯を落とすほど樹の心臓（首都）に攻撃が通る。伏兵は近づくと飛び出す。火のブレスが当たった所の樹冠は燃える" },
+    { route: "角 → 中心の高層ビル", play: "地図じゅうが碁盤の目の道路と建物で埋まった都市。道路を車の列が流れ、渋滞ごとまとめて薙げる。",
+      rule: "車は道路の上しか走れない。戦車は大通りだけ。壊した区画は建て直されない" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -23918,6 +24222,7 @@ const CODEX_ENEMY_NAMES = {
   railgun_loco: "列車砲列（機関車）", railgun_car: "列車砲列の砲車",
   railcar: "装甲軌道車", railram: "衝角機関車",
   forest_ambusher: "森の伏兵", forest_giant: "森番の巨人",
+  metro_car: "渋滞の車", metro_truck: "渋滞の箱バン", metro_police: "パトカー", metro_tank: "戦車",
   raider: "レイダー", treasure: "財宝馬車", eggconvoy: "竜卵の輸送隊",
 };
 
@@ -23936,6 +24241,10 @@ const CODEX_SPECIAL_ERA = {
   railram:        "軌道（全文明） — 放射線を行き来する",
   forest_ambusher: "大樹海（全文明） — 樹冠の下で待ち、近づくと飛び出す",
   forest_giant:   "大樹海（全文明） — 森を歩く大物",
+  metro_car:      "大都会（全文明） — 列になって道路を流れる",
+  metro_truck:    "大都会（全文明） — 車列に混じる少し硬い車",
+  metro_police:   "大都会（全文明） — 道路を走りながら撃つ",
+  metro_tank:     "大都会（全文明） — 大通りだけを走る。時代3つごとに1台増える",
   splitter_mid:   "分裂体を壊すと出る",
   splitter_small: "分裂体（中）を壊すと出る",
 };
@@ -25464,7 +25773,7 @@ function codexRegionCanvas(shape) {
     c.fillStyle = CODEX_RG.capital;
     c.beginPath(); c.moveTo(x, y - r); c.lineTo(x + r, y); c.lineTo(x, y + r); c.lineTo(x - r, y); c.closePath(); c.fill();
   };
-  c.fillStyle = shape === SHAPE_ASTEROIDS ? CODEX_RG.space : CODEX_RG.ground;
+  c.fillStyle = shape === SHAPE_ASTEROIDS ? CODEX_RG.space : shape === SHAPE_METRO ? METRO_COLORS.road : CODEX_RG.ground;
   c.fillRect(0, 0, S, S);
   if (shape === SHAPE_CONTINENT) {
     c.strokeStyle = CODEX_RG.river; c.lineWidth = 1.5;
@@ -25536,6 +25845,16 @@ function codexRegionCanvas(shape) {
       c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
     }
     diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
+  } else if (shape === SHAPE_METRO) {
+    // 碁盤の目の道路（灰）の間を建物（町の色）で埋める。黄の点が道路を流れる車列。中心の大きな角が高層ビル
+    c.fillStyle = CODEX_RG.town;
+    for (let y = 2; y < S; y += 10) for (let x = 2; x < S; x += 10) c.fillRect(x, y, 7, 7);
+    c.fillStyle = "#ffd060";
+    for (const [x, y] of [[10.5, 5], [10.5, 9], [10.5, 13], [24, 40.5], [28, 40.5], [32, 40.5], [40.5, 22], [40.5, 26]]) {
+      c.fillRect(x - 0.8, y - 0.8, 1.6, 1.6);
+    }
+    c.fillStyle = CODEX_RG.capital; c.fillRect(21, 21, 10, 10);
+    dot(4, 48, 2.2, CODEX_RG.start);
   }
   return cv;
 }
@@ -25669,7 +25988,7 @@ const REGION_CHOICE_COUNT = 3;
 // 最初から選べる地域。3つあるので初回から3択が成り立つ。残りは条件で解放（§7.4）
 // v3.7.0: 列車（軌道）以外は最初から全部（Shooter指示）。列車だけは初めてステージ5に着いたときに解放する
 const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL, SHAPE_FRONTLINE, SHAPE_SANCTUARY, SHAPE_ASTEROIDS,
-                             SHAPE_FOREST];   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
+                             SHAPE_FOREST, SHAPE_METRO];   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
 // 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
 const WIPE_GRACE_SECONDS  = 2;
 
@@ -28986,6 +29305,7 @@ function drawBossCitadel() {
   // 陥落後もここで（灰にして）描く——描かないと撃破の瞬間に消えてしまう。
   if (boss._railRide) { drawRailBoss(boss); return; }
   if (boss.fallen) return;
+  if (worldShape === SHAPE_METRO && drawMetroTower(boss)) return;   // v3.22.0: 首都は巨大な高層ビル
   const img = enemyImages.citadel;
   if (!img) return;
 
@@ -30800,6 +31120,12 @@ const ENEMY_IMAGE_SOURCES = {
   // v3.20.0: 大樹海の敵（案帳 DT-042。画像生成）
   forest_ambusher: "assets/mover_forest_ambusher.png",   // 大きな葉っぱの笠をかぶった森の住人の弓兵
   forest_giant:    "assets/mover_forest_giant.png",      // 苔むした木の巨人
+  // v3.22.0: 大都会の敵（真上から見た車。前が上）と首都の高層ビルの屋上
+  metro_car:       "assets/mover_metro_car.png",
+  metro_truck:     "assets/mover_metro_truck.png",
+  metro_police:    "assets/mover_metro_police.png",
+  metro_tank:      "assets/mover_metro_tank.png",
+  metro_tower:     "assets/terrain_metro_tower.png",
   walker_hull:   "assets/mover_walker_hull.png",
   walker_foot:   "assets/mover_walker_foot.png",
   // v1.8.0: 砲塔は敵そのものではなく胴の上に重ねる部品（drawWalkerTurrets）
@@ -30991,7 +31317,12 @@ const ENEMY_SPRITE_META = {
   miasma:         { px: 0.498, py: 0.548, forward: "none", drawScale: 3.15 },
   raider:         { px: 0.606, py: 0.487, forward: "up", drawScale: 1.53 },
   forest_ambusher: { px: 0.496, py: 0.442, forward: "up", drawScale: 3.29 },   // v3.20.0
-  forest_giant:    { px: 0.498, py: 0.532, forward: "up", drawScale: 3.58 },   // v3.21.1: 最初の版の絵（前が下だったので180度回して上＝前にそろえた）
+  forest_giant:    { px: 0.498, py: 0.532, forward: "up", drawScale: 3.58 },
+  // v3.22.0: 縦長の絵なので drawScale＝（車の長さ÷半径）×幅÷高さ
+  metro_car:       { px: 0.5, py: 0.5, forward: "up", drawScale: 1.93 },
+  metro_truck:     { px: 0.5, py: 0.5, forward: "up", drawScale: 1.98 },
+  metro_police:    { px: 0.5, py: 0.5, forward: "up", drawScale: 1.76 },
+  metro_tank:      { px: 0.5, py: 0.55, forward: "up", drawScale: 1.68 },   // v3.21.1: 最初の版の絵（前が下だったので180度回して上＝前にそろえた）
   // v0.47.1: コード側が描く「弾く扇」（drawMovers）と絵が重なって盾が読めなかったので、
   // エフェクトはそのままに**絵を一回り小さく**した（3.45 → 2.4）。
   shieldman:      { px: 0.488, py: 0.501, forward: "up", drawScale: 2.4 },
