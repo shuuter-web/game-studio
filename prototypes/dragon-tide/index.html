@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.21.1";
+const GAME_VERSION = "v3.21.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -8215,7 +8215,8 @@ const MOVER_DEFS = {
     name: "forest_ambusher", ambush: true,
     hp: 40, speed: 92, xp: 26, eggDrop: 0, eggChance: 0.35, radius: 11,
     color: "#3a6a2a", glowColor: "#9fe070", moveType: "pingpong",
-    attack: { type: "fan", interval: 1.4, count: 1, damage: 1.4, speed: 85, range: 320 },
+    // v3.21.2: どの時代でも矢（Shooter指示）。威力は他の動く敵と同じく時代と警戒度で上がる（moverFerocity：時代ごとに+20%）
+    attack: { type: "fan", interval: 1.4, count: 1, damage: 1.4, speed: 85, range: 320, shotStyle: "bolt" },
   },
   // 森番の巨人: 大樹海を歩く大物。重い踏み鳴らしで群れを押し返す
   forest_giant: {
@@ -10540,7 +10541,8 @@ function updateMovers(dt) {
         for (let k = -(atk.count >> 1); k <= (atk.count >> 1); k++) {
           // v2.9.2: 弾の威力にも文明ごとの強化を掛ける（着弾弾・装甲軌道車と揃える）
           spawnFanProjectileRaw(m.wx, m.wy, baseAngle + k * fanSpread, atk.speed, atk.damage * ferocity,
-                                atk.color ?? "#e8eef8", atk.kind ?? 0, 0, atk.knockR ?? 0);
+                                atk.color ?? "#e8eef8", atk.kind ?? 0, 0, atk.knockR ?? 0,
+                                atk.shotStyle !== undefined ? SHOT_STYLES.findIndex(st => st.key === atk.shotStyle) : undefined);
         }
       } else {
         m.attackTimer = 0.4;
@@ -14536,8 +14538,25 @@ function canopyClearCircle(x, y, radius) {
     }
   }
 }
-/** 爆発カテゴリの攻撃が樹冠を抉る（Shooter指示「爆発でも樹冠が壊れて欲しい」）。 */
-function canopyApplyBlast(x, y, radius) { canopyClearCircle(x, y, Math.max(radius, CANOPY_BLAST_MIN_R)); }
+/**
+ * 爆発カテゴリの攻撃が掛かった樹冠に火を付ける（Shooter指示「爆発でも樹冠が壊れて欲しい」）。
+ * v3.21.2: 一瞬で消すのをやめ、火で壊すときと同じく燃え上がって燃え尽きるようにした（Shooter指示）。
+ */
+function canopyApplyBlast(x, y, radius) {
+  if (!forestActive) return;
+  const rr = Math.max(radius, CANOPY_BLAST_MIN_R), cell = SHAPE_FOREST_CANOPY_CELL;
+  const c0 = Math.max(0, Math.floor((x - rr) / cell)), c1 = Math.min(canopyCols - 1, Math.floor((x + rr) / cell));
+  const r0 = Math.max(0, Math.floor((y - rr) / cell)), r1 = Math.min(canopyRows - 1, Math.floor((y + rr) / cell));
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const i = r * canopyCols + c;
+      if (canopyState[i] !== CANOPY_LEAF) continue;
+      const nx = Math.max(c * cell, Math.min(x, (c + 1) * cell)), ny = Math.max(r * cell, Math.min(y, (r + 1) * cell));
+      if (dist2(nx, ny, x, y) > rr * rr) continue;
+      canopyIgnite(i, 0);
+    }
+  }
+}
 
 function canopyIgnite(i, gen) {
   if (canopyState[i] !== CANOPY_LEAF) return;
@@ -17105,12 +17124,14 @@ function calcAngleToTarget(fromX, fromY, targetBoidIdx) {
 }
 
 // 変更5: kind=0(arrow) / kind=1(catapult)
-function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind, maxRange, knockR) {
+function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind, maxRange, knockR, styleOverride) {
   const slot = takeProjectileSlot();
   if (slot < 0) return;
+  // v3.21.2: styleOverride（SHOT_STYLES の添字）を渡すと、文明に関係なくその弾で撃つ（森の伏兵の矢）
+  const styleIdx = styleOverride ?? eraShotStyle();
   // 変更3: 弾速倍率を適用（v0.57: 文明ごとの弾速倍率／v0.62: 1/3 の減速を重ねる）
   // ここを通るのは扇撃ち＝すべて通常弾（矢・カタパルト弾）なので一律で減速する。
-  const actualSpeed = speed * PROJECTILE_SPEED_MULT * eraShotSpeedMult() * NORMAL_SHOT_SPEED_SCALE;
+  const actualSpeed = speed * PROJECTILE_SPEED_MULT * SHOT_STYLES[styleIdx].speedMult * NORMAL_SHOT_SPEED_SCALE;
   projActive[slot]     = 1;
   projWx[slot]         = fromWx;
   projWy[slot]         = fromWy;
@@ -17128,7 +17149,7 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind
   projColor[slot]      = color;
   // 変更5: 種別を記録（デフォルト 0=arrow）
   projKind[slot]       = fanShotKind(kind);
-  projStyle[slot]      = eraShotStyle();
+  projStyle[slot]      = styleIdx;
   projRange[slot]      = maxRange || 0;   // v0.57: 0 なら kind ごとの既定射程
   projKnockR[slot]     = knockR || 0;     // v0.59: 着弾点で周囲を押す半径
 }
