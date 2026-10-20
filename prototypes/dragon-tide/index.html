@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.20.0";
+const GAME_VERSION = "v3.21.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -14508,8 +14508,36 @@ function buildCanopy(buildings) {
   }
 }
 
-// 燃えるマスの炎の大きさ（建物の炎の spawnFire に渡す半径）
-const CANOPY_FIRE_RADIUS = SHAPE_FOREST_CANOPY_CELL * 0.35;
+// 燃えるマスの炎（建物の炎の spawnFire）。1つの炎は小さいので、1マスに数を置いて覆う（Shooter指示「数でカバー」）
+const CANOPY_FIRE_RADIUS  = SHAPE_FOREST_CANOPY_CELL * 0.3;
+const CANOPY_FIRE_PER_CELL = 5;
+const CANOPY_BLAST_MIN_R  = 90;    // v3.21.0: 小さい爆発でも最低1マスは剥がす
+const CANOPY_FALL_MARGIN  = 24;    // v3.21.0: 壊れた建物の縁からこれだけの樹冠も一緒に崩れる
+
+/**
+ * v3.21.0: (x, y) 半径 radius にかかる樹冠を剥がす（爆発・建物の崩落）。
+ * 樹冠は見た目だけなので判定には関わらない。剥がれた所には葉が散る。
+ */
+function canopyClearCircle(x, y, radius) {
+  if (!forestActive) return;
+  const cell = SHAPE_FOREST_CANOPY_CELL, half = cell / 2;
+  const c0 = Math.max(0, Math.floor((x - radius) / cell)), c1 = Math.min(canopyCols - 1, Math.floor((x + radius) / cell));
+  const r0 = Math.max(0, Math.floor((y - radius) / cell)), r1 = Math.min(canopyRows - 1, Math.floor((y + radius) / cell));
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const i = r * canopyCols + c;
+      if (canopyState[i] !== CANOPY_LEAF) continue;
+      const cx = c * cell + half, cy = r * cell + half;
+      // 円がマスの四角に掛かっていれば剥がす（中心までの距離だと、マスの角に接した建物で崩れなかった）
+      const nx = Math.max(c * cell, Math.min(x, (c + 1) * cell)), ny = Math.max(r * cell, Math.min(y, (r + 1) * cell));
+      if (dist2(nx, ny, x, y) > radius * radius) continue;
+      canopyState[i] = CANOPY_OPEN;
+      for (let k = 0; k < 3; k++) spawnHitParticles(cx + (fxRandom() - 0.5) * cell * 0.7, cy + (fxRandom() - 0.5) * cell * 0.7);
+    }
+  }
+}
+/** 爆発カテゴリの攻撃が樹冠を抉る（Shooter指示「爆発でも樹冠が壊れて欲しい」）。 */
+function canopyApplyBlast(x, y, radius) { canopyClearCircle(x, y, Math.max(radius, CANOPY_BLAST_MIN_R)); }
 
 function canopyIgnite(i, gen) {
   if (canopyState[i] !== CANOPY_LEAF) return;
@@ -14518,8 +14546,12 @@ function canopyIgnite(i, gen) {
   canopyBurnT[i] = CANOPY_BURN_SECONDS;
   canopyBurningList.push(i);
   // v3.19.2: 建物が燃えるときと同じ火の粉と煙（見た目だけ。fxRandom しか使わない）
+  // v3.21.0: 1マスに数を置く（1つの炎は小さいので数で覆う）
   const c = i % canopyCols, r = (i - c) / canopyCols;
-  spawnFire((c + 0.5) * SHAPE_FOREST_CANOPY_CELL, (r + 0.5) * SHAPE_FOREST_CANOPY_CELL, CANOPY_FIRE_RADIUS);
+  for (let k = 0; k < CANOPY_FIRE_PER_CELL; k++) {
+    spawnFire((c + 0.15 + fxRandom() * 0.7) * SHAPE_FOREST_CANOPY_CELL,
+              (r + 0.15 + fxRandom() * 0.7) * SHAPE_FOREST_CANOPY_CELL, CANOPY_FIRE_RADIUS);
+  }
 }
 
 /** 火属性の攻撃が (x, y) の敵に当たった。そこに樹冠があれば熱が溜まって燃え始める。 */
@@ -14751,6 +14783,15 @@ function buildWorldTree(result, boss, config) {
   boss._treeSpell = "heart";
   boss._treeTimer = 2.0;
   boss._treeSpellIdx = 0;
+  // v3.21.0: 巨大樹の樹冠は消えない（壊せない）ので、その下に建物を置かない（Shooter指示
+  // 「絶対に消えない部分はあっていいが、その下には建物を置かない」）。中心の穴（首都の城が見える所）の中は残す
+  for (let k = result.length - 1; k >= 0; k--) {
+    const b = result[k];
+    if (b.isBoss) continue;
+    const d = Math.sqrt(dist2(b.wx, b.wy, boss.wx, boss.wy));
+    if (d + (b.radius || 0) <= WORLD_TREE_HEART_HOLE) continue;
+    if (d - (b.radius || 0) < WORLD_TREE_R) result.splice(k, 1);
+  }
   const bConf = config.buildings.large;
   const nodeHp = Math.max(60, Math.round(boss.maxHp * WORLD_TREE_NODE_HP_MULT));
   const a0 = random() * Math.PI * 2;
@@ -17647,6 +17688,8 @@ function settlementFall(settlementIndex) {
   const settlement = settlements[settlementIndex];
   settlement.fallen = true;
   settlement.hp = 0;
+  // v3.21.0: 壊れた建物に接している樹冠も一緒に崩れる（Shooter指示）
+  canopyClearCircle(settlement.wx, settlement.wy, (settlement.radius || 10) + CANOPY_FALL_MARGIN);
   // v3.3.0: 穿つ楔の解放条件（要塞・首都区画の建物の累計）。保存はステージクリア等でまとめて
   if (settlement._fixedTier != null && !settlement.isBoss && !settlement._isWall && profile) {
     profile.fortressFallen = (profile.fortressFallen || 0) + 1;
@@ -18115,7 +18158,7 @@ function updateParticles(dt) {
 // v0.10: 炎上システム — 破壊した建物が数秒燃え、火の粉と煙柱を上げる。
 // 「人間社会が燃えている」画を作る。専用プールで既存FXと枠を奪い合わない。
 // -----------------------------------------------------------------
-const MAX_FIRES = 48;
+const MAX_FIRES = 160;   // v3.21.0: 48→160（燃える樹冠は1マスに5つ置く）
 const fireX      = new Float32Array(MAX_FIRES);
 const fireY      = new Float32Array(MAX_FIRES);
 const fireLife   = new Float32Array(MAX_FIRES);
@@ -18124,7 +18167,7 @@ const fireScale  = new Float32Array(MAX_FIRES);   // 建物サイズに応じた
 const fireActive = new Uint8Array(MAX_FIRES);
 const FIRE_DURATION = 2.4;
 
-const MAX_EMBERS = 200;
+const MAX_EMBERS = 600;   // v3.21.0: 200→600（炎を増やしたぶん）
 const emberX       = new Float32Array(MAX_EMBERS);
 const emberY       = new Float32Array(MAX_EMBERS);
 const emberVx      = new Float32Array(MAX_EMBERS);
@@ -20665,6 +20708,7 @@ function updateDragonProjectiles(dt) {
           }
         }
         spawnExplosionFx(dprojX[i], dprojY[i], aoeR, { fire: 0.7 });   // v3.9.0: 影弾の爆ぜ
+        canopyApplyBlast(dprojX[i], dprojY[i], aoeR);                  // v3.21.0: 爆発は樹冠を抉る
         hapticPulse(12);
         dprojActive[i] = 0;
         break;
@@ -22071,6 +22115,7 @@ function drawSpecialBolts() {
  */
 function hitInRadius(wx, wy, radius, hit, targets = TARGETS_ALL_AIM) {
   let hits = 0;
+  if (hit && hit.blast > 0) canopyApplyBlast(wx, wy, radius);   // v3.21.0: 爆発カテゴリは樹冠を抉る
   const cellRadius = Math.max(1, Math.ceil(radius / BUILDING_GRID_CELL));
   buildingGridQueryRadius(wx, wy, cellRadius, _buildingNeighbourBuf);
   const r2 = radius * radius;
