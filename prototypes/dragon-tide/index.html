@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.21.2";
+const GAME_VERSION = "v3.21.3";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9647,7 +9647,10 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   // v2.0.0: 軌道の地域は、時代に関係なく鉄路の敵が走っている（遺された無人の機械）
   if (worldShape === SHAPE_RAILWAY) generateRailMovers(stageIndex, result, tierForCount);
   // v3.17.0: 大樹海の地域は、時代に関係なく森の敵が居る
-  if (worldShape === SHAPE_FOREST) generateForestMovers(stageIndex, result, boss);
+  if (worldShape === SHAPE_FOREST) {
+    generateForestMovers(stageIndex, result, boss);
+    relocateMeleeOutOfCrown(result);   // v3.21.3: 樹冠の下に湧いた近接の敵は最初から外へ
+  }
 
   // v1.8.0: 多脚戦車を大戦（STAGE7）と最終（STAGE8）に1体。
   if (stageIndex === 6 || stageIndex === 7) {
@@ -10317,6 +10320,9 @@ function updateMovers(dt) {
       const goal = updateAmbusher(m, centroid, dt);
       if (goal) { targetX = goal.x; targetY = goal.y; }
     }
+    // v3.21.3: 飛び道具を持たない敵は、巨大樹の消えない樹冠の下から外へ出る（出た後は入らない＝下の位置の補正）
+    const crownExit = worldTreeCrownExitTarget(m);
+    if (crownExit) { targetX = crownExit.x; targetY = crownExit.y; }
 
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
@@ -10413,6 +10419,8 @@ function updateMovers(dt) {
       }
       m.wx += m.shoveX; m.wy += m.shoveY;
     }
+
+    keepOutOfWorldTreeCrown(m);   // v3.21.3: 出た後は巨大樹の樹冠へ入らない（縁に沿って滑る）
 
     // 地形（岩山）は移動敵も回り込む（押し出しスライド）。飛行ユニットは無視。
     // v0.17.1: 湖は単なる背景（当たり判定なし）にしたので押し出し対象から除外
@@ -14542,9 +14550,12 @@ function canopyClearCircle(x, y, radius) {
  * 爆発カテゴリの攻撃が掛かった樹冠に火を付ける（Shooter指示「爆発でも樹冠が壊れて欲しい」）。
  * v3.21.2: 一瞬で消すのをやめ、火で壊すときと同じく燃え上がって燃え尽きるようにした（Shooter指示）。
  */
-function canopyApplyBlast(x, y, radius) {
+function canopyApplyBlast(x, y, radius) { canopyIgniteCircle(x, y, Math.max(radius, CANOPY_BLAST_MIN_R)); }
+
+/** (x, y) 半径 rr の円が掛かる葉のマスに火を付ける（爆発・建物の崩落。燃え上がって燃え尽きる）。 */
+function canopyIgniteCircle(x, y, rr) {
   if (!forestActive) return;
-  const rr = Math.max(radius, CANOPY_BLAST_MIN_R), cell = SHAPE_FOREST_CANOPY_CELL;
+  const cell = SHAPE_FOREST_CANOPY_CELL;
   const c0 = Math.max(0, Math.floor((x - rr) / cell)), c1 = Math.min(canopyCols - 1, Math.floor((x + rr) / cell));
   const r0 = Math.max(0, Math.floor((y - rr) / cell)), r1 = Math.min(canopyRows - 1, Math.floor((y + rr) / cell));
   for (let r = r0; r <= r1; r++) {
@@ -14843,6 +14854,57 @@ function buildWorldTree(result, boss, config) {
       kind: rng() < 0.55 ? "dwellerLantern" : "dwellerMage",
       phase: rng() * Math.PI * 2, speed: 0.6 + rng() * 0.5, dir: rng() < 0.5 ? 1 : -1,
     });
+  }
+}
+
+// ---------------------------------------------------------------------
+// v3.21.3: 飛び道具を持たない敵は巨大樹の樹冠の下にいさせない（Shooter指示
+// 「消えない樹冠の下にいて見えないマンモス軍団にやられると意味が分からない」）。
+// 樹冠の帯（中心の穴の外〜樹冠の縁）にいる間は外へ向かい、外へ出たら帯へ入らない。
+// 中心の穴の中（見える所）にいる者は穴の中に留まる。飛ぶ敵・部位・止まった塔は対象外。
+// ---------------------------------------------------------------------
+function moverAvoidsWorldTreeCrown(m) {
+  if (!worldTree) return false;
+  const def = m.def;
+  if (def.flying || def.part || def.walker || !(def.speed > 0)) return false;
+  return !def.attack || def.attack.type === "shockwave";
+}
+/** 湧いた時点で樹冠の帯にいる近接の敵を、樹冠のすぐ外（同じ向き）へ置き直す。 */
+function relocateMeleeOutOfCrown(list) {
+  if (!worldTree) return;
+  for (const m of list) {
+    if (!moverAvoidsWorldTreeCrown(m)) continue;
+    const dx = m.wx - worldTree.x, dy = m.wy - worldTree.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1, r = m.def.radius || 10;
+    if (d <= WORLD_TREE_HEART_HOLE - r || d >= WORLD_TREE_R + r) continue;
+    const R = WORLD_TREE_R + r + 20;
+    m.wx = worldTree.x + dx / d * R; m.wy = worldTree.y + dy / d * R;
+    m._crownSide = "out";
+  }
+}
+
+/** 樹冠の帯の中にいる（まだ出ていない）なら、外へ抜ける目標点を返す。 */
+function worldTreeCrownExitTarget(m) {
+  if (!moverAvoidsWorldTreeCrown(m)) return null;
+  const dx = m.wx - worldTree.x, dy = m.wy - worldTree.y;
+  const d = Math.sqrt(dx * dx + dy * dy) || 1, r = m.def.radius || 10;
+  if (m._crownSide === undefined) {
+    if (d >= WORLD_TREE_R + r) m._crownSide = "out";
+    else if (d <= WORLD_TREE_HEART_HOLE - r) m._crownSide = "hole";
+  }
+  if (m._crownSide) return null;
+  const R = WORLD_TREE_R + r + 40;
+  return { x: worldTree.x + dx / d * R, y: worldTree.y + dy / d * R };
+}
+/** 出た後は帯へ入らないよう、縁へ押し戻す（岩山の押し出しと同じスライド）。 */
+function keepOutOfWorldTreeCrown(m) {
+  if (!m._crownSide || !moverAvoidsWorldTreeCrown(m)) return;
+  const dx = m.wx - worldTree.x, dy = m.wy - worldTree.y;
+  const d = Math.sqrt(dx * dx + dy * dy) || 1, r = m.def.radius || 10;
+  if (m._crownSide === "out" && d < WORLD_TREE_R + r) {
+    m.wx = worldTree.x + dx / d * (WORLD_TREE_R + r); m.wy = worldTree.y + dy / d * (WORLD_TREE_R + r);
+  } else if (m._crownSide === "hole" && d > WORLD_TREE_HEART_HOLE - r) {
+    m.wx = worldTree.x + dx / d * (WORLD_TREE_HEART_HOLE - r); m.wy = worldTree.y + dy / d * (WORLD_TREE_HEART_HOLE - r);
   }
 }
 
@@ -17710,7 +17772,8 @@ function settlementFall(settlementIndex) {
   settlement.fallen = true;
   settlement.hp = 0;
   // v3.21.0: 壊れた建物に接している樹冠も一緒に崩れる（Shooter指示）
-  canopyClearCircle(settlement.wx, settlement.wy, (settlement.radius || 10) + CANOPY_FALL_MARGIN);
+  // v3.21.3: 一瞬で消すのをやめ、火が付いて燃えて消える（Shooter指示）
+  canopyIgniteCircle(settlement.wx, settlement.wy, (settlement.radius || 10) + CANOPY_FALL_MARGIN);
   // v3.3.0: 穿つ楔の解放条件（要塞・首都区画の建物の累計）。保存はステージクリア等でまとめて
   if (settlement._fixedTier != null && !settlement.isBoss && !settlement._isWall && profile) {
     profile.fortressFallen = (profile.fortressFallen || 0) + 1;
