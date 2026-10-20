@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.19.0";
+const GAME_VERSION = "v3.19.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -14368,7 +14368,6 @@ let canopyState = new Uint8Array(0);
 let canopyGen   = new Uint8Array(0);      // 燃えているマスの「火元からの距離」
 let canopyHeat  = new Float32Array(0);
 let canopyBurnT = new Float32Array(0);
-let canopyScorched = new Uint8Array(0);   // v3.19.0: 燃え尽きたマス（焼け跡を地面に残す）
 const canopyBurningList = [];             // 燃えているマスの番号（毎フレーム全マスを舐めないため）
 let canopyTownCover = [];                 // 町ごとの覆われ方（{ x, y, r, cover }。伏兵を置く町を選ぶのに使う）
 
@@ -14408,9 +14407,7 @@ function clearCanopy() {
   canopyCols = canopyRows = 0;
   canopyState = new Uint8Array(0); canopyGen = new Uint8Array(0);
   canopyHeat = new Float32Array(0); canopyBurnT = new Float32Array(0);
-  canopyScorched = new Uint8Array(0);
   canopyBurningList.length = 0;
-  canopyFx.length = 0;
   canopyTownCover = [];
 }
 
@@ -14430,7 +14427,6 @@ function buildCanopy(buildings) {
   canopyGen   = new Uint8Array(n);
   canopyHeat  = new Float32Array(n);
   canopyBurnT = new Float32Array(n);
-  canopyScorched = new Uint8Array(n);
 
   // 町ごとの土地（建物の重心と、一番遠い建物までの距離）と覆う割合
   const towns = new Map();
@@ -14547,7 +14543,6 @@ function updateCanopy(dt) {
     canopyBurnT[i] -= dt;
     if (canopyBurnT[i] <= 0) {
       canopyState[i] = CANOPY_OPEN;
-      canopyScorched[i] = 1;
       canopyBurningList.splice(k, 1);
     }
   }
@@ -14562,28 +14557,10 @@ const CANOPY_TUFTS = [
   [[-0.20, -0.22, 0.40], [0.22, -0.20, 0.38], [-0.18, 0.22, 0.40], [0.22, 0.24, 0.42]],
 ];
 
-// ---------------------------------------------------------------------
-// v3.19.0: 樹冠と炎の見た目（Shooter判定「樹冠そのものと燃える炎の見た目がショボい」）
-// ---------------------------------------------------------------------
-// 葉むらは毎フレーム丸を塗るのをやめ、ステージ開始時に**作り置きの絵**（明暗のある房の集まり＋葉の粒）を
-// 4通り焼いておき、マスごとに貼る。地面に落ちる影を先に全マスぶん敷いてから葉を重ねるので、林に厚みが出る。
-// 燃えるマスは焦げた葉の上に、加算合成の炎の舌・照り返しの光・火の粉・煙を重ねる。
-// 絵の乱数は自前の小さな乱数（見た目専用）で作り、ゲームの乱数の列には触れない。
-const FOLIAGE_VARIANTS   = 4;
-const FOLIAGE_SPRITE_MUL = 1.55;   // 1マスに対する葉の絵の大きさ（隣のマスと重ねて切れ目を消す）
-const FOLIAGE_PALETTES = {
-  leaf:  { shadow: "rgba(0, 12, 0, 0.42)", dark: "#173d1c", mid: "#2c6a2e", light: "#5aa046", speck: "#8fd06a" },
-  char:  { shadow: "rgba(0, 0, 0, 0.42)",  dark: "#1a120c", mid: "#3a2416", light: "#5a3a20", speck: "#ff9a40" },
-  crown: { shadow: "rgba(0, 10, 0, 0.45)", dark: "#123218", mid: "#245a28", light: "#4e9440", speck: "#a8e078" },
-};
-const CANOPY_FX_MAX        = 260;   // 火の粉と煙の上限
-const CANOPY_EMBER_PER_SEC = 5;     // 燃えているマス1つあたりの火の粉
-const CANOPY_SMOKE_PER_SEC = 0.7;   // 同じく煙（多いと火が濁って見える）
-let foliageSprites = null;          // { leaf: [canvas×4], char: [...], crown: [...] }
-let flameSprite = null, flameGlowSprite = null;
-const canopyFx = [];                // { x, y, vx, vy, t, life, smoke }
+// v3.19.1: 樹冠と炎は v3.18 の見た目に戻した（Shooter判定「変にリッチになって、かえってショボく見える。
+// ゲームの他の要素と合わない」）。作り置きの葉むらの絵は巨大樹の樹冠だけに使う。
 
-/** 見た目専用の小さな乱数（同じ種から同じ絵を作る）。 */
+/** 見た目専用の小さな乱数（同じ種から同じ絵を作る。ゲームの乱数の列には触れない）。 */
 function makeVisualRng(seed) {
   let a = seed >>> 0;
   return () => {
@@ -14595,7 +14572,11 @@ function makeVisualRng(seed) {
   };
 }
 
-/** 葉むらの絵を1枚焼く（size 四方。房の数・粒の数は大きさに合わせる）。 */
+const FOLIAGE_PALETTES = {
+  crown: { dark: "#123218", mid: "#245a28", light: "#4e9440", speck: "#a8e078" },
+};
+
+/** 葉むらの絵を1枚焼く（巨大樹の樹冠を組む房に使う）。 */
 function makeFoliageSprite(size, pal, seed, clumpCount) {
   const cv = document.createElement("canvas");
   cv.width = cv.height = Math.ceil(size);
@@ -14607,10 +14588,8 @@ function makeFoliageSprite(size, pal, seed, clumpCount) {
     const a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * size * 0.27;
     clumps.push({ x: mid + Math.cos(a) * d, y: mid + Math.sin(a) * d, r: size * (0.13 + rng() * 0.09) });
   }
-  // 房の下地（濃い色で塊の形を作る）
   c.fillStyle = pal.dark;
   for (const q of clumps) { c.beginPath(); c.arc(q.x, q.y, q.r * 1.08, 0, Math.PI * 2); c.fill(); }
-  // 房ごとに左上から光が当たるグラデーション
   for (const q of clumps) {
     const g = c.createRadialGradient(q.x - q.r * 0.35, q.y - q.r * 0.4, q.r * 0.1, q.x, q.y, q.r);
     g.addColorStop(0, pal.light);
@@ -14619,203 +14598,77 @@ function makeFoliageSprite(size, pal, seed, clumpCount) {
     c.fillStyle = g;
     c.beginPath(); c.arc(q.x, q.y, q.r, 0, Math.PI * 2); c.fill();
   }
-  // 葉の粒（明るい粒は房の左上寄り、暗い粒は右下寄り）
-  const specks = Math.round(clumpCount * 9);
-  for (let k = 0; k < specks; k++) {
-    const q = clumps[Math.floor(rng() * clumps.length)];
-    const a = rng() * Math.PI * 2, d = rng() * q.r * 0.9;
-    const x = q.x + Math.cos(a) * d, y = q.y + Math.sin(a) * d;
-    const lit = (x - q.x) + (y - q.y) < 0;
-    c.globalAlpha = lit ? 0.55 : 0.35;
-    c.fillStyle = lit ? pal.speck : pal.dark;
-    c.beginPath();
-    c.ellipse(x, y, size * 0.012 + rng() * size * 0.012, size * 0.007 + rng() * size * 0.006, rng() * Math.PI, 0, Math.PI * 2);
-    c.fill();
-  }
-  c.globalAlpha = 1;
   return cv;
 }
 
-/** 炎の舌（下が太く上へ細る涙形）と照り返しの光の絵を焼く。加算合成で重ねる前提。 */
-function makeFlameSprites() {
-  const s = 64;
-  flameSprite = document.createElement("canvas");
-  flameSprite.width = s; flameSprite.height = s * 1.5;
-  let c = flameSprite.getContext("2d");
-  const g = c.createRadialGradient(s / 2, s * 1.05, 2, s / 2, s * 0.95, s * 0.62);
-  g.addColorStop(0, "rgba(255, 250, 220, 1)");
-  g.addColorStop(0.25, "rgba(255, 210, 90, 0.95)");
-  g.addColorStop(0.6, "rgba(255, 110, 30, 0.75)");
-  g.addColorStop(1, "rgba(200, 30, 10, 0)");
-  c.fillStyle = g;
-  c.beginPath();
-  c.moveTo(s / 2, 0);
-  c.bezierCurveTo(s * 0.78, s * 0.45, s * 0.98, s * 0.9, s / 2, s * 1.45);
-  c.bezierCurveTo(s * 0.02, s * 0.9, s * 0.22, s * 0.45, s / 2, 0);
-  c.fill();
-  flameGlowSprite = document.createElement("canvas");
-  flameGlowSprite.width = flameGlowSprite.height = s * 2;
-  c = flameGlowSprite.getContext("2d");
-  const h = c.createRadialGradient(s, s, 0, s, s, s);
-  h.addColorStop(0, "rgba(255, 150, 50, 0.55)");
-  h.addColorStop(0.5, "rgba(255, 90, 20, 0.18)");
-  h.addColorStop(1, "rgba(255, 60, 0, 0)");
-  c.fillStyle = h;
-  c.fillRect(0, 0, s * 2, s * 2);
-}
-
-function ensureForestSprites() {
-  if (foliageSprites) return;
-  const size = SHAPE_FOREST_CANOPY_CELL * FOLIAGE_SPRITE_MUL;
-  foliageSprites = { leaf: [], char: [] };
-  for (let v = 0; v < FOLIAGE_VARIANTS; v++) {
-    foliageSprites.leaf.push(makeFoliageSprite(size, FOLIAGE_PALETTES.leaf, 1013 + v * 7919, 9));
-    foliageSprites.char.push(makeFoliageSprite(size, FOLIAGE_PALETTES.char, 1013 + v * 7919, 9));
-  }
-  makeFlameSprites();
-}
-
-function spawnCanopyFx(x, y, smoke) {
-  if (canopyFx.length >= CANOPY_FX_MAX) canopyFx.shift();
-  canopyFx.push({
-    x: x + (fxRandom() - 0.5) * SHAPE_FOREST_CANOPY_CELL * 0.6,
-    y: y + (fxRandom() - 0.5) * SHAPE_FOREST_CANOPY_CELL * 0.6,
-    vx: (fxRandom() - 0.5) * (smoke ? 14 : 40),
-    vy: smoke ? -18 - fxRandom() * 14 : -40 - fxRandom() * 50,
-    t: 0, life: smoke ? 2.4 + fxRandom() * 1.2 : 0.7 + fxRandom() * 0.6, smoke,
-  });
-}
-
-/** 燃えているマスから火の粉と煙を出し、出したものを動かす（見た目だけ）。 */
-function updateCanopyFx(dt) {
-  if (forestActive) {
-    const cell = SHAPE_FOREST_CANOPY_CELL, half = cell / 2;
-    for (const i of canopyBurningList) {
-      const c = i % canopyCols, r = (i - c) / canopyCols;
-      const x = c * cell + half, y = r * cell + half;
-      if (fxRandom() < CANOPY_EMBER_PER_SEC * dt) spawnCanopyFx(x, y, false);
-      if (fxRandom() < CANOPY_SMOKE_PER_SEC * dt) spawnCanopyFx(x, y, true);
-    }
-  }
-  for (let k = canopyFx.length - 1; k >= 0; k--) {
-    const p = canopyFx[k];
-    p.t += dt;
-    if (p.t >= p.life) { canopyFx.splice(k, 1); continue; }
-    p.x += p.vx * dt; p.y += p.vy * dt;
-    if (!p.smoke) p.vx += Math.sin(p.t * 9 + p.y * 0.05) * 30 * dt;   // 火の粉はちらちら揺れる
-  }
-}
-
-/** 樹冠を描く（動く敵の上・竜とブレスの下）。影 → 葉 → 燃えるマスの炎 → 火の粉と煙 の順。 */
+/** 樹冠を描く（動く敵の上・竜とブレスの下）。色ごとに1本のパスへまとめて塗る。 */
 function drawCanopy() {
   if (!forestActive) return;
-  ensureForestSprites();
   const v = viewWorldRect(SHAPE_FOREST_CANOPY_CELL);
   const c0 = Math.max(0, Math.floor(v.x0 / SHAPE_FOREST_CANOPY_CELL));
   const c1 = Math.min(canopyCols - 1, Math.floor(v.x1 / SHAPE_FOREST_CANOPY_CELL));
   const r0 = Math.max(0, Math.floor(v.y0 / SHAPE_FOREST_CANOPY_CELL));
   const r1 = Math.min(canopyRows - 1, Math.floor(v.y1 / SHAPE_FOREST_CANOPY_CELL));
   const cell = SHAPE_FOREST_CANOPY_CELL, half = cell * 0.5;
-  const sz = cell * FOLIAGE_SPRITE_MUL, hs = sz / 2;
   const t = breathTime;
-  const variantOf = (i) => (i * 7 + (i >> 3)) & 3;
+  // 濃い房（葉の塊）→ 明るい房（日の当たる上面。左上へずらして小さく）の順に重ねる
+  const passes = [
+    { color: CANOPY_COLORS.leafDark,  rMul: 1.00, off: 0 },
+    { color: CANOPY_COLORS.leafLight, rMul: 0.55, off: -0.07 },
+  ];
   ctx.save();
-  // 地面に落ちる影（右下へずらした暗い円）。葉より先に全部敷く
-  ctx.fillStyle = FOLIAGE_PALETTES.leaf.shadow;
-  ctx.beginPath();
-  for (let r = r0; r <= r1; r++) {
-    for (let c = c0; c <= c1; c++) {
-      const i = r * canopyCols + c;
-      if (canopyState[i] !== CANOPY_LEAF) continue;   // 燃えているマスは葉が薄れていくので影も落とさない
-      const x = c * cell + half + cell * 0.16, y = r * cell + half + cell * 0.22;
-      ctx.moveTo(x + cell * 0.62, y);
-      ctx.arc(x, y, cell * 0.62, 0, Math.PI * 2);
+  for (const p of passes) {
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        const i = r * canopyCols + c;
+        if (canopyState[i] !== CANOPY_LEAF) continue;
+        // 葉むらの揺れ（マスごとに位相をずらす）
+        const sway = Math.sin(t * 1.3 + i * 0.7) * cell * 0.025;
+        const cx = c * cell + half + sway, cy = r * cell + half;
+        for (const [ox, oy, rr] of CANOPY_TUFTS[(i * 7 + (i >> 3)) & 3]) {
+          const x = cx + (ox + p.off) * cell, y = cy + (oy + p.off) * cell, rad = rr * p.rMul * cell;
+          ctx.moveTo(x + rad, y);
+          ctx.arc(x, y, rad, 0, Math.PI * 2);
+        }
+      }
     }
+    ctx.fill();
   }
-  ctx.fill();
-  // 葉（作り置きの絵を貼る。揺れはマスごとに位相をずらす）
-  for (let r = r0; r <= r1; r++) {
-    for (let c = c0; c <= c1; c++) {
-      const i = r * canopyCols + c;
-      if (canopyState[i] !== CANOPY_LEAF) continue;
-      const sway = Math.sin(t * 1.3 + i * 0.7) * cell * 0.02;
-      ctx.drawImage(foliageSprites.leaf[variantOf(i)], c * cell + half - hs + sway, r * cell + half - hs, sz, sz);
-    }
-  }
-  // 燃えているマス：焦げていく葉 → 照り返し → 炎の舌（加算）
-  for (const i of canopyBurningList) {
-    const c = i % canopyCols, r = (i - c) / canopyCols;
-    if (c < c0 || c > c1 || r < r0 || r > r1) continue;
-    const cx = c * cell + half, cy = r * cell + half;
-    const k = Math.max(0, canopyBurnT[i] / CANOPY_BURN_SECONDS);   // 1 → 0 で燃え尽きる
-    ctx.globalAlpha = Math.min(1, k * 1.6);
-    ctx.drawImage(foliageSprites.leaf[variantOf(i)], cx - hs, cy - hs, sz, sz);
-    ctx.globalAlpha = Math.min(1, k * 1.6) * (1 - k * 0.5);
-    ctx.drawImage(foliageSprites.char[variantOf(i)], cx - hs, cy - hs, sz, sz);
-  }
-  ctx.globalCompositeOperation = "lighter";
+  // 燃えているマス：葉の残りの上に小さな炎の房がいくつも揺れる。燃え尽きる直前ほど小さく
   for (const i of canopyBurningList) {
     const c = i % canopyCols, r = (i - c) / canopyCols;
     if (c < c0 || c > c1 || r < r0 || r > r1) continue;
     const cx = c * cell + half, cy = r * cell + half;
     const k = Math.max(0, canopyBurnT[i] / CANOPY_BURN_SECONDS);
-    const power = Math.sin(Math.min(1, (1 - k) * 3) * Math.PI * 0.5) * (0.35 + 0.65 * k);   // 燃え上がって、燃え尽きる
-    const gw = cell * 2.2 * (0.7 + 0.3 * power);
-    ctx.globalAlpha = 0.9 * power;
-    ctx.drawImage(flameGlowSprite, cx - gw / 2, cy - gw / 2, gw, gw);
-    for (let f = 0; f < 5; f++) {
-      const [ox, oy] = CANOPY_TUFTS[(i + f) & 3][f & 3];
-      const flick = 0.7 + 0.3 * Math.sin(t * 15 + i * 1.7 + f * 2.3);
-      const w = cell * (0.36 + 0.1 * ((f * 37 + i) % 3)) * power * flick;
-      const h = w * 1.5 * (0.85 + 0.3 * Math.sin(t * 11 + f + i));
-      ctx.globalAlpha = 0.95 * power;
-      ctx.drawImage(flameSprite, cx + ox * cell - w / 2, cy + oy * cell - h * 0.8, w, h);
+    ctx.globalAlpha = 0.85 * k;
+    ctx.fillStyle = CANOPY_COLORS.leafDark;
+    ctx.beginPath();
+    for (const [ox, oy, rr] of CANOPY_TUFTS[(i * 7 + (i >> 3)) & 3]) {
+      ctx.moveTo(cx + ox * cell + rr * cell, cy + oy * cell);
+      ctx.arc(cx + ox * cell, cy + oy * cell, rr * cell, 0, Math.PI * 2);
     }
+    ctx.fill();
+    for (const [col, size] of [[CANOPY_COLORS.burnOuter, 0.22], [CANOPY_COLORS.burnInner, 0.11]]) {
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      for (let f = 0; f < 4; f++) {
+        const [ox, oy] = CANOPY_TUFTS[(i + f) & 3][f];
+        const flick = 0.75 + 0.25 * Math.sin(t * 13 + i * 1.7 + f * 2.1);
+        const rad = size * cell * (0.45 + 0.55 * k) * flick;
+        const x = cx + ox * cell, y = cy + oy * cell - (1 - flick) * cell * 0.15;
+        ctx.moveTo(x + rad, y);
+        ctx.arc(x, y, rad, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
   }
-  // 火の粉（加算）
-  for (const p of canopyFx) {
-    if (p.smoke) continue;
-    const a = 1 - p.t / p.life;
-    ctx.globalAlpha = a;
-    ctx.fillStyle = a > 0.5 ? "#ffe9a0" : "#ff8a3a";
-    ctx.beginPath(); ctx.arc(p.x, p.y, 2.2 + a * 1.6, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.globalCompositeOperation = "source-over";
-  // 煙（ふくらみながら薄れる）
-  for (const p of canopyFx) {
-    if (!p.smoke) continue;
-    const u = p.t / p.life;
-    ctx.globalAlpha = 0.13 * (1 - u) * Math.min(1, u * 5);
-    ctx.fillStyle = "#6a625a";
-    ctx.beginPath(); ctx.arc(p.x, p.y, cell * (0.14 + u * 0.36), 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
   ctx.restore();
 }
 
-/** 燃え尽きたマスの焼け跡（地面の上・建物の下）。見た目だけ。 */
-function drawCanopyScorch() {
-  if (!forestActive) return;
-  const v = viewWorldRect(SHAPE_FOREST_CANOPY_CELL);
-  const c0 = Math.max(0, Math.floor(v.x0 / SHAPE_FOREST_CANOPY_CELL));
-  const c1 = Math.min(canopyCols - 1, Math.floor(v.x1 / SHAPE_FOREST_CANOPY_CELL));
-  const r0 = Math.max(0, Math.floor(v.y0 / SHAPE_FOREST_CANOPY_CELL));
-  const r1 = Math.min(canopyRows - 1, Math.floor(v.y1 / SHAPE_FOREST_CANOPY_CELL));
-  const cell = SHAPE_FOREST_CANOPY_CELL, half = cell / 2;
-  ctx.save();
-  ctx.fillStyle = "rgba(20, 12, 8, 0.2)";
-  ctx.beginPath();
-  for (let r = r0; r <= r1; r++) {
-    for (let c = c0; c <= c1; c++) {
-      if (!canopyScorched[r * canopyCols + c]) continue;
-      const x = c * cell + half, y = r * cell + half;
-      ctx.moveTo(x + cell * 0.45, y);
-      ctx.arc(x, y, cell * 0.45, 0, Math.PI * 2);
-    }
-  }
-  ctx.fill();
-  ctx.restore();
-}
 
 // =====================================================================
 // v3.19.0: 大樹海の首都 —「巨大樹」（Shooter指示）
@@ -14954,44 +14807,154 @@ function updateWorldTree(dt) {
   }
 }
 
-/** 巨大樹の樹冠の絵を焼く（ステージごとに1回）。 */
+// v3.19.1: 「これがボスだと分からない」（Shooter判定）への対応。
+// ・中心に穴を空け、首都の本体（城の絵）を最初から見せる（樹の心臓＝樹上の城）
+// ・緑の合間に人工物（木の足場・灯へ渡る吊り橋・樹上の家の屋根）を見せる。橋は所々を葉で隠して「合間」に見せる
+const WORLD_TREE_HEART_HOLE = 150;   // 樹冠の中心の穴の半径（首都の城の絵が収まる大きさ）
+const WORLD_TREE_DECK_W     = 46;    // 中心の穴を囲む木の回廊の幅
+const WORLD_TREE_BRIDGE_W   = 20;    // 灯へ渡る吊り橋の幅
+const WORLD_TREE_NODE_DECK  = 40;    // 灯の足場の半径
+const WORLD_TREE_HOUSES     = 16;    // 樹上の家の数
+const WORLD_TREE_WOOD = { deck: "#8a6a44", plank: "#5e4428", rail: "#d2b282", rope: "#c8a878" };
+const WORLD_TREE_ROOF = { base: "#ddd4bc", shade: "#a8987a", edge: "#2a2016", tile: "#5aa49a" };
+
+/** 巨大樹の樹冠の絵を焼く（ステージごとに1回）。葉 → 人工物 → 一部を葉で隠す → 中心の穴 の順。 */
 function bakeWorldTreeCrown() {
   const R = WORLD_TREE_R, size = Math.ceil(R * 2.3), mid = size / 2;
   const cv = document.createElement("canvas");
   cv.width = cv.height = size;
   const c = cv.getContext("2d");
   const rng = makeVisualRng(worldTree.seed + 17);
-  // 外周の房 → 内側の房の順に重ね、最後に上面の明るい房を散らす。房は葉むらの絵を大きくして使う
   const clumpSprite = [];
   for (let v = 0; v < 3; v++) clumpSprite.push(makeFoliageSprite(260, FOLIAGE_PALETTES.crown, worldTree.seed + v * 131, 12));
+  // 1) 葉の塊（外周 → 内側）
   c.fillStyle = FOLIAGE_PALETTES.crown.dark;
   c.beginPath(); c.arc(mid, mid, R * 0.96, 0, Math.PI * 2); c.fill();
-  const rings = [[0.88, 26, 300], [0.66, 20, 300], [0.42, 13, 290], [0.18, 6, 280]];
-  for (const [rr, n, s] of rings) {
+  const rings = [[0.88, 26, 300], [0.66, 20, 300], [0.42, 13, 290]];
+  for (const [rr, n, sz0] of rings) {
     for (let k = 0; k < n; k++) {
       const a = (k / n) * Math.PI * 2 + rng() * 0.3;
       const d = R * rr * (0.92 + rng() * 0.16);
-      const sz = s * (0.85 + rng() * 0.3);
+      const sz = sz0 * (0.85 + rng() * 0.3);
       c.drawImage(clumpSprite[k % 3], mid + Math.cos(a) * d - sz / 2, mid + Math.sin(a) * d - sz / 2, sz, sz);
     }
   }
-  // 全体に左上から光、右下に影（大きな丸い塊に見せる）
+  // 2) 人工物。灯の位置は樹の中心からの相対で読む
+  const nodes = worldTreeNodes().map(n => ({ x: mid + (n.wx - worldTree.x), y: mid + (n.wy - worldTree.y) }));
+  const plankStrip = (x0, y0, x1, y1, w) => {
+    const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy) || 1, nx = -dy / len, ny = dx / len;
+    c.strokeStyle = WORLD_TREE_WOOD.deck; c.lineWidth = w; c.lineCap = "butt";
+    c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+    c.strokeStyle = WORLD_TREE_WOOD.plank; c.lineWidth = 1.5;
+    for (let d = 6; d < len; d += 9) {
+      const px = x0 + dx * d / len, py = y0 + dy * d / len;
+      c.beginPath(); c.moveTo(px + nx * w / 2, py + ny * w / 2); c.lineTo(px - nx * w / 2, py - ny * w / 2); c.stroke();
+    }
+    c.strokeStyle = WORLD_TREE_WOOD.rope; c.lineWidth = 2;
+    for (const side of [-1, 1]) {
+      c.beginPath(); c.moveTo(x0 + nx * side * w / 2, y0 + ny * side * w / 2); c.lineTo(x1 + nx * side * w / 2, y1 + ny * side * w / 2); c.stroke();
+    }
+  };
+  const deck = (x, y, r) => {
+    c.fillStyle = WORLD_TREE_WOOD.deck;
+    c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+    c.strokeStyle = WORLD_TREE_WOOD.plank; c.lineWidth = 1.5;
+    for (let k = -r + 8; k < r; k += 9) {
+      const h = Math.sqrt(Math.max(0, r * r - k * k));
+      c.beginPath(); c.moveTo(x + k, y - h); c.lineTo(x + k, y + h); c.stroke();
+    }
+    c.strokeStyle = WORLD_TREE_WOOD.rail; c.lineWidth = 3;
+    c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.stroke();
+  };
+  const house = (x, y, r, rot) => {
+    // 真上から見た屋根。丸屋根と四角屋根を混ぜる（姿は描かず、住まいだけを見せる）
+    c.save(); c.translate(x, y); c.rotate(rot);
+    c.fillStyle = "rgba(0, 0, 0, 0.35)";
+    c.beginPath(); c.arc(r * 0.25, r * 0.3, r * 1.05, 0, Math.PI * 2); c.fill();
+    if (rng() < 0.55) {
+      c.fillStyle = WORLD_TREE_ROOF.base;
+      c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.fill();
+      c.fillStyle = WORLD_TREE_ROOF.shade;
+      c.beginPath(); c.arc(0, 0, r, -Math.PI * 0.25, Math.PI * 0.75); c.fill();
+      c.fillStyle = WORLD_TREE_ROOF.tile;
+      c.beginPath(); c.arc(0, 0, r * 0.28, 0, Math.PI * 2); c.fill();
+    } else {
+      c.fillStyle = WORLD_TREE_ROOF.base;
+      c.fillRect(-r, -r * 0.75, r * 2, r * 1.5);
+      c.fillStyle = WORLD_TREE_ROOF.shade;
+      c.fillRect(-r, 0, r * 2, r * 0.75);
+      c.fillStyle = WORLD_TREE_ROOF.tile;
+      c.fillRect(-r, -r * 0.08, r * 2, r * 0.16);
+    }
+    c.strokeStyle = WORLD_TREE_ROOF.edge; c.lineWidth = 1.5;
+    c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.stroke();
+    c.restore();
+  };
+  const ringR = WORLD_TREE_HEART_HOLE + WORLD_TREE_DECK_W / 2;
+  for (const n of nodes) {
+    const a = Math.atan2(n.y - mid, n.x - mid);
+    plankStrip(mid + Math.cos(a) * ringR, mid + Math.sin(a) * ringR, n.x, n.y, WORLD_TREE_BRIDGE_W);
+  }
+  // 中心の回廊（穴を囲む木の輪）
+  c.strokeStyle = WORLD_TREE_WOOD.deck; c.lineWidth = WORLD_TREE_DECK_W;
+  c.beginPath(); c.arc(mid, mid, ringR, 0, Math.PI * 2); c.stroke();
+  c.strokeStyle = WORLD_TREE_WOOD.plank; c.lineWidth = 1.5;
+  for (let k = 0; k < 72; k++) {
+    const a = (k / 72) * Math.PI * 2;
+    c.beginPath();
+    c.moveTo(mid + Math.cos(a) * WORLD_TREE_HEART_HOLE, mid + Math.sin(a) * WORLD_TREE_HEART_HOLE);
+    c.lineTo(mid + Math.cos(a) * (WORLD_TREE_HEART_HOLE + WORLD_TREE_DECK_W), mid + Math.sin(a) * (WORLD_TREE_HEART_HOLE + WORLD_TREE_DECK_W));
+    c.stroke();
+  }
+  c.strokeStyle = WORLD_TREE_WOOD.rail; c.lineWidth = 3;
+  c.beginPath(); c.arc(mid, mid, WORLD_TREE_HEART_HOLE + WORLD_TREE_DECK_W, 0, Math.PI * 2); c.stroke();
+  for (const n of nodes) deck(n.x, n.y, WORLD_TREE_NODE_DECK);
+  // 樹上の家：橋の脇と回廊の外側に並べる
+  const houses = [];
+  for (let k = 0; k < WORLD_TREE_HOUSES; k++) {
+    let x, y;
+    if (k < nodes.length * 2) {
+      const n = nodes[k % nodes.length];
+      const a = Math.atan2(n.y - mid, n.x - mid), t = 0.35 + rng() * 0.4;
+      const d = ringR + (Math.hypot(n.x - mid, n.y - mid) - ringR) * t;
+      const side = k < nodes.length ? 1 : -1;
+      x = mid + Math.cos(a) * d + Math.cos(a + Math.PI / 2) * side * (WORLD_TREE_BRIDGE_W / 2 + 18);
+      y = mid + Math.sin(a) * d + Math.sin(a + Math.PI / 2) * side * (WORLD_TREE_BRIDGE_W / 2 + 18);
+    } else {
+      const a = rng() * Math.PI * 2, d = WORLD_TREE_HEART_HOLE + WORLD_TREE_DECK_W + 30 + rng() * 40;
+      x = mid + Math.cos(a) * d; y = mid + Math.sin(a) * d;
+    }
+    houses.push({ x, y });
+    house(x, y, 12 + rng() * 6, rng() * Math.PI);
+  }
+  // 3) 橋と家の一部を葉で隠す（灯の足場と回廊は隠さない＝狙う所ははっきり見せる）
+  for (let k = 0; k < 34; k++) {
+    const a = rng() * Math.PI * 2, d = R * (0.35 + rng() * 0.55);
+    const x = mid + Math.cos(a) * d, y = mid + Math.sin(a) * d;
+    if (nodes.some(n => Math.hypot(n.x - x, n.y - y) < WORLD_TREE_NODE_DECK + 45)) continue;
+    if (Math.hypot(x - mid, y - mid) < WORLD_TREE_HEART_HOLE + WORLD_TREE_DECK_W + 40) continue;
+    const sz = 90 + rng() * 50;
+    c.drawImage(clumpSprite[k % 3], x - sz / 2, y - sz / 2, sz, sz);
+  }
+  // 全体に左上から光、右下に影
   const g = c.createRadialGradient(mid - R * 0.35, mid - R * 0.4, R * 0.1, mid, mid, R * 1.05);
-  g.addColorStop(0, "rgba(190, 255, 160, 0.16)");
+  g.addColorStop(0, "rgba(190, 255, 160, 0.12)");
   g.addColorStop(0.6, "rgba(0, 0, 0, 0)");
-  g.addColorStop(1, "rgba(0, 20, 0, 0.35)");
+  g.addColorStop(1, "rgba(0, 20, 0, 0.3)");
   c.globalCompositeOperation = "source-atop";
   c.fillStyle = g;
   c.fillRect(0, 0, size, size);
+  // 4) 中心の穴（下の首都の城が見える）
+  c.globalCompositeOperation = "destination-out";
+  c.fillStyle = "#000";   // 抜く量は塗りの不透明度で決まる（直前のグラデーションのままだと12%しか抜けない）
+  c.beginPath(); c.arc(mid, mid, WORLD_TREE_HEART_HOLE, 0, Math.PI * 2); c.fill();
   c.globalCompositeOperation = "source-over";
   worldTree.crown = cv;
 }
 
 /** 巨大樹の根（地面の上・建物の下）と焼け跡。 */
 function drawForestGround() {
-  if (!forestActive) return;
-  drawCanopyScorch();
-  if (!worldTree) return;
+  if (!forestActive || !worldTree) return;
   const { x, y } = worldTree;
   ctx.save();
   ctx.lineCap = "round";
@@ -15017,8 +14980,12 @@ function drawWorldTree() {
   const R = WORLD_TREE_R, t = breathTime;
   ctx.save();
   // 地面に落ちる大きな影
+  // 中心の穴（首都の城）は暗くしないよう、影は穴の外側だけに落とす
   ctx.fillStyle = "rgba(0, 10, 0, 0.35)";
-  ctx.beginPath(); ctx.arc(x + R * 0.08, y + R * 0.12, R * 1.02, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x + R * 0.08, y + R * 0.12, R * 1.02, 0, Math.PI * 2);
+  ctx.arc(x, y, WORLD_TREE_HEART_HOLE, 0, Math.PI * 2, true);
+  ctx.fill("evenodd");
   const size = worldTree.crown.width;
   ctx.drawImage(worldTree.crown, x - size / 2, y - size / 2);
   // 窓明かり（住んでいる気配。姿は見せない）
@@ -15038,7 +15005,22 @@ function drawWorldTree() {
     const col = heart ? "#fff4c8" : WORLD_TREE_SPELLS[s._treeSpell].color;
     if (s.fallen) continue;
     const charge = s._treeCharge || 0, flash = Math.max(0, s._treeFlash || 0) * 2;
-    const base = heart ? 46 : 24;
+    if (heart) {
+      // 心臓は中心の穴の縁を光の輪で縁どる（真ん中の首都の城は隠さない）
+      const pulse = 0.85 + 0.15 * Math.sin(t * 2.2);
+      ctx.globalAlpha = (0.35 + 0.55 * Math.max(charge, flash)) * pulse;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 6 + 8 * Math.max(charge, flash);
+      ctx.beginPath(); ctx.arc(s.wx, s.wy, WORLD_TREE_HEART_HOLE - 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 0.75;
+      ctx.lineWidth = 3;
+      for (let k = 0; k < 8; k++) {
+        const a = t * 0.5 + k * Math.PI / 4;
+        ctx.beginPath(); ctx.arc(s.wx, s.wy, WORLD_TREE_HEART_HOLE + 10, a, a + 0.45); ctx.stroke();
+      }
+      continue;
+    }
+    const base = 24;
     const pulse = 0.85 + 0.15 * Math.sin(t * 3 + s.wx * 0.01);
     const rad = base * pulse * (1 + 0.6 * charge + 0.8 * flash);
     const g = ctx.createRadialGradient(s.wx, s.wy, 0, s.wx, s.wy, rad * 2.2);
@@ -15063,7 +15045,7 @@ function drawWorldTree() {
   for (const s of settlements) {
     if (!s._treeSpell || s.fallen || s.hp >= s.maxHp) continue;
     const heart = s._treeSpell === "heart";
-    const rr = heart ? 70 : 36;
+    const rr = heart ? WORLD_TREE_HEART_HOLE + 22 : 36;
     ctx.globalAlpha = 0.9;
     ctx.lineWidth = heart ? 6 : 4;
     ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
@@ -28600,7 +28582,7 @@ function render(now) {
   updateTiledLayer(groundTiledLayer);
   updateTiledLayer(buildingTiledLayer);
   drawTiledLayer(ctx, groundTiledLayer);
-  drawForestGround();   // v3.19.0: 巨大樹の根と樹冠の焼け跡（地面の上・建物の下）
+  drawForestGround();   // v3.19.0: 巨大樹の根（地面の上・建物の下）
   drawTiledLayer(ctx, buildingTiledLayer);
 
   drawAsteroids();     // v1.5.0: 小惑星帯の岩塊とその上の町（動くので毎フレーム描く）
@@ -31767,7 +31749,6 @@ function tick() {
     updateSlashFx(wdt);           // v0.8: 緋竜の斬閃FX
     updateFires(wdt);             // v0.10: 燃える建物の火の粉・煙柱
     updateCanopy(wdt);            // v3.17.0: 大樹海の樹冠の延焼
-    updateCanopyFx(wdt);          // v3.19.0: 燃える樹冠の火の粉と煙
     updateWorldTree(wdt);         // v3.19.0: 巨大樹（大樹海の首都）の灯と心臓の魔法
     maybeShowLevelUp();           // v0.6: レベルアップが積まれていれば3択を出す（非モーダル）
   } else if (gameState === "title") {
