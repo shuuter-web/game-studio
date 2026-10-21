@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.27.0";
+const GAME_VERSION = "v3.28.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9282,8 +9282,23 @@ const TOWN_SURRENDER_RATIO = 0.7;
 const townStats = new Map();   // townIndex -> {total, fallen, surrendered, cx, cy}
 const worldTextFx = [];        // ワールドに浮かぶ文字 {x, y, life, text, color}
 const WORLD_TEXT_FX_DURATION = 2.2;
-function pushWorldText(x, y, text, color) {
-  worldTextFx.push({ x, y, life: WORLD_TEXT_FX_DURATION, text, color });
+// v3.28.0: 町の陥落の表示は、場所が画面の外なら画面の端に寄せて出す（カメラが動けば一緒に動き、
+// 場所が画面に入ったら本来の位置へ滑っていく）。Shooter指示「画面外だと陥落が目に入らない」
+const WORLD_TEXT_PIN_MARGIN_X   = 56;    // 画面の左右の端からの余白（px）
+const WORLD_TEXT_PIN_MARGIN_TOP = 130;   // 上はHUDとミニマップの下まで
+const WORLD_TEXT_PIN_MARGIN_BOTTOM = 70;
+const WORLD_TEXT_PIN_EASE       = 9;     // 表示位置が目標へ寄る速さ（1/秒）
+const WORLD_TEXT_PIN_DURATION   = 3.4;   // 陥落の表示は少し長く出す（画面の外から本来の場所へ戻る様子が見えるように）
+function pushWorldText(x, y, text, color, pinOnScreen = false) {
+  const dur = pinOnScreen ? WORLD_TEXT_PIN_DURATION : WORLD_TEXT_FX_DURATION;
+  worldTextFx.push({ x, y, life: dur, dur, text, color, pin: pinOnScreen });
+}
+/** 画面に収めた表示位置（スクリーン座標）。clamped＝本来の場所が画面の外 */
+function worldTextPinTarget(fx) {
+  const p = worldToScreen(fx.x, fx.y);
+  const x = Math.max(WORLD_TEXT_PIN_MARGIN_X, Math.min(viewW - WORLD_TEXT_PIN_MARGIN_X, p.x));
+  const y = Math.max(WORLD_TEXT_PIN_MARGIN_TOP, Math.min(viewH - WORLD_TEXT_PIN_MARGIN_BOTTOM, p.y));
+  return { x, y, clamped: x !== p.x || y !== p.y };
 }
 
 function recomputeTownRoles() {
@@ -9331,8 +9346,16 @@ function isTownSurrendered(townIndex) {
 
 function updateWorldTextFx(dt) {
   for (let i = worldTextFx.length - 1; i >= 0; i--) {
-    worldTextFx[i].life -= dt;
-    if (worldTextFx[i].life <= 0) worldTextFx.splice(i, 1);
+    const fx = worldTextFx[i];
+    if (fx.pin) {
+      const t = worldTextPinTarget(fx);
+      if (fx.sx === undefined) { fx.sx = t.x; fx.sy = t.y; }
+      const k = 1 - Math.exp(-WORLD_TEXT_PIN_EASE * dt);
+      fx.sx += (t.x - fx.sx) * k;
+      fx.sy += (t.y - fx.sy) * k;
+    }
+    fx.life -= dt;
+    if (fx.life <= 0) worldTextFx.splice(i, 1);
   }
 }
 
@@ -9420,16 +9443,36 @@ function drawWorldTextFx() {
   ctx.save();
   ctx.textAlign = "center";
   for (const fx of worldTextFx) {
-    const t = 1 - fx.life / WORLD_TEXT_FX_DURATION;   // 0→1
+    const t = 1 - fx.life / (fx.dur ?? WORLD_TEXT_FX_DURATION);   // 0→1
     const rise = 26 * t;
     const alpha = t < 0.15 ? t / 0.15 : (t > 0.7 ? (1 - t) / 0.3 : 1);
     ctx.globalAlpha = Math.max(0, alpha);
     ctx.font = `bold ${Math.max(10, Math.round(15 / cam.scale))}px monospace`;
     ctx.lineWidth = Math.max(2, 3 / cam.scale);
     ctx.strokeStyle = "rgba(0,0,0,0.65)";
-    ctx.strokeText(fx.text, fx.x, fx.y - rise);
+    // 画面に寄せる表示は、寄せた位置（スクリーン座標）をワールド座標へ戻して描く
+    let tx = fx.x, ty = fx.y;
+    if (fx.pin && fx.sx !== undefined) {
+      const w = screenToWorld(fx.sx, fx.sy);
+      tx = w.x; ty = w.y;
+      // 本来の場所が離れていれば、そちらを指す小さな矢印を添える
+      const real = worldToScreen(fx.x, fx.y);
+      const ddx = real.x - fx.sx, ddy = real.y - fx.sy;
+      if (ddx * ddx + ddy * ddy > 30 * 30) {
+        const a = Math.atan2(ddy, ddx), r = 26 / cam.scale, sz = 7 / cam.scale;
+        const ax = tx + Math.cos(a) * r, ay = ty - rise + Math.sin(a) * r - 5 / cam.scale;
+        ctx.fillStyle = fx.color;
+        ctx.beginPath();
+        ctx.moveTo(ax + Math.cos(a) * sz, ay + Math.sin(a) * sz);
+        ctx.lineTo(ax + Math.cos(a + 2.4) * sz, ay + Math.sin(a + 2.4) * sz);
+        ctx.lineTo(ax + Math.cos(a - 2.4) * sz, ay + Math.sin(a - 2.4) * sz);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    ctx.strokeText(fx.text, tx, ty - rise);
     ctx.fillStyle = fx.color;
-    ctx.fillText(fx.text, fx.x, fx.y - rise);
+    ctx.fillText(fx.text, tx, ty - rise);
     // 広がる輪（町全体が落ちたことを面で見せる）
     ctx.globalAlpha = Math.max(0, alpha) * 0.30;
     ctx.strokeStyle = fx.color;
@@ -15473,6 +15516,7 @@ const METRO_TANKS_BASE     = 2;     // 戦車の数（時代3つごとに1台増
 const METRO_HELI_GARRISON  = 2;     // 首都の周りを飛ぶ攻撃ヘリ（最初から）
 const METRO_HELI_WAVE_CAP  = 3;     // 首都の増援1回で出すヘリの上限（1機から始めて2回ごとに1機増える）
 const METRO_LOT_ALPHA      = 0.85;  // 街区の敷地の濃さ。地面の緑がほぼ見えない＝空き地が無い
+const METRO_LANDMARK_SCALE = 1.5;   // 街の中心の建物（神殿／風車）の半径＝大型の基準のこの倍
 const METRO_BUILDING_SCALE = 1.8;   // 区画の建物をこの倍の大きさにして隙間なく詰める（ぎっしり埋まった街）
 const METRO_COLORS = {
   lot: "#58554e", road: "#3a3a42", avenue: "#34343c", line: "#d8d0a0", walk: "#5a5a64",
@@ -15604,6 +15648,33 @@ function generateMetroDistrict(center, config, townIndex, boss) {
       }
     }
   }
+  // v3.28.0: 街の中心の建物（他の地域の町の広場と同じ神殿／風車）。2×2ブロックの真ん中は細い道路の交差点なので、
+  // そこに一番近いブロックの角に建てる。陥落の表示はここに出す（道路の上だと目に入らなかった・Shooter指示）
+  let center2 = null;
+  if (m.blocks.length > 0) {
+    const ccx = (m.bx0 + m.bx1) / 2 * METRO_BLOCK, ccy = (m.by0 + m.by1) / 2 * METRO_BLOCK;
+    const [pbx, pby] = m.blocks[Math.floor(random() * m.blocks.length)];
+    const lmR = BUILDING_SIZE_PARAMS.large.radiusBase * METRO_LANDMARK_SCALE;
+    const off = metroRoadW((m.bx0 + m.bx1) / 2) / 2 + METRO_LOT_MARGIN + lmR;
+    const lx = ccx + ((pbx + 0.5) * METRO_BLOCK < ccx ? -off : off);
+    const ly = ccy + ((pby + 0.5) * METRO_BLOCK < ccy ? -off : off);
+    if (!metroNearCapital(lx, ly, boss, 30) && dist2(lx, ly, START_X, START_Y) >= METRO_START_CLEAR * METRO_START_CLEAR) {
+      // 重なる区画の建物をどけてから建てる
+      for (let i = res.length - 1; i >= 0; i--) {
+        const b = res[i], minD = b.radius + lmR * 0.9;
+        if (dist2(b.wx, b.wy, lx, ly) < minD * minD) res.splice(i, 1);
+      }
+      const hp = Math.round(randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax) * 1.3);
+      const lm = makeBuilding(lx, ly, "large", bL.colors[0], bL, hp);
+      lm._landmark = townIndex % 2 === 0 ? "temple" : "windmill";
+      lm._faceAngle = randRange(-0.2, 0.2);
+      lm._townIndex = townIndex;
+      lm._metro = true;
+      lm.radius = lmR;
+      res.push(lm);
+      center2 = { x: lx, y: ly };
+    }
+  }
   // 開始地点・首都の際で建物がほとんど残らなかった街は街にしない（数棟で「陥落」が数えられてしまう）
   if (res.length < METRO_MIN_TOWN) {
     for (const b of res) delete b._townIndex;
@@ -15612,7 +15683,7 @@ function generateMetroDistrict(center, config, townIndex, boss) {
   {
     const x0 = m.bx0 * METRO_BLOCK, y0 = m.by0 * METRO_BLOCK, x1 = m.bx1 * METRO_BLOCK, y1 = m.by1 * METRO_BLOCK;
     res[0]._townMeta = {
-      cx: center.x, cy: center.y, plazaR: 0, ringR: 0, townR: Math.max(x1 - x0, y1 - y0) / 2,
+      cx: center2 ? center2.x : center.x, cy: center2 ? center2.y : center.y, plazaR: 0, ringR: 0, townR: Math.max(x1 - x0, y1 - y0) / 2,
       layout: "grid", shapeType: "rect", _metro: true,
       outline: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }],
       maxExtent: Math.hypot(x1 - x0, y1 - y0) / 2, frontAngle: 0,
@@ -18605,7 +18676,7 @@ function settlementFall(settlementIndex) {
       if (st.fallen / st.total >= TOWN_SURRENDER_RATIO) {
         st.surrendered = true;
         townJustSurrendered = true;
-        pushWorldText(st.cx, st.cy, "陥落", "#ffe08a");
+        pushWorldText(st.cx, st.cy, "陥落", "#ffe08a", true);   // v3.28.0: 画面の外なら画面の端に寄せて出す
         hapticPulse(120);
       }
     }
