@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.28.0";
+const GAME_VERSION = "v3.29.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2051,6 +2051,10 @@ const ATTACK_DEFS = {
   shellshot:      { ja: "甲羅弾",     en: "Shell Shot",        kind: "boulder",   recoilDist: 0,  fireStun: 0    },
   // v3.8.0: 雷雲竜。最寄りの相手に落ち、そこから次の相手へ飛び移る（ブレス）
   thunderchain:   { ja: "連なる雷",   en: "Chain Lightning",   kind: "chain",     recoilDist: 0,  fireStun: 0,    attribute: ATTRIBUTE_THUNDER },
+  // v3.29.0: 団子竜。群れの玉で下を通った相手を押し潰す（直接）
+  rollcrush:      { ja: "押し潰し",   en: "Roll Crush",        kind: "roll",      recoilDist: 0,  fireStun: 0    },
+  // v3.29.0: 土竜。描いた線に沿って地面が割れる（爆発）
+  erupt:          { ja: "地割れ",     en: "Fissure",           kind: "erupt",     recoilDist: 0,  fireStun: 0    },
 };
 /** 攻撃の属性（無ければ null）。 */
 function attackAttribute(attackId) {
@@ -2249,6 +2253,22 @@ const SPECIES_DEFS = {
     // 雷は落ちる先を選ぶので、向きの制限は緩め
     breathArcDeg: 160,
     move: { maxSpeed: 160, accel: 320, turnRate: 2.2, pathEndMode: "wander" },
+  },
+
+  // ---- v3.29.0: 案帳 DT-045／DT-046（種またぎで入る。専用スプライトは仮の絵を色替え）----
+  // 団子竜: 群れが1つの玉になって転がる（rollBall）。竜は玉の表面に貼り付くので尻尾は描かない
+  ball: {
+    ja: "団子竜", en: "Rolling Dragon", icon: "\u{1F7E0}", color: "#e0904a", element: "ball",
+    attack: "rollcrush", spriteTint: "#c07030", rollBall: true, noTail: true,
+    desc: "群れが1つの玉になって転がり、下を通った建物を押し潰す。壊すほど玉が大きく、速く、曲がりにくくなる",
+    move: { maxSpeed: 150, minSpeed: 0, accel: 260, turnRate: 2.4, leaderSpeed: 200, pathEndMode: "stop" },
+  },
+  // 土竜（もぐら）: 描いている間は地中（burrow）。指を離すと描いた線に沿って地割れ
+  mole: {
+    ja: "土竜", en: "Mole Dragon", icon: "\u26CF\uFE0F", color: "#b08850", element: "mole",
+    attack: "erupt", spriteTint: "#8a6a40", burrow: true,
+    desc: "描いている間は地中を進んで撃たれない。指を離すと、描いた線ぜんぶに沿って地面が割れる",
+    move: { maxSpeed: 165, accel: 320, turnRate: 2.2, pathEndMode: "stop" },
   },
 };
 
@@ -2973,7 +2993,7 @@ const DRAGON_HIT_BOOST = {
 function hitBoid(i, hit, nx, ny) {
   const dmg = hitDamage(hit, DRAGON_DAMAGE_RESIST);
   if (dmg > 0) applyDamageToBoid(i, dmg, hit);
-  if (hit.impact > 0 && !boidDowned[i]) applyImpactToBoid(i, nx, ny, hit.impact);
+  if (hit.impact > 0 && !boidDowned[i] && !moleUnderground()) applyImpactToBoid(i, nx, ny, hit.impact);
 }
 
 /** 移動敵に当てる。(fromX, fromY) は発生点（盾の向き・押す向き・関節の押し込みに使う）。 */
@@ -12762,6 +12782,7 @@ function moversNear(x, y, r) {
 
 function updateMoverRams() {
   if (movers.length === 0) return;
+  if (moleUnderground()) return;   // v3.29.0
   const isMelee = flockWeapon === "melee";
   // v0.87: 突進中は威力と届く範囲が伸び、さらに動く敵を弾き飛ばす。
   // v0.99.2: 突進は個体ごとになったので、威力も届く範囲も**その竜のぶん**を引く。
@@ -17603,6 +17624,7 @@ function spawnProjectile(fromWx, fromWy, targetBoidIdx, speed, damage, color, ao
 }
 
 function findNearestAliveBoid(wx, wy) {
+  if (moleUnderground()) return -1;   // v3.29.0: 地中の土竜は敵から見えない（狙われない）
   let nearest = -1;
   let nearestDist2 = Infinity;
   for (let i = 0; i < N; i++) {
@@ -18354,6 +18376,7 @@ function updateBeamAttacks(dt) {
 // -----------------------------------------------------------------
 function updateCollisionAttacks(dt) {
   if (gameState !== "playing") return;
+  if (moleUnderground()) return;   // v3.29.0: 土竜は地中の間は体当たりしない
 
   // ヒットストップタイマーとクールダウンを先に進める
   for (let i = 0; i < N; i++) {
@@ -18630,6 +18653,7 @@ function settlementFall(settlementIndex) {
     profile.fortressFallen = (profile.fortressFallen || 0) + 1;
   }
 
+  rollBallOnBuildingFall(settlement);   // v3.29.0: 団子竜の玉が巻き込むと大きくなる
   // v0.6: XPジェムを撒く＋撃破数を記録（仕様 §5.1）
   spawnXpGems(settlement.wx, settlement.wy, xpValueOf(settlement));
   runKills++;
@@ -19429,6 +19453,8 @@ const STRINGS = {
     shark:    "鮫竜が牙を剥いて襲いかかる",
     tortoise: "亀竜が静かな怒りとともに進み出る",
     thunder:  "雷雲竜が怒りの雷を落とす",
+    ball:     "団子竜が街を巻き込みながら転がり出す",
+    mole:     "土竜が地の底から怒りを突き上げる",
   },
   storySpeciesFallback: "竜たちが怒りを向ける",
   // ステージクリア＝竜の怒りを買った文明の滅亡（時代ごと）
@@ -19915,6 +19941,21 @@ SPECIES_EVO_SPEC.thunder = {
   B: { name: "嵐雲竜", tint: "#404880", scale: 1.05, eff: { rate: 0.25, range: 0.20 },
        next: [["豪雨", { rate: 0.18 }], ["雷雲の目", { range: 0.20, dmg: 0.15 }]] },
 };
+// v3.29.0: 団子竜・土竜
+SPECIES_EVO_SPEC.ball = {
+  L: [["重い玉", { dmg: 0.15 }], ["よく転がる", { speed: 0.10 }], ["重い玉・二", { dmg: 0.15 }], ["固い殻", { hp: 0.20 }]],
+  A: { name: "大玉", tint: "#a05a20", scale: 1.15, eff: { dmg: 0.20, hp: 0.30 },
+       next: [["岩の殻", { hp: 0.30 }], ["地響き", { dmg: 0.25 }]] },
+  B: { name: "疾風玉", tint: "#f0c070", scale: 1.0, eff: { speed: 0.15 },
+       next: [["坂道", { speed: 0.10 }], ["勢い", { dmg: 0.20 }]] },
+};
+SPECIES_EVO_SPEC.mole = {
+  L: [["深い爪", { dmg: 0.15 }], ["長い息", { range: 0.15 }], ["深い爪・二", { dmg: 0.15 }], ["早い息継ぎ", { rate: 0.18 }]],
+  A: { name: "大土竜", tint: "#6a4a2a", scale: 1.2, eff: { dmg: 0.20, range: 0.20 },
+       next: [["岩盤割り", { dmg: 0.25 }], ["大地溝", { range: 0.20 }]] },
+  B: { name: "砂潜り", tint: "#d8b070", scale: 1.0, eff: { rate: 0.25 },
+       next: [["素早い潜行", { rate: 0.18 }], ["砂嵐", { dmg: 0.20 }]] },
+};
 // 惑竜は爆竜と同じ体・同じ爆撃なので、同じツリー（分岐の名前だけ違う）
 SPECIES_EVO_SPEC.wayward = {
   L: SPECIES_EVO_SPEC.bomber.L,
@@ -19938,6 +19979,9 @@ const CROSS_EVOLUTIONS = [
   { to: "shark",    needs: { wake: 1, mecha: 1 },    from: "any" },
   { to: "tortoise", needs: { heal: 1, heavy: 1 },    from: "any" },
   { to: "thunder",  needs: { frost: 1, beacon: 1 },  from: "any" },
+  // v3.29.0: 止まらぬ鉄塊（重さ）＋穿つ楔（割る）＝転がって潰す／暴食（呑む）＋穿つ楔＝地に潜って割る
+  { to: "ball",     needs: { heavy: 1, wedge: 1 },   from: "any" },
+  { to: "mole",     needs: { deflect: 1, wedge: 1 }, from: "any" },
 ];
 // v3.6.0: 種またぎは同じレベルのまま行き来するので、専用の「進化形」は持たない（EVOLVED_FORMS は撤去）
 
@@ -20024,6 +20068,7 @@ const SPECIES_CATEGORY = {
   fire: "shot", ice: "shot", shadow: "blast", crimson: "direct", falcon: "direct", swallow: "shot",
   hornet: "direct", gargoyle: "direct", ufo: "shot", comet: "shot", bomber: "blast", wayward: "blast", frog: "direct",
   shark: "direct", tortoise: "shot", thunder: "shot",   // v3.8.0（v3.9.11: 亀竜は甲羅弾＝ブレス）
+  ball: "direct", mole: "blast",   // v3.29.0
 };
 const CATEGORY_NAMES = { direct: "直接", shot: "ブレス", blast: "爆発" };
 function flockCategory() { return SPECIES_CATEGORY[flockSpecies] || "shot"; }
@@ -21174,6 +21219,7 @@ let flockWeapon = "beam";
  * 未知のIDが来たら火竜へフォールバックする（旧セーブ・想定外値の保険）。
  */
 function setFlockSpecies(speciesId) {
+  if (speciesId !== flockSpecies) resetSpeciesMechanics();   // v3.29.0: 玉・地中の状態を持ち越さない
   flockSpecies = SPECIES_DEFS[speciesId] ? speciesId : "fire";
   flockWeapon  = ATTACK_DEFS[SPECIES_DEFS[flockSpecies].attack].kind;
   invalidateEvo();   // v3.2.0: 進化の効き先が竜種で変わる
@@ -21190,6 +21236,8 @@ const SPECIES_FLASH_COLOR = {
   shark:   "rgba(106,168,224,0.6)",
   tortoise:"rgba(140,192,112,0.6)",
   thunder: "rgba(255,240,120,0.7)",
+  ball:    "rgba(224,144,74,0.6)",
+  mole:    "rgba(176,136,80,0.6)",
 };
 
 // ---- BULLET（氷竜・直進弾丸）基礎性能（仕様 §6.2）----
@@ -23606,12 +23654,16 @@ function updateWeaponAttacks(dt) {
     updateBoulderAttacks(dt);
   } else if (flockWeapon === "chain") {
     updateThunderAttacks(dt);
+  } else if (flockWeapon === "roll") {
+    updateRollCrush(dt);    // v3.29.0: 団子竜
+  } else if (flockWeapon === "erupt") {
+    updateMoleAttacks(dt);  // v3.29.0: 土竜
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
 
   updateBombFuses(dt);   // 投下済みの爆弾は竜種が変わっても炸裂させきる
 
-  updateSpecials(dt);       // v0.85: 特殊個体（灯竜の光条・巌竜の轢き・呑竜の溜め）
+  if (!moleUnderground()) updateSpecials(dt);   // v0.85: 特殊個体（v3.29.0: 土竜が地中の間は群れごと休む）
   updateDragonProjectiles(dt);
   updateBoulders(dt);       // v3.9.11: 亀竜の甲羅弾（竜種が変わっても飛びきる）
 }
@@ -25693,6 +25745,12 @@ function codexDragonMainAttackRaw(def) {
       return { power: { label: label + "（1発）", shot: BOULDER_DAMAGE, impact: BOULDER_IMPACT },
                stat: `射程 ${BOULDER_RANGE} ／ ${BOULDER_INTERVAL}秒ごと ／ 弾速 ${BOULDER_SPEED}（とても遅い）・1つにだけ当たって押す${arc}` +
                      (def.hpMult ? ` ／ HP ×${def.hpMult}` : "") };
+    case "roll":   // v3.29.0
+      return { power: { label: label + "（秒間）", direct: ROLL_CRUSH_DPS_BASE, perSec: true },
+               stat: `玉の下を通った相手を押し潰す（竜1体ごとに秒間+${ROLL_CRUSH_DPS_PER}） ／ 壊すほど玉が大きく（最大で半径${1 + ROLL_GROW_MAX}倍）、速く、曲がりにくくなる ／ 縮むのは一番大きかったときの${Math.round((1 - ROLL_SHRINK_FLOOR) * 100)}%まで` };
+    case "erupt":  // v3.29.0
+      return { power: { label: label + "（1か所）", blast: MOLE_ERUPT_BASE },
+               stat: `描いている間は地中（撃たれない・最大${MOLE_BREATH_MAX}秒） ／ 指を離すと線に沿って幅${MOLE_ERUPT_WIDTH * 2}pxが割れる（竜1体ごとに+${MOLE_ERUPT_PER}） ／ 線が${MOLE_REF_LEN}pxより長いと1か所は弱くなる` };
     case "chain":
       return { power: { label: label + "（1発目）", shot: THUNDER_DAMAGE },
                stat: `射程 ${THUNDER_RANGE} ／ ${THUNDER_JUMPS}回飛び移る（${THUNDER_JUMP_RANGE}px以内・1回ごとに×${THUNDER_FALLOFF}） ／ ${THUNDER_INTERVAL}秒ごと${arc}` };
@@ -26503,6 +26561,9 @@ const SPECIES_CHOICES = [
   { species: "shark" },
   { species: "tortoise" },
   { species: "thunder" },
+  // v3.29.0: 案帳 DT-045／DT-046（解放は種またぎでだけ）
+  { species: "ball" },
+  { species: "mole" },
 ];
 let speciesSelecting = false;
 
@@ -27945,6 +28006,7 @@ function maybeAdvanceTier(townJustSurrendered) {
 // ステージ stageIdx のワールド（街・地形・レイヤー）を生成し直す共通処理。
 // advanceToNextStage（次ステージへ）と setupStageForResume（続きから）で共用。
 function loadStageWorld(stageIdx) {
+  resetSpeciesMechanics();   // v3.29.0: 団子竜の玉・土竜の地割れを前のステージから持ち越さない
   for (let i = 0; i < MAX_PROJECTILES; i++) projActive[i] = 0;
   for (let i = 0; i < MAX_PARTICLES; i++)   partActive[i] = 0;
   for (let e = 0; e < MAX_EGGS; e++)        eggActive[e] = 0;
@@ -28297,6 +28359,7 @@ function inputStart(sx, sy, now) {
   pathClear();
   const w = screenToWorld(sx, sy);
   pathPush(w.x, w.y);
+  moleRecordStroke(w.x, w.y, true);   // v3.29.0: 土竜は描いた一筆に沿って割る
   addTrailPoint(w.x, w.y, now);
   // 変更3: 指のワールド座標を保持（静止保持でも誘導継続するため）
   pointerWorldX = w.x;
@@ -28311,6 +28374,7 @@ function inputMove(sx, sy, now) {
   if (inputMode !== "DRAW") return;
   const w = screenToWorld(sx, sy);
   pathPush(w.x, w.y);
+  moleRecordStroke(w.x, w.y, false);
   addTrailPoint(w.x, w.y, now);
   // 変更3: 指が動いたときも最新ワールド座標を更新する
   pointerWorldX = w.x;
@@ -28881,6 +28945,7 @@ function renderWipeEpitaph(el) {
 function applyDamageToBoid(boidIndex, damage, hit) {
   // 変更2: ダウン中・すでに dead の場合は何もしない
   if (boidDead[boidIndex] || boidDowned[boidIndex]) return;
+  if (moleUnderground()) return;   // v3.29.0: 土竜は地中の間は撃たれない
   if (debugInvincible) return;   // v0.44: デバッグ「竜を無敵」中は落ちない（敵の観察用）
   if (wipeGraceTimer > 0) return; // v3.0.0: 全滅で戻された直後の無敵
   // v0.6: 「竜鱗共鳴」カードで被ダメージ軽減
@@ -28962,10 +29027,390 @@ const PATH_TRACE_IDLE_HOLD = 0.3;  // 弧が伸びないまま経った時間が
 // はみ出したぶんは分離（外力チャネル）が内外へ散らして自然な帯になる。
 const ORBIT_RING_ROWS = 3;
 
+// =====================================================================
+// v3.29.0: 団子竜（案帳 DT-045）— 群れが1つの玉になって転がる（塊魂）
+// =====================================================================
+// 群れの竜は全員、玉の表面に貼り付いて玉と一緒に転がる（玉の上半分にいる竜だけ見える）。
+// 玉は操縦点を1体の竜のように追い、下を通った建物と敵を押し潰す。
+// 壊すほど玉が大きくなり（壊した建物の絵が玉に貼り付く）、大きいほど速く・曲がりにくい。
+// しばらく何も壊さないと縮むが、縮むのは一番大きかったときの1割まで（Shooter判定「縮む要素はちょっとだけ」）。
+// 見た目に振り切る（Shooter判定）：玉は球として回転し、貼り付いた建物と竜が転がりに合わせて表から裏へ回る。
+const ROLL_RADIUS_BASE      = 14;     // 玉の半径＝これ＋下の係数×√竜の数（大きくなる前）
+const ROLL_RADIUS_PER_SQRT  = 4.2;
+const ROLL_GROW_PER_KILL    = 0.03;   // 建物1棟（中型）を壊すごとに大きさに足す割合
+const ROLL_GROW_SIZE_WEIGHT = { tiny: 0.4, small: 0.6, medium: 1, large: 1.6 };
+const ROLL_GROW_MAX         = 2.0;    // 大きくなる上限（半径が元の3倍まで）
+const ROLL_SHRINK_DELAY     = 1.5;    // 最後に壊してからこの秒数は縮まない
+const ROLL_SHRINK_RATE      = 0.12;   // 縮む速さ（大きさの割合/秒）
+const ROLL_SHRINK_FLOOR     = 0.9;    // 一番大きかったときのこの割合までしか縮まない
+const ROLL_SPEED_PER_GROW   = 0.35;   // 大きさ1につき速さ +35%
+const ROLL_TURN_PER_GROW    = 0.6;    // 大きさ1につき曲がりにくさ +60%
+const ROLL_CRUSH_TICK       = 0.15;   // 押し潰しの判定の間隔（秒）
+const ROLL_CRUSH_DPS_BASE   = 40;     // 押し潰しの秒間威力＝これ＋竜1体ごとの上乗せ×竜の数
+const ROLL_CRUSH_DPS_PER    = 4;
+const ROLL_KILL_MARGIN      = 30;     // 玉の縁からこの距離までで壊れた建物は「玉が巻き込んだ」として数える
+const ROLL_DEBRIS_MAX       = 48;     // 玉に貼り付く建物の絵の上限
+const ROLL_DRAGON_DRAW_SCALE = 0.62;  // 玉に貼り付いた竜の描く大きさ（竜が大きいと玉に見えない）
+const ROLL_DRAGON_SURFACE   = 0.92;   // 竜は玉の半径のこの割合の所に貼り付く（縁から少し内側）
+const ROLL_COLORS = { base: "#7a5230", light: "#b07a48", dark: "#3a2414", rim: "#2a1a0e" };
+
+let rollBall = null;   // { x, y, vx, vy, grow, peak, sinceKill, m: 3x3 回転行列（9要素）, debris: [] }
+
+function rollBallActive() { return !!sp().rollBall && !!rollBall; }
+function rollRadius() {
+  const n = Math.max(1, countAliveBoids());
+  return (ROLL_RADIUS_BASE + ROLL_RADIUS_PER_SQRT * Math.sqrt(n)) * (1 + (rollBall ? rollBall.grow : 0));
+}
+/** 竜 i が玉の表面のどこに貼り付くか（玉に固定した単位ベクトル）。何体いても散らばる並び */
+function rollSurfacePoint(i) {
+  // R2 数列（2つの無理数で縦と横を別々に刻む）。黄金比だけで刻むと縦と横が連動して、竜が1本の線に並んでしまった
+  const z = 1 - 2 * ((0.5 + i * 0.7548776662) % 1);
+  const r = Math.sqrt(Math.max(0, 1 - z * z)), lon = Math.PI * 2 * ((0.5 + i * 0.5698402910) % 1);
+  return [r * Math.cos(lon), r * Math.sin(lon), z];
+}
+function rollApply(m, v) {
+  return [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
+}
+/** 軸 (ax, ay, 0)（単位）まわりに角度 a だけ回した行列を m に左から掛ける */
+function rollRotate(m, ax, ay, a) {
+  const c = Math.cos(a), s = Math.sin(a), t = 1 - c;
+  // ロドリゲスの回転公式（軸の z 成分は 0）
+  const r = [t * ax * ax + c, t * ax * ay, s * ay,
+             t * ax * ay, t * ay * ay + c, -s * ax,
+             -s * ay, s * ax, c];
+  const o = m.slice();
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      m[row * 3 + col] = r[row * 3] * o[col] + r[row * 3 + 1] * o[3 + col] + r[row * 3 + 2] * o[6 + col];
+    }
+  }
+}
+/** 回転行列のずれ（誤差の積み重なり）を直交に戻す */
+function rollOrthonormalize(m) {
+  let a = [m[0], m[3], m[6]], b = [m[1], m[4], m[7]];
+  const na = Math.hypot(a[0], a[1], a[2]) || 1; a = a.map(v => v / na);
+  const d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  b = [b[0] - d * a[0], b[1] - d * a[1], b[2] - d * a[2]];
+  const nb = Math.hypot(b[0], b[1], b[2]) || 1; b = b.map(v => v / nb);
+  const c = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  m[0] = a[0]; m[3] = a[1]; m[6] = a[2]; m[1] = b[0]; m[4] = b[1]; m[7] = b[2]; m[2] = c[0]; m[5] = c[1]; m[8] = c[2];
+}
+const rollHidden = new Uint8Array(MAX_BOIDS);   // 玉の裏側（下半分）にいて見えない竜
+
+/** 玉を1ステップ進め、竜を表面に貼り付ける（simStep の群れの物理の代わり） */
+function stepRollBall(dt) {
+  const n = countAliveBoids();
+  if (!rollBall) {
+    const c = calcFriendlyCentroid();
+    rollBall = { x: c.x, y: c.y, vx: 0, vy: 0, grow: 0, peak: 0, sinceKill: 0,
+                 m: [1, 0, 0, 0, 1, 0, 0, 0, 1], debris: [], tick: 0, frames: 0 };
+  }
+  const b = rollBall;
+  if (n === 0) return;
+  const prof = mv();
+  const maxSp = prof.maxSpeed * _simSpeedMult * (1 + ROLL_SPEED_PER_GROW * b.grow);
+  const minSp = prof.minSpeed * _simSpeedMult;
+  const accel = prof.accel === INSTANT ? Infinity : prof.accel * _simSpeedMult;
+  const turn  = prof.turnRate / (1 + ROLL_TURN_PER_GROW * b.grow);
+  // 操縦点を1体の竜と同じやり方で追う（向きは turnRate、速さは accel で別々に上限）
+  const dx = leader.x - b.x, dy = leader.y - b.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const curSp = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+  const curA = curSp > 0.001 ? Math.atan2(b.vy, b.vx) : Math.atan2(dy, dx);
+  let dA = wrapAngle(Math.atan2(dy, dx) - curA);
+  const tMax = turn * dt;
+  if (dA > tMax) dA = tMax; else if (dA < -tMax) dA = -tMax;
+  let want = Math.max(minSp, maxSp * Math.min(1, dist / BOID_ARRIVE_DIST));
+  let dS = want - curSp;
+  const sMax = accel * dt;
+  if (dS > sMax) dS = sMax; else if (dS < -sMax) dS = -sMax;
+  const sp2 = Math.max(0, curSp + dS), a2 = curA + dA;
+  b.vx = Math.cos(a2) * sp2; b.vy = Math.sin(a2) * sp2;
+  b.x = Math.max(20, Math.min(WORLD_W - 20, b.x + (b.vx + tierRush.windX) * dt));
+  b.y = Math.max(20, Math.min(WORLD_H - 20, b.y + (b.vy + tierRush.windY) * dt));
+  // 岩山と城壁は玉も越えられない（竜と同じ。半分まではめり込んでよい＝壁に押し当てて潰せる）
+  {
+    const Rb = rollRadius() * 0.5;
+    const push = (cx, cy, r) => {
+      const ddx = b.x - cx, ddy = b.y - cy, d2 = ddx * ddx + ddy * ddy, min = r + Rb;
+      if (d2 >= min * min || d2 === 0) return;
+      const d = Math.sqrt(d2);
+      b.x = cx + ddx / d * min; b.y = cy + ddy / d * min;
+      const vn = (b.vx * ddx + b.vy * ddy) / d;
+      if (vn < 0) { b.vx -= vn * ddx / d; b.vy -= vn * ddy / d; }
+    };
+    for (const ob of terrainObstacles) if (ob.type !== "lake") push(ob.wx, ob.wy, ob.radius);
+    buildingGridQuery(b.x, b.y, _obstacleQueryBuf);
+    for (const sIdx of _obstacleQueryBuf) {
+      const w = settlements[sIdx];
+      if (w && !w.fallen && w._isWall) push(w.wx, w.wy, w.radius);
+    }
+  }
+
+  // 大きさ：しばらく壊さないと縮む（一番大きかったときの1割まで）
+  b.sinceKill += dt;
+  if (b.sinceKill > ROLL_SHRINK_DELAY && b.grow > 0) {
+    const floor = Math.max(0, ROLL_SHRINK_FLOOR * (1 + b.peak) - 1);
+    b.grow = Math.max(floor, b.grow - ROLL_SHRINK_RATE * dt);
+  }
+
+  // 転がり：進んだ距離÷半径だけ、進む向きと直角の水平軸まわりに回す（上の面が前へ進む向き）
+  const R = rollRadius();
+  const moved = sp2 * dt;
+  if (moved > 0.001) rollRotate(b.m, -b.vy / sp2, b.vx / sp2, moved / R);
+  if (++b.frames % 60 === 0) rollOrthonormalize(b.m);
+
+  // 竜を表面へ（向きは玉の進む向き）
+  const hx = sp2 > 1 ? b.vx : Math.cos(curA) * 1, hy = sp2 > 1 ? b.vy : Math.sin(curA) * 1;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const p = rollApply(b.m, rollSurfacePoint(i));
+    px[i] = b.x + p[0] * R * ROLL_DRAGON_SURFACE;
+    py[i] = b.y + p[1] * R * ROLL_DRAGON_SURFACE;
+    vx[i] = hx; vy[i] = hy;
+    boidKickX[i] = 0; boidKickY[i] = 0;
+    rollHidden[i] = p[2] < -0.05 ? 1 : 0;
+  }
+}
+
+/** 玉の押し潰し（攻撃の kind "roll"） */
+function updateRollCrush(dt) {
+  if (!rollBall) return;
+  rollBall.tick += dt;
+  if (rollBall.tick < ROLL_CRUSH_TICK) return;
+  const t = rollBall.tick;
+  rollBall.tick = 0;
+  const n = countAliveBoids();
+  if (n === 0) return;
+  const dmg = (ROLL_CRUSH_DPS_BASE + ROLL_CRUSH_DPS_PER * n) * effWeaponDmgMult("roll") * t;
+  hitInRadius(rollBall.x, rollBall.y, rollRadius() * 0.95, { direct: dmg }, attackTargets());
+}
+
+/** 建物が壊れたとき（settlementFall）。玉の近くなら玉が大きくなり、その建物の絵が玉に貼り付く */
+function rollBallOnBuildingFall(s) {
+  if (!rollBallActive() || s._isWall || s.isBoss) return;
+  const b = rollBall, R = rollRadius();
+  const reach = R + (s.radius || 0) + ROLL_KILL_MARGIN;
+  if (dist2(s.wx, s.wy, b.x, b.y) > reach * reach) return;
+  b.grow = Math.min(ROLL_GROW_MAX, b.grow + ROLL_GROW_PER_KILL * (ROLL_GROW_SIZE_WEIGHT[s.size] ?? 1));
+  if (b.grow > b.peak) b.peak = b.grow;
+  b.sinceKill = 0;
+  const key = buildingSpriteKeyFor(s);
+  if (key) {
+    // 貼り付く場所は、いま見えている面（上半分）のどこか。玉に固定した座標へ戻して覚える
+    const a = fxRandom() * Math.PI * 2, z = 0.2 + fxRandom() * 0.8, r = Math.sqrt(1 - z * z);
+    const w = [r * Math.cos(a), r * Math.sin(a), z];
+    const m = b.m;   // 回転行列の転置＝逆回転
+    const u = [m[0] * w[0] + m[3] * w[1] + m[6] * w[2], m[1] * w[0] + m[4] * w[1] + m[7] * w[2], m[2] * w[0] + m[5] * w[1] + m[8] * w[2]];
+    if (b.debris.length >= ROLL_DEBRIS_MAX) b.debris.shift();
+    b.debris.push({ u, key, color: s.color, size: (ROLL_GROW_SIZE_WEIGHT[s.size] ?? 1), spin: fxRandom() * Math.PI * 2 });
+  }
+}
+
+/** 玉そのもの（影・球・貼り付いた建物）。竜は drawBoids が上に描く（裏側の竜は描かない） */
+function drawRollBall() {
+  if (!rollBallActive()) return;
+  const b = rollBall, R = rollRadius();
+  ctx.save();
+  ctx.globalAlpha = 0.32;
+  ctx.fillStyle = "#000";
+  ctx.beginPath(); ctx.ellipse(b.x + R * 0.22, b.y + R * 0.3, R * 1.02, R * 0.9, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  const g = ctx.createRadialGradient(b.x - R * 0.35, b.y - R * 0.4, R * 0.1, b.x, b.y, R);
+  g.addColorStop(0, ROLL_COLORS.light);
+  g.addColorStop(0.6, ROLL_COLORS.base);
+  g.addColorStop(1, ROLL_COLORS.dark);
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.fill();
+  // 貼り付いた建物（奥から手前へ）。上半分にあるものだけ、縁ほど潰して描く
+  const vis = [];
+  for (const d of b.debris) {
+    const p = rollApply(b.m, d.u);
+    if (p[2] > 0) vis.push({ d, p });
+  }
+  vis.sort((a, c) => a.p[2] - c.p[2]);
+  for (const { d, p } of vis) {
+    const img = getTintedBuildingSprite(d.key, d.color);
+    if (!img) continue;
+    const s = R * 0.42 * d.size * (0.55 + 0.45 * p[2]);
+    ctx.save();
+    ctx.translate(b.x + p[0] * R * 0.9, b.y + p[1] * R * 0.9);
+    ctx.rotate(Math.atan2(p[1], p[0]) + d.spin);
+    ctx.globalAlpha = 0.6 + 0.4 * p[2];
+    ctx.drawImage(img, -s / 2, -s / 2, s, s * (img.height / img.width));
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = ROLL_COLORS.rim;
+  ctx.lineWidth = Math.max(2, R * 0.06);
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+// =====================================================================
+// v3.29.0: 土竜（もぐら・案帳 DT-046）— 描いている間は地中、指を離すと線に沿って地割れ
+// =====================================================================
+// 指で線を描いている間、群れは地中を進む（土の盛り上がりだけが見え、撃たれない・狙われない・攻撃もしない）。
+// 指を離した瞬間、その一筆で描いた線の全長に沿って地割れが走り、上の建物と敵を崩す（線が長いほど1か所は弱い）。
+// 地中にいられる時間（息）には上限があり、尽きると線の途中でも地上に出て割れる。地上では体当たりだけ（弱い）。
+const MOLE_BREATH_MAX      = 4.0;    // 地中にいられる秒数
+const MOLE_BREATH_REGEN    = 0.8;    // 地上で息が戻る速さ（秒/秒）
+const MOLE_MIN_BREATH      = 1.0;    // これだけ息が戻っていないと潜れない
+const MOLE_STROKE_STEP     = 14;     // 描いた線を記録する間隔（px）
+const MOLE_ERUPT_STEP      = 28;     // 地割れを起こす点の間隔（px）
+const MOLE_ERUPT_WIDTH     = 46;     // 地割れの幅（半径）
+const MOLE_ERUPT_BASE      = 10;     // 1点あたりの威力＝これ＋竜1体ごとの上乗せ×竜の数（線が短いとき）
+const MOLE_ERUPT_PER       = 2.5;
+const MOLE_REF_LEN         = 600;    // 線がこの長さを超えると、超えた分だけ1点あたりの威力が下がる
+const MOLE_RUN_TIME        = 0.5;    // 地割れが線の始めから終わりまで走る秒数
+const MOLE_CRACK_LIFE      = 1.8;    // 地割れの跡が見えている秒数
+const MOLE_COLORS = { mound: "#6a5034", moundLight: "#9a7a50", crack: "#140c06", glow: "#ff9a3a", breath: "#d8b070" };
+
+const mole = { under: false, breath: MOLE_BREATH_MAX, stroke: [], queue: [], cracks: [], needLift: false };
+
+function moleUnderground() { return mole.under && !!sp().burrow; }
+/** 竜種の特別な状態（団子竜の玉・土竜の地中）を初期化する。竜種が変わったとき・ステージの頭に呼ぶ */
+function resetSpeciesMechanics() {
+  rollBall = null;
+  resetMole();
+}
+function resetMole() {
+  mole.under = false; mole.breath = MOLE_BREATH_MAX; mole.stroke.length = 0;
+  mole.queue.length = 0; mole.cracks.length = 0; mole.needLift = false;
+}
+/** 描いた線を記録する（inputStart / inputMove から） */
+function moleRecordStroke(wx, wy, start) {
+  if (!sp().burrow) return;
+  if (start) { mole.stroke.length = 0; mole.needLift = false; }
+  const last = mole.stroke[mole.stroke.length - 1];
+  if (!last || dist2(last.x, last.y, wx, wy) >= MOLE_STROKE_STEP * MOLE_STROKE_STEP) mole.stroke.push({ x: wx, y: wy });
+}
+/** 土竜の毎フレーム（攻撃の kind "erupt"） */
+function updateMoleAttacks(dt) {
+  const breathMax = MOLE_BREATH_MAX * effWeaponRangeMult("erupt");
+  if (!isDrawing) mole.needLift = false;
+  if (!mole.under) {
+    mole.breath = Math.min(breathMax, mole.breath + MOLE_BREATH_REGEN / effFireIntervalMult("erupt") * dt);
+    if (isDrawing && !mole.needLift && mole.breath >= MOLE_MIN_BREATH && mole.stroke.length > 0) {
+      mole.under = true;
+      moleDust(1);
+    }
+  } else {
+    mole.breath -= dt;
+    if (!isDrawing || mole.breath <= 0) {
+      if (isDrawing) mole.needLift = true;   // 息切れで出たときは、指を離すまで潜り直さない
+      moleErupt();
+    }
+  }
+  // 地割れを線の始めから順に起こす
+  for (let k = mole.queue.length - 1; k >= 0; k--) {
+    const q = mole.queue[k];
+    q.t -= dt;
+    if (q.t > 0) continue;
+    hitInRadius(q.x, q.y, q.w, { blast: q.dmg }, attackTargets());
+    if (fxRandom() < 0.5) spawnCollisionParticles(q.x, q.y);
+    mole.queue.splice(k, 1);
+  }
+  for (let k = mole.cracks.length - 1; k >= 0; k--) {
+    mole.cracks[k].life -= dt;
+    if (mole.cracks[k].life <= 0) mole.cracks.splice(k, 1);
+  }
+}
+/** 地上に出て、描いた線に沿って地割れを起こす */
+function moleErupt() {
+  mole.under = false;
+  moleDust(1.6);
+  const s = mole.stroke;
+  if (s.length === 0) return;
+  // 線を等間隔の点に並べ直す
+  const pts = [{ x: s[0].x, y: s[0].y }];
+  let carry = 0, len = 0;
+  for (let k = 1; k < s.length; k++) {
+    const ax = s[k - 1].x, ay = s[k - 1].y, seg = Math.hypot(s[k].x - ax, s[k].y - ay);
+    len += seg;
+    let d = MOLE_ERUPT_STEP - carry;
+    while (d <= seg) {
+      const t = d / seg;
+      pts.push({ x: ax + (s[k].x - ax) * t, y: ay + (s[k].y - ay) * t });
+      d += MOLE_ERUPT_STEP;
+    }
+    carry = seg - (d - MOLE_ERUPT_STEP);
+  }
+  const n = countAliveBoids();
+  const dmg = (MOLE_ERUPT_BASE + MOLE_ERUPT_PER * n) * effWeaponDmgMult("erupt") * Math.min(1, MOLE_REF_LEN / Math.max(1, len));
+  const w = MOLE_ERUPT_WIDTH * Math.sqrt(effWeaponRangeMult("erupt"));
+  pts.forEach((p, k) => mole.queue.push({ x: p.x, y: p.y, w, dmg, t: (k / Math.max(1, pts.length - 1)) * MOLE_RUN_TIME }));
+  mole.cracks.push({ pts, life: MOLE_CRACK_LIFE, w });
+  triggerShake(2.2, 0.3);
+  hapticPulse(60);
+  mole.stroke.length = 0;
+}
+/** 潜る・出るときの土煙（見た目だけ） */
+function moleDust(scale) {
+  let k = 0;
+  for (let i = 0; i < N && k < 14 * scale; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    if (fxRandom() < 0.5) { spawnCollisionParticles(px[i], py[i]); k++; }
+  }
+}
+/** 地割れの跡（建物の上・竜の下） */
+function drawMoleCracks() {
+  if (mole.cracks.length === 0) return;
+  ctx.save();
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const c of mole.cracks) {
+    const t = c.life / MOLE_CRACK_LIFE;
+    ctx.globalAlpha = Math.min(1, t * 1.5) * 0.5;
+    ctx.strokeStyle = MOLE_COLORS.glow;
+    ctx.lineWidth = c.w * 0.45;
+    ctx.beginPath();
+    c.pts.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    ctx.stroke();
+    ctx.globalAlpha = Math.min(1, t * 1.5);
+    ctx.strokeStyle = MOLE_COLORS.crack;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    // 地割れはジグザグに（点の位置から決めるので毎フレーム同じ形）
+    c.pts.forEach((p, k) => {
+      const j = ((Math.round(p.x) * 31 + Math.round(p.y) * 17) % 13) - 6;
+      if (k) ctx.lineTo(p.x + j, p.y - j); else ctx.moveTo(p.x, p.y);
+    });
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+/** 地中の群れ：竜の代わりに土の盛り上がりと、息の残りの輪を描く */
+function drawMoleMounds() {
+  ctx.save();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const a = Math.atan2(vy[i], vx[i]);
+    ctx.fillStyle = MOLE_COLORS.mound;
+    ctx.beginPath(); ctx.ellipse(px[i], py[i], 8, 5.5, a, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = MOLE_COLORS.moundLight;
+    ctx.beginPath(); ctx.ellipse(px[i] - 1.5, py[i] - 1.5, 4, 2.6, a, 0, Math.PI * 2); ctx.fill();
+  }
+  const c = calcFriendlyCentroid();
+  const frac = Math.max(0, mole.breath / (MOLE_BREATH_MAX * effWeaponRangeMult("erupt")));
+  ctx.strokeStyle = MOLE_COLORS.breath;
+  ctx.lineWidth = 4 / cam.scale;
+  ctx.globalAlpha = 0.85;
+  ctx.beginPath(); ctx.arc(c.x, c.y - 46 / cam.scale, 12 / cam.scale, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac); ctx.stroke();
+  ctx.restore();
+}
+
 function simStep(dt) {
   _simSpeedMult = effSpeedMult();
   hopClock += dt * _simSpeedMult;
   updateLeader(dt);
+  // v3.29.0: 団子竜は群れの物理の代わりに玉を転がし、竜を表面に貼り付ける
+  if (sp().rollBall) {
+    stepRollBall(dt);
+    updateFlockMetrics(dt);
+    updateDamageNumbers(dt);
+    updateCharge(dt);
+    return;
+  }
 
   // ヒットストップ中の個体は移動・加速を計算するが位置更新をスキップ
   // （速度ベクトルは維持することで停止後にスムーズに動き出す）
@@ -29726,6 +30171,8 @@ function render(now) {
   drawExplosionFx();         // v3.9.0: 爆発の炎と煙（建物の上・竜の下）
   drawChargeFx();            // v0.87: 突進（尾・穂先の弧・速度線）。竜より下に敷く
   drawSpecialUnder();        // v0.85: 灯竜の光条と特殊個体の足元リング（竜の下）
+  drawMoleCracks();   // v3.29.0: 土竜の地割れの跡
+  drawRollBall();     // v3.29.0: 団子竜の玉（竜はこの上に貼り付いて描かれる）
   drawBoids();
   drawCrackMarks();          // v1.1.1: 楔竜が入れたひび（相手の上）
   drawWakeCharged();         // v1.1.0: 次の一撃が乗っている竜の輪（竜の上）
@@ -30283,6 +30730,9 @@ function drawBoids() {
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
   if (!sprites || sprites.length === 0) return;
+  // v3.29.0: 地中の土竜は竜の代わりに土の盛り上がりを描く
+  if (moleUnderground()) { drawMoleMounds(); return; }
+  const ballHide = rollBallActive();   // v3.29.0: 団子竜の玉の裏側にいる竜は描かない
 
   // ---- 尻尾の緩和チェーン更新 ----
   // 先頭セグメントは現在の進行方向へ、後続は1つ前のセグメントへ、指数平滑で寄せる。
@@ -30308,6 +30758,7 @@ function drawBoids() {
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
     // 変更2: ダウン中でフェードアウト完了（boidFadeTimer=0）かつ復帰フェードイン未開始 → 非表示
     if (boidDowned[i] && boidFadeTimer[i] <= 0 && boidReviveTimer[i] <= 0) continue;
+    if (ballHide && rollHidden[i] && !boidDowned[i]) continue;
 
     let alpha = 0.85;
     if (boidDowned[i] && boidFadeTimer[i] > 0) {
@@ -30324,7 +30775,7 @@ function drawBoids() {
     const wx    = px[i], wy = py[i];
     const angle = Math.atan2(vy[i], vx[i]);
     // 体格（巌竜の巨体など）。当たり判定と共通の boidBodyScale
-    const unitScale = boidBodyScale(i);
+    const unitScale = boidBodyScale(i) * (ballHide ? ROLL_DRAGON_DRAW_SCALE : 1);   // v3.29.0: 玉の上の竜は小さく（玉に見えるように）
 
     // ---- 羽ばたきフレーム選択 ----
     // breathTime（毎フレーム dt 加算済み）に個体ごとの位相オフセットを加算
@@ -31599,6 +32050,8 @@ const DRAGON_ELEMENT_COLORS = {
   shark:    { body: "rgba(106, 168, 224, 1.0)", wing: "rgba(58, 120, 184, 1.0)",  rim: "rgba(30, 60, 100, 0.0)" },
   tortoise: { body: "rgba(140, 192, 112, 1.0)", wing: "rgba(74, 122, 64, 1.0)",   rim: "rgba(40, 70, 35, 0.0)" },
   thunder:  { body: "rgba(255, 224, 112, 1.0)", wing: "rgba(200, 170, 50, 1.0)",  rim: "rgba(110, 90, 20, 0.0)" },
+  ball:     { body: "rgba(224, 144, 74, 1.0)",  wing: "rgba(192, 112, 48, 1.0)",  rim: "rgba(100, 60, 25, 0.0)" },
+  mole:     { body: "rgba(176, 136, 80, 1.0)",  wing: "rgba(138, 106, 64, 1.0)",  rim: "rgba(80, 60, 35, 0.0)" },
   heal:     { body: "rgba(150, 240, 170, 1.0)", wing: "rgba(90, 190, 120, 1.0)",  rim: "rgba(40, 110, 60, 0.0)" },
   frost:    { body: "rgba(200, 236, 255, 1.0)", wing: "rgba(140, 190, 230, 1.0)", rim: "rgba(70, 110, 150, 0.0)" },
   laser:    { body: "rgba(255, 240, 184, 1.0)", wing: "rgba(230, 200, 120, 1.0)", rim: "rgba(140, 110, 40, 0.0)" },
@@ -32187,6 +32640,7 @@ const DRAGON_PART_SPRITES = {
 const DRAGON_PARTS_ALIAS = {
   shark: "swallow", tortoise: "gargoyle", thunder: "shadow",
   heal: "rainbow", frost: "deflect", laser: "beacon",
+  ball: "fire", mole: "crimson",   // v3.29.0
 };
 /** 属性 element を描くのに使うパーツ定義のキー（無ければ null）。 */
 function dragonPartsKey(element) {
