@@ -994,7 +994,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.30.0";
+const GAME_VERSION = "v3.31.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2083,6 +2083,10 @@ const ATTACK_DEFS = {
   rollcrush:      { ja: "押し潰し",   en: "Roll Crush",        kind: "roll",      recoilDist: 0,  fireStun: 0    },
   // v3.29.0: 土竜。描いた線に沿って地面が割れる（爆発）
   erupt:          { ja: "地割れ",     en: "Fissure",           kind: "erupt",     recoilDist: 0,  fireStun: 0    },
+  // v3.31.0: 磁竜。壊した建物の破片を周りに回して削り、急旋回で投げる（直接）
+  magnetshards:   { ja: "破片の輪",   en: "Shard Orbit",       kind: "magnet",    recoilDist: 0,  fireStun: 0    },
+  // v3.31.0: 双子竜。2列の間に張る雷のアーチ（ブレス）
+  twinarc:        { ja: "雷の橋",     en: "Twin Arc",          kind: "arc",       recoilDist: 0,  fireStun: 0,    attribute: ATTRIBUTE_THUNDER },
 };
 /** 攻撃の属性（無ければ null）。 */
 function attackAttribute(attackId) {
@@ -2300,6 +2304,21 @@ const SPECIES_DEFS = {
     attack: "erupt", spriteTint: "#8a6a40", burrow: true,
     desc: "描いている間は地中を進んで撃たれない。指を離すと、描いた線ぜんぶに沿って地面が割れる",
     move: { maxSpeed: 165, accel: 320, turnRate: 2.2, pathEndMode: "stop" },
+  },
+  // ---- v3.31.0: 案帳 DT-047／DT-051（種またぎで入る。専用スプライトは仮の絵を色替え）----
+  // 磁竜: 群れの近くで壊れた建物の絵の破片が周りを回る（magnet）
+  magnet: {
+    ja: "磁竜", en: "Magnet Dragon", icon: "\u{1F9F2}", color: "#b090e0", element: "magnet",
+    attack: "magnetshards", spriteTint: "#8a70c0", magnet: true,
+    desc: "近くで壊れた建物の破片を周りに回して削る。急に曲がると破片が外へ飛んで遠くに刺さる",
+    move: { maxSpeed: 165, accel: 320, turnRate: 2.3, pathEndMode: "stop" },
+  },
+  // 双子竜: 群れが線の左右2列に分かれて飛ぶ（arc）
+  twin: {
+    ja: "双子竜", en: "Twin Dragon", icon: "\u{1F46F}", color: "#ffe070", element: "twin",
+    attack: "twinarc", spriteTint: "#e0c040",
+    desc: "群れが線の左右2列に分かれて並んで飛び、2列の間を雷のアーチで焼く。列の外は空振り",
+    move: { maxSpeed: 165, accel: 320, turnRate: 2.3, pathEndMode: "stop" },
   },
 };
 
@@ -18686,6 +18705,7 @@ function settlementFall(settlementIndex) {
   }
 
   rollBallOnBuildingFall(settlement);   // v3.29.0: 塊竜の玉が巻き込むと大きくなる
+  magnetOnBuildingFall(settlement);     // v3.31.0: 磁竜は近くで壊れた建物の破片を纏う
   // v0.6: XPジェムを撒く＋撃破数を記録（仕様 §5.1）
   spawnXpGems(settlement.wx, settlement.wy, xpValueOf(settlement));
   runKills++;
@@ -18870,6 +18890,9 @@ const SPECIAL_HEAL    = 8;
 const SPECIAL_FROST   = 9;
 // v3.10.0: 合成でだけ生まれる特殊個体（光剣＋極光）。前方へ極太の光線を撃つ
 const SPECIAL_LASER   = 10;
+// v3.31.0: 案帳 DT-054／DT-058
+const SPECIAL_CHAIN   = 11;   // 鉄鎖：鎖でつながった鉄球を振り回す
+const SPECIAL_DRUM    = 12;   // 軍鼓：4秒ごとに群れ全員の攻撃を2秒だけ速くする
 
 // v2.15.0: 名前を「竜」を付けない二つ名にした（Shooter指示）。
 // v2.15.1: 効果・見た目に合うかっこよさで付け直した。コメントや設計メモには旧名が残っているので対応表:
@@ -18902,6 +18925,8 @@ const SPECIAL_DEFS = {
   [SPECIAL_FROST]:   { key: "frost",   name: "凍て霧", color: "#c8ecff", hpMult: 2.0, spriteTint: "#e0f4ff" },
   // v3.10.0: 合成個体（加入カードは無い。FUSION_RECIPES でだけ生まれる）
   [SPECIAL_LASER]:   { key: "laser",   name: "天穿",   color: "#fff0b8", hpMult: 2.5, spriteTint: "#fff6d0", fused: true },
+  [SPECIAL_CHAIN]:   { key: "chain",   name: "鉄鎖",   color: "#b8bcc4", hpMult: 2.4, spriteTint: "#9aa0a8" },
+  [SPECIAL_DRUM]:    { key: "drum",    name: "軍鼓",   color: "#d08040", hpMult: 1.8, spriteTint: "#c07038" },
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -19487,6 +19512,8 @@ const STRINGS = {
     thunder:  "雷雲竜が怒りの雷を落とす",
     ball:     "塊竜が街を巻き込みながら転がり出す",
     mole:     "土竜が地の底から怒りを突き上げる",
+    magnet:   "磁竜が街の瓦礫を巻き上げる",
+    twin:     "双子竜が雷の橋を架ける",
   },
   storySpeciesFallback: "竜たちが怒りを向ける",
   // ステージクリア＝竜の怒りを買った文明の滅亡（時代ごと）
@@ -19644,6 +19671,8 @@ const STRINGS = {
     sp_wedge_time:     { name: "戻らぬ傷", desc: "ひびが残る時間 +30%／範囲 +18%" },
     sp_heal:           { name: "癒し手",     desc: "特殊個体がダウンから早く戻り、周りの竜を少し回復する特殊個体が加わる" },
     sp_frost:          { name: "凍て霧",     desc: "冷たい霧をまとい、中に入った敵の弾と動く敵を遅くする特殊個体が加わる" },
+    sp_chain:          { name: "鉄鎖",       desc: "鎖でつながった鉄球を引く特殊個体が加わる。急に曲がると鉄球が大きく振られて砕く" },
+    sp_drum:           { name: "軍鼓",       desc: "4秒ごとに太鼓を鳴らし、2秒だけ群れ全員の攻撃を速くする特殊個体が加わる" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
     charge_reach: { name: "突進の角", desc: "突進中の体当たりの届く範囲 +30%" },
@@ -19738,6 +19767,9 @@ const CARD_DEFS = [
   // v3.8.0
   { id: "sp_heal",          icon: "\u{1F49A}", rarity: "star", max: 3, specialJoin: SPECIAL_HEAL, weight: 6 },
   { id: "sp_frost",         icon: "\u{1F32B}\uFE0F", rarity: "star", max: 3, specialJoin: SPECIAL_FROST, weight: 6 },
+  // v3.31.0
+  { id: "sp_chain",         icon: "\u26D3\uFE0F", rarity: "star", max: 3, specialJoin: SPECIAL_CHAIN, weight: 6 },
+  { id: "sp_drum",          icon: "\u{1F941}", rarity: "star", max: 3, specialJoin: SPECIAL_DRUM, weight: 6 },
   // v3.1.0: 突進（一斉突撃と5枚）・ブレス角（見渡す顎）・速度（疾風）は竜種の個性に移した
 ];
 const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity };
@@ -19859,6 +19891,10 @@ const EVO_SPECIAL_EFFECT_TEXT = {
   sp_heal_range:    (n) => `回復が届く範囲 +${Math.round(20 * n)}%（基本 半径${HEAL_RADIUS}px）`,
   sp_frost_slow:    (n) => `霧の中の敵の弾と動く敵を遅くする割合 +${Math.round(FROST_SLOW_PER * 100 * n)}%（基本 ${Math.round(FROST_SLOW * 100)}%・最大 ${Math.round(FROST_SLOW_MAX * 100)}%）`,
   sp_frost_range:   (n) => `霧の広さ +${Math.round(20 * n)}%（基本 半径${FROST_RADIUS}px）`,
+  sp_chain_dmg:     (n) => `鉄球の威力 +${Math.round(25 * n)}%`,
+  sp_chain_len:     (n) => `鎖の長さ +${Math.round(20 * n)}%（基本 ${CHAIN_LENGTH}px）`,
+  sp_drum_boost:    (n) => `太鼓の後の速さ +${Math.round(5 * n)}%（撃ち続ける攻撃は威力 +${Math.round(10 * n)}%）`,
+  sp_drum_len:      (n) => `速くなる時間 +${(DRUM_BOOST_EXTRA * n).toFixed(1)}秒`,
   sp_laser_dmg:     (n) => `光線の威力 +${Math.round(30 * n)}%（基本 毎秒${SKYLANCE_DPS}）`,
   sp_laser_time:    (n) => `光線を照らし続ける時間 +${Math.round(25 * n)}%（基本 ${SKYLANCE_FIRE_TIME}秒）`,
   sp_laser_width:   (n) => `光線の太さ +${Math.round(20 * n)}%（基本 ${SKYLANCE_HALF_W * 2}px）`,
@@ -19988,6 +20024,21 @@ SPECIES_EVO_SPEC.mole = {
   B: { name: "砂潜り", tint: "#d8b070", scale: 1.0, eff: { rate: 0.25 },
        next: [["素早い潜行", { rate: 0.18 }], ["砂嵐", { dmg: 0.20 }]] },
 };
+// v3.31.0: 磁竜・双子竜
+SPECIES_EVO_SPEC.magnet = {
+  L: [["強い磁力", { dmg: 0.15 }], ["広い磁場", { range: 0.15 }], ["強い磁力・二", { dmg: 0.15 }], ["速い回転", { rate: 0.18 }]],
+  A: { name: "大磁竜", tint: "#6050a0", scale: 1.15, eff: { dmg: 0.20, range: 0.20 },
+       next: [["鉄の嵐", { dmg: 0.25 }], ["大磁場", { range: 0.20 }]] },
+  B: { name: "雷磁竜", tint: "#d0c0ff", scale: 1.0, eff: { rate: 0.25 },
+       next: [["火花", { rate: 0.18 }], ["鋭い破片", { dmg: 0.20 }]] },
+};
+SPECIES_EVO_SPEC.twin = {
+  L: [["強い雷", { dmg: 0.15 }], ["広い列", { range: 0.15 }], ["強い雷・二", { dmg: 0.15 }], ["広い列・二", { range: 0.15 }]],
+  A: { name: "雷門竜", tint: "#fff080", scale: 1.1, eff: { dmg: 0.20, range: 0.20 },
+       next: [["大門", { range: 0.20 }], ["神鳴りの橋", { dmg: 0.25 }]] },
+  B: { name: "連星竜", tint: "#80a0ff", scale: 1.0, eff: { dmg: 0.25 },
+       next: [["双子の絆", { hp: 0.30 }], ["連なる橋", { dmg: 0.20 }]] },
+};
 // 惑竜は爆竜と同じ体・同じ爆撃なので、同じツリー（分岐の名前だけ違う）
 SPECIES_EVO_SPEC.wayward = {
   L: SPECIES_EVO_SPEC.bomber.L,
@@ -20014,6 +20065,9 @@ const CROSS_EVOLUTIONS = [
   // v3.29.0: 止まらぬ鉄塊（重さ）＋穿つ楔（割る）＝転がって潰す／暴食（呑む）＋穿つ楔＝地に潜って割る
   { to: "ball",     needs: { heavy: 1, wedge: 1 },   from: "any" },
   { to: "mole",     needs: { deflect: 1, wedge: 1 }, from: "any" },
+  // v3.31.0: 暴食（引き寄せる）＋止まらぬ鉄塊（重さ）＝瓦礫を纏う／光剣＋煽る風＝並んで飛ぶ光の橋
+  { to: "magnet",   needs: { deflect: 1, heavy: 1 }, from: "any" },
+  { to: "twin",     needs: { beacon: 1, wake: 1 },   from: "any" },
 ];
 // v3.6.0: 種またぎは同じレベルのまま行き来するので、専用の「進化形」は持たない（EVOLVED_FORMS は撤去）
 
@@ -20050,6 +20104,13 @@ const SPECIAL_EVO_SPEC = {
              A: { name: "氷結", tint: "#80c8ff", eff: { sp_frost_slow: 2 } },
              B: { name: "濃霧", tint: "#f0f0f0", eff: { sp_frost_range: 2 } } },
   // v3.10.0: 合成個体
+  // v3.31.0
+  chain:   { L: [["重い鉄球", { sp_chain_dmg: 1 }], ["長い鎖", { sp_chain_len: 1 }], ["重い鉄球・二", { sp_chain_dmg: 1 }], ["長い鎖・二", { sp_chain_len: 1 }]],
+             A: { name: "破城鎚", tint: "#5a5e66", eff: { sp_chain_dmg: 2 } },
+             B: { name: "大振り", tint: "#d8dce4", eff: { sp_chain_len: 2 } } },
+  drum:    { L: [["強い拍", { sp_drum_boost: 1 }], ["長い拍", { sp_drum_len: 1 }], ["強い拍・二", { sp_drum_boost: 1 }], ["長い拍・二", { sp_drum_len: 1 }]],
+             A: { name: "陣太鼓", tint: "#a05020", eff: { sp_drum_boost: 2 } },
+             B: { name: "祭囃子", tint: "#ffb060", eff: { sp_drum_len: 2 } } },
   laser:   { L: [["灼く光", { sp_laser_dmg: 1 }], ["長い照射", { sp_laser_time: 1 }], ["灼く光・二", { sp_laser_dmg: 1 }], ["太い光", { sp_laser_width: 1 }]],
              A: { name: "長閃", tint: "#ffe080", eff: { sp_laser_time: 2 } },
              B: { name: "大穿", tint: "#ffffff", eff: { sp_laser_width: 2 } } },
@@ -20101,6 +20162,7 @@ const SPECIES_CATEGORY = {
   hornet: "direct", gargoyle: "direct", ufo: "shot", comet: "shot", bomber: "blast", wayward: "blast", frog: "direct",
   shark: "direct", tortoise: "shot", thunder: "shot",   // v3.8.0（v3.9.11: 亀竜は甲羅弾＝ブレス）
   ball: "direct", mole: "blast",   // v3.29.0
+  magnet: "direct", twin: "shot",  // v3.31.0
 };
 const CATEGORY_NAMES = { direct: "直接", shot: "ブレス", blast: "爆発" };
 function flockCategory() { return SPECIES_CATEGORY[flockSpecies] || "shot"; }
@@ -20117,6 +20179,8 @@ const SPECIAL_CROSS = {
   // v3.8.0
   heal:    { blast: "frost",   direct: "heavy" },
   frost:   { shot: "heal",     direct: "wedge" },
+  chain:   { shot: "drum",     blast: "heavy" },    // v3.31.0
+  drum:    { direct: "chain",  blast: "mecha" },
   // 合成個体（laser）は突然変異しない・突然変異の行き先にもならない（v3.10.0）
 };
 
@@ -20679,9 +20743,9 @@ function effFlockCap()      {
 }
 function effDmgTakenMult()  { return Math.pow(0.88, upCount("resonance")) * permaBuff.dmgTakenMult; }
 // 武器別強化はタイプ別に保持される（転換しても消えず、そのタイプに戻れば効く。§5.4-C）
-function effWeaponDmgMult(weapon)   { return (1 + 0.15 * upCount("dmg_" + weapon)) * permaBuff.weaponDmg; }
+function effWeaponDmgMult(weapon)   { return (1 + 0.15 * upCount("dmg_" + weapon)) * permaBuff.weaponDmg * drumDamageMult(weapon); }   // v3.31.0: 軍鼓
 function effWeaponRangeMult(weapon) { return (1 + 0.15 * upCount("range_" + weapon)) * permaBuff.weaponRange; }
-function effFireIntervalMult(weapon){ return Math.pow(0.82, upCount("rate_" + weapon)); }
+function effFireIntervalMult(weapon){ return Math.pow(0.82, upCount("rate_" + weapon)) * drumIntervalMult(); }   // v3.31.0: 軍鼓
 function effBeamTargets()   { return 1 + upCount("multibeam"); }
 function effBulletPierce()  { return 1 + upCount("pierce"); }
 function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
@@ -21270,6 +21334,8 @@ const SPECIES_FLASH_COLOR = {
   thunder: "rgba(255,240,120,0.7)",
   ball:    "rgba(224,144,74,0.6)",
   mole:    "rgba(176,136,80,0.6)",
+  magnet:  "rgba(176,144,224,0.6)",
+  twin:    "rgba(255,224,112,0.7)",
 };
 
 // ---- BULLET（氷竜・直進弾丸）基礎性能（仕様 §6.2）----
@@ -22356,6 +22422,7 @@ function updateSpecials(dt) {
   }
   if (gameState !== "playing") return;
   updateHealFx(dt);
+  let drumAlive = 0;   // v3.31.0: 生きている軍鼓竜の数（拍の強さに使う）
   for (let i = 0; i < N; i++) {
     const kind = boidSpecial[i];
     if (kind === SPECIAL_NONE) continue;
@@ -22376,7 +22443,10 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_HEAL)    updateHealDragon(i, dt);   // 回復の輪（復活の早さはダウン時に効く）
     else if (kind === SPECIAL_FROST)   updateFrostDragon(i);
     else if (kind === SPECIAL_LASER)   updateLaserDragon(i, dt);
+    else if (kind === SPECIAL_CHAIN)   updateChainDragon(i, dt);   // v3.31.0
+    else if (kind === SPECIAL_DRUM)    drumAlive++;
   }
+  updateDrumBeat(dt, drumAlive);   // v3.31.0: 軍鼓の拍は群れで1つ
   updateWakeTrail(dt);      // v1.1.0: 航跡の寿命と、中に居る竜への印付け
   updateCrackBursts(dt);    // v1.1.2: ひびが入った瞬間の弾け
   updateSpecialBolts(dt);
@@ -23690,6 +23760,10 @@ function updateWeaponAttacks(dt) {
     updateRollCrush(dt);    // v3.29.0: 塊竜
   } else if (flockWeapon === "erupt") {
     updateMoleAttacks(dt);  // v3.29.0: 土竜
+  } else if (flockWeapon === "magnet") {
+    updateMagnetAttacks(dt);  // v3.31.0: 磁竜
+  } else if (flockWeapon === "arc") {
+    updateTwinArcs(dt);       // v3.31.0: 双子竜
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
 
@@ -25783,6 +25857,12 @@ function codexDragonMainAttackRaw(def) {
     case "erupt":  // v3.29.0
       return { power: { label: label + "（1か所）", blast: MOLE_ERUPT_BASE },
                stat: `描いている間は地中（撃たれない・最大${MOLE_BREATH_MAX}秒） ／ 指を離すと線に沿って幅${MOLE_ERUPT_WIDTH * 2}pxが割れる（竜1体ごとに+${MOLE_ERUPT_PER}） ／ 線が${MOLE_REF_LEN}pxより長いと1か所は弱くなる` };
+    case "magnet":  // v3.31.0
+      return { power: { label: label + "（回る破片1つ）", direct: MAG_ORBIT_DMG },
+               stat: `${MAG_GRAB_R}px以内で壊れた建物の絵が破片になって周りを回る（最大${MAG_SHARDS_MAX}個） ／ 急に曲がると外へ飛び、速さに応じて最大${MAG_THROW_DMG * 2}で当たる` };
+    case "arc":     // v3.31.0
+      return { power: { label: label + "（秒間・1点）", shot: TWIN_ARC_DPS, perSec: true },
+               stat: `群れが線の左右${TWIN_HALF_W}pxに2列で並び、列の間を雷のアーチで焼く ／ 列の外は空振り` };
     case "chain":
       return { power: { label: label + "（1発目）", shot: THUNDER_DAMAGE },
                stat: `射程 ${THUNDER_RANGE} ／ ${THUNDER_JUMPS}回飛び移る（${THUNDER_JUMP_RANGE}px以内・1回ごとに×${THUNDER_FALLOFF}） ／ ${THUNDER_INTERVAL}秒ごと${arc}` };
@@ -25864,7 +25944,8 @@ function codexDragonCanvas(species) {
   return cv;
 }
 
-const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST, SPECIAL_LASER];
+const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST,
+                             SPECIAL_CHAIN, SPECIAL_DRUM, SPECIAL_LASER];   // v3.31.0: 鉄鎖・軍鼓
 
 function codexSpecialHtml() {
   let html =
@@ -25913,6 +25994,7 @@ const CODEX_SPECIAL_POWERS = {
   [SPECIAL_MECHA]:   () => [{ label: "ロケット", blast: MECHA_DAMAGE, note: `半径${MECHA_BLAST_R}` }],
   [SPECIAL_WEDGE]:   () => [{ label: "体当たり", direct: WEDGE_RAM_DAMAGE }],
   [SPECIAL_LASER]:   () => [{ label: "光線", shot: SKYLANCE_DPS, perSec: true }],
+  [SPECIAL_CHAIN]:   () => [{ label: "鉄球（秒速250px）", direct: CHAIN_DMG }],
 };
 const CODEX_SPECIAL_TAG = {
   [SPECIAL_BEACON]:  "★光剣／向きを選ばない削り役",
@@ -25925,6 +26007,8 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_HEAL]:    "★癒し手／特殊個体がダウンから早く戻る・周りの竜を少し回復。自分では打たない",
   [SPECIAL_FROST]:   "★凍て霧／足止め。敵の弾と動く敵を遅くする。自分では打たない",
   [SPECIAL_LASER]:   "★天穿／合成（光剣＋極光）。前方へ極太の光線",
+  [SPECIAL_CHAIN]:   "★鉄鎖／急旋回で鉄球を振り回す",
+  [SPECIAL_DRUM]:    "★軍鼓／拍に合わせて群れ全員の攻撃が速くなる。自分では打たない",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_LASER]:
@@ -25960,6 +26044,14 @@ const CODEX_SPECIAL_DESC = {
     "<b>自分では攻撃しない。</b>連れている間、<b>特殊個体</b>がダウンしてから戻るまでの時間が短くなる" +
     "（普通の竜には効かない）。最初から8割、レベルで最短3割まで。複数連れても効果は重ならない。" +
     "あわせて、周期的に周りの竜（自分も含む）の HP を少し戻す（緑の輪）。",
+  [SPECIAL_CHAIN]:
+    "鎖でつながった鉄球を引いて飛ぶ。鉄球は鎖の長さより遠くへ行けない振り子で、" +
+    "<b>急に曲がると前の勢いのまま外側へ大きく振られ</b>、通った所の建物と敵を砕く。" +
+    "鉄球が速いほど強く当たり、ゆっくり引きずっているだけのときは当たらない。",
+  [SPECIAL_DRUM]:
+    "<b>自分では攻撃しない。</b>4秒ごとに太鼓を鳴らし、その後の2秒だけ<b>群れ全員の攻撃が速くなる</b>" +
+    "（発射の間隔が縮む。撃ち続ける攻撃は威力が上がる）。鳴る直前に軍鼓の周りの輪が縮んで知らせるので、" +
+    "拍に合わせて硬い街へ飛び込むと一気に崩せる。複数連れると速くなる時間が延びる。",
   [SPECIAL_FROST]:
     "<b>自分では攻撃しない。</b>周りに冷たい霧をまとい、霧の中に入った<b>敵の弾と動く敵</b>を遅くする。" +
     "弾は霧を出れば元の速さに戻る。竜の弾や味方は遅くならない。線路を走る列車には効かない。" +
@@ -25972,6 +26064,10 @@ const CODEX_SPECIAL_STAT = {
   [SPECIAL_HEAL]: () =>
     `特殊個体のダウン ${BOID_DOWN_DURATION}秒 → ${Math.round(BOID_DOWN_DURATION * HEAL_REVIVE_BASE)}秒（レベルで最短 ${Math.round(BOID_DOWN_DURATION * HEAL_REVIVE_MIN)}秒） ／ ` +
     `${HEAL_INTERVAL}秒ごとに周りの竜を最大HPの${Math.round(HEAL_FRAC * 100)}%回復（半径 ${HEAL_RADIUS}px） ／ HP ×${SPECIAL_DEFS[SPECIAL_HEAL].hpMult}`,
+  [SPECIAL_CHAIN]: () =>
+    `鎖 ${CHAIN_LENGTH}px ／ 鉄球の半径 ${CHAIN_BALL_R}px ／ 秒速${CHAIN_MIN_SPEED}px以上で当たる（秒速250pxで ${CHAIN_DMG}・最大 ${CHAIN_DMG * 2.5}） ／ HP ×${SPECIAL_DEFS[SPECIAL_CHAIN].hpMult}`,
+  [SPECIAL_DRUM]: () =>
+    `${DRUM_PERIOD}秒ごとに ${DRUM_BOOST_TIME}秒（1体増えるごとに+${DRUM_BOOST_EXTRA}秒） ／ 発射間隔 ×${DRUM_INTERVAL_MULT} ／ 撃ち続ける攻撃の威力 ×${DRUM_CONT_DMG} ／ HP ×${SPECIAL_DEFS[SPECIAL_DRUM].hpMult}`,
   [SPECIAL_FROST]: () =>
     `霧の半径 ${FROST_RADIUS}px ／ 中の敵の弾と動く敵の速さ -${Math.round(FROST_SLOW * 100)}%（強化で最大 -${Math.round(FROST_SLOW_MAX * 100)}%） ／ ` +
     `HP ×${SPECIAL_DEFS[SPECIAL_FROST].hpMult}`,
@@ -26103,6 +26199,18 @@ function codexSpecialCanvas(kind) {
       c.strokeStyle = col; c.lineWidth = w; c.beginPath(); c.moveTo(4, 0); c.lineTo(26, 0); c.stroke();
     }
     c.restore();
+    codexDrawSpecialDragon(c, kind, 44);
+  } else if (kind === SPECIAL_CHAIN) {
+    // v3.31.0: 左下へ伸びる鎖と鉄球
+    c.strokeStyle = "#9aa0a8"; c.lineWidth = 1.6; c.setLineDash([3, 2]);
+    c.beginPath(); c.moveTo(0, 0); c.lineTo(-14, 14); c.stroke(); c.setLineDash([]);
+    c.fillStyle = "#4a4e56"; c.beginPath(); c.arc(-15, 15, 6, 0, Math.PI * 2); c.fill();
+    codexDrawSpecialDragon(c, kind, 44);
+  } else if (kind === SPECIAL_DRUM) {
+    // v3.31.0: 広がる拍の輪
+    c.strokeStyle = def.color;
+    for (const [r, a] of [[14, 0.8], [20, 0.5]]) { c.globalAlpha = a; c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.stroke(); }
+    c.globalAlpha = 1;
     codexDrawSpecialDragon(c, kind, 44);
   } else if (kind === SPECIAL_HEAL || kind === SPECIAL_FROST) {
     // v3.8.0: 癒しの輪／霧の円
@@ -26596,6 +26704,9 @@ const SPECIES_CHOICES = [
   // v3.29.0: 案帳 DT-045／DT-046（解放は種またぎでだけ）
   { species: "ball" },
   { species: "mole" },
+  // v3.31.0: 案帳 DT-047／DT-051（解放は種またぎでだけ）
+  { species: "magnet" },
+  { species: "twin" },
 ];
 let speciesSelecting = false;
 
@@ -26664,7 +26775,8 @@ function isRegionUnlocked(shape) {
 const INITIAL_SPECIES  = ["fire"];
 // v3.5.0: 今の7体は全部最初から（Shooter「最初の要素が少なすぎる」）。解放条件は今後足す特殊個体に使う
 const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE,
-                          SPECIAL_HEAL, SPECIAL_FROST];   // v3.8.0: 癒し手・凍て霧も最初から
+                          SPECIAL_HEAL, SPECIAL_FROST,   // v3.8.0: 癒し手・凍て霧も最初から
+                          SPECIAL_CHAIN, SPECIAL_DRUM];  // v3.31.0
 const FORTRESS_FALLEN_GOAL = 300;   // 穿つ楔：要塞・首都区画の建物を累計これだけ壊す
 
 // ctx = { clearedIdx: さっきクリアした時代の添字（無ければ -1）, runComplete: ラン完走か }
@@ -29321,6 +29433,8 @@ function moleUnderground() { return mole.under && !!sp().burrow; }
 function resetSpeciesMechanics() {
   rollBall = null;
   resetMole();
+  magnetShards = []; magnetPrevC = null; magnetFlockV.x = 0; magnetFlockV.y = 0;   // v3.31.0
+  twinTick = 0;
 }
 function resetMole() {
   mole.under = false; mole.breath = MOLE_BREATH_MAX; mole.stroke.length = 0;
@@ -29447,6 +29561,342 @@ function drawMoleMounds() {
   ctx.restore();
 }
 
+// =====================================================================
+// v3.31.0: 磁竜（案帳 DT-047）— 壊した建物の絵の破片を周りに回し、急旋回で投げる
+// =====================================================================
+// 群れの近くで建物が壊れると、その建物の絵を4つに切った破片ができ、群れの重心を軸に周回する。
+// 破片は自分の位置と速度を持ち、受けるのは「軸の周りの輪へ引き寄せる力」と「輪に沿って回す力」だけ。
+// 回す力は加速だけで、破片が自分から減速することはない（Shooter と合意した方針）。
+// 群れが急に曲がる・止まると、破片の勢いが引き寄せる力に勝って輪から外れ、離れすぎたものはその速度のまま飛んでいく。
+const MAG_GRAB_R         = 220;   // この距離で壊れた建物が破片になる（届く距離の強化で伸びる）
+const MAG_SHARDS_MAX     = 18;    // 回っている破片の上限（届く距離の強化で増える）
+const MAG_PIECES         = { tiny: 1, small: 2, medium: 3, large: 4 };   // 建物1棟から出る破片の数
+const MAG_PIECE_SIZE     = { tiny: 9, small: 11, medium: 14, large: 18 };
+const MAG_RING_BASE      = 34;    // 輪の半径＝これ＋下の係数×√竜の数
+const MAG_RING_PER       = 4;
+const MAG_ORBIT_SPEED    = 140;   // 輪に沿って回る速さ（群れに対して。px/秒）
+const MAG_SPRING         = 30;    // 輪へ引き寄せる強さ（ずれ1pxあたりの加速）
+const MAG_RADIAL_DAMP    = 3;     // 半径方向の揺れの収まり（周回の速さは落とさない）
+const MAG_TANGENT_ACCEL  = 420;   // 輪に沿って回す加速（回る速さより遅いときだけ。減速はしない）
+const MAG_GRIP           = 80;   // 輪の上を回るのに要る力より、これだけ余分に引ける（群れの加速がこれを超える急旋回には付いていけず外へ膨らむ。
+                                   // 実測：まっすぐ飛ぶ間の群れの加速は 30 以下、折り返しでは 200〜300。折り返すと18個中7個ほどが飛ぶ）
+const MAG_FLOCK_V_TAU    = 0.15;  // 群れの速さをなましる時間（秒）。卵の孵化などで重心が跳んだ1フレームで破片が飛ばないように
+const MAG_RELEASE        = 2.3;   // 輪の半径のこの倍より離れたら、つながりが切れて飛んでいく
+const MAG_CATCH          = 1.4;   // 輪の半径のこの倍まで寄ったら輪に乗ったとみなす（ここから先は離れると飛んでいく）
+const MAG_HIT_R          = 12;    // 破片の当たりの半径
+const MAG_ORBIT_DMG      = 7;     // 回っている破片が触れた相手に与える威力
+const MAG_ORBIT_HIT_CD   = 0.3;   // 1つの破片が続けて当たる間隔（秒）
+const MAG_THROW_DMG      = 26;    // 飛んでいく破片の威力（秒速300pxのとき。速いほど強い・最大2倍）
+const MAG_FREE_LIFE      = 2.5;   // 飛んでいった破片が何にも当たらず消えるまで（秒）
+
+let magnetShards = [];
+let magnetPrevC = null;   // 群れの重心の速さを測るための前のフレームの重心
+const magnetFlockV = { x: 0, y: 0 };   // なました群れの速さ
+
+/** 建物が壊れたとき（settlementFall）。群れの近くなら、その建物の絵を切った破片を作る */
+function magnetOnBuildingFall(s) {
+  if (!sp().magnet || s._isWall || s.isBoss) return;
+  const key = buildingSpriteKeyFor(s);
+  if (!key) return;
+  const c = calcFriendlyCentroid();
+  const range = effWeaponRangeMult("magnet");
+  const reach = MAG_GRAB_R * range;
+  if (dist2(s.wx, s.wy, c.x, c.y) > reach * reach) return;
+  const cap = Math.round(MAG_SHARDS_MAX * range);
+  const attached = magnetShards.reduce((t, m) => t + (m.free ? 0 : 1), 0);
+  const pieces = Math.min(MAG_PIECES[s.size] ?? 2, cap - attached);
+  for (let k = 0; k < pieces; k++) {
+    const a = random() * Math.PI * 2;
+    magnetShards.push({
+      x: s.wx + Math.cos(a) * 6, y: s.wy + Math.sin(a) * 6, vx: Math.cos(a) * 60, vy: Math.sin(a) * 60,
+      key, color: s.color, q: k % 4, size: MAG_PIECE_SIZE[s.size] ?? 12,
+      ang: random() * Math.PI * 2, spin: (random() < 0.5 ? -1 : 1) * (3 + random() * 4),
+      free: false, caught: false, life: 0, cd: 0,
+    });
+  }
+}
+
+/** 磁竜の毎フレーム（攻撃の kind "magnet"） */
+function updateMagnetAttacks(dt) {
+  if (dt <= 0) return;
+  const n = countAliveBoids();
+  const c = calcFriendlyCentroid();
+  if (magnetPrevC) {
+    const k = Math.min(1, dt / MAG_FLOCK_V_TAU);
+    magnetFlockV.x += ((c.x - magnetPrevC.x) / dt - magnetFlockV.x) * k;
+    magnetFlockV.y += ((c.y - magnetPrevC.y) / dt - magnetFlockV.y) * k;
+  }
+  magnetPrevC = { x: c.x, y: c.y };
+  const fvx = magnetFlockV.x, fvy = magnetFlockV.y;
+  const ring = MAG_RING_BASE + MAG_RING_PER * Math.sqrt(Math.max(1, n));
+  const dmgMul = effWeaponDmgMult("magnet");
+  const targets = attackTargets();
+  for (let k = magnetShards.length - 1; k >= 0; k--) {
+    const s = magnetShards[k];
+    s.ang += s.spin * dt;
+    if (s.cd > 0) s.cd -= dt;
+    if (!s.free) {
+      if (n === 0) { s.free = true; s.life = MAG_FREE_LIFE; continue; }
+      const rx = s.x - c.x, ry = s.y - c.y, d = Math.sqrt(rx * rx + ry * ry) || 1;
+      const ux = rx / d, uy = ry / d, tx = -uy, ty = ux;
+      const rvx = s.vx - fvx, rvy = s.vy - fvy;          // 群れから見た速さ
+      const vr = rvx * ux + rvy * uy, vt = rvx * tx + rvy * ty;
+      const ar = -MAG_SPRING * (d - ring) - MAG_RADIAL_DAMP * vr;
+      const at = vt < MAG_ORBIT_SPEED ? MAG_TANGENT_ACCEL : 0;   // 回す力は加速だけ（減速しない）
+      let ax = ux * ar + tx * at, ay = uy * ar + ty * at;
+      const a = Math.sqrt(ax * ax + ay * ay);
+      const aMax = MAG_ORBIT_SPEED * MAG_ORBIT_SPEED / ring + MAG_GRIP;
+      if (a > aMax) { ax *= aMax / a; ay *= aMax / a; }
+      s.vx += ax * dt; s.vy += ay * dt;
+      s.x += s.vx * dt; s.y += s.vy * dt;
+      // 輪に乗るまでは引き寄せるだけ（遠くで壊れた建物の破片がいきなり飛んでいかないように）
+      if (!s.caught && d < ring * MAG_CATCH) s.caught = true;
+      if (s.caught && d > ring * MAG_RELEASE) { s.free = true; s.life = MAG_FREE_LIFE; continue; }
+      if (s.cd <= 0 && hitInRadius(s.x, s.y, MAG_HIT_R, { direct: MAG_ORBIT_DMG * dmgMul }, targets) > 0) {
+        s.cd = MAG_ORBIT_HIT_CD * effFireIntervalMult("magnet");
+      }
+    } else {
+      s.x += s.vx * dt; s.y += s.vy * dt;
+      s.life -= dt;
+      const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
+      if (hitInRadius(s.x, s.y, MAG_HIT_R + 2, { direct: MAG_THROW_DMG * dmgMul * Math.min(2, speed / 300) }, targets) > 0) {
+        spawnCollisionParticles(s.x, s.y);
+        magnetShards.splice(k, 1);
+        continue;
+      }
+      if (s.life <= 0 || s.x < 0 || s.y < 0 || s.x > WORLD_W || s.y > WORLD_H) magnetShards.splice(k, 1);
+    }
+  }
+}
+/** 破片（建物の絵の4分の1ずつ）を回しながら描く */
+function drawMagnetShards() {
+  if (magnetShards.length === 0) return;
+  for (const s of magnetShards) {
+    const img = getTintedBuildingSprite(s.key, s.color);
+    if (!img) continue;
+    const w = img.width / 2, h = img.height / 2;
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.ang);
+    ctx.globalAlpha = s.free ? Math.min(1, s.life * 2) : 1;
+    ctx.drawImage(img, (s.q % 2) * w, Math.floor(s.q / 2) * h, w, h, -s.size / 2, -s.size / 2, s.size, s.size * (h / w));
+    ctx.restore();
+  }
+}
+
+// =====================================================================
+// v3.31.0: 双子竜（案帳 DT-051）— 群れが線の左右2列に分かれ、2列の間を雷のアーチで焼く
+// =====================================================================
+// 偶数番の竜は進む向きの左、奇数番は右へ一定の幅だけずれた点を追う（simStep）。
+// 2k番と2k+1番を組にして、組の間に雷のアーチを張る。アーチの上の建物と敵を焼く＝2列に挟まれた帯だけが焼ける。
+const TWIN_HALF_W      = 64;    // 線から各列までの距離（届く距離の強化で広がる）
+const TWIN_TICK        = 0.2;   // アーチの当たりの判定の間隔（秒）
+const TWIN_ARC_DPS     = 14;    // アーチ上の1点あたりの秒間威力
+const TWIN_ARC_STEP    = 24;    // アーチの当たりを取る点の間隔（px）
+const TWIN_ARC_HIT_R   = 16;
+const TWIN_ARC_MAX     = 2.2;   // 組の距離が列の幅のこの倍を超えたらアーチは切れる（離れすぎた組）
+const TWIN_HEADING_EASE = 6;    // 列の向き（進む向き）をなましる速さ（1/秒）
+let twinHeading = 0;
+let twinTick = 0;
+
+function twinHalfWidth() { return TWIN_HALF_W * Math.sqrt(effWeaponRangeMult("arc")); }
+/** 列の向きを進む向きへ寄せる（simStep から毎フレーム） */
+function updateTwinHeading(dt) {
+  const c = calcFriendlyCentroid();
+  const dx = leader.x - c.x, dy = leader.y - c.y;
+  if (dx * dx + dy * dy < 20 * 20) return;   // 操縦点の上で止まっているときは向きを変えない
+  twinHeading += wrapAngle(Math.atan2(dy, dx) - twinHeading) * Math.min(1, TWIN_HEADING_EASE * dt);
+}
+/** アーチの組を作り直す。左の列（偶数番）と右の列（奇数番）をそれぞれ前から順に並べ、同じ順位どうしをつなぐ（はしご状）。
+ * 番号で固定の組にすると列の中で前後にずれた相手とつながって切れ、いちばん近い相手にすると1体にアーチが集まるため */
+const twinPairs = [];
+const twinLeft = [], twinRight = [];
+function buildTwinPairs() {
+  twinPairs.length = 0; twinLeft.length = 0; twinRight.length = 0;
+  const maxD = twinHalfWidth() * 2 * TWIN_ARC_MAX;
+  const hx = Math.cos(twinHeading), hy = Math.sin(twinHeading);
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    ((i & 1) ? twinRight : twinLeft).push(i);
+  }
+  const along = (i) => px[i] * hx + py[i] * hy;
+  twinLeft.sort((a, b) => along(b) - along(a));
+  twinRight.sort((a, b) => along(b) - along(a));
+  const n = Math.min(twinLeft.length, twinRight.length);
+  for (let k = 0; k < n; k++) {
+    const a = twinLeft[k], b = twinRight[k];
+    const d = Math.sqrt(dist2(px[a], py[a], px[b], py[b]));
+    if (d <= maxD) twinPairs.push(a, b, d);
+  }
+}
+/** アーチの組を順に返す */
+function forEachTwinPair(fn) {
+  for (let k = 0; k < twinPairs.length; k += 3) {
+    const a = twinPairs[k], b = twinPairs[k + 1];
+    if (boidDead[a] || boidDead[b]) continue;
+    fn(a, b, Math.max(1, Math.hypot(px[b] - px[a], py[b] - py[a])));
+  }
+}
+/** 双子竜の攻撃（kind "arc"） */
+function updateTwinArcs(dt) {
+  buildTwinPairs();
+  twinTick += dt;
+  if (twinTick < TWIN_TICK) return;
+  const t = twinTick;
+  twinTick = 0;
+  const dmg = TWIN_ARC_DPS * t * effWeaponDmgMult("arc");
+  const targets = attackTargets();
+  forEachTwinPair((a, b, d) => {
+    const steps = Math.max(1, Math.round(d / TWIN_ARC_STEP));
+    for (let k = 1; k < steps; k++) {
+      const f = k / steps;
+      hitInRadius(px[a] + (px[b] - px[a]) * f, py[a] + (py[b] - py[a]) * f, TWIN_ARC_HIT_R, { shot: dmg }, targets);
+    }
+  });
+}
+/** 雷のアーチ（ジグザグの線。見た目だけなので fxRandom で揺らす） */
+function drawTwinArcs() {
+  if (flockWeapon !== "arc" || gameState !== "playing") return;
+  ctx.save();
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  forEachTwinPair((a, b, d) => {
+    const steps = Math.max(2, Math.round(d / 14));
+    const nx = -(py[b] - py[a]) / d, ny = (px[b] - px[a]) / d;
+    const pts = [];
+    for (let k = 0; k <= steps; k++) {
+      const f = k / steps, j = (k === 0 || k === steps) ? 0 : (fxRandom() - 0.5) * 10;
+      pts.push([px[a] + (px[b] - px[a]) * f + nx * j, py[a] + (py[b] - py[a]) * f + ny * j]);
+    }
+    for (const [w, col] of [[6, "rgba(255,224,112,0.25)"], [2, "rgba(255,248,200,0.9)"]]) {
+      ctx.strokeStyle = col; ctx.lineWidth = w;
+      ctx.beginPath();
+      pts.forEach((p, k) => (k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+      ctx.stroke();
+    }
+  });
+  ctx.restore();
+}
+
+// =====================================================================
+// v3.31.0: 特殊個体「鉄鎖」（案帳 DT-054）— 鎖でつながった鉄球を引きずり、急旋回で振り回す
+// =====================================================================
+// 鉄球は鉄鎖の竜に鎖でつながれ、鎖の長さより遠くへは行けない（振り子）。竜が急に曲がると、鉄球は前の勢いのまま
+// 外側へ大きく弧を描いて振られる。鉄球が速く動いているほど、触れた建物と敵に強く当たる（遅いと当たらない）。
+const CHAIN_LENGTH      = 70;    // 鎖の長さ（px）
+const CHAIN_BALL_R      = 15;    // 鉄球の半径
+const CHAIN_DRAG        = 0.8;   // 鉄球の速さの落ち方（1/秒。地面を引きずる抵抗）
+const CHAIN_MIN_SPEED   = 90;    // これより遅い鉄球は当たらない（引きずっているだけ）
+const CHAIN_DMG         = 22;    // 秒速250pxで当たったときの威力（速いほど強い・最大2.5倍）
+const CHAIN_HIT_TICK    = 0.12;  // 当たりの判定の間隔（秒）
+const CHAIN_COLORS = { link: "#9aa0a8", ball: "#4a4e56", light: "#b8bcc4", rim: "#1a1c20" };
+const chainBalls = new Map();    // 鉄鎖の竜の番号 → { x, y, vx, vy, tick }
+
+function chainLength() { return CHAIN_LENGTH * (1 + 0.2 * upCount("sp_chain_len")); }
+function updateChainDragon(i, dt) {
+  let b = chainBalls.get(i);
+  const L = chainLength();
+  if (!b) { b = { x: px[i] - vx[i] * 0.3, y: py[i] - vy[i] * 0.3, vx: 0, vy: 0, tick: 0 }; chainBalls.set(i, b); }
+  const drag = Math.exp(-CHAIN_DRAG * dt);
+  b.vx *= drag; b.vy *= drag;
+  b.x += b.vx * dt; b.y += b.vy * dt;
+  // 鎖：竜から L より遠ければ L まで引き戻し、竜から離れる向きの速さを消す（竜の速さぶんは引っ張られる）
+  const dx = b.x - px[i], dy = b.y - py[i], d = Math.sqrt(dx * dx + dy * dy) || 1;
+  if (d > L) {
+    const ux = dx / d, uy = dy / d;
+    b.x = px[i] + ux * L; b.y = py[i] + uy * L;
+    const rel = (b.vx - vx[i]) * ux + (b.vy - vy[i]) * uy;
+    if (rel > 0) { b.vx -= ux * rel; b.vy -= uy * rel; }
+  }
+  b.tick += dt;
+  if (b.tick < CHAIN_HIT_TICK) return;
+  const t = b.tick;
+  b.tick = 0;
+  const speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+  if (speed < CHAIN_MIN_SPEED) return;
+  const dmg = CHAIN_DMG * Math.min(2.5, speed / 250) * (1 + 0.25 * upCount("sp_chain_dmg")) * (t / CHAIN_HIT_TICK);
+  hitInRadius(b.x, b.y, CHAIN_BALL_R, { direct: dmg }, TARGETS_ALL_AIM);
+}
+/** 鎖と鉄球（竜の下に描く） */
+function drawChainBalls() {
+  if (chainBalls.size === 0) return;
+  ctx.save();
+  for (const [i, b] of chainBalls) {
+    if (boidSpecial[i] !== SPECIAL_CHAIN || boidDead[i] || boidDowned[i]) { chainBalls.delete(i); continue; }
+    ctx.strokeStyle = CHAIN_COLORS.link;
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.moveTo(px[i], py[i]); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.setLineDash([]);
+    const g = ctx.createRadialGradient(b.x - 4, b.y - 4, 2, b.x, b.y, CHAIN_BALL_R);
+    g.addColorStop(0, CHAIN_COLORS.light); g.addColorStop(1, CHAIN_COLORS.ball);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, CHAIN_BALL_R, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = CHAIN_COLORS.rim; ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// =====================================================================
+// v3.31.0: 特殊個体「軍鼓」（案帳 DT-058）— 4秒ごとに太鼓が鳴り、2秒だけ群れ全員の攻撃が速くなる
+// =====================================================================
+// 鳴る直前に軍鼓の周りの輪が縮んで知らせる。速くなる間は、発射の間隔が縮む攻撃は間隔が、
+// 撃ち続ける攻撃（炎息・体当たり・衛星・玉・破片・アーチ）は威力が上がる。複数連れると速くなる時間が延びる。
+const DRUM_PERIOD        = 4.0;   // 太鼓が鳴る間隔（秒）
+const DRUM_WARN          = 0.6;   // 鳴る前に輪が縮み始める（秒）
+const DRUM_BOOST_TIME    = 2.0;   // 速くなる時間（秒）
+const DRUM_BOOST_EXTRA   = 0.5;   // 軍鼓が1体増えるごとに延びる時間（秒）
+const DRUM_INTERVAL_MULT = 0.55;  // 速くなる間の発射間隔の倍率
+const DRUM_CONT_DMG      = 1.5;   // 撃ち続ける攻撃の、速くなる間の威力の倍率
+const DRUM_CONT_KINDS    = new Set(["beam", "melee", "satellite", "roll", "magnet", "arc", "erupt"]);
+const drumState = { t: 0, boost: 0, pulse: 0, count: 0 };
+
+function drumBoostActive() { return drumState.boost > 0 && drumState.count > 0; }
+function drumIntervalMult() {
+  return drumBoostActive() ? Math.max(0.3, DRUM_INTERVAL_MULT - 0.05 * upCount("sp_drum_boost")) : 1;
+}
+function drumDamageMult(weapon) {
+  return drumBoostActive() && DRUM_CONT_KINDS.has(weapon) ? DRUM_CONT_DMG + 0.1 * upCount("sp_drum_boost") : 1;
+}
+/** 毎フレーム1回（updateSpecials の最後）。count＝動ける軍鼓の数 */
+function updateDrumBeat(dt, count) {
+  drumState.count = count;
+  if (drumState.pulse > 0) drumState.pulse = Math.max(0, drumState.pulse - dt);
+  if (count === 0) { drumState.t = 0; drumState.boost = 0; return; }
+  if (drumState.boost > 0) drumState.boost = Math.max(0, drumState.boost - dt);
+  drumState.t += dt;
+  if (drumState.t >= DRUM_PERIOD) {
+    drumState.t -= DRUM_PERIOD;
+    drumState.boost = DRUM_BOOST_TIME + DRUM_BOOST_EXTRA * (count - 1 + upCount("sp_drum_len"));
+    drumState.pulse = 0.5;
+    triggerShake(0.8, 0.06);
+  }
+}
+/** 軍鼓の周りの輪（鳴る前に縮み、鳴った瞬間に広がる） */
+function drawDrumRings() {
+  if (drumState.count === 0) return;
+  const toBeat = DRUM_PERIOD - drumState.t;
+  ctx.save();
+  for (let i = 0; i < N; i++) {
+    if (boidSpecial[i] !== SPECIAL_DRUM || boidDead[i] || boidDowned[i]) continue;
+    if (toBeat < DRUM_WARN) {
+      const f = toBeat / DRUM_WARN;
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = SPECIAL_DEFS[SPECIAL_DRUM].color;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(px[i], py[i], 14 + 36 * f, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (drumState.pulse > 0) {
+      const f = 1 - drumState.pulse / 0.5;
+      ctx.globalAlpha = 1 - f;
+      ctx.strokeStyle = "#ffb070";
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(px[i], py[i], 20 + 90 * f, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 function simStep(dt) {
   _simSpeedMult = effSpeedMult();
   hopClock += dt * _simSpeedMult;
@@ -29491,9 +29941,18 @@ function simStep(dt) {
   if (traceActive) {
     pathBuildCum();   // updateLeader と同じフレームだが、パス更新後に作り直す
     // 「1列あたり3行」くらいの塊になる列数。少数なら細く、増えたら横に広がる。
-    traceCols = Math.round(Math.sqrt(countAliveBoids() / 3));
+    traceCols = Math.round(Math.sqrt(countAliveBoids() / (flockWeapon === "arc" ? 6 : 3)));   // 双子竜は組の数で数える
     if (traceCols < PATH_TRACE_COLS_MIN) traceCols = PATH_TRACE_COLS_MIN;
     else if (traceCols > PATH_TRACE_COLS_MAX) traceCols = PATH_TRACE_COLS_MAX;
+  }
+
+  // v3.31.0: 双子竜は線の左右2列に分かれる（偶数番が左・奇数番が右）
+  const twinMode = flockWeapon === "arc";
+  let twinOffX = 0, twinOffY = 0;
+  if (twinMode) {
+    updateTwinHeading(dt);
+    const w = twinHalfWidth();
+    twinOffX = -Math.sin(twinHeading) * w; twinOffY = Math.cos(twinHeading) * w;
   }
 
   // v0.37: 回り込みの向きは**群れ全体で1つ**にする。
@@ -29599,8 +30058,10 @@ function simStep(dt) {
     // 追う点。通常は操縦点、弧長トレース中は線上の隊列スロット（の少し先）。
     let tgtX = leader.x, tgtY = leader.y;
     if (traceActive) {
-      const row = (i / traceCols) | 0;
-      const col = (i % traceCols) - (traceCols - 1) * 0.5;
+      // 双子竜は組（2体）で1つのスロットを使い、左右へは下の twinOff で分かれる（組がいつも隣り合うように）
+      const slot = twinMode ? (i >> 1) : i;
+      const row = (slot / traceCols) | 0;
+      const col = (slot % traceCols) - (traceCols - 1) * 0.5;
       const slotArc = leaderArc - row * PATH_TRACE_ROW_GAP;
       // スロットそのものではなく LOOKAHEAD ぶん先を狙う（純追尾）。
       // 直接狙うと到達時に方向が定まらず震える。
@@ -29609,6 +30070,7 @@ function simStep(dt) {
       tgtY = p.y + p.tx * col * PATH_TRACE_LATERAL;
     }
 
+    if (twinMode) { const side = (i & 1) ? 1 : -1; tgtX += twinOffX * side; tgtY += twinOffY * side; }
     // 目標への引力（方向のみ。距離減衰はなし）。単位ベクトルと距離は下でも使う。
     const ldx = tgtX - xi, ldy = tgtY - yi;
     const aDist = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
@@ -30220,9 +30682,13 @@ function render(now) {
   drawChargeFx();            // v0.87: 突進（尾・穂先の弧・速度線）。竜より下に敷く
   drawSpecialUnder();        // v0.85: 灯竜の光条と特殊個体の足元リング（竜の下）
   drawMoleCracks();   // v3.29.0: 土竜の地割れの跡
+  drawTwinArcs();     // v3.31.0: 双子竜の雷のアーチ
+  drawChainBalls();   // v3.31.0: 鉄鎖の鎖と鉄球
+  drawMagnetShards(); // v3.31.0: 磁竜の破片
   drawRollBall();     // v3.29.0: 塊竜の玉（竜はこの上に貼り付いて描かれる）
   drawBoids();
   drawRollBallOverlay();   // v3.30.0: 塊竜の竜の数・撃たれた合図
+  drawDrumRings();         // v3.31.0: 軍鼓の拍の輪
   drawCrackMarks();          // v1.1.1: 楔竜が入れたひび（相手の上）
   drawWakeCharged();         // v1.1.0: 次の一撃が乗っている竜の輪（竜の上）
   drawChargeHitFx();         // v0.88: 突進が乗った一撃の衝撃（当たった面なので竜の上）
@@ -32102,6 +32568,10 @@ const DRAGON_ELEMENT_COLORS = {
   thunder:  { body: "rgba(255, 224, 112, 1.0)", wing: "rgba(200, 170, 50, 1.0)",  rim: "rgba(110, 90, 20, 0.0)" },
   ball:     { body: "rgba(224, 144, 74, 1.0)",  wing: "rgba(192, 112, 48, 1.0)",  rim: "rgba(100, 60, 25, 0.0)" },
   mole:     { body: "rgba(176, 136, 80, 1.0)",  wing: "rgba(138, 106, 64, 1.0)",  rim: "rgba(80, 60, 35, 0.0)" },
+  magnet:   { body: "rgba(176, 144, 224, 1.0)", wing: "rgba(138, 112, 192, 1.0)", rim: "rgba(80, 60, 120, 0.0)" },
+  twin:     { body: "rgba(255, 224, 112, 1.0)", wing: "rgba(224, 192, 64, 1.0)",  rim: "rgba(120, 100, 30, 0.0)" },
+  chain:    { body: "rgba(184, 188, 196, 1.0)", wing: "rgba(154, 160, 168, 1.0)", rim: "rgba(90, 94, 100, 0.0)" },
+  drum:     { body: "rgba(208, 128, 64, 1.0)",  wing: "rgba(192, 112, 56, 1.0)",  rim: "rgba(110, 60, 25, 0.0)" },
   heal:     { body: "rgba(150, 240, 170, 1.0)", wing: "rgba(90, 190, 120, 1.0)",  rim: "rgba(40, 110, 60, 0.0)" },
   frost:    { body: "rgba(200, 236, 255, 1.0)", wing: "rgba(140, 190, 230, 1.0)", rim: "rgba(70, 110, 150, 0.0)" },
   laser:    { body: "rgba(255, 240, 184, 1.0)", wing: "rgba(230, 200, 120, 1.0)", rim: "rgba(140, 110, 40, 0.0)" },
@@ -32691,6 +33161,7 @@ const DRAGON_PARTS_ALIAS = {
   shark: "swallow", tortoise: "gargoyle", thunder: "shadow",
   heal: "rainbow", frost: "deflect", laser: "beacon",
   ball: "fire", mole: "crimson",   // v3.29.0
+  magnet: "shadow", twin: "swallow", chain: "heavy", drum: "rainbow",   // v3.31.0
 };
 /** 属性 element を描くのに使うパーツ定義のキー（無ければ null）。 */
 function dragonPartsKey(element) {
