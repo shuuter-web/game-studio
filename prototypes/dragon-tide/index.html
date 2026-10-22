@@ -996,7 +996,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.33.0";
+const GAME_VERSION = "v3.34.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1750,6 +1750,9 @@ const STAGE_SHAPES = [
   // v3.22.0: 大都会（正方形・案帳 DT-022）… 地図全体が碁盤の目の道路と建物で埋まった都市。
   // 道路を車の列が流れる。首都は巨大な高層ビル
   { id: "metro",     w: 8400, h: 8400,  icon: "🌆" },
+  // v3.34.0: 光線の高原（正方形・案帳 DT-015）… 野に立つ光線の塔が群れを追って光線を振る。光線は敵の街も焼くので、
+  // 群れで光線を街の上へ連れて行く。首都はプリズム塔で、光線を当てると割れて首都区画じゅうに飛び散る
+  { id: "plateau",   w: 8400, h: 8400,  icon: "🔦" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
@@ -1760,6 +1763,7 @@ const SHAPE_ASTEROIDS = 5;
 const SHAPE_RAILWAY   = 6;
 const SHAPE_FOREST    = 7;
 const SHAPE_METRO     = 8;
+const SHAPE_PLATEAU   = 9;
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
 
 function clampShape(v) {
@@ -4465,7 +4469,7 @@ let START_Y = WORLD_H * 0.5;
 function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
   if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST ||
-      shape === SHAPE_METRO) {
+      shape === SHAPE_METRO || shape === SHAPE_PLATEAU) {
     return { x: 320, y: h - 320 };   // 角（首都は中心）
   }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
@@ -5850,6 +5854,11 @@ function generateStageLayout(stageIndex) {
     for (const b of kept) result.push(b);
     for (const w of generateFrontlineWalls(frontlinePlan)) result.push(w);
   }
+  // v3.34.0: 光線の高原の塔（町の外の野）
+  beamTowers = [];
+  if (worldShape === SHAPE_PLATEAU) {
+    for (const t of placeBeamTowers(boss, config, townCenters)) { result.push(t); beamTowers.push(t); }
+  }
   // v1.4.0: 聖地の祠（参道の突き当たり）
   if (worldShape === SHAPE_SANCTUARY) {
     for (const sh of placeSanctuaryShrines(boss, config)) {
@@ -6835,6 +6844,215 @@ function buildSanctuaryRoadNetwork(centers, boss) {
 }
 
 // =====================================================================
+// v3.34.0: 光線の高原（SHAPE_PLATEAU・案帳 DT-015）
+// =====================================================================
+// 見晴らしのよい高原に人間の光線の塔が点々と立つ。塔は群れを見つけると太い光線を出しっぱなしにし、
+// 群れを追ってゆっくり向きを変える。光線は竜を焼くが、敵の建物と動く敵も区別なく焼く（塔は自分の街を巻き込んでも止めない）。
+// 群れは光線より少し速いので、止まらなければ焼かれない。群れで光線を敵の街の上へ連れて行くのが遊びの中心。
+// 首都は中央の巨大なプリズム塔。光線がプリズムに当たると何本にも割れて首都区画じゅうに飛び散る（首都の守りも焼ける）。
+// プリズム（首都の本体）と光線の塔は光線では壊れない（塔どうしで壊し合わないように）。
+const BEAM_TOWER_COUNT     = 14;    // 8400×8400 の地図に立てる塔の数
+const BEAM_TOWER_SPACING   = 1000;  // 塔どうしの最小の間隔
+const BEAM_TOWER_TOWN_GAP  = 300;   // 町の中心から塔までの最小の距離（塔は町の外の野に立つ）
+const BEAM_TOWER_START_GAP = 1500;  // 開始地点の近くには立てない（最初の数十秒は群れを育てる）
+const BEAM_TOWER_CAPITAL_GAP = 1100; // 首都の近くにも立てない（首都区画はプリズムの割れた光線で崩す）
+const BEAM_TOWER_HP_MULT   = 2.2;   // 塔の固さ（大きい建物のこの倍）
+const BEAM_TOWER_RADIUS    = 30;
+const BEAM_DETECT_R        = 1100;  // 群れの重心がこの距離に入ると塔が群れを見つける
+const BEAM_LOSE_R          = 1900;  // この距離より遠くに BEAM_LOSE_TIME 秒いると見失って光線を止める（首都のプリズムまで光線を連れて行けるように、首都と塔の間より長く）
+const BEAM_LOSE_TIME       = 1.5;
+const BEAM_CHARGE_TIME     = 1.0;   // 見つけてから撃ち始めるまで（細い照準の線だけが出る。溜めている間は向きを変えないので、動いていれば撃ち始めは外れる）
+const BEAM_LENGTH          = 2000;  // 光線の長さ（画面の端まで届く。見失う距離より長く）
+const BEAM_HALF_W          = 16;    // 光線の当たりの半幅
+const BEAM_SWEEP_SPEED     = 90;    // 群れの位置で光線が横へ動く速さの上限（px/秒）。群れの最高速（約165）より遅い。実測では群れの平均の速さは曲がりや加速で60〜160に落ちるので、115だと追いつかれて焼かれ続けた
+const BEAM_TURN_MAX        = 1.2;   // 塔の近くで振れる角速度の上限（rad/秒）
+const BEAM_TICK            = 0.1;   // 当たりの判定の間隔（秒）
+const BEAM_SAMPLE_STEP     = 40;    // 光線に沿って建物を探す間隔（px）
+const BEAM_DRAGON_DPS      = 20;    // 竜への秒間威力（竜のHPは30。1.5秒浴び続けると落ちる）
+const BEAM_BUILDING_DPS    = 50;    // 敵の建物への秒間威力
+const BEAM_MOVER_DPS       = 40;    // 動く敵への秒間威力
+const PRISM_CATCH_EXTRA    = 30;    // プリズム（首都の半径＋これ）に光線が触れたら割れる
+const PRISM_SPLITS         = 6;     // 割れる本数
+const PRISM_SPLIT_LENGTH   = 950;   // 割れた光線の長さ
+const BEAM_COLORS = { glow: "rgba(90,220,255,0.28)", band: "rgba(120,235,255,0.75)", core: "rgba(245,255,255,0.95)",
+                      aim: "rgba(255,90,80,0.55)", lens: "#9ff0ff", lensRim: "#2a5a70", prism: "rgba(190,245,255,0.85)" };
+
+let beamTowers = [];   // 光線の塔の建物オブジェクト（settlements の中にもある）。光線の高原以外は空
+let beamTick = 0;
+let beamSegments = [];   // このフレームの光線（描画と当たりの判定で共有）{ x1, y1, x2, y2, split }
+
+/** 光線の塔を町の外の野に立てる（ワールド生成から。町・首都の建物が並んだ後） */
+function placeBeamTowers(boss, config, townCenters) {
+  const bLarge = config.buildings.large;
+  const out = [];
+  const count = BEAM_TOWER_COUNT;
+  for (let tries = 0; tries < count * 60 && out.length < count; tries++) {
+    const x = randRange(300, WORLD_W - 300), y = randRange(300, WORLD_H - 300);
+    if (dist2(x, y, START_X, START_Y) < BEAM_TOWER_START_GAP ** 2) continue;
+    if (dist2(x, y, boss.wx, boss.wy) < BEAM_TOWER_CAPITAL_GAP ** 2) continue;
+    if (townCenters.some(c => dist2(x, y, c.x, c.y) < BEAM_TOWER_TOWN_GAP ** 2)) continue;
+    if (out.some(t => dist2(x, y, t.wx, t.wy) < BEAM_TOWER_SPACING ** 2)) continue;
+    const hp = Math.round(randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax) * BEAM_TOWER_HP_MULT);
+    const t = makeBuilding(x, y, "large", "#8fa4b4", bLarge, hp);
+    t._beamTower   = true;
+    t._emplacement = null;
+    t.radius       = BEAM_TOWER_RADIUS;
+    t.attackRadius = 0;           // 弾は撃たない（光線だけ）
+    t._noAttack    = true;
+    t._fixedTier   = maxPowerTier();
+    t.beam = { on: false, charge: 0, lost: 0, angle: random() * Math.PI * 2 };
+    out.push(t);
+  }
+  return out;
+}
+
+/** 首都（プリズム）。まだ立っていれば建物オブジェクト */
+function plateauPrism() {
+  const boss = bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null;
+  return boss && !boss.fallen ? boss : null;
+}
+
+/** 線分 (x1,y1)-(x2,y2) とプリズム（首都）が交わるなら、交わる点までの長さを返す（交わらなければ -1） */
+function beamPrismHit(x1, y1, x2, y2) {
+  const boss = plateauPrism();
+  if (!boss) return -1;
+  const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy;
+  const t = Math.max(0, Math.min(1, ((boss.wx - x1) * dx + (boss.wy - y1) * dy) / len2));
+  const cx = x1 + dx * t, cy = y1 + dy * t;
+  const r = boss.radius + PRISM_CATCH_EXTRA;
+  return dist2(cx, cy, boss.wx, boss.wy) <= r * r ? Math.sqrt(len2) * t : -1;
+}
+
+/** 光線の塔の毎フレーム（向き・撃つかどうか）と、当たりの判定（BEAM_TICK ごと） */
+function updateBeamTowers(dt) {
+  beamSegments.length = 0;
+  if (beamTowers.length === 0 || gameState !== "playing") return;
+  const n = countAliveBoids();
+  const c = calcFriendlyCentroid();
+  for (const t of beamTowers) {
+    if (t.fallen) continue;
+    const b = t.beam;
+    const d = Math.sqrt(dist2(t.wx, t.wy, c.x, c.y));
+    if (n === 0) { b.on = false; b.charge = 0; continue; }
+    if (!b.on) {
+      if (d > BEAM_DETECT_R) continue;
+      b.on = true; b.charge = 0; b.lost = 0;
+      b.angle = Math.atan2(c.y - t.wy, c.x - t.wx);   // 見つけた瞬間に群れの方を向く（撃つのは溜め終わってから）
+    }
+    b.lost = d > BEAM_LOSE_R ? b.lost + dt : 0;
+    if (b.lost > BEAM_LOSE_TIME) { b.on = false; continue; }
+    if (b.charge < BEAM_CHARGE_TIME) { b.charge += dt; continue; }
+    // 群れの位置で横へ動く速さが BEAM_SWEEP_SPEED を超えないように回す（遠い群れほどゆっくり回る）
+    const maxTurn = Math.min(BEAM_TURN_MAX, BEAM_SWEEP_SPEED / Math.max(150, d)) * dt;
+    const want = wrapAngle(Math.atan2(c.y - t.wy, c.x - t.wx) - b.angle);
+    b.angle += Math.max(-maxTurn, Math.min(maxTurn, want));
+    const x2 = t.wx + Math.cos(b.angle) * BEAM_LENGTH, y2 = t.wy + Math.sin(b.angle) * BEAM_LENGTH;
+    const hitLen = beamPrismHit(t.wx, t.wy, x2, y2);
+    if (hitLen >= 0) {
+      const bx = t.wx + Math.cos(b.angle) * hitLen, by = t.wy + Math.sin(b.angle) * hitLen;
+      beamSegments.push({ x1: t.wx, y1: t.wy, x2: bx, y2: by, split: false });
+      const prism = plateauPrism();
+      for (let k = 0; k < PRISM_SPLITS; k++) {
+        const a = b.angle + (k + 0.5) * Math.PI * 2 / PRISM_SPLITS;
+        beamSegments.push({ x1: prism.wx, y1: prism.wy,
+          x2: prism.wx + Math.cos(a) * PRISM_SPLIT_LENGTH, y2: prism.wy + Math.sin(a) * PRISM_SPLIT_LENGTH, split: true });
+      }
+    } else {
+      beamSegments.push({ x1: t.wx, y1: t.wy, x2, y2, split: false });
+    }
+  }
+  beamTick += dt;
+  if (beamTick < BEAM_TICK) return;
+  const tick = beamTick;
+  beamTick = 0;
+  for (const s of beamSegments) applyBeamDamage(s, tick);
+}
+
+/** 光線1本ぶんの当たり。竜・敵の建物・動く敵を焼く（光線の塔とプリズムは焼かない） */
+function applyBeamDamage(s, tick) {
+  const dx = s.x2 - s.x1, dy = s.y2 - s.y1, len = Math.sqrt(dx * dx + dy * dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  const w2 = BEAM_HALF_W * BEAM_HALF_W;
+  // 竜
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    if (pointSegDist2(px[i], py[i], s.x1, s.y1, s.x2, s.y2) > w2) continue;
+    hitBoid(i, { shot: BEAM_DRAGON_DPS * tick }, -uy, ux);
+  }
+  // 敵の建物（光線に沿って一定間隔で格子を引く。同じ建物を二度焼かないよう印を付ける）
+  const stamp = ++beamStamp;
+  const cell = Math.max(1, Math.ceil((BEAM_SAMPLE_STEP + BEAM_HALF_W + BEAM_TOWER_RADIUS) / BUILDING_GRID_CELL));
+  for (let d = 0; d <= len; d += BEAM_SAMPLE_STEP) {
+    buildingGridQueryRadius(s.x1 + ux * d, s.y1 + uy * d, cell, _buildingNeighbourBuf);
+    for (const sIdx of _buildingNeighbourBuf) {
+      const st = settlements[sIdx];
+      if (!st || st.fallen || st.isBoss || st._beamTower || st._beamStamp === stamp) continue;
+      const r = BEAM_HALF_W + (st.radius || 10) * 0.6;
+      if (pointSegDist2(st.wx, st.wy, s.x1, s.y1, s.x2, s.y2) > r * r) continue;
+      st._beamStamp = stamp;
+      damageBuilding(sIdx, BEAM_BUILDING_DPS * tick);
+    }
+  }
+  // 動く敵
+  for (const m of movers) {
+    if (!m.alive) continue;
+    const r = BEAM_HALF_W + (m.def.radius || 10);
+    if (pointSegDist2(m.wx, m.wy, s.x1, s.y1, s.x2, s.y2) > r * r) continue;
+    damageMover(m, BEAM_MOVER_DPS * tick, s.x1, s.y1);
+  }
+}
+let beamStamp = 0;
+
+/** 光線と、溜めている塔の照準の線・塔のレンズ・プリズム（樹冠と同じ層。竜の下） */
+function drawBeams(now) {
+  if (beamTowers.length === 0) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  // 溜めている塔の照準の線（細い赤の点線）
+  ctx.setLineDash([10, 8]);
+  ctx.strokeStyle = BEAM_COLORS.aim; ctx.lineWidth = 2;
+  for (const t of beamTowers) {
+    if (t.fallen || !t.beam.on || t.beam.charge >= BEAM_CHARGE_TIME) continue;
+    ctx.beginPath(); ctx.moveTo(t.wx, t.wy);
+    ctx.lineTo(t.wx + Math.cos(t.beam.angle) * BEAM_LENGTH, t.wy + Math.sin(t.beam.angle) * BEAM_LENGTH); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // 光線（外の淡い光・水色の帯・白い芯）。脈打たせる
+  ctx.globalCompositeOperation = "lighter";
+  const pulse = 1 + 0.12 * Math.sin(now * 0.02);
+  for (const s of beamSegments) {
+    const k = s.split ? 0.7 : 1;
+    for (const [w, col] of [[BEAM_HALF_W * 3.2 * pulse * k, BEAM_COLORS.glow], [BEAM_HALF_W * 1.6 * k, BEAM_COLORS.band], [BEAM_HALF_W * 0.5 * k, BEAM_COLORS.core]]) {
+      ctx.strokeStyle = col; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+    }
+  }
+  ctx.globalCompositeOperation = "source-over";
+  // 塔のレンズ（向いている方に少しずらす）
+  for (const t of beamTowers) {
+    if (t.fallen) continue;
+    const a = t.beam.angle, lx = t.wx + Math.cos(a) * 8, ly = t.wy + Math.sin(a) * 8;
+    ctx.fillStyle = BEAM_COLORS.lensRim;
+    ctx.beginPath(); ctx.arc(t.wx, t.wy, 14, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = t.beam.on ? BEAM_COLORS.core : BEAM_COLORS.lens;
+    ctx.beginPath(); ctx.arc(lx, ly, 8, 0, Math.PI * 2); ctx.fill();
+  }
+  // プリズム（首都の上の六角の結晶）
+  const boss = worldShape === SHAPE_PLATEAU ? plateauPrism() : null;
+  if (boss) {
+    const r = boss.radius * 0.9;
+    ctx.fillStyle = BEAM_COLORS.prism; ctx.strokeStyle = BEAM_COLORS.lensRim; ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let k = 0; k < 6; k++) {
+      const a = now * 0.0003 + k * Math.PI / 3;
+      ctx[k ? "lineTo" : "moveTo"](boss.wx + Math.cos(a) * r, boss.wy + Math.sin(a) * r);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// =====================================================================
 // v2.0.0: 軌道（正方形）— 滅びた文明が遺した鉄路
 // =====================================================================
 // 首都（中央のターミナル）から放射状に6本、それを二重の環状線が囲む。
@@ -7474,7 +7692,7 @@ function placeBossBuilding(stageIndex, config) {
   // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
   if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY ||
       worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_RAILWAY || worldShape === SHAPE_FOREST ||
-      worldShape === SHAPE_METRO) {
+      worldShape === SHAPE_METRO || worldShape === SHAPE_PLATEAU) {
     return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
   }
   if (worldShape === SHAPE_FRONTLINE) {
@@ -19583,8 +19801,8 @@ const STRINGS = {
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
-               "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会"],
+               "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会", "光線の塔が立つ高原"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
   regionHint: "地域ごとに土地の形と遊び方が変わる。時代（建物・敵・兵器）はどの地域でも同じ。",
@@ -19610,6 +19828,8 @@ const STRINGS = {
       rule: "灯を落とすほど樹の心臓（首都）に攻撃が通る。伏兵は近づくと飛び出す。火のブレスが当たった所の樹冠は燃える" },
     { route: "角 → 中心の高層ビル", play: "地図じゅうが碁盤の目の道路と建物で埋まった都市。道路を車の列が流れ、渋滞ごとまとめて薙げる。",
       rule: "車は道路の上しか走れない。戦車は大通りだけ。首都に近づくと攻撃ヘリが飛んでくる。壊した区画は建て直されない" },
+    { route: "角 → 中心のプリズム塔", play: "見晴らしのよい高原に光線の塔が立つ。塔は群れを追って光線を振り、光線は敵の街も焼く。群れで光線を街の上へ連れて行く。",
+      rule: "群れは光線より少し速い。止まらなければ焼かれない。光線がプリズム（首都）に当たると割れて首都区画を焼く。塔とプリズムは光線では壊れない" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -26606,6 +26826,15 @@ function codexRegionCanvas(shape) {
     }
     c.fillStyle = CODEX_RG.capital; c.fillRect(21, 21, 10, 10);
     dot(4, 48, 2.2, CODEX_RG.start);
+  } else if (shape === SHAPE_PLATEAU) {
+    // 町（点）の間の野に塔（青灰）。塔から水色の光線が伸び、中心のプリズム（ひし形）で割れる
+    for (const [x, y] of [[10, 12], [36, 9], [9, 34], [42, 36], [24, 44]]) dot(x, y, 3, CODEX_RG.town);
+    c.strokeStyle = "rgba(120,235,255,0.85)"; c.lineWidth = 1.6;
+    c.beginPath(); c.moveTo(20, 8); c.lineTo(8, 30); c.moveTo(46, 22); c.lineTo(26, 26); c.stroke();
+    c.strokeStyle = "rgba(120,235,255,0.5)"; c.lineWidth = 1;
+    for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3 + 0.3; c.beginPath(); c.moveTo(26, 26); c.lineTo(26 + Math.cos(a) * 11, 26 + Math.sin(a) * 11); c.stroke(); }
+    for (const [x, y] of [[20, 8], [46, 22]]) dot(x, y, 2.6, "#8fa4b4");
+    diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
   }
   return cv;
 }
@@ -26749,7 +26978,7 @@ const REGION_CHOICE_COUNT = 3;
 // 最初から選べる地域。3つあるので初回から3択が成り立つ。残りは条件で解放（§7.4）
 // v3.7.0: 列車（軌道）以外は最初から全部（Shooter指示）。列車だけは初めてステージ5に着いたときに解放する
 const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL, SHAPE_FRONTLINE, SHAPE_SANCTUARY, SHAPE_ASTEROIDS,
-                             SHAPE_FOREST, SHAPE_METRO];   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
+                             SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU];   // v3.34.0: 光線の高原も最初から   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
 // 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
 const WIPE_GRACE_SECONDS  = 2;
 
@@ -30792,6 +31021,7 @@ function render(now) {
   drawMetroTurretsAndRotors();   // v3.23.0: 大都会の戦車の砲塔・攻撃ヘリの回転翼
   drawRailExtras();          // v2.0.0: 前照灯・粘着編成の標識
   drawCanopy();              // v3.17.0: 大樹海の樹冠（敵と街の上・竜とブレスの下）
+  drawBeams(now);            // v3.34.0: 光線の高原の光線・塔のレンズ・プリズム（竜の下）
   if (forestActive) drawEmbers();   // v3.19.2: 燃える樹冠の火の粉・煙が葉に隠れないよう樹冠の上で描く
   drawWorldTree();           // v3.19.0: 巨大樹の樹冠・灯・心臓
   drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
@@ -33980,6 +34210,7 @@ function tick() {
     updateSlashFx(wdt);           // v0.8: 緋竜の斬閃FX
     updateFires(wdt);             // v0.10: 燃える建物の火の粉・煙柱
     updateCanopy(wdt);            // v3.17.0: 大樹海の樹冠の延焼
+    updateBeamTowers(wdt);        // v3.34.0: 光線の高原の塔と光線
     updateWorldTree(wdt);         // v3.19.0: 巨大樹（大樹海の首都）の灯と心臓の魔法
     maybeShowLevelUp();           // v0.6: レベルアップが積まれていれば3択を出す（非モーダル）
   } else if (gameState === "title") {
