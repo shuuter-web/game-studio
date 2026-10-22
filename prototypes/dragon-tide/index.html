@@ -533,6 +533,8 @@
   }
   @keyframes hintBlink { 0%,100% { opacity: 1.0; } 50% { opacity: 0.25; } }
 
+  /* v3.33.0: つづきからの下の注記（戻らないもの） */
+  .title-note { font-size: 11px; line-height: 1.4; color: rgba(255,255,255,0.6); max-width: 280px; text-align: center; margin: -4px auto 6px; }
   /* v0.19: タイトルメニュー（2回目以降のラン。はじめる／つづきから） */
   #title-menu {
     display: none;
@@ -19621,6 +19623,8 @@ const STRINGS = {
   openOptions: "オプション",
   challengeDone: (name, reward) => `チャレンジ達成: ${name}  +${reward}🔷`,
   continueRun: (stageNum) => `つづきから　STAGE ${stageNum}/8`,
+  // v3.33.0（案帳 DT-076）: 途中セーブで戻らないものは意図的な割り切り。そのことを再開ボタンの下に一言書く
+  continueNote: "壊した建物はそのまま。削りかけの建物・動く敵・群れの位置はステージの最初に戻ります",
   cards: {
     scale:     { name: "硬鱗",     desc: "竜のHP +20%" },
     wind:      { name: "疾風",     desc: "群れの速度 +8%" },
@@ -22447,6 +22451,7 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_DRUM)    drumAlive++;
   }
   updateDrumBeat(dt, drumAlive);   // v3.31.0: 軍鼓の拍は群れで1つ
+  updateFreeShards(dt);            // v3.33.0: 外れた破片（磁竜の投げ・鉄鎖のスマッシュ）はどの竜種でも動く
   updateWakeTrail(dt);      // v1.1.0: 航跡の寿命と、中に居る竜への印付け
   updateCrackBursts(dt);    // v1.1.2: ひびが入った瞬間の弾け
   updateSpecialBolts(dt);
@@ -26637,6 +26642,10 @@ function refreshTitleMenu() {
     cont.textContent = STRINGS.continueRun((save.runStageIndex | 0) + 1);
     cont.addEventListener("pointerdown", (e) => { e.stopPropagation(); resumeRun(); });
     titleMenuEl.appendChild(cont);
+    const note = document.createElement("div");
+    note.className = "title-note";
+    note.textContent = STRINGS.continueNote;
+    titleMenuEl.appendChild(note);
   }
   const startBtn = document.createElement("button");
   startBtn.className = "title-btn";
@@ -28485,6 +28494,7 @@ function addTrailPoint(sx, sy, now) {
   trailPoints.push({ x: sx, y: sy, bornAt: now });
 }
 
+const SWIPE_SAMPLES_MAX = 24;   // v3.33.0: スワイプを測るために残す指の動きの数
 function inputStart(sx, sy, now) {
   // v0.6: ライン描画はプレイ中とステージクリア演出中のみ受け付ける。
   // タイトル/リザルトはDOMオーバーレイが操作を担う。
@@ -28503,6 +28513,8 @@ function inputStart(sx, sy, now) {
   pathClear();
   const w = screenToWorld(sx, sy);
   pathPush(w.x, w.y);
+  swipeSamples.length = 0; swipeSamples.push({ x: sx, y: sy, t: now });   // v3.33.0
+  magnetOnInputStart();   // v3.33.0: 磁竜はもう一度タップすると近くの破片が戻ってくる
   moleRecordStroke(w.x, w.y, true);   // v3.29.0: 土竜は描いた一筆に沿って割る
   addTrailPoint(w.x, w.y, now);
   // 変更3: 指のワールド座標を保持（静止保持でも誘導継続するため）
@@ -28518,6 +28530,8 @@ function inputMove(sx, sy, now) {
   if (inputMode !== "DRAW") return;
   const w = screenToWorld(sx, sy);
   pathPush(w.x, w.y);
+  swipeSamples.push({ x: sx, y: sy, t: now });
+  if (swipeSamples.length > SWIPE_SAMPLES_MAX) swipeSamples.shift();
   moleRecordStroke(w.x, w.y, false);
   addTrailPoint(w.x, w.y, now);
   // 変更3: 指が動いたときも最新ワールド座標を更新する
@@ -28528,6 +28542,7 @@ function inputMove(sx, sy, now) {
 }
 
 function inputEnd() {
+  if (inputMode === "DRAW") { const v = swipeVelocity(); magnetOnSwipe(v.x, v.y); }   // v3.33.0: 磁竜は離したときのスワイプで破片を投げる
   isDrawing = false;
   inputMode = "NONE";
   touchRing.active = false;
@@ -29542,7 +29557,7 @@ function drawMoleMounds() {
 // 回す力は加速だけで、破片が自分から減速することはない（Shooter と合意した方針）。
 // 群れが急に曲がる・止まると、破片の勢いが引き寄せる力に勝って輪から外れ、離れすぎたものはその速度のまま飛んでいく。
 const MAG_GRAB_R         = 220;   // この距離で壊れた建物が破片になる（届く距離の強化で伸びる）
-const MAG_SHARDS_MAX     = 18;    // 回っている破片の上限（届く距離の強化で増える）
+const MAG_SHARDS_MAX     = 30;    // 回っている破片の上限（届く距離の強化で増える）。v3.33.0: 18→30（Shooter判定「もう少し貯めたい」）
 const MAG_PIECES         = { tiny: 1, small: 2, medium: 3, large: 4 };   // 建物1棟から出る破片の数
 const MAG_PIECE_SIZE     = { tiny: 9, small: 11, medium: 14, large: 18 };
 const MAG_RING_BASE      = 34;    // 輪の半径＝これ＋下の係数×√竜の数
@@ -29556,18 +29571,31 @@ const MAG_GRIP           = 80;   // 輪の上を回るのに要る力より、�
 const MAG_FLOCK_V_TAU    = 0.15;  // 群れの速さをなましる時間（秒）。卵の孵化などで重心が跳んだ1フレームで破片が飛ばないように
 const MAG_RELEASE        = 2.3;   // 輪の半径のこの倍より離れたら、つながりが切れて飛んでいく
 const MAG_CATCH          = 1.4;   // 輪の半径のこの倍まで寄ったら輪に乗ったとみなす（ここから先は離れると飛んでいく）
+const MAG_TRAIL_TIME     = 0.06;  // 光の尾の長さ（速さ×この秒数）
 const MAG_HIT_R          = 12;    // 破片の当たりの半径
 const MAG_ORBIT_DMG      = 7;     // 回っている破片が触れた相手に与える威力
 const MAG_ORBIT_HIT_CD   = 0.3;   // 1つの破片が続けて当たる間隔（秒）
 const MAG_THROW_DMG      = 26;    // 飛んでいく破片の威力（秒速300pxのとき。速いほど強い・最大2倍）
-const MAG_FREE_LIFE      = 2.5;   // 飛んでいった破片が何にも当たらず消えるまで（秒）
+const MAG_GROUND_LIFE    = 8;     // 輪から外れた破片が消えるまで（秒）。止まった破片も地面に残り、もう一度タップすると戻ってくる
+const MAG_FREE_DRAG      = 0.6;   // 輪から外れた破片の速さの落ち方（1/秒）
+const MAG_HIT_MIN_SPEED  = 160;   // 外れた破片はこれより速いときだけ当たる（地面に転がっている破片は当たらない）
+const MAG_FAST_SPEED     = 320;   // これより速い破片は光をまとう（攻撃らしく見せる）。もう一度タップしても戻らない
+// v3.33.0: 指を離したときのスワイプ（Shooter判定「慣性で投げるのは難しい。離したときのスワイプで意図的に飛ばしたい」）
+const MAG_SWIPE_WINDOW   = 0.12;  // 指を離す直前のこの秒数の動きからスワイプの向きと速さを出す
+const MAG_SWIPE_GAIN     = 1.0;   // スワイプの速さ（ワールドpx/秒）のこの倍を、輪に乗っている破片の速さに足す
+const MAG_SWIPE_MAX      = 900;   // 足す速さの上限（px/秒）
+const MAG_SWIPE_MIN      = 150;   // これより遅い指の動きはスワイプとみなさない（ただ指を離しただけ）
+const MAG_RECALL_REACH   = 1.3;   // もう一度タップしたとき、破片になる距離のこの倍以内の外れた破片を呼び戻す
 
 let magnetShards = [];
+const swipeSamples = [];   // v3.33.0: 指の動きの直近の記録（画面座標・時刻）。離したときのスワイプに使う
+let chainSmashCtx = null;  // v3.33.0: 鉄鎖のスマッシュが当たっている間だけ、その鉄球の位置と速さ（壊れた建物を砕く向き）
 let magnetPrevC = null;   // 群れの重心の速さを測るための前のフレームの重心
 const magnetFlockV = { x: 0, y: 0 };   // なました群れの速さ
 
 /** 建物が壊れたとき（settlementFall）。群れの近くなら、その建物の絵を切った破片を作る */
 function magnetOnBuildingFall(s) {
+  if (chainSmashCtx && !s.isBoss) { shatterBuilding(s, chainSmashCtx); return; }   // v3.33.0: 鉄鎖のスマッシュで壊れたら砕け散る
   if (!sp().magnet || s._isWall || s.isBoss) return;
   const key = buildingSpriteKeyFor(s);
   if (!key) return;
@@ -29606,10 +29634,11 @@ function updateMagnetAttacks(dt) {
   const targets = attackTargets();
   for (let k = magnetShards.length - 1; k >= 0; k--) {
     const s = magnetShards[k];
+    if (s.free) continue;   // 外れた破片は updateFreeShards（どの竜種でも動く）
     s.ang += s.spin * dt;
     if (s.cd > 0) s.cd -= dt;
-    if (!s.free) {
-      if (n === 0) { s.free = true; s.life = MAG_FREE_LIFE; continue; }
+    {
+      if (n === 0) { s.free = true; s.life = MAG_GROUND_LIFE; continue; }
       const rx = s.x - c.x, ry = s.y - c.y, d = Math.sqrt(rx * rx + ry * ry) || 1;
       const ux = rx / d, uy = ry / d, tx = -uy, ty = ux;
       const rvx = s.vx - fvx, rvy = s.vy - fvy;          // 群れから見た速さ
@@ -29625,35 +29654,120 @@ function updateMagnetAttacks(dt) {
       s.x += s.vx * dt; s.y += s.vy * dt;
       // 輪に乗るまでは引き寄せるだけ（遠くで壊れた建物の破片がいきなり飛んでいかないように）
       if (!s.caught && d < ring * MAG_CATCH) s.caught = true;
-      if (s.caught && !isDrawing && d > ring * MAG_RELEASE) { s.free = true; s.life = MAG_FREE_LIFE; continue; }
+      if (s.caught && !isDrawing && d > ring * MAG_RELEASE) { s.free = true; s.life = MAG_GROUND_LIFE; continue; }
       if (s.cd <= 0 && hitInRadius(s.x, s.y, MAG_HIT_R, { direct: MAG_ORBIT_DMG * dmgMul }, targets) > 0) {
         s.cd = MAG_ORBIT_HIT_CD * effFireIntervalMult("magnet");
       }
-    } else {
-      s.x += s.vx * dt; s.y += s.vy * dt;
-      s.life -= dt;
-      const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
-      if (hitInRadius(s.x, s.y, MAG_HIT_R + 2, { direct: MAG_THROW_DMG * dmgMul * Math.min(2, speed / 300) }, targets) > 0) {
+    }
+  }
+}
+/** 輪から外れた破片（磁竜が投げたもの・鉄鎖のスマッシュで砕けたもの）。どの竜種でも毎フレーム動かす */
+function updateFreeShards(dt) {
+  if (dt <= 0 || magnetShards.length === 0) return;
+  const targets = attackTargets();
+  const drag = Math.exp(-MAG_FREE_DRAG * dt);
+  for (let k = magnetShards.length - 1; k >= 0; k--) {
+    const s = magnetShards[k];
+    if (!s.free) continue;
+    s.vx *= drag; s.vy *= drag;
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
+    s.ang += s.spin * dt * Math.min(1, speed / MAG_HIT_MIN_SPEED);   // 止まった破片は回らない
+    s.life -= dt;
+    if (speed >= MAG_HIT_MIN_SPEED) {
+      const base = s.dmg ?? MAG_THROW_DMG * effWeaponDmgMult("magnet");
+      if (hitInRadius(s.x, s.y, MAG_HIT_R + 2, { direct: base * Math.min(2, speed / 300) }, targets) > 0) {
         spawnCollisionParticles(s.x, s.y);
         magnetShards.splice(k, 1);
         continue;
       }
-      if (s.life <= 0 || s.x < 0 || s.y < 0 || s.x > WORLD_W || s.y > WORLD_H) magnetShards.splice(k, 1);
     }
+    if (s.life <= 0 || s.x < 0 || s.y < 0 || s.x > WORLD_W || s.y > WORLD_H) magnetShards.splice(k, 1);
+  }
+}
+/** もう一度タップしたとき：近くに落ちている破片（光をまとうほど速いもの以外）を輪へ呼び戻す */
+function magnetOnInputStart() {
+  if (!sp().magnet || magnetShards.length === 0) return;
+  const c = calcFriendlyCentroid();
+  const range = effWeaponRangeMult("magnet");
+  const reach = MAG_GRAB_R * range * MAG_RECALL_REACH;
+  let room = Math.round(MAG_SHARDS_MAX * range) - magnetShards.reduce((t, m) => t + (m.free ? 0 : 1), 0);
+  for (const s of magnetShards) {
+    if (room <= 0) break;
+    if (!s.free || s.vx * s.vx + s.vy * s.vy >= MAG_FAST_SPEED * MAG_FAST_SPEED) continue;
+    if (dist2(s.x, s.y, c.x, c.y) > reach * reach) continue;
+    s.free = false; s.caught = false; s.dmg = undefined; room--;
+  }
+}
+/** 指を離したとき：直前のスワイプの向きと速さを、輪に乗っている破片に足す（指を離している間は輪の力が弱いので飛んでいく） */
+function magnetOnSwipe(svx, svy) {
+  if (!sp().magnet) return;
+  let v = Math.sqrt(svx * svx + svy * svy);
+  if (v < MAG_SWIPE_MIN) return;
+  const gain = Math.min(MAG_SWIPE_MAX, v * MAG_SWIPE_GAIN) / v;
+  for (const s of magnetShards) {
+    if (s.free || !s.caught) continue;
+    s.vx += svx * gain; s.vy += svy * gain;
+  }
+}
+/** 指を離す直前の動き（画面座標）から、ワールドでの速さを出す */
+function swipeVelocity() {
+  if (swipeSamples.length < 2) return { x: 0, y: 0 };
+  const last = swipeSamples[swipeSamples.length - 1];
+  if (performance.now() - last.t > MAG_SWIPE_WINDOW * 1000) return { x: 0, y: 0 };   // 指を止めてから離した＝スワイプではない
+  let first = last;
+  for (let k = swipeSamples.length - 2; k >= 0; k--) {
+    first = swipeSamples[k];
+    if (last.t - first.t >= MAG_SWIPE_WINDOW * 1000) break;
+  }
+  const dtS = (last.t - first.t) / 1000;
+  if (dtS <= 0.01) return { x: 0, y: 0 };
+  return { x: (last.x - first.x) / dtS / cam.scale, y: (last.y - first.y) / dtS / cam.scale };
+}
+/** 鉄鎖のスマッシュで壊れた建物（城壁も）を、鉄球の向きへ砕いて飛ばす。破片は当たった相手を削る */
+function shatterBuilding(st, from) {
+  const key = buildingSpriteKeyFor(st);
+  const pieces = st._isWall ? CHAIN_WALL_PIECES : (MAG_PIECES[st.size] ?? 2) + 1;
+  const sp0 = Math.sqrt(from.vx * from.vx + from.vy * from.vy) || 1;
+  const dir = Math.atan2(from.vy, from.vx);
+  for (let k = 0; k < pieces; k++) {
+    const a = dir + (random() - 0.5) * CHAIN_SHATTER_SPREAD;
+    const v = sp0 * CHAIN_SHATTER_SPEED * (0.7 + 0.6 * random());
+    magnetShards.push({
+      x: st.wx, y: st.wy, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+      key, color: st.color || CHAIN_WALL_COLOR, q: k % 4, size: MAG_PIECE_SIZE[st.size] ?? 14,
+      ang: random() * Math.PI * 2, spin: (random() < 0.5 ? -1 : 1) * (5 + random() * 6),
+      free: true, caught: false, life: MAG_GROUND_LIFE, cd: 0, dmg: CHAIN_SHARD_DMG,
+    });
   }
 }
 /** 破片（建物の絵の4分の1ずつ）を回しながら描く */
 function drawMagnetShards() {
   if (magnetShards.length === 0) return;
   for (const s of magnetShards) {
-    const img = getTintedBuildingSprite(s.key, s.color);
-    if (!img) continue;
-    const w = img.width / 2, h = img.height / 2;
+    // v3.33.0: 速い破片は光の尾をまとう（飛んでいる破片が攻撃だと分かるように）
+    if (s.free && s.vx * s.vx + s.vy * s.vy >= MAG_FAST_SPEED * MAG_FAST_SPEED) {
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.lineCap = "round";
+      for (const [w, col] of [[s.size * 0.9, "rgba(255,150,60,0.35)"], [s.size * 0.35, "rgba(255,240,200,0.9)"]]) {
+        ctx.strokeStyle = col; ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(s.x - s.vx * MAG_TRAIL_TIME, s.y - s.vy * MAG_TRAIL_TIME); ctx.lineTo(s.x, s.y); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    const img = s.key ? getTintedBuildingSprite(s.key, s.color) : null;
     ctx.save();
     ctx.translate(s.x, s.y);
     ctx.rotate(s.ang);
     ctx.globalAlpha = s.free ? Math.min(1, s.life * 2) : 1;
-    ctx.drawImage(img, (s.q % 2) * w, Math.floor(s.q / 2) * h, w, h, -s.size / 2, -s.size / 2, s.size, s.size * (h / w));
+    if (img) {
+      const w = img.width / 2, h = img.height / 2;
+      ctx.drawImage(img, (s.q % 2) * w, Math.floor(s.q / 2) * h, w, h, -s.size / 2, -s.size / 2, s.size, s.size * (h / w));
+    } else {   // 城壁など絵の無い建物は石の塊
+      ctx.fillStyle = s.color; ctx.strokeStyle = "rgba(0,0,0,0.5)"; ctx.lineWidth = 1;
+      ctx.fillRect(-s.size / 2, -s.size / 2, s.size, s.size * 0.8); ctx.strokeRect(-s.size / 2, -s.size / 2, s.size, s.size * 0.8);
+    }
     ctx.restore();
   }
 }
@@ -29765,6 +29879,21 @@ const CHAIN_DRAG        = 0.8;   // 鉄球の速さの落ち方（1/秒。地面
 const CHAIN_MIN_SPEED   = 90;    // これより遅い鉄球は当たらない（引きずっているだけ）
 const CHAIN_DMG         = 22;    // 秒速250pxで当たったときの威力（速いほど強い・最大2.5倍）
 const CHAIN_HIT_TICK    = 0.12;  // 当たりの判定の間隔（秒）
+// v3.33.0（Shooter判定）: 勢いに応じて衝撃力。ある勢いを超えるとスマッシュ（強い衝撃・建物と城壁を砕く・敵を吹き飛ばす）
+const CHAIN_IMPACT_PER_SPEED = 0.45;  // 衝撃力＝鉄球の速さ×これ（秒速250pxで約110）
+const CHAIN_SMASH_SPEED      = 280;   // これより速く当たるとスマッシュ（実測：急に曲がったときの振りの上位1割ほど）
+const CHAIN_SMASH_IMPACT     = 2.2;   // スマッシュの衝撃力の倍率（動く敵は吹き飛ぶ）
+const CHAIN_SMASH_DMG        = 1.5;   // スマッシュの威力の倍率
+const CHAIN_SMASH_WALL       = 3;     // スマッシュが城壁に足す威力（ふつうの威力のこの倍。城壁も砕く）
+const CHAIN_HITSTOP          = 0.05;  // 当たったとき鉄球が止まる秒数
+const CHAIN_SMASH_HITSTOP    = 0.1;   // スマッシュのときの止まる秒数
+const CHAIN_HIT_SLOW         = 0.85;  // 当たったあとの鉄球の速さ（当たる前のこの倍）
+const CHAIN_SHATTER_SPEED    = 0.9;   // 砕けた破片の速さ（鉄球の速さのこの倍・ばらつきあり）
+const CHAIN_SHATTER_SPREAD   = 1.3;   // 砕けた破片が広がる角度（rad）
+const CHAIN_SHARD_DMG        = 14;    // 砕けた破片が当たった相手に与える威力（秒速300pxのとき）
+const CHAIN_WALL_PIECES      = 3;
+const CHAIN_WALL_COLOR       = "#8a8070";
+const TARGETS_WALL_ONLY      = { building: TARGET_NONE, mover: TARGET_NONE, wall: TARGET_AIM };
 const CHAIN_COLORS = { link: "#9aa0a8", ball: "#4a4e56", light: "#b8bcc4", rim: "#1a1c20" };
 const chainBalls = new Map();    // 鉄鎖の竜の番号 → { x, y, vx, vy, tick }
 
@@ -29772,7 +29901,8 @@ function chainLength() { return CHAIN_LENGTH * (1 + 0.2 * upCount("sp_chain_len"
 function updateChainDragon(i, dt) {
   let b = chainBalls.get(i);
   const L = chainLength();
-  if (!b) { b = { x: px[i] - vx[i] * 0.3, y: py[i] - vy[i] * 0.3, vx: 0, vy: 0, tick: 0 }; chainBalls.set(i, b); }
+  if (!b) { b = { x: px[i] - vx[i] * 0.3, y: py[i] - vy[i] * 0.3, vx: 0, vy: 0, tick: 0, stop: 0 }; chainBalls.set(i, b); }
+  if (b.stop > 0) { b.stop -= dt; return; }   // v3.33.0: ヒットストップ中は鉄球が止まる（竜は進み、止まり終わると鎖が引く）
   const drag = Math.exp(-CHAIN_DRAG * dt);
   b.vx *= drag; b.vy *= drag;
   b.x += b.vx * dt; b.y += b.vy * dt;
@@ -29791,7 +29921,22 @@ function updateChainDragon(i, dt) {
   const speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
   if (speed < CHAIN_MIN_SPEED) return;
   const dmg = CHAIN_DMG * Math.min(2.5, speed / 250) * (1 + 0.25 * upCount("sp_chain_dmg")) * (t / CHAIN_HIT_TICK);
-  hitInRadius(b.x, b.y, CHAIN_BALL_R, { direct: dmg }, TARGETS_ALL_AIM);
+  const smash = speed >= CHAIN_SMASH_SPEED;
+  const impact = speed * CHAIN_IMPACT_PER_SPEED * (smash ? CHAIN_SMASH_IMPACT : 1);
+  let hits;
+  if (smash) {
+    chainSmashCtx = { x: b.x, y: b.y, vx: b.vx, vy: b.vy };   // この間に壊れた建物は砕け散る（magnetOnBuildingFall）
+    hits = hitInRadius(b.x, b.y, CHAIN_BALL_R, { direct: dmg * CHAIN_SMASH_DMG, impact }, TARGETS_ALL_AIM);
+    hitInRadius(b.x, b.y, CHAIN_BALL_R, { direct: dmg * CHAIN_SMASH_WALL }, TARGETS_WALL_ONLY);
+    chainSmashCtx = null;
+  } else {
+    hits = hitInRadius(b.x, b.y, CHAIN_BALL_R, { direct: dmg, impact }, TARGETS_ALL_AIM);
+  }
+  if (hits > 0) {
+    b.stop = smash ? CHAIN_SMASH_HITSTOP : CHAIN_HITSTOP;
+    b.vx *= CHAIN_HIT_SLOW; b.vy *= CHAIN_HIT_SLOW;
+    if (smash) { spawnCollisionParticles(b.x, b.y); spawnCollisionParticles(b.x, b.y); triggerShake(0.5, 0.05); }
+  }
 }
 /** 鎖と鉄球（竜の下に描く） */
 function drawChainBalls() {
