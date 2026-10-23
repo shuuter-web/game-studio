@@ -996,7 +996,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.34.0";
+const GAME_VERSION = "v3.35.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1753,6 +1753,9 @@ const STAGE_SHAPES = [
   // v3.34.0: 光線の高原（正方形・案帳 DT-015）… 野に立つ光線の塔が群れを追って光線を振る。光線は敵の街も焼くので、
   // 群れで光線を街の上へ連れて行く。首都はプリズム塔で、光線を当てると割れて首都区画じゅうに飛び散る
   { id: "plateau",   w: 8400, h: 8400,  icon: "🔦" },
+  // v3.35.0: 英雄の国（正方形・案帳 DT-107）… 地図は大陸と同じ作り。中心の王城から人類の英雄が出てきて、
+  // 竜を1体ずつ一刀両断する。撃退するたびに強くなって戻ってくる
+  { id: "heroland",  w: 8400, h: 8400,  icon: "⚔" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
@@ -1764,6 +1767,7 @@ const SHAPE_RAILWAY   = 6;
 const SHAPE_FOREST    = 7;
 const SHAPE_METRO     = 8;
 const SHAPE_PLATEAU   = 9;
+const SHAPE_HEROLAND  = 10;
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
 
 function clampShape(v) {
@@ -2847,6 +2851,7 @@ function splitImpact(dirX, dirY, impulse, resist, mass, axis) {
  */
 function applyImpactToMover(m, fromX, fromY, impulse) {
   if (!m.alive || impulse <= 0) return;
+  if (m.def.hero) heroOnImpact(m, impulse);   // v3.35.0: 英雄は衝撃力に応じて気絶する
   const dx = m.wx - fromX, dy = m.wy - fromY;
   const d  = Math.sqrt(dx * dx + dy * dy) || 1;
   const axis = impactFreeAxis(m, _impactAxis) ? _impactAxis : null;
@@ -3110,6 +3115,7 @@ function pushRailVehicle(m, nx, ny, v) {
  *   それ以外   … 減衰する速度チャネル（押されたぶんだけ位置がずれる）
  */
 function pushMover(m, nx, ny, v) {
+  if (m.def && m.def.hero) { heroPush(m, nx, ny, v); return; }   // v3.35.0: 英雄は自前の速さで吹っ飛ぶ
   if (m.def && (m.def.part === "arm" || m.def.part === "leg")) {
     m.fvx += nx * v; m.fvy += ny * v;
     m.evx += nx * v * 0.5; m.evy += ny * v * 0.5;   // 肘にも半分＝腕全体がしなる
@@ -4469,7 +4475,7 @@ let START_Y = WORLD_H * 0.5;
 function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
   if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST ||
-      shape === SHAPE_METRO || shape === SHAPE_PLATEAU) {
+      shape === SHAPE_METRO || shape === SHAPE_PLATEAU || shape === SHAPE_HEROLAND) {
     return { x: 320, y: h - 320 };   // 角（首都は中心）
   }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
@@ -5854,6 +5860,7 @@ function generateStageLayout(stageIndex) {
     for (const b of kept) result.push(b);
     for (const w of generateFrontlineWalls(frontlinePlan)) result.push(w);
   }
+  resetHeroLand();   // v3.35.0: 英雄の国の英雄（出てくるのはステージが始まってから）
   // v3.34.0: 光線の高原の塔（町の外の野）
   beamTowers = [];
   if (worldShape === SHAPE_PLATEAU) {
@@ -7692,7 +7699,7 @@ function placeBossBuilding(stageIndex, config) {
   // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
   if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY ||
       worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_RAILWAY || worldShape === SHAPE_FOREST ||
-      worldShape === SHAPE_METRO || worldShape === SHAPE_PLATEAU) {
+      worldShape === SHAPE_METRO || worldShape === SHAPE_PLATEAU || worldShape === SHAPE_HEROLAND) {
     return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
   }
   if (worldShape === SHAPE_FRONTLINE) {
@@ -8563,6 +8570,14 @@ const MOVER_DEFS = {
   },
   // v3.23.0 攻撃ヘリ: 道路に縛られず飛ぶ大物。群れの周りを回りながら機関砲とロケットを浴びせる。
   // 首都の守り・増援として出る（首都の屋上にヘリポートがあるので）
+  // v3.35.0: 人類の英雄（英雄の国だけ・案帳 DT-107）。動き・攻撃・描き方は updateHero / drawHero が受け持つ。
+  // 射撃と爆発は盾で受けて半分。体力は段と時代で spawnHero が決める（ここの hp は図鑑などの目安）
+  hero: {
+    name: "hero", hero: true, elite: true,
+    hp: 1600, speed: 220, xp: 2500, eggDrop: 0, radius: 12,
+    color: "#e8ecf4", glowColor: "#ffd060", moveType: "patrol",
+    damageResist: { shot: 0.5, blast: 0.5 },
+  },
   metro_heli: {
     name: "metro_heli", flying: true, elite: true, showHpBar: true,
     inertia: { accel: 70 },   // v3.27.0: 加速・減速に時間がかかる（向きを変えるとき大きく膨らむ）
@@ -10649,6 +10664,7 @@ function updateMovers(dt) {
     // v2.3.0: 編成の車両は enemyGroups（updateRailTrainGroup）が動かす
     if (def.part === "train") continue;
     if (def.railBound) { updateRailMover(m, dt); continue; }
+    if (def.hero) { updateHero(m, dt); continue; }   // v3.35.0: 人類の英雄は自前で動いて斬る
     // 胴は共通の移動・攻撃に乗せたうえで、脚の本数と砲塔だけ先に片付ける
     if (def.walker) updateWalkerHull(m, dt);
 
@@ -12670,8 +12686,10 @@ function damageMover(m, damage, srcX, srcY) {
   if (m.def.part === "arm" || m.def.part === "leg") nudgeBehemothPart(m, srcX, srcY, damage);
   // v1.8.0: 脚を全部折られた多脚戦車は無防備（折りきった見返り）
   if (m.def.walker && m.grounded) damage *= WALKER_GROUNDED_MULT;
+  if (m.def.hero) damage = heroIncomingDamage(m, damage);   // v3.35.0: 気絶中の英雄は傷が増える
   m.hp -= damage;
   reportDamage(m, m.wx, m.wy, damage);
+  if (m.def.hero && m.hp <= 0) { heroDefeated(m); return; }   // v3.35.0: 英雄は倒れずに退く（最後の戦いだけ倒れる）
   if (m.hp <= 0) {
     m.alive = false;
     m.hp = 0;
@@ -14499,6 +14517,7 @@ function drawMovers() {
   for (const m of movers) {
     if (!m.alive) continue;
     const def = m.def;
+    if (def.hero) { drawHero(m); continue; }   // v3.35.0
     if (metroVb && (def.roadRunner || def.metroGun) &&
         (m.wx < metroVb.minX || m.wx > metroVb.maxX || m.wy < metroVb.minY || m.wy > metroVb.maxY)) continue;
     // v1.0.6: 巨人型だけ**描画用の向き**を使う（踏み替えの補間）。
@@ -19801,8 +19820,8 @@ const STRINGS = {
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
-               "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会", "光線の塔が立つ高原"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原"],
+               "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会", "光線の塔が立つ高原", "英雄が守る王国"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
   regionHint: "地域ごとに土地の形と遊び方が変わる。時代（建物・敵・兵器）はどの地域でも同じ。",
@@ -19830,6 +19849,8 @@ const STRINGS = {
       rule: "車は道路の上しか走れない。戦車は大通りだけ。首都に近づくと攻撃ヘリが飛んでくる。壊した区画は建て直されない" },
     { route: "角 → 中心のプリズム塔", play: "見晴らしのよい高原に光線の塔が立つ。塔は群れを追って光線を振り、光線は敵の街も焼く。群れで光線を街の上へ連れて行く。",
       rule: "群れは光線より少し速い。止まらなければ焼かれない。光線がプリズム（首都）に当たると割れて首都区画を焼く。塔とプリズムは光線では壊れない" },
+    { route: "角 → 中心の王城", play: "人類の英雄が王城から出てきて群れを追う。構えから高速で踏み込み、竜を1体ずつ一刀両断する。",
+      rule: "衝撃を当てると英雄は吹っ飛んで気絶する。撃退すると王城へ戻り、45秒後に1段強くなって帰ってくる。王城に迫るともう退かず、英雄が立っている間は王城が傷を半分しか受けない" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -19843,6 +19864,8 @@ const STRINGS = {
   openOptions: "オプション",
   challengeDone: (name, reward) => `チャレンジ達成: ${name}  +${reward}🔷`,
   continueRun: (stageNum) => `つづきから　STAGE ${stageNum}/8`,
+  heroRepelled: "英雄 撃退",   // v3.35.0
+  heroFallen: "英雄を討ち取った",
   // v3.33.0（案帳 DT-076）: 途中セーブで戻らないものは意図的な割り切り。そのことを再開ボタンの下に一言書く
   continueNote: "壊した建物はそのまま。削りかけの建物・動く敵・群れの位置はステージの最初に戻ります",
   cards: {
@@ -21647,6 +21670,7 @@ function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
+  if (settlement.isBoss && heroGuarding()) damage *= HERO_GUARD_DMG;   // v3.35.0: 英雄が立っている間の王城
   settlement.hp -= damage;
   reportDamage(settlement, settlement.wx, settlement.wy, damage);
   if (settlement.hp <= 0 && !settlement.fallen) {
@@ -26835,6 +26859,13 @@ function codexRegionCanvas(shape) {
     for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3 + 0.3; c.beginPath(); c.moveTo(26, 26); c.lineTo(26 + Math.cos(a) * 11, 26 + Math.sin(a) * 11); c.stroke(); }
     for (const [x, y] of [[20, 8], [46, 22]]) dot(x, y, 2.6, "#8fa4b4");
     diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
+  } else if (shape === SHAPE_HEROLAND) {
+    // 大陸と同じ町の散らばり。王城（ひし形）から金の輪の英雄が出て、白い予告線で群れへ踏み込む
+    for (const [x, y] of [[10, 12], [38, 10], [12, 36], [42, 40], [26, 46], [44, 24]]) dot(x, y, 3, CODEX_RG.town);
+    c.strokeStyle = "#ffd060"; c.lineWidth = 1.2; c.beginPath(); c.arc(18, 22, 3.6, 0, Math.PI * 2); c.stroke();
+    dot(18, 22, 2, "#e8ecf4");
+    c.strokeStyle = "rgba(255,255,255,0.8)"; c.setLineDash([2, 2]); c.beginPath(); c.moveTo(18, 22); c.lineTo(8, 42); c.stroke(); c.setLineDash([]);
+    diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
   }
   return cv;
 }
@@ -26978,7 +27009,7 @@ const REGION_CHOICE_COUNT = 3;
 // 最初から選べる地域。3つあるので初回から3択が成り立つ。残りは条件で解放（§7.4）
 // v3.7.0: 列車（軌道）以外は最初から全部（Shooter指示）。列車だけは初めてステージ5に着いたときに解放する
 const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL, SHAPE_FRONTLINE, SHAPE_SANCTUARY, SHAPE_ASTEROIDS,
-                             SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU];   // v3.34.0: 光線の高原も最初から   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
+                             SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND];   // v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
 // 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
 const WIPE_GRACE_SECONDS  = 2;
 
@@ -29600,6 +29631,34 @@ function rollBallOnBuildingFall(s) {
 
 /** 玉の影と、貼り付いた建物（表も裏も同じ絵。裏は薄く小さく）。竜は drawBoids がこの上に描く。
  *  v3.30.0: 茶色の球はやめ、竜と巻き込んだ建物だけで玉を描く（Shooter指示） */
+// v3.35.0（案帳 DT-045・Shooter判定）: 玉の中の竜は1体ずつのHPの帯が見えないので、群れ全体のHPを玉の下の1本のゲージで出す。
+// 分母は群れにいる竜全員の最大HP、分子は動ける竜の今のHP（ダウン中は0として数える）
+const ROLL_HP_GAUGE_H      = 6;      // ゲージの太さ（画面px）
+const ROLL_HP_GAUGE_GAP    = 10;     // 玉の下端からの間（画面px）
+const ROLL_HP_GAUGE_MIN_W  = 60;     // 玉が小さくてもこの幅（画面px）より細くしない
+const ROLL_HP_GAUGE_COLORS = { back: "rgba(0,0,0,0.55)", rim: "rgba(255,255,255,0.65)", high: "#5ad06a", mid: "#e8c440", low: "#e8503a" };
+function drawRollBallHpGauge() {
+  if (!rollBallActive() || gameState !== "playing") return;
+  let hp = 0, max = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+    max += effBoidMaxHpFor(i);
+    if (!boidDowned[i]) hp += Math.max(0, boidHp[i]);
+  }
+  if (max <= 0) return;
+  const ratio = Math.min(1, hp / max);
+  const b = rollBall, R = rollRadius(), px1 = 1 / cam.scale;
+  const w = Math.max(ROLL_HP_GAUGE_MIN_W * px1, R * 1.6), h = ROLL_HP_GAUGE_H * px1;
+  const x = b.x - w / 2, y = b.y + R + ROLL_HP_GAUGE_GAP * px1;
+  ctx.save();
+  ctx.fillStyle = ROLL_HP_GAUGE_COLORS.back;
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = ratio > 0.5 ? ROLL_HP_GAUGE_COLORS.high : ratio > 0.25 ? ROLL_HP_GAUGE_COLORS.mid : ROLL_HP_GAUGE_COLORS.low;
+  ctx.fillRect(x, y, w * ratio, h);
+  ctx.strokeStyle = ROLL_HP_GAUGE_COLORS.rim; ctx.lineWidth = px1;
+  ctx.strokeRect(x, y, w, h);
+  ctx.restore();
+}
 function drawRollBall() {
   if (!rollBallActive()) return;
   const b = rollBall, R = rollRadius();
@@ -30243,6 +30302,316 @@ function drawDrumRings() {
       ctx.strokeStyle = "#ffb070";
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(px[i], py[i], 20 + 90 * f, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// =====================================================================
+// v3.35.0: 英雄の国（SHAPE_HEROLAND）と人類の英雄（案帳 DT-107・1回目）
+// =====================================================================
+// 人類が英雄を立てて竜に立ち向かう国。地図は大陸と同じ作りで、中心に王城（首都）。地域の仕掛けは英雄ひとつ。
+// 英雄はステージ開始から少しして王城から出てきて、群れを追う。構え（予告線）→高速の踏み込み→竜を1体ずつ一刀両断。
+// 衝撃の攻撃を当てると衝撃力に応じて吹っ飛んで気絶する（踏み込み中に当てると気絶が2倍）。気絶中は受ける傷が増える。
+// 体力が尽きると光の筋になって王城へ戻り、しばらくして1段強くなって帰ってくる。
+// 群れが王城に迫ってからは退かない（最後の戦い）。英雄が立っている間、王城は傷を半分しか受けない。
+const HERO_FIRST_DELAY      = 10;     // ステージ開始から最初に出てくるまで（秒）
+const HERO_RETURN_DELAY     = 45;     // 撃退してから戻ってくるまで（秒）
+const HERO_MAX_LEVEL        = 5;
+const HERO_HP_BY_LEVEL      = [1600, 2240, 2700, 3200, 3800];   // 段ごとの体力（時代で HERO_HP_PER_ERA ずつ増える）
+const HERO_HP_PER_ERA       = 0.3;
+const HERO_INTERVAL_BY_LEVEL = [3.0, 2.4, 2.4, 2.2, 2.0];       // 次に斬るまでの間（秒）
+const HERO_KILLS_BY_LEVEL   = [1, 1, 2, 2, 2];                   // 1回の踏み込みで続けて斬る数（3段から2体）
+const HERO_DASHES_BY_LEVEL  = [1, 1, 1, 3, 3];                   // 1回の構えで続けて踏み込む回数（4段から3回）
+const HERO_WALK_SPEED       = 220;    // 歩く速さ（群れより速いので逃げ切れない）
+const HERO_RUN_SPEED        = 480;    // 群れから遠いときは駆けてくる（王城から地図の端まで5000pxあるので、歩くと30秒近くかかった）
+const HERO_RUN_R            = 1400;   // これより遠いと駆ける
+const HERO_ENGAGE_R         = 300;    // この距離まで群れに近づいたら構える
+const HERO_WINDUP           = 0.6;    // 構え（予告線が出る）
+const HERO_DASH_SPEED       = 900;
+const HERO_DASH_OVERSHOOT   = 70;     // 狙った竜の先までこれだけ踏み込む
+const HERO_SLASH_R          = 30;     // 踏み込みの道筋からこの距離の竜を斬る
+const HERO_RECOVER          = 0.6;    // 斬った後に止まる＝殴るすき（秒）
+const HERO_CHAIN_R          = 320;    // 続けて斬る次の竜を探す距離
+const HERO_SPECIAL_DMG      = 0.5;    // 特殊個体はダウンせず、最大体力のこの割合を失う
+const HERO_STUN_PER_IMPACT  = 1 / 200; // 衝撃力100で0.5秒・300で1.5秒
+const HERO_STUN_MAX         = 3;
+const HERO_STUN_DASH_MULT   = 2;      // 踏み込み中に当てると気絶が2倍（迎え撃ち）
+const HERO_STUN_DECAY       = 0.75;   // 続けて気絶させるたびに次の気絶はこの倍に短くなる
+const HERO_STUN_RESET       = 5;      // 気絶しないままこの秒数たつと短くなったのが元に戻る
+const HERO_STUNNED_DMG      = 1.5;    // 気絶中に受ける傷の倍率
+const HERO_KNOCK_PER_IMPACT = 1.6;    // 衝撃力1あたりの吹っ飛ぶ速さ（px/秒）
+const HERO_KNOCK_DRAG       = 5;      // 吹っ飛びの収まり（1/秒）
+const HERO_FINAL_R          = 1100;   // 群れの重心が王城からこの距離に入ったら英雄はもう退かない
+const HERO_GUARD_DMG        = 0.5;    // 英雄が立っている間の王城が受ける傷の倍率
+const HERO_REPEL_EGGS       = 3;
+const HERO_REPEL_HEAL       = 0.2;    // 撃退したとき群れのHPをこの割合だけ戻す
+const HERO_FINAL_EGGS       = 5;
+const HERO_FINAL_CRYSTALS   = 30;
+const HERO_STREAK_TIME      = 0.7;    // 撃退されて王城へ飛ぶ光の筋が見えている秒数
+const HERO_COLORS = { body: "#e8ecf4", rim: "#ffd060", cape: "#c8283a", sword: "#ffffff", warn: "rgba(255,255,255,0.75)",
+                      slash: "rgba(255,255,255,0.95)", glow: "rgba(255,220,120,0.35)", stun: "#ffe060" };
+
+let heroState = null;   // 英雄の国のステージだけ { m, level, timer, away, final, defeated, stunMul, sinceStun }
+const heroFx = [];      // 斬撃の三日月・割れた竜・光の筋（見た目だけ）
+
+function heroInRegion() { return worldShape === SHAPE_HEROLAND && heroState !== null; }
+function heroCapital() { return bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null; }
+/** 王城を守っているか（英雄が地図に立っている） */
+function heroGuarding() { return heroInRegion() && !!heroState.m && heroState.m.alive; }
+
+function resetHeroLand() {
+  heroFx.length = 0;
+  heroState = worldShape === SHAPE_HEROLAND
+    ? { m: null, level: 1, timer: HERO_FIRST_DELAY, away: true, final: false, defeated: false, stunMul: 1, sinceStun: 0 }
+    : null;
+}
+
+function spawnHero() {
+  const cap = heroCapital();
+  if (!cap) return;
+  const lv = heroState.level;
+  const hp = Math.round(HERO_HP_BY_LEVEL[lv - 1] * (1 + HERO_HP_PER_ERA * currentStage));
+  const m = makeMover(MOVER_DEFS.hero, () => ({ x: cap.wx, y: cap.wy }));
+  m.wx = cap.wx; m.wy = cap.wy + cap.radius + 20;
+  m.maxHp = hp; m.hp = hp; m.xpValue = MOVER_DEFS.hero.xp;
+  m.hero = { state: "walk", t: 0, cool: 1.0, target: -1, dashX: 0, dashY: 0, dirX: 1, dirY: 0, kills: 0, dashesLeft: 0, stun: 0, kvx: 0, kvy: 0 };
+  movers.push(m);
+  heroState.m = m; heroState.away = false;
+  spawnDragonAppearEffect(m.wx, m.wy);
+}
+
+/** 英雄の国の毎フレーム（出てくるまでの時間・王城への接近・光の筋の寿命） */
+function updateHeroLand(dt) {
+  for (let k = heroFx.length - 1; k >= 0; k--) { heroFx[k].t += dt; if (heroFx[k].t >= heroFx[k].life) heroFx.splice(k, 1); }
+  if (!heroInRegion() || gameState !== "playing" || heroState.defeated) return;
+  const cap = heroCapital();
+  if (cap && !heroState.final) {
+    const c = calcFriendlyCentroid();
+    if (dist2(c.x, c.y, cap.wx, cap.wy) < HERO_FINAL_R * HERO_FINAL_R) heroState.final = true;
+  }
+  if (heroState.away) {
+    heroState.timer -= dt;
+    // 最後の戦いでは待たずに出てくる（王城の前に立つ）
+    if (heroState.timer <= 0 || (heroState.final && heroState.timer > 2)) {
+      if (heroState.final) heroState.level = Math.max(heroState.level, 3);
+      spawnHero();
+    }
+  }
+}
+
+/** 一番近い動ける竜（いなければ -1） */
+function heroNearestBoid(x, y, exclude = -1) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < N; i++) {
+    if (i === exclude || boidDead[i] || boidDowned[i]) continue;
+    const d = dist2(px[i], py[i], x, y);
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+
+function heroStartDash(m, h, i) {
+  const dx = px[i] - m.wx, dy = py[i] - m.wy, d = Math.sqrt(dx * dx + dy * dy) || 1;
+  h.dirX = dx / d; h.dirY = dy / d;
+  h.dashX = px[i] + h.dirX * HERO_DASH_OVERSHOOT; h.dashY = py[i] + h.dirY * HERO_DASH_OVERSHOOT;
+  h.target = i; h.state = "dash";
+}
+
+/** 竜を一刀両断する（普通の竜はダウン。特殊個体は最大体力の半分） */
+function heroSlash(m, h, i) {
+  const dmg = boidSpecial[i] !== SPECIAL_NONE ? effBoidMaxHpFor(i) * HERO_SPECIAL_DMG : effBoidMaxHpFor(i) * 10;
+  hitBoid(i, { direct: dmg }, h.dirX, h.dirY);
+  const a = Math.atan2(h.dirY, h.dirX);
+  heroFx.push({ kind: "slash", x: px[i], y: py[i], a, t: 0, life: 0.35 });
+  heroFx.push({ kind: "halves", x: px[i], y: py[i], a, t: 0, life: 0.5 });
+  triggerShake(0.7, 0.08);
+  triggerFlash("rgba(255,255,255,0.18)", 0.1);
+}
+
+function updateHero(m, dt) {
+  const h = m.hero;
+  const lv = heroState.level;
+  // 吹っ飛び（衝撃で入った速さ）
+  if (h.kvx || h.kvy) {
+    m.wx += h.kvx * dt; m.wy += h.kvy * dt;
+    const k = Math.exp(-HERO_KNOCK_DRAG * dt);
+    h.kvx *= k; h.kvy *= k;
+    if (Math.abs(h.kvx) + Math.abs(h.kvy) < 5) { h.kvx = 0; h.kvy = 0; }
+    m.wx = Math.max(40, Math.min(WORLD_W - 40, m.wx)); m.wy = Math.max(40, Math.min(WORLD_H - 40, m.wy));
+  }
+  heroState.sinceStun += dt;
+  if (heroState.sinceStun > HERO_STUN_RESET) heroState.stunMul = 1;
+  if (h.stun > 0) { h.stun -= dt; return; }
+  const c = calcFriendlyCentroid();
+  if (countAliveBoids() === 0) { h.state = "walk"; return; }
+  if (h.state === "walk") {
+    h.cool -= dt;
+    const dx = c.x - m.wx, dy = c.y - m.wy, d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const sp = d > HERO_RUN_R ? HERO_RUN_SPEED : HERO_WALK_SPEED;
+    if (d > HERO_ENGAGE_R * 0.8) { m.wx += dx / d * sp * dt; m.wy += dy / d * sp * dt; }
+    m.headingX = dx / d; m.headingY = dy / d;
+    if (h.cool <= 0 && d < HERO_ENGAGE_R) {
+      const i = heroNearestBoid(m.wx, m.wy);
+      if (i >= 0) { h.state = "windup"; h.t = HERO_WINDUP; h.target = i; h.dashesLeft = HERO_DASHES_BY_LEVEL[lv - 1]; }
+    }
+  } else if (h.state === "windup") {
+    h.t -= dt;
+    if (boidDead[h.target] || boidDowned[h.target]) h.target = heroNearestBoid(m.wx, m.wy);
+    if (h.target < 0) { h.state = "walk"; return; }
+    const dx = px[h.target] - m.wx, dy = py[h.target] - m.wy, d = Math.sqrt(dx * dx + dy * dy) || 1;
+    m.headingX = dx / d; m.headingY = dy / d;
+    if (h.t <= 0) { h.kills = 0; heroStartDash(m, h, h.target); }
+  } else if (h.state === "dash") {
+    const step = HERO_DASH_SPEED * dt;
+    const x0 = m.wx, y0 = m.wy;
+    const rx = h.dashX - m.wx, ry = h.dashY - m.wy, rem = Math.sqrt(rx * rx + ry * ry);
+    const mv = Math.min(step, rem);
+    m.wx += h.dirX * mv; m.wy += h.dirY * mv;
+    m.headingX = h.dirX; m.headingY = h.dirY;
+    heroFx.push({ kind: "after", x: x0, y: y0, a: Math.atan2(h.dirY, h.dirX), t: 0, life: 0.18 });
+    // 道筋に入った竜を斬る（狙った竜を優先。続けて斬れる数まで）
+    const t = h.target;
+    if (t >= 0 && !boidDead[t] && !boidDowned[t] && pointSegDist2(px[t], py[t], x0, y0, m.wx, m.wy) < HERO_SLASH_R * HERO_SLASH_R) {
+      heroSlash(m, h, t);
+      h.kills++;
+      const next = h.kills < HERO_KILLS_BY_LEVEL[lv - 1] ? heroNearestBoid(m.wx, m.wy, t) : -1;
+      if (next >= 0 && dist2(px[next], py[next], m.wx, m.wy) < HERO_CHAIN_R * HERO_CHAIN_R) { heroStartDash(m, h, next); return; }
+      h.target = -1;
+    }
+    if (rem <= step) {
+      h.dashesLeft--;
+      if (h.dashesLeft > 0) {
+        const i = heroNearestBoid(m.wx, m.wy);
+        if (i >= 0) { h.state = "windup"; h.t = HERO_WINDUP * 0.5; h.target = i; return; }
+      }
+      h.state = "recover"; h.t = HERO_RECOVER;
+    }
+  } else if (h.state === "recover") {
+    h.t -= dt;
+    if (h.t <= 0) { h.state = "walk"; h.cool = HERO_INTERVAL_BY_LEVEL[lv - 1]; }
+  }
+}
+
+/** 衝撃が当たった（applyImpactToMover から）。衝撃力に応じて気絶 */
+function heroOnImpact(m, impulse) {
+  const h = m.hero;
+  let s = impulse * HERO_STUN_PER_IMPACT * heroState.stunMul;
+  if (h.state === "dash") s *= HERO_STUN_DASH_MULT;
+  s = Math.min(HERO_STUN_MAX, s);
+  if (s < 0.05) return;
+  h.stun = Math.max(h.stun, s);
+  heroState.stunMul *= HERO_STUN_DECAY;
+  heroState.sinceStun = 0;
+  if (h.state === "dash" || h.state === "windup") { h.state = "recover"; h.t = 0; }   // 構え・踏み込みは崩れる
+}
+/** 押された（pushMover から）。吹っ飛ぶ */
+function heroPush(m, nx, ny, v) {
+  m.hero.kvx += nx * v * HERO_KNOCK_PER_IMPACT; m.hero.kvy += ny * v * HERO_KNOCK_PER_IMPACT;
+}
+/** 受ける傷（気絶中は増える） */
+function heroIncomingDamage(m, damage) { return m.hero && m.hero.stun > 0 ? damage * HERO_STUNNED_DMG : damage; }
+
+/** 体力が尽きた。最後の戦いなら倒れる、そうでなければ王城へ退いて強くなって戻る */
+function heroDefeated(m) {
+  const cap = heroCapital();
+  m.alive = false; m.hp = 0;
+  heroState.m = null;
+  for (let k = 0; k < (heroState.final ? HERO_FINAL_EGGS : HERO_REPEL_EGGS); k++) {
+    const a = random() * Math.PI * 2, r = 30 + random() * 40;
+    spawnEgg(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
+  }
+  spawnXpGems(m.wx, m.wy, m.xpValue ?? MOVER_DEFS.hero.xp);
+  runKills++;
+  if (heroState.final) {
+    heroState.defeated = true;
+    profile.crystals += HERO_FINAL_CRYSTALS; saveProfile();
+    triggerFlash("rgba(255,230,160,0.35)", 0.4);
+    pushWorldText(m.wx, m.wy, STRINGS.heroFallen, "#ffe08a", true);
+    return;
+  }
+  // 撃退：群れを少し回復し、光の筋になって王城へ
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    boidHp[i] = Math.min(effBoidMaxHpFor(i), boidHp[i] + effBoidMaxHpFor(i) * HERO_REPEL_HEAL);
+  }
+  if (cap) heroFx.push({ kind: "streak", x: m.wx, y: m.wy, x2: cap.wx, y2: cap.wy, t: 0, life: HERO_STREAK_TIME });
+  pushWorldText(m.wx, m.wy, STRINGS.heroRepelled, "#ffe08a", true);
+  heroState.away = true;
+  heroState.timer = HERO_RETURN_DELAY;
+  heroState.level = Math.min(HERO_MAX_LEVEL, heroState.level + 1);
+}
+
+/** 英雄と、構えの予告線（drawMovers から。英雄の分はほかの敵の描き方に乗らない） */
+function drawHero(m) {
+  const h = m.hero, r = m.def.radius;
+  const a = Math.atan2(m.headingY, m.headingX);
+  ctx.save();
+  if (h.state === "windup" && h.target >= 0 && !boidDead[h.target]) {
+    ctx.strokeStyle = HERO_COLORS.warn; ctx.lineWidth = 1.5; ctx.setLineDash([6, 6]);
+    ctx.globalAlpha = 0.5 + 0.5 * Math.abs(Math.sin(breathTime * 20));
+    ctx.beginPath(); ctx.moveTo(m.wx, m.wy); ctx.lineTo(px[h.target], py[h.target]); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+  }
+  ctx.translate(m.wx, m.wy);
+  // 金の輪（英雄の印）
+  ctx.fillStyle = HERO_COLORS.glow;
+  ctx.beginPath(); ctx.arc(0, 0, r * 2.1, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = HERO_COLORS.rim; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(0, 0, r * 1.7, 0, Math.PI * 2); ctx.stroke();
+  ctx.rotate(a);
+  // 赤いマント（後ろへなびく）
+  const sway = Math.sin(breathTime * 9) * r * 0.25;
+  ctx.fillStyle = HERO_COLORS.cape;
+  ctx.beginPath(); ctx.moveTo(-r * 0.3, -r * 0.8); ctx.lineTo(-r * 2.2, -r * 0.9 + sway); ctx.lineTo(-r * 2.0, r * 0.9 + sway); ctx.lineTo(-r * 0.3, r * 0.8); ctx.closePath(); ctx.fill();
+  // 体（白銀の丸に金の縁）
+  ctx.fillStyle = HERO_COLORS.body; ctx.strokeStyle = HERO_COLORS.rim; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  // 剣（構え中は光る）
+  ctx.strokeStyle = HERO_COLORS.sword; ctx.lineWidth = h.state === "windup" ? 3 : 2;
+  if (h.state === "windup") { ctx.shadowColor = HERO_COLORS.rim; ctx.shadowBlur = 10; }
+  ctx.beginPath(); ctx.moveTo(r * 0.5, r * 0.6); ctx.lineTo(r * 2.4, r * 0.6); ctx.stroke();
+  ctx.restore();
+  // 体力の帯（頭の上）
+  const bw = r * 4, bh = 4, bx = m.wx - bw / 2, by = m.wy - r * 2.6;
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(bx, by, bw, bh);
+  ctx.fillStyle = HERO_COLORS.rim; ctx.fillRect(bx, by, bw * Math.max(0, m.hp / m.maxHp), bh);
+  ctx.restore();
+  // 気絶の星
+  if (h.stun > 0) {
+    ctx.save(); ctx.fillStyle = HERO_COLORS.stun;
+    for (let k = 0; k < 3; k++) {
+      const sa = breathTime * 6 + k * Math.PI * 2 / 3;
+      ctx.beginPath(); ctx.arc(m.wx + Math.cos(sa) * r * 1.3, m.wy - r * 1.6 + Math.sin(sa) * r * 0.4, 2.2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+/** 斬撃の三日月・割れて飛ぶ竜・踏み込みの残像・王城へ戻る光の筋 */
+function drawHeroFx() {
+  if (heroFx.length === 0) return;
+  ctx.save();
+  for (const f of heroFx) {
+    const k = f.t / f.life, alpha = 1 - k;
+    if (f.kind === "slash") {
+      ctx.strokeStyle = HERO_COLORS.slash; ctx.globalAlpha = alpha; ctx.lineWidth = 4 * (1 - k * 0.5); ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(f.x, f.y, 22 + 10 * k, f.a - Math.PI / 2 - 0.9, f.a - Math.PI / 2 + 0.9); ctx.stroke();
+    } else if (f.kind === "halves") {
+      const off = 6 + 30 * k;
+      ctx.globalAlpha = alpha; ctx.fillStyle = "#ff8a30";
+      for (const s of [-1, 1]) {
+        const hx = f.x + Math.cos(f.a + s * Math.PI / 2) * off, hy = f.y + Math.sin(f.a + s * Math.PI / 2) * off;
+        ctx.beginPath(); ctx.arc(hx, hy, 5 * (1 - k * 0.5), 0, Math.PI * 2); ctx.fill();
+      }
+    } else if (f.kind === "after") {
+      ctx.globalAlpha = alpha * 0.5; ctx.fillStyle = HERO_COLORS.body;
+      ctx.beginPath(); ctx.arc(f.x, f.y, 10, 0, Math.PI * 2); ctx.fill();
+    } else if (f.kind === "streak") {
+      const hx = f.x + (f.x2 - f.x) * k, hy = f.y + (f.y2 - f.y) * k;
+      ctx.globalAlpha = alpha; ctx.strokeStyle = HERO_COLORS.rim; ctx.lineWidth = 5; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(f.x + (f.x2 - f.x) * Math.max(0, k - 0.25), f.y + (f.y2 - f.y) * Math.max(0, k - 0.25)); ctx.lineTo(hx, hy); ctx.stroke();
     }
   }
   ctx.restore();
@@ -31047,6 +31416,8 @@ function render(now) {
   drawMagnetShards(); // v3.31.0: 磁竜の破片
   drawRollBall();     // v3.29.0: 塊竜の玉（竜はこの上に貼り付いて描かれる）
   drawBoids();
+  drawRollBallHpGauge();   // v3.35.0: 塊竜の群れ全体のHPゲージ（玉の下）
+  drawHeroFx();            // v3.35.0: 英雄の斬撃・割れた竜・光の筋（竜の上）
   drawDrumRings();         // v3.31.0: 軍鼓の拍の輪
   drawCrackMarks();          // v1.1.1: 楔竜が入れたひび（相手の上）
   drawWakeCharged();         // v1.1.0: 次の一撃が乗っている竜の輪（竜の上）
@@ -32620,11 +32991,25 @@ function rebuildMinimapBase() {
  * 最強モードに入ったら役目が終わるので消す。
  */
 const MINIMAP_TOWN_MARK_R = 1.5;
+// v3.35.0（案帳 DT-062・Shooter判定）: 次の1街の陥落で警戒度が上がるときだけ、まだの町の点を**全部同じように**明滅させる。
+// 明滅＝「次にどこを落としても警戒度が上がる」。町どうしには差を付けない（特定の町だけ目立たせない）。色も増やさない
+const MINIMAP_TIER_GLOW_R      = 3.2;    // 明滅の暈の半径（px）
+const MINIMAP_TIER_GLOW_PERIOD = 1100;   // 明滅の周期（ミリ秒）
 function drawMinimapTownMarks(c, scaleX, scaleY) {
   if (bossEnraged) return;
+  const tierGlow = townsLeftForNextTier() === 1;
+  const pulse = tierGlow ? 0.5 + 0.5 * Math.sin(performance.now() / MINIMAP_TIER_GLOW_PERIOD * Math.PI * 2) : 0;
   for (const st of townStats.values()) {
     if (st.surrendered) continue;
     const mx = st.cx * scaleX, my = st.cy * scaleY;
+    if (tierGlow) {
+      c.globalAlpha = 0.25 + 0.45 * pulse;
+      c.fillStyle = MINIMAP_TARGET_COLOR;
+      c.beginPath();
+      c.arc(mx, my, MINIMAP_TOWN_MARK_R + MINIMAP_TIER_GLOW_R * (0.6 + 0.4 * pulse), 0, Math.PI * 2);
+      c.fill();
+      c.globalAlpha = 1;
+    }
     // 暗い縁を敷く（街のドットの上でも点が沈まない）。縁は 0.7px ぶんだけ
     c.fillStyle = "rgba(0,0,0,0.55)";
     c.beginPath();
@@ -34211,6 +34596,7 @@ function tick() {
     updateFires(wdt);             // v0.10: 燃える建物の火の粉・煙柱
     updateCanopy(wdt);            // v3.17.0: 大樹海の樹冠の延焼
     updateBeamTowers(wdt);        // v3.34.0: 光線の高原の塔と光線
+    updateHeroLand(wdt);          // v3.35.0: 英雄の国（英雄が出てくる・戻ってくる）
     updateWorldTree(wdt);         // v3.19.0: 巨大樹（大樹海の首都）の灯と心臓の魔法
     maybeShowLevelUp();           // v0.6: レベルアップが積まれていれば3択を出す（非モーダル）
   } else if (gameState === "title") {
