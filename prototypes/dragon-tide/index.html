@@ -104,6 +104,9 @@
   }
   #hud-eggrow { color: #ffd040; font-size: 11px; margin-top: 1px; }
 
+  /* v3.36.0: 陥落の光の粒が警戒度の表示に着いたときに一瞬光る */
+  @keyframes tierPulse { 0% { box-shadow: 0 0 0 0 rgba(255,224,138,0.9); color: #ffe08a; } 100% { box-shadow: 0 0 0 10px rgba(255,224,138,0); } }
+  #h-stage.tier-pulse { animation: tierPulse 0.6s ease-out; }
   /* 最上段2行目: ステージ名と警戒度（ほぼ動かないフレーバーなので控えめに） */
   #h-stage {
     padding: 1px 9px;
@@ -996,7 +999,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.35.0";
+const GAME_VERSION = "v3.36.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2095,6 +2098,7 @@ const ATTACK_DEFS = {
   erupt:          { ja: "地割れ",     en: "Fissure",           kind: "erupt",     recoilDist: 0,  fireStun: 0    },
   // v3.31.0: 磁竜。壊した建物の破片を周りに回して削り、急旋回で投げる（直接）
   magnetshards:   { ja: "破片の輪",   en: "Shard Orbit",       kind: "magnet",    recoilDist: 0,  fireStun: 0    },
+  wispfire:       { ja: "取り憑き火", en: "Haunting Flame",    kind: "wisp",      recoilDist: 0,  fireStun: 0,   attribute: ATTRIBUTE_FIRE },   // v3.36.0
   // v3.31.0: 双子竜。2列の間に張る雷のアーチ（ブレス）
   twinarc:        { ja: "雷の橋",     en: "Twin Arc",          kind: "arc",       recoilDist: 0,  fireStun: 0,    attribute: ATTRIBUTE_THUNDER },
 };
@@ -2328,7 +2332,16 @@ const SPECIES_DEFS = {
     ja: "双子竜", en: "Twin Dragon", icon: "\u{1F46F}", color: "#ffe070", element: "twin",
     attack: "twinarc", spriteTint: "#e0c040",
     desc: "群れが線の左右2列に分かれて並んで飛び、2列の間を雷のアーチで焼く。列の外は空振り",
-    move: { maxSpeed: 165, accel: 320, turnRate: 2.3, pathEndMode: "stop" },
+    // v3.36.0: 線を弧長でなぞる隊列に乗せる（左右の列を、各竜がいる所の線の向きで分けるため）
+    move: { maxSpeed: 165, accel: 320, turnRate: 2.3, pathEndMode: "stop", pathTrace: true, leaderSpeed: 160 },
+  },
+  // ---- v3.36.0: 案帳 DT-083（種またぎで入る）----
+  // 鬼火: 飛ばない。描いた線の上に灯を並べ、最後尾の灯が消えて線の先に灯る（wisp）。群れの物理は使わない
+  wisp: {
+    ja: "鬼火", en: "Will-o'-Wisp", icon: "\u{1F47B}", color: "#a0d8ff", element: "wisp",
+    attack: "wispfire", spriteTint: "#9fd8ff", wisp: true, noTail: true, hpMult: 0.8,
+    desc: "飛ばずに、描いた線の上に灯を並べて尺取りで進む。灯のまわりを焼き、消えた灯は近くの建物に青い火を残す",
+    move: { maxSpeed: 136, accel: 320, turnRate: 2.3, pathEndMode: "stop" },
   },
 };
 
@@ -4414,7 +4427,7 @@ function screenToWorld(sx, sy) {
 }
 
 function updateCamera(dt) {
-  const centroid = calcFriendlyCentroid();
+  const centroid = wispActive() && wisp ? wispCameraTarget() : calcFriendlyCentroid();   // v3.36.0: 鬼火は列の前のほうを追う
   const lerpFactor = 0.08;
   cam.x += (centroid.x - cam.x) * lerpFactor;
   cam.y += (centroid.y - cam.y) * lerpFactor;
@@ -5861,6 +5874,7 @@ function generateStageLayout(stageIndex) {
     for (const w of generateFrontlineWalls(frontlinePlan)) result.push(w);
   }
   resetHeroLand();   // v3.35.0: 英雄の国の英雄（出てくるのはステージが始まってから）
+  fallFx.length = 0; fallPeople.length = 0;   // v3.36.0: 前のステージの陥落の演出を残さない
   // v3.34.0: 光線の高原の塔（町の外の野）
   beamTowers = [];
   if (worldShape === SHAPE_PLATEAU) {
@@ -18944,7 +18958,8 @@ function settlementFall(settlementIndex) {
   }
 
   rollBallOnBuildingFall(settlement);   // v3.29.0: 塊竜の玉が巻き込むと大きくなる
-  magnetOnBuildingFall(settlement);     // v3.31.0: 磁竜は近くで壊れた建物の破片を纏う
+  magnetOnBuildingFall(settlement);
+  wispOnBuildingFall(settlement);       // v3.36.0: 取り憑かれた建物が壊れたら隣へ燃え移る     // v3.31.0: 磁竜は近くで壊れた建物の破片を纏う
   // v0.6: XPジェムを撒く＋撃破数を記録（仕様 §5.1）
   spawnXpGems(settlement.wx, settlement.wy, xpValueOf(settlement));
   runKills++;
@@ -18992,6 +19007,7 @@ function settlementFall(settlementIndex) {
         st.surrendered = true;
         townJustSurrendered = true;
         pushWorldText(st.cx, st.cy, "陥落", "#ffe08a", true);   // v3.28.0: 画面の外なら画面の端に寄せて出す
+        onTownFallFx(settlement._townIndex, st);   // v3.36.0: 守りが崩れる輪・逃げ出す住民・警戒度へ飛ぶ光の粒
         hapticPulse(120);
       }
     }
@@ -19753,6 +19769,7 @@ const STRINGS = {
     mole:     "土竜が地の底から怒りを突き上げる",
     magnet:   "磁竜が街の瓦礫を巻き上げる",
     twin:     "双子竜が雷の橋を架ける",
+    wisp:     "鬼火が冷えた卵の恨みを灯す",
   },
   storySpeciesFallback: "竜たちが怒りを向ける",
   // ステージクリア＝竜の怒りを買った文明の滅亡（時代ごと）
@@ -20279,6 +20296,14 @@ SPECIES_EVO_SPEC.magnet = {
   B: { name: "雷磁竜", tint: "#d0c0ff", scale: 1.0, eff: { rate: 0.25 },
        next: [["火花", { rate: 0.18 }], ["鋭い破片", { dmg: 0.20 }]] },
 };
+// v3.36.0: 鬼火。分岐で灯の数が変わる案（狐火16個・大鬼火6個）はまだ入れていない（効き目は威力・範囲・間隔で出す）
+SPECIES_EVO_SPEC.wisp = {
+  L: [["強い火", { dmg: 0.15 }], ["広い灯", { range: 0.15 }], ["早い明滅", { rate: 0.18 }], ["強い火・二", { dmg: 0.15 }]],
+  A: { name: "狐火", tint: "#c0e8ff", scale: 1.0, eff: { rate: 0.20, range: 0.10 },
+       next: [["嫁入り行列", { range: 0.15 }], ["野火", { dmg: 0.20 }]] },
+  B: { name: "大鬼火", tint: "#70b0ff", scale: 1.15, eff: { range: 0.40, hp: 0.20 },
+       next: [["祟り火", { dmg: 0.20 }], ["業火", { dmg: 0.25 }]] },
+};
 SPECIES_EVO_SPEC.twin = {
   L: [["強い雷", { dmg: 0.15 }], ["広い列", { range: 0.15 }], ["強い雷・二", { dmg: 0.15 }], ["広い列・二", { range: 0.15 }]],
   A: { name: "雷門竜", tint: "#fff080", scale: 1.1, eff: { dmg: 0.20, range: 0.20 },
@@ -20315,6 +20340,7 @@ const CROSS_EVOLUTIONS = [
   // v3.31.0: 暴食（引き寄せる）＋止まらぬ鉄塊（重さ）＝瓦礫を纏う／光剣＋煽る風＝並んで飛ぶ光の橋
   { to: "magnet",   needs: { deflect: 1, heavy: 1 }, from: "any" },
   { to: "twin",     needs: { beacon: 1, wake: 1 },   from: "any" },
+  { to: "wisp",     needs: { rainbow: 1, frost: 1 }, from: "any" },   // v3.36.0: 冷たい光と霧で「冷たい火」
 ];
 // v3.6.0: 種またぎは同じレベルのまま行き来するので、専用の「進化形」は持たない（EVOLVED_FORMS は撤去）
 
@@ -20410,6 +20436,7 @@ const SPECIES_CATEGORY = {
   shark: "direct", tortoise: "shot", thunder: "shot",   // v3.8.0（v3.9.11: 亀竜は甲羅弾＝ブレス）
   ball: "direct", mole: "blast",   // v3.29.0
   magnet: "direct", twin: "shot",  // v3.31.0
+  wisp: "direct",                   // v3.36.0
 };
 const CATEGORY_NAMES = { direct: "直接", shot: "ブレス", blast: "爆発" };
 function flockCategory() { return SPECIES_CATEGORY[flockSpecies] || "shot"; }
@@ -21583,6 +21610,7 @@ const SPECIES_FLASH_COLOR = {
   mole:    "rgba(176,136,80,0.6)",
   magnet:  "rgba(176,144,224,0.6)",
   twin:    "rgba(255,224,112,0.7)",
+  wisp:    "rgba(160,216,255,0.7)",
 };
 
 // ---- BULLET（氷竜・直進弾丸）基礎性能（仕様 §6.2）----
@@ -24013,6 +24041,8 @@ function updateWeaponAttacks(dt) {
     updateMagnetAttacks(dt);  // v3.31.0: 磁竜
   } else if (flockWeapon === "arc") {
     updateTwinArcs(dt);       // v3.31.0: 双子竜
+  } else if (flockWeapon === "wisp") {
+    updateWispAttacks(dt);    // v3.36.0: 鬼火
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
 
@@ -26109,6 +26139,9 @@ function codexDragonMainAttackRaw(def) {
     case "magnet":  // v3.31.0
       return { power: { label: label + "（回る破片1つ）", direct: MAG_ORBIT_DMG },
                stat: `${MAG_GRAB_R}px以内で壊れた建物の絵が破片になって周りを回る（最大${MAG_SHARDS_MAX}個） ／ 急に曲がると外へ飛び、速さに応じて最大${MAG_THROW_DMG * 2}で当たる` };
+    case "wisp":    // v3.36.0
+      return { power: { label: label + "（灯1つ・竜1体あたり秒間）", direct: WISP_BURN_PER, perSec: true },
+               stat: `灯${WISP_LAMPS}個が線の上に${WISP_GAP}pxおきに並び、${WISP_HOP}秒ごとに最後尾が先頭へ移る ／ 灯のまわり半径${WISP_BURN_R}pxを焼く ／ 消えた灯は${WISP_HAUNT_R}px以内の建物に${WISP_HAUNT_TIME}秒燃える火を残し、壊れると隣へ1回燃え移る` };
     case "arc":     // v3.31.0
       return { power: { label: label + "（秒間・1点）", shot: TWIN_ARC_DPS, perSec: true },
                stat: `群れが線の左右${TWIN_HALF_W}pxに2列で並び、列の間を雷のアーチで焼く ／ 列の外は空振り` };
@@ -26976,6 +27009,7 @@ const SPECIES_CHOICES = [
   // v3.31.0: 案帳 DT-047／DT-051（解放は種またぎでだけ）
   { species: "magnet" },
   { species: "twin" },
+  { species: "wisp" },   // v3.36.0: 案帳 DT-083
 ];
 let speciesSelecting = false;
 
@@ -28775,7 +28809,8 @@ function inputStart(sx, sy, now) {
   pathPush(w.x, w.y);
   swipeSamples.length = 0; swipeSamples.push({ x: sx, y: sy, t: now });   // v3.33.0
   magnetOnInputStart();   // v3.33.0: 磁竜はもう一度タップすると近くの破片が戻ってくる
-  moleRecordStroke(w.x, w.y, true);   // v3.29.0: 土竜は描いた一筆に沿って割る
+  moleRecordStroke(w.x, w.y, true);
+  wispRecordStroke(w.x, w.y, true);   // v3.36.0   // v3.29.0: 土竜は描いた一筆に沿って割る
   addTrailPoint(w.x, w.y, now);
   // 変更3: 指のワールド座標を保持（静止保持でも誘導継続するため）
   pointerWorldX = w.x;
@@ -28793,6 +28828,7 @@ function inputMove(sx, sy, now) {
   swipeSamples.push({ x: sx, y: sy, t: now });
   if (swipeSamples.length > SWIPE_SAMPLES_MAX) swipeSamples.shift();
   moleRecordStroke(w.x, w.y, false);
+  wispRecordStroke(w.x, w.y, false);
   addTrailPoint(w.x, w.y, now);
   // 変更3: 指が動いたときも最新ワールド座標を更新する
   pointerWorldX = w.x;
@@ -29710,6 +29746,7 @@ function resetSpeciesMechanics() {
   rollBall = null;
   resetMole();
   magnetShards = []; magnetPrevC = null; magnetFlockV.x = 0; magnetFlockV.y = 0;   // v3.31.0
+  wisp = null; wispHaunts.length = 0;   // v3.36.0
   twinTick = 0;
 }
 function resetMole() {
@@ -30071,8 +30108,8 @@ const TWIN_ARC_DPS     = 14;    // アーチ上の1点あたりの秒間威力
 const TWIN_ARC_STEP    = 24;    // アーチの当たりを取る点の間隔（px）
 const TWIN_ARC_HIT_R   = 16;
 const TWIN_ARC_MAX     = 2.2;   // 組の距離が列の幅のこの倍を超えたらアーチは切れる（離れすぎた組）
-const TWIN_ROW_SPRING   = 4;     // 列の線から横へ1pxずれるごとに戻す力
-const TWIN_ROW_PULL_MAX = 240;   // 戻す力の上限
+const TWIN_ROW_SPRING   = 1.5;   // 列の線から横へ1pxずれるごとに戻す力（v3.36.0: 4→1.5。向きの反転と重なって乱れを強めていた）
+const TWIN_ROW_PULL_MAX = 120;   // 戻す力の上限
 const TWIN_CAM_SCALE    = 0.8;   // 双子竜はカメラを引き気味にする（2列とアーチが画面に収まるように）
 const TWIN_HEADING_EASE = 6;    // 列の向き（進む向き）をなましる速さ（1/秒）
 let twinHeading = 0;
@@ -30080,10 +30117,18 @@ let twinTick = 0;
 
 function twinHalfWidth() { return TWIN_HALF_W * Math.sqrt(effWeaponRangeMult("arc")); }
 /** 列の向きを進む向きへ寄せる（simStep から毎フレーム） */
+// v3.36.0（案帳 DT-051）: 進む向きは「操縦点が動いた向き」＝描いた線の向きで決める。
+// 以前は群れの重心→操縦点の向きだったので、群れが操縦点に追いついたり追い越したりすると向きが反転し、
+// 左右の目標が入れ替わって両方の列が交差していた。操縦点が止まっている間は向きを変えない
+const TWIN_HEADING_MIN_SPEED = 30;   // 操縦点がこれより遅いときは止まっているとみなす（px/秒）
+let twinPrevLeader = null;
 function updateTwinHeading(dt) {
-  const c = calcFriendlyCentroid();
-  const dx = leader.x - c.x, dy = leader.y - c.y;
-  if (dx * dx + dy * dy < 20 * 20) return;   // 操縦点の上で止まっているときは向きを変えない
+  if (dt <= 0) return;
+  const prev = twinPrevLeader;
+  twinPrevLeader = { x: leader.x, y: leader.y };
+  if (!prev) return;
+  const dx = leader.x - prev.x, dy = leader.y - prev.y;
+  if (dx * dx + dy * dy < (TWIN_HEADING_MIN_SPEED * dt) ** 2) return;
   twinHeading += wrapAngle(Math.atan2(dy, dx) - twinHeading) * Math.min(1, TWIN_HEADING_EASE * dt);
 }
 /** アーチの組を作り直す。左の列（偶数番）と右の列（奇数番）をそれぞれ前から順に並べ、同じ順位どうしをつなぐ（はしご状）。
@@ -30617,11 +30662,372 @@ function drawHeroFx() {
   ctx.restore();
 }
 
+// =====================================================================
+// v3.36.0: 陥落の手応え（案帳 DT-063）— ①守りが崩れる輪 ②逃げ出す住民 ③警戒度へ飛ぶ光の粒
+// =====================================================================
+// 陥落した町は「おいしい餌」。演出は「抵抗が止んだ＝ここから食べ放題」に読めるものだけにする（白旗・色落としは使わない）。
+// ① 町の中心から外周まで地面を這う輪が広がり、輪が通った撃つ建物（砲台・銃座など）が煙を吐いて黙る
+// ② 町から人（クリーム色の小さな点）が3〜5人ずつの列で、群れのいない向きへ逃げ出す（見た目だけ・当たりなし）
+// ③ 町から光の粒が HUD の警戒度の表示へ飛び、着くと表示が光る（陥落＝警戒度の区切り、を毎回見せる）
+// 見た目だけなので乱数は fxRandom。
+const FALL_RING_TIME        = 0.55;   // 輪が外周まで届くまで（秒）
+const FALL_RING_MAX_R       = 420;    // 輪の最大半径（町の外周がこれより大きくても止める）
+const FALL_SMOKE_TIME       = 1.1;    // 黙った建物の煙が消えるまで（秒）
+const FALL_SHAKE            = 0.45;
+const FALL_PEOPLE_GROUPS    = [4, 6]; // 町ごとの列の数
+const FALL_PEOPLE_PER_GROUP = [3, 5];
+const FALL_PEOPLE_SPEED     = 60;     // px/秒
+const FALL_PEOPLE_RUN       = 3.0;    // 走る秒数（そのあと FALL_PEOPLE_FADE 秒で薄れて消える）
+const FALL_PEOPLE_FADE      = 1.0;
+const FALL_PEOPLE_MAX       = 40;     // 画面全体で同時にこれ以上は出さない（町の多い地域でにぎやかになりすぎないように）
+const FALL_PEOPLE_R         = 1.5;    // 人の点の半径（ワールドpx）
+const FALL_PEOPLE_VIEW_MARGIN = 250;  // 町の中心が画面の外でもこの距離までなら出す（町の端は画面に入っていることが多い）
+const FALL_PARTICLES        = 6;      // 警戒度へ飛ぶ光の粒の数
+const FALL_PARTICLE_TIME    = 0.9;    // 光の粒が HUD に着くまで（秒）
+const FALL_COLORS = { ring: "rgba(255,236,190,0.75)", dust: "rgba(140,120,96,0.35)", smoke: "rgba(170,170,170,0.55)",
+                      person: "#f4e8c8", personRim: "#3a2a18", bundle: "#8a5a30", spark: "#ffe08a" };
+
+const fallFx = [];      // { kind: "ring"|"smoke"|"spark", ... }
+const fallPeople = [];  // { x, y, vx, vy, t, lead }
+
+/** 町が陥落した瞬間（settlementFall から） */
+function onTownFallFx(townIndex, st) {
+  // 町の広さ（中心から一番遠い建物まで）
+  let r = 60;
+  const armed = [];
+  for (const s of settlements) {
+    if (!s || s._townIndex !== townIndex || s._isWall || s.isBoss) continue;
+    const d = Math.sqrt(dist2(s.wx, s.wy, st.cx, st.cy));
+    if (d > r) r = d;
+    if (!s.fallen && !s._noAttack && s.attackRadius > 0) armed.push({ x: s.wx, y: s.wy, d });
+  }
+  r = Math.min(FALL_RING_MAX_R, r + 30);
+  fallFx.push({ kind: "ring", x: st.cx, y: st.cy, r, t: 0, life: FALL_RING_TIME + 0.25 });
+  for (const a of armed) fallFx.push({ kind: "smoke", x: a.x, y: a.y, t: -FALL_RING_TIME * a.d / r, life: FALL_SMOKE_TIME });
+  triggerShake(FALL_SHAKE, 0.08);
+  // ② 画面の中の町だけ。群れのいない向きへ放射状に
+  const vb = getViewBoundsWorld(FALL_PEOPLE_VIEW_MARGIN);
+  if (st.cx > vb.minX && st.cx < vb.maxX && st.cy > vb.minY && st.cy < vb.maxY) {
+    const c = calcFriendlyCentroid();
+    const away = Math.atan2(st.cy - c.y, st.cx - c.x);
+    const groups = FALL_PEOPLE_GROUPS[0] + Math.floor(fxRandom() * (FALL_PEOPLE_GROUPS[1] - FALL_PEOPLE_GROUPS[0] + 1));
+    for (let g = 0; g < groups; g++) {
+      const a = away + (fxRandom() - 0.5) * Math.PI * 1.4;
+      const n = FALL_PEOPLE_PER_GROUP[0] + Math.floor(fxRandom() * (FALL_PEOPLE_PER_GROUP[1] - FALL_PEOPLE_PER_GROUP[0] + 1));
+      const sx = st.cx + Math.cos(a) * r * 0.3, sy = st.cy + Math.sin(a) * r * 0.3;
+      for (let k = 0; k < n && fallPeople.length < FALL_PEOPLE_MAX; k++) {
+        const v = FALL_PEOPLE_SPEED * (0.9 + 0.2 * fxRandom());
+        fallPeople.push({ x: sx - Math.cos(a) * k * 6, y: sy - Math.sin(a) * k * 6, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+                          t: 0, lead: k === 0, ph: fxRandom() * 6 });
+      }
+    }
+  }
+  // ③ 警戒度の表示へ飛ぶ光の粒（着く先は画面座標。カメラが動いても HUD に向かう）
+  for (let k = 0; k < FALL_PARTICLES; k++) {
+    fallFx.push({ kind: "spark", x: st.cx + (fxRandom() - 0.5) * 40, y: st.cy + (fxRandom() - 0.5) * 40,
+                  t: -k * 0.05, life: FALL_PARTICLE_TIME, bend: (fxRandom() - 0.5) * 160 });
+  }
+}
+
+/** HUD の警戒度の表示（画面の上の段）の真ん中の画面座標 */
+function fallHudTarget() {
+  const el = document.getElementById("h-stage");
+  if (!el) return { x: viewW * 0.5, y: 30 };
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width * 0.5, y: r.top + r.height * 0.5 };
+}
+
+function updateFallFx(dt) {
+  let arrived = false;
+  for (let k = fallFx.length - 1; k >= 0; k--) {
+    const f = fallFx[k];
+    f.t += dt;
+    if (f.t >= f.life) { if (f.kind === "spark") arrived = true; fallFx.splice(k, 1); }
+  }
+  if (arrived) {
+    const el = document.getElementById("h-stage");
+    if (el) { el.classList.remove("tier-pulse"); void el.offsetWidth; el.classList.add("tier-pulse"); }
+  }
+  for (let k = fallPeople.length - 1; k >= 0; k--) {
+    const p = fallPeople[k];
+    p.t += dt;
+    if (p.t < FALL_PEOPLE_RUN) { p.x += p.vx * dt; p.y += p.vy * dt; }
+    if (p.t >= FALL_PEOPLE_RUN + FALL_PEOPLE_FADE) fallPeople.splice(k, 1);
+  }
+}
+
+function drawFallFx() {
+  if (fallFx.length === 0 && fallPeople.length === 0) return;
+  ctx.save();
+  for (const f of fallFx) {
+    if (f.t < 0) continue;
+    if (f.kind === "ring") {
+      const k = Math.min(1, f.t / FALL_RING_TIME), rr = f.r * (1 - (1 - k) * (1 - k));
+      const fade = f.t > FALL_RING_TIME ? 1 - (f.t - FALL_RING_TIME) / (f.life - FALL_RING_TIME) : 1;
+      ctx.globalAlpha = fade;
+      ctx.strokeStyle = FALL_COLORS.dust; ctx.lineWidth = 18;
+      ctx.beginPath(); ctx.arc(f.x, f.y, rr, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = FALL_COLORS.ring; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(f.x, f.y, rr, 0, Math.PI * 2); ctx.stroke();
+    } else if (f.kind === "smoke") {
+      const k = f.t / f.life;
+      ctx.globalAlpha = 1 - k; ctx.fillStyle = FALL_COLORS.smoke;
+      for (let j = 0; j < 3; j++) { ctx.beginPath(); ctx.arc(f.x + j * 4 - 4, f.y - 6 - k * 22 - j * 3, 4 + k * 8, 0, Math.PI * 2); ctx.fill(); }
+    } else if (f.kind === "spark") {
+      const k = f.t / f.life, e = k * k;
+      const tgt = fallHudTarget(), tw = screenToWorld(tgt.x, tgt.y);
+      const mx = (f.x + tw.x) / 2 + f.bend, my = (f.y + tw.y) / 2 - Math.abs(f.bend);
+      const x = (1 - e) * (1 - e) * f.x + 2 * (1 - e) * e * mx + e * e * tw.x;
+      const y = (1 - e) * (1 - e) * f.y + 2 * (1 - e) * e * my + e * e * tw.y;
+      ctx.globalAlpha = 0.9; ctx.fillStyle = FALL_COLORS.spark;
+      ctx.beginPath(); ctx.arc(x, y, 3.5 / cam.scale, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  for (const p of fallPeople) {
+    const a = p.t < FALL_PEOPLE_RUN ? 1 : 1 - (p.t - FALL_PEOPLE_RUN) / FALL_PEOPLE_FADE;
+    const sway = Math.sin(p.t * 14 + p.ph) * 0.8;
+    const sp = Math.hypot(p.vx, p.vy) || 1, nx = -p.vy / sp, ny = p.vx / sp;
+    const x = p.x + nx * sway, y = p.y + ny * sway;
+    ctx.globalAlpha = a * 0.3; ctx.strokeStyle = FALL_COLORS.person; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x - p.vx / sp * 6, y - p.vy / sp * 6); ctx.lineTo(x, y); ctx.stroke();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = FALL_COLORS.personRim;
+    ctx.beginPath(); ctx.arc(x, y, FALL_PEOPLE_R + 0.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = FALL_COLORS.person;
+    ctx.beginPath(); ctx.arc(x, y, FALL_PEOPLE_R, 0, Math.PI * 2); ctx.fill();
+    if (p.lead) { ctx.fillStyle = FALL_COLORS.bundle; ctx.fillRect(x - p.vx / sp * 2.5 - 1.2, y - p.vy / sp * 2.5 - 1.2, 2.4, 2.4); }
+  }
+  ctx.restore();
+}
+
+// =====================================================================
+// v3.36.0: 鬼火（案帳 DT-083）— 飛ばずに、描いた線の上に灯を並べて尺取りで進む
+// =====================================================================
+// 人間に奪われ、孵らないまま冷えた卵から出た火。翼も尾も無い「竜の魂」なので、飛ぶのではなく灯る場所を移していく。
+// 灯は12個が線の上に一列に並ぶ。指で描いている間、一定の間隔で最後尾の灯が消えて線の先に灯る（尺取り）。
+// 指を離すと列はその場に残る（置き火）。群れの物理（離れる・そろう・寄る、旋回）は使わない（塊竜と同じ考え）。
+// 竜は12個の灯に割り振られ、竜が増えると灯が大きく明るくなるだけで列は伸びない。
+// 攻撃「取り憑き火」：灯のまわりを焼く（直接・火）。灯が先へ移るとき、消えた所の近くの建物に青い火を残す（4秒燃え続ける）。
+// 取り憑かれた建物が壊れると、近くの建物1つへ燃え移る（1回まで）。
+// v3.36.0 では入れていないもの：跳んでいる間に弾に当たらない（無敵の0.22秒）、横切った敵の足止め、分岐で灯の数が変わること
+const WISP_LAMPS          = 12;
+const WISP_GAP            = 30;     // 灯どうしの間（列の長さ＝GAP×(LAMPS-1)）
+const WISP_HOP            = 0.22;   // 最後尾が先頭へ移る間隔（秒）＝前へ約136px/秒（手数の強化で縮む）
+const WISP_STROKE_STEP    = 6;      // 描いた線を記録する間隔（px）
+const WISP_STROKE_MAX     = 4000;   // 記録する点の上限（これを超える長い線は古い所から捨てる）
+const WISP_BURN_R         = 30;     // 灯が焼く半径（届く距離の強化で広がる）
+const WISP_BURN_PER       = 3;      // 灯1つの秒間威力＝これ×その灯の竜の数
+const WISP_TICK           = 0.15;   // 当たりの判定の間隔（秒）
+const WISP_HAUNT_R        = 50;     // 灯が消えるとき、この距離以内でいちばん近い建物に取り憑く
+const WISP_HAUNT_TIME     = 4;      // 取り憑き火が燃え続ける秒数
+const WISP_HAUNT_PER      = 1.5;    // 取り憑き火の秒間威力＝これ×消えた灯の竜の数
+const WISP_SPREAD_R       = 48;     // 取り憑かれた建物が壊れたとき燃え移る距離
+const WISP_CAM_LEAD       = 0.8;    // カメラは列の後ろからこの割合の所を追う（列の真ん中を追うと先が見えず動かしにくい・Shooter判定）
+const WISP_LAMP_R         = 7;      // 灯の大きさ（竜が1体のとき。竜が増えると √ で大きくなる）
+const WISP_COLORS = { core: "#ffffff", glow: "rgba(150,215,255,0.35)", rim: "rgba(170,225,255,0.85)", haunt: "rgba(110,190,255,0.75)" };
+
+let wisp = null;   // { lamps:[{x,y,born}], stroke:[{x,y,c}], arc, hopT, tick, ph }
+const wispHaunts = [];   // { sIdx, t, dps, spread }
+
+function wispActive() { return !!sp().wisp; }
+
+function initWisp() {
+  const c = calcFriendlyCentroid();
+  const a = Math.atan2(leader.y - c.y, leader.x - c.x) || 0;
+  const lamps = [];
+  for (let k = 0; k < WISP_LAMPS; k++) {
+    const d = (k - (WISP_LAMPS - 1)) * WISP_GAP;   // 最後尾が k=0、先頭が c
+    lamps.push({ x: c.x + Math.cos(a) * d, y: c.y + Math.sin(a) * d, born: 0 });
+  }
+  wisp = { lamps, stroke: [], arc: 0, hopT: 0, tick: 0, ph: 0 };
+}
+
+/** 描いた線を記録する（inputStart / inputMove から） */
+function wispRecordStroke(wx, wy, start) {
+  if (!wispActive()) return;
+  if (!wisp) initWisp();
+  const st = wisp.stroke;
+  if (start) { st.length = 0; wisp.arc = -1; }   // 新しい線：最後尾から順に新しい線の始まりへ移る
+  const last = st[st.length - 1];
+  if (last && dist2(last.x, last.y, wx, wy) < WISP_STROKE_STEP * WISP_STROKE_STEP) return;
+  st.push({ x: wx, y: wy, c: last ? last.c + Math.sqrt(dist2(last.x, last.y, wx, wy)) : 0 });
+  if (st.length > WISP_STROKE_MAX) {
+    const drop = st.length - WISP_STROKE_MAX, base = st[drop].c;
+    st.splice(0, drop);
+    for (const p of st) p.c -= base;
+    wisp.arc = Math.max(-1, wisp.arc - base);
+  }
+}
+function wispStrokePoint(arc) {
+  const st = wisp.stroke;
+  let lo = 0, hi = st.length - 1;
+  if (arc <= 0) return st[0];
+  if (arc >= st[hi].c) return st[hi];
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (st[mid].c <= arc) lo = mid; else hi = mid; }
+  const a = st[lo], b = st[hi], t = (arc - a.c) / ((b.c - a.c) || 1);
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+/** 生きている竜を灯に割り振ったときの、灯 k の竜の数 */
+function wispLampCount(k, n) { return Math.floor(n / WISP_LAMPS) + (k >= WISP_LAMPS - (n % WISP_LAMPS) ? 1 : 0); }
+
+/** 群れの物理の代わり（simStep から）。灯を進め、竜を灯の位置に置く */
+function stepWisp(dt) {
+  if (!wisp) initWisp();
+  wisp.ph += dt;
+  const hop = WISP_HOP * effFireIntervalMult("wisp");
+  if (isDrawing && wisp.stroke.length > 0) {
+    wisp.hopT += dt;
+    while (wisp.hopT >= hop) {
+      const next = wisp.arc < 0 ? 0 : wisp.arc + WISP_GAP;
+      if (next > wisp.stroke[wisp.stroke.length - 1].c) { wisp.hopT = Math.min(wisp.hopT, hop); break; }   // 指が先へ進むのを待つ
+      wisp.hopT -= hop;
+      const gone = wisp.lamps.shift();
+      wispOnLampLeave(gone, wispLampCount(0, countAliveBoids()));
+      const p = wispStrokePoint(next);
+      wisp.lamps.push({ x: p.x, y: p.y, born: wisp.ph });
+      wisp.arc = next;
+    }
+  } else {
+    wisp.hopT = 0;
+  }
+  // 竜を灯に置く（後ろの灯から順に。1つの灯の竜は小さな輪に並べる）
+  const n = countAliveBoids();
+  let rank = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i]) continue;
+    const k = boidDowned[i] ? 0 : rank % WISP_LAMPS;
+    if (!boidDowned[i]) rank++;
+    const L = wisp.lamps[k];
+    const cnt = Math.max(1, wispLampCount(k, n));
+    const a = (i * 2.399963) + wisp.ph * 0.8, r = cnt > 1 ? 4 + Math.sqrt(cnt) * 2 : 0;
+    px[i] = L.x + Math.cos(a) * r; py[i] = L.y + Math.sin(a) * r;
+    vx[i] = 0; vy[i] = 0;
+  }
+  // 操縦点は列の先頭に置いておく（敵や卵の向きの計算が群れの先を基準にできるように）
+  const front = wisp.lamps[WISP_LAMPS - 1];
+  if (!isDrawing) { leader.x = front.x; leader.y = front.y; }
+}
+
+/** カメラが追う点（列の後ろから WISP_CAM_LEAD の所） */
+function wispCameraTarget() {
+  const k = Math.round((WISP_LAMPS - 1) * WISP_CAM_LEAD);
+  return wisp ? wisp.lamps[k] : calcFriendlyCentroid();
+}
+
+/** 消えた灯が近くの建物に取り憑く */
+function wispOnLampLeave(L, cnt) {
+  if (!L || cnt <= 0) return;
+  const reach = WISP_HAUNT_R * effWeaponRangeMult("wisp");
+  const cell = Math.max(1, Math.ceil(reach / BUILDING_GRID_CELL));
+  buildingGridQueryRadius(L.x, L.y, cell, _buildingNeighbourBuf);
+  let best = -1, bd = reach * reach;
+  for (const sIdx of _buildingNeighbourBuf) {
+    const s = settlements[sIdx];
+    if (!s || s.fallen || s._isWall) continue;   // 城壁には取り憑かない（燃える物が無い）
+    const d = dist2(s.wx, s.wy, L.x, L.y);
+    if (d < bd) { bd = d; best = sIdx; }
+  }
+  if (best >= 0) wispHaunt(best, WISP_HAUNT_PER * cnt, 1);
+}
+function wispHaunt(sIdx, dps, spread) {
+  const h = wispHaunts.find((x) => x.sIdx === sIdx);
+  if (h) { h.t = WISP_HAUNT_TIME; h.dps = Math.max(h.dps, dps); h.spread = Math.max(h.spread, spread); return; }
+  wispHaunts.push({ sIdx, t: WISP_HAUNT_TIME, dps, spread });
+}
+/** 取り憑かれた建物が壊れた（settlementFall から）。近くの建物1つへ燃え移る */
+function wispOnBuildingFall(st) {
+  if (wispHaunts.length === 0) return;
+  const idx = settlements.indexOf(st);
+  const h = wispHaunts.find((x) => x.sIdx === idx);
+  if (!h || h.spread <= 0) return;
+  const cell = Math.max(1, Math.ceil(WISP_SPREAD_R / BUILDING_GRID_CELL));
+  buildingGridQueryRadius(st.wx, st.wy, cell, _buildingNeighbourBuf);
+  let best = -1, bd = WISP_SPREAD_R * WISP_SPREAD_R;
+  for (const sIdx of _buildingNeighbourBuf) {
+    const s = settlements[sIdx];
+    if (!s || s.fallen || s._isWall || sIdx === idx || wispHaunts.some((x) => x.sIdx === sIdx)) continue;
+    const d = dist2(s.wx, s.wy, st.wx, st.wy);
+    if (d < bd) { bd = d; best = sIdx; }
+  }
+  if (best >= 0) wispHaunt(best, h.dps, h.spread - 1);
+}
+
+/** 鬼火の攻撃（kind "wisp"）。灯のまわりを焼き、取り憑き火を燃やす */
+function updateWispAttacks(dt) {
+  if (!wisp) return;
+  const dmgMul = effWeaponDmgMult("wisp");
+  wisp.tick += dt;
+  // 取り憑き火（建物が壊れたものは外す）
+  for (let k = wispHaunts.length - 1; k >= 0; k--) {
+    const h = wispHaunts[k];
+    const s = settlements[h.sIdx];
+    h.t -= dt;
+    if (!s || s.fallen || h.t <= 0) { wispHaunts.splice(k, 1); continue; }
+  }
+  if (wisp.tick < WISP_TICK) return;
+  const t = wisp.tick;
+  wisp.tick = 0;
+  const targets = attackTargets();
+  const r = WISP_BURN_R * effWeaponRangeMult("wisp");
+  const n = countAliveBoids();
+  for (let k = 0; k < WISP_LAMPS; k++) {
+    const cnt = wispLampCount(k, n);
+    if (cnt <= 0) continue;
+    const L = wisp.lamps[k];
+    hitInRadius(L.x, L.y, r, { direct: WISP_BURN_PER * cnt * t * dmgMul }, targets);
+  }
+  for (const h of wispHaunts.slice()) {
+    const s = settlements[h.sIdx];
+    if (s && !s.fallen) hitBuilding(h.sIdx, { direct: h.dps * t * dmgMul }, s.wx, s.wy);
+  }
+}
+
+/** 灯と取り憑き火（竜の代わりに描く） */
+function drawWisp() {
+  if (!wispActive() || !wisp) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  // 取り憑かれた建物の屋根に立つ青い炎
+  for (const h of wispHaunts) {
+    const s = settlements[h.sIdx];
+    if (!s || s.fallen) continue;
+    const fl = 0.7 + 0.3 * Math.sin(wisp.ph * 11 + h.sIdx);
+    ctx.fillStyle = WISP_COLORS.haunt; ctx.globalAlpha = 0.6 * fl;
+    ctx.beginPath(); ctx.ellipse(s.wx, s.wy - 4, 6, 10 * fl, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  const n = countAliveBoids();
+  for (let k = 0; k < WISP_LAMPS; k++) {
+    const cnt = wispLampCount(k, n);
+    if (cnt <= 0) continue;
+    const L = wisp.lamps[k];
+    const age = wisp.ph - L.born;
+    const grow = Math.min(1, age / 0.15);   // 灯るときは輪が広がる
+    const flick = 0.85 + 0.15 * Math.sin(wisp.ph * 9 + k * 1.7);
+    const R = WISP_LAMP_R * Math.sqrt(cnt) * flick * (0.4 + 0.6 * grow);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = WISP_COLORS.glow;
+    ctx.beginPath(); ctx.arc(L.x, L.y, R * 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = WISP_COLORS.rim; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(L.x, L.y, R * 1.1, 0, Math.PI * 2); ctx.stroke();
+    if (grow < 1) { ctx.globalAlpha = 1 - grow; ctx.beginPath(); ctx.arc(L.x, L.y, R * (1.2 + 2 * grow), 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
+    ctx.fillStyle = WISP_COLORS.core;
+    ctx.beginPath(); ctx.arc(L.x, L.y, R * 0.45, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
 function simStep(dt) {
   _simSpeedMult = effSpeedMult();
   hopClock += dt * _simSpeedMult;
   updateLeader(dt);
   // v3.29.0: 塊竜は群れの物理の代わりに玉を転がし、竜を表面に貼り付ける
+  if (sp().wisp) {   // v3.36.0: 鬼火は群れの物理の代わりに灯を並べる
+    stepWisp(dt);
+    updateFlockMetrics(dt);
+    updateDamageNumbers(dt);
+    return;
+  }
   if (sp().rollBall) {
     stepRollBall(dt);
     updateFlockMetrics(dt);
@@ -30756,6 +31162,7 @@ function simStep(dt) {
         sepY += dy * invD;
         nSep++;
       }
+      if (twinMode && ((i ^ j) & 1)) continue;   // v3.36.0: 双子竜は整列・結合を同じ列の竜どうしだけで（列ごとに群れが1つずつ）
       aliX += vx[j]; aliY += vy[j]; nAli++;
       cohX += px[j]; cohY += py[j]; nCoh++;
     }
@@ -30788,9 +31195,10 @@ function simStep(dt) {
       const p = pathPointAtArc(Math.max(0, slotArc + PATH_TRACE_LOOKAHEAD), _tracePtB);
       tgtX = p.x - p.ty * col * PATH_TRACE_LATERAL;   // 進行方向の法線へ列ぶんずらす
       tgtY = p.y + p.tx * col * PATH_TRACE_LATERAL;
-    }
-
-    if (twinMode) { const side = (i & 1) ? 1 : -1; tgtX += twinOffX * side; tgtY += twinOffY * side; }
+      // v3.36.0: 双子竜はその竜のスロットの位置での線の向きで左右へずらす（群れ全体で1つの向きにすると、
+      // Uターンの途中で向きが反転したとたんに左右の目標が入れ替わり、両方の列が交差した）
+      if (twinMode) { const side = (i & 1) ? 1 : -1, w = twinHalfWidth(); tgtX -= p.ty * side * w; tgtY += p.tx * side * w; }
+    } else if (twinMode) { const side = (i & 1) ? 1 : -1; tgtX += twinOffX * side; tgtY += twinOffY * side; }
     // 目標への引力（方向のみ。距離減衰はなし）。単位ベクトルと距離は下でも使う。
     const ldx = tgtX - xi, ldy = tgtY - yi;
     const aDist = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
@@ -30817,7 +31225,7 @@ function simStep(dt) {
     ay += steerNy * wLead * 120;
     // v3.32.0: 双子竜は列から横へはみ出した竜を列の線へ引き戻す（数が増えても2列に分かれたままにする。
     // 前後への伸びは止めないので、列は縦長になる。少しはみ出してごちゃつくくらいの強さ）
-    if (twinMode) {
+    if (twinMode && !traceActive) {   // 線をなぞっている間はスロットが左右を決めるので引き戻さない
       const w = twinHalfWidth(), nx = twinOffX / w, ny = twinOffY / w;
       const err = ((i & 1) ? w : -w) - ((xi - leader.x) * nx + (yi - leader.y) * ny);
       const pull = Math.max(-TWIN_ROW_PULL_MAX, Math.min(TWIN_ROW_PULL_MAX, err * TWIN_ROW_SPRING));
@@ -31391,6 +31799,7 @@ function render(now) {
   drawRailExtras();          // v2.0.0: 前照灯・粘着編成の標識
   drawCanopy();              // v3.17.0: 大樹海の樹冠（敵と街の上・竜とブレスの下）
   drawBeams(now);            // v3.34.0: 光線の高原の光線・塔のレンズ・プリズム（竜の下）
+  drawFallFx();              // v3.36.0: 陥落の輪・煙・逃げる住民・光の粒（竜の下）
   if (forestActive) drawEmbers();   // v3.19.2: 燃える樹冠の火の粉・煙が葉に隠れないよう樹冠の上で描く
   drawWorldTree();           // v3.19.0: 巨大樹の樹冠・灯・心臓
   drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
@@ -31952,6 +32361,7 @@ function drawBreathAttacks(now) {
 // v3.10.0: 極光（旧母竜・虹竜）専用の体格成長・「最初の1体」探しは撤去した（他の特殊個体と同じ扱い）。
 
 function drawBoids() {
+  if (wispActive()) { drawWisp(); return; }   // v3.36.0: 鬼火は竜の絵を描かず、灯で描く
   // プリレンダスプライトのDPR（createDragonSprites で使ったものと一致させる）
   const spriteDpr     = Math.min(window.devicePixelRatio || 1, 2);
   const spritePx      = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
@@ -32387,10 +32797,9 @@ function drawProjectiles() {
 // 画像は「穂先が画像の右を向いて横たわり」。
 // front/back はベクター版と**全く同じ寸法**（原点から穂先まで / 原点から矢尻まで、論理px）。
 // ここを合わせておくと、当たり判定や進行感が変わらず見た目だけが差し替わる。
-const SHOT_IMAGE_SOURCES = {
-  javelin: "assets/shot_javelin.png",
-  bolt:    "assets/shot_bolt.png",
-};
+// v3.36.0（案帳 DT-069・Shooter判定「B」）: 投槍と弩も図形に戻した。画像は約10分の1に縮めて描くので細い柄がちぎれた点線になり、
+// 色も暗く、ほかの図形の弾にある「明るい芯と後ろの尾」が無かった。図形版は drawPolearmShot。画像は読み込まない
+const SHOT_IMAGE_SOURCES = {};
 const SHOT_IMAGE_GEO = {
   javelin: { front: 7, back: 15 },
   bolt:    { front: 4, back: 12 },
@@ -32484,6 +32893,46 @@ function shotTinted(key, color) {
   return cv;
 }
 
+// v3.36.0: 投槍と弩の図形版（案帳 DT-069 の案B）。ほかの図形の弾と同じ「明るい芯＋尾」の作りに揃える。
+// 白く光る穂先（弾でいちばん明るい所）／木の柄（建物の規模の色を乗せる）／弩だけ白っぽい矢羽根／後ろへ薄くなる残像の尾。
+// 弾ごとの全長のばらつき（±10%）は残し、尾の長さも弾ごとに少しずらす。傾きと首振りは外した（尾と向きがずれて横滑りに見えたため）
+const POLEARM_SHOT = {
+  javelin: { head: 6.5, shaft: 15, shaftW: 1.8, headW: 2.4, fletch: 0 },
+  bolt:    { head: 4.0, shaft: 12, shaftW: 1.4, headW: 1.9, fletch: 3.2 },
+};
+const POLEARM_TRAIL_MULT   = 1.8;    // 尾の長さ（柄の長さのこの倍・弾ごとに ±25%）
+const POLEARM_TRAIL_ALPHA  = 0.35;
+const POLEARM_SHAFT_TINT   = 0.25;   // 柄の色：弾の色（建物の規模の色）をこの割合だけ白へ寄せる
+const POLEARM_HEAD_GLOW    = 0.28;   // 穂先の後ろの淡い光の濃さ
+function drawPolearmShot(c, key, color, sc, seed) {
+  const g = POLEARM_SHOT[key], v = shotVariant(seed);
+  const k = sc * v.lenMult;
+  const tail = -g.shaft * k;
+  const f = Math.sin(seed * 3.17) * 43758.5453;
+  const trailLen = g.shaft * k * POLEARM_TRAIL_MULT * (0.75 + 0.5 * (f - Math.floor(f)));
+  // 残像の尾（柄の後ろへ薄くなる）
+  const grad = c.createLinearGradient(tail - trailLen, 0, tail, 0);
+  grad.addColorStop(0, "rgba(255,245,225,0)");
+  grad.addColorStop(1, `rgba(255,245,225,${POLEARM_TRAIL_ALPHA})`);
+  c.strokeStyle = grad; c.lineWidth = g.shaftW * 1.6 * sc;
+  c.beginPath(); c.moveTo(tail - trailLen, 0); c.lineTo(tail, 0); c.stroke();
+  // 柄
+  c.strokeStyle = lightenColor(color, POLEARM_SHAFT_TINT); c.lineWidth = g.shaftW * sc;
+  c.beginPath(); c.moveTo(tail, 0); c.lineTo(0, 0); c.stroke();
+  // 矢羽根（弩だけ）
+  if (g.fletch) {
+    c.fillStyle = "rgba(240,238,228,0.9)";
+    for (const s of [-1, 1]) {
+      c.beginPath(); c.moveTo(tail + g.fletch * sc, 0); c.lineTo(tail, s * g.fletch * 0.7 * sc); c.lineTo(tail - g.fletch * 0.3 * sc, 0); c.closePath(); c.fill();
+    }
+  }
+  // 穂先（白く光る三角＋後ろの淡い光）
+  c.fillStyle = `rgba(255,250,235,${POLEARM_HEAD_GLOW})`;
+  c.beginPath(); c.ellipse(g.head * 0.4 * sc, 0, g.head * 0.8 * sc, g.headW * 1.1 * sc, 0, 0, Math.PI * 2); c.fill();
+  c.fillStyle = "#ffffff";
+  c.beginPath(); c.moveTo(g.head * sc, 0); c.lineTo(0, -g.headW * sc); c.lineTo(0, g.headW * sc); c.closePath(); c.fill();
+}
+
 /**
  * v0.57: 文明ごとの通常弾を1発描く。
  * v0.68: 描画先 `c` を引数で受け取る（図鑑が別canvasに見本を描くため。本編は ctx を渡す）。
@@ -32507,6 +32956,7 @@ function drawEraShot(c, key, x, y, ang, color, sc, seed, lifeFrac) {
   // v0.98.1: 画像を持っている弾はそちらを描いて終わり。
   // 高さは画像の縦横比に任せる（引き伸ばして太らせない）ので、
   // **絵の側を短太く作る**ことで実寸での読めるさを出している。
+  if (key === "javelin" || key === "bolt") { drawPolearmShot(ctx, key, color, sc, seed); ctx.restore(); return; }   // v3.36.0
   const shotImg = SHOT_IMAGE_GEO[key] ? shotTinted(key, color) : null;
   if (shotImg) {
     const g   = SHOT_IMAGE_GEO[key];
@@ -33314,6 +33764,7 @@ const DRAGON_ELEMENT_COLORS = {
   mole:     { body: "rgba(176, 136, 80, 1.0)",  wing: "rgba(138, 106, 64, 1.0)",  rim: "rgba(80, 60, 35, 0.0)" },
   magnet:   { body: "rgba(176, 144, 224, 1.0)", wing: "rgba(138, 112, 192, 1.0)", rim: "rgba(80, 60, 120, 0.0)" },
   twin:     { body: "rgba(255, 224, 112, 1.0)", wing: "rgba(224, 192, 64, 1.0)",  rim: "rgba(120, 100, 30, 0.0)" },
+  wisp:     { body: "rgba(160, 216, 255, 1.0)", wing: "rgba(120, 180, 240, 1.0)", rim: "rgba(60, 100, 150, 0.0)" },
   chain:    { body: "rgba(184, 188, 196, 1.0)", wing: "rgba(154, 160, 168, 1.0)", rim: "rgba(90, 94, 100, 0.0)" },
   drum:     { body: "rgba(208, 128, 64, 1.0)",  wing: "rgba(192, 112, 56, 1.0)",  rim: "rgba(110, 60, 25, 0.0)" },
   heal:     { body: "rgba(150, 240, 170, 1.0)", wing: "rgba(90, 190, 120, 1.0)",  rim: "rgba(40, 110, 60, 0.0)" },
@@ -33906,6 +34357,7 @@ const DRAGON_PARTS_ALIAS = {
   heal: "rainbow", frost: "deflect", laser: "beacon",
   ball: "fire", mole: "crimson",   // v3.29.0
   magnet: "shadow", twin: "swallow", chain: "heavy", drum: "rainbow",   // v3.31.0
+  wisp: "ice",   // v3.36.0（ゲーム中は竜の絵を描かず灯で描く。図鑑などの見本用）
 };
 /** 属性 element を描くのに使うパーツ定義のキー（無ければ null）。 */
 function dragonPartsKey(element) {
@@ -34597,6 +35049,7 @@ function tick() {
     updateCanopy(wdt);            // v3.17.0: 大樹海の樹冠の延焼
     updateBeamTowers(wdt);        // v3.34.0: 光線の高原の塔と光線
     updateHeroLand(wdt);          // v3.35.0: 英雄の国（英雄が出てくる・戻ってくる）
+    updateFallFx(wdt);            // v3.36.0: 陥落の演出
     updateWorldTree(wdt);         // v3.19.0: 巨大樹（大樹海の首都）の灯と心臓の魔法
     maybeShowLevelUp();           // v0.6: レベルアップが積まれていれば3択を出す（非モーダル）
   } else if (gameState === "title") {
