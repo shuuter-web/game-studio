@@ -1,6 +1,9 @@
 # Dragon Tide — 検討中の方針（次スレッド引き継ぎ）
 
 - 作成: 2026-07-30 ／ 全面更新: 2026-08-12（v0.36.2）／ **更新: 2026-08-25（v0.48.0 時点）**
+- **v3 以降は [dragon-tide-run-cycle.md](dragon-tide-run-cycle.md) とコードが正**（2026-10-25 追記・案帳 DT-078）。この文書の §2 の多くは v0.48 時点の記録で、
+  個別の案は案帳（DT-081〜）へ移した。v3.39.0 で消したもの：動きの見本 `MOVE_PROFILE_PRESETS` とデバッグの「🛸 動き切替」、
+  止めていた最強モード（`BOSS_ENRAGE_*`）、使っていなかった `railJunctions`
 - 対象コード: `prototypes/dragon-tide/index.html`
 - この文書は**残作業と検討中アイディアの保管**。実装済みの living doc は下記を参照。
 - 行番号は変動するため**識別子（関数名・定数名）で参照**する。最新の実像はコードを正とする。
@@ -5210,4 +5213,4 @@ Shooter判定「非常に素晴らしいステージになりました。今後�
 | 大きい敵の最期（v2.6.0） | 対象は `moverLeavesWreck`（半径34以上・鉄路以外）。撃破時に `beginMoverDeath` が `m.death` を付け、`updateMoverDeaths` が 崩れ(`DEATH_COLLAPSE`)→倒れ込み(`moverDeathSlam`)→残骸(`DEATH_HOLD`)→フェード(`DEATH_FADE`) を回す。描くのは `drawMoverWrecks`（本体）と既存の手足描画（`alive || 最期の最中` で描く）|
 | 衝撃・ノックバック（v2.5.0） | **押す攻撃を足すときはまずここ**。攻撃は `damage` と衝撃力の2本立て。入口は `applyImpactToMover` / `applyImpactToBuilding` / `applyImpactToBoid` の3つで、割り振りは `splitImpact`。受け手の性質は `impactMassOf` / `impactResistOf` / `impactFreeAxis` / `hasImpactShove` に集約。実際に動かすのは `pushMover`（関節＝バネ、線路＝`pushRailVehicle`、胴＝揺れ、他＝減衰速度）。換算係数は `IMPACT_TO_DAMAGE` 1つだけ |
 | ステージ生成 | `generateStageLayout`／`placeTownCenters`／`generateTownWalls`／`START_TOWN_CLEAR` |
-| デバッグ | 左下バージョン3タップ。「🛸 動き切替」（hover/ground）「💥 反動切替」（0/40/100/240）<br>**v0.44 の敵確認セット**: 「👾 敵を出す…」（図鑑から選んで群れの隣に湧かせる。隊は隊ごと・巨獣は腕つき）／「🏷 敵の名札」（名前・HP・潜航中かを頭上に表示、盾持ちは弾く扇も出る）／「🛡 竜を無敵」（落ちずに敵の挙動だけ観察）／「☠ 敵を全部消す」（1体だけ残して見る）／「🌊 堰を決壊させる」／「🎯 ボス手前へワープ」 |
+| デバッグ | 左下バージョン3タップ。「💥 反動切替」（0/40/100/240）<br>**v0.44 の敵確認セット**: 「👾 敵を出す…」（図鑑から選んで群れの隣に湧かせる。隊は隊ごと・巨獣は腕つき）／「🏷 敵の名札」（名前・HP・潜航中かを頭上に表示、盾持ちは弾く扇も出る）／「🛡 竜を無敵」（落ちずに敵の挙動だけ観察）／「☠ 敵を全部消す」（1体だけ残して見る）／「🌊 堰を決壊させる」／「🎯 ボス手前へワープ」 |

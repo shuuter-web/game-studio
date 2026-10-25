@@ -297,9 +297,9 @@ Bは `updateLeader` 冒頭で `screenToWorld(touchRing.x, touchRing.y)` を毎�
 - **`beginRun(weapon)` は `gameState !== "title"` で即 return する**。竜種を切り替えて比較したいときは
   `beginRun` を繰り返し呼ぶのではなく **`flockWeapon` を直接代入して `resetBoidsForStageStart(n)`** する
   （繰り返し呼んで「全竜種が同じ値」という誤測定をした実績あり）。
-- **`mv()` は `moveProfileOverride|flockWeapon` をキーにキャッシュする**。
-  同じキーのまま `MOVE_PROFILE_PRESETS[key]` を書き換えてパラメータを振ると
-  **キャッシュが更新されず全条件が1本目の値で走る**（turnRate のスイープを丸ごと誤測定した実績あり）。
+- **`mv()` は `flockSpecies` をキーにキャッシュする**。
+  同じ竜種のまま `SPECIES_DEFS[id].move` を書き換えてパラメータを振ると
+  **キャッシュが更新されず全条件が1本目の値で走る**（turnRate のスイープを丸ごと誤測定した実績あり）。振るたびに `_mvKey = ""` で捨てる。
   スイープするときは**キーを毎回変える**（`"__probe_" + 値`）。
 - 「◯◯度旋回にかかる時間」で旋回性能を測ると、**リーダーの方位が群れの移動につれて変わる**ため
   固定角度に到達する時間は当てにならない。**1フレームごとの実回転量を積んで角速度を出す**のが正しい。
@@ -581,8 +581,8 @@ boidKickX/Y[i]              … 外力の速度(px/s)。vx/vy には混ぜない
 | 氷竜 bullet | 2.8 | 175 | 63 | 2.8 | 0.45 | 52〜137 | 3.0px |
 | 影竜 missile | 1.8 | 180 | 100 | 1.8 | 0.87 | 70〜109 | 2.3px |
 | 緋竜 melee | 1.7 | 185 | 109 | 1.7 | 0.33 | 56〜149 | 3.6px |
-| **hover**（プリセット） | INSTANT | 170 | — | 即時（1フレーム） | 0.02 | 33 | 4.4px |
-| **ground**（プリセット） | 1.0 | 105 | 105 | 1.0 | 0.73 | 162〜206 | 1.9px |
+| **hover**（見本・v3.39.0 で削除） | INSTANT | 170 | — | 即時（1フレーム） | 0.02 | 33 | 4.4px |
+| **ground**（見本・v3.39.0 で削除） | 1.0 | 105 | 105 | 1.0 | 0.73 | 162〜206 | 1.9px |
 
 **v0.37 の極端枠3種**（群れ20体・指を300px振幅の8の字で振り回したときの実測。
 「散らばり」は群れ重心からの平均距離、「操縦点との差」は操縦点からの平均距離）：
@@ -639,11 +639,10 @@ v0.33 は開いた線では折り返さず、終端に着いたら `pathEndMode`
 `ufo` プリセットは「蜻蛉竜」、`ground` 系は「鯨竜／亀竜」に相当する。
 実装には **竜種と `flockWeapon` の分離（`SPECIES_DEFS` 新設）** が前提になる。
 
-### 12-5. 未割り当てのプリセット（UFO型・鈍重な陸上型）
+### 12-5. 未割り当てのプリセット（UFO型・鈍重な陸上型）— v3.39.0 で削除
 
-`MOVE_PROFILE_PRESETS` に `hover` / `ground` を定義済み。**竜種には割り当てていない**ので、
-実機の手触り確認は**デバッグパネルの「🛸 動き切替」**で行う
-（左下バージョンを1回タップ → パネル。`種:xxx` → `hover` → `ground` を巡回。現在値はステータス行に出る）。
+**v3.39.0 で `MOVE_PROFILE_PRESETS` とデバッグの「🛸 動き切替」を消した**（案帳 DT-078）。実際の竜には一度も使っておらず、
+竜種の動きは全部 `SPECIES_DEFS[id].move` で決まる。見本と同じ性質の竜種は値を自分で持っている。以下は当時の記録。
 
 - `hover`: `accel`/`turnRate` ともに `INSTANT`、`minSpeed: 0`、`pathEndMode: "stop"`。
   指に対して向きと速さが即時に変わり、**止まれる**。
@@ -658,11 +657,10 @@ v0.33 は開いた線では折り返さず、終端に着いたら `pathEndMode`
 
 | 目的 | 差し込み口 |
 |---|---|
-| 竜種・攻撃の定義 | **`SPECIES_DEFS`**（攻撃×動き×見た目）／**`ATTACK_DEFS`**（kind・反動・硬直）／`MOVE_PROFILE_DEFAULT`／`MOVE_PROFILE_PRESETS`（デバッグ用） |
+| 竜種・攻撃の定義 | **`SPECIES_DEFS`**（攻撃×動き×見た目）／**`ATTACK_DEFS`**（kind・反動・硬直）／`MOVE_PROFILE_DEFAULT` |
 | 竜種の切り替え | **`setFlockSpecies(id)`**（`flockWeapon` を導出＋HUD更新）。`flockSpecies` が正 |
-| 有効プロファイルの取得 | **`mv()`**（`flockSpecies` と `moveProfileOverride` でキャッシュ）／攻撃は **`atk()`**／竜種は **`sp()`** |
+| 有効プロファイルの取得 | **`mv()`**（`flockSpecies` でキャッシュ）／攻撃は **`atk()`**／竜種は **`sp()`** |
 | スプライト | **`getSpeciesSprites(id)`**（種IDキーの簡易LRU・`SPRITE_CACHE_MAX=3`）。要求時生成で複数種を同時保持できる |
 | 積分（向き・速さの制限） | `simStep` の「v0.33: 『向き』と『速さ』を分けて積分する」ブロック。共通定数 `TURN_GAIN` / `TURN_DEADZONE` / `BOID_ARRIVE_DIST` / `SEP_MIN_SPEED_FRAC` |
 | 反動・硬直 | `applyFireKick`（bullet/missile の発射時）／`updateCollisionAttacks`（緋竜の体当たり）／`updateBeamAttacks` 末尾（持続照射の連続反動） |
 | パス末端 | `updateLeader` の `pathEndReached` 分岐、`isPathClosed`、`PATH_CLOSED_DIST`、`PATH_END_REACH_DIST` |
-| 実機での切替 | `debugCycleMoveProfile`（DEBUG_ACTIONS「🛸 動き切替」） |
