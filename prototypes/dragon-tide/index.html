@@ -1008,7 +1008,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.41.0";
+const GAME_VERSION = "v3.42.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -26245,7 +26245,7 @@ function codexDragonMainAttackRaw(def) {
                stat: `群れ全体で鉄球を引く ／ 鎖 ${CHAIN_LENGTH}px＋竜の数の√×${FLAIL_LEN_PER} ／ 鉄球の半径 ${CHAIN_BALL_R}px＋√×${FLAIL_R_PER} ／ 秒速${CHAIN_MIN_SPEED}px以上で当たる（速いほど強い・最大2.5倍）` };
     case "wisp":    // v3.36.0
       return { power: { label: label + "（灯1つ・竜1体あたり秒間）", direct: WISP_BURN_PER, perSec: true },
-               stat: `灯${WISP_LAMPS}個が線の上に${WISP_GAP}pxおきに並び、${WISP_HOP}秒ごとに最後尾が先頭へ移る ／ 灯のまわり半径${WISP_BURN_R}pxを焼く ／ 消えた灯は${WISP_HAUNT_R}px以内の建物に${WISP_HAUNT_TIME}秒燃える火を残し、壊れると隣へ1回燃え移る` };
+               stat: `竜1体につき灯1つ（最大${WISP_LAMPS_MAX}）が線の上に${WISP_GAP}pxおきに並び、秒速${WISP_SPEED}pxで線の終わりまで進む ／ 灯のまわり半径${WISP_BURN_R}pxを焼く ／ 消えた灯は${WISP_HAUNT_R}px以内の建物に${WISP_HAUNT_TIME}秒燃える火を残し、壊れると隣へ${WISP_SPREAD}回まで燃え移る` };
     case "arc":     // v3.31.0
       return { power: { label: label + "（秒間・1点）", shot: TWIN_ARC_DPS, perSec: true },
                stat: `群れが線の左右${TWIN_HALF_W}pxに2列で並び、列の間を雷のアーチで焼く ／ 列の外は空振り` };
@@ -30945,36 +30945,59 @@ function drawFallFx() {
 // 攻撃「取り憑き火」：灯のまわりを焼く（直接・火）。灯が先へ移るとき、消えた所の近くの建物に青い火を残す（4秒燃え続ける）。
 // 取り憑かれた建物が壊れると、近くの建物1つへ燃え移る（1回まで）。
 // v3.36.0 では入れていないもの：跳んでいる間に弾に当たらない（無敵の0.22秒）、横切った敵の足止め、分岐で灯の数が変わること
-const WISP_LAMPS          = 12;
-const WISP_GAP            = 30;     // 灯どうしの間（列の長さ＝GAP×(LAMPS-1)）
-const WISP_HOP            = 0.22;   // 最後尾が先頭へ移る間隔（秒）＝前へ約136px/秒（手数の強化で縮む）
+// v3.42.0（案帳 DT-083 手直し・Shooter判定「線に沿ってあまり進まない」「ダメージを受ける場所が鬼火の場所と違う」「灯を12個に制限しなくてよい」）:
+// ・灯は竜1体に1つ（上限 WISP_LAMPS_MAX。超えたら1つの灯に複数）。竜が増えると列が伸びる
+// ・竜（当たりの位置）は先頭の灯から順に置く。前は竜を後ろの灯に置き、明るい灯は前にあったので、撃たれる場所と見える灯がずれていた
+// ・灯は指を離しても線の終わりまで進み続ける。進む速さは WISP_SPEED（前は約136px/秒で、指を待つ間も止まっていた）
+// ・取り憑き火を強くし、燃え移りを2回まで（前は弱くて建物が壊れず、燃え移りが起きなかった）
+const WISP_LAMPS_MAX      = 48;
+const WISP_GAP            = 30;     // 灯どうしの間（px）
+const WISP_SPEED          = 200;    // 列が線の上を進む速さ（px/秒。手数の強化で速くなる）
 const WISP_STROKE_STEP    = 6;      // 描いた線を記録する間隔（px）
 const WISP_STROKE_MAX     = 4000;   // 記録する点の上限（これを超える長い線は古い所から捨てる）
 const WISP_BURN_R         = 30;     // 灯が焼く半径（届く距離の強化で広がる）
 const WISP_BURN_PER       = 3;      // 灯1つの秒間威力＝これ×その灯の竜の数
 const WISP_TICK           = 0.15;   // 当たりの判定の間隔（秒）
-const WISP_HAUNT_R        = 50;     // 灯が消えるとき、この距離以内でいちばん近い建物に取り憑く
+const WISP_HAUNT_R        = 100;    // 灯が消えるとき、この距離以内でいちばん近い建物に取り憑く（v3.42.0: 50→100。近くの建物は灯がもう焼き切っていて、取り憑く先が無かった）
 const WISP_HAUNT_TIME     = 4;      // 取り憑き火が燃え続ける秒数
-const WISP_HAUNT_PER      = 1.5;    // 取り憑き火の秒間威力＝これ×消えた灯の竜の数
+const WISP_HAUNT_PER      = 4;      // 取り憑き火の秒間威力＝これ×消えた灯の竜の数（v3.42.0: 1.5→4）
+const WISP_SPREAD         = 2;      // 燃え移る回数（v3.42.0: 1→2）
 const WISP_SPREAD_R       = 48;     // 取り憑かれた建物が壊れたとき燃え移る距離
 const WISP_CAM_LEAD       = 0.8;    // カメラは列の後ろからこの割合の所を追う（列の真ん中を追うと先が見えず動かしにくい・Shooter判定）
-const WISP_LAMP_R         = 7;      // 灯の大きさ（竜が1体のとき。竜が増えると √ で大きくなる）
+const WISP_LAMP_R         = 7;      // 灯の大きさ（竜が1体のとき。1つの灯に複数いると √ で大きくなる）
 const WISP_COLORS = { core: "#ffffff", glow: "rgba(150,215,255,0.35)", rim: "rgba(170,225,255,0.85)", haunt: "rgba(110,190,255,0.75)" };
 
-let wisp = null;   // { lamps:[{x,y,born}], stroke:[{x,y,c}], arc, hopT, tick, ph }
+let wisp = null;   // { lamps:[{x,y,born}]（0＝最後尾）, cnt:[動ける竜の数], stroke:[{x,y,c}], arc, hopT, tick, ph }
 const wispHaunts = [];   // { sIdx, t, dps, spread }
 
 function wispActive() { return !!sp().wisp; }
 
+/** 灯の数＝倒れていない竜の数（ダウン中も含む。上限あり） */
+function wispLampTarget() {
+  let n = 0;
+  for (let i = 0; i < N; i++) if (!boidDead[i]) n++;
+  return Math.max(1, Math.min(WISP_LAMPS_MAX, n));
+}
 function initWisp() {
   const c = calcFriendlyCentroid();
   const a = Math.atan2(leader.y - c.y, leader.x - c.x) || 0;
   const lamps = [];
-  for (let k = 0; k < WISP_LAMPS; k++) {
-    const d = (k - (WISP_LAMPS - 1)) * WISP_GAP;   // 最後尾が k=0、先頭が c
+  const L = wispLampTarget();
+  for (let k = 0; k < L; k++) {
+    const d = (k - (L - 1)) * WISP_GAP;   // 最後尾が k=0、先頭が重心
     lamps.push({ x: c.x + Math.cos(a) * d, y: c.y + Math.sin(a) * d, born: 0 });
   }
-  wisp = { lamps, stroke: [], arc: 0, hopT: 0, tick: 0, ph: 0 };
+  wisp = { lamps, cnt: [], stroke: [], arc: 0, hopT: 0, tick: 0, ph: 0 };
+}
+/** 竜の数に合わせて灯を足す・減らす（最後尾で） */
+function wispFitLamps() {
+  const L = wispLampTarget(), ls = wisp.lamps;
+  while (ls.length > L) ls.shift();
+  while (ls.length < L) {
+    const t = ls[0], u = ls[1] || { x: t.x + 1, y: t.y };
+    const dx = t.x - u.x, dy = t.y - u.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
+    ls.unshift({ x: t.x + dx / d * WISP_GAP, y: t.y + dy / d * WISP_GAP, born: wisp.ph });
+  }
 }
 
 /** 描いた線を記録する（inputStart / inputMove から） */
@@ -31003,51 +31026,53 @@ function wispStrokePoint(arc) {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-/** 生きている竜を灯に割り振ったときの、灯 k の竜の数 */
-function wispLampCount(k, n) { return Math.floor(n / WISP_LAMPS) + (k >= WISP_LAMPS - (n % WISP_LAMPS) ? 1 : 0); }
-
-/** 群れの物理の代わり（simStep から）。灯を進め、竜を灯の位置に置く */
+/** 群れの物理の代わり（simStep から）。灯を進め、竜を先頭の灯から順に置く */
 function stepWisp(dt) {
   if (!wisp) initWisp();
   wisp.ph += dt;
-  const hop = WISP_HOP * effFireIntervalMult("wisp");
-  if (isDrawing && wisp.stroke.length > 0) {
+  wispFitLamps();
+  const Lc = wisp.lamps.length;
+  const hop = WISP_GAP / WISP_SPEED * effFireIntervalMult("wisp");
+  // 線の終わりまで進む（指を離しても続ける）
+  if (wisp.stroke.length > 0) {
     wisp.hopT += dt;
     while (wisp.hopT >= hop) {
       const next = wisp.arc < 0 ? 0 : wisp.arc + WISP_GAP;
-      if (next > wisp.stroke[wisp.stroke.length - 1].c) { wisp.hopT = Math.min(wisp.hopT, hop); break; }   // 指が先へ進むのを待つ
+      if (next > wisp.stroke[wisp.stroke.length - 1].c) { wisp.hopT = Math.min(wisp.hopT, hop); break; }   // 線の終わり（描いている間は指を待つ）
       wisp.hopT -= hop;
       const gone = wisp.lamps.shift();
-      wispOnLampLeave(gone, wispLampCount(0, countAliveBoids()));
+      wispOnLampLeave(gone, wisp.cnt[0] || 0);
       const p = wispStrokePoint(next);
       wisp.lamps.push({ x: p.x, y: p.y, born: wisp.ph });
+      wisp.cnt.shift(); wisp.cnt.push(0);
       wisp.arc = next;
     }
-  } else {
-    wisp.hopT = 0;
   }
-  // 竜を灯に置く（後ろの灯から順に。1つの灯の竜は小さな輪に並べる）
-  const n = countAliveBoids();
+  // 竜を灯に置く：倒れていない竜を順に、先頭の灯から後ろへ（灯より竜が多ければ先頭から2周目）
+  const cnt = wisp.cnt; cnt.length = Lc; cnt.fill(0);
+  const tot = new Array(Lc).fill(0);
   let rank = 0;
   for (let i = 0; i < N; i++) {
     if (boidDead[i]) continue;
-    const k = boidDowned[i] ? 0 : rank % WISP_LAMPS;
-    if (!boidDowned[i]) rank++;
+    const k = Lc - 1 - (rank % Lc);
+    rank++;
+    tot[k]++;
+    if (!boidDowned[i]) cnt[k]++;
     const L = wisp.lamps[k];
-    const cnt = Math.max(1, wispLampCount(k, n));
-    const a = (i * 2.399963) + wisp.ph * 0.8, r = cnt > 1 ? 4 + Math.sqrt(cnt) * 2 : 0;
+    const a = (i * 2.399963) + wisp.ph * 0.8, r = tot[k] > 1 ? 4 + Math.sqrt(tot[k]) * 2 : 0;
     px[i] = L.x + Math.cos(a) * r; py[i] = L.y + Math.sin(a) * r;
     vx[i] = 0; vy[i] = 0;
   }
   // 操縦点は列の先頭に置いておく（敵や卵の向きの計算が群れの先を基準にできるように）
-  const front = wisp.lamps[WISP_LAMPS - 1];
+  const front = wisp.lamps[Lc - 1];
   if (!isDrawing) { leader.x = front.x; leader.y = front.y; }
 }
 
 /** カメラが追う点（列の後ろから WISP_CAM_LEAD の所） */
 function wispCameraTarget() {
-  const k = Math.round((WISP_LAMPS - 1) * WISP_CAM_LEAD);
-  return wisp ? wisp.lamps[k] : calcFriendlyCentroid();
+  if (!wisp) return calcFriendlyCentroid();
+  const k = Math.round((wisp.lamps.length - 1) * WISP_CAM_LEAD);
+  return wisp.lamps[k];
 }
 
 /** 消えた灯が近くの建物に取り憑く */
@@ -31063,7 +31088,7 @@ function wispOnLampLeave(L, cnt) {
     const d = dist2(s.wx, s.wy, L.x, L.y);
     if (d < bd) { bd = d; best = sIdx; }
   }
-  if (best >= 0) wispHaunt(best, WISP_HAUNT_PER * cnt, 1);
+  if (best >= 0) wispHaunt(best, WISP_HAUNT_PER * cnt, WISP_SPREAD);
 }
 function wispHaunt(sIdx, dps, spread) {
   const h = wispHaunts.find((x) => x.sIdx === sIdx);
@@ -31105,9 +31130,8 @@ function updateWispAttacks(dt) {
   wisp.tick = 0;
   const targets = attackTargets();
   const r = WISP_BURN_R * effWeaponRangeMult("wisp");
-  const n = countAliveBoids();
-  for (let k = 0; k < WISP_LAMPS; k++) {
-    const cnt = wispLampCount(k, n);
+  for (let k = 0; k < wisp.lamps.length; k++) {
+    const cnt = wisp.cnt[k] || 0;
     if (cnt <= 0) continue;
     const L = wisp.lamps[k];
     hitInRadius(L.x, L.y, r, { direct: WISP_BURN_PER * cnt * t * dmgMul }, targets);
@@ -31131,9 +31155,8 @@ function drawWisp() {
     ctx.fillStyle = WISP_COLORS.haunt; ctx.globalAlpha = 0.6 * fl;
     ctx.beginPath(); ctx.ellipse(s.wx, s.wy - 4, 6, 10 * fl, 0, 0, Math.PI * 2); ctx.fill();
   }
-  const n = countAliveBoids();
-  for (let k = 0; k < WISP_LAMPS; k++) {
-    const cnt = wispLampCount(k, n);
+  for (let k = 0; k < wisp.lamps.length; k++) {
+    const cnt = wisp.cnt[k] || 0;
     if (cnt <= 0) continue;
     const L = wisp.lamps[k];
     const age = wisp.ph - L.born;
