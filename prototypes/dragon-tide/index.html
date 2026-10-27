@@ -200,8 +200,6 @@
   .fo-card.special .fo-name { color: #ead8ff; }
   .fo-card .fo-desc { font-size: 11px; color: rgba(240,225,200,0.85); line-height: 1.35; }
   .fo-card .fo-stack { font-size: 10px; color: #ffd060; }
-  #fo-skip { margin-top: 16px; padding: 8px 18px; background: rgba(20,26,36,0.9); border: 1px solid rgba(200,220,255,0.4); border-radius: 999px;
-    color: #d8e6ff; font-size: 12px; }
   /* 最上段1行目: 戦況（ボスHP / 残り町 / 結界 / 次の警戒度まで） */
   #hud-buildings {
     padding: 2px 10px;
@@ -1025,7 +1023,6 @@
   <div class="fo-title"></div>
   <div class="fo-sub"></div>
   <div id="fo-cards"></div>
-  <button id="fo-skip" type="button"></button>
 </div>
 
 <!-- v0.6: タイトル画面 -->
@@ -1059,7 +1056,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.43.3";
+const GAME_VERSION = "v3.44.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9791,7 +9788,6 @@ function recomputeTownRoles() {
     st.surrendered = st.total > 0 && st.fallen / st.total >= TOWN_SURRENDER_RATIO;
   }
   // v3.43.0: 建て直った町は警戒度に数えない（もう一度落としたら、またカードで選ぶ）
-  for (const idx of townsCounted) { const st = townStats.get(idx); if (!st || !st.surrendered) townsCounted.delete(idx); }
 }
 
 /** その建物の町が陥落していれば true（＝撃たない）。 */
@@ -19194,8 +19190,11 @@ function settlementFall(settlementIndex) {
   // v1.0.7: 町が1つ沈黙したときだけ警戒度を見る。
   // ここは settlementFall の最後（索引の張り直しも描き直しも済んだ後）なので、
   // この中で settlements が丸ごと作り直されても（城壁の張り直し）問題ない。
-  // v3.43.0: 陥落したら強化カードを出す。警戒度はカードを取ったときだけ進む（案帳 DT-128）
-  if (townJustSurrendered) queueFallOffer(settlement._townIndex);
+  // v3.43.0: 陥落したら強化カードを出す（v3.44.0: 竜の宝のある町だけ。警戒度はどの陥落でも進む。カードを選んでから上げる）
+  if (townJustSurrendered) {
+    if (treasureTowns.delete(settlement._townIndex)) queueFallOffer(settlement._townIndex);
+    else maybeAdvanceTier(true);
+  }
 }
 
 // -----------------------------------------------------------------
@@ -20049,9 +20048,9 @@ const STRINGS = {
   // v3.39.3: 「そのまま残ります」はセーブするときの言い方だった（Shooter判定）。v3.39.4: 建物の一文も外して一言だけに（Shooter指示）
   continueNote: "中断したステージから再開します",
   // v3.43.0: 町の陥落で選ぶ強化（案帳 DT-128）
-  fallOfferTitle: "陥落",
-  fallOfferSub: "強化を1つ選ぶ（このステージだけ）。取ると警戒度が進む",
-  fallOfferSkip: "見逃す（警戒度は進まない）",
+  // v3.44.0: カードは「竜の宝」を取り戻した町でだけ出る（案帳 DT-128。宝の設定が決まったら名前と印を差し替える）
+  fallOfferTitle: "竜の宝を取り戻した",
+  fallOfferSub: "強化を1つ選ぶ（このステージだけ）",
   stageCardListHead: "このステージで取った強化",
   fallCards: {
     fsp_direct: { name: "特殊個体の牙",   desc: "特殊個体の直接攻撃の威力 +60%" },
@@ -20248,7 +20247,12 @@ const DOWN_EGG_CHANCE     = 0.5;
 const GENERAL_CARD_DOUBLE = new Set(["scale", "magnet", "resonance", "cat_direct", "cat_shot", "cat_blast"]);
 function genCount(id) { return upCount(id) + (GENERAL_CARD_DOUBLE.has(id) ? (stageCards[id] || 0) : 0); }
 const stageCards = {};              // 陥落カードの id → このステージで取った枚数
-const townsCounted = new Set();     // カードを取った陥落の町（警戒度はこれだけを数える）
+// v3.44.0（案帳 DT-128 手直し）: 全部の陥落でカードを出すと1ステージ約50回と多すぎた。
+// ステージの始めに町の約2割（最大10・最低1）へ「竜の宝」を置き、その町を落としたときだけカードを出す。
+// 宝は地図にもミニマップにも出さない（見つけたら嬉しい。印は町の上に立つ旗だけ）。警戒度はふつうに全部の陥落で進む
+const TREASURE_TOWN_RATIO = 0.2;
+const TREASURE_TOWN_MAX   = 10;
+const treasureTowns = new Set();    // まだ取り戻していない宝のある町（町の番号）
 const fallOfferQueue = [];          // カードを出す順番を待っている陥落（町の番号）。同時に落ちたら1つずつ出す
 let fallOfferVisible = false;       // 出している間はゲームを完全に止める
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
@@ -27492,6 +27496,7 @@ function startStage(shape) {
   titleOverlayEl.classList.remove("visible");
 
   buildContinent(0);                       // ワールド生成＋警戒度0＋竜の数を戻す（特殊個体は残る）
+  pickTreasureTowns();                     // v3.44.0: 竜の宝を置く町
   stageStartTime = performance.now();
   runMaxFlock = Math.max(runMaxFlock, countAliveBoids());
   updateHUDStage();
@@ -27930,7 +27935,7 @@ function snapshotRunSave() {
     eggs:          totalEggCount,          // 拾った卵（HUD）
     lvUpApplied:   dragonLvPendingApplied, // 開いていたレベルアップで竜のレベルを上げ済みか
     stageCards:    Object.assign({}, stageCards),   // v3.43.0: 陥落カード（ステージ限定）
-    townsCounted:  [...townsCounted],               // v3.43.0: 警戒度に数える陥落
+    treasureTowns: [...treasureTowns],              // v3.44.0: まだ取り戻していない竜の宝の町
   });
   runSaveDirty  = false;
   runSaveLastMs = performance.now();
@@ -28017,7 +28022,8 @@ function resumeRun() {
   // v3.43.0: 陥落カードと、警戒度に数える陥落を戻す
   clearStageCards();
   if (save.stageCards && typeof save.stageCards === "object") for (const [k, v] of Object.entries(save.stageCards)) if (FALL_CARD_DEFS.some(d => d.id === k)) stageCards[k] = v | 0;
-  if (Array.isArray(save.townsCounted)) for (const t of save.townsCounted) townsCounted.add(t | 0);
+  if (Array.isArray(save.treasureTowns)) for (const t of save.treasureTowns) treasureTowns.add(t | 0);
+  else pickTreasureTowns();   // 宝の無い旧セーブ（v3.43 まで）から再開したら選び直す
   renderStageCardIcons();
   stageStartTime = performance.now() - (save.stageElapsedMs || 0);
   // v3.11.7: 群れの数・卵・ボスの状態を戻す（位置は開始地点・HPは満タンから）
@@ -28369,7 +28375,7 @@ function advanceTier() {
 /** 陥落した町の数。警戒度はこの1つの数だけを見る。 */
 function fallenTownCount() {
   let n = 0;
-  for (const [idx, st] of townStats) if (st.surrendered && townsCounted.has(idx)) n++;   // v3.43.0: カードを取った陥落だけ
+  for (const st of townStats.values()) if (st.surrendered) n++;
   return n;
 }
 
@@ -28606,13 +28612,10 @@ function triggerTierAdvance() {
 // ---- v3.43.0: 町の陥落で選ぶステージ限定の強化（案帳 DT-128）----
 const fallOfferEl      = document.getElementById("fall-offer");
 const fallOfferCardsEl = document.getElementById("fo-cards");
-const fallOfferSkipEl  = document.getElementById("fo-skip");
 const stageCardsHudEl  = document.getElementById("hud-stagecards");
 const tierGaugeEl      = document.getElementById("tier-gauge");
 fallOfferEl.querySelector(".fo-title").textContent = STRINGS.fallOfferTitle;
 fallOfferEl.querySelector(".fo-sub").textContent   = STRINGS.fallOfferSub;
-fallOfferSkipEl.textContent = STRINGS.fallOfferSkip;
-fallOfferSkipEl.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); closeFallOffer(); });
 // 暗幕の上の入力は後ろの画面（線を描く）へ通さない
 fallOfferEl.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
 
@@ -28621,12 +28624,58 @@ function fallCardText(id) { return STRINGS.fallCards[id] || STRINGS.cards[id] ||
 /** ステージが変わる・ランが終わるときに、陥落カードと順番待ちを畳む。 */
 function clearStageCards() {
   for (const k of Object.keys(stageCards)) delete stageCards[k];
-  townsCounted.clear();
+  treasureTowns.clear();
   fallOfferQueue.length = 0;
   fallOfferVisible = false;
   fallOfferEl.classList.remove("visible");
   renderStageCardIcons();
   hideStageCardList();
+}
+
+/** v3.44.0: 竜の宝を置く町を選ぶ。大きい町ほど選ばれやすい（落としたときの山を大きくする）。 */
+function pickTreasureTowns() {
+  treasureTowns.clear();
+  const pool = [...townStats].filter(([, st]) => !st.surrendered && st.total > 0);
+  const want = Math.min(TREASURE_TOWN_MAX, pool.length, Math.max(1, Math.round(townStats.size * TREASURE_TOWN_RATIO)));
+  for (let k = 0; k < want && pool.length > 0; k++) {
+    let total = 0;
+    for (const [, st] of pool) total += st.total;
+    let roll = random() * total, pick = pool.length - 1;
+    for (let i = 0; i < pool.length; i++) { roll -= pool[i][1].total; if (roll <= 0) { pick = i; break; } }
+    treasureTowns.add(pool[pick][0]);
+    pool.splice(pick, 1);
+  }
+}
+
+/** v3.44.0: 宝のある町の上に旗を立てる（いまは仮の印。地図・ミニマップには出さない）。 */
+const TREASURE_FLAG_POLE  = 46;   // 旗竿の高さ（ワールド px）
+const TREASURE_FLAG_W     = 28;
+const TREASURE_FLAG_COLOR = "#ffd040";
+function drawTreasureFlags() {
+  if (treasureTowns.size === 0) return;
+  const wave = Math.sin(performance.now() / 260);   // 見た目だけの揺れ
+  ctx.save();
+  for (const idx of treasureTowns) {
+    const st = townStats.get(idx);
+    if (!st || st.surrendered) continue;
+    const x = st.cx, y = st.cy;
+    // 砲台の射程の輪と見分けがつくよう、細い輪ではなく金色の光で包む
+    const glow = ctx.createRadialGradient(x, y, 4, x, y, 56);
+    glow.addColorStop(0, "rgba(255,214,90,0.45)"); glow.addColorStop(1, "rgba(255,214,90,0)");
+    ctx.globalAlpha = 0.75 + 0.25 * wave;
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(x, y, 56, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "#f4ecd2"; ctx.lineWidth = 3.5;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - TREASURE_FLAG_POLE); ctx.stroke();
+    ctx.fillStyle = TREASURE_FLAG_COLOR; ctx.strokeStyle = "#806020"; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y - TREASURE_FLAG_POLE);
+    ctx.lineTo(x + TREASURE_FLAG_W, y - TREASURE_FLAG_POLE + 8 + wave * 3);
+    ctx.lineTo(x, y - TREASURE_FLAG_POLE + 16);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function queueFallOffer(townIndex) {
@@ -28683,7 +28732,6 @@ function takeFallCard(def, townIndex) {
     const ratio = (1 + SPECIAL_CARD_HP * upCount("fsp_hp")) / oldSpMult;
     for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i] && boidSpecial[i] !== SPECIAL_NONE) boidHp[i] *= ratio;
   }
-  townsCounted.add(townIndex);
   renderStageCardIcons();
   markRunSaveDirty();
   closeFallOffer();
@@ -28691,7 +28739,7 @@ function takeFallCard(def, townIndex) {
   updateHUDBuildings();
 }
 
-/** 取らずに閉じる（見逃す）と、その陥落は警戒度に数えない。 */
+/** カードを選び終えたら閉じて、順番待ちの次を出す。 */
 function closeFallOffer() {
   fallOfferVisible = false;
   fallOfferEl.classList.remove("visible");
@@ -32268,6 +32316,7 @@ function render(now) {
   drawCanopy();              // v3.17.0: 大樹海の樹冠（敵と街の上・竜とブレスの下）
   drawBeams(now);            // v3.34.0: 光線の高原の光線・塔のレンズ・プリズム（竜の下）
   drawFallFx();              // v3.36.0: 陥落の輪・煙・逃げる住民・光の粒（竜の下）
+  drawTreasureFlags();       // v3.44.0: 竜の宝のある町の旗（地図には出さない）
   if (forestActive) drawEmbers();   // v3.19.2: 燃える樹冠の火の粉・煙が葉に隠れないよう樹冠の上で描く
   drawWorldTree();           // v3.19.0: 巨大樹の樹冠・灯・心臓
   drawMotherBreathFx();      // v0.24.1: 母竜ブレスの残像（フェードアウト）
