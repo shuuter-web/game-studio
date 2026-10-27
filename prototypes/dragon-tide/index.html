@@ -1056,7 +1056,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.44.3";
+const GAME_VERSION = "v3.45.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -8755,6 +8755,18 @@ const MOVER_DEFS = {
     treasureReward: 40,   // 撃破時の竜晶ボーナス
   },
 
+  // v3.45.0 行商の隊（案帳 DT-269）: 町と町を結ぶ道を行ったり来たりする荷運び。自分は撃たない。
+  // 護衛（caravan_guard）が前後について、ふつうに撃ってくる。フレーバーの敵（道に動くものが出る）
+  caravan: {
+    name: "caravan", hp: 90, speed: 52, xp: 60, eggDrop: 2, radius: 15, turnRate: 4.0,   // 道の端で小さく折り返す
+    color: "#8a6a40", glowColor: "#e0c080", moveType: "pingpong", stayOnRoute: true,
+  },
+  caravan_guard: {
+    name: "caravan_guard", hp: 35, speed: 52, xp: 12, eggDrop: 0, radius: 9, turnRate: 4.0,
+    color: "#6a7a8a", glowColor: "#a0b0c0", moveType: "pingpong", stayOnRoute: true,   // 道から離れず、届く群れを撃つ
+    attack: { type: "fan", interval: 2.0, count: 1, damage: 1, speed: 80, range: 300 },
+  },
+
   // v3.16.0 竜卵の輸送隊（警戒度ラッシュ）: 竜卵を積んで首都へ逃げる隊列。
   // 財宝馬車の絵と金のオーラを流用。群れから逃げ回るのではなく首都へまっすぐ向かう
   // （逃げ込まれたら終わり＝追いつけるかの勝負）。攻撃はしない。
@@ -10229,6 +10241,9 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
     for (const leg of attachWalkerLegs(hull)) result.push(leg);
   }
 
+  // v3.45.0: 行商の隊（案帳 DT-269）。町と町を結ぶ道（townRoadEdges）の上を往復する。前後に護衛が2人
+  result.push(...makeCaravans());
+
   // v0.26: 巨獣（多パーツボス）を後半の一部ステージ（STAGE6・STAGE8）に1体。
   if (stageIndex === 5 || stageIndex === 7) {
     const core = makeMover(MOVER_DEFS.behemoth_core, randPoint);
@@ -10317,6 +10332,36 @@ function keepPathOutOfStartZone(points, closed) {
     }
     if (!inserted) break;
   }
+}
+
+// v3.45.0: 行商の隊（案帳 DT-269）
+const CARAVAN_COUNT        = 2;     // 1ステージ（と警戒度の段）ごとの隊の数
+const CARAVAN_ROAD_MIN     = 450;   // これより短い道は使わない（往復がすぐ終わって動いて見えない）
+const CARAVAN_GUARD_OFFSET = 34;    // 護衛が荷の前後にどれだけ離れるか（道に沿った距離）
+function makeCaravans() {
+  const out = [];
+  if (!townRoadEdges || townRoadEdges.length === 0) return out;   // 道の無い地域（岩塊・大都会）には出ない
+  const clear2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
+  const roads = townRoadEdges.filter(([a, b]) => dist2(a.x, a.y, b.x, b.y) >= CARAVAN_ROAD_MIN * CARAVAN_ROAD_MIN &&
+    dist2(a.x, a.y, START_X, START_Y) > clear2 && dist2(b.x, b.y, START_X, START_Y) > clear2);
+  for (let k = 0; k < CARAVAN_COUNT && roads.length > 0; k++) {
+    const [a, b] = roads.splice(Math.floor(random() * roads.length), 1)[0];
+    const way = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
+    const t = 0.2 + random() * 0.6;
+    const ux = (b.x - a.x), uy = (b.y - a.y), len = Math.sqrt(ux * ux + uy * uy) || 1;
+    const packId = nextPackId++;
+    for (const [defKey, off] of [["caravan_guard", CARAVAN_GUARD_OFFSET], ["caravan", 0], ["caravan_guard", -CARAVAN_GUARD_OFFSET]]) {
+      const def = MOVER_DEFS[defKey];
+      const m = makeMover(def, () => way[0]);
+      m.waypoints = way; m.wpIdx = 1; m.wpDir = 1;
+      m.wx = a.x + ux * t + ux / len * off; m.wy = a.y + uy * t + uy / len * off;
+      m.headingX = ux / len; m.headingY = uy / len;
+      m.packId = packId;
+      m.maxHp = m.hp = def.hp; m.xpValue = def.xp;
+      out.push(m);
+    }
+  }
+  return out;
 }
 
 /** 移動敵1体を生成する（経路生成込み）。 */
@@ -10846,7 +10891,7 @@ function updateMovers(dt) {
       targetX = m._trGoal.wx;
       targetY = m._trGoal.wy;
       pursuing = true;
-    } else if (m._trChase || dist2(m.wx, m.wy, centroid.x, centroid.y) < MOVER_PURSUIT_RANGE * MOVER_PURSUIT_RANGE) {
+    } else if (m._trChase || (!def.stayOnRoute && dist2(m.wx, m.wy, centroid.x, centroid.y) < MOVER_PURSUIT_RANGE * MOVER_PURSUIT_RANGE)) {   // v3.45.0: 道の上だけを行く敵は追わない
       // v3.16.0: ラッシュの敵は画面の外（反応距離より遠く）から来るので、距離によらず追う
       if (def.fleer) {
         // v0.25.1: 財宝馬車は群れから離れる方向へ逃げる（追いかける楽しさ）
@@ -14892,6 +14937,22 @@ function drawMovers() {
       ctx.moveTo(8, -3); ctx.lineTo(12, -5);
       ctx.moveTo(8, 3);  ctx.lineTo(12, 5);
       ctx.stroke();
+    } else if (def.name === "caravan") {
+      // v3.45.0 行商の隊: 荷を背負った獣（楕円の胴・頭）と、背中の木箱2つ。画像なしのベクター専用
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.ellipse(0, 0, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(15, 0, 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#c09860"; ctx.strokeStyle = "#5a4020"; ctx.lineWidth = 1;
+      ctx.fillRect(-9, -7, 7, 6); ctx.strokeRect(-9, -7, 7, 6);
+      ctx.fillRect(-9, 1, 7, 6);  ctx.strokeRect(-9, 1, 7, 6);
+      ctx.fillStyle = "#e8d8b0";   // 手綱を引く商人
+      ctx.beginPath(); ctx.arc(22, 5, 3, 0, Math.PI * 2); ctx.fill();
+    } else if (def.name === "caravan_guard") {
+      // v3.45.0 行商の隊の護衛: 丸い兵と、前へ構えた槍
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.arc(0, 0, 6.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#d8d0c0"; ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(-3, 4); ctx.lineTo(12, 4); ctx.stroke();
     } else if (def.name === "balloon") {
       // 爆撃気球: 丸い気嚢＋吊り索＋ゴンドラ（回転させず常に上向きで描く）
       ctx.rotate(-angle); // 気球は姿勢を回転させない
@@ -25458,6 +25519,7 @@ const CODEX_ENEMY_NAMES = {
   forest_ambusher: "森の伏兵", forest_giant: "森番の巨人",
   metro_car: "渋滞の車", metro_truck: "渋滞の箱バン", metro_police: "パトカー", metro_tank: "戦車", metro_heli: "攻撃ヘリ",
   raider: "レイダー", treasure: "財宝馬車", eggconvoy: "竜卵の輸送隊",
+  caravan: "行商の隊", caravan_guard: "行商の隊の護衛",
 };
 
 // 出現テーブルに載らない敵の出どころ（載っているものは自動で引く）
@@ -25465,6 +25527,8 @@ const CODEX_SPECIAL_ERA = {
   raider:         "全文明 — 建物が尽きると首都から湧く",
   treasure:       "全文明 — 1体だけ漂う当たり枠",
   eggconvoy:      "全文明 — 警戒度が上がったとき、首都へ逃げる隊列",
+  caravan:        "全文明 — 町と町を結ぶ道を往復する（道の無い地域には出ない）",
+  caravan_guard:  "全文明 — 行商の隊の前後",
   behemoth_core:  "VI 電気 / VIII 最終",
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
   walker_hull:    "VII 大戦 / VIII 最終",
