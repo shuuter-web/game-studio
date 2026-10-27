@@ -1056,7 +1056,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.44.2";
+const GAME_VERSION = "v3.44.3";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -4035,6 +4035,10 @@ const TIERS_PER_RUN = 4;
 // 添字＝**上がった先**の警戒度。つまり [1] は警戒度2に上がる条件。
 // 最強モードの 0.70 まで均等に刻んで、50町の大陸で 9 / 18 / 26 / 35 町になる。
 const TIER_ADVANCE_TOWN_RATIO = [0, 0.18, 0.35, 0.52];
+// v3.44.3（案帳 DT-128・Shooter指示）: 警戒度は「竜玉を取り戻して強化カードを取った回数」だけで進む。
+// 竜玉は1ステージ10なので、今までの割合（18%・35%・52%）を10枚に当てて 2・4・6 枚で段階が上がる。
+// 町の陥落そのものでは進まない（竜玉の町だけ落として、警戒度を上げずに強くなる抜け道を塞ぐ）
+const TIER_ADVANCE_CARD_COUNT = [0, 2, 4, 6];
 
 // v1.0.4: 街の再建を復活させる（Shooter指示「街を全滅させる作業はあまり面白くなかった
 // ので、やはりもとのもうちょっと緩い感じに戻しましょう」）。
@@ -15945,7 +15949,6 @@ const METRO_AVENUE_EVERY   = 4;     // この本数ごとに大通り
 // v3.24.0 でブロック1つ＝街1つにしたが、v3.25.0 で 2×2 ブロックに戻し、かわりに街の境の道路を太くした（Shooter指示）。
 // 街の境の道路は抜かない（＝道路を抜いてつながるのは街の中のブロックどうしだけ）
 const METRO_DISTRICT       = 2;     // 1つの街＝この数×この数のブロック
-const METRO_TIER_QUOTA_WEIGHT = 0.32;   // 警戒度が上がるのに要る陥落街数を割合ぶんのこの倍に（tierQuotaTownWeight）。警戒度2まで約6街
 const METRO_MIN_TOWN       = 6;     // これより建物が少ない街（開始地点・首都の際）は街にしない（散らばった家と同じ扱い）
 const METRO_LOT_SIZE       = 108;   // 区画の一辺の目安（ブロックの内側をこの大きさで割る）
 const METRO_LOT_MARGIN     = 10;    // 道路の縁から建物までの余白
@@ -19193,8 +19196,7 @@ function settlementFall(settlementIndex) {
   // この中で settlements が丸ごと作り直されても（城壁の張り直し）問題ない。
   // v3.43.0: 陥落したら強化カードを出す（v3.44.0: 竜の宝のある町だけ。警戒度はどの陥落でも進む。カードを選んでから上げる）
   if (townJustSurrendered) {
-    if (treasureTowns.delete(settlement._townIndex)) queueFallOffer(settlement._townIndex);
-    else maybeAdvanceTier(true);
+    if (treasureTowns.delete(settlement._townIndex)) queueFallOffer(settlement._townIndex);   // 警戒度はカードを取ったときに進む
   }
 }
 
@@ -26252,8 +26254,8 @@ function codexTierTableHtml() {
   const x = (v, d) => "×" + v.toFixed(d);
   const pct = (v) => Math.round(v * 100) + "%";
   return `<table class="cx-table"><thead><tr><th></th>${head}</tr></thead><tbody>` +
-    row("上がる条件", "陥落した町の割合",
-        i => i === 0 ? "開始時" : pct(TIER_ADVANCE_TOWN_RATIO[i])) +
+    row("上がる条件", "竜玉を取り戻した回数",
+        i => i === 0 ? "開始時" : TIER_ADVANCE_CARD_COUNT[i] + "回") +
     row("建物の硬さ", "", i => x(POWER_TIER_BOOST[i].hp, 2)) +
     row("建物の弾の威力", "", i => x(POWER_TIER_BOOST[i].dmg, 2)) +
     row("建物の発射間隔", "小さいほど速く撃つ", i => x(POWER_TIER_BOOST[i].interval, 2)) +
@@ -26266,18 +26268,17 @@ function codexTierTableHtml() {
 
 function codexMiscHtml() {
   // 町の数の例。大陸はおよそ50町（STAGE_CONFIGS の町数 × 面積で変わるので、例として固定の数で示す）
-  const EXAMPLE_TOWNS = 50;
-  const steps = TIER_ADVANCE_TOWN_RATIO.slice(1).map(r => Math.ceil(EXAMPLE_TOWNS * r));
+  const steps = TIER_ADVANCE_CARD_COUNT.slice(1);
   const surrender = Math.round(TOWN_SURRENDER_RATIO * 10);
   return (
     `<div class="tree-hint">どのタブにも入らない仕組みの説明。</div>` +
     `<div class="cx-era">警戒度（ラン中に${POWER_TIER_BOOST.length}段階で上がる）</div>` +
     `<div class="cx-box">` +
-      `<div class="cx-atk">町を陥落させるほど、文明が警戒を強める。段階が上がるほど動く敵が増え、建物も少し固くなる。` +
-        `今の段階は画面上の「警戒度N」、次の段階までの残りは「街あとN」。</div>` +
+      `<div class="cx-atk">竜玉を取り戻すほど、文明が警戒を強める。段階が上がるほど動く敵が増え、建物も少し固くなる。` +
+        `今の段階は画面上の「警戒度N」、次の段階までは下の目盛り。</div>` +
       `<ul class="cx-bullets">` +
         `<li><b>町の陥落</b>＝その町の建物の${surrender}割が壊れたとき。陥落した町の残りは撃つのをやめる（壊すことはできる）</li>` +
-        `<li>例：${EXAMPLE_TOWNS}町の大陸なら、陥落 ${steps.join("・")} 町で段階が上がる</li>` +
+        `<li>竜玉はどのステージにも${TREASURE_TOWN_COUNT}町あり、取り戻して強化カードを取った回数が ${steps.join("・")} 回で段階が上がる（ふつうの町の陥落では上がらない）</li>` +
       `</ul>` +
     `</div>` +
     `<div class="cx-box">${codexTierTableHtml()}</div>` +
@@ -28375,32 +28376,30 @@ function advanceTier() {
 // v3.39.0: 最強モード（街の7割が陥落すると首都が本気を出す）は v3.0.1 で止めていたので、仕組みごと消した（案帳 DT-078）。
 // 寄り道するほど首都が強くなるのは逆向きだった（Shooter判断）。首都はラン中ずっと一定。
 
-/** 陥落した町の数。警戒度はこの1つの数だけを見る。 */
+/** 陥落した町の数。 */
 function fallenTownCount() {
   let n = 0;
   for (const st of townStats.values()) if (st.surrendered) n++;
   return n;
 }
-
-/**
- * v3.26.0: 警戒度の区切りに数える街の数の重み。大都会は地図全体が街で埋まっていて1街も広いので、
- * 割合のままだと警戒度2までに薙ぐ広さが他の地域の約3.5倍あった（実測: 他 0.7〜1.8 Mpx²／大都会 4.5 Mpx²）。
- * 必要な陥落数を減らして他の地域と同じくらいの広さ（約1.5 Mpx²）にそろえる
- */
-function tierQuotaTownWeight() {
-  return worldShape === SHAPE_METRO ? METRO_TIER_QUOTA_WEIGHT : 1;
+/** v3.44.3: このステージで取った陥落カードの枚数。警戒度はこの1つの数だけを見る。 */
+function alertCount() {
+  let n = 0;
+  for (const k in stageCards) n += stageCards[k];
+  return n;
 }
-/** 次の警戒度に上がるのに必要な陥落町数（最終段階なら Infinity）。 */
+
+/** 次の警戒度に上がるのに必要なカードの枚数（最終段階なら Infinity）。 */
 function tierAdvanceTownQuota() {
   const next = powerTier + 1;
   if (next >= TIERS_PER_RUN) return Infinity;
-  return Math.ceil(townStats.size * tierQuotaTownWeight() * TIER_ADVANCE_TOWN_RATIO[next]);
+  return TIER_ADVANCE_CARD_COUNT[next];
 }
 
 /** 次の警戒度まであと何町か。 */
 function townsLeftForNextTier() {
   if (townStats.size === 0) return Infinity;
-  return Math.max(0, tierAdvanceTownQuota() - fallenTownCount());
+  return Math.max(0, tierAdvanceTownQuota() - alertCount());
 }
 
 /** まだ陥落していない町の数（HUDと地図の目印に使う）。 */
@@ -28797,9 +28796,9 @@ function updateTierGauge() {
     key = "max";
     build = () => { const m = document.createElement("span"); m.className = "tg-max"; m.textContent = "MAX"; return [m]; };
   } else {
-    const from  = powerTier > 0 ? Math.ceil(townStats.size * tierQuotaTownWeight() * TIER_ADVANCE_TOWN_RATIO[powerTier]) : 0;
+    const from  = TIER_ADVANCE_CARD_COUNT[powerTier] || 0;
     const total = Math.max(1, tierAdvanceTownQuota() - from);
-    const done  = Math.max(0, Math.min(total, fallenTownCount() - from));
+    const done  = Math.max(0, Math.min(total, alertCount() - from));
     key = total + "/" + done;
     build = () => {
       if (total > TIER_GAUGE_MAX_CELLS) {
@@ -28823,7 +28822,7 @@ function maybeAdvanceTier(townJustSurrendered) {
   if (isFinalTier()) return;
   if (!townJustSurrendered) return;     // 街が沈黙する区切りでだけ上げる
   if (townStats.size === 0) return;     // 町の無い大陸では上がらない
-  if (fallenTownCount() < tierAdvanceTownQuota()) return;
+  if (alertCount() < tierAdvanceTownQuota()) return;
   triggerTierAdvance();
 }
 
@@ -31285,7 +31284,8 @@ function onTownFallFx(townIndex, st) {
   for (const a of armed) fallFx.push({ kind: "smoke", x: a.x, y: a.y, t: -FALL_RING_TIME * a.d / r, life: FALL_SMOKE_TIME });
   triggerShake(FALL_SHAKE, 0.08);
   // ③ 警戒度の表示へ飛ぶ光の粒（着く先は画面座標。カメラが動いても HUD に向かう）
-  for (let k = 0; k < FALL_PARTICLES; k++) {
+  // v3.44.3: 警戒度は竜玉のカードでだけ進むので、光の粒は竜玉の町のときだけ飛ばす
+  if (treasureTowns.has(townIndex)) for (let k = 0; k < FALL_PARTICLES; k++) {
     fallFx.push({ kind: "spark", x: st.cx + (fxRandom() - 0.5) * 40, y: st.cy + (fxRandom() - 0.5) * 40,
                   t: -k * 0.05, life: FALL_PARTICLE_TIME, bend: (fxRandom() - 0.5) * 160 });
   }
