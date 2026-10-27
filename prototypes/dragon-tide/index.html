@@ -1056,7 +1056,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.44.1";
+const GAME_VERSION = "v3.44.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -20049,9 +20049,11 @@ const STRINGS = {
   // v3.39.3: 「そのまま残ります」はセーブするときの言い方だった（Shooter判定）。v3.39.4: 建物の一文も外して一言だけに（Shooter指示）
   continueNote: "中断したステージから再開します",
   // v3.43.0: 町の陥落で選ぶ強化（案帳 DT-128）
-  // v3.44.0: カードは「竜の宝」を取り戻した町でだけ出る（案帳 DT-128。宝の設定が決まったら名前と印を差し替える）
-  fallOfferTitle: "竜の宝を取り戻した",
-  fallOfferSub: "強化を1つ選ぶ（このステージだけ）",
+  // v3.44.0: カードは「竜の宝」を取り戻した町でだけ出る（案帳 DT-128）
+  // v3.44.2: 宝の設定は「竜玉」（大人の竜から取れる、莫大な力を秘めた玉。取り戻すと竜の魂が解き放たれ、
+  // 竜の怒りが宿って、この国を滅ぼすまで群れに力を貸す＝ステージの間だけ効く。案帳 DT-238・Shooter指示）
+  fallOfferTitle: "竜玉を取り戻した",
+  fallOfferSub: "竜の怒りが宿る。強化を1つ選ぶ（この国を滅ぼすまで）",
   stageCardListHead: "このステージで取った強化",
   fallCards: {
     fsp_direct: { name: "特殊個体の牙",   desc: "特殊個体の直接攻撃の威力 +60%" },
@@ -20251,8 +20253,8 @@ const stageCards = {};              // 陥落カードの id → このステー
 // v3.44.0（案帳 DT-128 手直し）: 全部の陥落でカードを出すと1ステージ約50回と多すぎた。
 // ステージの始めに町の約2割（最大10・最低1）へ「竜の宝」を置き、その町を落としたときだけカードを出す。
 // 宝は地図にもミニマップにも出さない（見つけたら嬉しい。印は町の上に立つ旗だけ）。警戒度はふつうに全部の陥落で進む
-const TREASURE_TOWN_RATIO = 0.2;
-const TREASURE_TOWN_MAX   = 10;
+// v3.44.2（Shooter指示）: 数は地域で変えず1ステージ10で固定（町が10より少ない地域は全部の町）
+const TREASURE_TOWN_COUNT = 10;
 const treasureTowns = new Set();    // まだ取り戻していない宝のある町（町の番号）
 const fallOfferQueue = [];          // カードを出す順番を待っている陥落（町の番号）。同時に落ちたら1つずつ出す
 let fallOfferVisible = false;       // 出している間はゲームを完全に止める
@@ -28637,7 +28639,7 @@ function clearStageCards() {
 function pickTreasureTowns() {
   treasureTowns.clear();
   const pool = [...townStats].filter(([, st]) => !st.surrendered && st.total > 0);
-  const want = Math.min(TREASURE_TOWN_MAX, pool.length, Math.max(1, Math.round(townStats.size * TREASURE_TOWN_RATIO)));
+  const want = Math.min(TREASURE_TOWN_COUNT, pool.length);
   for (let k = 0; k < want && pool.length > 0; k++) {
     let total = 0;
     for (const [, st] of pool) total += st.total;
@@ -28648,33 +28650,34 @@ function pickTreasureTowns() {
   }
 }
 
-/** v3.44.0: 宝のある町の上に旗を立てる（いまは仮の印。地図・ミニマップには出さない）。 */
-const TREASURE_FLAG_POLE  = 46;   // 旗竿の高さ（ワールド px）
-const TREASURE_FLAG_W     = 28;
-const TREASURE_FLAG_COLOR = "#ffd040";
+/** v3.44.0: 宝のある町の上に印を出す（地図・ミニマップには出さない）。
+ * v3.44.2: 旗をやめ、青白く光る竜玉にする（竜玉のものは青白く光る、で揃える。案帳 DT-238） */
+const TREASURE_ORB_R      = 13;   // 竜玉の半径（ワールド px）
+const TREASURE_ORB_LIFT   = 30;   // 町の中心からどれだけ上に浮かべるか
+const TREASURE_GLOW_R     = 60;
 function drawTreasureFlags() {
   if (treasureTowns.size === 0) return;
-  const wave = Math.sin(performance.now() / 260);   // 見た目だけの揺れ
+  const t = performance.now() / 1000;   // 見た目だけの揺れ
   ctx.save();
   for (const idx of treasureTowns) {
     const st = townStats.get(idx);
     if (!st || st.surrendered) continue;
-    const x = st.cx, y = st.cy;
-    // 砲台の射程の輪と見分けがつくよう、細い輪ではなく金色の光で包む
-    const glow = ctx.createRadialGradient(x, y, 4, x, y, 56);
-    glow.addColorStop(0, "rgba(255,214,90,0.45)"); glow.addColorStop(1, "rgba(255,214,90,0)");
-    ctx.globalAlpha = 0.75 + 0.25 * wave;
+    const bob = Math.sin(t * 2.2 + idx) * 3, pulse = 0.5 + 0.5 * Math.sin(t * 3 + idx);
+    const x = st.cx, y = st.cy - TREASURE_ORB_LIFT + bob;
+    // 町を包む青白い光（砲台の射程の輪と見分けがつくよう、輪ではなく光で）
+    const glow = ctx.createRadialGradient(st.cx, st.cy, 4, st.cx, st.cy, TREASURE_GLOW_R);
+    glow.addColorStop(0, "rgba(170,225,255,0.42)"); glow.addColorStop(1, "rgba(170,225,255,0)");
+    ctx.globalAlpha = 0.7 + 0.3 * pulse;
     ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(x, y, 56, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(st.cx, st.cy, TREASURE_GLOW_R, 0, Math.PI * 2); ctx.fill();
+    // 浮かぶ竜玉（芯は白、縁は青）
     ctx.globalAlpha = 1;
-    ctx.strokeStyle = "#f4ecd2"; ctx.lineWidth = 3.5;
-    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - TREASURE_FLAG_POLE); ctx.stroke();
-    ctx.fillStyle = TREASURE_FLAG_COLOR; ctx.strokeStyle = "#806020"; ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x, y - TREASURE_FLAG_POLE);
-    ctx.lineTo(x + TREASURE_FLAG_W, y - TREASURE_FLAG_POLE + 8 + wave * 3);
-    ctx.lineTo(x, y - TREASURE_FLAG_POLE + 16);
-    ctx.closePath(); ctx.fill(); ctx.stroke();
+    const orb = ctx.createRadialGradient(x - 4, y - 4, 1, x, y, TREASURE_ORB_R);
+    orb.addColorStop(0, "#ffffff"); orb.addColorStop(0.45, "#c8f0ff"); orb.addColorStop(1, "#4aa8e8");
+    ctx.fillStyle = orb;
+    ctx.beginPath(); ctx.arc(x, y, TREASURE_ORB_R, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(220,245,255,${0.5 + 0.4 * pulse})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, TREASURE_ORB_R + 4 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.restore();
 }
