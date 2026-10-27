@@ -1056,7 +1056,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.44.0";
+const GAME_VERSION = "v3.44.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -10775,6 +10775,7 @@ function behemothSweepHits(m, core) {
 function updateMovers(dt) {
   updateEnemyGroups(dt);   // v2.3.0: 複数パーツのグループ敵（編成など）
   updateMoverDeaths(dt);   // v2.6.0: 大きい敵の最期（崩れ→倒れ込み→残骸）
+  updateFlungMovers(dt);   // v3.44.1: 鉄球で吹き飛ばした敵
 
   // 衝撃波FXの寿命更新
   for (let i = shockwaveFxList.length - 1; i >= 0; i--) {
@@ -28826,6 +28827,7 @@ function maybeAdvanceTier(townJustSurrendered) {
 // ステージ stageIdx のワールド（街・地形・レイヤー）を生成し直す共通処理。
 // advanceToNextStage（次ステージへ）と setupStageForResume（続きから）で共用。
 function loadStageWorld(stageIdx) {
+  flungMovers.length = 0;    // v3.44.1
   resetSpeciesMechanics();   // v3.29.0: 塊竜の玉・土竜の地割れを前のステージから持ち越さない
   for (let i = 0; i < MAX_PROJECTILES; i++) projActive[i] = 0;
   for (let i = 0; i < MAX_PARTICLES; i++)   partActive[i] = 0;
@@ -30600,6 +30602,13 @@ const CHAIN_SWING_MAX   = 620;   // 回る速さがこれを超えたら押さ�
 const CHAIN_TARGET_R_MULT = 0.8;   // 相手の半径のこの倍を当たりに足す（絵の外周より少し内側）
 const CHAIN_INNER_EXTRA   = 22;    // 鉄球から鎖の側へ、この長さぶん当たりを伸ばす（px）
 const CHAIN_HIT_TICK    = 0.12;  // 当たりの判定の間隔（秒）
+const CHAIN_SLOW_DMG_MULT = 0.5; // 竜の最高速より遅い鉄球の威力の倍率（v3.44.1）
+// v3.44.1（案帳 DT-054 手直し）: 鉄球で倒した動く敵は、すぐ消さずに当たった向きへ吹き飛ばしてから消す
+const FLING_SPEED_PER_IMPACT = 3;     // 吹き飛ぶ速さ＝衝撃力×これ
+const FLING_SPEED_MIN = 320, FLING_SPEED_MAX = 760;
+const FLING_DRAG = 2.2;               // 速さの落ち方（1/秒）
+const FLING_LIFE = 0.9;               // 消えるまでの秒数（最後の0.3秒で薄れる）
+const flungMovers = [];               // 見た目だけ（当たり判定なし）
 // v3.33.0（Shooter判定）: 勢いに応じて衝撃力。ある勢いを超えるとスマッシュ（強い衝撃・建物と城壁を砕く・敵を吹き飛ばす）
 const CHAIN_IMPACT_PER_SPEED = 0.45;  // 衝撃力＝鉄球の速さ×これ（秒速250pxで約110）
 const CHAIN_SMASH_SPEED      = 280;   // これより速く当たるとスマッシュ（実測：急に曲がったときの振りの上位1割ほど）
@@ -30652,7 +30661,8 @@ function stepChainBall(b, ax, ay, avx, avy, L, R, dmgMult, dt) {
   b.hx = b.x; b.hy = b.y;
   const speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
   if (speed < CHAIN_MIN_SPEED) return;
-  const dmg = CHAIN_DMG * Math.min(2.5, speed / 250) * dmgMult * (t / CHAIN_HIT_TICK);
+  // v3.44.1（案帳 DT-054 手直し）: 竜の速さより遅く当たった（引きずっているだけの）ときは威力を半分にする
+  const dmg = CHAIN_DMG * Math.min(2.5, speed / 250) * dmgMult * (t / CHAIN_HIT_TICK) * (speed < mv().maxSpeed ? CHAIN_SLOW_DMG_MULT : 1);
   const smash = speed >= CHAIN_SMASH_SPEED;
   const impact = speed * CHAIN_IMPACT_PER_SPEED * (smash ? CHAIN_SMASH_IMPACT : 1);
   const toA = Math.sqrt(dist2(ax, ay, b.x, b.y)) || 1;
@@ -30693,10 +30703,45 @@ function chainBallHit(x0, y0, x1, y1, ix, iy, R, hit, targets) {
   }
   if (targetHittable(targets, "mover")) for (const m of moversNear(cx, cy, reach)) {
     if (!m.alive || !near(m.wx, m.wy, m.def.radius || 10)) continue;
-    if (hit) hitMover(m, hit, x1, y1);
+    if (hit) {
+      hitMover(m, hit, x1, y1);
+      if (!m.alive && !m.death && !m.def.hero) flingMover(m, x1, y1, hit.impact || 0);   // 大きい敵（残骸になる）と英雄は除く
+    }
     hits++;
   }
   return hits;
+}
+function flingMover(m, fromX, fromY, impact) {
+  const dx = m.wx - fromX, dy = m.wy - fromY, d = Math.sqrt(dx * dx + dy * dy) || 1;
+  const v = Math.max(FLING_SPEED_MIN, Math.min(FLING_SPEED_MAX, impact * FLING_SPEED_PER_IMPACT));
+  flungMovers.push({ key: m.def.sprite ?? m.def.name, radius: m.def.radius || 10, color: m.def.color || "#7a8a9a",
+    x: m.wx, y: m.wy, vx: dx / d * v, vy: dy / d * v, a: Math.atan2(m.headingY, m.headingX) + Math.PI / 2,
+    spin: (fxRandom() - 0.5) * 16, t: 0 });
+}
+function updateFlungMovers(dt) {
+  if (dt <= 0 || flungMovers.length === 0) return;
+  const drag = Math.exp(-FLING_DRAG * dt);
+  for (let k = flungMovers.length - 1; k >= 0; k--) {
+    const f = flungMovers[k];
+    f.t += dt; f.vx *= drag; f.vy *= drag; f.x += f.vx * dt; f.y += f.vy * dt; f.a += f.spin * dt;
+    if (f.t >= FLING_LIFE) flungMovers.splice(k, 1);
+  }
+}
+function drawFlungMovers() {
+  if (flungMovers.length === 0) return;
+  for (const f of flungMovers) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, (FLING_LIFE - f.t) / 0.3);
+    ctx.translate(f.x, f.y); ctx.rotate(f.a);
+    const img = enemyImages[f.key], meta = ENEMY_SPRITE_META[f.key];
+    if (img && meta && img.naturalWidth) {
+      const drawW = f.radius * meta.drawScale, sp = drawW / img.naturalWidth;
+      ctx.drawImage(img, -img.naturalWidth * sp * meta.px, -img.naturalHeight * sp * meta.py, drawW, img.naturalHeight * sp);
+    } else {
+      ctx.fillStyle = f.color; ctx.beginPath(); ctx.arc(0, 0, f.radius, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
 }
 function updateChainDragon(i, dt) {
   let b = chainBalls.get(i);
@@ -32304,6 +32349,7 @@ function render(now) {
   if (!forestActive) drawEmbers();   // v0.10: 燃える建物の火の粉・煙（建物の上・ユニットの下）。大樹海では樹冠の上で描く
   drawXpGems();              // v0.6: XPジェム（青白ダイヤ。金色の卵と区別）
   drawMoverWrecks();         // v2.6.0: 崩れかけ／残骸の本体（生きている敵より下）
+  drawFlungMovers();         // v3.44.1: 鉄球で吹き飛ばした敵（見た目だけ）
   drawBehemothLimbs();       // v1.7.0: 巨獣の関節（コア・拳の下に敷く）
   drawWalkerLegs();          // v1.8.0: 多脚戦車の脚（胴と足の下に敷く）
   drawTierRushUnder();       // v3.16.0: 猛進の残像・精鋭と輸送隊の輪（敵の下）
