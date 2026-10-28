@@ -1095,7 +1095,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.50.3";
+const GAME_VERSION = "v3.50.4";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -11138,7 +11138,7 @@ function updateMovers(dt) {
     // v0.15: ステージが進むほど攻撃が苛烈に（間隔短縮・ビームDPS増。HPは据え置き）
     // v1.0.5: 警戒度ぶんも掛ける（TIER_MOVER_FEROCITY）。
     // v3.16.1: 警戒度ラッシュの精鋭は連射も威力も別格
-    const ferocity = moverFerocity() * (m._trElite ? TR_ELITE_FEROCITY : 1);
+    const ferocity = moverFerocity() * (m._trFerocity || 1);   // v3.50.4: ラッシュの敵ごとの苛烈さ
     if (atk.type === "laser") {
       // v0.76: 巨人型のレーザー（Shooter指示「常時照射はやめて極太ビームの細い版を」）。
       // 首都の大技と同じ spawnLaserStrike を使うので作法も同じ＝**予兆1.3秒 → 照射0.9秒**。
@@ -11664,7 +11664,10 @@ const TR_HORDE_STAGGER = 0.12;  // 1列ずつ出す間隔（一度に湧かせ�
 const TR_ELITE_HP      = 8;     // 精鋭の体力倍率
 const TR_ELITE_SPEED   = 1.35;  // 速さの倍率の下限
 const TR_ELITE_MIN_SPEED = 120; // 速さの下限(px/s)。群れ（150〜200）より少し遅い＝逃げ続けるのは難しい
-const TR_ELITE_FEROCITY = 2.5;  // 攻撃の苛烈さ（間隔÷・威力×）
+const TR_ELITE_FEROCITY = 1.8;  // 攻撃の苛烈さ（間隔÷・威力×）。v3.50.4: 2.5→1.8（案帳 DT-472「衝撃波を連発してきて強すぎる」）
+// v3.50.4（案帳 DT-472・Shooter指示「追跡者以外のラッシュ敵は弱すぎる」）: 大型包囲・小型の大軍の敵を硬く・苛烈に
+const TR_UNIT_HP        = 2.5;   // 体力の倍率
+const TR_UNIT_FEROCITY  = 1.5;   // 攻撃の苛烈さ（間隔÷・威力×）
 const TR_ELITE_CHASE_TIME = 60; // この間は追い続ける
 const TR_ELITE_XP      = 8;
 const TR_ELITE_HEAL    = 0.4;
@@ -11753,6 +11756,13 @@ function spawnTrMover(def, x, y) {
   return m;
 }
 
+/** v3.50.4: 大型包囲・小型の大軍の敵を硬く・苛烈にする */
+function toughenTrMover(m) {
+  m.maxHp = m.hp = m.maxHp * TR_UNIT_HP;
+  m._trFerocity = TR_UNIT_FEROCITY;
+  return m;
+}
+
 /** 群れ全体を回復する（輸送隊・精鋭の報酬）。 */
 function healFlock(frac) {
   for (let j = 0; j < N; j++) {
@@ -11826,7 +11836,7 @@ function startTierRush() {
       const a0 = random() * Math.PI * 2;
       for (let k = 0; k < n; k++) {
         const a = a0 + k * Math.PI * 2 / n + (random() - 0.5) * 0.3;
-        spawnTrMover(defs.large, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r)._trChase = true;
+        toughenTrMover(spawnTrMover(defs.large, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r))._trChase = true;
       }
       d.total = n;
       break;
@@ -11880,7 +11890,7 @@ function startTierRush() {
       m.maxHp = m.hp = def.hp * TR_ELITE_HP;
       m.speedMult = Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed);
       m.xpValue = def.xp * TR_ELITE_XP;
-      m._trChase = true; m._trElite = true; m._trReward = "elite";
+      m._trChase = true; m._trElite = true; m._trReward = "elite"; m._trFerocity = TR_ELITE_FEROCITY;
       d.total = 1;
       tr.dur = TR_ELITE_CHASE_TIME;
       break;
@@ -11973,8 +11983,8 @@ function updateTierRush(wdt, dt) {
         if (inRow <= 0) { d.left = 0; break; }
         for (let k = 0; k < inRow; k++) {
           const off = (k - (inRow - 1) / 2) * TR_HORDE_GAP;
-          spawnTrMover(d.def, d.baseX + tx * off + Math.cos(d.dir) * back,
-                              d.baseY + ty * off + Math.sin(d.dir) * back)._trChase = true;
+          toughenTrMover(spawnTrMover(d.def, d.baseX + tx * off + Math.cos(d.dir) * back,
+                                             d.baseY + ty * off + Math.sin(d.dir) * back))._trChase = true;
         }
         d.left -= inRow;
         d.row++;
@@ -16573,7 +16583,7 @@ function updateMetroGun(m, dt) {
   if (m.muzzleT > 0) m.muzzleT = Math.max(0, m.muzzleT - dt);
   if (m.mainTimer === undefined) { m.mainTimer = random() * g.mainInterval; m.mgTimer = random() * g.mgInterval; m.mgLeft = 0; }
   if (idx < 0) return;
-  const ferocity = moverFerocity() * (m._trElite ? TR_ELITE_FEROCITY : 1);
+  const ferocity = moverFerocity() * (m._trFerocity || 1);   // v3.50.4: ラッシュの敵ごとの苛烈さ
   const dx = px[idx] - m.wx, dy = py[idx] - m.wy;
   const d2 = dx * dx + dy * dy;
   const aligned = Math.abs(wrapAngle(Math.atan2(dy, dx) - m.turretAngle)) < g.align;
@@ -26622,7 +26632,7 @@ function codexMiscHtml() {
         `今の段階は画面上の「警戒度N」、次の段階までは下の目盛り。</div>` +
       `<ul class="cx-bullets">` +
         `<li><b>町の陥落</b>＝その町の建物の${surrender}割が壊れたとき。陥落した町の残りは撃つのをやめる（壊すことはできる）</li>` +
-        `<li>竜玉はどのステージにも${TREASURE_TOWN_COUNT}町あり、取り戻して強化カードを取った回数が ${steps.join("・")} 回で段階が上がる（ふつうの町の陥落では上がらない）</li>` +
+        `<li>強化カード（竜玉施設のある${TREASURE_TOWN_COUNT}町と、町の陥落で溜まる竜玉のかけら${SHARDS_PER_ORB}つで1枚）を取った回数が、そのステージで取れる枚数の ${steps.join("・")} に届くと段階が上がる</li>` +
       `</ul>` +
     `</div>` +
     `<div class="cx-box">${codexTierTableHtml()}</div>` +
@@ -26645,6 +26655,7 @@ function codexMiscHtml() {
         `<li><b>首都</b>：別格のさらに ×${CAPITAL_POWER_MULT} の硬さ。ラン中ずっと変わらない</li>` +
       `</ul>` +
     `</div>` +
+    codexRushHtml() +
     `<div class="cx-era">ステージの★</div>` +
     `<div class="cx-box">` +
       `<div class="cx-atk">首都を落とすまでの時間で決まる。寄り道して群れを育てれば楽になるが、急ぐほど★が増える。</div>` +
@@ -26653,6 +26664,32 @@ function codexMiscHtml() {
       `</ul>` +
     `</div>`
   );
+}
+
+/** v3.50.4（案帳 DT-472・Shooter指示）: 図鑑「その他」に警戒度ラッシュと襲撃隊を載せる。数値は定数から引く */
+const CODEX_RUSH_DESC = {
+  haste:    () => `${TR_DURATION}秒間、敵の動き・攻撃・弾の速さが ×${TR_HASTE}`,
+  siege:    () => `その時代の大型の敵が画面の外から群れを取り囲んで迫る（警戒度2〜4で ${TR_SIEGE_COUNT.slice(1).join("・")}体。体力 ×${TR_UNIT_HP}・攻撃の苛烈さ ×${TR_UNIT_FEROCITY}）`,
+  horde:    () => `その時代の小型の敵が矢印の方向から${TR_HORDE_ROW}体ずつ列で押し寄せる（警戒度2〜4で ${TR_HORDE_COUNT.slice(1).join("・")}体。体力 ×${TR_UNIT_HP}・攻撃の苛烈さ ×${TR_UNIT_FEROCITY}）`,
+  wind:     () => `${TR_DURATION}秒間、矢印の方向へ強い風。竜は秒速${TR_WIND_SPEED}pxで流され、敵の弾も流れる`,
+  meteor:   () => `${TR_DURATION}秒間、予告の輪の場所に星が落ちる（竜に${TR_METEOR_DMG}・建物に${TR_METEOR_BLD_DMG}。誘い込めば町も壊せる）`,
+  volley:   () => `町が群れを狙い、予告線のあと一斉に撃つ（${TR_VOLLEY_AT.length}回）`,
+  firering: () => `群れを囲む炎の輪が縮んでくる。輪の上は毎秒${TR_RING_DPS}。隙間から抜けられる`,
+  convoy:   () => `竜卵を積んだ隊列${TR_CONVOY_COUNT}台が首都へ逃げる。倒すと経験値${TR_CONVOY_XP}と群れの回復`,
+  elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
+  night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
+};
+function codexRushHtml() {
+  return `<div class="cx-era">警戒度ラッシュ（警戒度が上がるたびに1つ）</div>` +
+    `<div class="cx-box"><div class="cx-atk">警戒度が上がると、人間が竜卵の力で反撃してくる山場が起きる。少し間を置いて名前と予告が出てから始まる。</div></div>` +
+    `<div class="cx-list">` + TR_KINDS.map((k) =>
+      `<div class="cx-row"><div class="cx-body">` +
+        `<div class="cx-name">${trName(k)}</div>` +
+        `<div class="cx-tags">${storyEgg(STRINGS.trWarn[k] ?? "")}</div>` +
+        `<div class="cx-atk">${CODEX_RUSH_DESC[k] ? CODEX_RUSH_DESC[k]() : ""}</div>` +
+      `</div></div>`).join("") + `</div>` +
+    `<div class="cx-era">襲撃隊</div>` +
+    `<div class="cx-box"><div class="cx-atk">群れが${RUSH_FLOCK_THRESHOLD}体以上いると、約${RUSH_INTERVAL}秒ごとにレイダー（群れ10体ごとに+${RUSH_PER_10}・最大${RUSH_MAX_RAIDERS}体）と衝撃兵${RUSH_HEAVY_COUNT}体が外から迫る。前の波が残っている間は来ない。</div></div>`;
 }
 
 // -----------------------------------------------------------------
