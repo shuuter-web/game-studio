@@ -200,6 +200,9 @@
   .fo-card.special .fo-name { color: #ead8ff; }
   .fo-card .fo-desc { font-size: 11px; color: rgba(240,225,200,0.85); line-height: 1.35; }
   .fo-card .fo-stack { font-size: 10px; color: #ffd060; }
+  /* v3.47.0（案帳 DT-128）: 出てすぐは押せない。その間は薄く、押せるようになると明るくなる（誤タップ防止） */
+  #fall-offer .fo-card { transition: opacity 0.15s, transform 0.15s; }
+  #fall-offer:not(.armed) .fo-card { opacity: 0.45; transform: scale(0.96); pointer-events: none; }
   /* 最上段1行目: 戦況（ボスHP / 残り町 / 結界 / 次の警戒度まで） */
   #hud-buildings {
     padding: 2px 10px;
@@ -1056,7 +1059,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.46.2";
+const GAME_VERSION = "v3.47.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -13174,6 +13177,21 @@ function updateMoverDeaths(dt) {
       d.slammed = true;
       moverDeathSlam(m);
     }
+    // v3.47.0: 吹き飛ばされた残骸は減速しながら滑って回る（倒れ込んだ後も止まるまで滑る）
+    // 手足は親の吹き飛びにそのまま乗る（崩れた後も親から離れないように）
+    const parentFling = d.drift && d.drift.death ? d.drift.death.fling : null;
+    if (parentFling) {
+      m.wx = Math.max(0, Math.min(WORLD_W, m.wx + parentFling.vx * dt));
+      m.wy = Math.max(0, Math.min(WORLD_H, m.wy + parentFling.vy * dt));
+    }
+    const fl = d.fling;
+    if (fl) {
+      const drag = Math.exp(-FLING_DRAG * dt);
+      fl.vx *= drag; fl.vy *= drag; fl.spin *= drag;
+      m.wx = Math.max(0, Math.min(WORLD_W, m.wx + fl.vx * dt));
+      m.wy = Math.max(0, Math.min(WORLD_H, m.wy + fl.vy * dt));
+      fl.angle += fl.spin * dt;
+    }
     if (d.t >= DEATH_COLLAPSE + DEATH_HOLD + DEATH_FADE) d.done = true;
   }
 }
@@ -13198,7 +13216,7 @@ function drawMoverWrecks() {
     // 「焦げ跡は見た目で訳がわからない」）。**大きさも位置も変えず、色だけ落とす**。
     ctx.save();
     ctx.translate(m.wx, m.wy);
-    ctx.rotate(Math.atan2(m.headingY, m.headingX) + Math.PI / 2 + (m.deathTilt || 0) * look.sink);
+    ctx.rotate(Math.atan2(m.headingY, m.headingX) + Math.PI / 2 + (m.deathTilt || 0) * look.sink + (d.fling ? d.fling.angle : 0));
     if (img && meta) {
       const drawW = m.def.radius * meta.drawScale;
       const sp = drawW / img.naturalWidth;
@@ -20048,6 +20066,9 @@ const STRINGS = {
   fuseTitle: "特殊個体の合成",
   evoRecorded: (name, reward) => `📖 進化図鑑に記録: ${name}  +${reward}🔷`,
   lockedSpeciesEvo: "竜の突然変異で出会う",
+  randomDragon: "ランダム",                                   // v3.47.0（案帳 DT-471）
+  randomDragonDesc: "解放済みの竜からランダムに選ぶ",
+  randomDragonLocked: "解放済みの竜が2種類以上になると選べる",
   banishButton: (n) => `🚫 封印（残り${n}）`,
   banishArmed: "封印するカードを選ぶ（やめる）",
   panelAxes: "時代＼地域",
@@ -20323,6 +20344,8 @@ const stageCards = {};              // 陥落カードの id → このステー
 // v3.44.2（Shooter指示）: 数は地域で変えず1ステージ10で固定（町が10より少ない地域は全部の町）
 const TREASURE_TOWN_COUNT = 10;
 const treasureTowns = new Set();    // まだ取り戻していない宝のある町（町の番号）
+const FALL_OFFER_ARM_MS = 700;      // v3.47.0: 陥落カードが出てから押せるようになるまで（ミリ秒）
+let fallOfferArmTimer = 0;
 const fallOfferQueue = [];          // カードを出す順番を待っている陥落（町の番号）。同時に落ちたら1つずつ出す
 let fallOfferVisible = false;       // 出している間はゲームを完全に止める
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
@@ -27897,6 +27920,25 @@ function showSpeciesSelect() {
     dbgTap(btn, (e) => { e.preventDefault(); beginRun(ch.species); });
     cardListEl.appendChild(btn);
   }
+  // v3.47.0（案帳 DT-471・Shooter指示）: 解放済みの竜からランダムに選ぶ。解放済みが1種類だけのときは鍵付き
+  const unlockedSpecies = SPECIES_CHOICES.map(ch => ch.species).filter(isSpeciesUnlocked);
+  const randomBtn = document.createElement("button");
+  if (unlockedSpecies.length < 2) {
+    randomBtn.className = "upgrade-card species-locked";
+    randomBtn.innerHTML =
+      `<span class="card-icon">🔒</span>` +
+      `<span><div class="card-name">${STRINGS.randomDragon}</div>` +
+      `<div class="card-desc">${STRINGS.randomDragonLocked}</div></span>`;
+  } else {
+    randomBtn.className = "upgrade-card rarity-star";
+    randomBtn.innerHTML =
+      `<span class="card-icon">🎲</span>` +
+      `<span><div class="card-name">🎲 ${STRINGS.randomDragon}</div>` +
+      `<div class="card-desc">${STRINGS.randomDragonDesc}</div></span>`;
+    // ランの乱数は beginRun で引き直すので、ここで random() を1回使っても後の展開には響かない
+    dbgTap(randomBtn, (e) => { e.preventDefault(); beginRun(unlockedSpecies[Math.floor(random() * unlockedSpecies.length)]); });
+  }
+  cardListEl.appendChild(randomBtn);
   // 「もどる」でタイトルへ戻れる（つづきから等を選び直せる）
   const back = document.createElement("button");
   back.className = "upgrade-card card-span-2";   // 2列グリッドでは横いっぱいに広げる
@@ -28796,16 +28838,29 @@ function openNextFallOffer() {
       (def.max > 1 ? `<span class="fo-stack">${have + 1}/${def.max}</span>` : "");
     btn.querySelector(".fo-name").textContent = text.name;
     btn.querySelector(".fo-desc").textContent = text.desc;
-    btn.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); takeFallCard(def, townIndex); });
+    // v3.47.0（案帳 DT-128・Shooter指摘「止めた直後に選択画面なので誤タップが頻発」）:
+    // 押した瞬間ではなく、カードの上で押して離したときに選ぶ。押し始めがカードの上でないもの
+    // （線を描いていた指が、出てきたカードの上で離れた）は選ばない
+    btn.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); btn.dataset.pressed = String(e.pointerId); });
+    btn.addEventListener("pointerup", (e) => {
+      e.stopPropagation(); e.preventDefault();
+      if (btn.dataset.pressed === String(e.pointerId)) takeFallCard(def, townIndex);
+      delete btn.dataset.pressed;
+    });
+    btn.addEventListener("pointerleave", () => { delete btn.dataset.pressed; });
     return btn;
   }));
   fallOfferVisible = true;
+  // 出てから FALL_OFFER_ARM_MS は押せない（ゲームが止まった瞬間に、まだ画面を触っている指で選んでしまわないように）
+  fallOfferEl.classList.remove("armed");
+  clearTimeout(fallOfferArmTimer);
+  fallOfferArmTimer = setTimeout(() => fallOfferEl.classList.add("armed"), FALL_OFFER_ARM_MS);
   fallOfferEl.classList.add("visible");
   hapticPulse(40);
 }
 
 function takeFallCard(def, townIndex) {
-  if (!fallOfferVisible) return;
+  if (!fallOfferVisible || !fallOfferEl.classList.contains("armed")) return;
   const oldMax = effBoidMaxHp();
   const oldSpMult = 1 + SPECIAL_CARD_HP * upCount("fsp_hp");
   stageCards[def.id] = (stageCards[def.id] || 0) + 1;
@@ -30694,6 +30749,8 @@ const FLING_SPEED_MIN = 320, FLING_SPEED_MAX = 760;
 const FLING_DRAG = 2.2;               // 速さの落ち方（1/秒）
 const FLING_LIFE = 0.9;               // 消えるまでの秒数（最後の0.3秒で薄れる）
 const flungMovers = [];               // 見た目だけ（当たり判定なし）
+const WRECK_FLING_SPEED_MULT = 0.6;   // v3.47.0: 大きい敵の残骸が吹き飛ぶ速さ（ふつうの敵のこの倍。さらに大きさの√で割る）
+const WRECK_FLING_SPIN = 6;           // 残骸が回る速さの幅（rad/秒。大きさで割る）
 // v3.33.0（Shooter判定）: 勢いに応じて衝撃力。ある勢いを超えるとスマッシュ（強い衝撃・建物と城壁を砕く・敵を吹き飛ばす）
 const CHAIN_IMPACT_PER_SPEED = 0.45;  // 衝撃力＝鉄球の速さ×これ（秒速250pxで約110）
 const CHAIN_SMASH_SPEED      = 280;   // これより速く当たるとスマッシュ（実測：急に曲がったときの振りの上位1割ほど）
@@ -30790,7 +30847,10 @@ function chainBallHit(x0, y0, x1, y1, ix, iy, R, hit, targets) {
     if (!m.alive || !near(m.wx, m.wy, m.def.radius || 10)) continue;
     if (hit) {
       hitMover(m, hit, x1, y1);
-      if (!m.alive && !m.death && !m.def.hero) flingMover(m, x1, y1, hit.impact || 0);   // 大きい敵（残骸になる）と英雄は除く
+      if (!m.alive && !m.def.hero) {   // 英雄は除く
+        if (m.death) flingWreck(m, x1, y1, hit.impact || 0);   // v3.47.0: 大きい敵は残骸ごと吹き飛ぶ（案帳 DT-054 手直し）
+        else flingMover(m, x1, y1, hit.impact || 0);
+      }
     }
     hits++;
   }
@@ -30802,6 +30862,16 @@ function flingMover(m, fromX, fromY, impact) {
   flungMovers.push({ key: m.def.sprite ?? m.def.name, radius: m.def.radius || 10, color: m.def.color || "#7a8a9a",
     x: m.wx, y: m.wy, vx: dx / d * v, vy: dy / d * v, a: Math.atan2(m.headingY, m.headingX) + Math.PI / 2,
     spin: (fxRandom() - 0.5) * 16, t: 0 });
+}
+/** v3.47.0（案帳 DT-054 手直し・Shooter指示「大きな敵の残骸も吹っ飛んで欲しい」）:
+ * 残骸になる大きい敵は、残骸の演出（崩れ→倒れ込み→残る→薄れる）はそのままに、残骸ごと当たった向きへ滑らせる。
+ * 大きいほど重いので遅く、回りも小さい。手足は親へ寄っていく処理で一緒についてくる */
+function flingWreck(m, fromX, fromY, impact) {
+  if (!m.death || m.death.fling) return;
+  const dx = m.wx - fromX, dy = m.wy - fromY, d = Math.sqrt(dx * dx + dy * dy) || 1;
+  const heavy = Math.max(1, (m.def.radius || DEATH_MIN_RADIUS) / DEATH_MIN_RADIUS);
+  const v = Math.max(FLING_SPEED_MIN, Math.min(FLING_SPEED_MAX, impact * FLING_SPEED_PER_IMPACT)) * WRECK_FLING_SPEED_MULT / Math.sqrt(heavy);
+  m.death.fling = { vx: dx / d * v, vy: dy / d * v, spin: (fxRandom() - 0.5) * WRECK_FLING_SPIN / heavy, angle: 0 };
 }
 function updateFlungMovers(dt) {
   if (dt <= 0 || flungMovers.length === 0) return;
