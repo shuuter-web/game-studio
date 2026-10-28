@@ -372,6 +372,17 @@
   .et-node i { font-style: normal; color: #ffd060; letter-spacing: -1px; }
   .et-arrow, .et-or { color: rgba(220,235,255,0.6); }
   .et-cross { margin-left: 4px; color: #ff9ae0; }
+  /* v3.50.2: 先の分岐・突然変異の行き先まで。見ていないものは ??? */
+  #levelup-overlay.lv-center #levelup-dragon { max-height: 30vh; overflow-y: auto; }
+  .et-row.et-branch { padding-left: 6px; }
+  .et-row.et-closed { opacity: 0.45; }
+  .et-node.unknown { color: rgba(200,215,235,0.55); border-style: dotted; }
+  .et-label { font-size: 9px; color: #ff9ae0; margin: 0 2px 0 4px; }
+  .et-cross-row { margin-top: 4px; }
+  .et-cx { display: inline-flex; flex-direction: column; align-items: center; border: 1px dotted rgba(255,154,224,0.5); border-radius: 5px;
+           padding: 0 4px; font-size: 10px; color: rgba(232,244,255,0.75); line-height: 1.25; }
+  .et-cx small { font-size: 8px; color: rgba(200,215,235,0.6); }
+  .et-cx.ready { border-style: solid; border-color: #ff9ae0; color: #fff; box-shadow: 0 0 6px rgba(255,154,224,0.5); }
   /* v3.12.1: 地域選択はゲーム中の三択と別の画面に見せる（Shooter指示）。
      HUD・地図・進捗を隠し、暗幕の上で中央に置く。カードは「地図の札」風の別デザイン */
   body.region-picking #hud-topbar, body.region-picking #hud-left, body.region-picking #minimap-container,
@@ -1084,7 +1095,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.50.1";
+const GAME_VERSION = "v3.50.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -21824,36 +21835,65 @@ function buildLevelUpCards() {
   renderLevelUpCards(opts.length ? opts : [CARD_ORB], { branchScreen: true });
 }
 
-/** v3.50.0: 進化ツリー（レベルアップの画面の上）。竜の形態のつながりと、連れている特殊個体の形態 */
+/** v3.50.0: 進化ツリー（レベルアップの画面の上）。
+ * v3.50.2（案帳 DT-238・Shooter指示「先の分岐も、まだ見ぬ竜種や特殊個体も『???』表示で」）:
+ *   竜：基本の形態 → 分岐 A／B → それぞれの型2つ まで全部並べる。突然変異は全部の行き先と条件を並べる。
+ *   まだ見ていない姿（分岐・型・突然変異の行き先）と、まだ解放していない特殊個体の名前は「???」。
+ *   特殊個体：連れている種類ごとに 分岐 A／B と突然変異の行き先（群れの攻撃の種類ごと） */
+const EVO_TREE_UNKNOWN = "???";
 function evoTreeHtml() {
-  const pips = (lv) => "●".repeat(lv) + "○".repeat(Math.max(0, FORM_LV_MAX - lv));
-  const node = (name, color, cls, extra = "") => `<span class="et-node ${cls}" style="--et:${color}">${name}${extra}</span>`;
+  const seen = (profile && profile.evoSeen) || {};
+  const pips = (lv) => `<i>${"●".repeat(lv)}${"○".repeat(Math.max(0, FORM_LV_MAX - lv))}</i>`;
+  const node = (name, color, cls, extra = "") => `<span class="et-node ${cls}" style="--et:${color}">${name}${extra ? " " + extra : ""}</span>`;
+  const unknown = () => node(EVO_TREE_UNKNOWN, "#6a7a8a", "unknown");
+  const arrow = `<span class="et-arrow">→</span>`, or = `<span class="et-or">/</span>`;
+  const spName = (key) => { const k = SPECIAL_KIND_BY_KEY[key]; return k !== undefined && isSpecialUnlocked(k) ? SPECIAL_DEFS[k].name : EVO_TREE_UNKNOWN; };
   const sid = flockSpecies, spec = SPECIES_EVO_SPEC[sid], br = runSpeciesBranch[sid] || {};
-  let html = `<div class="et-row">`;
+  let html = "";
   if (spec) {
     const base = SPECIES_DEFS[sid];
-    html += node(`${base.icon} ${base.ja}`, base.color, br.t10 ? "done" : "now", br.t10 ? "" : ` <i>${pips(runFormLv)}</i>`);
-    html += `<span class="et-arrow">→</span>`;
-    if (!br.t10) html += ["A", "B"].map(o => node(spec[o].name, spec[o].tint, "next")).join(`<span class="et-or">/</span>`);
-    else {
-      html += node(spec[br.t10].name, spec[br.t10].tint, br.t20 ? "done" : "now", br.t20 ? "" : ` <i>${pips(runFormLv)}</i>`);
-      html += `<span class="et-arrow">→</span>`;
-      const t2 = tier2Options(sid, br.t10);
-      if (!br.t20) html += t2.map(o => node(o.name.split("・").pop(), o.tint, "next")).join(`<span class="et-or">/</span>`);
-      else { const o = t2.find(o => o.id === br.t20); html += node(o ? o.name.split("・").pop() : "", o ? o.tint : base.color, "now", ` <i>${pips(runFormLv)}</i>`); }
+    html += `<div class="et-row">` + node(`${base.icon} ${base.ja}`, base.color, br.t10 ? "done" : "now", br.t10 ? "" : pips(runFormLv)) + `</div>`;
+    for (const opt of ["A", "B"]) {
+      const b = spec[opt];
+      const mine = br.t10 === opt, other = br.t10 && !mine;
+      const known = mine || seen[`d:${sid}.${opt}`];
+      let row = `<div class="et-row et-branch${other ? " et-closed" : ""}"><span class="et-arrow">${opt === "A" ? "├" : "└"}</span>`;
+      row += known ? node(b.name, b.tint, mine ? (br.t20 ? "done" : "now") : "next", mine && !br.t20 ? pips(runFormLv) : "") : unknown();
+      row += arrow;
+      row += tier2Options(sid, opt).map((o) => {
+        const isMine = mine && br.t20 === o.id;
+        const k = isMine || seen[`d:${sid}.${o.id}`];
+        return k ? node(o.name.split("・").pop(), o.tint, isMine ? "now" : "next", isMine ? pips(runFormLv) : "") : unknown();
+      }).join(or);
+      html += row + `</div>`;
     }
-    const crosses = dragonCrossOptions();
-    if (crosses.length) html += `<span class="et-cross">突然変異 ${crosses.map(c => SPECIES_DEFS[c.becomes].icon).join("")}</span>`;
+    // 突然変異：全部の行き先。条件を満たしているものは光らせる
+    const crosses = CROSS_EVOLUTIONS.filter(cx => cx.to !== sid && SPECIES_DEFS[cx.to]);
+    html += `<div class="et-row et-cross-row"><span class="et-label">突然変異</span>` + crosses.map((cx) => {
+      const to = SPECIES_DEFS[cx.to];
+      const known = isSpeciesUnlocked(cx.to) || seen[`x:${cx.to}`];
+      const need = Object.keys(cx.needs).map(k => `${spName(k)}${cx.needs[k] > 1 ? "×" + cx.needs[k] : ""}`).join("＋");
+      const ready = specialsSatisfy(cx.needs);
+      return `<span class="et-cx${ready ? " ready" : ""}">${known ? to.icon + to.ja : EVO_TREE_UNKNOWN}<small>${need}</small></span>`;
+    }).join("") + `</div>`;
   }
-  html += `</div>`;
   for (const kind of new Set(runSpecials)) {
     const key = SPECIAL_DEFS[kind]?.key;
     if (!SPECIAL_EVO_SPEC[key]) continue;
     const d = SPECIAL_DEFS[kind], b = runSpBranch[key];
-    html += `<div class="et-row et-sp">` + node(d.name, d.color, b ? "done" : "now", b ? "" : ` <i>${pips(spFormLv(key))}</i>`) + `<span class="et-arrow">→</span>`;
-    html += b ? node(SPECIAL_EVO_SPEC[key][b].name, SPECIAL_EVO_SPEC[key][b].tint, "now", ` <i>${pips(spFormLv(key))}</i>`)
-              : ["A", "B"].map(o => node(SPECIAL_EVO_SPEC[key][o].name, SPECIAL_EVO_SPEC[key][o].tint, "next")).join(`<span class="et-or">/</span>`);
-    html += `</div>`;
+    let row = `<div class="et-row et-sp">` + node(d.name, d.color, b ? "done" : "now", b ? "" : pips(spFormLv(key))) + arrow;
+    row += ["A", "B"].map((o) => {
+      const sb = SPECIAL_EVO_SPEC[key][o], mine = b === o;
+      const known = mine || seen[`s:${key}.${o}`];
+      return known ? node(sb.name, sb.tint, mine ? "now" : (b ? "done" : "next"), mine ? pips(spFormLv(key)) : "") : unknown();
+    }).join(or);
+    const cross = SPECIAL_CROSS[key] || {};
+    const cats = Object.keys(cross);
+    if (cats.length) row += `<span class="et-label">突然変異</span>` + cats.map((c) => {
+      const toKey = cross[c], known = seen[`sx:${toKey}`] || isSpecialUnlocked(SPECIAL_KIND_BY_KEY[toKey]);
+      return `<span class="et-cx${c === flockCategory() ? " ready" : ""}">${known ? SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[toKey]].name : EVO_TREE_UNKNOWN}<small>${CATEGORY_NAMES[c]}の群れ</small></span>`;
+    }).join("");
+    html += row + `</div>`;
   }
   return html;
 }
