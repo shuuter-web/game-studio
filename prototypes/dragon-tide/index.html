@@ -185,17 +185,23 @@
   #stagecard-list .sl-row .sl-name { font-weight: 700; white-space: nowrap; }
   #stagecard-list .sl-row .sl-desc { color: rgba(230,225,210,0.8); font-size: 10px; }
   /* v3.43.0: 町の陥落で選ぶ強化（ゲームを止めて中央に横並び） */
-  #fall-offer { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
-    background: rgba(4,6,12,0.72); z-index: 46; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 0 8px; }
+  /* v3.49.0（案帳 DT-238）: 止めずにスロー。画面下に縦の3択（レベルアップの三択と同じ置き方）。暗幕は無く、カードの外は線を描ける */
+  #fall-offer { position: fixed; left: 0; right: 0; bottom: 0; display: none; flex-direction: column; align-items: center;
+    z-index: 46; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 0 10px calc(10px + env(safe-area-inset-bottom));
+    pointer-events: none; background: linear-gradient(to top, rgba(4,6,12,0.78), rgba(4,6,12,0)); }
   #fall-offer.visible { display: flex; }
-  #fall-offer .fo-title { font-size: 20px; font-weight: 700; color: #ffe08a; letter-spacing: 0.08em; text-shadow: 0 0 14px rgba(255,190,90,0.7); }
-  #fall-offer .fo-sub { font-size: 11px; color: rgba(255,235,200,0.75); margin: 4px 0 14px; }
-  #fo-cards { display: flex; gap: 8px; justify-content: center; width: 100%; max-width: 520px; }
-  .fo-card { flex: 1 1 0; max-width: 160px; min-height: 150px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px;
+  #fall-offer .fo-title { font-size: 16px; font-weight: 700; color: #ffe08a; letter-spacing: 0.06em; text-shadow: 0 0 12px rgba(255,190,90,0.7); }
+  #fall-offer.rare .fo-title { color: #c8f0ff; text-shadow: 0 0 14px rgba(120,200,255,0.8); }
+  #fall-offer .fo-sub { font-size: 10px; color: rgba(255,235,200,0.75); margin: 2px 0 8px; }
+  #fo-cards { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 440px; pointer-events: auto; }
+  .fo-card { position: relative; display: flex; flex-direction: row; align-items: center; gap: 10px; padding: 9px 12px; min-height: 58px;
     background: linear-gradient(160deg, rgba(56,40,18,0.96), rgba(26,20,12,0.96)); border: 2px solid #d8a860; border-radius: 10px; color: #fff;
-    cursor: pointer; text-align: center; }
+    cursor: pointer; text-align: left; }
+  .fo-card .fo-text { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+  .fo-card.rare { border-color: #8fd8ff; box-shadow: 0 0 12px rgba(120,200,255,0.45); background: linear-gradient(160deg, rgba(20,44,66,0.96), rgba(10,20,34,0.96)); }
+  .fo-card .fo-rare { position: absolute; top: 4px; right: 8px; font-size: 9px; font-weight: 700; color: #8fd8ff; letter-spacing: 0.1em; }
   .fo-card.special { border-color: #c890ff; background: linear-gradient(160deg, rgba(44,30,62,0.96), rgba(20,14,30,0.96)); }
-  .fo-card .fo-icon { font-size: 30px; line-height: 1; }
+  .fo-card .fo-icon { font-size: 26px; line-height: 1; }
   .fo-card .fo-name { font-size: 13px; font-weight: 700; color: #ffe8c0; }
   .fo-card.special .fo-name { color: #ead8ff; }
   .fo-card .fo-desc { font-size: 11px; color: rgba(240,225,200,0.85); line-height: 1.35; }
@@ -1059,7 +1065,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.48.0";
+const GAME_VERSION = "v3.49.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3105,6 +3111,8 @@ const DRAGON_HIT_BOOST = {
 function stageAttackMult() {
   let m = upCount("f_gamble") > 0 ? GAMBLE_ATTACK_MULT : 1;
   if (tierRush.phase === "active") m *= 1 + RUSH_CARD_ATTACK * upCount("f_rush");
+  if (upCount("f_egg_power") > 0) m *= 1 + Math.min(EGG_POWER_MAX, EGG_POWER_PER_EGG * totalEggCount);   // v3.49.0
+  if (fallRoarTimer > 0) m *= 1 + FALL_ROAR_ATTACK * upCount("f_fall_roar");                            // v3.49.0
   return m;
 }
 // v3.43.0: 特殊個体の攻撃だけに重ねる倍率（陥落カード「特殊個体の牙・喉・膂力」）。
@@ -4041,7 +4049,15 @@ const TIER_ADVANCE_TOWN_RATIO = [0, 0.18, 0.35, 0.52];
 // v3.44.3（案帳 DT-128・Shooter指示）: 警戒度は「竜玉を取り戻して強化カードを取った回数」だけで進む。
 // 竜玉は1ステージ10なので、今までの割合（18%・35%・52%）を10枚に当てて 2・4・6 枚で段階が上がる。
 // 町の陥落そのものでは進まない（竜玉の町だけ落として、警戒度を上げずに強くなる抜け道を塞ぐ）
-const TIER_ADVANCE_CARD_COUNT = [0, 2, 4, 6];
+const TIER_ADVANCE_CARD_COUNT = [0, 2, 4, 6];   // v3.44.3 の値（1ステージ10枚のとき）。v3.49.0 からは下の割合で数える
+// v3.49.0（案帳 DT-238）: カードは「竜玉の町5つ＋かけら3つで1枚」になり、1ステージの枚数が町の数で変わる。
+// 今までの 2・4・6 枚／10枚 と同じ割合で、そのステージで取れる枚数から必要数を決める
+const TIER_ADVANCE_CARD_RATIO = [0, 0.2, 0.4, 0.6];
+let stageCardTotal = 10;   // そのステージで取れるカードの枚数の見込み（竜玉の町＋かけらで揃う数）
+function tierCardQuota(tier) {
+  if (tier <= 0) return 0;
+  return Math.max(tier, Math.round(stageCardTotal * TIER_ADVANCE_CARD_RATIO[tier]));
+}
 
 // v1.0.4: 街の再建を復活させる（Shooter指示「街を全滅させる作業はあまり面白くなかった
 // ので、やはりもとのもうちょっと緩い感じに戻しましょう」）。
@@ -19285,8 +19301,16 @@ function settlementFall(settlementIndex) {
   // ここは settlementFall の最後（索引の張り直しも描き直しも済んだ後）なので、
   // この中で settlements が丸ごと作り直されても（城壁の張り直し）問題ない。
   // v3.43.0: 陥落したら強化カードを出す（v3.44.0: 竜の宝のある町だけ。警戒度はどの陥落でも進む。カードを選んでから上げる）
+  // v3.49.0（案帳 DT-238）: 竜玉の町（施設の陥落）はレアのカードがすぐ出る。ほかの町は竜玉のかけらが1つ溜まり、3つでカード
   if (townJustSurrendered) {
-    if (treasureTowns.delete(settlement._townIndex)) queueFallOffer(settlement._townIndex);   // 警戒度はカードを取ったときに進む
+    if (upCount("f_fall_roar") > 0) { fallRoarTimer = FALL_ROAR_TIME; pushWorldText(leader.x, leader.y - 40, fallCardText("f_fall_roar").name, "#ffb070"); }
+    if (treasureTowns.delete(settlement._townIndex)) queueFallOffer(settlement._townIndex, true);   // 警戒度はカードを取ったときに進む
+    else {
+      stageShards++;
+      if (stageShards >= SHARDS_PER_ORB) { stageShards -= SHARDS_PER_ORB; queueFallOffer(settlement._townIndex, false); }
+      renderStageCardIcons();
+      markRunSaveDirty();
+    }
   }
 }
 
@@ -19427,6 +19451,9 @@ let boidSpecialTotal;
 // v1.1.0: 曳竜の航跡を通った印。1 = **次の直接攻撃1ヒット**だけ威力が上がる。
 // 当たった瞬間に 0 に戻る（積み増しはしない＝何周しても1発ぶん）。
 let boidWakeCharge;
+// v3.49.0: 陥落カード「巨竜化」で巨大になった竜（ステージが変わると戻る）と、その踏みつけの時計
+let boidGiant;
+let boidGiantTimer;
 // v0.99.2: 突進の個体状態。入口は群れで決まるが、持続は個体ごと。
 let boidChargeOn;     // 1 = この竜は今まさに突進している
 let boidChargeHold;   // 溜まっている秒数（0 .. effChargeRampSeconds()）
@@ -19473,6 +19500,8 @@ function initBoids() {
   boidSpecialCd         = new Float32Array(MAX_BOIDS);
   boidSpecialTotal      = new Float32Array(MAX_BOIDS);
   boidWakeCharge        = new Uint8Array(MAX_BOIDS);
+  boidGiant             = new Uint8Array(MAX_BOIDS);
+  boidGiantTimer        = new Float32Array(MAX_BOIDS);
   // v0.99.2: 突進の個体状態
   boidChargeOn          = new Uint8Array(MAX_BOIDS);
   boidChargeHold        = new Float32Array(MAX_BOIDS);
@@ -19807,6 +19836,7 @@ function collectNearbyEggs() {
       if (dx * dx + dy * dy < 60 * 60) {
         eggActive[e] = 0;
         totalEggCount++;
+        if (upCount("f_egg_wave") > 0) eggShockwave(eggWx[e], eggWy[e]);   // v3.49.0: 孵化の衝撃
         // 卵回収 = その場で竜+1（群れ上限未満のときのみ）
         // v0.6: 上限到達後の卵は XP+10 に変換する（拾って無駄がない）
         const added = spawnBoidAtEgg(eggWx[e], eggWy[e]);
@@ -19873,6 +19903,7 @@ function spawnBoidAtEgg(wx, wy) {
   boidKickX[idx]            = 0;
   boidKickY[idx]            = 0;
   boidCollisionCooldown[idx] = 0;
+  boidGiant[idx]            = 0;   // v3.49.0: 前に巨竜だった枠を引き継がない
   // 変更2: ダウン/復帰モデル配列の初期化（NaN/未定義防止）
   boidDowned[idx]      = 0;
   boidDownTimer[idx]   = 0;
@@ -20151,6 +20182,9 @@ const STRINGS = {
   // 竜の怒りが宿って、この国を滅ぼすまで群れに力を貸す＝ステージの間だけ効く。案帳 DT-238・Shooter指示）
   fallOfferTitle: "竜玉を取り戻した",
   fallOfferSub: "竜の怒りが宿る。強化を1つ選ぶ（この国を滅ぼすまで）",
+  fallOfferTitleRare: "竜玉施設から竜玉を取り戻した",   // v3.49.0
+  fallOfferTitleShard: "竜玉のかけらが揃った",
+  fallCardRare: "レア",
   stageCardListHead: "このステージで取った強化",
   fallCards: {
     fsp_direct: { name: "特殊個体の牙",   desc: "特殊個体の直接攻撃の威力 +60%" },
@@ -20162,6 +20196,11 @@ const STRINGS = {
     f_down_egg: { name: "形見の卵",       desc: "竜が落ちると、半分の確率でその場に卵を残す" },
     f_gamble:   { name: "捨て身の賭け",   desc: "群れのHPが半分になるかわりに、攻撃が2倍" },
     f_rush:     { name: "逆襲の血",       desc: "ラッシュの間、群れの攻撃 +50%" },
+    f_egg_power: { name: "卵の力",        desc: "このステージで拾った卵1つにつき、群れの攻撃 +1%（最大 +60%）" },
+    f_fall_roar: { name: "陥落の咆哮",    desc: "町が陥落するたびに、8秒間 群れの攻撃 +50%" },
+    f_egg_wave:  { name: "孵化の衝撃",    desc: "卵を拾うたびに、その場で衝撃波が起きてまわりを吹き飛ばす" },
+    f_sp_double: { name: "双つ魂",        desc: "連れている特殊個体が2倍になる（あとから加わった特殊個体も2倍）" },
+    f_giant:     { name: "巨竜化",        desc: "群れの竜5匹が巨大になる（HP 4倍・まわりを踏みつぶす）" },
   },
   cards: {
     scale:     { name: "硬鱗",     desc: "竜のHP +40%" },
@@ -20332,11 +20371,36 @@ const FALL_CARD_DEFS = [
   { id: "fsp_impact", icon: "\u{1F4AA}", max: 3, special: true },
   { id: "fsp_hp",     icon: "\u{1F49C}", max: 3, special: true },
   { id: "fsp_revive", icon: "\u{1F504}", max: 2, special: true },
-  { id: "f_egg_twin", icon: "\u{1F423}", max: 1 },
+  { id: "f_egg_twin", icon: "\u{1F423}", max: 1, rare: true },
   { id: "f_down_egg", icon: "\u{1FAB9}", max: 1 },
-  { id: "f_gamble",   icon: "\u{1F3B2}", max: 1 },
+  { id: "f_gamble",   icon: "\u{1F3B2}", max: 1, rare: true },
   { id: "f_rush",     icon: "\u{1FA78}", max: 2 },
+  // v3.49.0（案帳 DT-238・Shooter指示「ステージ限定なのでいろいろ派手でよい」）
+  { id: "f_egg_power", icon: "\u{1F95A}", max: 1 },              // 拾った卵の数だけ攻撃が上がる
+  { id: "f_fall_roar", icon: "\u{1F4E2}", max: 2 },              // 町が陥落するたびに、しばらく攻撃が上がる
+  { id: "f_egg_wave",  icon: "\u{1F4A5}", max: 1, rare: true },  // 卵を拾うと衝撃波
+  { id: "f_sp_double", icon: "\u{1F465}", max: 1, rare: true, special: true },   // 特殊個体が2倍
+  { id: "f_giant",     icon: "\u{1F996}", max: 2, rare: true },  // 群れの数匹が巨大化
 ];
+// 群れが持っていない攻撃の強化は出さない（Shooter指示）。カード → 見る攻撃の成分（special＝特殊個体の攻撃だけを見る）
+const FALL_CARD_NEEDS = {
+  cat_direct: { cat: "direct" }, cat_shot: { cat: "shot" }, cat_blast: { cat: "blast" },
+  fsp_direct: { cat: "direct", special: true }, fsp_shot: { cat: "shot", special: true }, fsp_impact: { cat: "impact", special: true },
+};
+const EGG_POWER_PER_EGG  = 0.01;   // 卵の力：拾った卵1つで攻撃 +1%
+const EGG_POWER_MAX      = 0.6;
+const FALL_ROAR_TIME     = 8;      // 陥落の咆哮：攻撃が上がっている秒数
+const FALL_ROAR_ATTACK   = 0.5;    // 1枚ごとの上げ幅
+const EGG_WAVE_RADIUS    = 150;    // 卵の衝撃波
+const EGG_WAVE_DAMAGE    = 45;
+const EGG_WAVE_IMPACT    = 160;
+const GIANT_COUNT        = 5;      // 巨竜化：1枚で巨大になる竜の数
+const GIANT_SCALE        = 2.0;
+const GIANT_HP_MULT      = 4;
+const GIANT_STOMP_INTERVAL = 1.2;  // 巨竜の踏みつけ（自分のまわりへの爆発）
+const GIANT_STOMP_RADIUS = 70;
+const GIANT_STOMP_DAMAGE = 30;
+let fallRoarTimer = 0;
 const SPECIAL_CARD_DMG    = 0.60;   // 特殊個体の牙・喉・膂力 1枚の上げ幅
 const SPECIAL_CARD_HP     = 0.80;   // 特殊個体の鱗 1枚
 const SPECIAL_CARD_REVIVE = 0.75;   // 特殊個体の再起 1枚ごとの復活時間の倍率
@@ -20353,12 +20417,18 @@ const stageCards = {};              // 陥落カードの id → このステー
 // ステージの始めに町の約2割（最大10・最低1）へ「竜の宝」を置き、その町を落としたときだけカードを出す。
 // 宝は地図にもミニマップにも出さない（見つけたら嬉しい。印は町の上に立つ旗だけ）。警戒度はふつうに全部の陥落で進む
 // v3.44.2（Shooter指示）: 数は地域で変えず1ステージ10で固定（町が10より少ない地域は全部の町）
-const TREASURE_TOWN_COUNT = 10;
+const TREASURE_TOWN_COUNT = 5;      // v3.49.0（案帳 DT-238）: 10→5。低ランクの町から2つ・高ランクの町から3つ
+const ORB_TOWN_LOW  = 2;
+const ORB_TOWN_HIGH = 3;
+// v3.49.0: 竜玉のかけら。竜玉の町でない町が1つ陥落するたびに1つ。SHARDS_PER_ORB で竜玉になり、強化カードを選ぶ
+const SHARDS_PER_ORB = 3;
+let stageShards = 0;
 const treasureTowns = new Set();    // まだ取り戻していない宝のある町（町の番号）
 const FALL_OFFER_ARM_MS = 700;      // v3.47.0: 陥落カードが出てから押せるようになるまで（ミリ秒）
 let fallOfferArmTimer = 0;
-const fallOfferQueue = [];          // カードを出す順番を待っている陥落（町の番号）。同時に落ちたら1つずつ出す
-let fallOfferVisible = false;       // 出している間はゲームを完全に止める
+const fallOfferQueue = [];          // カードを出す順番を待っている陥落 { townIndex, rare }。同時に落ちたら1つずつ出す
+let fallOfferVisible = false;       // v3.49.0: 出している間はスロー（止めない）
+let fallOfferSlowmo = 0;            // スローが続く残り秒数（実時間。過ぎたら通常速度でカードだけ残る）
 // v0.14.1: 最初のレベルアップ（進化選択）専用の「進化しない」カード。
 // 通常プール（CARD_DEFS）には含めず、buildLevelUpCards の初回分岐でのみ提示する
 const CARD_STAY_FIRE = { id: "stay_fire", icon: "\u{1F525}", rarity: "star", max: Infinity };
@@ -21371,7 +21441,7 @@ function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon ==
 function effBoidMaxHpFor(i) {
   const spDef = boidSpecial && SPECIAL_DEFS[boidSpecial[i]];
   const spMult = spDef ? spDef.hpMult * (1 + SPECIAL_CARD_HP * upCount("fsp_hp")) : 1;   // v3.43.0: 特殊個体の鱗
-  return effBoidMaxHp() * spMult;
+  return effBoidMaxHp() * spMult * (boidGiant[i] ? GIANT_HP_MULT : 1);   // v3.49.0: 巨竜化
 }
 
 // ---- カード取得時の即時効果（倍率系は eff* で都度参照するため不要）----
@@ -21641,6 +21711,7 @@ let timeScale   = 1;   // ワールド時間倍率（tick で dt に乗算）
  */
 function maybeShowLevelUp() {
   if (gameState !== "playing" || pendingCards <= 0 || upgradeCardsVisible) return;
+  if (fallOfferVisible) return;   // v3.49.0: 陥落カードを選んでいる間は待つ
   upgradeCardsVisible = true;
   slowmoTimer = SLOWMO_DURATION;
   levelupTitleEl.textContent = STRINGS.levelUp;  // 竜種選択で書き換わったタイトルを戻す
@@ -21892,6 +21963,7 @@ function chooseCard(def) {
   levelupOverlayEl.classList.remove("visible");
   // 連続レベルアップが残っていれば続けて開く（スロー時間もリフレッシュされる）
   if (pendingCards > 0) maybeShowLevelUp();
+  else openNextFallOffer();   // v3.49.0: 待っていた陥落カード
 }
 
 /** カードUIを閉じてスローを解除する（ステージ遷移・タイトル帰還時の安全網）。 */
@@ -22719,6 +22791,7 @@ function isSpecialActive(i) {
 /** 描画・当たり判定に使う体格倍率（母竜の成長と巌竜の巨体を一本化）。 */
 function boidBodyScale(i) {
   if (boidSpecial[i] === SPECIAL_HEAVY && !boidDowned[i] && !boidDead[i]) return effHeavyScale();
+  if (boidGiant[i] && !boidDead[i]) return GIANT_SCALE;   // v3.49.0: 巨竜化
   // v3.10.0: 極光（旧母竜）だけプレイヤーレベルで育っていたのは撤去（他の特殊個体と同じ大きさ）
   return 1;
 }
@@ -22728,7 +22801,7 @@ function boidBodyScale(i) {
  * 空きスロットがあれば新しい竜として増やし、群れ上限に達していれば
  * 既存の通常個体（母竜以外）を1匹だけ転じる。どちらも群れの数は減らない。
  */
-function addRunSpecial(kind) {
+function addRunSpecial(kind, stageOnly = false) {
   let idx = -1;
   if (N < MAX_BOIDS) {
     idx = N;
@@ -22746,6 +22819,7 @@ function addRunSpecial(kind) {
     boidFadeTimer[idx]   = 0;
     boidReviveTimer[idx] = 0;
     boidDownTimer[idx]   = 0;
+    boidGiant[idx]       = 0;
     const base = idx * TAIL_SEGS;
     for (let s = 0; s < TAIL_SEGS; s++) boidAngleHistory[base + s] = va;
     spawnDragonAppearEffect(px[idx], py[idx]);
@@ -22756,8 +22830,10 @@ function addRunSpecial(kind) {
     }
     if (idx < 0) return;
   }
-  runSpecials.push(kind);
+  // v3.49.0: stageOnly＝陥落カード「双つ魂」の分身。runSpecials に入れない＝次のステージの割り当てで消える
+  if (!stageOnly) runSpecials.push(kind);
   markSpecial(idx, kind);
+  if (!stageOnly && upCount("f_sp_double") > 0) addRunSpecial(kind, true);   // あとから加わった特殊個体も2倍
   invalidateEvo();     // v3.2.0: 種またぎの条件が変わる
   evaluateUnlocks();   // v3.3.0: 「特殊個体を3体同時に」
   const def = SPECIAL_DEFS[kind];
@@ -26380,7 +26456,7 @@ function codexTierTableHtml() {
   const pct = (v) => Math.round(v * 100) + "%";
   return `<table class="cx-table"><thead><tr><th></th>${head}</tr></thead><tbody>` +
     row("上がる条件", "竜玉を取り戻した回数",
-        i => i === 0 ? "開始時" : TIER_ADVANCE_CARD_COUNT[i] + "回") +
+        i => i === 0 ? "開始時" : `${Math.round(TIER_ADVANCE_CARD_RATIO[i] * 100)}%`) +
     row("建物の硬さ", "", i => x(POWER_TIER_BOOST[i].hp, 2)) +
     row("建物の弾の威力", "", i => x(POWER_TIER_BOOST[i].dmg, 2)) +
     row("建物の発射間隔", "小さいほど速く撃つ", i => x(POWER_TIER_BOOST[i].interval, 2)) +
@@ -26393,7 +26469,7 @@ function codexTierTableHtml() {
 
 function codexMiscHtml() {
   // 町の数の例。大陸はおよそ50町（STAGE_CONFIGS の町数 × 面積で変わるので、例として固定の数で示す）
-  const steps = TIER_ADVANCE_CARD_COUNT.slice(1);
+  const steps = TIER_ADVANCE_CARD_RATIO.slice(1).map(r => Math.round(r * 100) + "%");
   const surrender = Math.round(TOWN_SURRENDER_RATIO * 10);
   return (
     `<div class="tree-hint">どのタブにも入らない仕組みの説明。</div>` +
@@ -28091,6 +28167,7 @@ function snapshotRunSave() {
     eggs:          totalEggCount,          // 拾った卵（HUD）
     lvUpApplied:   dragonLvPendingApplied, // 開いていたレベルアップで竜のレベルを上げ済みか
     stageCards:    Object.assign({}, stageCards),   // v3.43.0: 陥落カード（ステージ限定）
+    stageShards,                                    // v3.49.0: 竜玉のかけら
     treasureTowns: [...treasureTowns],              // v3.44.0: まだ取り戻していない竜の宝の町
     orbFacilityKinds: Object.fromEntries([...orbFacilities].map(([t, f]) => [t, f.kind])),   // v3.48.0
   });
@@ -28182,7 +28259,12 @@ function resumeRun() {
   if (Array.isArray(save.treasureTowns)) {
     for (const t of save.treasureTowns) treasureTowns.add(t | 0);
     assignOrbFacilities(save.orbFacilityKinds || {});   // v3.48.0（種類の無い v3.47 までのセーブは町の番号から決める）
+    updateStageCardTotal();
   } else pickTreasureTowns();   // 宝の無い旧セーブ（v3.43 まで）から再開したら選び直す
+  stageShards = save.stageShards | 0;   // v3.49.0
+  // v3.49.0: 巨竜・特殊個体の分身は位置と一緒に持ち越さないので、カードの分だけ作り直す
+  for (let k = 0; k < (stageCards.f_giant || 0); k++) makeGiants();
+  if (stageCards.f_sp_double) for (const kind of runSpecials.slice()) addRunSpecial(kind, true);
   renderStageCardIcons();
   stageStartTime = performance.now() - (save.stageElapsedMs || 0);
   // v3.11.7: 群れの数・卵・ボスの状態を戻す（位置は開始地点・HPは満タンから）
@@ -28548,7 +28630,7 @@ function alertCount() {
 function tierAdvanceTownQuota() {
   const next = powerTier + 1;
   if (next >= TIERS_PER_RUN) return Infinity;
-  return TIER_ADVANCE_CARD_COUNT[next];
+  return tierCardQuota(next);
 }
 
 /** 次の警戒度まであと何町か。 */
@@ -28773,8 +28855,7 @@ const stageCardsHudEl  = document.getElementById("hud-stagecards");
 const tierGaugeEl      = document.getElementById("tier-gauge");
 fallOfferEl.querySelector(".fo-title").textContent = STRINGS.fallOfferTitle;
 fallOfferEl.querySelector(".fo-sub").textContent   = STRINGS.fallOfferSub;
-// 暗幕の上の入力は後ろの画面（線を描く）へ通さない
-fallOfferEl.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+// v3.49.0: 暗幕は無い（カードの外は後ろの画面へ通して線を描ける）。カードの上の入力はカード側で止める
 
 function fallCardText(id) { return STRINGS.fallCards[id] || STRINGS.cards[id] || { name: id, desc: "" }; }
 
@@ -28783,6 +28864,9 @@ function clearStageCards() {
   for (const k of Object.keys(stageCards)) delete stageCards[k];
   treasureTowns.clear();
   orbFacilities.clear();
+  stageShards = 0;          // v3.49.0
+  fallRoarTimer = 0;
+  boidGiant.fill(0);
   fallOfferQueue.length = 0;
   fallOfferVisible = false;
   fallOfferEl.classList.remove("visible");
@@ -28793,16 +28877,25 @@ function clearStageCards() {
 /** v3.44.0: 竜の宝を置く町を選ぶ。大きい町ほど選ばれやすい（落としたときの山を大きくする）。 */
 function pickTreasureTowns() {
   treasureTowns.clear();
-  const pool = [...townStats].filter(([, st]) => !st.surrendered && st.total > 0);
-  const want = Math.min(TREASURE_TOWN_COUNT, pool.length);
-  for (let k = 0; k < want && pool.length > 0; k++) {
-    let total = 0;
-    for (const [, st] of pool) total += st.total;
-    let roll = random() * total, pick = pool.length - 1;
-    for (let i = 0; i < pool.length; i++) { roll -= pool[i][1].total; if (roll <= 0) { pick = i; break; } }
-    treasureTowns.add(pool[pick][0]);
-    pool.splice(pick, 1);
-  }
+  // v3.49.0（案帳 DT-238・Shooter指示）: 低ランクの町から2つ、高ランクの町（格上の街・要塞都市）から3つ。足りなければ他方から埋める
+  const high = new Set();
+  for (const s of settlements) if (s && s._townIndex !== undefined && ((s._tierOffset || 0) > 0 || s._fixedTier != null)) high.add(s._townIndex);
+  const all = [...townStats].filter(([, st]) => !st.surrendered && st.total > 0);
+  const pickFrom = (pool, want) => {
+    for (let k = 0; k < want && pool.length > 0; k++) {
+      let total = 0;
+      for (const [, st] of pool) total += st.total;
+      let roll = random() * total, pick = pool.length - 1;
+      for (let i = 0; i < pool.length; i++) { roll -= pool[i][1].total; if (roll <= 0) { pick = i; break; } }
+      treasureTowns.add(pool[pick][0]);
+      pool.splice(pick, 1);
+    }
+  };
+  const lowPool = all.filter(([t]) => !high.has(t)), highPool = all.filter(([t]) => high.has(t));
+  pickFrom(highPool, Math.min(ORB_TOWN_HIGH, highPool.length));
+  pickFrom(lowPool, Math.min(TREASURE_TOWN_COUNT - treasureTowns.size, lowPool.length));
+  pickFrom(highPool, TREASURE_TOWN_COUNT - treasureTowns.size);
+  updateStageCardTotal();
   // v3.48.0: 種類は4つを順番に配る（並びはランの乱数で混ぜる＝どのステージにも全種類が出る）
   const order = ORB_FACILITY_KINDS.slice();
   for (let k = order.length - 1; k > 0; k--) { const r = Math.floor(random() * (k + 1)); [order[k], order[r]] = [order[r], order[k]]; }
@@ -28978,35 +29071,90 @@ function drawTreasureFlags() {
   ctx.restore();
 }
 
-function queueFallOffer(townIndex) {
+/** v3.49.0: そのステージで取れるカードの見込み（竜玉の町＋かけらで揃う数）。警戒度の必要数に使う */
+function updateStageCardTotal() {
+  const orb = TREASURE_TOWN_COUNT;
+  stageCardTotal = Math.max(1, Math.min(orb, townStats.size) + Math.floor(Math.max(0, townStats.size - orb) / SHARDS_PER_ORB));
+}
+
+function queueFallOffer(townIndex, rare = false) {
   if (townIndex === undefined) return;
-  fallOfferQueue.push(townIndex);
+  fallOfferQueue.push({ townIndex, rare });
   if (!fallOfferVisible) openNextFallOffer();
 }
 
+/** v3.49.0: 群れ（竜種＋特殊個体）が持っている攻撃の成分。special＝特殊個体だけ */
+function flockAttackCats(specialOnly) {
+  const cats = new Set();
+  const add = (pw) => { if (pw) for (const c of ATTACK_CATEGORY_ORDER) if (pw[c]) cats.add(c); };
+  if (!specialOnly) { const m = codexDragonMainAttack(SPECIES_DEFS[flockSpecies]); add(m && m.power); }
+  for (const k of new Set(runSpecials)) for (const pw of (CODEX_SPECIAL_POWERS[k] ? CODEX_SPECIAL_POWERS[k]() : [])) add(pw);
+  return cats;
+}
+
+/** v3.49.0: 卵の衝撃波（陥落カード「孵化の衝撃」） */
+function eggShockwave(x, y) {
+  hitInRadius(x, y, EGG_WAVE_RADIUS, { blast: EGG_WAVE_DAMAGE, impact: EGG_WAVE_IMPACT });
+  fallFx.push({ kind: "ring", x, y, r: EGG_WAVE_RADIUS, t: 0, life: 0.5 });
+  triggerShake(1.2, 0.06);
+}
+
+/** v3.49.0: 巨竜化。ふつうの竜からランダムに GIANT_COUNT 匹（ステージが変わると戻る） */
+function makeGiants() {
+  const pool = [];
+  for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i] && boidSpecial[i] === SPECIAL_NONE && !boidGiant[i]) pool.push(i);
+  for (let k = 0; k < GIANT_COUNT && pool.length > 0; k++) {
+    const i = pool.splice(Math.floor(random() * pool.length), 1)[0];
+    boidGiant[i] = 1;
+    boidGiantTimer[i] = random() * GIANT_STOMP_INTERVAL;
+    boidHp[i] = effBoidMaxHpFor(i);
+    spawnDragonAppearEffect(px[i], py[i]);
+  }
+}
+/** 毎フレーム：咆哮の時計・巨竜の踏みつけ */
+function updateStageCardEffects(dt) {
+  if (fallRoarTimer > 0) fallRoarTimer = Math.max(0, fallRoarTimer - dt);
+  if (upCount("f_giant") === 0) return;
+  for (let i = 0; i < N; i++) {
+    if (!boidGiant[i] || boidDead[i] || boidDowned[i]) continue;
+    boidGiantTimer[i] -= dt;
+    if (boidGiantTimer[i] > 0) continue;
+    boidGiantTimer[i] = GIANT_STOMP_INTERVAL;
+    if (hitInRadius(px[i], py[i], GIANT_STOMP_RADIUS, { blast: GIANT_STOMP_DAMAGE }) > 0) spawnCollisionParticles(px[i], py[i]);
+  }
+}
+
 /** 候補から3枚。上限まで取ったものと、特殊個体がいないときの特殊個体向けは出さない。 */
-function pickFallCards() {
+function pickFallCards(rare) {
+  const catsAll = flockAttackCats(false), catsSp = flockAttackCats(true);
   const pool = FALL_CARD_DEFS.filter((d) => {
     if (d.special && runSpecials.length === 0) return false;
+    const need = FALL_CARD_NEEDS[d.id];   // v3.49.0: 群れが持っていない攻撃の強化は出さない
+    if (need && !(need.special ? catsSp : catsAll).has(need.cat)) return false;
     return (upgradeCounts[d.id] || 0) + (stageCards[d.id] || 0) < d.max;
   });
+  // v3.49.0: 竜玉施設（rare）はレアのカードから。かけら（ふつう）はレア以外から。足りなければもう一方で埋める
+  const main = pool.filter(d => !!d.rare === !!rare), rest = pool.filter(d => !!d.rare !== !!rare);
   const picks = [];
-  while (picks.length < 3 && pool.length > 0) picks.push(pool.splice(Math.floor(random() * pool.length), 1)[0]);
+  while (picks.length < 3 && main.length > 0) picks.push(main.splice(Math.floor(random() * main.length), 1)[0]);
+  while (picks.length < 3 && rest.length > 0) picks.push(rest.splice(Math.floor(random() * rest.length), 1)[0]);
   return picks;
 }
 
 function openNextFallOffer() {
   if (gameState !== "playing" || fallOfferQueue.length === 0) return;
-  const townIndex = fallOfferQueue.shift();
-  const picks = pickFallCards();
+  if (upgradeCardsVisible) return;   // v3.49.0: レベルアップを選んでいる間は待つ（閉じたら開く）
+  const { townIndex, rare } = fallOfferQueue.shift();
+  const picks = pickFallCards(rare);
   if (picks.length === 0) { openNextFallOffer(); return; }
   fallOfferCardsEl.replaceChildren(...picks.map((def) => {
     const text = fallCardText(def.id);
     const have = stageCards[def.id] || 0;
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "fo-card" + (def.special ? " special" : "");
-    btn.innerHTML = `<span class="fo-icon">${def.icon}</span><span class="fo-name"></span><span class="fo-desc"></span>` +
+    btn.className = "fo-card" + (def.special ? " special" : "") + (def.rare ? " rare" : "");
+    btn.innerHTML = `<span class="fo-icon">${def.icon}</span><span class="fo-text"><span class="fo-name"></span><span class="fo-desc"></span></span>` +
+      (def.rare ? `<span class="fo-rare">${STRINGS.fallCardRare}</span>` : "") +
       (def.max > 1 ? `<span class="fo-stack">${have + 1}/${def.max}</span>` : "");
     btn.querySelector(".fo-name").textContent = text.name;
     btn.querySelector(".fo-desc").textContent = text.desc;
@@ -29023,6 +29171,9 @@ function openNextFallOffer() {
     return btn;
   }));
   fallOfferVisible = true;
+  fallOfferSlowmo = SLOWMO_DURATION;   // v3.49.0: 止めずにスロー（レベルアップの三択と同じ）
+  fallOfferEl.querySelector(".fo-title").textContent = rare ? STRINGS.fallOfferTitleRare : STRINGS.fallOfferTitleShard;
+  fallOfferEl.classList.toggle("rare", rare);
   // 出てから FALL_OFFER_ARM_MS は押せない（ゲームが止まった瞬間に、まだ画面を触っている指で選んでしまわないように）
   fallOfferEl.classList.remove("armed");
   clearTimeout(fallOfferArmTimer);
@@ -29037,6 +29188,8 @@ function takeFallCard(def, townIndex) {
   const oldSpMult = 1 + SPECIAL_CARD_HP * upCount("fsp_hp");
   stageCards[def.id] = (stageCards[def.id] || 0) + 1;
   if (def.id === "brood") applyCardImmediate("brood");
+  if (def.id === "f_giant") makeGiants();   // v3.49.0
+  if (def.id === "f_sp_double") for (const k of runSpecials.slice()) addRunSpecial(k, true);
   // HPの最大が変わるカード（硬鱗・捨て身の賭け）は、今のHPも同じ比で合わせる（取った瞬間に効きが見える）
   if (def.id === "f_gamble" || def.id === "scale") {
     const ratio = effBoidMaxHp() / oldMax;
@@ -29055,9 +29208,10 @@ function takeFallCard(def, townIndex) {
 /** カードを選び終えたら閉じて、順番待ちの次を出す。 */
 function closeFallOffer() {
   fallOfferVisible = false;
+  fallOfferSlowmo = 0;
   fallOfferEl.classList.remove("visible");
-  lastTickTs = performance.now();   // 止めていた間の時間を、次の1歩に持ち込まない
   openNextFallOffer();
+  if (!fallOfferVisible) maybeShowLevelUp();   // 待っていたレベルアップを出す
 }
 
 // v3.43.1: アイコンをタップしたら持っているカードの一覧を出す（Shooter指示）。もう一度タップするか5秒で閉じる
@@ -29086,7 +29240,13 @@ stageCardsHudEl.addEventListener("pointerdown", (e) => {
 stageCardListEl.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); hideStageCardList(); });
 
 function renderStageCardIcons() {
-  stageCardsHudEl.replaceChildren(...FALL_CARD_DEFS.filter(d => stageCards[d.id] > 0).map((d) => {
+  // v3.49.0: 先頭に竜玉のかけら（いくつ溜まったか）
+  const shard = document.createElement("span");
+  shard.className = "sc shard";
+  shard.title = STRINGS.fallOfferTitleShard;
+  shard.textContent = "\u{1F537}";
+  { const b = document.createElement("b"); b.textContent = stageShards + "/" + SHARDS_PER_ORB; shard.appendChild(b); }
+  stageCardsHudEl.replaceChildren(shard, ...FALL_CARD_DEFS.filter(d => stageCards[d.id] > 0).map((d) => {
     const el = document.createElement("span");
     el.className = "sc";
     el.title = fallCardText(d.id).name;
@@ -29106,7 +29266,7 @@ function updateTierGauge() {
     key = "max";
     build = () => { const m = document.createElement("span"); m.className = "tg-max"; m.textContent = "MAX"; return [m]; };
   } else {
-    const from  = TIER_ADVANCE_CARD_COUNT[powerTier] || 0;
+    const from  = tierCardQuota(powerTier);
     const total = Math.max(1, tierAdvanceTownQuota() - from);
     const done  = Math.max(0, Math.min(total, alertCount() - from));
     key = total + "/" + done;
@@ -35909,18 +36069,17 @@ function tick() {
   lastTickTs = now;
   const dt   = dtMs / 1000;
 
-  if (gameState === "playing" && fallOfferVisible) {
-    // v3.43.0: 陥落の強化カードを選んでいる間は完全に止める（Shooter指示）
-  } else if (gameState === "playing") {
+  // v3.49.0（案帳 DT-238・Shooter指示）: 陥落の強化カードも止めずにスロー（レベルアップの三択と同じ）
+  if (gameState === "playing") {
     // v0.6.1: カード表示中はスローモー（時間停止は廃止）。
     // timeScale はイージングで目標値に寄せ、急停止・急再開のカクつきを防ぐ。
     // v0.51: 時代遷移も同じスローモー枠を使う（プレイは止めない。
     // ラン中に3回起きるので、止めるとテンポを殺すため）。
-    const cardSlowmo = upgradeCardsVisible && slowmoTimer > 0;
+    const cardSlowmo = (upgradeCardsVisible && slowmoTimer > 0) || (fallOfferVisible && fallOfferSlowmo > 0);
     const eraSlowmo  = tierSlowmoTimer > 0;
     const targetScale = (cardSlowmo || eraSlowmo) ? SLOWMO_SCALE : 1;
     timeScale += (targetScale - timeScale) * Math.min(1, dt * SLOWMO_EASE);
-    if (cardSlowmo) slowmoTimer -= dt;                 // 実時間で減衰
+    if (cardSlowmo) { if (upgradeCardsVisible) slowmoTimer -= dt; if (fallOfferVisible) fallOfferSlowmo -= dt; }   // 実時間で減衰
     if (eraSlowmo)  tierSlowmoTimer = Math.max(0, tierSlowmoTimer - dt);
     const wdt = dt * timeScale;
 
@@ -35932,6 +36091,7 @@ function tick() {
     updateCamera(wdt);
     // v3.16.0: 猛進のあいだは敵側（建物の射撃・弾・動く敵）だけ時間を速める
     rebuildMoverGrid();           // v3.23.0: 竜の攻撃が近くの敵だけを見るための格子（敵が多い地域だけ）
+    updateStageCardEffects(wdt);                  // v3.49.0: 陥落の咆哮・巨竜の踏みつけ
     updateOrbFacilities(wdt * tierRush.haste);   // v3.48.0: 竜玉施設（鐘の拍・大砲）。砲台より先に（鐘が鳴ったフレームに撃つ）
     updateSettlementAttacks(wdt * tierRush.haste);
     updateProjectiles(wdt);
