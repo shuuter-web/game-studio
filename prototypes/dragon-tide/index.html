@@ -1059,7 +1059,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.47.0";
+const GAME_VERSION = "v3.48.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9807,6 +9807,7 @@ function recomputeTownRoles() {
     st.surrendered = st.total > 0 && st.fallen / st.total >= TOWN_SURRENDER_RATIO;
   }
   // v3.43.0: 建て直った町は警戒度に数えない（もう一度落としたら、またカードで選ぶ）
+  attachOrbFacilities();   // v3.48.0: 建物が作り直されても、竜玉の町の施設を付け直す
 }
 
 /** その建物の町が陥落していれば true（＝撃たない）。 */
@@ -18466,6 +18467,12 @@ function updateSettlementAttacks(dt) {
     }
     if (!inRange) continue;
 
+    // v3.48.0（案帳 DT-238）: 竜玉の鐘楼の町は、鐘が鳴った瞬間だけ町中の砲台が一斉に撃つ（鳴っていない間は撃たない）
+    const orbKind = settlement._orbFacility === undefined ? orbFacilityKindAlive(settlement._townIndex) : null;
+    if (orbKind === "bell") {
+      if (!orbFacilities.get(settlement._townIndex).ringing) continue;
+      settlement.attackTimer = 0;
+    }
     settlement.attackTimer -= dt;
     if (settlement.attackTimer > 0) continue;
     // 通常建物: 発射頻度を大幅に下げる（×4倍の間隔 = たまに飛ぶ「雰囲気」として残す）
@@ -18474,7 +18481,8 @@ function updateSettlementAttacks(dt) {
     settlement.attackTimer = settlement.isBoss
       ? settlement.projectileInterval
       : settlement.projectileInterval * 4.0 *
-        (townBelfryAlive.has(settlement._townIndex) ? BELFRY_INTERVAL_MULT : 1);
+        (townBelfryAlive.has(settlement._townIndex) ? BELFRY_INTERVAL_MULT : 1) /
+        (orbKind === "furnace" ? ORB_FURNACE_RATE : 1);   // v3.48.0: 竜玉炉の町は撃つのが速い
 
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
     if (targetIdx < 0) continue;
@@ -19219,7 +19227,10 @@ function settlementFall(settlementIndex) {
     const st = townStats.get(settlement._townIndex);
     if (st && !st.surrendered) {
       st.fallen++;
-      if (st.fallen / st.total >= TOWN_SURRENDER_RATIO) {
+      // v3.48.0（案帳 DT-238・Shooter指示）: 竜玉の町は、竜玉施設の陥落＝町の陥落。施設が立っている間は割合では落ちない
+      const orbFac = orbFacilities.get(settlement._townIndex);
+      const orbTown = !!(orbFac && orbFac.s);   // 施設の建物が無い町（付けられなかった）はふつうの割合で落ちる
+      if (orbTown ? settlement._orbFacility !== undefined : st.fallen / st.total >= TOWN_SURRENDER_RATIO) {
         st.surrendered = true;
         townJustSurrendered = true;
         pushWorldText(st.cx, st.cy, "陥落", "#ffe08a", true);   // v3.28.0: 画面の外なら画面の端に寄せて出す
@@ -22037,6 +22048,7 @@ function damageBuilding(settlementIdx, damage) {
   if (!settlement || settlement.fallen) return;
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   if (settlement.isBoss && heroGuarding()) damage *= HERO_GUARD_DMG;   // v3.35.0: 英雄が立っている間の王城
+  if (settlement._orbFacility === undefined && orbFacilityKindAlive(settlement._townIndex) === "barrier") damage *= ORB_BARRIER_DMG_MULT;   // v3.48.0: 竜玉の結界塔
   settlement.hp -= damage;
   reportDamage(settlement, settlement.wx, settlement.wy, damage);
   if (settlement.hp <= 0 && !settlement.fallen) {
@@ -26202,6 +26214,21 @@ function codexBuildingHtml() {
       `</div>`;
   }
 
+  // v3.48.0: 竜玉施設（案帳 DT-238）
+  html += `</div><div class="cx-era">竜玉施設（壊すと町が陥落し、竜玉を取り戻して強化を選ぶ）</div><div class="cx-list">`;
+  for (const key of ORB_FACILITY_KINDS) {
+    const def = ORB_FACILITY_DEFS[key];
+    html +=
+      `<div class="cx-row" style="border-color:${ORB_COLOR}">` +
+        `<div class="cx-thumb" style="display:flex;align-items:center;justify-content:center;font-size:26px">${def.icon}</div>` +
+        `<div class="cx-body">` +
+          `<div class="cx-name">${def.label}</div>` +
+          `<div class="cx-tags">どのステージにも竜玉の町が${TREASURE_TOWN_COUNT}つ（種類は町ごと） ／ 町の中心寄り ／ HP ×${ORB_FACILITY_HP_MULT}</div>` +
+          `<div class="cx-atk">${def.desc}。青白く光り、上に竜玉が浮かぶ。地図には出ない。</div>` +
+        `</div>` +
+      `</div>`;
+  }
+
   html += `</div><div class="cx-era">普通の建物（弾は文明ごとに変わる）</div><div class="cx-list">`;
   for (const b of CODEX_BUILDING_SIZES) {
     // 数値は文明でばらつくので、代表として最初と最後の文明を並べる
@@ -28065,6 +28092,7 @@ function snapshotRunSave() {
     lvUpApplied:   dragonLvPendingApplied, // 開いていたレベルアップで竜のレベルを上げ済みか
     stageCards:    Object.assign({}, stageCards),   // v3.43.0: 陥落カード（ステージ限定）
     treasureTowns: [...treasureTowns],              // v3.44.0: まだ取り戻していない竜の宝の町
+    orbFacilityKinds: Object.fromEntries([...orbFacilities].map(([t, f]) => [t, f.kind])),   // v3.48.0
   });
   runSaveDirty  = false;
   runSaveLastMs = performance.now();
@@ -28151,8 +28179,10 @@ function resumeRun() {
   // v3.43.0: 陥落カードと、警戒度に数える陥落を戻す
   clearStageCards();
   if (save.stageCards && typeof save.stageCards === "object") for (const [k, v] of Object.entries(save.stageCards)) if (FALL_CARD_DEFS.some(d => d.id === k)) stageCards[k] = v | 0;
-  if (Array.isArray(save.treasureTowns)) for (const t of save.treasureTowns) treasureTowns.add(t | 0);
-  else pickTreasureTowns();   // 宝の無い旧セーブ（v3.43 まで）から再開したら選び直す
+  if (Array.isArray(save.treasureTowns)) {
+    for (const t of save.treasureTowns) treasureTowns.add(t | 0);
+    assignOrbFacilities(save.orbFacilityKinds || {});   // v3.48.0（種類の無い v3.47 までのセーブは町の番号から決める）
+  } else pickTreasureTowns();   // 宝の無い旧セーブ（v3.43 まで）から再開したら選び直す
   renderStageCardIcons();
   stageStartTime = performance.now() - (save.stageElapsedMs || 0);
   // v3.11.7: 群れの数・卵・ボスの状態を戻す（位置は開始地点・HPは満タンから）
@@ -28752,6 +28782,7 @@ function fallCardText(id) { return STRINGS.fallCards[id] || STRINGS.cards[id] ||
 function clearStageCards() {
   for (const k of Object.keys(stageCards)) delete stageCards[k];
   treasureTowns.clear();
+  orbFacilities.clear();
   fallOfferQueue.length = 0;
   fallOfferVisible = false;
   fallOfferEl.classList.remove("visible");
@@ -28772,6 +28803,102 @@ function pickTreasureTowns() {
     treasureTowns.add(pool[pick][0]);
     pool.splice(pick, 1);
   }
+  // v3.48.0: 種類は4つを順番に配る（並びはランの乱数で混ぜる＝どのステージにも全種類が出る）
+  const order = ORB_FACILITY_KINDS.slice();
+  for (let k = order.length - 1; k > 0; k--) { const r = Math.floor(random() * (k + 1)); [order[k], order[r]] = [order[r], order[k]]; }
+  const kinds = {};
+  [...treasureTowns].forEach((t, k) => { kinds[t] = order[k % order.length]; });
+  assignOrbFacilities(kinds);
+}
+
+// =====================================================================
+// v3.48.0: 竜玉施設（案帳 DT-238・Shooter指示）— 町側の特殊個体
+// =====================================================================
+// 竜玉は大人の竜から取れる、莫大な力を秘めた玉。人間はそれを奪って施設の動力にしている。
+// 竜玉の町（1ステージ10町）には、町の中心に近い建物が1つ竜玉施設になる。施設が生きている間は町を強くし、
+// 壊すと町が陥落して（施設の陥落＝町の陥落）竜玉を取り戻し、強化カードを選ぶ。地図・ミニマップには出さない。
+const ORB_FACILITY_KINDS = ["bell", "barrier", "furnace", "cannon"];   // ⑤檻・⑥灯台は後で
+const ORB_FACILITY_DEFS = {
+  bell:    { label: "竜玉の鐘楼", icon: "\u{1F514}", desc: "4秒ごとに鳴り、鳴った瞬間に町中の砲台が一斉に撃つ。鳴っていない間は撃たない" },
+  barrier: { label: "竜玉の結界塔", icon: "\u{1F6E1}\uFE0F", desc: "町の建物を青白い膜で包み、受ける攻撃を半分にする（結界塔そのものは包まない）" },
+  furnace: { label: "竜玉炉", icon: "\u{1F525}", desc: "町の砲台の撃つ速さを1.5倍にする" },
+  cannon:  { label: "竜玉の大砲", icon: "\u{1F4A5}", desc: "8秒ごとに、地面に予告を出してから群れへ太い光の弾を撃つ" },
+};
+const ORB_FACILITY_HP_MULT = 2.5;    // 施設は町の中で少し硬い
+const ORB_BELL_PERIOD      = 4.0;    // 鐘が鳴る間隔（秒）
+const ORB_BELL_WARN        = 0.8;    // 鳴る前に輪が縮み始める（秒）
+const ORB_BARRIER_DMG_MULT = 0.5;
+const ORB_FURNACE_RATE     = 1.5;
+const ORB_CANNON_PERIOD    = 8.0;
+const ORB_CANNON_RANGE     = 560;    // 群れがこの距離に入っているときだけ撃つ
+const ORB_CANNON_RADIUS    = 90;
+const ORB_CANNON_HIT_TIME  = 0.5;    // 予告の後に焼いている時間（秒）
+const ORB_CANNON_DPS       = 24;
+const ORB_COLOR            = "#aee4ff";
+const orbFacilities = new Map();     // 町の番号 → { kind, s（施設の建物）, t（鐘・大砲の時計）, ringing, pulse }
+
+/** 竜玉の町に種類を割り当てて、施設の建物を決める。kinds＝町の番号 → 種類（無ければ町の番号から決める） */
+function assignOrbFacilities(kinds) {
+  orbFacilities.clear();
+  for (const t of treasureTowns) {
+    const kind = ORB_FACILITY_DEFS[kinds[t]] ? kinds[t] : ORB_FACILITY_KINDS[t % ORB_FACILITY_KINDS.length];
+    orbFacilities.set(t, { kind, s: null, t: 0, ringing: false, pulse: 0 });
+  }
+  attachOrbFacilities();
+}
+/** 施設の建物を（作り直されていれば）付け直す。町の中心にいちばん近い、役割の無い中〜大の建物 */
+function attachOrbFacilities() {
+  if (orbFacilities.size === 0) return;
+  const best = new Map();   // 町の番号 → { s, score }
+  for (const s of settlements) {
+    if (!s || s.fallen || s._townIndex === undefined || !orbFacilities.has(s._townIndex)) continue;
+    if (s.isBoss || s._isWall || s._noAttack || s._landmark) continue;
+    const st = townStats.get(s._townIndex);
+    if (!st) continue;
+    // 役割・時代兵器の付いた建物は避ける（1棟1役）。小さい建物は施設に見えないので後回し
+    const plain = !s._townRole && !s._emplacement && !s._beamTower;
+    const big = s.size === "large" ? 0 : s.size === "medium" ? 1 : 2;
+    const score = (plain ? 0 : 100000) + big * 10000 + Math.hypot(s.wx - st.cx, s.wy - st.cy);
+    const cur = best.get(s._townIndex);
+    if (!cur || score < cur.score) best.set(s._townIndex, { s, score });
+  }
+  for (const [t, f] of orbFacilities) {
+    if (f.s && f.s._orbFacility !== undefined && settlements.includes(f.s)) continue;   // 付いたまま
+    const pick = best.get(t);
+    f.s = pick ? pick.s : null;
+    if (!f.s) continue;
+    f.s._orbFacility = f.kind;
+    f.s.maxHp = (f.s.maxHp || f.s.hp) * ORB_FACILITY_HP_MULT;
+    f.s.hp *= ORB_FACILITY_HP_MULT;
+  }
+}
+/** 町の竜玉施設が生きていればその種類（無ければ null） */
+function orbFacilityKindAlive(townIndex) {
+  if (townIndex === undefined || orbFacilities.size === 0) return null;
+  const f = orbFacilities.get(townIndex);
+  return f && f.s && !f.s.fallen && !isTownSurrendered(townIndex) ? f.kind : null;
+}
+function updateOrbFacilities(dt) {
+  if (orbFacilities.size === 0 || dt <= 0) return;
+  for (const [townIndex, f] of orbFacilities) {
+    f.ringing = false;
+    if (f.pulse > 0) f.pulse = Math.max(0, f.pulse - dt);
+    if (!orbFacilityKindAlive(townIndex)) continue;
+    const s = f.s;
+    if (f.kind === "bell") {
+      f.t += dt;
+      if (f.t >= ORB_BELL_PERIOD) { f.t -= ORB_BELL_PERIOD; f.ringing = true; f.pulse = 0.5; }
+    } else if (f.kind === "cannon") {
+      f.t += dt;
+      if (f.t < ORB_CANNON_PERIOD) continue;
+      const target = findNearestAliveBoid(s.wx, s.wy);
+      if (target < 0 || dist2(px[target], py[target], s.wx, s.wy) > ORB_CANNON_RANGE * ORB_CANNON_RANGE) { f.t = ORB_CANNON_PERIOD; continue; }
+      f.t = 0;
+      attackerNow = settlementAttacker(s);
+      spawnHazard(px[target], py[target], ORB_CANNON_RADIUS, HAZARD_WARN_TIME + ORB_CANNON_HIT_TIME, ORB_CANNON_DPS, ORB_COLOR,
+                  ORB_CANNON_RADIUS, s.wx, s.wy);
+    }
+  }
 }
 
 /** v3.44.0: 宝のある町の上に印を出す（地図・ミニマップには出さない）。
@@ -28780,21 +28907,64 @@ const TREASURE_ORB_R      = 13;   // 竜玉の半径（ワールド px）
 const TREASURE_ORB_LIFT   = 30;   // 町の中心からどれだけ上に浮かべるか
 const TREASURE_GLOW_R     = 60;
 function drawTreasureFlags() {
-  if (treasureTowns.size === 0) return;
+  if (orbFacilities.size === 0) return;
   const t = performance.now() / 1000;   // 見た目だけの揺れ
   ctx.save();
-  for (const idx of treasureTowns) {
-    const st = townStats.get(idx);
-    if (!st || st.surrendered) continue;
+  for (const [idx, f] of orbFacilities) {
+    if (!orbFacilityKindAlive(idx)) continue;
+    const s = f.s, st = townStats.get(idx);
     const bob = Math.sin(t * 2.2 + idx) * 3, pulse = 0.5 + 0.5 * Math.sin(t * 3 + idx);
-    const x = st.cx, y = st.cy - TREASURE_ORB_LIFT + bob;
-    // 町を包む青白い光（砲台の射程の輪と見分けがつくよう、輪ではなく光で）
-    const glow = ctx.createRadialGradient(st.cx, st.cy, 4, st.cx, st.cy, TREASURE_GLOW_R);
-    glow.addColorStop(0, "rgba(170,225,255,0.42)"); glow.addColorStop(1, "rgba(170,225,255,0)");
+    // v3.48.0: 竜玉の結界塔は町の建物を青白い膜で包む
+    if (f.kind === "barrier" && st) {
+      const meta = townMetaList.find(m => m.cx === st.cx && m.cy === st.cy);
+      const r = (meta && meta.maxExtent ? meta.maxExtent : 160) + 30;
+      ctx.globalAlpha = 0.10 + 0.05 * pulse;
+      ctx.fillStyle = ORB_COLOR;
+      ctx.beginPath(); ctx.arc(st.cx, st.cy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.35 + 0.2 * pulse;
+      ctx.strokeStyle = ORB_COLOR; ctx.lineWidth = 2;
+      ctx.setLineDash([10, 6]);
+      ctx.beginPath(); ctx.arc(st.cx, st.cy, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // 施設を包む青白い光（砲台の射程の輪と見分けがつくよう、輪ではなく光で）
+    const glowR = s.radius + TREASURE_GLOW_R * 0.6;
+    const glow = ctx.createRadialGradient(s.wx, s.wy, 4, s.wx, s.wy, glowR);
+    glow.addColorStop(0, "rgba(170,225,255,0.5)"); glow.addColorStop(1, "rgba(170,225,255,0)");
     ctx.globalAlpha = 0.7 + 0.3 * pulse;
     ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(st.cx, st.cy, TREASURE_GLOW_R, 0, Math.PI * 2); ctx.fill();
-    // 浮かぶ竜玉（芯は白、縁は青）
+    ctx.beginPath(); ctx.arc(s.wx, s.wy, glowR, 0, Math.PI * 2); ctx.fill();
+    // 鐘楼：鳴る前に輪が縮み、鳴った瞬間に町へ広がる
+    if (f.kind === "bell") {
+      const toBeat = ORB_BELL_PERIOD - f.t;
+      ctx.strokeStyle = ORB_COLOR;
+      if (toBeat < ORB_BELL_WARN) {
+        ctx.globalAlpha = 0.9; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(s.wx, s.wy, s.radius + 8 + 50 * (toBeat / ORB_BELL_WARN), 0, Math.PI * 2); ctx.stroke();
+      }
+      if (f.pulse > 0) {
+        const k = 1 - f.pulse / 0.5;
+        ctx.globalAlpha = 1 - k; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(s.wx, s.wy, s.radius + 20 + 220 * k, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    // 竜玉炉：施設のまわりを回る小さな火の粉
+    if (f.kind === "furnace") {
+      ctx.fillStyle = "#ffd0a0";
+      for (let k = 0; k < 5; k++) {
+        const a = t * 2.4 + k * (Math.PI * 2 / 5), r = s.radius + 10;
+        ctx.globalAlpha = 0.6 + 0.4 * Math.sin(t * 6 + k);
+        ctx.beginPath(); ctx.arc(s.wx + Math.cos(a) * r, s.wy + Math.sin(a) * r, 3, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    // 大砲：撃つ前の1秒、砲口に光が溜まる
+    if (f.kind === "cannon" && f.t > ORB_CANNON_PERIOD - 1) {
+      const k = f.t - (ORB_CANNON_PERIOD - 1);
+      ctx.globalAlpha = 0.4 + 0.6 * k; ctx.fillStyle = ORB_COLOR;
+      ctx.beginPath(); ctx.arc(s.wx, s.wy, 6 + 10 * k, 0, Math.PI * 2); ctx.fill();
+    }
+    // 浮かぶ竜玉（芯は白、縁は青）と、種類の印
+    const x = s.wx, y = s.wy - TREASURE_ORB_LIFT + bob;
     ctx.globalAlpha = 1;
     const orb = ctx.createRadialGradient(x - 4, y - 4, 1, x, y, TREASURE_ORB_R);
     orb.addColorStop(0, "#ffffff"); orb.addColorStop(0.45, "#c8f0ff"); orb.addColorStop(1, "#4aa8e8");
@@ -28802,6 +28972,8 @@ function drawTreasureFlags() {
     ctx.beginPath(); ctx.arc(x, y, TREASURE_ORB_R, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = `rgba(220,245,255,${0.5 + 0.4 * pulse})`; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(x, y, TREASURE_ORB_R + 4 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
+    ctx.font = "14px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(ORB_FACILITY_DEFS[f.kind].icon, x, y - TREASURE_ORB_R - 12);
   }
   ctx.restore();
 }
@@ -35760,6 +35932,7 @@ function tick() {
     updateCamera(wdt);
     // v3.16.0: 猛進のあいだは敵側（建物の射撃・弾・動く敵）だけ時間を速める
     rebuildMoverGrid();           // v3.23.0: 竜の攻撃が近くの敵だけを見るための格子（敵が多い地域だけ）
+    updateOrbFacilities(wdt * tierRush.haste);   // v3.48.0: 竜玉施設（鐘の拍・大砲）。砲台より先に（鐘が鳴ったフレームに撃つ）
     updateSettlementAttacks(wdt * tierRush.haste);
     updateProjectiles(wdt);
     updateWeaponAttacks(wdt);     // v0.6-p2: 武器ディスパッチ（BEAM/BULLET/MISSILE）
