@@ -1084,7 +1084,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.50.0";
+const GAME_VERSION = "v3.50.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -20307,21 +20307,18 @@ const STRINGS = {
 // 後半だけを重くする：Lv10 以降は旧の一定値 2384 から1回ごとに ×1.045。
 //   試算（8時代×6地域の平均の経験値）：ステージ終了時のレベル
 //     6割破壊 22/31/38/44/50/54/58/61 ・ 8割破壊 25/35/43/49/55/59/63/66
-// v3.50.0（案帳 DT-238・Shooter指示「1レベルアップに必要な経験値は増やす。最序盤だけはちょっと緩めに」）:
-//   レベルアップは「1回で実感できるくらい強くなる」ものにしたので、回数を約半分にする。
-//   Lv3 までは今まで（160 × 1.35）のまま、Lv3〜9 は ×1.6、Lv9 以降は1回ごとに ×1.10。
-//   試算（v3.9.4 と同じ経験値）：ステージ終了時のレベル 6割破壊 14/19/22/25/28/29/31/33・8割破壊 16/20/24/27/30/32/34/35
-//   （今までは 6割破壊 22/31/38/44/50/54/58/61）
+// v3.50.1（案帳 DT-238・Shooter指示「必要経験値は以前の5倍くらい。序盤も多くて良かった」）:
+//   v3.9.4 の曲線（160 × 1.35^(Lv−1)、Lv10 以降は1回ごとに ×1.045）をそのまま5倍にする（序盤も緩めない）。
+//   試算（v3.9.4 と同じ経験値）：ステージ終了時のレベル 6割破壊 10/14/17/20/24/26/29/31・8割破壊 11/16/20/23/27/30/33/35
+//   （v3.9.4 のままだと 6割破壊 22/31/38/44/50/54/58/61）
 const XP_LEVEL_BASE        = 160;
-const XP_LEVEL_GROWTH      = 1.35;   // Lv3 まで（最序盤は緩め）
-const XP_LEVEL_EARLY       = 3;
-const XP_LEVEL_MID_GROWTH  = 1.6;    // Lv3〜XP_LEVEL_CAP
-const XP_LEVEL_CAP         = 9;
-const XP_LEVEL_LATE_GROWTH = 1.10;   // XP_LEVEL_CAP 以降は1回ごとに10%ずつ重くなる（頭打ちにしない）
+const XP_LEVEL_GROWTH      = 1.35;
+const XP_LEVEL_CAP         = 10;
+const XP_LEVEL_LATE_GROWTH = 1.045;  // Lv10 以降は1回ごとに4.5%ずつ重くなる（頭打ちにしない）
+const XP_LEVEL_MULT        = 5;      // v3.50.1: レベルアップ1回で大きく強くなるので、回数を減らす
 function xpForNext(level) {
-  if (level < XP_LEVEL_EARLY) return Math.floor(XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, level - 1));
-  const mid = XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, XP_LEVEL_EARLY - 1) * Math.pow(XP_LEVEL_MID_GROWTH, Math.min(level, XP_LEVEL_CAP) - XP_LEVEL_EARLY);
-  return Math.ceil(mid * Math.pow(XP_LEVEL_LATE_GROWTH, Math.max(0, level - XP_LEVEL_CAP)));
+  const early = XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, Math.min(level, XP_LEVEL_CAP) - 1);
+  return Math.ceil(early * Math.pow(XP_LEVEL_LATE_GROWTH, Math.max(0, level - XP_LEVEL_CAP))) * XP_LEVEL_MULT;
 }
 
 // ---- 進行状態（ステージ開始ごとに resetProgression で全消去）----
@@ -21217,6 +21214,8 @@ function crossScreenOptions() {
  *  ・竜種のレベルアップ（形態の Lv3 まで）／竜種の進化（分岐）・突然変異（形態の Lv3 で）
  *  ・特殊個体のレベルアップ（形態の Lv3 まで）／特殊個体の進化（分岐）・突然変異・合成（形態の Lv3 で）
  *  ・特殊個体の加入（枠が空いているとき） */
+const JOIN_OFFER_MAX = 3;          // v3.50.1: 特殊個体の加入カードを並べる最大数
+const JOIN_OFFER_FEW_WHEN = 3;     // ほかの選択肢がこの数以上なら加入は1つだけ
 function levelUpOptions() {
   const dragon = [];
   if (SPECIES_EVO_SPEC[flockSpecies]) {
@@ -21241,9 +21240,14 @@ function levelUpOptions() {
       if (runSpecials.includes(SPECIAL_KIND_BY_KEY[other]) && !special.includes(EVO_NODES[`evo.fuse.${r.id}`])) special.push(EVO_NODES[`evo.fuse.${r.id}`]);
     }
   }
-  const joins = CARD_DEFS.filter(def => def.specialJoin && takenCount(def.id) < def.max && !runBanished.has(def.id) &&
+  const joinPool = CARD_DEFS.filter(def => def.specialJoin && takenCount(def.id) < def.max && !runBanished.has(def.id) &&
     runSpecials.length < effSpecialSlots() && isSpecialUnlocked(def.specialJoin));
-  return [...dragon, ...special.filter(Boolean), ...joins];
+  // v3.50.1（Shooter指示）: 特殊個体の加入は最大3つまで。ほかの選択肢がすでに3つ以上あるときは1つだけ（引くのはランの乱数）
+  const others = [...dragon, ...special.filter(Boolean)];
+  const joinCount = Math.min(joinPool.length, others.length >= JOIN_OFFER_FEW_WHEN ? 1 : JOIN_OFFER_MAX);
+  const joins = [];
+  while (joins.length < joinCount) joins.push(joinPool.splice(Math.floor(random() * joinPool.length), 1)[0]);
+  return [...others, ...joins];
 }
 /** 旧：3択の進化枠（検証・図鑑の互換のため残す） */
 function evoCandidates() {
