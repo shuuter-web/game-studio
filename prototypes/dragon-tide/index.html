@@ -353,6 +353,25 @@
     pointer-events: none;
   }
   #levelup-overlay.visible { display: flex; }
+  /* v3.50.0（案帳 DT-238）: レベルアップは時間を止めて中央に出す。進化ツリーを上に、選択肢は全部（多ければスクロール） */
+  #levelup-overlay.lv-center {
+    top: 0; justify-content: center; padding: 12px 0 calc(12px + env(safe-area-inset-bottom));
+    background: rgba(2,4,12,0.78); pointer-events: auto;
+  }
+  #levelup-overlay.lv-center #card-list { max-height: 58vh; overflow-y: auto; padding: 2px 4px; }
+  #levelup-overlay.lv-center:not(.armed) .upgrade-card { opacity: 0.45; pointer-events: none; }
+  #levelup-overlay.lv-center #levelup-dragon {
+    white-space: normal; text-align: left; padding: 6px 10px; width: min(86vw, 340px); box-sizing: border-box; max-width: none;
+  }
+  .et-row { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 2px 0; font-size: 11px; }
+  .et-row.et-sp { font-size: 10px; opacity: 0.92; }
+  .et-node { border: 1px solid var(--et); border-radius: 5px; padding: 1px 5px; color: #e8f4ff; }
+  .et-node.now { background: color-mix(in srgb, var(--et) 30%, transparent); font-weight: bold; }
+  .et-node.done { opacity: 0.5; }
+  .et-node.next { border-style: dashed; opacity: 0.8; }
+  .et-node i { font-style: normal; color: #ffd060; letter-spacing: -1px; }
+  .et-arrow, .et-or { color: rgba(220,235,255,0.6); }
+  .et-cross { margin-left: 4px; color: #ff9ae0; }
   /* v3.12.1: 地域選択はゲーム中の三択と別の画面に見せる（Shooter指示）。
      HUD・地図・進捗を隠し、暗幕の上で中央に置く。カードは「地図の札」風の別デザイン */
   body.region-picking #hud-topbar, body.region-picking #hud-left, body.region-picking #minimap-container,
@@ -1065,7 +1084,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.49.0";
+const GAME_VERSION = "v3.50.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -20288,13 +20307,21 @@ const STRINGS = {
 // 後半だけを重くする：Lv10 以降は旧の一定値 2384 から1回ごとに ×1.045。
 //   試算（8時代×6地域の平均の経験値）：ステージ終了時のレベル
 //     6割破壊 22/31/38/44/50/54/58/61 ・ 8割破壊 25/35/43/49/55/59/63/66
+// v3.50.0（案帳 DT-238・Shooter指示「1レベルアップに必要な経験値は増やす。最序盤だけはちょっと緩めに」）:
+//   レベルアップは「1回で実感できるくらい強くなる」ものにしたので、回数を約半分にする。
+//   Lv3 までは今まで（160 × 1.35）のまま、Lv3〜9 は ×1.6、Lv9 以降は1回ごとに ×1.10。
+//   試算（v3.9.4 と同じ経験値）：ステージ終了時のレベル 6割破壊 14/19/22/25/28/29/31/33・8割破壊 16/20/24/27/30/32/34/35
+//   （今までは 6割破壊 22/31/38/44/50/54/58/61）
 const XP_LEVEL_BASE        = 160;
-const XP_LEVEL_GROWTH      = 1.35;
-const XP_LEVEL_CAP         = 10;
-const XP_LEVEL_LATE_GROWTH = 1.045;  // Lv10 以降は1回ごとに4.5%ずつ重くなる（頭打ちにしない）
+const XP_LEVEL_GROWTH      = 1.35;   // Lv3 まで（最序盤は緩め）
+const XP_LEVEL_EARLY       = 3;
+const XP_LEVEL_MID_GROWTH  = 1.6;    // Lv3〜XP_LEVEL_CAP
+const XP_LEVEL_CAP         = 9;
+const XP_LEVEL_LATE_GROWTH = 1.10;   // XP_LEVEL_CAP 以降は1回ごとに10%ずつ重くなる（頭打ちにしない）
 function xpForNext(level) {
-  const early = XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, Math.min(level, XP_LEVEL_CAP) - 1);
-  return Math.ceil(early * Math.pow(XP_LEVEL_LATE_GROWTH, Math.max(0, level - XP_LEVEL_CAP)));
+  if (level < XP_LEVEL_EARLY) return Math.floor(XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, level - 1));
+  const mid = XP_LEVEL_BASE * Math.pow(XP_LEVEL_GROWTH, XP_LEVEL_EARLY - 1) * Math.pow(XP_LEVEL_MID_GROWTH, Math.min(level, XP_LEVEL_CAP) - XP_LEVEL_EARLY);
+  return Math.ceil(mid * Math.pow(XP_LEVEL_LATE_GROWTH, Math.max(0, level - XP_LEVEL_CAP)));
 }
 
 // ---- 進行状態（ステージ開始ごとに resetProgression で全消去）----
@@ -20816,17 +20843,23 @@ const EVO_NODES = {};          // id -> カード（id / icon / rarity / max）�
 const SPECIAL_KIND_BY_KEY = {};
 for (const k in SPECIAL_DEFS) SPECIAL_KIND_BY_KEY[SPECIAL_DEFS[k].key] = Number(k);
 
-const EVO_LV_MAX        = 30;         // 特殊個体のレベルの上限
-const EVO_LV_PER_SLOPE  = 9;          // この段数で「傾き」1つぶん伸びる（Lv10 = 旧 L1〜L4）
-const SP_BRANCH_LEVEL   = 10;         // 特殊個体の分岐（A／B）
-const SP_CROSS_LEVELS   = [5, 15, 25];// 特殊個体の突然変異が出るレベル
+// v3.50.0（案帳 DT-238・Shooter指示）: 細かく刻むのをやめ、以前のように**形態ごとに Lv1〜3、Lv3 で進化**する。
+//   竜も特殊個体も、形態の Lv3 に着くと「進化（分岐）・突然変異（・合成）」が選べるようになり、進化したら次の形態を Lv1 から。
+//   能力は「強さ」＝これまでに上げた回数（runDragonLv・runSpLv）で決まり、形態が変わっても減らない。1回で実感できるくらい伸びる。
+const FORM_LV_MAX       = 3;          // 形態ごとのレベルの上限（ここで進化できる）
+const EVO_LV_MAX        = 10;         // 特殊個体の強さの上限（基本の形態→進化で6。突然変異・合成で先へ）
+const EVO_LV_PER_SLOPE  = 2;          // この回数で「傾き」1つぶん伸びる（1回で傾きの半分）
+const SP_BRANCH_LEVEL   = FORM_LV_MAX;// 旧名（図鑑）
+const SP_CROSS_LEVELS   = [FORM_LV_MAX];
 // v3.11.0: 竜のレベルは**レベルアップのたびに自動で +1**（Shooter指示。三択では選ばない）。
 // レベルアップはラン全体で約60回なので、竜の上限を 60 にし、1レベルあたりの伸びを半分にした
 // （Lv60 で以前の Lv30 と同じ強さ）。分岐・突然変異のレベルも2倍。
-const DRAGON_LV_MAX        = 60;
-const DRAGON_LV_PER_SLOPE  = 18;
-const DRAGON_BRANCH_LEVELS = [20, 40];      // 同系統の分岐（以前は 10・20）
-const DRAGON_CROSS_LEVELS  = [10, 30, 50];  // 竜の突然変異（以前は 5・15・25）
+// v3.50.0: 竜の強さの上限と伸び方（1回で傾きの約0.36。基本の形態→進化→進化で強さ7、突然変異した先でも進化して15まで）
+// 1ランのレベルアップは約33回。上限が低いと突然変異した先で上げられず、後半が竜玉（経験値）ばかりになった（試算）
+const DRAGON_LV_MAX        = 15;
+const DRAGON_LV_PER_SLOPE  = 2.8;
+const DRAGON_BRANCH_LEVELS = [1, 2];        // 旧名（図鑑）：1回目の進化・2回目の進化
+const DRAGON_CROSS_LEVELS  = [FORM_LV_MAX];
 const EVO_BRANCH_LEVELS = DRAGON_BRANCH_LEVELS;   // 旧名（図鑑など）
 const EVO_CROSS_LEVELS  = DRAGON_CROSS_LEVELS;
 const EVO_TIER2_MULT    = 2;          // Lv20 の型は旧ツリーの続き（1段ぶん）の2倍
@@ -20929,6 +20962,8 @@ let runDragonLv      = 1;
 let runSpeciesBranch = {};   // 竜種 -> { t10: "A"|"B", t20: "A1"|"A2"|... }（行き来しても覚えている）
 let runSpLv          = {};   // 特殊個体の種類 key -> レベル
 let runSpBranch      = {};   // 特殊個体の種類 key -> "A"|"B"
+let runFormLv        = 1;    // v3.50.0: 今の竜の形態のレベル（1〜FORM_LV_MAX）
+let runSpFormLv      = {};   // v3.50.0: 特殊個体の種類 key -> 今の形態のレベル
 // v3.9.6: 種またぎは**分岐の画面で1回だけ**並ぶ（Shooter「選びたくない種またぎが延々出続ける」）。
 // 分岐の段（10・20）ごとに、種またぎを一度でも見せたら true。見送っても A/B を選んでも、その段ではもう出ない。
 let runCrossOffered  = {};
@@ -20936,6 +20971,8 @@ let runFuseOffered   = {};   // v3.10.0: 合成の画面を出したレシピ（
 
 function initEvoForRun() {
   runDragonLv = 1;
+  runFormLv = 1;
+  runSpFormLv = {};
   runSpeciesBranch = {};
   runSpLv = {};
   runSpBranch = {};
@@ -20948,6 +20985,7 @@ function initEvoForRun() {
 
 function speciesBranch(sid) { return runSpeciesBranch[sid] || (runSpeciesBranch[sid] = {}); }
 function spLevel(key) { return runSpLv[key] || 1; }
+function spFormLv(key) { return runSpFormLv[key] || 1; }
 
 /** 今の竜の分岐で足される能力（Lv10 の分岐＋Lv20 の型）。 */
 function branchEffectsOf(sid) {
@@ -21025,10 +21063,10 @@ function lvText(L, max = EVO_LV_MAX) { return L >= max ? "Lv Max" : `Lv${L}`; }
     tag: "species", rarity: "common", weight: EVO_W_DRAGON_LV,
     get icon() { return sp().icon; },
     get color() { return flockEvoVisual()?.tint || sp().color; },
-    get lv() { return runDragonLv + 1; }, lvCount: DRAGON_LV_MAX,
-    label: () => `${currentFormName()} ${lvText(runDragonLv + 1, DRAGON_LV_MAX)}`,
-    desc: () => `竜のレベル +1（突然変異しても同じレベル）／ ` +
-                (evoEffectText(levelGain(SPECIES_SLOPE[flockSpecies] || {}, runDragonLv, DRAGON_LV_MAX, DRAGON_LV_PER_SLOPE), speciesKind(flockSpecies)) || "能力が少し伸びる"),
+    get lv() { return runFormLv + 1; }, lvCount: FORM_LV_MAX,
+    label: () => `${currentFormName()} Lv${runFormLv + 1}`,
+    desc: () => `竜種のレベルアップ（Lv${FORM_LV_MAX} で進化できる）／ ` +
+                (evoEffectText(levelGain(SPECIES_SLOPE[flockSpecies] || {}, runDragonLv, DRAGON_LV_MAX, DRAGON_LV_PER_SLOPE), speciesKind(flockSpecies)) || "強さは上限（進化への段だけ進む）"),
   });
   // v3.11.0: 竜の突然変異の画面の「このまま」（竜のレベルは自動で上がるので、変えない選択）
   defineEvoCard("evo.keep", {
@@ -21060,8 +21098,8 @@ function lvText(L, max = EVO_LV_MAX) { return L >= max ? "Lv Max" : `Lv${L}`; }
     const needText = Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・");
     defineEvoCard(`evo.cx.${cx.to}`, { becomes: cx.to, needsSpecials: cx.needs, icon: to.icon, rarity: "star", tag: "cross",
       color: to.color, weight: EVO_W_CROSS,
-      label: () => `${currentFormName()}→【${to.ja} ${lvText(runDragonLv, DRAGON_LV_MAX)}】`,
-      desc: () => `竜の突然変異（${needText}）。群れごと${to.ja}になる。竜のレベルはそのまま` +
+      label: () => `${currentFormName()}→【${to.ja}】`,
+      desc: () => `竜の突然変異（${needText}）。群れごと${to.ja}になり、Lv1 から。強さはそのまま引き継いでさらに伸びる` +
                   (runSpeciesBranch[cx.to]?.t10 ? `（前に選んだ分岐のまま）` : "") });
   }
   // 特殊個体：レベル・分岐（Lv10）・種またぎ（Lv5・15・25）
@@ -21072,10 +21110,10 @@ function lvText(L, max = EVO_LV_MAX) { return L >= max ? "Lv Max" : `Lv${L}`; }
     const icon = CARD_DEFS.find(c => c.specialJoin === kindNum)?.icon || "✨";
     defineEvoCard(`evo.slv.${key}`, { special: kindNum, key, icon, rarity: "common", tag: "special", tagOwner: def.name,
       weight: EVO_W_SP_LV, get color() { return runSpBranch[key] ? SPECIAL_EVO_SPEC[key][runSpBranch[key]].tint : def.color; },
-      get lv() { return spLevel(key) + 1; }, lvCount: EVO_LV_MAX,
-      label: () => `${spFormName(key)} ${lvText(spLevel(key) + 1)}`,
-      desc: () => `特殊個体のレベル +1（別の種類に変わっても同じレベル）／ ` +
-                  (evoEffectText(levelGain(SPECIAL_SLOPE[key], spLevel(key)), null) || "能力が少し伸びる") });
+      get lv() { return spFormLv(key) + 1; }, lvCount: FORM_LV_MAX,
+      label: () => `${spFormName(key)} Lv${spFormLv(key) + 1}`,
+      desc: () => `特殊個体のレベルアップ（Lv${FORM_LV_MAX} で進化できる）／ ` +
+                  (evoEffectText(levelGain(SPECIAL_SLOPE[key], spLevel(key)), null) || "強さは上限（進化への段だけ進む）") });
     for (const br of ["A", "B"]) {
       const b = SPECIAL_EVO_SPEC[key][br];
       defineEvoCard(`evo.sbr.${key}.${br}`, { special: kindNum, key, opt: br, icon: "\u{1F409}", rarity: "star", tag: "branch",
@@ -21089,8 +21127,8 @@ function lvText(L, max = EVO_LV_MAX) { return L >= max ? "Lv Max" : `Lv${L}`; }
       defineEvoCard(`evo.scx.${key}.${toKey}`, { special: kindNum, key, becomesSpecial: toKey, needsCategory: cat,
         icon: CARD_DEFS.find(c => c.specialJoin === toKind)?.icon || "✨", rarity: "star", tag: "cross",
         color: SPECIAL_DEFS[toKind].color, weight: EVO_W_SP_BRANCH,
-        label: () => `${def.name}→【${SPECIAL_DEFS[toKind].name} ${lvText(Math.max(spLevel(key), spLevel(toKey)))}】`,
-        desc: `特殊個体の突然変異（${CATEGORY_NAMES[cat]}の群れ）。この種類が全員${SPECIAL_DEFS[toKind].name}になる。レベルはそのまま` });
+        label: () => `${def.name}→【${SPECIAL_DEFS[toKind].name}】`,
+        desc: `特殊個体の突然変異（${CATEGORY_NAMES[cat]}の群れ）。この種類が全員${SPECIAL_DEFS[toKind].name}になり、Lv1 から。強さは引き継ぐ` });
     }
   }
   // v3.10.0: 特殊個体の合成
@@ -21098,9 +21136,9 @@ function lvText(L, max = EVO_LV_MAX) { return L >= max ? "Lv Max" : `Lv${L}`; }
     const A = SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[r.a]], B = SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[r.b]];
     const T = SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[r.to]];
     defineEvoCard(`evo.fuse.${r.id}`, { fuse: r, icon: "\u{1F52F}", rarity: "star", tag: "fuse", color: T.color,
-      label: () => `${A.name}＋${B.name}→【${T.name} ${lvText(fusionLevel(r))}】`,
+      label: () => `${A.name}＋${B.name}→【${T.name}】`,
       desc: () => `特殊個体の合成。${A.name}1体と${B.name}1体が、1体の${T.name}になる（連れ歩きの枠が1つ空く）。` +
-                  `レベルは2体の合算・材料の分岐は引き継がない` });
+                  `強さは2体の合算・Lv1 から・材料の分岐は引き継がない` });
   }
 })();
 
@@ -21135,6 +21173,7 @@ function doFusion(r) {
   const sb = pick(kb);
   if (sb >= 0) { boidSpecial[sb] = SPECIAL_NONE; boidHp[sb] = Math.min(boidHp[sb], effBoidMaxHpFor(sb)); }
   runSpLv[r.to] = lv;
+  runSpFormLv[r.to] = 1;   // v3.50.0: 合成個体は Lv1 から
   // 加入カードの「取った回数」を戻す（抜けたぶんはまた加入させられる）
   for (const k of [r.a, r.b]) if (upgradeCounts["sp_" + k] > 0) upgradeCounts["sp_" + k]--;
   recordEvoSeen(`fz:${r.to}`, EVO_NODES[`evo.fuse.${r.id}`]);
@@ -21144,19 +21183,18 @@ function doFusion(r) {
 /** 竜が分岐のレベルに着いていて、まだ選んでいなければ、その選択肢。 */
 function dragonBranchOptions() {
   const sid = flockSpecies;
-  if (!SPECIES_EVO_SPEC[sid]) return [];
+  if (!SPECIES_EVO_SPEC[sid] || runFormLv < FORM_LV_MAX) return [];   // v3.50.0: 形態の Lv3 で進化できる
   const br = speciesBranch(sid);
-  if (runDragonLv >= EVO_BRANCH_LEVELS[0] && !br.t10) return ["A", "B"].map(o => EVO_NODES[`evo.br.${sid}.${o}`]);
-  if (runDragonLv >= EVO_BRANCH_LEVELS[1] && br.t10 && !br.t20) {
-    return tier2Options(sid, br.t10).map(o => EVO_NODES[`evo.br.${sid}.${o.id}`]).filter(Boolean);
-  }
+  if (!br.t10) return ["A", "B"].map(o => EVO_NODES[`evo.br.${sid}.${o}`]);
+  if (!br.t20) return tier2Options(sid, br.t10).map(o => EVO_NODES[`evo.br.${sid}.${o.id}`]).filter(Boolean);
   return [];
 }
 /** 今の分岐の段（10 か 20）。分岐が無ければ 0。 */
 function dragonBranchTier() {
   const br = runSpeciesBranch[flockSpecies] || {};
-  if (runDragonLv >= EVO_BRANCH_LEVELS[0] && !br.t10) return EVO_BRANCH_LEVELS[0];
-  if (runDragonLv >= EVO_BRANCH_LEVELS[1] && br.t10 && !br.t20) return EVO_BRANCH_LEVELS[1];
+  if (runFormLv < FORM_LV_MAX) return 0;
+  if (!br.t10) return 10;
+  if (!br.t20) return 20;
   return 0;
 }
 /** 条件を満たしている種またぎ（今の竜種は除く）。 */
@@ -21175,27 +21213,42 @@ function crossScreenOptions() {
   return dragonCrossOptions();
 }
 
-/** 3択の進化枠。dragon＝竜（レベル）、special＝特殊個体（レベル・分岐・種またぎ）。
- *  v3.9.6: 竜の種またぎは3択には出さない（分岐の画面で1回だけ）。 */
-function evoCandidates() {
+/** v3.50.0（案帳 DT-238・Shooter指示）: レベルアップで出す選択肢。3択に限らず、条件を満たしているものは全部。
+ *  ・竜種のレベルアップ（形態の Lv3 まで）／竜種の進化（分岐）・突然変異（形態の Lv3 で）
+ *  ・特殊個体のレベルアップ（形態の Lv3 まで）／特殊個体の進化（分岐）・突然変異・合成（形態の Lv3 で）
+ *  ・特殊個体の加入（枠が空いているとき） */
+function levelUpOptions() {
   const dragon = [];
-  // v3.11.0: 竜のレベルは自動で上がるので、三択の竜の枠は無くなった
+  if (SPECIES_EVO_SPEC[flockSpecies]) {
+    // 強さが上限でも形態のレベルは上げられる（進化・突然変異へ進めるように）
+    if (runFormLv < FORM_LV_MAX) dragon.push(EVO_NODES["evo.dlv"]);
+    if (runFormLv >= FORM_LV_MAX) dragon.push(...dragonBranchOptions(), ...dragonCrossOptions());
+  }
   const special = [];
   for (const kind of new Set(runSpecials)) {
     const key = SPECIAL_DEFS[kind]?.key;
     if (!SPECIAL_EVO_SPEC[key]) continue;
-    if (spLevel(key) < EVO_LV_MAX) special.push(EVO_NODES[`evo.slv.${key}`]);
-    if (spLevel(key) >= SP_BRANCH_LEVEL && !runSpBranch[key]) {
-      special.push(EVO_NODES[`evo.sbr.${key}.A`], EVO_NODES[`evo.sbr.${key}.B`]);
+    if (spFormLv(key) < FORM_LV_MAX) {
+      special.push(EVO_NODES[`evo.slv.${key}`]);   // 強さが上限でも形態のレベルは上げられる
+      continue;
     }
-    // v3.9.7: 特殊個体の種またぎも竜と同じ Lv5・15・25 に固定。そのレベルにいる間だけ3択に並ぶ
-    // （レベルを上げたら、その段の種またぎはもう出ない）
+    if (!runSpBranch[key]) special.push(EVO_NODES[`evo.sbr.${key}.A`], EVO_NODES[`evo.sbr.${key}.B`]);
     const toKey = SPECIAL_CROSS[key]?.[flockCategory()];
-    if (toKey && SP_CROSS_LEVELS.includes(spLevel(key)) && EVO_NODES[`evo.scx.${key}.${toKey}`]) {
-      special.push(EVO_NODES[`evo.scx.${key}.${toKey}`]);
+    if (toKey && EVO_NODES[`evo.scx.${key}.${toKey}`]) special.push(EVO_NODES[`evo.scx.${key}.${toKey}`]);
+    for (const r of FUSION_RECIPES) {
+      if (r.a !== key && r.b !== key) continue;
+      const other = r.a === key ? r.b : r.a;
+      if (runSpecials.includes(SPECIAL_KIND_BY_KEY[other]) && !special.includes(EVO_NODES[`evo.fuse.${r.id}`])) special.push(EVO_NODES[`evo.fuse.${r.id}`]);
     }
   }
-  return { dragon, special };
+  const joins = CARD_DEFS.filter(def => def.specialJoin && takenCount(def.id) < def.max && !runBanished.has(def.id) &&
+    runSpecials.length < effSpecialSlots() && isSpecialUnlocked(def.specialJoin));
+  return [...dragon, ...special.filter(Boolean), ...joins];
+}
+/** 旧：3択の進化枠（検証・図鑑の互換のため残す） */
+function evoCandidates() {
+  const all = levelUpOptions();
+  return { dragon: all.filter(d => d.tag === "species" || (d.evo && (d.sid || d.becomes))), special: all.filter(d => d.special !== undefined || d.fuse) };
 }
 
 /** 群れの見た目（今の竜種で選んだ分岐の色と大きさ）。分岐前なら null。 */
@@ -21236,25 +21289,35 @@ function applyEvoNode(node, oldMaxHp) {
     flashTint = node.color;
   } else if (node.id === "evo.dlv") {
     runDragonLv = Math.min(DRAGON_LV_MAX, runDragonLv + 1);
+    runFormLv = Math.min(FORM_LV_MAX, runFormLv + 1);
   } else if (node.tier) {
     const br = speciesBranch(node.sid);
     if (node.tier === 10) br.t10 = node.opt; else br.t20 = node.opt;
+    runFormLv = 1;                                            // v3.50.0: 進化したら次の形態を Lv1 から
+    runDragonLv = Math.min(DRAGON_LV_MAX, runDragonLv + 1);   // 強さはさらに伸びる
     recordEvoSeen(`d:${node.sid}.${node.opt}`, node);
     flashTint = node.color;
   } else if (node.becomes) {
     setFlockSpecies(node.becomes);
+    runFormLv = 1;                                            // v3.50.0
+    runDragonLv = Math.min(DRAGON_LV_MAX, runDragonLv + 1);
     for (let i = 0; i < N; i++) if (boidFireTimer) boidFireTimer[i] = random() * currentFireInterval();
     unlockSpeciesForever(node.becomes);
     recordEvoSeen(`x:${node.becomes}`, node);
     flashTint = SPECIES_DEFS[node.becomes].color;
   } else if (node.special !== undefined && node.id.startsWith("evo.slv.")) {
     runSpLv[node.key] = Math.min(EVO_LV_MAX, spLevel(node.key) + 1);
+    runSpFormLv[node.key] = Math.min(FORM_LV_MAX, spFormLv(node.key) + 1);
   } else if (node.becomesSpecial) {
     convertSpecialType(node.special, SPECIAL_KIND_BY_KEY[node.becomesSpecial]);
+    runSpFormLv[node.becomesSpecial] = 1;                     // v3.50.0
+    runSpLv[node.becomesSpecial] = Math.min(EVO_LV_MAX, spLevel(node.becomesSpecial) + 1);
     recordEvoSeen(`sx:${node.becomesSpecial}`, node);
     flashTint = node.color;
   } else if (node.special !== undefined && node.opt) {
     runSpBranch[node.key] = node.opt;
+    runSpFormLv[node.key] = 1;                                // v3.50.0
+    runSpLv[node.key] = Math.min(EVO_LV_MAX, spLevel(node.key) + 1);
     recordEvoSeen(`s:${node.key}.${node.opt}`, node);
     flashTint = node.color;
   }
@@ -21713,18 +21776,13 @@ function maybeShowLevelUp() {
   if (gameState !== "playing" || pendingCards <= 0 || upgradeCardsVisible) return;
   if (fallOfferVisible) return;   // v3.49.0: 陥落カードを選んでいる間は待つ
   upgradeCardsVisible = true;
-  slowmoTimer = SLOWMO_DURATION;
+  slowmoTimer = 0;   // v3.50.0: レベルアップは時間を止める（tick が止める）
   levelupTitleEl.textContent = STRINGS.levelUp;  // 竜種選択で書き換わったタイトルを戻す
-  // v3.11.0: 竜のレベルはレベルアップのたびに自動で上がる（v3.11.7: 開き直しでは上げない）
-  const up = dragonLvPendingApplied ? null : autoDragonLevelUp();
-  dragonLvPendingApplied = true;
-  // v3.11.1: メニューの一番上に「火竜 Lv1→2　攻撃の威力 +2%」を1行で出す
-  levelupDragonEl.innerHTML = up
-    ? `${up.icon} <span class="lv" style="color:${up.color}">${up.name} Lv${up.from}→${up.to === DRAGON_LV_MAX ? "Max" : up.to}</span>` +
-      (up.gain ? `<span class="gain">${up.gain}</span>` : "")
-    : "";
+  // v3.50.0（案帳 DT-238・Shooter指示）: 竜のレベルは自動で上げない（選択肢の1つ）。代わりに進化ツリーを見せる
+  levelupDragonEl.innerHTML = evoTreeHtml();
   buildLevelUpCards();
-  levelupOverlayEl.classList.add("visible");
+  levelupOverlayEl.classList.add("visible", "lv-center");
+  armLevelUpCards();
   triggerFlash("rgba(160,236,255,0.35)", 0.15);
   hapticPulse(60);
 }
@@ -21756,30 +21814,63 @@ function autoDragonLevelUp() {
   return { icon: sp().icon, name: currentFormName(), from, to: runDragonLv, gain, color };
 }
 
-/** 取得可能なカードから重み付きで3枚（重複なし）選んでDOMに並べる。 */
+/** v3.50.0: 条件を満たした選択肢を全部並べる（何も無ければ竜玉＝経験値）。 */
 function buildLevelUpCards() {
-  // v3.5.0: 竜が分岐点にいれば「進化の分岐」画面（見送ったらこの回だけ通常の3択）
-  const branches = dragonBranchOptions();
-  if (branches.length > 0) { renderBranchScreen(branches); return; }
-  // v3.9.7: 種またぎは Lv5・15・25 に固定。v3.9.8: **分岐と同じく選ばせる**（Shooter指示）。
-  // 並ぶのは「そのままレベルアップ」と条件を満たした種またぎだけ。見送り・ほかの強化は無し。どれを選んでもその段は終わり
-  const crosses = crossScreenOptions();
-  if (crosses.length > 0) {
-    pendingOfferMark = { kind: "cross", key: runDragonLv };   // v3.11.7: 選んだ時点で「出した」にする（途中で閉じても再開で出し直せる）
-    renderBranchScreen([EVO_NODES["evo.keep"]].concat(crosses), STRINGS.crossTitle);   // v3.11.0: 「このまま」か突然変異
-    return;
+  const opts = levelUpOptions();
+  renderLevelUpCards(opts.length ? opts : [CARD_ORB], { branchScreen: true });
+}
+
+/** v3.50.0: 進化ツリー（レベルアップの画面の上）。竜の形態のつながりと、連れている特殊個体の形態 */
+function evoTreeHtml() {
+  const pips = (lv) => "●".repeat(lv) + "○".repeat(Math.max(0, FORM_LV_MAX - lv));
+  const node = (name, color, cls, extra = "") => `<span class="et-node ${cls}" style="--et:${color}">${name}${extra}</span>`;
+  const sid = flockSpecies, spec = SPECIES_EVO_SPEC[sid], br = runSpeciesBranch[sid] || {};
+  let html = `<div class="et-row">`;
+  if (spec) {
+    const base = SPECIES_DEFS[sid];
+    html += node(`${base.icon} ${base.ja}`, base.color, br.t10 ? "done" : "now", br.t10 ? "" : ` <i>${pips(runFormLv)}</i>`);
+    html += `<span class="et-arrow">→</span>`;
+    if (!br.t10) html += ["A", "B"].map(o => node(spec[o].name, spec[o].tint, "next")).join(`<span class="et-or">/</span>`);
+    else {
+      html += node(spec[br.t10].name, spec[br.t10].tint, br.t20 ? "done" : "now", br.t20 ? "" : ` <i>${pips(runFormLv)}</i>`);
+      html += `<span class="et-arrow">→</span>`;
+      const t2 = tier2Options(sid, br.t10);
+      if (!br.t20) html += t2.map(o => node(o.name.split("・").pop(), o.tint, "next")).join(`<span class="et-or">/</span>`);
+      else { const o = t2.find(o => o.id === br.t20); html += node(o ? o.name.split("・").pop() : "", o ? o.tint : base.color, "now", ` <i>${pips(runFormLv)}</i>`); }
+    }
+    const crosses = dragonCrossOptions();
+    if (crosses.length) html += `<span class="et-cross">突然変異 ${crosses.map(c => SPECIES_DEFS[c.becomes].icon).join("")}</span>`;
   }
-  // v3.10.0: 特殊個体の合成。竜の画面が無いときだけ（あれば次のレベルアップへ回る）。
-  // 並ぶのは「合成する」と「そのままレベルアップ」（Lv10 に届いた方の材料のレベル）だけ
-  const fr = pendingFusion();
-  if (fr) {
-    pendingOfferMark = { kind: "fuse", key: fr.id };
-    const hiKey = spLevel(fr.a) >= spLevel(fr.b) ? fr.a : fr.b;
-    const stay = spLevel(hiKey) < EVO_LV_MAX ? [EVO_NODES[`evo.slv.${hiKey}`]] : [];
-    renderBranchScreen([EVO_NODES[`evo.fuse.${fr.id}`]].concat(stay), STRINGS.fuseTitle);
-    return;
+  html += `</div>`;
+  for (const kind of new Set(runSpecials)) {
+    const key = SPECIAL_DEFS[kind]?.key;
+    if (!SPECIAL_EVO_SPEC[key]) continue;
+    const d = SPECIAL_DEFS[kind], b = runSpBranch[key];
+    html += `<div class="et-row et-sp">` + node(d.name, d.color, b ? "done" : "now", b ? "" : ` <i>${pips(spFormLv(key))}</i>`) + `<span class="et-arrow">→</span>`;
+    html += b ? node(SPECIAL_EVO_SPEC[key][b].name, SPECIAL_EVO_SPEC[key][b].tint, "now", ` <i>${pips(spFormLv(key))}</i>`)
+              : ["A", "B"].map(o => node(SPECIAL_EVO_SPEC[key][o].name, SPECIAL_EVO_SPEC[key][o].tint, "next")).join(`<span class="et-or">/</span>`);
+    html += `</div>`;
   }
-  renderLevelUpCards(pickLevelUpCards());
+  return html;
+}
+
+/** v3.50.0: レベルアップのカードも、出てすぐは押せない＋押して離したときに選ぶ（陥落カードと同じ誤タップ防止） */
+let levelUpArmTimer = 0;
+function armLevelUpCards() {
+  levelupOverlayEl.classList.remove("armed");
+  clearTimeout(levelUpArmTimer);
+  levelUpArmTimer = setTimeout(() => levelupOverlayEl.classList.add("armed"), FALL_OFFER_ARM_MS);
+}
+/** カードに「押して離したら選ぶ」を付ける */
+function bindCardRelease(btn, onPick) {
+  btn.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); btn.dataset.pressed = String(e.pointerId); });
+  btn.addEventListener("pointerup", (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const ok = btn.dataset.pressed === String(e.pointerId) && (!levelupOverlayEl.classList.contains("lv-center") || levelupOverlayEl.classList.contains("armed"));
+    delete btn.dataset.pressed;
+    if (ok) onPick();
+  });
+  btn.addEventListener("pointerleave", () => { delete btn.dataset.pressed; });
 }
 
 /** 3択の中身を引く（描画しない。検証からも呼べるように分けた）。 */
@@ -21867,11 +21958,7 @@ function renderLevelUpCards(picks, opts = {}) {
         `<span><div class="evo-tag">${STRINGS.evoTag(def)}</div>` +
         `<div class="card-name">${text.name}${pips}</div>` +
         `<div class="card-desc">${text.desc}</div></span>`;
-      btn.addEventListener("pointerdown", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        chooseCard(def);   // 進化カードは封印できない
-      });
+      bindCardRelease(btn, () => chooseCard(def));   // 進化カードは封印できない（v3.50.0: 押して離したときに選ぶ）
       cardListEl.appendChild(btn);
       continue;
     }
@@ -21881,9 +21968,7 @@ function renderLevelUpCards(picks, opts = {}) {
       `<span class="card-icon">${def.icon}</span>` +
       `<span><div class="card-name">${text.name}${stack}</div>` +
       `<div class="card-desc">${text.desc}</div></span>`;
-    btn.addEventListener("pointerdown", (e) => {
-      e.stopPropagation();
-      e.preventDefault();
+    bindCardRelease(btn, () => {
       // v3.3.0: 封印を構えていたら、このカードを封印して引き直す（進化カードは封印できない）
       if (banishArmed && !def.evo && def !== CARD_ORB) { banishCard(def); return; }
       chooseCard(def);
@@ -21960,7 +22045,8 @@ function chooseCard(def) {
 
   upgradeCardsVisible = false;
   slowmoTimer = 0;
-  levelupOverlayEl.classList.remove("visible");
+  levelupOverlayEl.classList.remove("visible", "lv-center", "armed");
+  lastTickTs = performance.now();   // v3.50.0: 止めていた間の時間を次の1歩に持ち込まない
   // 連続レベルアップが残っていれば続けて開く（スロー時間もリフレッシュされる）
   if (pendingCards > 0) maybeShowLevelUp();
   else openNextFallOffer();   // v3.49.0: 待っていた陥落カード
@@ -21971,7 +22057,7 @@ function dismissLevelUpCards() {
   upgradeCardsVisible = false;
   slowmoTimer = 0;
   timeScale   = 1;
-  levelupOverlayEl.classList.remove("visible");
+  levelupOverlayEl.classList.remove("visible", "lv-center", "armed");
 }
 
 // -----------------------------------------------------------------
@@ -27119,8 +27205,8 @@ function codexEvoFullHtml() {
   const swatch = (c) => c ? `<span class="evo-swatch" style="background:${c}"></span>` : "";
   const head = (text) => `<div class="evo-line" style="color:#ffd08a;margin-top:6px">${text}</div>`;
   const line = (text, pad = 8) => `<div class="evo-line" style="padding-left:${pad}px">${text}</div>`;
-  let html = `<div class="tree-hint">（デバッグ表示）竜のレベル・特殊個体のレベルは1〜${EVO_LV_MAX}。突然変異しても同じレベル。` +
-             `竜のレベルは1〜${DRAGON_LV_MAX}（レベルアップのたびに自動）。竜の分岐は Lv${DRAGON_BRANCH_LEVELS.join("・Lv")}、特殊個体の分岐は Lv${SP_BRANCH_LEVEL}。もう一度押すと元の表示に戻る。</div><div class="cx-list">`;
+  let html = `<div class="tree-hint">（デバッグ表示）竜も特殊個体も形態ごとに Lv1〜${FORM_LV_MAX}。Lv${FORM_LV_MAX} で進化（分岐）・突然変異。` +
+             `強さ（上げた回数）は竜 1〜${DRAGON_LV_MAX}・特殊個体 1〜${EVO_LV_MAX}。もう一度押すと元の表示に戻る。</div><div class="cx-list">`;
   for (const sid of Object.keys(SPECIES_EVO_SPEC)) {
     const def = SPECIES_DEFS[sid];
     if (!def) continue;
@@ -27128,15 +27214,15 @@ function codexEvoFullHtml() {
     const spec = SPECIES_EVO_SPEC[sid];
     html += `<div class="cx-row"><div class="cx-body"><div class="cx-name">${def.icon} ${def.ja}${isSpeciesUnlocked(sid) ? "" : "　🔒"}</div>`;
     html += head("レベルごとの能力");
-    for (const L of [20, 40, 60]) html += line(`Lv${L}：${evoEffectText(levelEffects(SPECIES_SLOPE[sid], L, DRAGON_LV_MAX, DRAGON_LV_PER_SLOPE), kind)}`);
+    for (const L of [4, 7, 15]) html += line(`強さ${L}：${evoEffectText(levelEffects(SPECIES_SLOPE[sid], L, DRAGON_LV_MAX, DRAGON_LV_PER_SLOPE), kind)}`);
     for (const br of ["A", "B"]) {
       const b = spec[br];
-      html += head(`${swatch(b.tint)}Lv${EVO_BRANCH_LEVELS[0]} 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, kind));
-      for (const o of tier2Options(sid, br)) html += line(`${swatch(o.tint)}Lv${EVO_BRANCH_LEVELS[1]} 型：${o.name} ／ ${evoEffectText(o.eff, kind)}`, 16);
+      html += head(`${swatch(b.tint)}進化1 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, kind));
+      for (const o of tier2Options(sid, br)) html += line(`${swatch(o.tint)}進化2 型：${o.name} ／ ${evoEffectText(o.eff, kind)}`, 16);
     }
     const cx = CROSS_EVOLUTIONS.find(c => c.to === sid);
     if (cx) html += head("この竜種への竜の突然変異") +
-      line(Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・") + ` を連れていれば、どの竜種からでも（竜の Lv${EVO_CROSS_LEVELS.join("・Lv")} で1回ずつ）`);
+      line(Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・") + ` を連れていれば、どの竜種からでも（形態の Lv${FORM_LV_MAX} で）`);
     html += `</div></div>`;
   }
   for (const key in SPECIAL_EVO_SPEC) {
@@ -27144,10 +27230,10 @@ function codexEvoFullHtml() {
     if (kind === undefined) continue;
     html += `<div class="cx-row"><div class="cx-body"><div class="cx-name">${SPECIAL_DEFS[kind].name}</div>`;
     html += head("レベルごとの能力");
-    for (const L of [10, 20, 30]) html += line(`Lv${L}：${evoEffectText(levelEffects(SPECIAL_SLOPE[key], L), null)}`);
+    for (const L of [3, 6, 10]) html += line(`強さ${L}：${evoEffectText(levelEffects(SPECIAL_SLOPE[key], L), null)}`);
     for (const br of ["A", "B"]) {
       const b = SPECIAL_EVO_SPEC[key][br];
-      html += head(`${swatch(b.tint)}Lv${SP_BRANCH_LEVEL} 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, null));
+      html += head(`${swatch(b.tint)}Lv${FORM_LV_MAX} 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, null));
     }
     const crosses = SPECIAL_CROSS[key] || {};
     html += head("特殊個体の突然変異") + line(Object.keys(crosses).map(c => `${CATEGORY_NAMES[c]}の群れ→${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[crosses[c]]].name}`).join("／"));
@@ -27174,8 +27260,8 @@ function codexEvoHtml() {
     const spec = SPECIES_EVO_SPEC[sid];
     const entries = [];
     for (const br of ["A", "B"]) {
-      entries.push({ e: `d:${sid}.${br}`, name: `Lv${EVO_BRANCH_LEVELS[0]} ${spec[br].name}`, tint: spec[br].tint, desc: evoEffectText(spec[br].eff, kind) });
-      for (const o of tier2Options(sid, br)) entries.push({ e: `d:${sid}.${o.id}`, name: `Lv${EVO_BRANCH_LEVELS[1]} ${o.name}`, tint: o.tint, desc: evoEffectText(o.eff, kind) });
+      entries.push({ e: `d:${sid}.${br}`, name: `進化1 ${spec[br].name}`, tint: spec[br].tint, desc: evoEffectText(spec[br].eff, kind) });
+      for (const o of tier2Options(sid, br)) entries.push({ e: `d:${sid}.${o.id}`, name: `進化2 ${o.name}`, tint: o.tint, desc: evoEffectText(o.eff, kind) });
     }
     const cx = CROSS_EVOLUTIONS.find(c => c.to === sid);
     if (cx) entries.push({ e: `x:${sid}`, name: `突然変異で${def.ja}に`, tint: def.color, cross: true,
@@ -27200,7 +27286,7 @@ function codexEvoHtml() {
     }
     if (fusedFrom) {
       const nm = (k) => SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name;
-      html += entryLine(`fz:${key}`, `合成で${name}が生まれた`, SPECIAL_DEFS[kind].color, `${nm(fusedFrom.a)}＋${nm(fusedFrom.b)}（どちらかが Lv${FUSION_LEVEL} で1回）`, true);
+      html += entryLine(`fz:${key}`, `合成で${name}が生まれた`, SPECIAL_DEFS[kind].color, `${nm(fusedFrom.a)}＋${nm(fusedFrom.b)}（どちらかが Lv${FORM_LV_MAX} のとき）`, true);
     } else {
       html += entryLine(`sx:${key}`, `突然変異で${name}になった`, SPECIAL_DEFS[kind].color, "別の特殊個体から、群れの攻撃の種類しだいで変わる", true);
     }
@@ -28162,6 +28248,7 @@ function snapshotRunSave() {
     // v3.6.0: 竜のレベル・特殊個体のレベル・分岐
     runDragonLv, runSpeciesBranch: JSON.parse(JSON.stringify(runSpeciesBranch)), runCrossOffered: Object.assign({}, runCrossOffered), runFuseOffered: Object.assign({}, runFuseOffered),
     runSpLv: Object.assign({}, runSpLv), runSpBranch: Object.assign({}, runSpBranch),
+    runFormLv, runSpFormLv: Object.assign({}, runSpFormLv),   // v3.50.0
     // v3.11.7: 途中セーブで抜けていたもの（Shooter「竜の数がセーブされていない」）
     flockCount:    N,                      // 群れの数（特殊個体込み）。位置とHPは保存しない＝開始地点から満タンで再開
     eggs:          totalEggCount,          // 拾った卵（HUD）
@@ -28214,6 +28301,10 @@ function resumeRun() {
   runDragonLv      = Math.max(1, Math.min(DRAGON_LV_MAX, save.runDragonLv | 0 || 1));
   runSpeciesBranch = (save.runSpeciesBranch && typeof save.runSpeciesBranch === "object") ? save.runSpeciesBranch : {};
   runSpLv          = (save.runSpLv && typeof save.runSpLv === "object") ? save.runSpLv : {};
+  // v3.50.0: 強さの上限が変わった（竜 60→15・特殊個体 30→10）。旧セーブは上限で切り、形態のレベルは Lv1 から
+  for (const k in runSpLv) runSpLv[k] = Math.max(1, Math.min(EVO_LV_MAX, runSpLv[k] | 0));
+  runFormLv        = Math.max(1, Math.min(FORM_LV_MAX, save.runFormLv | 0 || 1));
+  runSpFormLv      = (save.runSpFormLv && typeof save.runSpFormLv === "object") ? save.runSpFormLv : {};
   runSpBranch      = (save.runSpBranch && typeof save.runSpBranch === "object") ? save.runSpBranch : {};
   runCrossOffered  = (save.runCrossOffered && typeof save.runCrossOffered === "object") ? save.runCrossOffered : {};
   runFuseOffered   = (save.runFuseOffered && typeof save.runFuseOffered === "object") ? save.runFuseOffered : {};
@@ -36069,8 +36160,11 @@ function tick() {
   lastTickTs = now;
   const dt   = dtMs / 1000;
 
-  // v3.49.0（案帳 DT-238・Shooter指示）: 陥落の強化カードも止めずにスロー（レベルアップの三択と同じ）
-  if (gameState === "playing") {
+  // v3.49.0（案帳 DT-238・Shooter指示）: 陥落の強化カードは止めずにスロー
+  // v3.50.0: レベルアップは時間を止めて画面の中央に出す（進化ツリーを見て選ぶ）
+  if (gameState === "playing" && upgradeCardsVisible) {
+    // 止める（描画だけは下で続く）
+  } else if (gameState === "playing") {
     // v0.6.1: カード表示中はスローモー（時間停止は廃止）。
     // timeScale はイージングで目標値に寄せ、急停止・急再開のカクつきを防ぐ。
     // v0.51: 時代遷移も同じスローモー枠を使う（プレイは止めない。
