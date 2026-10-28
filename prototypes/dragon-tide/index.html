@@ -1095,7 +1095,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.50.2";
+const GAME_VERSION = "v3.50.3";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -21794,8 +21794,9 @@ function maybeShowLevelUp() {
   slowmoTimer = 0;   // v3.50.0: レベルアップは時間を止める（tick が止める）
   levelupTitleEl.textContent = STRINGS.levelUp;  // 竜種選択で書き換わったタイトルを戻す
   // v3.50.0（案帳 DT-238・Shooter指示）: 竜のレベルは自動で上げない（選択肢の1つ）。代わりに進化ツリーを見せる
-  levelupDragonEl.innerHTML = evoTreeHtml();
-  buildLevelUpCards();
+  const opts = levelUpOptions();   // v3.50.3: ツリーとカードで同じ選択肢を使う（加入カードは乱数で選ぶので1回だけ引く）
+  levelupDragonEl.innerHTML = evoTreeHtml(opts);
+  buildLevelUpCards(opts);
   levelupOverlayEl.classList.add("visible", "lv-center");
   armLevelUpCards();
   triggerFlash("rgba(160,236,255,0.35)", 0.15);
@@ -21830,8 +21831,7 @@ function autoDragonLevelUp() {
 }
 
 /** v3.50.0: 条件を満たした選択肢を全部並べる（何も無ければ竜玉＝経験値）。 */
-function buildLevelUpCards() {
-  const opts = levelUpOptions();
+function buildLevelUpCards(opts = levelUpOptions()) {
   renderLevelUpCards(opts.length ? opts : [CARD_ORB], { branchScreen: true });
 }
 
@@ -21841,8 +21841,20 @@ function buildLevelUpCards() {
  *   まだ見ていない姿（分岐・型・突然変異の行き先）と、まだ解放していない特殊個体の名前は「???」。
  *   特殊個体：連れている種類ごとに 分岐 A／B と突然変異の行き先（群れの攻撃の種類ごと） */
 const EVO_TREE_UNKNOWN = "???";
-function evoTreeHtml() {
-  const seen = (profile && profile.evoSeen) || {};
+// v3.50.3（Shooter指示）: 突然変異の行き先は、連れている特殊個体か選択肢に出ている特殊個体（加入）が絡むものだけ。
+//   今の選択肢に出ているもの（分岐・型・突然変異）は、見ていなくてもその場では名前を出す（図鑑の記録・解放は変えない）
+function evoTreeHtml(offered = []) {
+  const seen = Object.assign({}, (profile && profile.evoSeen) || {});
+  const offeredSpecials = new Set(runSpecials.map(k => SPECIAL_DEFS[k]?.key));
+  for (const d of offered) {
+    if (d.tier && d.sid) seen[`d:${d.sid}.${d.opt}`] = true;
+    if (d.becomes) seen[`x:${d.becomes}`] = true;
+    if (d.special !== undefined && d.opt) seen[`s:${d.key}.${d.opt}`] = true;
+    if (d.becomesSpecial) seen[`sx:${d.becomesSpecial}`] = true;
+    if (d.specialJoin !== undefined) offeredSpecials.add(SPECIAL_DEFS[d.specialJoin]?.key);
+  }
+  const offeredCross = new Set(offered.filter(d => d.becomes).map(d => d.becomes));
+  const offeredSpCross = new Set(offered.filter(d => d.becomesSpecial).map(d => d.becomesSpecial));
   const pips = (lv) => `<i>${"●".repeat(lv)}${"○".repeat(Math.max(0, FORM_LV_MAX - lv))}</i>`;
   const node = (name, color, cls, extra = "") => `<span class="et-node ${cls}" style="--et:${color}">${name}${extra ? " " + extra : ""}</span>`;
   const unknown = () => node(EVO_TREE_UNKNOWN, "#6a7a8a", "unknown");
@@ -21868,10 +21880,11 @@ function evoTreeHtml() {
       html += row + `</div>`;
     }
     // 突然変異：全部の行き先。条件を満たしているものは光らせる
-    const crosses = CROSS_EVOLUTIONS.filter(cx => cx.to !== sid && SPECIES_DEFS[cx.to]);
-    html += `<div class="et-row et-cross-row"><span class="et-label">突然変異</span>` + crosses.map((cx) => {
+    const crosses = CROSS_EVOLUTIONS.filter(cx => cx.to !== sid && SPECIES_DEFS[cx.to] &&
+      Object.keys(cx.needs).some(k => offeredSpecials.has(k)));
+    if (crosses.length) html += `<div class="et-row et-cross-row"><span class="et-label">突然変異</span>` + crosses.map((cx) => {
       const to = SPECIES_DEFS[cx.to];
-      const known = isSpeciesUnlocked(cx.to) || seen[`x:${cx.to}`];
+      const known = offeredCross.has(cx.to) || isSpeciesUnlocked(cx.to) || seen[`x:${cx.to}`];
       const need = Object.keys(cx.needs).map(k => `${spName(k)}${cx.needs[k] > 1 ? "×" + cx.needs[k] : ""}`).join("＋");
       const ready = specialsSatisfy(cx.needs);
       return `<span class="et-cx${ready ? " ready" : ""}">${known ? to.icon + to.ja : EVO_TREE_UNKNOWN}<small>${need}</small></span>`;
@@ -21890,7 +21903,7 @@ function evoTreeHtml() {
     const cross = SPECIAL_CROSS[key] || {};
     const cats = Object.keys(cross);
     if (cats.length) row += `<span class="et-label">突然変異</span>` + cats.map((c) => {
-      const toKey = cross[c], known = seen[`sx:${toKey}`] || isSpecialUnlocked(SPECIAL_KIND_BY_KEY[toKey]);
+      const toKey = cross[c], known = offeredSpCross.has(toKey) || seen[`sx:${toKey}`] || isSpecialUnlocked(SPECIAL_KIND_BY_KEY[toKey]);
       return `<span class="et-cx${c === flockCategory() ? " ready" : ""}">${known ? SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[toKey]].name : EVO_TREE_UNKNOWN}<small>${CATEGORY_NAMES[c]}の群れ</small></span>`;
     }).join("");
     html += row + `</div>`;
