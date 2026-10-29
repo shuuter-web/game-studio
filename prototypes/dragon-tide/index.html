@@ -1163,7 +1163,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.54.0";
+const GAME_VERSION = "v3.54.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -11805,6 +11805,7 @@ const TR_GATE_RING         = 380;     // 群れの重心からの距離
 const TR_GATE_HP_STAGE     = 0.5;
 const TR_GATE_SPAWN        = 1.5;     // 1つの門から1体湧く間隔（秒）
 const TR_GATE_DUR          = 25;      // 湧き続ける時間（過ぎたら門は閉じる）
+const TR_GATE_FOLLOW       = 140;     // v3.54.1: 門が群れについてくる速さ（px/秒。群れの最高速より少し遅い＝振り切れば一時的に離れられる）
 const TR_TWIN_STRENGTH     = 0.6;     // 双頭の精鋭：1体ずつは精鋭の追跡者のこの割合の体力
 const TR_TWIN_RAGE         = 1.5;     // 片方が倒れたとき、残りの速さと攻撃の倍率
 const TR_TWIN_SYNC         = 2.5;     // この秒数のうちに2体とも倒せば「同時」（怒らない・卵が倍）
@@ -12025,7 +12026,7 @@ function startTierRush() {
         const m = spawnTrMover(MOVER_DEFS.rush_gate, c.x + Math.cos(a) * TR_GATE_RING, c.y + Math.sin(a) * TR_GATE_RING);
         m._marching = false;
         m.maxHp = m.hp = MOVER_DEFS.rush_gate.hp * (1 + TR_GATE_HP_STAGE * runStageIndex);
-        m._trChase = true; m._gate = { t: TR_GATE_SPAWN * (k + 1) / TR_GATE_COUNT };
+        m._trChase = true; m._gate = { t: TR_GATE_SPAWN * (k + 1) / TR_GATE_COUNT, ang: a };
       }
       d.def = defs.small; d.total = TR_GATE_COUNT;
       tr.dur = TR_GATE_DUR;
@@ -12146,9 +12147,19 @@ function updateTrFortress(dt) {
 }
 /** v3.54.0（案帳 DT-488）: 湧き出る門。生きている門から一定の間隔で敵が湧く */
 function updateTrGates(d, dt) {
+  const c = calcFriendlyCentroid();
   for (const m of movers) {
     const g = m._gate;
     if (!g || !m.alive) continue;
+    // v3.54.1（案帳 DT-472 手直し・Shooter判定「門が群れについてきてくれないとほとんど意味がない」）:
+    // 門は群れの重心から見て決まった向き・距離の場所へ寄っていく（群れを囲んだまま一緒に動く）
+    const tx = c.x + Math.cos(g.ang) * TR_GATE_RING, ty = c.y + Math.sin(g.ang) * TR_GATE_RING;
+    const dx = tx - m.wx, dy = ty - m.wy, dd = Math.sqrt(dx * dx + dy * dy);
+    if (dd > 1) {
+      const step = Math.min(dd, TR_GATE_FOLLOW * dt);
+      m.wx = Math.max(60, Math.min(WORLD_W - 60, m.wx + dx / dd * step));
+      m.wy = Math.max(60, Math.min(WORLD_H - 60, m.wy + dy / dd * step));
+    }
     g.t -= dt;
     if (g.t > 0) continue;
     g.t = TR_GATE_SPAWN;
@@ -27132,7 +27143,7 @@ const CODEX_RUSH_DESC = {
   elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
   fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は絶えず撃ってくる。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
-  gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
+  gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
   twinelite: () => `大型の精鋭が2体（1体ずつは精鋭の追跡者の${Math.round(TR_TWIN_STRENGTH * 100)}%の体力）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
