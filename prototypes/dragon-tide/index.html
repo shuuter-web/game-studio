@@ -1163,7 +1163,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.53.0";
+const GAME_VERSION = "v3.54.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -8375,6 +8375,17 @@ const MOVER_DEFS = {
     name: "harpoon_knight", hp: 300, speed: 56, xp: 160, eggDrop: 2, radius: 13, turnRate: 2.0,
     color: "#7f8ea6", glowColor: "#d8e4ff", moveType: "patrol", showHpBar: true,
   },
+  // v3.54.0（案帳 DT-487）: 動く砦。四隅の砲台が撃ち続ける大きな攻城塔。正面と横は硬く（受ける傷1/4）、後ろの扉だけがふつうに効く
+  moving_fortress: {
+    name: "moving_fortress", hp: 2400, speed: 34, xp: 1200, eggDrop: 6, radius: 42, turnRate: 0.7,
+    color: "#6f7c8e", glowColor: "#ffd090", moveType: "patrol", showHpBar: true,
+    shieldArc: Math.PI * 2 / 3, shieldBlock: 0.25,   // 正面±120°＝後ろの±60°だけが弱点
+  },
+  // v3.54.0（案帳 DT-488）: 湧き出る門。動かない門から、その時代の小型の敵が湧き続ける
+  rush_gate: {
+    name: "rush_gate", hp: 700, speed: 0, xp: 240, eggDrop: 2, radius: 22,
+    color: "#7a40c0", glowColor: "#d0a0ff", moveType: "patrol", showHpBar: true,
+  },
   raider: {
     name: "raider", hp: 25, speed: 82, xp: 15, eggDrop: 0, eggChance: 0.2, radius: 10,
     color: "#c04040", glowColor: "#ff8080", moveType: "pingpong",
@@ -11713,9 +11724,10 @@ const TR_ATTACKER_METEOR = { get name() { return STRINGS.trAttackerMeteor; }, to
 const TR_ATTACKER_RING   = { get name() { return STRINGS.trAttackerRing; },   tone: "fire" };
 // 流星は建物と城壁にだけ当てる（動く敵に当てると、敵を倒した報酬が流星から出てしまう）
 const TR_TARGETS_BUILDINGS = { building: TARGET_AIM, wall: TARGET_AIM, mover: TARGET_NONE };
-const TR_KINDS = ["haste", "siege", "horde", "wind", "meteor", "volley", "firering", "convoy", "elite", "night", "harpoon"];   // v3.51.0: 竜狩りの銛
+const TR_KINDS = ["haste", "siege", "horde", "wind", "meteor", "volley", "firering", "convoy", "elite", "night", "harpoon",   // v3.51.0: 竜狩りの銛
+                  "fortress", "gates", "twinelite"];   // v3.54.0: 動く砦・湧き出る門・双頭の精鋭（案帳 DT-487〜489）
 // 敵を出す種類（全部倒すか時間切れで終わる）。それ以外は時間で終わる。
-const TR_UNIT_KINDS = new Set(["siege", "horde", "convoy", "elite", "harpoon"]);
+const TR_UNIT_KINDS = new Set(["siege", "horde", "convoy", "elite", "harpoon", "fortress", "gates", "twinelite"]);
 const TR_START_DELAY   = 2.4;   // 実時間。警戒度の帯（2.2秒）とスローが引いてから
 const TR_WARN_TIME     = 1.3;   // 予告の長さ（実時間）
 const TR_DURATION      = 12;    // 時間で区切る種類の長さ
@@ -11781,6 +11793,22 @@ const TR_HARPOON_FIRST    = 1.5;            // 出てから最初の銛まで
 const TR_HARPOON_PULL     = 85;             // 引きずる速さ（px/秒）
 const TR_HARPOON_TAKE     = 14;             // 騎士のこの距離（＋半径）まで引かれたら奪われる
 const TR_HARPOON_DUR      = 45;             // この時間で騎士は引き揚げる
+// v3.54.0（案帳 DT-487〜489・Shooter指示「ラッシュは強敵か、たくさんの敵が出る形」）
+const TR_FORTRESS_HP_STAGE = 0.6;     // 動く砦：ステージ1つ進むごとの体力の上げ幅
+const TR_FORTRESS_DUR      = 50;
+const TR_FORTRESS_FIRE     = 0.9;     // 四隅の砲台が撃つ間隔（秒）
+const TR_FORTRESS_RANGE    = 460;
+const TR_FORTRESS_SHOT_DMG = 3;       // 1発の威力（ステージ1つ進むごとに +1）
+const TR_FORTRESS_SHOT_SPEED = 170;
+const TR_GATE_COUNT        = 3;
+const TR_GATE_RING         = 380;     // 群れの重心からの距離
+const TR_GATE_HP_STAGE     = 0.5;
+const TR_GATE_SPAWN        = 1.5;     // 1つの門から1体湧く間隔（秒）
+const TR_GATE_DUR          = 25;      // 湧き続ける時間（過ぎたら門は閉じる）
+const TR_TWIN_STRENGTH     = 0.6;     // 双頭の精鋭：1体ずつは精鋭の追跡者のこの割合の体力
+const TR_TWIN_RAGE         = 1.5;     // 片方が倒れたとき、残りの速さと攻撃の倍率
+const TR_TWIN_SYNC         = 2.5;     // この秒数のうちに2体とも倒せば「同時」（怒らない・卵が倍）
+const TR_TWIN_DUR          = 60;
 const TR_CONVOY_COUNT  = 3;
 const TR_CONVOY_XP     = 300;
 const TR_CONVOY_HEAL   = 0.4;
@@ -11981,6 +12009,46 @@ function startTierRush() {
     case "night":
       tr.dur = TR_NIGHT_DUR;
       break;
+    case "fortress": {   // v3.54.0（案帳 DT-487）
+      const a = random() * Math.PI * 2, r = offscreenSpawnRadius();
+      const m = spawnTrMover(MOVER_DEFS.moving_fortress, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
+      m.maxHp = m.hp = MOVER_DEFS.moving_fortress.hp * (1 + TR_FORTRESS_HP_STAGE * runStageIndex);
+      m._trChase = true; m._fortress = { t: TR_FORTRESS_FIRE, corner: 0 }; m._trReward = "fortress";
+      d.total = 1;
+      tr.dur = TR_FORTRESS_DUR;
+      break;
+    }
+    case "gates": {   // v3.54.0（案帳 DT-488）
+      const a0 = random() * Math.PI * 2;
+      for (let k = 0; k < TR_GATE_COUNT; k++) {
+        const a = a0 + k * Math.PI * 2 / TR_GATE_COUNT;
+        const m = spawnTrMover(MOVER_DEFS.rush_gate, c.x + Math.cos(a) * TR_GATE_RING, c.y + Math.sin(a) * TR_GATE_RING);
+        m._marching = false;
+        m.maxHp = m.hp = MOVER_DEFS.rush_gate.hp * (1 + TR_GATE_HP_STAGE * runStageIndex);
+        m._trChase = true; m._gate = { t: TR_GATE_SPAWN * (k + 1) / TR_GATE_COUNT };
+      }
+      d.def = defs.small; d.total = TR_GATE_COUNT;
+      tr.dur = TR_GATE_DUR;
+      break;
+    }
+    case "twinelite": {   // v3.54.0（案帳 DT-489）
+      const def = defs.large;
+      const a = random() * Math.PI * 2, r = offscreenSpawnRadius();
+      const pair = [];
+      for (let k = 0; k < 2; k++) {
+        const aa = a + (k ? 0.5 : -0.5);
+        const m = spawnTrMover(def, c.x + Math.cos(aa) * r, c.y + Math.sin(aa) * r);
+        m.maxHp = m.hp = def.hp * TR_ELITE_HP * TR_TWIN_STRENGTH;
+        m.speedMult = Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed);
+        m.xpValue = def.xp * TR_ELITE_XP * TR_TWIN_STRENGTH;
+        m._trChase = true; m._trElite = true; m._trReward = "twin"; m._trFerocity = TR_ELITE_FEROCITY;
+        pair.push(m);
+      }
+      pair[0]._twin = pair[1]; pair[1]._twin = pair[0];
+      d.total = 2;
+      tr.dur = TR_TWIN_DUR;
+      break;
+    }
     case "harpoon": {   // v3.51.0（案帳 DT-476）
       const n = Math.min(trCapLeft(), TR_HARPOON_COUNT[tier]);
       const r = offscreenSpawnRadius() * TR_SIEGE_RING;
@@ -12008,6 +12076,8 @@ function endTierRush() {
       pushWorldText(m.wx, m.wy, STRINGS.trConvoyEscaped, "#ffd48a");
     }
   }
+  // v3.54.0: 湧き出る門は時間で閉じる（壊していない門も消える。湧いた敵はふつうの敵として残る）
+  if (tr.kind === "gates") for (const m of movers) if (m.alive && m._gate) { m.alive = false; pushWorldText(m.wx, m.wy, STRINGS.trGateClosed, "#d0a0ff"); }
   // v3.51.0: 竜狩りの騎士は時間切れで引き揚げる（引いていた竜は放される）
   if (tr.kind === "harpoon") for (const m of movers) if (m.alive && m._harpoon) {
     m.alive = false;
@@ -12028,12 +12098,75 @@ function onTierRushKill(m) {
     pushWorldText(m.wx, m.wy, storyEgg(STRINGS.trConvoyCaught), "#ffe08a");
     triggerFlash("rgba(255,210,80,0.30)", 0.25);
     hapticPulse(120);
+  } else if (m._trReward === "fortress") {   // v3.54.0
+    pushWorldText(m.wx, m.wy, STRINGS.trFortressDown, "#ffe08a");
+    triggerFlash("rgba(255,210,80,0.30)", 0.25);
+    hapticPulse(160);
+  } else if (m._trReward === "twin") {      // v3.54.0: 双頭の精鋭
+    awardCrystals(Math.round(TR_ELITE_CRYSTALS * TR_TWIN_STRENGTH));
+    pushWorldText(m.wx, m.wy, STRINGS.trEliteDown, "#ffe08a");
+    const o = m._twin;
+    if (o && !o.alive && o._twinDiedAt !== undefined && tierRush.t - o._twinDiedAt <= TR_TWIN_SYNC) {
+      // 同時に討った：怒りを取り消し、卵を倍に
+      pushWorldText(m.wx, m.wy - 24, STRINGS.trTwinSync, "#fff0a0");
+      for (let k = 0; k < (m.def.eggDrop || 0) + (o.def.eggDrop || 0); k++) spawnEgg(m.wx + (random() - 0.5) * 80, m.wy + (random() - 0.5) * 80);
+    } else if (o && o.alive) {
+      m._twinDiedAt = tierRush.t;
+      o._twinRageAt = tierRush.t + TR_TWIN_SYNC;   // 少し待ってから怒る（その間にもう1体を倒せば同時）
+    }
+    triggerFlash("rgba(255,210,80,0.30)", 0.25);
+    hapticPulse(160);
   } else if (m._trReward === "elite") {
     healFlock(TR_ELITE_HEAL);
     awardCrystals(TR_ELITE_CRYSTALS);
     pushWorldText(m.wx, m.wy, STRINGS.trEliteDown, "#ffe08a");
     triggerFlash("rgba(255,210,80,0.30)", 0.25);
     hapticPulse(160);
+  }
+}
+
+/** v3.54.0（案帳 DT-487）: 動く砦の四隅の砲台。群れが届く範囲にいる間、四隅から順に撃つ */
+function updateTrFortress(dt) {
+  for (const m of movers) {
+    const f = m._fortress;
+    if (!f || !m.alive) continue;
+    f.t -= dt;
+    if (f.t > 0) continue;
+    f.t = TR_FORTRESS_FIRE / 4;   // 四隅で1周が TR_FORTRESS_FIRE
+    const h = Math.atan2(m.headingY, m.headingX);
+    const ca = h + Math.PI / 4 + f.corner * Math.PI / 2;
+    f.corner = (f.corner + 1) % 4;
+    const cx = m.wx + Math.cos(ca) * m.def.radius * 0.9, cy = m.wy + Math.sin(ca) * m.def.radius * 0.9;
+    const idx = findNearestAliveBoid(cx, cy);
+    if (idx < 0 || dist2(px[idx], py[idx], cx, cy) > TR_FORTRESS_RANGE * TR_FORTRESS_RANGE) continue;
+    attackerNow = moverAttacker(m);
+    spawnFanProjectileRaw(cx, cy, Math.atan2(py[idx] - cy, px[idx] - cx), TR_FORTRESS_SHOT_SPEED,
+      (TR_FORTRESS_SHOT_DMG + runStageIndex) * moverFerocity(), "#ffd060", 1, TR_FORTRESS_RANGE + 60);
+  }
+}
+/** v3.54.0（案帳 DT-488）: 湧き出る門。生きている門から一定の間隔で敵が湧く */
+function updateTrGates(d, dt) {
+  for (const m of movers) {
+    const g = m._gate;
+    if (!g || !m.alive) continue;
+    g.t -= dt;
+    if (g.t > 0) continue;
+    g.t = TR_GATE_SPAWN;
+    if (trCapLeft() <= 0) continue;
+    const a = random() * Math.PI * 2;
+    const u = toughenTrMover(spawnTrMover(d.def, m.wx + Math.cos(a) * 30, m.wy + Math.sin(a) * 30));
+    u._trChase = true; u._marching = false;
+  }
+}
+/** v3.54.0（案帳 DT-489）: 双頭の精鋭の怒り（片方が倒れてから少し待って、残りが速く・強くなる） */
+function updateTrTwinRage() {
+  for (const m of movers) {
+    if (!m.alive || m._twinRageAt === undefined || m._twinRaged || tierRush.t < m._twinRageAt) continue;
+    m._twinRaged = true;
+    m.speedMult = (m.speedMult || 1) * TR_TWIN_RAGE;
+    m._trFerocity = (m._trFerocity || 1) * TR_TWIN_RAGE;
+    pushWorldText(m.wx, m.wy - 30, STRINGS.trTwinRage, "#ff6060");
+    triggerShake(1.5, 0.1);
   }
 }
 
@@ -12083,9 +12216,20 @@ function updateHarpoonKnights(dt) {
     vx[i] *= 0.6; vy[i] *= 0.6;
   }
 }
-/** 綱（騎士から引かれている竜へ）。見た目だけ */
+/** 綱（騎士から引かれている竜へ）。見た目だけ。v3.54.0: 双頭の精鋭を結ぶ赤い線・怒った精鋭の赤い輪も */
 function drawHarpoonTethers() {
   ctx.save();
+  for (const m of movers) {
+    if (!m.alive || !m._twin) continue;
+    if (m._twin.alive && m.wx < m._twin.wx) {
+      ctx.strokeStyle = "rgba(230,80,80,0.75)"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.moveTo(m.wx, m.wy); ctx.lineTo(m._twin.wx, m._twin.wy); ctx.stroke(); ctx.setLineDash([]);
+    }
+    if (m._twinRaged) {
+      ctx.strokeStyle = `rgba(255,60,40,${0.5 + 0.4 * Math.sin(breathTime * 8)})`; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(m.wx, m.wy, m.def.radius * 1.4, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
   ctx.lineCap = "round";
   for (const m of movers) {
     const h = m._harpoon;
@@ -12156,6 +12300,9 @@ function updateTierRush(wdt, dt) {
       break;
     }
     case "meteor": updateTrMeteors(d, wdt); break;
+    case "fortress": updateTrFortress(wdt); break;   // v3.54.0
+    case "gates": updateTrGates(d, wdt); break;
+    case "twinelite": updateTrTwinRage(); break;
     case "volley": updateTrVolley(d); break;
     case "firering": updateTrFireRing(d, wdt); break;
     case "convoy": {
@@ -12174,7 +12321,7 @@ function updateTierRush(wdt, dt) {
 
   let frac;
   if (TR_UNIT_KINDS.has(tr.kind)) {
-    const alive = trAliveUnits();
+    const alive = tr.kind === "gates" ? movers.filter(m => m.alive && m._gate).length : trAliveUnits();   // v3.54.0: 門は門の数で
     const pending = tr.kind === "horde" ? d.left : 0;
     if ((alive === 0 && pending === 0) || tr.t >= tr.dur) { endTierRush(); return; }
     frac = (alive + pending) / Math.max(1, d.total);
@@ -15176,6 +15323,22 @@ function drawMovers() {
       ctx.moveTo(8, -3); ctx.lineTo(12, -5);
       ctx.moveTo(8, 3);  ctx.lineTo(12, 5);
       ctx.stroke();
+    } else if (def.name === "moving_fortress") {
+      // v3.54.0 動く砦: 四角い塔と四隅の砲台。後ろ（-x）の扉だけ明るい＝弱点
+      ctx.fillStyle = def.color;
+      ctx.fillRect(-34, -34, 68, 68);
+      ctx.strokeStyle = "#3a4452"; ctx.lineWidth = 3; ctx.strokeRect(-34, -34, 68, 68);
+      ctx.fillStyle = "#e8c080"; ctx.fillRect(-38, -12, 8, 24);
+      ctx.fillStyle = "#4a5664";
+      for (const [x, y] of [[-30, -30], [30, -30], [-30, 30], [30, 30]]) { ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = "#2a323e"; ctx.fillRect(-14, -14, 28, 28);
+    } else if (def.name === "rush_gate") {
+      // v3.54.0 湧き出る門: 地面に開いた紫の渦（回して見せる。向きは無いので回転を打ち消す）
+      ctx.rotate(-angle + breathTime * 1.5);
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.ellipse(0, 0, 22, 14, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = def.glowColor; ctx.lineWidth = 2;
+      for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.ellipse(0, 0, 18 - k * 5, 11 - k * 3, k * 0.6, 0, Math.PI * 1.4); ctx.stroke(); }
     } else if (def.name === "harpoon_knight") {
       // v3.51.0 竜狩りの騎士: 丸い鎧の騎士と、前へ構えた長い銛
       ctx.fillStyle = def.color;
@@ -20278,7 +20441,7 @@ const STRINGS = {
   // v3.16.0: 警戒度ラッシュ（{egg} は storyEgg で竜卵／星卵に置き換える）
   trNames: {
     haste: "猛進", siege: "大型包囲", horde: "小型の大軍", wind: "強風", meteor: "流星",
-    volley: "一斉射撃", firering: "火の輪", convoy: "{egg}の輸送隊", elite: "精鋭の追跡者", night: "暗夜", harpoon: "竜狩りの銛",
+    volley: "一斉射撃", firering: "火の輪", convoy: "{egg}の輸送隊", elite: "精鋭の追跡者", night: "暗夜", harpoon: "竜狩りの銛", fortress: "動く砦", gates: "湧き出る門", twinelite: "双頭の精鋭",
   },
   trWarn: {
     haste:    "人間たちが{egg}の力で奮い立つ",
@@ -20292,8 +20455,11 @@ const STRINGS = {
     elite:    "精鋭が群れを追ってくる",
     night:    "夜が辺りを覆う",
     harpoon:  "竜狩りの騎士が銛を構える",
+    fortress: "砲台を積んだ砦が動き出す",
+    gates:    "地面に門が開く",
+    twinelite: "二体の精鋭が群れを追ってくる",
   },
-  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた",
+  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた", trGateClosed: "門が閉じた", trTwinRage: "怒り狂った", trTwinSync: "同時に討った", trFortressDown: "砦を落とした",
   trAttackerMeteor: "流星", trAttackerRing: "火の輪",
   defeatTitle: "力尽きた",
   // v3.41.0（案帳 DT-129・Shooter指示「力尽きた時のメッセージにもほかと同じようにフレーバーを」）:
@@ -26070,7 +26236,7 @@ const CODEX_ENEMY_NAMES = {
   knights: "騎士団", siegetower: "攻城塔", batteringram: "破城槌", splitter: "分裂体",
   splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
   ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
-  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士",
+  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門",
   miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
@@ -26965,6 +27131,9 @@ const CODEX_RUSH_DESC = {
   convoy:   () => `竜卵を積んだ隊列${TR_CONVOY_COUNT}台が首都へ逃げる。倒すと経験値${TR_CONVOY_XP}と群れの回復`,
   elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
+  fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は絶えず撃ってくる。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
+  gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
+  twinelite: () => `大型の精鋭が2体（1体ずつは精鋭の追跡者の${Math.round(TR_TWIN_STRENGTH * 100)}%の体力）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
 function codexRushHtml() {
