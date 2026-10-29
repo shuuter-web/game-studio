@@ -1183,7 +1183,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.56.0";
+const GAME_VERSION = "v3.58.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2273,6 +2273,7 @@ const ATTACK_DEFS = {
   // v3.31.0: 磁竜。壊した建物の破片を周りに回して削り、急旋回で投げる（直接）
   magnetshards:   { ja: "破片の輪",   en: "Shard Orbit",       kind: "magnet",    recoilDist: 0,  fireStun: 0    },
   ironflail:      { ja: "鉄球",       en: "Iron Flail",        kind: "flail",     recoilDist: 0,  fireStun: 0 },   // v3.40.0
+  whaleinhale:    { ja: "吸い込み",   en: "Whale Inhale",      kind: "inhale",    recoilDist: 0,  fireStun: 0 },   // v3.57.0
   wispfire:       { ja: "取り憑き火", en: "Haunting Flame",    kind: "wisp",      recoilDist: 0,  fireStun: 0,   attribute: ATTRIBUTE_FIRE },   // v3.36.0
   // v3.31.0: 双子竜。2列の間に張る雷のアーチ（ブレス）
   twinarc:        { ja: "雷の橋",     en: "Twin Arc",          kind: "arc",       recoilDist: 0,  fireStun: 0,    attribute: ATTRIBUTE_THUNDER },
@@ -2529,6 +2530,15 @@ const SPECIES_DEFS = {
     attack: "ironflail", spriteTint: "#9aa0a8", flail: true, hpMult: 1.4,
     desc: "群れ全体で鎖につないだ鉄球を引く。急に曲がると鉄球が外へ大きく振られ、速いほど強く砕く",
     move: { maxSpeed: 165, accel: 320, turnRate: 2.3, pathEndMode: "stop" },
+  },
+  // ---- v3.57.0: 案帳 DT-049（種またぎで入る）----
+  // 鯨竜: 数体だけの巨体（群れの上限 ×WHALE_CAP_MULT・体 ×WHALE_BODY_SCALE）。最も鈍重。指を離して止まると息を吸い（inhale）、
+  // 周りの動く敵を吸い寄せ、吸っている範囲の建物も削る。もう一度触ると、吸った分をまとめて弾けさせる
+  whale: {
+    ja: "鯨竜", en: "Whale Dragon", icon: "\u{1F40B}", color: "#5f8fb8", element: "whale",
+    attack: "whaleinhale", spriteTint: "#5f8fb8", hpMult: 4.0, capMult: 0.25, bodyScale: 2.2,
+    desc: "数体だけの巨体。指を離して止まると息を吸って周りを吸い寄せ（建物も削る）、もう一度触ると吸った分をまとめて弾けさせる",
+    move: { maxSpeed: 90, accel: 130, turnRate: 1.2, pathEndMode: "stop" },
   },
 };
 
@@ -11825,6 +11835,7 @@ const TR_GATE_RING         = 380;     // 群れの重心からの距離
 const TR_GATE_HP_STAGE     = 0.5;
 const TR_GATE_SPAWN        = 1.5;     // 1つの門から1体湧く間隔（秒）
 const TR_GATE_DUR          = 25;      // 湧き続ける時間（過ぎたら門は閉じる）
+const TR_GATE_FOLLOW       = 140;     // v3.54.1: 門が群れについてくる速さ（px/秒。群れの最高速より少し遅い＝振り切れば一時的に離れられる）
 const TR_TWIN_STRENGTH     = 0.6;     // 双頭の精鋭：1体ずつは精鋭の追跡者のこの割合の体力
 const TR_TWIN_RAGE         = 1.5;     // 片方が倒れたとき、残りの速さと攻撃の倍率
 const TR_TWIN_SYNC         = 2.5;     // この秒数のうちに2体とも倒せば「同時」（怒らない・卵が倍）
@@ -12045,7 +12056,7 @@ function startTierRush() {
         const m = spawnTrMover(MOVER_DEFS.rush_gate, c.x + Math.cos(a) * TR_GATE_RING, c.y + Math.sin(a) * TR_GATE_RING);
         m._marching = false;
         m.maxHp = m.hp = MOVER_DEFS.rush_gate.hp * (1 + TR_GATE_HP_STAGE * runStageIndex);
-        m._trChase = true; m._gate = { t: TR_GATE_SPAWN * (k + 1) / TR_GATE_COUNT };
+        m._trChase = true; m._gate = { t: TR_GATE_SPAWN * (k + 1) / TR_GATE_COUNT, ang: a };
       }
       d.def = defs.small; d.total = TR_GATE_COUNT;
       tr.dur = TR_GATE_DUR;
@@ -12166,9 +12177,19 @@ function updateTrFortress(dt) {
 }
 /** v3.54.0（案帳 DT-488）: 湧き出る門。生きている門から一定の間隔で敵が湧く */
 function updateTrGates(d, dt) {
+  const c = calcFriendlyCentroid();
   for (const m of movers) {
     const g = m._gate;
     if (!g || !m.alive) continue;
+    // v3.54.1（案帳 DT-472 手直し・Shooter判定「門が群れについてきてくれないとほとんど意味がない」）:
+    // 門は群れの重心から見て決まった向き・距離の場所へ寄っていく（群れを囲んだまま一緒に動く）
+    const tx = c.x + Math.cos(g.ang) * TR_GATE_RING, ty = c.y + Math.sin(g.ang) * TR_GATE_RING;
+    const dx = tx - m.wx, dy = ty - m.wy, dd = Math.sqrt(dx * dx + dy * dy);
+    if (dd > 1) {
+      const step = Math.min(dd, TR_GATE_FOLLOW * dt);
+      m.wx = Math.max(60, Math.min(WORLD_W - 60, m.wx + dx / dd * step));
+      m.wy = Math.max(60, Math.min(WORLD_H - 60, m.wy + dy / dd * step));
+    }
     g.t -= dt;
     if (g.t > 0) continue;
     g.t = TR_GATE_SPAWN;
@@ -20447,6 +20468,7 @@ const STRINGS = {
     twin:     "双子竜が雷の橋を架ける",
     wisp:     "鬼火が冷えた卵の恨みを灯す",
     flail:    "鉄鎖竜が鉄球を振りかぶる",
+    whale:    "鯨竜が大きく息を吸い込む",
   },
   storySpeciesFallback: "竜たちが怒りを向ける",
   // ステージクリア＝竜の怒りを買った文明の滅亡（時代ごと）
@@ -20612,6 +20634,8 @@ const STRINGS = {
   fallOfferTitleRare: "竜玉施設から竜玉を取り戻した",   // v3.49.0
   fallOfferTitleShard: "竜の力が高まった",   // v3.56.0: 経験値で出る強化カード
   fallCardRare: "レア",
+  stageJoinName: (name) => `${name}の加勢`,   // v3.58.0: ステージ限定の特殊個体の加入
+  stageJoinDesc: (name, have, max) => `${name}がこのステージの間だけ加わる（加勢 ${have}/${max}・連れ歩きの枠とは別）`,
   stageCardListHead: "このステージで取った強化",
   fallCards: {
     fsp_direct: { name: "特殊個体の牙",   desc: "特殊個体の直接攻撃の威力 +60%" },
@@ -20794,6 +20818,8 @@ const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity
 // 取った枚数は stageCards に入り、ステージが変わると消える。upCount に足されるので eff* はそのまま効く。
 const GENERAL_CARD_IDS = new Set(["scale", "tide", "magnet", "brood", "resonance", "cat_direct", "cat_shot", "cat_blast"]);
 const FALL_GENERAL_MAX = { scale: 3, resonance: 2, cat_direct: 3, cat_shot: 3, cat_blast: 3 };
+const STAGE_JOIN_MAX = 3;   // v3.58.0: 1ステージで加勢（ステージ限定の加入）できる特殊個体の数
+const stageSpecials = [];  // このステージで加勢した特殊個体の種類
 const FALL_CARD_DEFS = [
   // 効き目を倍にしたぶん、重ねすぎると壊れるものは上限を下げる（竜鱗共鳴2枚で被ダメ -40%、威力3枚で +72%、硬鱗3枚で HP +120%）
   ...CARD_DEFS.filter(d => GENERAL_CARD_IDS.has(d.id)).map(d => ({ id: d.id, icon: d.icon, max: FALL_GENERAL_MAX[d.id] ?? d.max })),
@@ -20813,6 +20839,9 @@ const FALL_CARD_DEFS = [
   { id: "f_egg_wave",  icon: "\u{1F4A5}", max: 1, rare: true },  // 卵を拾うと衝撃波
   { id: "f_sp_double", icon: "\u{1F465}", max: 1, rare: true, special: true },   // 特殊個体が2倍
   { id: "f_giant",     icon: "\u{1F996}", max: 2, rare: true },  // 群れの数匹が巨大化
+  // v3.58.0（案帳 DT-238・Shooter指示「ステージ中強化カードに、そのステージでだけ加入する特殊個体を」「永続加入とは別枠。加入上限とか」）:
+  // 加入カードのある特殊個体ごとに1枚。runSpecials（連れ歩きの枠）には入れず、ステージが変わると消える。上限は STAGE_JOIN_MAX で別に数える
+  ...CARD_DEFS.filter(d => d.specialJoin).map(d => ({ id: "fj_" + d.id.slice(3), icon: d.icon, max: STAGE_JOIN_MAX, stageJoin: d.specialJoin })),
 ];
 // 群れが持っていない攻撃の強化は出さない（Shooter指示）。カード → 見る攻撃の成分（special＝特殊個体の攻撃だけを見る）
 const FALL_CARD_NEEDS = {
@@ -21133,6 +21162,14 @@ SPECIES_EVO_SPEC.flail = {
   B: { name: "大振り竜", tint: "#d8dce4", scale: 1.0, eff: { range: 0.20, rate: 0.15 },
        next: [["遠心", { rate: 0.18 }], ["長い鎖・二", { range: 0.20 }]] },
 };
+// v3.57.0: 鯨竜。範囲＝吸い込みの広さ、間隔＝広がる速さ
+SPECIES_EVO_SPEC.whale = {
+  L: [["深い息", { dmg: 0.15 }], ["大きな口", { range: 0.15 }], ["深い息・二", { dmg: 0.15 }], ["速い吸い込み", { rate: 0.18 }]],
+  A: { name: "大鯨竜", tint: "#2f5f88", scale: 1.15, eff: { dmg: 0.25, hp: 0.25 },
+       next: [["潮吹き", { dmg: 0.25 }], ["厚い皮", { hp: 0.30 }]] },
+  B: { name: "渦鯨竜", tint: "#a0d8f0", scale: 1.0, eff: { range: 0.25, rate: 0.15 },
+       next: [["大渦", { range: 0.20 }], ["速い渦", { rate: 0.18 }]] },
+};
 SPECIES_EVO_SPEC.wisp = {
   L: [["強い火", { dmg: 0.15 }], ["広い灯", { range: 0.15 }], ["早い明滅", { rate: 0.18 }], ["強い火・二", { dmg: 0.15 }]],
   A: { name: "狐火", tint: "#c0e8ff", scale: 1.0, eff: { rate: 0.20, range: 0.10 },
@@ -21178,6 +21215,7 @@ const CROSS_EVOLUTIONS = [
   { to: "twin",     needs: { beacon: 1, wake: 1 },   from: "any" },
   { to: "wisp",     needs: { rainbow: 1, frost: 1 }, from: "any" },   // v3.36.0: 冷たい光と霧で「冷たい火」
   { to: "flail",    needs: { heavy: 1, drum: 1 },    from: "any" },   // v3.40.0: 止まらぬ鉄塊（重さ）＋軍鼓（拍で振る）
+  { to: "whale",    needs: { deflect: 1, frost: 1 }, from: "any" },   // v3.57.0: 暴食（呑む）＋凍て霧（まとう）＝吸い込む巨体
 ];
 // v3.6.0: 種またぎは同じレベルのまま行き来するので、専用の「進化形」は持たない（EVOLVED_FORMS は撤去）
 
@@ -21285,6 +21323,7 @@ const SPECIES_CATEGORY = {
   magnet: "direct", twin: "shot",  // v3.31.0
   wisp: "direct",                   // v3.36.0
   flail: "direct",                  // v3.40.0
+  whale: "blast",                   // v3.57.0
 };
 const CATEGORY_NAMES = { direct: "直接", shot: "ブレス", blast: "爆発" };
 function flockCategory() { return SPECIES_CATEGORY[flockSpecies] || "shot"; }
@@ -21898,7 +21937,7 @@ function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * genCoun
 // v3.24.0: 警戒度で上限が開く仕組み（55%→70%→85%→100%）をやめ、最初から最大まで育てられるようにした
 // （Shooter指示「群れの上限を警戒度によって上げる理由がよくわからない」）
 function effFlockCap()      {
-  const base = BASE_FLOCK_CAP + 25 * genCount("brood") + permaBuff.flockCap;
+  const base = (BASE_FLOCK_CAP + 25 * genCount("brood") + permaBuff.flockCap) * (sp().capMult || 1);   // v3.57.0: 鯨竜は数体だけ
   return Math.max(1, Math.min(MAX_BOIDS, Math.round(base)));
 }
 function effDmgTakenMult()  { return Math.pow(0.88, genCount("resonance")) * permaBuff.dmgTakenMult; }
@@ -21961,7 +22000,14 @@ const STAGE_CARD_XP_BASE   = 1000;
 const STAGE_CARD_XP_GROWTH = 1.15;   // 1枚取るごとに次の必要量 ×1.15
 const STAGE_CARD_XP_STAGE  = 0.35;   // ステージ1つ進むごとの必要量の上げ幅（後のステージほど経験値が多いので）
 const STAGE_CARD_EXPECTED  = 15;     // 1ステージで経験値から取れる枚数の見込み（警戒度の必要数に使う）
-function stageCardNeed() { return STAGE_CARD_XP_BASE * (1 + STAGE_CARD_XP_STAGE * runStageIndex) * Math.pow(STAGE_CARD_XP_GROWTH, stageCardLevel); }
+// v3.58.0（Shooter指示「序盤の強化までの必要経験値をもっとマイルドに。最初は半分、5回目までに今の必要量に追いつく」）:
+//   1枚目は ×0.5、そこから5枚目（stageCardLevel 4）で ×1 になるまでまっすぐ上げる
+const STAGE_CARD_EARLY_MULT  = 0.5;
+const STAGE_CARD_EARLY_CARDS = 4;
+function stageCardNeed() {
+  const early = STAGE_CARD_EARLY_MULT + (1 - STAGE_CARD_EARLY_MULT) * Math.min(stageCardLevel, STAGE_CARD_EARLY_CARDS) / STAGE_CARD_EARLY_CARDS;
+  return STAGE_CARD_XP_BASE * (1 + STAGE_CARD_XP_STAGE * runStageIndex) * Math.pow(STAGE_CARD_XP_GROWTH, stageCardLevel) * early;
+}
 function addXp(value) {
   value = Math.round(value * permaBuff.xpGain);   // v0.21: 恵みライン「成長の律動」
   playerXp   += value;
@@ -22679,6 +22725,7 @@ const SPECIES_FLASH_COLOR = {
   twin:    "rgba(255,224,112,0.7)",
   wisp:    "rgba(160,216,255,0.7)",
   flail:   "rgba(184,188,196,0.6)",
+  whale:   "rgba(140,190,230,0.6)",
 };
 
 // ---- BULLET（氷竜・直進弾丸）基礎性能（仕様 §6.2）----
@@ -23439,6 +23486,7 @@ function isSpecialActive(i) {
 function boidBodyScale(i) {
   if (boidSpecial[i] === SPECIAL_HEAVY && !boidDowned[i] && !boidDead[i]) return effHeavyScale();
   if (boidGiant[i] && !boidDead[i]) return GIANT_SCALE;   // v3.49.0: 巨竜化
+  if (sp().bodyScale && boidSpecial[i] === SPECIAL_NONE) return sp().bodyScale;   // v3.57.0: 鯨竜の巨体
   // v3.10.0: 極光（旧母竜）だけプレイヤーレベルで育っていたのは撤去（他の特殊個体と同じ大きさ）
   return 1;
 }
@@ -25122,6 +25170,8 @@ function updateWeaponAttacks(dt) {
     updateWispAttacks(dt);    // v3.36.0: 鬼火
   } else if (flockWeapon === "flail") {
     updateFlailSpecies(dt);   // v3.40.0: 鉄鎖竜
+  } else if (flockWeapon === "inhale") {
+    updateWhaleInhale(dt);    // v3.57.0: 鯨竜
   }
   // melee は遠隔攻撃なし（強化された体当たり = updateCollisionAttacks が担う）
 
@@ -27173,7 +27223,7 @@ const CODEX_RUSH_DESC = {
   elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
   fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は絶えず撃ってくる。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
-  gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
+  gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
   twinelite: () => `大型の精鋭が2体（1体ずつは精鋭の追跡者の${Math.round(TR_TWIN_STRENGTH * 100)}%の体力）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
@@ -27266,6 +27316,9 @@ function codexDragonMainAttackRaw(def) {
     case "magnet":  // v3.31.0
       return { power: { label: label + "（回る破片1つ）", direct: MAG_ORBIT_DMG },
                stat: `${MAG_GRAB_R}px以内で壊れた建物の絵が破片になって周りを回る（最大${MAG_SHARDS_MAX}個） ／ 急に曲がると外へ飛び、速さに応じて最大${MAG_THROW_DMG * 2}で当たる` };
+    case "inhale":  // v3.57.0
+      return { power: { label: label + "（吸っている間・秒間）", shot: WHALE_SUCK_DPS, perSec: true },
+               stat: `指を離して止まると息を吸う：半径${WHALE_R0}px→${WHALE_RMAX}px（${WHALE_GROW_TIME}秒で広がる）の動く敵を引き寄せ、建物も削る ／ もう一度触ると爆発（${WHALE_BURST_DMG}〜${WHALE_BURST_DMG * (1 + WHALE_BURST_CHARGE)}・吸った時間しだい） ／ 群れの上限 ×${SPECIES_DEFS.whale.capMult}・体 ×${SPECIES_DEFS.whale.bodyScale}` };
     case "flail":   // v3.40.0
       return { power: { label: label + "（秒速250px・竜1体のとき）", direct: CHAIN_DMG },
                stat: `群れ全体で鉄球を引く ／ 鎖 ${CHAIN_LENGTH}px＋竜の数の√×${FLAIL_LEN_PER} ／ 鉄球の半径 ${CHAIN_BALL_R}px＋√×${FLAIL_R_PER} ／ 秒速${CHAIN_MIN_SPEED}px以上で当たる（速いほど強い・最大2.5倍）` };
@@ -28149,6 +28202,7 @@ const SPECIES_CHOICES = [
   { species: "twin" },
   { species: "wisp" },   // v3.36.0: 案帳 DT-083
   { species: "flail" },  // v3.40.0: 案帳 DT-054
+  { species: "whale" },  // v3.57.0: 案帳 DT-049
 ];
 let speciesSelecting = false;
 
@@ -29123,6 +29177,7 @@ function resumeRun() {
   // v3.49.0: 巨竜・特殊個体の分身は位置と一緒に持ち越さないので、カードの分だけ作り直す
   for (let k = 0; k < (stageCards.f_giant || 0); k++) makeGiants();
   if (stageCards.f_sp_double) for (const kind of runSpecials.slice()) addRunSpecial(kind, true);
+  for (const d of FALL_CARD_DEFS) if (d.stageJoin) for (let k = 0; k < (stageCards[d.id] || 0); k++) { stageSpecials.push(d.stageJoin); addRunSpecial(d.stageJoin, true); }   // v3.58.0: 加勢を戻す
   renderStageCardIcons();
   stageStartTime = performance.now() - (save.stageElapsedMs || 0);
   // v3.11.7: 群れの数・卵・ボスの状態を戻す（位置は開始地点・HPは満タンから）
@@ -29715,7 +29770,11 @@ fallOfferEl.querySelector(".fo-title").textContent = STRINGS.fallOfferTitle;
 fallOfferEl.querySelector(".fo-sub").textContent   = STRINGS.fallOfferSub;
 // v3.49.0: 暗幕は無い（カードの外は後ろの画面へ通して線を描ける）。カードの上の入力はカード側で止める
 
-function fallCardText(id) { return STRINGS.fallCards[id] || STRINGS.cards[id] || { name: id, desc: "" }; }
+function fallCardText(id) {
+  const def = FALL_CARD_DEFS.find(d => d.id === id);
+  if (def && def.stageJoin) { const n = SPECIAL_DEFS[def.stageJoin].name; return { name: STRINGS.stageJoinName(n), desc: STRINGS.stageJoinDesc(n, Math.min(stageSpecials.length + 1, STAGE_JOIN_MAX), STAGE_JOIN_MAX) }; }
+  return STRINGS.fallCards[id] || STRINGS.cards[id] || { name: id, desc: "" };
+}
 
 /** ステージが変わる・ランが終わるときに、陥落カードと順番待ちを畳む。 */
 function clearStageCards() {
@@ -29723,6 +29782,7 @@ function clearStageCards() {
   treasureTowns.clear();
   orbFacilities.clear();
   stageShards = 0;          // v3.49.0
+  stageSpecials.length = 0; // v3.58.0
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
   boidGiant.fill(0);
@@ -29947,7 +30007,7 @@ function flockAttackCats(specialOnly) {
   const cats = new Set();
   const add = (pw) => { if (pw) for (const c of ATTACK_CATEGORY_ORDER) if (pw[c]) cats.add(c); };
   if (!specialOnly) { const m = codexDragonMainAttack(SPECIES_DEFS[flockSpecies]); add(m && m.power); }
-  for (const k of new Set(runSpecials)) for (const pw of (CODEX_SPECIAL_POWERS[k] ? CODEX_SPECIAL_POWERS[k]() : [])) add(pw);
+  for (const k of new Set([...runSpecials, ...stageSpecials])) for (const pw of (CODEX_SPECIAL_POWERS[k] ? CODEX_SPECIAL_POWERS[k]() : [])) add(pw);
   return cats;
 }
 
@@ -29987,11 +30047,15 @@ function updateStageCardEffects(dt) {
 function pickFallCards(rare) {
   const catsAll = flockAttackCats(false), catsSp = flockAttackCats(true);
   const pool = FALL_CARD_DEFS.filter((d) => {
-    if (d.special && runSpecials.length === 0) return false;
+    if (d.special && runSpecials.length + stageSpecials.length === 0) return false;
+    if (d.stageJoin && stageSpecials.length >= STAGE_JOIN_MAX) return false;   // v3.58.0: 加勢の上限（連れ歩きの枠とは別）
     const need = FALL_CARD_NEEDS[d.id];   // v3.49.0: 群れが持っていない攻撃の強化は出さない
     if (need && !(need.special ? catsSp : catsAll).has(need.cat)) return false;
     return (upgradeCounts[d.id] || 0) + (stageCards[d.id] || 0) < d.max;
   });
+  // v3.58.0: 加勢のカードは種類が多く、そのままだと三択の半分を占める。候補に残すのは1種類だけ
+  const joins = pool.filter(d => d.stageJoin);
+  if (joins.length > 1) { const keep = joins[Math.floor(random() * joins.length)]; for (let k = pool.length - 1; k >= 0; k--) if (pool[k].stageJoin && pool[k] !== keep) pool.splice(k, 1); }
   // v3.49.0: 竜玉施設（rare）はレアのカードから。かけら（ふつう）はレア以外から。足りなければもう一方で埋める
   const main = pool.filter(d => !!d.rare === !!rare), rest = pool.filter(d => !!d.rare !== !!rare);
   const picks = [];
@@ -30049,6 +30113,7 @@ function takeFallCard(def, townIndex) {
   if (def.id === "brood") applyCardImmediate("brood");
   if (def.id === "f_giant") makeGiants();   // v3.49.0
   if (def.id === "f_sp_double") for (const k of runSpecials.slice()) addRunSpecial(k, true);
+  if (def.stageJoin) { stageSpecials.push(def.stageJoin); addRunSpecial(def.stageJoin, true); }   // v3.58.0: 加勢
   // HPの最大が変わるカード（硬鱗・捨て身の賭け）は、今のHPも同じ比で合わせる（取った瞬間に効きが見える）
   if (def.id === "f_gamble" || def.id === "scale") {
     const ratio = effBoidMaxHp() / oldMax;
@@ -31448,6 +31513,7 @@ function resetSpeciesMechanics() {
   magnetShards = []; magnetPrevC = null; magnetFlockV.x = 0; magnetFlockV.y = 0;   // v3.31.0
   wisp = null; wispHaunts.length = 0;   // v3.36.0
   flailBall = null; flailPrevC = null;  // v3.40.0
+  whale.t = 0; whale.on = false;        // v3.57.0
   twinTick = 0;
 }
 function resetMole() {
@@ -32106,6 +32172,84 @@ function flailParams() {
     dmg: (1 + FLAIL_DMG_PER * (sq - 1)) * effWeaponDmgMult("flail"),
   };
 }
+// =====================================================================
+// v3.57.0: 竜種「鯨竜」（案帳 DT-049）
+// =====================================================================
+// 指を離している（線を描いていない）間、群れの重心のまわりで息を吸う。吸っている範囲は時間とともに広がり、
+// 中の動く敵を中心へ引きずり、建物を削る（Shooter指示「吸い寄せる時に建物にもダメージ」）。
+// もう一度指で触ると、吸っていた時間に応じた大きさの爆発でまとめて弾けさせる（中心から外へ押す）。
+const WHALE_R0          = 90;    // 吸い始めの半径
+const WHALE_RMAX        = 330;   // いちばん広がったときの半径（届く距離の強化で広がる）
+const WHALE_GROW_TIME   = 3.0;   // 広がりきるまでの秒数（手数の強化で縮む）
+const WHALE_PULL        = 120;   // 動く敵を引きずる速さ（px/秒。中心に近いほど弱い）
+const WHALE_SUCK_DPS    = 16;    // 吸っている範囲の建物・敵への秒間の傷（ブレス）
+const WHALE_TICK        = 0.25;
+const WHALE_BURST_DMG   = 120;   // 弾けさせる爆発の基本の威力（吸っていた時間が長いほど最大 ×(1+WHALE_BURST_CHARGE)）
+const WHALE_BURST_CHARGE = 2.0;
+const WHALE_BURST_IMPACT = 220;
+const WHALE_MIN_INHALE  = 0.4;   // これより短い吸い込みは弾けない（線を引き直しただけ）
+const whale = { t: 0, on: false, tick: 0, x: 0, y: 0 };
+function whaleRadius() {
+  const grow = Math.min(1, whale.t / (WHALE_GROW_TIME * effFireIntervalMult("inhale")));
+  return (WHALE_R0 + (WHALE_RMAX - WHALE_R0) * grow) * Math.sqrt(effWeaponRangeMult("inhale"));
+}
+function updateWhaleInhale(dt) {
+  const alive = countAliveBoids();
+  if (alive === 0) { whale.on = false; whale.t = 0; return; }
+  if (isDrawing) {
+    // 触った：吸っていたなら弾けさせる
+    if (whale.on && whale.t >= WHALE_MIN_INHALE) {
+      const r = whaleRadius();
+      const charge = Math.min(1, whale.t / (WHALE_GROW_TIME * effFireIntervalMult("inhale")));
+      const dmg = WHALE_BURST_DMG * (1 + WHALE_BURST_CHARGE * charge) * effWeaponDmgMult("inhale");
+      hitInRadius(whale.x, whale.y, r * 0.85, { blast: dmg, impact: WHALE_BURST_IMPACT }, attackTargets());
+      fallFx.push({ kind: "ring", x: whale.x, y: whale.y, r: r, t: 0, life: 0.55 });
+      triggerShake(2.4, 0.12);
+      hapticPulse(80);
+    }
+    whale.on = false; whale.t = 0;
+    return;
+  }
+  const c = calcFriendlyCentroid();
+  whale.x = c.x; whale.y = c.y;
+  whale.on = true;
+  whale.t += dt;
+  const r = whaleRadius();
+  // 動く敵を中心へ引きずる（大きい敵・ボス級は引かない）
+  for (const m of moversNear(c.x, c.y, r)) {
+    if (!m.alive || m.def.part || isRailVehicle(m.def) || (m.def.radius || 10) >= DEATH_MIN_RADIUS) continue;
+    const dx = c.x - m.wx, dy = c.y - m.wy, d = Math.sqrt(dx * dx + dy * dy);
+    if (d > r || d < 20) continue;
+    const step = WHALE_PULL * Math.min(1, d / r + 0.3) * dt;
+    m.wx += dx / d * step; m.wy += dy / d * step;
+  }
+  whale.tick += dt;
+  if (whale.tick >= WHALE_TICK) {
+    const dmg = WHALE_SUCK_DPS * whale.tick * effWeaponDmgMult("inhale") * Math.min(alive, 6) / 3;
+    whale.tick = 0;
+    hitInRadius(c.x, c.y, r, { shot: dmg }, attackTargets());
+  }
+}
+/** 吸い込み：広がる輪と、中心へ流れ込む筋（見た目だけ） */
+function drawWhaleInhale() {
+  if (flockWeapon !== "inhale" || !whale.on || gameState !== "playing") return;
+  const r = whaleRadius();
+  ctx.save();
+  ctx.strokeStyle = "rgba(160,210,255,0.55)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(whale.x, whale.y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = "rgba(120,180,230,0.08)";
+  ctx.beginPath(); ctx.arc(whale.x, whale.y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "rgba(200,230,255,0.5)"; ctx.lineWidth = 1.5;
+  for (let k = 0; k < 12; k++) {
+    const a = k * Math.PI / 6 + breathTime * 0.6;
+    const f = 1 - ((breathTime * 1.2 + k * 0.37) % 1);
+    const r1 = r * f, r2 = Math.max(0, r1 - 26);
+    ctx.beginPath(); ctx.moveTo(whale.x + Math.cos(a) * r1, whale.y + Math.sin(a) * r1);
+    ctx.lineTo(whale.x + Math.cos(a) * r2, whale.y + Math.sin(a) * r2); ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function updateFlailSpecies(dt) {
   if (dt <= 0) return;
   if (countAliveBoids() === 0) return;
@@ -33726,6 +33870,7 @@ function render(now) {
   drawSpecialUnder();        // v0.85: 灯竜の光条と特殊個体の足元リング（竜の下）
   drawMoleCracks();   // v3.29.0: 土竜の地割れの跡
   drawTwinArcs();     // v3.31.0: 双子竜の雷のアーチ
+  drawWhaleInhale();  // v3.57.0: 鯨竜の吸い込み
   drawChainBalls();   // v3.31.0: 鉄鎖の鎖と鉄球
   drawMagnetShards(); // v3.31.0: 磁竜の破片
   drawRollBall();     // v3.29.0: 塊竜の玉（竜はこの上に貼り付いて描かれる）
@@ -35691,6 +35836,7 @@ const DRAGON_ELEMENT_COLORS = {
   twin:     { body: "rgba(255, 224, 112, 1.0)", wing: "rgba(224, 192, 64, 1.0)",  rim: "rgba(120, 100, 30, 0.0)" },
   wisp:     { body: "rgba(160, 216, 255, 1.0)", wing: "rgba(120, 180, 240, 1.0)", rim: "rgba(60, 100, 150, 0.0)" },
   flail:    { body: "rgba(184, 188, 196, 1.0)", wing: "rgba(154, 160, 168, 1.0)", rim: "rgba(90, 94, 100, 0.0)" },
+  whale:    { body: "rgba(95, 143, 184, 1.0)",  wing: "rgba(70, 110, 150, 1.0)",  rim: "rgba(40, 60, 90, 0.0)" },   // v3.57.0
   chain:    { body: "rgba(184, 188, 196, 1.0)", wing: "rgba(154, 160, 168, 1.0)", rim: "rgba(90, 94, 100, 0.0)" },
   drum:     { body: "rgba(208, 128, 64, 1.0)",  wing: "rgba(192, 112, 56, 1.0)",  rim: "rgba(110, 60, 25, 0.0)" },
   link:     { body: "rgba(255, 232, 96, 1.0)",  wing: "rgba(220, 196, 64, 1.0)",  rim: "rgba(120, 100, 30, 0.0)" },   // v3.46.0
@@ -36286,6 +36432,7 @@ const DRAGON_PARTS_ALIAS = {
   magnet: "shadow", twin: "swallow", chain: "heavy", drum: "rainbow",   // v3.31.0
   wisp: "ice",   // v3.36.0（ゲーム中は竜の絵を描かず灯で描く。図鑑などの見本用）
   flail: "heavy",   // v3.40.0
+  whale: "gargoyle",   // v3.57.0
   link: "swallow",  // v3.46.0
 };
 /** 属性 element を描くのに使うパーツ定義のキー（無ければ null）。 */
