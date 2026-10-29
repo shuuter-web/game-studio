@@ -372,6 +372,7 @@
   .et-node i { font-style: normal; color: #ffd060; letter-spacing: -1px; }
   .et-arrow, .et-or { color: rgba(220,235,255,0.6); }
   .et-cross { margin-left: 4px; color: #ff9ae0; }
+  .result-bonus { color: #ffe08a; font-weight: bold; }
   /* v3.55.0: 店（竜の巣） */
   #levelup-overlay.shop-mode #card-list { max-height: none; }
   #levelup-overlay.shop-mode:not(.armed) .shop-card, #levelup-overlay.shop-mode:not(.armed) .shop-next { opacity: 0.5; pointer-events: none; }
@@ -1182,7 +1183,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.55.1";
+const GAME_VERSION = "v3.56.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -19699,13 +19700,8 @@ function settlementFall(settlementIndex) {
   // v3.49.0（案帳 DT-238）: 竜玉の町（施設の陥落）はレアのカードがすぐ出る。ほかの町は竜玉のかけらが1つ溜まり、3つでカード
   if (townJustSurrendered) {
     if (upCount("f_fall_roar") > 0) { fallRoarTimer = FALL_ROAR_TIME; pushWorldText(leader.x, leader.y - 40, fallCardText("f_fall_roar").name, "#ffb070"); }
+    // v3.56.0: ふつうの町の陥落ではカードを出さない（カードは経験値で）。竜玉の町（施設の陥落）のレアは残す
     if (treasureTowns.delete(settlement._townIndex)) queueFallOffer(settlement._townIndex, true);   // 警戒度はカードを取ったときに進む
-    else {
-      stageShards++;
-      if (stageShards >= SHARDS_PER_ORB) { stageShards -= SHARDS_PER_ORB; queueFallOffer(settlement._townIndex, false); }
-      renderStageCardIcons();
-      markRunSaveDirty();
-    }
   }
 }
 
@@ -20337,6 +20333,9 @@ const STRINGS = {
   statLevel: "最終レベル",
   // v3.55.0: 店（竜の巣）
   statXpBank: "貯めた経験値",
+  statStageXp: "このステージで得た経験値",
+  statClearBonus: "評価のボーナス",
+  clearRankByTier: (t) => `警戒度${t}で撃破`,
   hudXp: (n) => `✨${Math.floor(n).toLocaleString()}`,
   shopTitle: "竜の巣",
   shopWallet: (n) => `貯めた経験値 <b>${Math.floor(n).toLocaleString()}</b>　—　加入と進化を買って次の国へ`,
@@ -20611,7 +20610,7 @@ const STRINGS = {
   fallOfferTitle: "竜玉を取り戻した",
   fallOfferSub: "竜の怒りが宿る。強化を1つ選ぶ（この国を滅ぼすまで）",
   fallOfferTitleRare: "竜玉施設から竜玉を取り戻した",   // v3.49.0
-  fallOfferTitleShard: "竜玉のかけらが揃った",
+  fallOfferTitleShard: "竜の力が高まった",   // v3.56.0: 経験値で出る強化カード
   fallCardRare: "レア",
   stageCardListHead: "このステージで取った強化",
   fallCards: {
@@ -21954,10 +21953,27 @@ function applyCardImmediate(cardId) {
 
 // ---- XP加算とレベルアップ検出 ----
 // v3.55.0（案帳 DT-238・Shooter指示）: ステージ中のレベルアップはやめた。経験値は貯めて、ステージとステージの間の店（竜の巣）で通貨として使う
+// v3.56.0（Shooter指示「ステージ内の強化カードは町陥落ではなく経験値でのレベルアップのタイミングに」）:
+//   経験値は店の通貨として貯まると同時に、ステージの中で一定量ごとに強化カード（ステージ限定）を1枚選ばせる。
+//   敵を倒しても町を壊しても少しずつ強くなり、いつかはクリアできる。必要量はステージの中で少しずつ増え、ステージが変わると戻る
+let stageCardXp = 0, stageCardLevel = 0, stageXpAtStart = 0;
+const STAGE_CARD_XP_BASE   = 1000;
+const STAGE_CARD_XP_GROWTH = 1.15;   // 1枚取るごとに次の必要量 ×1.15
+const STAGE_CARD_XP_STAGE  = 0.35;   // ステージ1つ進むごとの必要量の上げ幅（後のステージほど経験値が多いので）
+const STAGE_CARD_EXPECTED  = 15;     // 1ステージで経験値から取れる枚数の見込み（警戒度の必要数に使う）
+function stageCardNeed() { return STAGE_CARD_XP_BASE * (1 + STAGE_CARD_XP_STAGE * runStageIndex) * Math.pow(STAGE_CARD_XP_GROWTH, stageCardLevel); }
 function addXp(value) {
   value = Math.round(value * permaBuff.xpGain);   // v0.21: 恵みライン「成長の律動」
   playerXp   += value;
   runTotalXp += value;
+  if (gameState === "playing") {
+    stageCardXp += value;
+    while (stageCardXp >= stageCardNeed()) {
+      stageCardXp -= stageCardNeed();
+      stageCardLevel++;
+      queueFallOffer(-1, false);
+    }
+  }
   updateXpHud();
 }
 
@@ -22612,8 +22628,8 @@ const xpFillEl   = document.getElementById("xp-fill");
 const hudLevelEl = document.getElementById("h-level");
 
 function updateXpHud() {
-  // v3.55.0: バーは「店でいちばん安い買い物まで」の目安
-  const ratio = Math.max(0, Math.min(1, playerXp / SHOP_COST.join));
+  // v3.56.0: バーは次の強化カードまで
+  const ratio = Math.max(0, Math.min(1, stageCardXp / stageCardNeed()));
   xpFillEl.style.width = (ratio * 100).toFixed(1) + "%";
   xpFillEl.classList.toggle("near-full", ratio >= 1);
   updateHUDLevel();
@@ -27136,9 +27152,9 @@ function codexMiscHtml() {
     codexRushHtml() +
     `<div class="cx-era">ステージの★</div>` +
     `<div class="cx-box">` +
-      `<div class="cx-atk">首都を落とすまでの時間で決まる。寄り道して群れを育てれば楽になるが、急ぐほど★が増える。</div>` +
+      `<div class="cx-atk">首都を落としたときの警戒度で決まる（低いほど高い）。★が多いほど、店で使える経験値のボーナスが大きい。</div>` +
       `<ul class="cx-bullets">` +
-        CLEAR_STAR_MINUTES.map((m, k) => `<li>${"★".repeat(CLEAR_STARS_MAX - k)}：${m}分以内</li>`).join("") +
+        [5, 4, 3, 2].map((st) => `<li>${"★".repeat(st)}：${STRINGS.clearRankByTier(CLEAR_STARS_MAX - st + 1)}　ボーナス ✨${clearBonus(st, 0).toLocaleString()}〜</li>`).join("") +
       `</ul>` +
     `</div>`
   );
@@ -28427,6 +28443,10 @@ function triggerStageCleared() {
   const starsBest = recordPanelStars(runEra, runShape, stars);
   lastStageTimeMs = stageTimeMs;
   awardCrystals(crystalsForStageClear(runStageIndex));
+  const bonus = clearBonus(stars, runStageIndex);   // v3.56.0: 評価のボーナス
+  const stageXp = runTotalXp - (stageXpAtStart || 0);
+  playerXp += bonus;
+  updateXpHud();
   evaluateChallenges();
   const railwayBefore = isRegionUnlocked(SHAPE_RAILWAY);
   evaluateUnlocks({ clearedIdx: runStageIndex });   // v3.3.0
@@ -28453,7 +28473,9 @@ function triggerStageCleared() {
       `${starsBest ? ' <span class="result-best">自己ベスト更新</span>' : ""}</div>` +
     `${STRINGS.statStageTime}: <span class="stat-value">${formatRunTime(stageTimeMs)}</span><br>` +
     `${STRINGS.statFlock}: <span class="stat-value">${countAliveBoids()}</span><br>` +
-    `${STRINGS.statXpBank}: <span class="stat-value">${playerXp.toLocaleString()}</span><br>` +
+    `${STRINGS.statStageXp}: <span class="stat-value">✨${stageXp.toLocaleString()}</span><br>` +
+    `<span class="result-bonus">${STRINGS.statClearBonus}: ✨+${bonus.toLocaleString()}</span><br>` +
+    `${STRINGS.statXpBank}: <span class="stat-value">✨${playerXp.toLocaleString()}</span><br>` +
     `${STRINGS.statLives}: <span class="stat-value">${runLives}</span>`;
   resultStatsEl.classList.add("visible");
   retryBtn.textContent = STRINGS.nextEra(CONTINENT_DEFS[runStageIndex].name);
@@ -28997,7 +29019,7 @@ function snapshotRunSave() {
     eggs:          totalEggCount,          // 拾った卵（HUD）
     lvUpApplied:   dragonLvPendingApplied, // 開いていたレベルアップで竜のレベルを上げ済みか
     stageCards:    Object.assign({}, stageCards),   // v3.43.0: 陥落カード（ステージ限定）
-    stageShards,                                    // v3.49.0: 竜玉のかけら
+    stageShards, stageCardXp, stageCardLevel, stageXpAtStart,   // v3.56.0: 経験値の強化カードの進み
     treasureTowns: [...treasureTowns],              // v3.44.0: まだ取り戻していない竜の宝の町
     orbFacilityKinds: Object.fromEntries([...orbFacilities].map(([t, f]) => [t, f.kind])),   // v3.48.0
   });
@@ -29097,6 +29119,7 @@ function resumeRun() {
     updateStageCardTotal();
   } else pickTreasureTowns();   // 宝の無い旧セーブ（v3.43 まで）から再開したら選び直す
   stageShards = save.stageShards | 0;   // v3.49.0
+  stageCardXp = +save.stageCardXp || 0; stageCardLevel = save.stageCardLevel | 0; stageXpAtStart = +save.stageXpAtStart || runTotalXp;   // v3.56.0
   // v3.49.0: 巨竜・特殊個体の分身は位置と一緒に持ち越さないので、カードの分だけ作り直す
   for (let k = 0; k < (stageCards.f_giant || 0); k++) makeGiants();
   if (stageCards.f_sp_double) for (const kind of runSpecials.slice()) addRunSpecial(kind, true);
@@ -29135,22 +29158,22 @@ function triggerStageClear() {
 // （v0.99.8〜v3.0.0 は「相手を追い込むほど★」＝寄り道と最強モードを評価していた）
 const CLEAR_STARS_MAX = 5;
 // ★5 / ★4 / ★3 / ★2 になる上限時間（分）。それより遅ければ★1。ステージは5〜20分が目安
-const CLEAR_STAR_MINUTES = [5, 8, 12, 16];
 
 /** 今この瞬間にボスを落としたら何★か。 */
+// v3.56.0（案帳 DT-238・Shooter指示「クリア時の評価は警戒度が低いほうが高得点」）: ★はクリアしたときの警戒度で決まる
+//   警戒度1で★5、2で★4、3で★3、4で★2（時間は結果に出すだけ）
 function clearStars() {
-  const minutes = (performance.now() - stageStartTime) / 60000;
-  for (let k = 0; k < CLEAR_STAR_MINUTES.length; k++) {
-    if (minutes <= CLEAR_STAR_MINUTES[k]) return CLEAR_STARS_MAX - k;
-  }
-  return 1;
+  return Math.max(1, CLEAR_STARS_MAX - clampTier(powerTier));
 }
 
 /** ★n の呼び名。 */
 function clearRankName(stars) {
-  const k = CLEAR_STARS_MAX - stars;
-  return k < CLEAR_STAR_MINUTES.length ? `${CLEAR_STAR_MINUTES[k]}分以内に撃破` : "撃破";
+  return STRINGS.clearRankByTier(CLEAR_STARS_MAX - stars + 1);
 }
+// v3.56.0: 評価のボーナス（店の通貨＝経験値）。ステージの経験値より大きくして、警戒度を上げずに攻める動機にする（Shooter指示）
+const CLEAR_BONUS_BY_STARS = { 5: 90000, 4: 60000, 3: 30000, 2: 12000, 1: 5000 };
+const CLEAR_BONUS_PER_STAGE = 0.2;   // ステージ1つ進むごとの上げ幅
+function clearBonus(stars, stageIdx) { return Math.round((CLEAR_BONUS_BY_STARS[stars] || 0) * (1 + CLEAR_BONUS_PER_STAGE * stageIdx)); }
 
 /** ★★★☆☆ の文字列。 */
 function starsText(stars) {
@@ -29700,6 +29723,7 @@ function clearStageCards() {
   treasureTowns.clear();
   orbFacilities.clear();
   stageShards = 0;          // v3.49.0
+  stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
   boidGiant.fill(0);
   fallOfferQueue.length = 0;
@@ -29909,7 +29933,7 @@ function drawTreasureFlags() {
 /** v3.49.0: そのステージで取れるカードの見込み（竜玉の町＋かけらで揃う数）。警戒度の必要数に使う */
 function updateStageCardTotal() {
   const orb = TREASURE_TOWN_COUNT;
-  stageCardTotal = Math.max(1, Math.min(orb, townStats.size) + Math.floor(Math.max(0, townStats.size - orb) / SHARDS_PER_ORB));
+  stageCardTotal = Math.max(1, Math.min(orb, townStats.size) + STAGE_CARD_EXPECTED);   // v3.56.0: 竜玉の町＋経験値で取れる枚数
 }
 
 function queueFallOffer(townIndex, rare = false) {
@@ -30075,13 +30099,7 @@ stageCardsHudEl.addEventListener("pointerdown", (e) => {
 stageCardListEl.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); hideStageCardList(); });
 
 function renderStageCardIcons() {
-  // v3.49.0: 先頭に竜玉のかけら（いくつ溜まったか）
-  const shard = document.createElement("span");
-  shard.className = "sc shard";
-  shard.title = STRINGS.fallOfferTitleShard;
-  shard.textContent = "\u{1F537}";
-  { const b = document.createElement("b"); b.textContent = stageShards + "/" + SHARDS_PER_ORB; shard.appendChild(b); }
-  stageCardsHudEl.replaceChildren(shard, ...FALL_CARD_DEFS.filter(d => stageCards[d.id] > 0).map((d) => {
+  stageCardsHudEl.replaceChildren(...FALL_CARD_DEFS.filter(d => stageCards[d.id] > 0).map((d) => {
     const el = document.createElement("span");
     el.className = "sc";
     el.title = fallCardText(d.id).name;
