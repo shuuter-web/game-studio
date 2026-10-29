@@ -383,6 +383,14 @@
   .shop-note { font-size: 11px; color: rgba(220,235,255,0.7); font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
   .shop-next { align-self: center; margin-top: 12px; }
   #levelup-overlay.shop-mode .tw-go.shop-next { display: block; pointer-events: auto; }
+  #levelup-overlay.shop-mode { justify-content: flex-start; overflow: hidden; }
+  #levelup-overlay.shop-mode #levelup-dragon.lv-tree-panel { height: 30vh; flex: none; }
+  #levelup-overlay.shop-mode #card-list { max-height: 44vh; overflow-y: auto; flex: none; }
+  #levelup-overlay.shop-mode .tw-go.shop-buy { display: block; pointer-events: auto; margin-top: 6px; flex: none; }
+  #levelup-overlay .shop-buy { display: none; }
+  body.region-picking #levelup-overlay.shop-mode #levelup-dragon.lv-tree-panel { display: block !important; }
+  #levelup-overlay.shop-mode .upgrade-card { flex-shrink: 0; }
+  #levelup-overlay.shop-mode .tw-go { align-self: center; }
   /* v3.53.0: 上にツリー（下から上へ進化）・下に選択肢 */
   #levelup-overlay.lv-center { justify-content: flex-start; }
   #levelup-dragon.lv-tree-panel { display: block; width: min(94vw, 380px); max-width: none; height: 38vh; overflow: auto; white-space: normal;
@@ -1174,7 +1182,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.55.0";
+const GAME_VERSION = "v3.55.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -20341,6 +20349,8 @@ const STRINGS = {
   shopNoEvo: "いま選べる進化は無い（突然変異は特殊個体の組み合わせで現れる）",
   shopSpecialHead: "特殊個体の進化",
   shopNext: "次へ（地域を選ぶ）",
+  shopBuy: (n) => `買う（✨${n.toLocaleString()}）`,
+  shopPickHint: "品物を押すと、ツリーで買った後の姿が見える",
   statXp: "総XP",
   toTitle: "タイトルへ",
   levelUp: "LEVEL UP",
@@ -20521,9 +20531,10 @@ const STRINGS = {
   treeDragon: "竜の進化", treeSpecials: "特殊個体の進化", treeJoin: "特殊個体の加入", treeOther: "そのほか",
   treeMutation: "突然変異", treeFuse: "合成",
   treeUntilEvo: (n) => `あと${n}回レベルを上げると、上の姿へ進化できる`,
-  treeCanEvo: "Lv3！ 光っている姿へ進化できる",
+  treeCanEvo: "光っている姿へ進化できる",
   treeTapHint: "光っている箱を押すと説明が出る。「これにする」で決まる",
   treeEvoHere: "ここで進化",
+  treeNow: "いま",
   treePick: "これにする",
   randomDragon: "ランダム",                                   // v3.47.0（案帳 DT-471）
   randomDragonDesc: "解放済みの竜からランダムに選ぶ",
@@ -22316,13 +22327,8 @@ function buildDragonTree(sel, opts) {
   const curName = currentFormName(), curTint = flockEvoVisual()?.tint || base.color;
   if (br.t10) rows.push(treeRow([treeNode(base.ja, base.color, "done", speciesThumbUrl(sid))]));
   if (br.t20) rows.push(treeRow([treeNode(spec[br.t10].name, spec[br.t10].tint, "done", speciesThumbUrl(sid))]));
-  // 今の形態：レベルごとに1つ
-  const dlvSel = isSelNode(sel, "evo.dlv");
-  for (let L = 1; L <= FORM_LV_MAX; L++) {
-    const cls = L < runFormLv ? "done" : L === runFormLv ? "now" : (L === runFormLv + 1 && dlvSel ? "sel" : "future");
-    rows.push(treeRow([treeNode(`${curName} Lv${L}`, curTint, cls, L === runFormLv || (L === runFormLv + 1 && dlvSel) ? speciesThumbUrl(sid) : "",
-      L === FORM_LV_MAX ? STRINGS.treeEvoHere : "")]));
-  }
+  // 今の形態（v3.55.0: レベルを刻まないので1つの箱）
+  rows.push(treeRow([treeNode(curName, curTint, "now", speciesThumbUrl(sid), STRINGS.treeNow)]));
   // 次の進化先（分岐・型）と、選択肢に出ている突然変異
   const next = [], after = [];
   const named = (known, name) => known ? name : EVO_TREE_UNKNOWN;
@@ -22347,7 +22353,7 @@ function buildDragonTree(sel, opts) {
   if (next.length) rows.push(treeRow(next, true));
   if (after.length) rows.push(treeRow(after));
   const wrap = treeWrap(STRINGS.treeDragon, rows);
-  wrap.appendChild(treeHint(runFormLv < FORM_LV_MAX ? STRINGS.treeUntilEvo(FORM_LV_MAX - runFormLv) : (next.length ? STRINGS.treeCanEvo : ""), runFormLv >= FORM_LV_MAX));
+  wrap.appendChild(treeHint(next.some(n => n.classList.contains("can") || n.classList.contains("sel")) ? STRINGS.treeCanEvo : "", true));
   return wrap;
 }
 /** 特殊個体のツリー（下から：今の形態の Lv1〜3 → 分岐 A／B（と、選択肢に出ている突然変異・合成））。preview＝まだ連れていない（加入の選択肢） */
@@ -22356,16 +22362,13 @@ function buildSpecialTree(kind, sel, opts, preview) {
   if (!SPECIAL_EVO_SPEC[key]) return null;
   const seen = (profile && profile.evoSeen) || {};
   const offered = new Set(opts.map(x => x.id));
-  const b = runSpBranch[key], fl = preview ? 0 : spFormLv(key);
+  const b = runSpBranch[key];
   const img = specialThumbUrl(kind);
   const rows = [];
   if (b) rows.push(treeRow([treeNode(d.name, d.color, "done", img)]));
   const curName = b ? SPECIAL_EVO_SPEC[key][b].name : d.name, curTint = b ? SPECIAL_EVO_SPEC[key][b].tint : d.color;
-  const lvSel = isSelNode(sel, `evo.slv.${key}`) || (preview && sel && sel.specialJoin === kind);
-  for (let L = 1; L <= FORM_LV_MAX; L++) {
-    const cls = L < fl ? "done" : L === fl ? "now" : (L === fl + 1 && lvSel ? "sel" : "future");
-    rows.push(treeRow([treeNode(`${curName} Lv${L}`, curTint, cls, L === fl || (L === fl + 1 && lvSel) ? img : "", L === FORM_LV_MAX ? STRINGS.treeEvoHere : "")]));
-  }
+  // 今の形態（v3.55.0: 1つの箱。加入の品物なら、加入した姿が光る）
+  rows.push(treeRow([treeNode(curName, curTint, preview ? "sel" : "now", img, preview ? "" : STRINGS.treeNow)]));
   const next = [];
   if (!b) for (const o of ["A", "B"]) {
     const id = `evo.sbr.${key}.${o}`, off = offered.has(id), known = off || seen[`s:${key}.${o}`];
@@ -22378,7 +22381,7 @@ function buildSpecialTree(kind, sel, opts, preview) {
   }
   if (next.length) rows.push(treeRow(next, true));
   const wrap = treeWrap(preview ? `${STRINGS.treeJoin}：${d.name}` : `${STRINGS.treeSpecials}：${d.name}`, rows);
-  if (!preview) wrap.appendChild(treeHint(fl < FORM_LV_MAX ? STRINGS.treeUntilEvo(FORM_LV_MAX - fl) : (next.length ? STRINGS.treeCanEvo : ""), fl >= FORM_LV_MAX));
+  if (!preview) wrap.appendChild(treeHint(next.some(n => n.classList.contains("can") || n.classList.contains("sel")) ? STRINGS.treeCanEvo : "", true));
   return wrap;
 }
 function treeHint(text, ready) {
@@ -28521,6 +28524,7 @@ function shopSpecialOffers() {
 function showShop() {
   shopOpen = true;
   shopRerolls = 0;
+  shopSelected = null;
   rollShopJoins();
   renderShop();
   titleOverlayEl.classList.remove("visible");
@@ -28531,12 +28535,16 @@ function showShop() {
 }
 function closeShop() {
   shopOpen = false;
+  shopSelected = null;
   levelupOverlayEl.classList.remove("shop-mode");
+  levelupDragonEl.className = ""; levelupDragonEl.innerHTML = "";
   snapshotRunSave();
   showRegionPick();
 }
+let shopSelected = null;   // { def, cost }
 function shopBuy(def, cost) {
   if (playerXp < cost) return;
+  shopSelected = null;
   playerXp -= cost;
   if (def.specialJoin !== undefined) {
     runSpecials.push(def.specialJoin);
@@ -28555,8 +28563,22 @@ function shopBuy(def, cost) {
 }
 function renderShop() {
   levelupTitleEl.textContent = STRINGS.shopTitle;
-  levelupDragonEl.className = "";
+  // v3.55.0（Shooter指示「進化のツリーでの表示は重要なので無くさないで」）: 上にツリー。品物を押すと、その竜・特殊個体のツリーで買った後の姿が光る
+  const offers = [...shopDragonOffers(), ...shopSpecialOffers()];
+  const offerDefs = offers.map(o => o.def).concat(shopJoinOffers.filter(k => !shopBought.has(k)).map(k => CARD_DEFS.find(d => d.specialJoin === k)).filter(Boolean));
+  levelupDragonEl.className = "lv-tree-panel";
   levelupDragonEl.innerHTML = "";
+  if (shopSelected) renderChoiceTree(shopSelected.def, offerDefs);
+  else { const t = buildDragonTree(null, offerDefs); if (t) levelupDragonEl.appendChild(t); }
+  let buy = levelupOverlayEl.querySelector(".shop-buy");
+  if (!buy) {
+    buy = document.createElement("button");
+    buy.className = "tw-go shop-buy";
+    bindCardRelease(buy, () => { if (shopSelected && playerXp >= shopSelected.cost) shopBuy(shopSelected.def, shopSelected.cost); });
+    levelupOverlayEl.appendChild(buy);
+  }
+  buy.disabled = !shopSelected || playerXp < shopSelected.cost;
+  buy.textContent = shopSelected ? STRINGS.shopBuy(shopSelected.cost) : STRINGS.shopPickHint;
   cardListEl.classList.remove("species-grid", "tree-choice");
   cardListEl.innerHTML = "";
   const head = document.createElement("div");
@@ -28568,12 +28590,14 @@ function renderShop() {
     const text = STRINGS.cards[def.id] || { name: def.id, desc: "" };
     const btn = document.createElement("button");
     const afford = playerXp >= cost && !opts.sold;
-    btn.className = "upgrade-card shop-card" + (def.evo ? " rarity-evo" : " rarity-star") + (afford ? "" : " cant");
+    btn.className = "upgrade-card shop-card" + (def.evo ? " rarity-evo" : " rarity-star") + (afford ? "" : " cant") +
+      (shopSelected && shopSelected.def === def ? " sel" : "");
     if (def.evo) btn.style.setProperty("--evo-color", def.color || "#ffb060");
     btn.innerHTML = `<span class="card-icon">${def.icon || ""}</span>` +
       `<span><div class="card-name">${opts.label || text.name}</div><div class="card-desc">${text.desc}</div></span>` +
       `<span class="shop-cost">${opts.sold ? STRINGS.shopSold : STRINGS.shopCost(cost)}</span>`;
-    if (afford) bindCardRelease(btn, () => shopBuy(def, cost));
+    // 押すと選ぶ（ツリーに出る）。買うのは下の「買う」（押し間違えて買わないように）
+    if (!opts.sold) bindCardRelease(btn, () => { shopSelected = { def, cost }; renderShop(); });
     cardListEl.appendChild(btn);
   };
   // 加入
@@ -28588,7 +28612,7 @@ function renderShop() {
     const rr = document.createElement("button");
     rr.className = "card-tool" + (playerXp >= shopRerollCost() ? "" : " cant");
     rr.textContent = STRINGS.shopReroll(shopRerollCost());
-    if (playerXp >= shopRerollCost()) bindCardRelease(rr, () => { playerXp -= shopRerollCost(); shopRerolls++; rollShopJoins(); updateXpHud(); renderShop(); });
+    if (playerXp >= shopRerollCost()) bindCardRelease(rr, () => { playerXp -= shopRerollCost(); shopRerolls++; rollShopJoins(); shopSelected = null; updateXpHud(); renderShop(); });
     cardListEl.appendChild(rr);
   }
   // 竜の進化
