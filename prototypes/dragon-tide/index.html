@@ -1095,7 +1095,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.50.4";
+const GAME_VERSION = "v3.51.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -8302,6 +8302,11 @@ const MOVER_DEFS = {
   },
   // v0.8新規: レイダー — 通常建物が枯れたときボス城塞から湧く小型追撃兵。
   // XPと（低確率で）卵の無限供給源＝経験値切れによる詰み防止（Shooter指示）。
+  // v3.51.0（案帳 DT-476）: 竜狩りの騎士。警戒度ラッシュ「竜狩りの銛」で出る。銛の処理は updateHarpoonKnights（def には攻撃を持たない）
+  harpoon_knight: {
+    name: "harpoon_knight", hp: 300, speed: 56, xp: 160, eggDrop: 2, radius: 13, turnRate: 2.0,
+    color: "#7f8ea6", glowColor: "#d8e4ff", moveType: "patrol", showHpBar: true,
+  },
   raider: {
     name: "raider", hp: 25, speed: 82, xp: 15, eggDrop: 0, eggChance: 0.2, radius: 10,
     color: "#c04040", glowColor: "#ff8080", moveType: "pingpong",
@@ -11640,9 +11645,9 @@ const TR_ATTACKER_METEOR = { get name() { return STRINGS.trAttackerMeteor; }, to
 const TR_ATTACKER_RING   = { get name() { return STRINGS.trAttackerRing; },   tone: "fire" };
 // 流星は建物と城壁にだけ当てる（動く敵に当てると、敵を倒した報酬が流星から出てしまう）
 const TR_TARGETS_BUILDINGS = { building: TARGET_AIM, wall: TARGET_AIM, mover: TARGET_NONE };
-const TR_KINDS = ["haste", "siege", "horde", "wind", "meteor", "volley", "firering", "convoy", "elite", "night"];
+const TR_KINDS = ["haste", "siege", "horde", "wind", "meteor", "volley", "firering", "convoy", "elite", "night", "harpoon"];   // v3.51.0: 竜狩りの銛
 // 敵を出す種類（全部倒すか時間切れで終わる）。それ以外は時間で終わる。
-const TR_UNIT_KINDS = new Set(["siege", "horde", "convoy", "elite"]);
+const TR_UNIT_KINDS = new Set(["siege", "horde", "convoy", "elite", "harpoon"]);
 const TR_START_DELAY   = 2.4;   // 実時間。警戒度の帯（2.2秒）とスローが引いてから
 const TR_WARN_TIME     = 1.3;   // 予告の長さ（実時間）
 const TR_DURATION      = 12;    // 時間で区切る種類の長さ
@@ -11698,6 +11703,16 @@ const TR_RING_GAP      = 0.42;  // 隙間の半角(rad)
 const TR_RING_DPS      = 40;    // 輪の上に1.5秒居るとダウンする強さ（横切るだけなら軽い）
 const TR_RING_WARN     = 1.0;
 // 竜卵の輸送隊
+// v3.51.0（案帳 DT-476・Shooter判定）: 竜狩りの銛。騎士が銛を打ち込み、竜を綱で引きずっていく。
+// 騎士のもとまで引かれた竜はダウンではなく本当に減る。解放の方法は騎士を倒すことだけ（綱は切れない）。全部倒しても回復は無い
+const TR_HARPOON_COUNT    = [0, 4, 5, 6];   // 警戒度ごとの騎士の数
+const TR_HARPOON_HP_STAGE = 0.5;            // ステージ1つ進むごとの体力の上げ幅（def.hp に掛ける）
+const TR_HARPOON_RANGE    = 340;            // 銛が届く距離
+const TR_HARPOON_INTERVAL = 4.5;            // 1本引き終える（または外れる）ごとの次の銛までの間（秒）
+const TR_HARPOON_FIRST    = 1.5;            // 出てから最初の銛まで
+const TR_HARPOON_PULL     = 85;             // 引きずる速さ（px/秒）
+const TR_HARPOON_TAKE     = 14;             // 騎士のこの距離（＋半径）まで引かれたら奪われる
+const TR_HARPOON_DUR      = 45;             // この時間で騎士は引き揚げる
 const TR_CONVOY_COUNT  = 3;
 const TR_CONVOY_XP     = 300;
 const TR_CONVOY_HEAL   = 0.4;
@@ -11898,6 +11913,20 @@ function startTierRush() {
     case "night":
       tr.dur = TR_NIGHT_DUR;
       break;
+    case "harpoon": {   // v3.51.0（案帳 DT-476）
+      const n = Math.min(trCapLeft(), TR_HARPOON_COUNT[tier]);
+      const r = offscreenSpawnRadius() * TR_SIEGE_RING;
+      const a0 = random() * Math.PI * 2;
+      for (let k = 0; k < n; k++) {
+        const a = a0 + k * Math.PI * 2 / n + (random() - 0.5) * 0.4;
+        const m = spawnTrMover(MOVER_DEFS.harpoon_knight, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
+        m.maxHp = m.hp = MOVER_DEFS.harpoon_knight.hp * (1 + TR_HARPOON_HP_STAGE * runStageIndex);
+        m._trChase = true; m._harpoon = { target: -1, cd: TR_HARPOON_FIRST + k * 0.4 };
+      }
+      d.total = n;
+      tr.dur = TR_HARPOON_DUR;
+      break;
+    }
   }
   if (TR_UNIT_KINDS.has(tr.kind) && tr.kind !== "horde" && !(d.total > 0)) { endTierRush(); return; }
 }
@@ -11910,6 +11939,11 @@ function endTierRush() {
       m.alive = false;
       pushWorldText(m.wx, m.wy, STRINGS.trConvoyEscaped, "#ffd48a");
     }
+  }
+  // v3.51.0: 竜狩りの騎士は時間切れで引き揚げる（引いていた竜は放される）
+  if (tr.kind === "harpoon") for (const m of movers) if (m.alive && m._harpoon) {
+    m.alive = false;
+    pushWorldText(m.wx, m.wy, STRINGS.trHarpoonLeave, "#c8d4e8");
   }
   // 時間切れで残った敵は、普通の敵として居残る（追跡だけやめる）
   for (const m of movers) if (m._tr) { m._trChase = false; m._trGoal = null; }
@@ -11933,6 +11967,68 @@ function onTierRushKill(m) {
     triggerFlash("rgba(255,210,80,0.30)", 0.25);
     hapticPulse(160);
   }
+}
+
+/** v3.51.0（案帳 DT-476）: 竜狩りの騎士の銛。群れの端の竜（特殊個体は狙わない）に銛を打ち込み、綱で引きずる。
+ *  騎士のもとまで引かれた竜は本当に減る（ダウンではない）。騎士を倒すと放される。 */
+function updateHarpoonKnights(dt) {
+  if (dt <= 0) return;
+  const c = calcFriendlyCentroid();
+  for (const m of movers) {
+    const h = m._harpoon;
+    if (!h || !m.alive) continue;
+    const i = h.target;
+    if (i >= 0 && (boidDead[i] || boidDowned[i])) h.target = -1;   // 引いていた竜が落ちた
+    if (h.target < 0) {
+      h.cd -= dt;
+      if (h.cd > 0) continue;
+      // 群れの重心から遠い（端の）竜のうち、銛が届くものを狙う。ほかの騎士が引いている竜は狙わない
+      let best = -1, bestScore = -Infinity;
+      for (let j = 0; j < N; j++) {
+        if (boidDead[j] || boidDowned[j] || boidSpecial[j] !== SPECIAL_NONE) continue;
+        const d2 = dist2(px[j], py[j], m.wx, m.wy);
+        if (d2 > TR_HARPOON_RANGE * TR_HARPOON_RANGE) continue;
+        if (movers.some(o => o !== m && o.alive && o._harpoon && o._harpoon.target === j)) continue;
+        const score = dist2(px[j], py[j], c.x, c.y) - d2 * 0.5;
+        if (score > bestScore) { bestScore = score; best = j; }
+      }
+      if (best < 0) { h.cd = 0.5; continue; }
+      h.target = best;
+      h.cd = TR_HARPOON_INTERVAL;
+      continue;
+    }
+    // 引きずる：竜を騎士の方へ動かす（竜自身の速さは殺す）
+    const dx = m.wx - px[i], dy = m.wy - py[i], d = Math.sqrt(dx * dx + dy * dy) || 1;
+    if (debugInvincible) continue;   // デバッグ「竜を無敵」中は引かない（観察用）
+    if (d <= moverRadiusOf(m) + TR_HARPOON_TAKE) {
+      // 奪われた：本当に減る（ダウンではない。スロットごと外す）
+      boidDead[i] = 1; boidDowned[i] = 0; boidHp[i] = 0;
+      spawnDragonDownEffect(px[i], py[i]);
+      pushWorldText(px[i], py[i] - 20, STRINGS.trHarpoonTaken, "#ff8080");
+      hapticPulse(100);
+      h.target = -1;
+      updateHUD();
+      continue;
+    }
+    const step = Math.min(d, TR_HARPOON_PULL * dt);
+    px[i] += dx / d * step; py[i] += dy / d * step;
+    vx[i] *= 0.6; vy[i] *= 0.6;
+  }
+}
+/** 綱（騎士から引かれている竜へ）。見た目だけ */
+function drawHarpoonTethers() {
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const m of movers) {
+    const h = m._harpoon;
+    if (!h || !m.alive || h.target < 0) continue;
+    const i = h.target;
+    ctx.strokeStyle = "rgba(255,224,96,0.9)"; ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.moveTo(m.wx, m.wy); ctx.lineTo(px[i], py[i]); ctx.stroke();
+    ctx.fillStyle = "#e8e8f0";   // 銛の頭
+    ctx.beginPath(); ctx.arc(px[i], py[i], 3.5, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
 }
 
 function trAliveUnits() {
@@ -15012,6 +15108,15 @@ function drawMovers() {
       ctx.moveTo(8, -3); ctx.lineTo(12, -5);
       ctx.moveTo(8, 3);  ctx.lineTo(12, 5);
       ctx.stroke();
+    } else if (def.name === "harpoon_knight") {
+      // v3.51.0 竜狩りの騎士: 丸い鎧の騎士と、前へ構えた長い銛
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#3a4458"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = "#d8d0b8"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-6, 5); ctx.lineTo(22, 5); ctx.stroke();
+      ctx.fillStyle = "#e8e8f0";
+      ctx.beginPath(); ctx.moveTo(26, 5); ctx.lineTo(20, 1.5); ctx.lineTo(20, 8.5); ctx.closePath(); ctx.fill();
     } else if (def.name === "caravan") {
       // v3.45.0 行商の隊: 荷を背負った獣（楕円の胴・頭）と、背中の木箱2つ。画像なしのベクター専用
       ctx.fillStyle = def.color;
@@ -19895,12 +20000,16 @@ function collectNearbyEggs() {
  * @returns {boolean} 追加に成功したら true（上限到達時は false）
  */
 function spawnBoidAtEgg(wx, wy) {
-  if (N >= effFlockCap() || N >= MAX_BOIDS) return false; // 上限到達時は追加しない
+  // v3.51.0: 竜狩りの銛で本当に減った竜の枠（dead）があれば、そこを使う（群れの上限を食いつぶさないように）
+  let idx = -1;
+  for (let j = 1; j < N; j++) if (boidDead[j] && boidSpecial[j] === SPECIAL_NONE) { idx = j; break; }
+  if (idx < 0) {
+    if (N >= effFlockCap() || N >= MAX_BOIDS) return false; // 上限到達時は追加しない
+    idx = N; // 新しい個体スロット
+    N++;     // 有効個体数を先に増やす
+  }
   // 変更2: 竜出現エフェクトをスポーン（追加に成功したときのみ）
   spawnDragonAppearEffect(wx, wy);
-
-  const idx = N; // 新しい個体スロット
-  N++;           // 有効個体数を先に増やす
 
   // 群れの平均速度を取得して初速に使う（群れの流れに乗せる）
   let avgVx = 0, avgVy = 0, aliveCount = 0;
@@ -20101,7 +20210,7 @@ const STRINGS = {
   // v3.16.0: 警戒度ラッシュ（{egg} は storyEgg で竜卵／星卵に置き換える）
   trNames: {
     haste: "猛進", siege: "大型包囲", horde: "小型の大軍", wind: "強風", meteor: "流星",
-    volley: "一斉射撃", firering: "火の輪", convoy: "{egg}の輸送隊", elite: "精鋭の追跡者", night: "暗夜",
+    volley: "一斉射撃", firering: "火の輪", convoy: "{egg}の輸送隊", elite: "精鋭の追跡者", night: "暗夜", harpoon: "竜狩りの銛",
   },
   trWarn: {
     haste:    "人間たちが{egg}の力で奮い立つ",
@@ -20114,8 +20223,9 @@ const STRINGS = {
     convoy:   "{egg}を積んだ隊列が首都へ逃げていく",
     elite:    "精鋭が群れを追ってくる",
     night:    "夜が辺りを覆う",
+    harpoon:  "竜狩りの騎士が銛を構える",
   },
-  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った",
+  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた",
   trAttackerMeteor: "流星", trAttackerRing: "火の輪",
   defeatTitle: "力尽きた",
   // v3.41.0（案帳 DT-129・Shooter指示「力尽きた時のメッセージにもほかと同じようにフレーバーを」）:
@@ -25783,7 +25893,7 @@ const CODEX_ENEMY_NAMES = {
   knights: "騎士団", siegetower: "攻城塔", batteringram: "破城槌", splitter: "分裂体",
   splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
   ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
-  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵",
+  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士",
   miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
@@ -26678,6 +26788,7 @@ const CODEX_RUSH_DESC = {
   convoy:   () => `竜卵を積んだ隊列${TR_CONVOY_COUNT}台が首都へ逃げる。倒すと経験値${TR_CONVOY_XP}と群れの回復`,
   elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
+  harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
 function codexRushHtml() {
   return `<div class="cx-era">警戒度ラッシュ（警戒度が上がるたびに1つ）</div>` +
@@ -33045,6 +33156,7 @@ function render(now) {
   drawHazards();             // v0.42: 持続する範囲攻撃（地面に敷く＝竜より下）
   drawLaserStrikes();        // v0.48: 極太レーザー（予兆＋照射）
   drawTierRushWorld();       // v3.16.0: 流星・一斉射撃の予告線・火の輪
+  drawHarpoonTethers();      // v3.51.0: 竜狩りの騎士の綱
   drawFlood();               // v0.43: 洪水（地面の上・竜より下）
   drawDams();                // v0.43: 堰の見た目
   drawHazardShots();         // v0.63: 危険地帯の見せ弾（誰が撃ったかを見せる）
@@ -36303,6 +36415,7 @@ function tick() {
     updateBossReinforcements(wdt); // v0.58: 首都が兵を出し続ける（取り巻きを倒しても消化試合にしない）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
     updateTierRush(wdt, dt);      // v3.16.0: 警戒度ラッシュ（予告と待ちは実時間）
+    updateHarpoonKnights(wdt);    // v3.51.0: 竜狩りの騎士の銛
     updateDeathTimers(wdt);
     checkFlockWipe(wdt);          // v3.0.0: 全員ダウンでスタート地点へ戻す（残機制）
     updateParticles(wdt);
