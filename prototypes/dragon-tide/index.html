@@ -373,6 +373,11 @@
   .et-arrow, .et-or { color: rgba(220,235,255,0.6); }
   .et-cross { margin-left: 4px; color: #ff9ae0; }
   .result-bonus { color: #ffe08a; font-weight: bold; }
+  /* v3.58.2: ステージクリアの次に出すリザルト画面 */
+  .rs-table { display: grid; grid-template-columns: auto auto; gap: 6px 18px; justify-content: center; margin: 10px 0 4px; font-size: 15px; }
+  .rs-table .rs-v { text-align: right; font-variant-numeric: tabular-nums; }
+  .rs-table .rs-sum { border-top: 1px solid rgba(255,224,138,0.5); padding-top: 6px; }
+  .rs-bank { font-size: 22px; color: #ffe08a; font-weight: bold; }
   /* v3.55.0: 店（竜の巣） */
   #levelup-overlay.shop-mode #card-list { max-height: none; }
   #levelup-overlay.shop-mode:not(.armed) .shop-card, #levelup-overlay.shop-mode:not(.armed) .shop-next { opacity: 0.5; pointer-events: none; }
@@ -1183,7 +1188,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.58.1";
+const GAME_VERSION = "v3.58.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -20387,6 +20392,8 @@ const STRINGS = {
   stageBanner: (n, total) => `STAGE ${n}/${total}`,
   stageClearTitle: (n, total) => `STAGE ${n}/${total} CLEAR`,
   nextEra: (eraName) => `次の時代へ — ${eraName}`,
+  stageClearToResult: "結果を見る",   // v3.58.2
+  stageResultTitle: "リザルト",
   statStageTime: "ステージ時間",
   statLives: "残機",
   wipeTitle: "全滅",
@@ -28514,6 +28521,8 @@ function triggerStageCleared() {
   if (railwayJustOpened && !regionChoices.includes(SHAPE_RAILWAY)) regionChoices[regionChoices.length - 1] = SHAPE_RAILWAY;
   snapshotRunSave();
   dismissLevelUpCards();
+  // v3.58.2: 首都を落とした一撃で出た強化カードが、クリアとリザルトの画面に重なって残らないように畳む
+  fallOfferQueue.length = 0; fallOfferVisible = false; fallOfferSlowmo = 0; fallOfferEl.classList.remove("visible");
   stageOverlayEl.classList.remove("visible");   // v3.14.0: 開始の見出しが残っていたら下げる
   clearEpitaphAfterFade();
 
@@ -28526,15 +28535,48 @@ function triggerStageCleared() {
       `${starsBest ? ' <span class="result-best">自己ベスト更新</span>' : ""}</div>` +
     `${STRINGS.statStageTime}: <span class="stat-value">${formatRunTime(stageTimeMs)}</span><br>` +
     `${STRINGS.statFlock}: <span class="stat-value">${countAliveBoids()}</span><br>` +
-    `${STRINGS.statStageXp}: <span class="stat-value">✨${stageXp.toLocaleString()}</span><br>` +
-    `<span class="result-bonus">${STRINGS.statClearBonus}: ✨+${bonus.toLocaleString()}</span><br>` +
-    `${STRINGS.statXpBank}: <span class="stat-value">✨${playerXp.toLocaleString()}</span><br>` +
     `${STRINGS.statLives}: <span class="stat-value">${runLives}</span>`;
   resultStatsEl.classList.add("visible");
-  retryBtn.textContent = STRINGS.nextEra(CONTINENT_DEFS[runStageIndex].name);
+  // v3.58.2（案帳 DT-238・Shooter指示「リザルト画面はステージクリア画面を送った後別画面に」）: 経験値の勘定は次の画面で見せる
+  stageClearPhase = "clear";
+  stageResult = { stars, stageXp, bonus, bank: playerXp };
+  retryBtn.textContent = STRINGS.stageClearToResult;
   setTimeout(() => overlayTitle.classList.add("show"), 300);
   setTimeout(() => retryBtn.classList.add("visible"), 1200);
   hapticPulse(200);
+}
+
+// stageClearPhase（上で宣言）: "clear"＝ステージクリアの画面、"result"＝リザルト（経験値の勘定）
+let stageResult = null;
+const STAGE_RESULT_COUNT_MS = 900;   // 貯めた経験値の数字を数え上げる時間
+/** v3.58.2: ステージクリアの次の画面。このステージの経験値＋評価のボーナス＝貯めた経験値 を見せてから店へ */
+function showStageResult() {
+  const r = stageResult;
+  stageClearPhase = "result";
+  overlayTitle.classList.remove("show");
+  retryBtn.classList.remove("visible");
+  overlayTitle.textContent = STRINGS.stageResultTitle;
+  resultStatsEl.innerHTML =
+    `<div class="result-stars">${starsText(r.stars)}</div>` +
+    `<div class="result-rank">${clearRankName(r.stars)}</div>` +
+    `<div class="rs-table">` +
+      `<span>${STRINGS.statStageXp}</span><span class="rs-v">✨${r.stageXp.toLocaleString()}</span>` +
+      `<span class="result-bonus">${STRINGS.statClearBonus}</span><span class="rs-v result-bonus">✨+${r.bonus.toLocaleString()}</span>` +
+      `<span class="rs-sum">${STRINGS.statXpBank}</span><span class="rs-v rs-sum rs-bank" id="rs-bank">✨${(r.bank - r.bonus).toLocaleString()}</span>` +
+    `</div>`;
+  // ボーナスが貯金に入るところを数え上げで見せる（見た目だけ。値はクリアの時点で足してある）
+  const bankEl = document.getElementById("rs-bank");
+  const from = r.bank - r.bonus, start = performance.now() + 400;
+  const tick = () => {
+    if (stageClearPhase !== "result" || !bankEl.isConnected) return;
+    const t = Math.max(0, Math.min(1, (performance.now() - start) / STAGE_RESULT_COUNT_MS));
+    bankEl.textContent = "✨" + Math.round(from + r.bonus * t).toLocaleString();
+    if (t < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  retryBtn.textContent = STRINGS.nextEra(CONTINENT_DEFS[runStageIndex].name);
+  setTimeout(() => overlayTitle.classList.add("show"), 100);
+  setTimeout(() => retryBtn.classList.add("visible"), 400 + STAGE_RESULT_COUNT_MS);
 }
 
 // 直前のステージのクリア時間（アンロック条件「5分以内」などで使う）
@@ -28709,6 +28751,8 @@ function renderShop() {
 /** 「次の時代へ」ボタン。v3.55.0: 地域3択の前に店（竜の巣）へ */
 function proceedToNextStage() {
   if (gameState !== "stage-clear" || regionPicking || shopOpen) return;
+  if (stageClearPhase === "clear" && stageResult) { showStageResult(); return; }   // v3.58.2: まずリザルトへ
+  if (!retryBtn.classList.contains("visible")) return;   // 数え上げの途中に押した指で店へ飛ばない
   overlayEl.classList.remove("visible");
   overlayTitle.classList.remove("show");
   retryBtn.classList.remove("visible");
