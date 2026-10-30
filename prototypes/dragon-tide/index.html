@@ -1275,7 +1275,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.59.2";
+const GAME_VERSION = "v3.60.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1497,6 +1497,7 @@ const DEBUG_ENEMY_LABELS = {
   clubmen: "🪨石打ちの衆", bullchariot: "🐂牡牛戦車", batteringram: "🪵破城槌",
   grapeshot: "💥散弾砲車", steamhammer: "🔨蒸気打鉄", repulsor: "🌀反発塔車",
   concussion: "📣衝撃砲", gravitygun: "🕳重力砲",
+  war_elephant: "🐘戦象(弓兵4人つき)", scythe_chariot: "⚔鎌付き戦車",   // v3.60.0
 };
 
 // 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
@@ -1510,7 +1511,7 @@ const DEBUG_ENEMY_ORDER = [
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
-  "walker_hull",
+  "walker_hull", "war_elephant", "scythe_chariot",
   // v2.0.0: 軌道の敵。線路が無い地域では湧かせられない（押しても何も起きない）
   "railgun_loco", "railcar", "railram",
   // v3.17.0: 大樹海の敵（樹冠が無い地域では隠れも切り拓きも起きない）
@@ -1575,6 +1576,11 @@ function debugSpawnEnemy(key) {
     return;
   }
 
+  if (key === "war_elephant") {   // v3.60.0: 背の弓兵ごと
+    const el = spawnOne(def, 0, 0);
+    for (const r of attachElephantRiders(el)) movers.push(r);
+    return;
+  }
   if (key === "behemoth_core") {
     const core = spawnOne(def, 0, 0);
     for (const side of [-1, 1]) {
@@ -6328,9 +6334,11 @@ function generateStageLayout(stageIndex) {
   // 首都建物を含めたいので、capitalBuildings を result に入れた後で回す。
   {
     const metaMap2 = buildTownMetaMap(result);
-    const pickInto = (pool, count) => {
+    let spinPlaced = 0;
+    const pickInto = (pool, count, key = "concussionBattery") => {
       // 既に時代兵器が付いている建物は避ける（1棟に2種は付けない）
-      const all = pool.filter(b => !b._emplacement && !b.fallen);
+      // v3.60.0: 回転砲塔は役割を持つ建物（前哨堡など）にも重ねない（役割の撃ち方が先に動いて、渦を撃たなくなる）
+      const all = pool.filter(b => !b._emplacement && !b.fallen && (key === "concussionBattery" || !b._townRole));
       const sh = (arr) => {
         for (let i = arr.length - 1; i > 0; i--) {
           const j = Math.floor(random() * (i + 1));
@@ -6341,9 +6349,11 @@ function generateStageLayout(stageIndex) {
       // v0.77: 衝撃砲台も表側優先（時代兵器と同じ側に固めて「表＝守り」を読ませる）
       const free = sh(all.filter(b => isOnTownFront(b, metaMap2)))
         .concat(sh(all.filter(b => !isOnTownFront(b, metaMap2))));
-      const def = EMPLACEMENT_DEFS.concussionBattery;
+      const def = EMPLACEMENT_DEFS[key];
+      if (key === "spinTurret") count = Math.min(count, SPIN_TURRET_MAX - spinPlaced);
       for (let k = 0; k < count && k < free.length; k++) {
-        free[k]._emplacement = "concussionBattery";
+        if (key === "spinTurret") spinPlaced++;
+        free[k]._emplacement = key;
         free[k].attackRadius = Math.max(free[k].attackRadius, def.range);
       }
     };
@@ -6366,6 +6376,9 @@ function generateStageLayout(stageIndex) {
       else if (isAdvanced && random() < CONCUSSION_ADVANCED_CHANCE) {
         pickInto(buildings, CONCUSSION_PER_ADVANCED_TOWN);
       }
+      // v3.60.0: 回転砲塔（DT-206）も強い街に。町の数が少ないうちに偏らないよう、要塞都市は必ず・格上の街は半分
+      if (isFortress) pickInto(buildings, SPIN_TURRET_PER_FORTRESS_TOWN, "spinTurret");
+      else if (isAdvanced && random() < SPIN_TURRET_ADVANCED_CHANCE) pickInto(buildings, 1, "spinTurret");
     }
     // ボス周辺（首都区画）。城下の民家は _noAttack なので対象から外す
     pickInto(result.filter(b => b._isCapital && !b._noAttack), CONCUSSION_IN_CAPITAL);
@@ -8502,6 +8515,30 @@ const MOVER_DEFS = {
     color: "#6f7c8e", glowColor: "#ffd090", moveType: "patrol", showHpBar: true,
     shieldArc: Math.PI * 2 / 3, shieldBlock: 0.25,   // 正面±120°＝後ろの±60°だけが弱点
   },
+  // v3.60.0（案帳 DT-218・Shooter判定「乗っている人と象を別パーツで」「町に逃げるギミックは要らない」）: 戦象。
+  // 背の弓兵4人は別の敵（part: "rider"）で、象の背に乗って動き、群れを撃つ。弓兵が残っている間は象の体は固い
+  war_elephant: {
+    name: "war_elephant", hp: 900, speed: 34, xp: 420, eggDrop: 3, radius: 30, turnRate: 0.8, showHpBar: true,
+    color: "#8c9198", glowColor: "#d8c8a0", moveType: "patrol",
+    attack: { type: "shockwave", interval: 3.2, radius: 95, damage: 3, push: 70 },
+  },
+  war_elephant_rider: {
+    name: "war_elephant_rider", part: "rider", hp: 70, speed: 0, xp: 60, eggDrop: 0, eggChance: 0.5, radius: 7,
+    color: "#7c8ea4", glowColor: "#c8d8f0", moveType: "patrol",
+  },
+  // v3.60.0（案帳 DT-239）: 鎌付き戦車。右側にだけ大きな鎌。群れのまわりを回り込み、鎌の側ですれ違いざまに薙ぐ。
+  // 鎌の無い側（左・前・後ろ）からの攻撃は2倍効く。予告線は無い（鎌の向きで危ない側が分かる）
+  scythe_chariot: {
+    name: "scythe_chariot", scythe: true, hp: 380, speed: 125, xp: 240, eggDrop: 3, radius: 18, turnRate: 1.7, showHpBar: true,
+    color: "#6f7c8e", glowColor: "#e0e8f0", moveType: "patrol",
+  },
+  // v3.60.0（案帳 DT-257）: 英雄の仲間。英雄が戻ってくるたびに1人ずつ増える（2回目 盾投げの騎士・3回目 大魔法使い・4回目〜 弓手）
+  hero_shield: { name: "hero_shield", heroMate: "shield", hp: 520, speed: 0, xp: 380, eggDrop: 2, radius: 9,
+    color: "#b8c4d8", glowColor: "#ffe8a0", moveType: "patrol", showHpBar: true },
+  hero_mage:   { name: "hero_mage",   heroMate: "mage",   hp: 380, speed: 0, xp: 380, eggDrop: 2, radius: 9,
+    color: "#8a5cd0", glowColor: "#e0c8ff", moveType: "patrol", showHpBar: true },
+  hero_archer: { name: "hero_archer", heroMate: "archer", hp: 300, speed: 0, xp: 300, eggDrop: 2, radius: 8,
+    color: "#7a9a6a", glowColor: "#e8f0c0", moveType: "patrol", showHpBar: true },
   // v3.54.0（案帳 DT-488）: 湧き出る門。動かない門から、その時代の小型の敵が湧き続ける
   rush_gate: {
     name: "rush_gate", hp: 700, speed: 0, xp: 240, eggDrop: 2, radius: 22,
@@ -9043,8 +9080,8 @@ const MOVER_DEFS = {
 const MOVER_SPAWNS_BY_STAGE = [
   // 石打ちの衆は3人組なので枠は1（＝大陸に3組9体前後。他の文明は単体7体前後で揃う）
   [["mammoth_lord", 1], ["clubmen", 1], ["mammoth", 1], ["lurker", 1]],
-  [["gilded_colossus", 1], ["bullchariot", 2], ["colossus", 2], ["shieldman", 1]],
-  [["siegetower", 1], ["batteringram", 2], ["knights", 2], ["colossus", 1], ["shieldman", 1], ["splitter", 1]],
+  [["gilded_colossus", 1], ["bullchariot", 2], ["colossus", 2], ["shieldman", 1], ["scythe_chariot", 1]],   // v3.60.0: 鎌付き戦車
+  [["siegetower", 1], ["batteringram", 2], ["knights", 2], ["colossus", 1], ["shieldman", 1], ["splitter", 1], ["scythe_chariot", 1]],
   [["grenadiers", 1], ["grapeshot", 2], ["ironclad", 2], ["knights", 2], ["balloon", 2], ["lurker", 1], ["flamewagon", 1]],
   [["armortrain", 1], ["steamhammer", 2], ["ironclad", 2], ["balloon", 2], ["knights", 1], ["shockman", 1], ["shieldman", 1], ["miasma", 1], ["teslawagon", 1]],
   [["teslagiant", 1], ["repulsor", 2], ["colossus", 3], ["balloon", 2], ["ironclad", 1], ["warlord", 1], ["healer", 1], ["splitter", 2], ["flamewagon", 1]],
@@ -9331,7 +9368,21 @@ const EMPLACEMENT_DEFS = {
   concussionBattery: {
     label: "衝撃砲台", ring: KNOCKBACK_MARK_COLOR, interval: 3.2, range: 470, knockback: true,
   },
+  // v3.60.0（案帳 DT-206・Shooter判定「新しい弾幕パターン」「適切な街に配置」）: 回転砲塔。
+  // 4方向の砲身がゆっくり回りながら弾を撒き続ける＝渦巻きの弾幕。隙間を読んで近づいて壊す。
+  // 衝撃砲台と同じく時代の表とは別枠で、格上の街・要塞都市に置く（どの文明でも出る）
+  spinTurret: { label: "回転砲塔", ring: "#a8bccf", interval: 0.2, range: 430, spin: true },
 };
+const SPIN_TURRET_BARRELS = 4;        // 砲身の数（等間隔）
+const SPIN_TURRET_STEP    = 0.17;     // 1発ごとに回る角度（rad）。0.2秒ごと＝秒間約0.85rad＝ゆっくり
+const SPIN_TURRET_SPEED   = 80;       // 弾速（遅い＝渦の形が読める）
+const SPIN_TURRET_DAMAGE  = 1.4;
+const SPIN_TURRET_REACH   = 520;      // 弾の届く距離
+const SPIN_TURRET_COLOR   = "#ffd34a";
+const SPIN_TURRET_PER_FORTRESS_TOWN = 1;
+const SPIN_TURRET_ADVANCED_CHANCE   = 0.35;  // 格上の街に置く確率
+const SPIN_TURRET_MAX = 4;                   // 1つの大陸に置く上限（弾幕だらけにしない）
+const SPIN_TURRET_XP_MULT = 4;        // 倒すと経験値多め
 
 // 衝撃砲台のパラメータ。弾自体は敵の「衝撃砲」と同じ仕組み
 // （kind=1 のカタパルト弾＋着弾点の小さな衝撃波 projKnockR）。
@@ -10304,6 +10355,24 @@ function drawEmplacements() {
     ctx.arc(s.wx, s.wy, 3.2, 0, Math.PI * 2);
     ctx.fill();
 
+    // v3.60.0: 回転砲塔は砲身（4本）を今の向きで描く＝どちらへ回っているか・弾がどこから出るかが見える
+    if (def.spin) {
+      const ang = s._spinAngle ?? 0, len = s.radius + 12;
+      ctx.globalAlpha = 0.95;
+      ctx.strokeStyle = "#2c3846"; ctx.lineWidth = 7; ctx.lineCap = "round";
+      ctx.beginPath();
+      for (let k = 0; k < SPIN_TURRET_BARRELS; k++) {
+        const a = ang + k * Math.PI * 2 / SPIN_TURRET_BARRELS;
+        ctx.moveTo(s.wx, s.wy); ctx.lineTo(s.wx + Math.cos(a) * len, s.wy + Math.sin(a) * len);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = def.ring; ctx.lineWidth = 3.5;
+      ctx.stroke();
+      ctx.fillStyle = "#3a4858";
+      ctx.beginPath(); ctx.arc(s.wx, s.wy, s.radius * 0.55, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = def.ring; ctx.lineWidth = 2; ctx.stroke();
+      ctx.lineCap = "butt";
+    }
     // v0.60: 押してくる建物（衝撃砲台）は、押してくる**敵と同じ記号**を出す。
     // 外へ広がり続ける輪＋4方向のくさび＝「ここに入ると飛ばされる」。
     if (def.knockback) {
@@ -10499,6 +10568,13 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   // v3.45.0: 行商の隊（案帳 DT-269）。町と町を結ぶ道（townRoadEdges）の上を往復する。前後に護衛が2人
   result.push(...makeCaravans());
 
+  // v3.60.0: 戦象（案帳 DT-218）を古代・中世に。背に弓兵4人（別の敵）
+  for (let k = 0; k < (WAR_ELEPHANT_BY_STAGE[stageIndex] || 0); k++) {
+    const el = makeMover(MOVER_DEFS.war_elephant, randPoint);
+    el.maxHp = el.hp = MOVER_DEFS.war_elephant.hp; el.xpValue = MOVER_DEFS.war_elephant.xp;
+    result.push(el, ...attachElephantRiders(el));
+  }
+
   // v0.26: 巨獣（多パーツボス）を後半の一部ステージ（STAGE6・STAGE8）に1体。
   if (stageIndex === 5 || stageIndex === 7) {
     const core = makeMover(MOVER_DEFS.behemoth_core, randPoint);
@@ -10533,6 +10609,102 @@ const PACK_SEPARATION_GAP  = 6;    // 同一pack個体間に確保する隙間�
 // 進路や隊形そのものは壊さない。完全な非重なりは保証しない。
 const MOVER_SEPARATION_GAP  = 4;    // 別pack同士に確保する隙間
 const MOVER_SEPARATION_PUSH = 0.22; // 別pack同士の押し戻し係数（同一packは0.5＝完全解消）
+
+// ---- v3.60.0: 戦象（案帳 DT-218）----
+const WAR_ELEPHANT_BY_STAGE = [0, 1, 1];   // ステージごとの頭数（古代・中世）
+const WAR_ELEPHANT_ARMOR    = 0.25;        // 背に弓兵が残っている間、象の体が受ける傷の倍率（弓兵を先に狙わせる）
+// 背の弓兵の座席（象の向きに対する前後・左右。前＝+x）
+const WAR_ELEPHANT_SEATS = [[-2, -8], [-2, 8], [-15, -8], [-15, 8]];
+const WAR_RIDER_INTERVAL = 2.2;   // 弓兵1人が次の矢を撃つまで（秒）
+const WAR_RIDER_RANGE    = 380;
+const WAR_RIDER_SPEED    = 150;
+const WAR_RIDER_DAMAGE   = 2;
+function attachElephantRiders(el) {
+  el.riders = WAR_ELEPHANT_SEATS.map((seat, k) => {
+    const r = makeMover(MOVER_DEFS.war_elephant_rider, () => ({ x: el.wx, y: el.wy }));
+    r.maxHp = r.hp = MOVER_DEFS.war_elephant_rider.hp; r.xpValue = MOVER_DEFS.war_elephant_rider.xp;
+    r.parent = el; r.seat = seat;
+    r.attackTimer = 0.5 + k * 0.5 + random() * 0.5;   // 4人が一斉に撃たないようにずらす
+    placeElephantRider(r);
+    return r;
+  });
+  return el.riders;
+}
+function placeElephantRider(r) {
+  const el = r.parent, a = Math.atan2(el.headingY, el.headingX);
+  const c = Math.cos(a), sn = Math.sin(a);
+  r.wx = el.wx + r.seat[0] * c - r.seat[1] * sn;
+  r.wy = el.wy + r.seat[0] * sn + r.seat[1] * c;
+  r.headingX = el.headingX; r.headingY = el.headingY;
+}
+/** 背の弓兵：象の背に乗ったまま、近い竜を撃つ。象が倒れたら一緒に落ちる */
+function updateElephantRider(r, dt) {
+  const el = r.parent;
+  if (!el || !el.alive) { r.alive = false; return; }
+  placeElephantRider(r);
+  r.attackTimer -= dt;
+  if (r.attackTimer > 0) return;
+  r.attackTimer = WAR_RIDER_INTERVAL;
+  const i = findNearestAliveBoid(r.wx, r.wy);
+  if (i < 0 || dist2(px[i], py[i], r.wx, r.wy) > WAR_RIDER_RANGE * WAR_RIDER_RANGE) { r.attackTimer = 0.4; return; }
+  spawnProjectile(r.wx, r.wy, i, WAR_RIDER_SPEED, WAR_RIDER_DAMAGE, "#e8dcb8", 0, false, 0);
+}
+function elephantRidersLeft(el) { return el.riders ? el.riders.some(r => r.alive) : false; }
+
+// ---- v3.60.0: 鎌付き戦車（案帳 DT-239）----
+const SCYTHE_ENGAGE_R   = 900;    // 群れがこれより近いと回り込みを始める（遠いうちはふつうに巡回）
+const SCYTHE_ORBIT_R    = 240;    // 回り込むときの半径
+const SCYTHE_PASS_R     = 30;     // すれ違うときの半径（鎌が群れを通る）
+const SCYTHE_ORBIT_TIME = 2.6;    // 回り込んでいる秒数（このあとすれ違いに入る）
+const SCYTHE_PASS_TIME  = 2.2;    // すれ違いの秒数
+const SCYTHE_LEN        = 46;     // 鎌の届く長さ（車体の中心から右へ）
+const SCYTHE_HIT_W      = 11;     // 鎌の太さ（当たり）
+const SCYTHE_DAMAGE     = 14;     // 竜のHPは30。触れると大きく傷つく
+const SCYTHE_IMPACT     = 140;
+const SCYTHE_REHIT      = 0.8;    // 同じ竜にもう一度当たるまで（秒）
+const SCYTHE_SAFE_MULT  = 2;      // 鎌の無い側から受ける傷の倍率
+const SCYTHE_SIDE_ARC   = 1.0;    // 鎌の側（右）とみなす角度の幅（±rad）
+/** 回り込みとすれ違い。群れが遠いときは false を返して、ふつうの巡回に任せる */
+function updateScytheChariot(m, dt) {
+  const c = calcFriendlyCentroid();
+  const rx = m.wx - c.x, ry = m.wy - c.y, d = Math.sqrt(rx * rx + ry * ry) || 1;
+  if (d > SCYTHE_ENGAGE_R || countAliveBoids() === 0) return false;
+  if (!m.sc) m.sc = { phase: "orbit", t: 0, hit: new Map(), trail: [] };
+  const sc = m.sc;
+  sc.t += dt;
+  if (sc.phase === "orbit" && sc.t > SCYTHE_ORBIT_TIME) { sc.phase = "pass"; sc.t = 0; }
+  else if (sc.phase === "pass" && sc.t > SCYTHE_PASS_TIME) { sc.phase = "orbit"; sc.t = 0; }
+  const wantR = sc.phase === "pass" ? SCYTHE_PASS_R : SCYTHE_ORBIT_R;
+  // 群れを右手に見て回る：接線＝(-ry, rx)/d（右＝進む向きを時計回りに90°）。半径のずれだけ内外へ寄せる
+  const ux = rx / d, uy = ry / d;
+  const pull = Math.max(-1.6, Math.min(1.6, (d - wantR) / 90));
+  let wx = -uy - ux * pull, wy = ux - uy * pull;
+  const wl = Math.sqrt(wx * wx + wy * wy) || 1; wx /= wl; wy /= wl;
+  const cur = Math.atan2(m.headingY, m.headingX), want = Math.atan2(wy, wx);
+  const turn = Math.max(-m.def.turnRate * dt, Math.min(m.def.turnRate * dt, wrapAngle(want - cur)));
+  const na = cur + turn;
+  m.headingX = Math.cos(na); m.headingY = Math.sin(na);
+  const spd = m.def.speed * (frostFields.length ? frostSpeedMultAt(m.wx, m.wy) : 1);
+  m.wx = Math.max(40, Math.min(WORLD_W - 40, m.wx + m.headingX * spd * dt));
+  m.wy = Math.max(40, Math.min(WORLD_H - 40, m.wy + m.headingY * spd * dt));
+  // 砂煙の跡（見た目だけ）
+  sc.trail.push({ x: m.wx - m.headingX * 14, y: m.wy - m.headingY * 14, t: 0 });
+  for (const p of sc.trail) p.t += dt;
+  while (sc.trail.length && sc.trail[0].t > 0.6) sc.trail.shift();
+  // 鎌：車体の右（-hy, hx）へ伸びる線分に触れた竜を薙ぐ
+  const sx = -m.headingY, sy = m.headingX;
+  const x0 = m.wx + sx * 10, y0 = m.wy + sy * 10, x1 = m.wx + sx * SCYTHE_LEN, y1 = m.wy + sy * SCYTHE_LEN;
+  for (const [i, tm] of sc.hit) { if (tm - dt <= 0) sc.hit.delete(i); else sc.hit.set(i, tm - dt); }
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i] || sc.hit.has(i)) continue;
+    const r = SCYTHE_HIT_W * boidBodyScale(i);
+    if (pointSegDist2(px[i], py[i], x0, y0, x1, y1) > r * r) continue;
+    hitBoid(i, { direct: SCYTHE_DAMAGE, impact: SCYTHE_IMPACT }, sx, sy);
+    sc.hit.set(i, SCYTHE_REHIT);
+    spawnHitParticles(px[i], py[i]);
+  }
+  return true;
+}
 
 // v1.3.1: 開始地点の周りの、動く敵が湧かない・巡回しない安全圏（Shooter指示「スタート即動く敵は避けたい」）。
 // 町を置かない芯（START_TOWN_CLEAR_CENTER）と同じ半径にした。開始時の画面（外接円の半径 約960）に
@@ -11118,6 +11290,9 @@ function updateMovers(dt) {
     if (def.part === "train") continue;
     if (def.railBound) { updateRailMover(m, dt); continue; }
     if (def.hero) { updateHero(m, dt); continue; }   // v3.35.0: 人類の英雄は自前で動いて斬る
+    if (def.part === "rider") { updateElephantRider(m, dt); continue; }   // v3.60.0: 戦象の背の弓兵
+    if (def.heroMate) { updateHeroMate(m, dt); continue; }               // v3.60.0: 英雄の仲間
+    if (def.scythe && updateScytheChariot(m, dt)) continue;               // v3.60.0: 鎌付き戦車（群れが遠いときはふつうに巡回）
     // 胴は共通の移動・攻撃に乗せたうえで、脚の本数と砲塔だけ先に片付ける
     if (def.walker) updateWalkerHull(m, dt);
 
@@ -11507,7 +11682,7 @@ function updateMovers(dt) {
   for (const a of movers) {
     // v1.8.0: 関節パーツ（巨獣の腕・多脚戦車の脚）は押し合いの対象外。
     // 親に付いて動くものを押すと、関節の計算と喧嘩して暴れる
-    if (!a.alive || a.def.part === "arm" || a.def.part === "leg" ||
+    if (!a.alive || a.def.part === "arm" || a.def.part === "leg" || a.def.part === "rider" ||
         isRailVehicle(a.def) || a.submerged || a.def.roadRunner) continue;
     sepList.push(a);
   }
@@ -13382,6 +13557,15 @@ function damageMover(m, damage, srcX, srcY) {
       if (damage <= 0) return;
     }
   }
+  // v3.60.0: 戦象は背の弓兵が残っている間は固い。鎌付き戦車は鎌の無い側から2倍効く
+  if (m.def.name === "war_elephant" && elephantRidersLeft(m)) {
+    damage *= WAR_ELEPHANT_ARMOR;
+    if (fxRandom() < 0.3) spawnHitParticles(m.wx + (fxRandom() - 0.5) * 30, m.wy + (fxRandom() - 0.5) * 30);
+  }
+  if (m.def.scythe && srcX !== undefined) {
+    const rel = wrapAngle(Math.atan2(srcY - m.wy, srcX - m.wx) - Math.atan2(m.headingY, m.headingX));
+    if (Math.abs(rel - Math.PI / 2) > SCYTHE_SIDE_ARC) damage *= SCYTHE_SAFE_MULT;
+  }
   damage *= incomingDamageMult(m);   // v1.1.1: 楔竜のひび
   // v1.7.0: 関節パーツは殴られた向きへ押し込まれる（HPが減るだけだと置物に見える）
   if (m.def.part === "arm" || m.def.part === "leg") nudgeBehemothPart(m, srcX, srcY, damage);
@@ -13477,6 +13661,8 @@ function damageMover(m, damage, srcX, srcY) {
       hapticPulse(300);
     }
 
+    // v3.60.0: 戦象が倒れたら背の弓兵も落ちる（報酬は無し）
+    if (m.riders) for (const r of m.riders) if (r.alive) { r.alive = false; spawnHitParticles(r.wx, r.wy); }
     // v0.26: 巨獣コア撃破 → 腕も道連れ＋大報酬＋派手演出
     if (m.def.part === "core") {
       if (m.armL && m.armL.alive) m.armL.alive = false;
@@ -15471,6 +15657,51 @@ function drawMovers() {
       ctx.beginPath(); ctx.ellipse(0, 0, 22, 14, 0, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = def.glowColor; ctx.lineWidth = 2;
       for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.ellipse(0, 0, 18 - k * 5, 11 - k * 3, k * 0.6, 0, Math.PI * 1.4); ctx.stroke(); }
+    } else if (def.name === "war_elephant") {
+      // v3.60.0 戦象: 灰色の大きな胴・頭・耳・牙・鼻。背には木の輿（弓兵が乗る台）
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.ellipse(-4, 0, 26, 18, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#7c8188";
+      ctx.beginPath(); ctx.ellipse(18, -12, 7, 10, -0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(18, 12, 7, 10, 0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.arc(24, 0, 10, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#f0ead8"; ctx.lineWidth = 2.4;
+      ctx.beginPath(); ctx.moveTo(29, -5); ctx.quadraticCurveTo(37, -7, 40, -3); ctx.moveTo(29, 5); ctx.quadraticCurveTo(37, 7, 40, 3); ctx.stroke();
+      ctx.strokeStyle = "#7c8188"; ctx.lineWidth = 4; ctx.lineCap = "round";
+      const sw = Math.sin(breathTime * 3 + (m.swayPhase ?? 0)) * 4;
+      ctx.beginPath(); ctx.moveTo(32, 0); ctx.quadraticCurveTo(40, sw, 44, sw * 1.6); ctx.stroke();
+      ctx.lineCap = "butt";
+      ctx.fillStyle = "#8a5a2a"; ctx.strokeStyle = "#4a3016"; ctx.lineWidth = 1.2;
+      ctx.fillRect(-21, -13, 23, 26); ctx.strokeRect(-21, -13, 23, 26);
+      if (elephantRidersLeft(m)) { ctx.strokeStyle = "rgba(255,230,160,0.5)"; ctx.lineWidth = 1.5; ctx.strokeRect(-23, -15, 27, 30); }
+    } else if (def.name === "war_elephant_rider") {
+      // v3.60.0 戦象の背の弓兵: 小さな青灰の兵と弓
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.arc(0, 0, 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#d8c8a0"; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(2, 0, 5, -1.1, 1.1); ctx.stroke();
+    } else if (def.name === "scythe_chariot") {
+      // v3.60.0 鎌付き戦車: 馬・車体・車輪。右（+y）にだけ銀の三日月の鎌。走るときらっと光る
+      if (m.sc) for (const p of m.sc.trail) {   // 砂煙（世界座標なので回転を外して描く）
+        const k = 1 - p.t / 0.6;
+        ctx.save(); ctx.rotate(-angle); ctx.globalAlpha = 0.18 * k; ctx.fillStyle = "#c8b890";
+        ctx.beginPath(); ctx.arc(p.x - m.wx, p.y - m.wy, 6 + 6 * (1 - k), 0, Math.PI * 2); ctx.fill(); ctx.restore();
+      }
+      ctx.fillStyle = "#8a6038";
+      ctx.beginPath(); ctx.ellipse(22, 0, 10, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(32, 0, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#4a3418"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(4, 0); ctx.stroke();
+      ctx.fillStyle = "#2a2a30"; ctx.fillRect(-6, -13, 8, 4); ctx.fillRect(-6, 9, 8, 4);
+      ctx.fillStyle = def.color; ctx.fillRect(-10, -9, 15, 18);
+      ctx.strokeStyle = "#3a4458"; ctx.lineWidth = 1.2; ctx.strokeRect(-10, -9, 15, 18);
+      const glint = 0.6 + 0.4 * Math.abs(Math.sin(breathTime * 7 + (m.swayPhase ?? 0)));
+      ctx.fillStyle = "#dfe6ee"; ctx.strokeStyle = "#8a96a8"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(-3, 10); ctx.quadraticCurveTo(-8, 30, 8, SCYTHE_LEN); ctx.quadraticCurveTo(4, 28, 3, 10); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.globalAlpha = glint; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(-4, 16); ctx.quadraticCurveTo(-6, 30, 7, SCYTHE_LEN - 2); ctx.stroke(); ctx.globalAlpha = 1;
+    } else if (def.heroMate) {
+      drawHeroMateBody(m);
     } else if (def.name === "harpoon_knight") {
       // v3.51.0 竜狩りの騎士: 丸い鎧の騎士と、前へ構えた長い銛
       ctx.fillStyle = def.color;
@@ -18912,7 +19143,15 @@ function fireEmplacement(s, targetIdx) {
   const tx = px[targetIdx], ty = py[targetIdx];
   const base = Math.atan2(ty - s.wy, tx - s.wx);
 
-  if (key === "ember") {
+  if (key === "spinTurret") {
+    // 群れを狙わず、回りながら4方向へ撒く（狙われないので、渦の隙間に入れば当たらない）
+    if (s._spinAngle === undefined) { s._spinAngle = random() * Math.PI * 2; s._spinDir = random() < 0.5 ? -1 : 1; }
+    s._spinAngle += SPIN_TURRET_STEP * s._spinDir;
+    for (let k = 0; k < SPIN_TURRET_BARRELS; k++) {
+      spawnFanProjectileRaw(s.wx, s.wy, s._spinAngle + k * Math.PI * 2 / SPIN_TURRET_BARRELS,
+                            SPIN_TURRET_SPEED, SPIN_TURRET_DAMAGE, SPIN_TURRET_COLOR, 0, SPIN_TURRET_REACH);
+    }
+  } else if (key === "ember") {
     // 足元に燃える輪を置く（0.7秒の予告つき）。弾ではないので当たり判定は hazard 側
     spawnHazard(s.wx, s.wy, EMBER_TOWER_RADIUS, EMBER_TOWER_LIFE, EMBER_TOWER_DPS, "#ff8038");
   } else if (key === "trebuchet") {
@@ -22226,6 +22465,7 @@ function xpValueOf(settlement) {
     case "large":  base = 20; break;
     default:       base = 2; break; // small / 城下small
   }
+  if (settlement._emplacement === "spinTurret") base *= SPIN_TURRET_XP_MULT;   // v3.60.0: 回転砲塔は経験値多め
   // v0.7: 要塞都市はリスクに見合う報酬（v3.5.2: ×2 → ×6、v3.5.3: ×10）
   return settlement._fortified ? base * FORTIFIED_XP_MULT : base;
 }
@@ -26443,6 +26683,7 @@ const CODEX_ENEMY_NAMES = {
   splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
   ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
   flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門",
+  war_elephant: "戦象", war_elephant_rider: "戦象の弓兵", scythe_chariot: "鎌付き戦車", hero_shield: "盾投げの騎士", hero_mage: "大魔法使い", hero_archer: "英雄の弓手",
   miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
@@ -32838,6 +33079,7 @@ function heroSpeak(kind, important = false, m = heroState && heroState.m) {
 }
 function resetHeroLand() {
   heroFx.length = 0;
+  heroMateFx.length = 0;   // v3.60.0
   heroSay = null;
   heroState = worldShape === SHAPE_HEROLAND
     ? { m: null, level: 1, timer: HERO_FIRST_DELAY, away: true, final: false, defeated: false, stunMul: 1, sinceStun: 0 }
@@ -32857,11 +33099,202 @@ function spawnHero() {
   heroState.m = m; heroState.away = false;
   heroState.saidLowHp = false;
   spawnDragonAppearEffect(m.wx, m.wy);
+  spawnHeroMates(m, lv);   // v3.60.0: 2回目から仲間が1人ずつ増える
   heroSpeak(heroState.final ? "final" : lv > 1 ? "comeback" : "appear", true, m);
+}
+
+// =====================================================================
+// v3.60.0（案帳 DT-257）: 英雄の仲間。英雄が戻ってくるたびに1人ずつ増える
+//   2回目〜 盾投げの騎士：大きな丸い盾を投げる。弧を描いて飛び、当たった竜を弾き飛ばして手元へ戻る（行きと帰りで2回当たる）
+//   3回目〜 大魔法使い：群れの足元に大きな回る魔法陣を描き（1.5秒）、光の柱を噴き上げる
+//   4回目〜 弓手：英雄の横から群れを撃つ
+// 倒すと、その回の英雄は一人で戦う。英雄が退くと残りの仲間も退く
+// =====================================================================
+const HERO_MATES_BY_LEVEL = [[], ["shield"], ["shield", "mage"], ["shield", "mage", "archer"], ["shield", "mage", "archer"]];
+const HERO_MATE_DEFS = { shield: "hero_shield", mage: "hero_mage", archer: "hero_archer" };
+// 英雄の向きに対する立ち位置（前＝+x、右＝+y）
+const HERO_MATE_SLOTS = { shield: [24, -20], mage: [-30, 0], archer: [8, 26] };
+const HERO_MATE_FOLLOW   = 170;   // 立ち位置へ寄る速さ（英雄が踏み込むと遅れてついてくる）
+const HERO_MATE_HP_ERA   = 0.35;  // 文明1つ進むごとの体力の上げ幅
+const HM_SHIELD_INTERVAL = 4.2;   // 盾を投げる間（戻ってきてから）
+const HM_SHIELD_RANGE    = 400;
+const HM_SHIELD_FLIGHT   = 0.75;  // 片道の秒数
+const HM_SHIELD_ARC      = 0.35;  // 弧の膨らみ（距離に対する割合）
+const HM_SHIELD_R        = 18;    // 盾の当たりの半径
+const HM_SHIELD_DAMAGE   = 7;
+const HM_SHIELD_IMPACT   = 260;
+const HM_MAGE_INTERVAL   = 7.5;
+const HM_MAGE_FIRST      = 3.0;
+const HM_MAGE_CAST       = 1.5;   // 魔法陣を描いている秒数（この間に外へ抜ける）
+const HM_MAGE_R          = 120;   // 魔法陣の半径
+const HM_MAGE_DAMAGE     = 14;
+const HM_MAGE_PILLAR     = 0.6;   // 光の柱が見えている秒数
+const HM_ARCHER_INTERVAL = 1.5;
+const HM_ARCHER_RANGE    = 420;
+const HM_ARCHER_SPEED    = 170;
+const HM_ARCHER_DAMAGE   = 2.5;
+const heroMateFx = [];   // 飛んでいる盾・魔法陣・光の柱
+function spawnHeroMates(hero, lv) {
+  for (const kind of HERO_MATES_BY_LEVEL[Math.min(lv, HERO_MATES_BY_LEVEL.length) - 1] || []) {
+    const def = MOVER_DEFS[HERO_MATE_DEFS[kind]];
+    const slot = HERO_MATE_SLOTS[kind];
+    const mm = makeMover(def, () => ({ x: hero.wx, y: hero.wy }));
+    mm.wx = hero.wx + slot[0]; mm.wy = hero.wy + slot[1];
+    mm.maxHp = mm.hp = Math.round(def.hp * (1 + HERO_MATE_HP_ERA * currentStage)); mm.xpValue = def.xp;
+    mm.mate = { kind, hero, cool: kind === "mage" ? HM_MAGE_FIRST : 1.5 + random(), busy: false };
+    movers.push(mm);
+    spawnDragonAppearEffect(mm.wx, mm.wy);
+  }
+}
+function dismissHeroMates(cap) {
+  for (const mm of movers) {
+    if (!mm.alive || !mm.def.heroMate) continue;
+    mm.alive = false;
+    if (cap) heroFx.push({ kind: "streak", x: mm.wx, y: mm.wy, x2: cap.wx, y2: cap.wy, t: 0, life: HERO_STREAK_TIME });
+  }
+  for (let k = heroMateFx.length - 1; k >= 0; k--) if (heroMateFx[k].kind !== "pillar") heroMateFx.splice(k, 1);
+}
+function updateHeroMate(mm, dt) {
+  const st = mm.mate, hero = st.hero;
+  if (!hero || !hero.alive) { mm.alive = false; return; }
+  // 魔法を描いている間は足を止める。それ以外は英雄の向きに対する立ち位置へ寄る
+  if (!st.busy) {
+    const a = Math.atan2(hero.headingY, hero.headingX), slot = HERO_MATE_SLOTS[st.kind];
+    const tx = hero.wx + slot[0] * Math.cos(a) - slot[1] * Math.sin(a);
+    const ty = hero.wy + slot[0] * Math.sin(a) + slot[1] * Math.cos(a);
+    const dx = tx - mm.wx, dy = ty - mm.wy, d = Math.sqrt(dx * dx + dy * dy);
+    if (d > 2) { const mv = Math.min(d, HERO_MATE_FOLLOW * dt); mm.wx += dx / d * mv; mm.wy += dy / d * mv; }
+  }
+  const i = findNearestAliveBoid(mm.wx, mm.wy);
+  if (i >= 0) { const dx = px[i] - mm.wx, dy = py[i] - mm.wy, d = Math.sqrt(dx * dx + dy * dy) || 1; mm.headingX = dx / d; mm.headingY = dy / d; }
+  st.cool -= dt;
+  if (st.cool > 0 || st.busy || i < 0) return;
+  const d2 = dist2(px[i], py[i], mm.wx, mm.wy);
+  if (st.kind === "shield") {
+    if (d2 > HM_SHIELD_RANGE * HM_SHIELD_RANGE) { st.cool = 0.4; return; }
+    st.busy = true;
+    heroMateFx.push({ kind: "shield", owner: mm, x0: mm.wx, y0: mm.wy, tx: px[i], ty: py[i], t: 0, back: false, hit: new Set(), side: random() < 0.5 ? 1 : -1, x: mm.wx, y: mm.wy });
+  } else if (st.kind === "mage") {
+    const c = calcFriendlyCentroid();
+    st.busy = true;
+    heroMateFx.push({ kind: "circle", owner: mm, x: c.x, y: c.y, t: 0 });
+  } else if (st.kind === "archer") {
+    if (d2 > HM_ARCHER_RANGE * HM_ARCHER_RANGE) { st.cool = 0.4; return; }
+    st.cool = HM_ARCHER_INTERVAL;
+    spawnProjectile(mm.wx, mm.wy, i, HM_ARCHER_SPEED, HM_ARCHER_DAMAGE, "#ffe070", 0, false, 0);
+  }
+}
+/** 盾の位置：行きは投げた所→狙った所、帰りは狙った所→騎士の今の位置。どちらも横へ膨らむ弧 */
+function heroShieldPos(f) {
+  const k = Math.min(1, f.t / HM_SHIELD_FLIGHT);
+  const ax = f.back ? f.tx : f.x0, ay = f.back ? f.ty : f.y0;
+  const bx = f.back ? f.owner.wx : f.tx, by = f.back ? f.owner.wy : f.ty;
+  const dx = bx - ax, dy = by - ay, len = Math.sqrt(dx * dx + dy * dy) || 1;
+  const bend = len * HM_SHIELD_ARC * f.side * (f.back ? -1 : 1);
+  const cx = (ax + bx) / 2 - dy / len * bend, cy = (ay + by) / 2 + dx / len * bend;
+  const u = 1 - k;
+  return { x: u * u * ax + 2 * u * k * cx + k * k * bx, y: u * u * ay + 2 * u * k * cy + k * k * by, done: k >= 1 };
+}
+function updateHeroMateFx(dt) {
+  for (let k = heroMateFx.length - 1; k >= 0; k--) {
+    const f = heroMateFx[k];
+    f.t += dt;
+    if (f.kind === "shield") {
+      if (!f.owner.alive) { heroMateFx.splice(k, 1); continue; }
+      const ox = f.x, oy = f.y, p = heroShieldPos(f);
+      f.x = p.x; f.y = p.y;
+      const mx = f.x - ox, my = f.y - oy, ml = Math.sqrt(mx * mx + my * my) || 1;
+      for (let i = 0; i < N; i++) {
+        if (boidDead[i] || boidDowned[i] || f.hit.has(i)) continue;
+        if (dist2(px[i], py[i], f.x, f.y) > HM_SHIELD_R * HM_SHIELD_R) continue;
+        f.hit.add(i);
+        hitBoid(i, { direct: HM_SHIELD_DAMAGE, impact: HM_SHIELD_IMPACT }, mx / ml, my / ml);
+        spawnHitParticles(px[i], py[i]);
+      }
+      if (p.done) {
+        if (!f.back) { f.back = true; f.t = 0; f.hit.clear(); }   // 帰りもう一度当たる
+        else { f.owner.mate.busy = false; f.owner.mate.cool = HM_SHIELD_INTERVAL; heroMateFx.splice(k, 1); }
+      }
+    } else if (f.kind === "circle") {
+      if (!f.owner.alive) { heroMateFx.splice(k, 1); continue; }   // 描いている間に倒せば消える
+      if (f.t >= HM_MAGE_CAST) {
+        for (let i = 0; i < N; i++) {
+          if (boidDead[i] || boidDowned[i]) continue;
+          if (dist2(px[i], py[i], f.x, f.y) > HM_MAGE_R * HM_MAGE_R) continue;
+          hitBoid(i, { blast: HM_MAGE_DAMAGE }, 0, 0);
+        }
+        triggerShake(1.4, 0.08); triggerFlash("rgba(220,200,255,0.22)", 0.14);
+        heroMateFx[k] = { kind: "pillar", x: f.x, y: f.y, t: 0 };
+        f.owner.mate.busy = false; f.owner.mate.cool = HM_MAGE_INTERVAL;
+      }
+    } else if (f.kind === "pillar" && f.t >= HM_MAGE_PILLAR) heroMateFx.splice(k, 1);
+  }
+}
+function drawHeroMateFx() {
+  if (!heroMateFx.length) return;
+  ctx.save();
+  for (const f of heroMateFx) {
+    if (f.kind === "shield") {
+      ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(breathTime * 14);
+      ctx.fillStyle = "#e4eaf2"; ctx.strokeStyle = "#8a96a8"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "#c8283a"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-9, 0); ctx.lineTo(9, 0); ctx.strokeStyle = "rgba(255,255,255,0.7)"; ctx.lineWidth = 1; ctx.stroke();
+      ctx.restore();
+    } else if (f.kind === "circle") {
+      // 回る光の魔法陣：外の輪・内の輪・六芒の線。描き終わりに近いほど明るく脈打つ
+      const k = Math.min(1, f.t / HM_MAGE_CAST);
+      ctx.save(); ctx.translate(f.x, f.y);
+      ctx.globalAlpha = 0.45 + 0.4 * k + 0.15 * Math.sin(breathTime * 18) * k;
+      ctx.fillStyle = "rgba(200,170,255,0.12)"; ctx.beginPath(); ctx.arc(0, 0, HM_MAGE_R, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#f0e0ff"; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.arc(0, 0, HM_MAGE_R * (0.4 + 0.6 * Math.min(1, k * 2)), 0, Math.PI * 2); ctx.stroke();
+      ctx.rotate(breathTime * 1.8);
+      ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, 0, HM_MAGE_R * 0.72, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      for (let j = 0; j < 6; j++) { const a = j * Math.PI / 3; const b = a + Math.PI * 2 / 3;
+        ctx.moveTo(Math.cos(a) * HM_MAGE_R * 0.72, Math.sin(a) * HM_MAGE_R * 0.72); ctx.lineTo(Math.cos(b) * HM_MAGE_R * 0.72, Math.sin(b) * HM_MAGE_R * 0.72); }
+      ctx.stroke();
+      ctx.rotate(-breathTime * 3.6);
+      for (let j = 0; j < 8; j++) { const a = j * Math.PI / 4; ctx.fillStyle = "#f0e0ff"; ctx.fillRect(Math.cos(a) * HM_MAGE_R * 0.86 - 2, Math.sin(a) * HM_MAGE_R * 0.86 - 2, 4, 4); }
+      ctx.restore();
+    } else if (f.kind === "pillar") {
+      const k = f.t / HM_MAGE_PILLAR;
+      ctx.globalAlpha = 0.75 * (1 - k);
+      const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, HM_MAGE_R);
+      g.addColorStop(0, "#ffffff"); g.addColorStop(0.5, "rgba(220,200,255,0.8)"); g.addColorStop(1, "rgba(160,120,255,0)");
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, HM_MAGE_R * (1 + 0.15 * k), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.restore();
+}
+/** 仲間の体（drawMovers のベクター描画から。回転済みで前＝+x） */
+function drawHeroMateBody(mm) {
+  const kind = mm.mate ? mm.mate.kind : mm.def.heroMate, r = mm.def.radius;
+  ctx.fillStyle = mm.def.color; ctx.strokeStyle = "#ffd060"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  if (kind === "shield") {
+    if (!(mm.mate && mm.mate.busy)) {   // 盾を持っているときだけ手元に描く
+      ctx.fillStyle = "#e4eaf2"; ctx.strokeStyle = "#8a96a8"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(r * 0.9, 0, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "#c8283a"; ctx.beginPath(); ctx.arc(r * 0.9, 0, 3.5, 0, Math.PI * 2); ctx.stroke();
+    }
+  } else if (kind === "mage") {
+    ctx.strokeStyle = "#c8a070"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-2, r * 0.9); ctx.lineTo(r * 1.4, r * 0.9); ctx.stroke();
+    ctx.fillStyle = mm.mate && mm.mate.busy ? "#ffffff" : "#e0c8ff";
+    ctx.beginPath(); ctx.arc(r * 1.5, r * 0.9, 3.5 + (mm.mate && mm.mate.busy ? Math.abs(Math.sin(breathTime * 12)) * 2 : 0), 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#5a3a98"; ctx.beginPath(); ctx.moveTo(r * 0.7, 0); ctx.lineTo(-r * 0.4, -r * 0.6); ctx.lineTo(-r * 0.4, r * 0.6); ctx.closePath(); ctx.fill();
+  } else {
+    ctx.strokeStyle = "#e8dcb8"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(r * 0.3, 0, r * 1.1, -1.1, 1.1); ctx.stroke();
+  }
 }
 
 /** 英雄の国の毎フレーム（出てくるまでの時間・王城への接近・光の筋の寿命） */
 function updateHeroLand(dt) {
+  updateHeroMateFx(dt);   // v3.60.0
   for (let k = heroFx.length - 1; k >= 0; k--) { heroFx[k].t += dt; if (heroFx[k].t >= heroFx[k].life) heroFx.splice(k, 1); }
   if (heroSay) {
     heroSay.t += dt;
@@ -33010,6 +33443,7 @@ function heroDefeated(m) {
   const cap = heroCapital();
   m.alive = false; m.hp = 0;
   heroState.m = null;
+  dismissHeroMates(cap);   // v3.60.0: 残っていた仲間も英雄と一緒に退く（次に戻ってくるときにまた来る）
   for (let k = 0; k < (heroState.final ? HERO_FINAL_EGGS : HERO_REPEL_EGGS); k++) {
     const a = random() * Math.PI * 2, r = 30 + random() * 40;
     spawnEgg(m.wx + Math.cos(a) * r, m.wy + Math.sin(a) * r);
@@ -34273,6 +34707,7 @@ function render(now) {
   drawMoleCracks();   // v3.29.0: 土竜の地割れの跡
   drawTwinArcs();     // v3.31.0: 双子竜の雷のアーチ
   drawWhaleInhale();  // v3.57.0: 鯨竜の吸い込み
+  drawHeroMateFx();   // v3.60.0: 英雄の仲間の盾・魔法陣
   drawChainBalls();   // v3.31.0: 鉄鎖の鎖と鉄球
   drawMagnetShards(); // v3.31.0: 磁竜の破片
   drawRollBall();     // v3.29.0: 塊竜の玉（竜はこの上に貼り付いて描かれる）
