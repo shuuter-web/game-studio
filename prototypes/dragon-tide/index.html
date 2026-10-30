@@ -1275,7 +1275,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.60.0";
+const GAME_VERSION = "v3.61.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1498,6 +1498,7 @@ const DEBUG_ENEMY_LABELS = {
   grapeshot: "💥散弾砲車", steamhammer: "🔨蒸気打鉄", repulsor: "🌀反発塔車",
   concussion: "📣衝撃砲", gravitygun: "🕳重力砲",
   war_elephant: "🐘戦象(弓兵4人つき)", scythe_chariot: "⚔鎌付き戦車",   // v3.60.0
+  kite_soldier: "🪁雷凧の兵",   // v3.61.0
 };
 
 // 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
@@ -1511,7 +1512,7 @@ const DEBUG_ENEMY_ORDER = [
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
-  "walker_hull", "war_elephant", "scythe_chariot",
+  "walker_hull", "war_elephant", "scythe_chariot", "kite_soldier",
   // v2.0.0: 軌道の敵。線路が無い地域では湧かせられない（押しても何も起きない）
   "railgun_loco", "railcar", "railram",
   // v3.17.0: 大樹海の敵（樹冠が無い地域では隠れも切り拓きも起きない）
@@ -8539,6 +8540,11 @@ const MOVER_DEFS = {
     color: "#8a5cd0", glowColor: "#e0c8ff", moveType: "patrol", showHpBar: true },
   hero_archer: { name: "hero_archer", heroMate: "archer", hp: 300, speed: 0, xp: 300, eggDrop: 2, radius: 8,
     color: "#7a9a6a", glowColor: "#e8f0c0", moveType: "patrol", showHpBar: true },
+  // v3.61.0（案帳 DT-250）: 雷凧の兵。町の外側で金属の糸の凧を揚げている。凧に雷が落ちると糸全体が1秒だけ雷の線になる
+  kite_soldier: {
+    name: "kite_soldier", kite: true, hp: 90, speed: 0, xp: 90, eggDrop: 1, radius: 8,
+    color: "#7c8ea4", glowColor: "#ffe890", moveType: "patrol",
+  },
   // v3.54.0（案帳 DT-488）: 湧き出る門。動かない門から、その時代の小型の敵が湧き続ける
   rush_gate: {
     name: "rush_gate", hp: 700, speed: 0, xp: 240, eggDrop: 2, radius: 22,
@@ -10568,6 +10574,8 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   // v3.45.0: 行商の隊（案帳 DT-269）。町と町を結ぶ道（townRoadEdges）の上を往復する。前後に護衛が2人
   result.push(...makeCaravans());
 
+  // v3.61.0: 雷凧の兵（案帳 DT-250）は町の位置が決まってから置く（この時点では町の一覧がまだ前のステージのまま）
+  kitePlacePending = KITE_SOLDIERS_BY_STAGE[stageIndex] || 0;
   // v3.60.0: 戦象（案帳 DT-218）を古代・中世に。背に弓兵4人（別の敵）
   for (let k = 0; k < (WAR_ELEPHANT_BY_STAGE[stageIndex] || 0); k++) {
     const el = makeMover(MOVER_DEFS.war_elephant, randPoint);
@@ -10650,6 +10658,149 @@ function updateElephantRider(r, dt) {
   spawnProjectile(r.wx, r.wy, i, WAR_RIDER_SPEED, WAR_RIDER_DAMAGE, "#e8dcb8", 0, false, 0);
 }
 function elephantRidersLeft(el) { return el.riders ? el.riders.some(r => r.alive) : false; }
+
+// ---- v3.61.0: 雷凧の兵（案帳 DT-250・Shooter判定「出す場所は近世から、町の外側」）----
+// 近世（フランクリンの凧の時代）・産業・電気。普通の町と格上の街の外側に1人ずつ、1つの大陸に8人前後
+const KITE_SOLDIERS_BY_STAGE = [0, 0, 0, 8, 8, 8];
+const KITE_TOWN_OFFSET = 150;   // 町の中心から兵までの距離
+const KITE_LINE_LEN    = 130;   // 兵から凧までの糸の長さ（町の外へ向けて揚げる）
+const KITE_ACTIVE_R    = 650;   // 群れがこれより近いときだけ雷雲が集まる
+const KITE_IDLE        = 3.5;   // 次の雷雲が集まり始めるまで（＋乱数1.5秒）
+const KITE_CHARGE      = 3.0;   // 雷雲が暗くなっていく秒数（合図）
+const KITE_STRIKE      = 1.0;   // 糸が雷の線になっている秒数
+const KITE_LINE_W      = 12;    // 糸の当たりの太さ
+const KITE_LINE_DMG    = 9;     // 竜のHPは30
+const KITE_SPLASH_R    = 60;    // 凧のまわりに散る雷
+const KITE_SPLASH_DMG  = 7;
+const KITE_FREE_SPEED  = 34;    // 兵を倒すと凧が風に流される速さ
+const KITE_FREE_LIFE   = 16;
+const KITE_FREE_EVERY  = 2.6;   // 流れた凧が雷を落とす間
+const KITE_FREE_BUILDING_DMG = 30;   // 流れた凧の雷は人間の建物も焼く
+let kitePlacePending = 0;
+const freeKites = [];
+/** 町の一覧ができてから、町の外側に兵を置く（始まりの場所の近くと首都は避ける） */
+function placeKiteSoldiers() {
+  if (kitePlacePending <= 0 || townStats.size === 0) return;
+  const clear2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
+  const towns = [...townStats.values()].filter(t => !t.surrendered && t.total > 0 && dist2(t.cx, t.cy, START_X, START_Y) > clear2);
+  for (let k = 0; k < kitePlacePending && towns.length > 0; k++) {
+    const t = towns.splice(Math.floor(random() * towns.length), 1)[0];
+    const a = random() * Math.PI * 2;
+    const x = Math.max(60, Math.min(WORLD_W - 60, t.cx + Math.cos(a) * KITE_TOWN_OFFSET));
+    const y = Math.max(60, Math.min(WORLD_H - 60, t.cy + Math.sin(a) * KITE_TOWN_OFFSET));
+    const m = makeMover(MOVER_DEFS.kite_soldier, () => ({ x, y }));
+    m.wx = x; m.wy = y; m.maxHp = m.hp = MOVER_DEFS.kite_soldier.hp; m.xpValue = MOVER_DEFS.kite_soldier.xp;
+    m.kiteAng = a;   // 町の外へ向けて揚げる
+    movers.push(m);
+  }
+  kitePlacePending = 0;
+}
+/** 雷属性の攻撃を持つ竜種（雷を呼ぶ側どうし）は、凧の雷で焼けない。特殊個体は焼ける */
+function kiteHurtsBoid(i) { return boidSpecial[i] !== SPECIAL_NONE || attackAttribute(sp().attack) !== "thunder"; }
+function kiteSplash(x, y, hitBuildings) {
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i] || !kiteHurtsBoid(i)) continue;
+    if (dist2(px[i], py[i], x, y) > KITE_SPLASH_R * KITE_SPLASH_R) continue;
+    hitBoid(i, { shot: KITE_SPLASH_DMG }, 0, 0);
+  }
+  if (hitBuildings) settlements.forEach((st, idx) => {
+    if (st && !st.fallen && dist2(st.wx, st.wy, x, y) < (KITE_SPLASH_R + st.radius) ** 2) damageBuilding(idx, KITE_FREE_BUILDING_DMG);
+  });
+  triggerShake(0.8, 0.05);
+}
+function kitePos(m) {
+  const sway = Math.sin(breathTime * 1.3 + (m.swayPhase ?? 0)) * 0.25;
+  return { x: m.wx + Math.cos(m.kiteAng + sway) * KITE_LINE_LEN, y: m.wy + Math.sin(m.kiteAng + sway) * KITE_LINE_LEN };
+}
+function updateKiteSoldier(m, dt) {
+  if (m.kiteAng === undefined) m.kiteAng = random() * Math.PI * 2;   // デバッグで湧かせたとき
+  if (!m.kt) m.kt = { phase: "idle", t: KITE_IDLE * random(), hit: new Set() };
+  const k = m.kt, kp = kitePos(m);
+  m.headingX = Math.cos(m.kiteAng); m.headingY = Math.sin(m.kiteAng);
+  k.t -= dt;
+  if (k.phase === "idle") {
+    if (k.t > 0) return;
+    const c = calcFriendlyCentroid();
+    if (countAliveBoids() === 0 || dist2(c.x, c.y, m.wx, m.wy) > KITE_ACTIVE_R * KITE_ACTIVE_R) { k.t = 0.5; return; }
+    k.phase = "charge"; k.t = KITE_CHARGE;
+  } else if (k.phase === "charge") {
+    if (k.t > 0) return;
+    k.phase = "strike"; k.t = KITE_STRIKE; k.hit.clear();
+    kiteSplash(kp.x, kp.y, false);
+    triggerFlash("rgba(255,240,160,0.14)", 0.08);
+  } else if (k.phase === "strike") {
+    // 糸（兵→凧）を横切っている竜を焼く（1回の雷で1体1回）
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i] || k.hit.has(i) || !kiteHurtsBoid(i)) continue;
+      const r = KITE_LINE_W * boidBodyScale(i);
+      if (pointSegDist2(px[i], py[i], m.wx, m.wy, kp.x, kp.y) > r * r) continue;
+      k.hit.add(i);
+      hitBoid(i, { shot: KITE_LINE_DMG }, 0, 0);
+      spawnHitParticles(px[i], py[i]);
+    }
+    if (k.t <= 0) { k.phase = "idle"; k.t = KITE_IDLE + random() * 1.5; }
+  }
+}
+/** 兵を倒したら凧が流れる（倒された瞬間の凧の位置から、町の外へ向かう風に乗って） */
+function releaseKite(m) {
+  const kp = kitePos(m);
+  freeKites.push({ x: kp.x, y: kp.y, vx: Math.cos(m.kiteAng) * KITE_FREE_SPEED, vy: Math.sin(m.kiteAng) * KITE_FREE_SPEED, t: 0, next: KITE_FREE_EVERY * 0.5, flash: 0, phase: m.swayPhase ?? 0 });
+}
+function updateKites(dt) {
+  placeKiteSoldiers();
+  for (let k = freeKites.length - 1; k >= 0; k--) {
+    const f = freeKites[k];
+    f.t += dt; f.next -= dt; f.flash = Math.max(0, f.flash - dt);
+    const wob = Math.sin(f.t * 1.7 + f.phase) * 0.6;
+    f.x += (f.vx - f.vy * wob) * dt; f.y += (f.vy + f.vx * wob) * dt;
+    if (f.next <= 0) { f.next = KITE_FREE_EVERY; f.flash = 0.35; kiteSplash(f.x, f.y, true); }
+    if (f.t >= KITE_FREE_LIFE || f.x < 0 || f.y < 0 || f.x > WORLD_W || f.y > WORLD_H) freeKites.splice(k, 1);
+  }
+}
+/** 凧の絵（菱形・尾）。上に雷雲（charge＝0〜1で暗くなる） */
+function drawKiteShape(x, y, charge, flash, phase) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(breathTime * 2 + phase) * 0.2);
+  ctx.fillStyle = "#d84040"; ctx.strokeStyle = "#f0e8d8"; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(0, -11); ctx.lineTo(8, 0); ctx.lineTo(0, 13); ctx.lineTo(-8, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -11); ctx.lineTo(0, 13); ctx.moveTo(-8, 0); ctx.lineTo(8, 0); ctx.stroke();
+  ctx.strokeStyle = "#f0e8d8"; ctx.beginPath(); ctx.moveTo(0, 13); ctx.quadraticCurveTo(5, 20, 0, 27); ctx.stroke();
+  ctx.restore();
+  if (charge > 0) {
+    ctx.globalAlpha = 0.25 + 0.55 * charge;
+    ctx.fillStyle = charge > 0.7 && Math.sin(breathTime * 30) > 0.6 ? "#9aa0b8" : "#3a3e52";
+    for (const [ox, oy, r] of [[-14, -22, 13], [4, -26, 15], [18, -20, 11], [0, -16, 12]]) { ctx.beginPath(); ctx.arc(x + ox, y + oy, r * (0.7 + 0.3 * charge), 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+  if (flash > 0) {
+    ctx.globalAlpha = Math.min(1, flash * 3);
+    ctx.strokeStyle = "#fff6a0"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, y, KITE_SPLASH_R, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 6, y - 40); ctx.lineTo(x - 4, y - 18); ctx.lineTo(x + 4, y - 14); ctx.lineTo(x - 2, y); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+/** 糸（ふだんは白い細線・雷のときは黄色のジグザグ）と凧。動く敵の後に世界座標で描く */
+function drawKites() {
+  ctx.save();
+  for (const m of movers) {
+    if (!m.alive || !m.def.kite) continue;
+    const kp = kitePos(m), k = m.kt;
+    if (k && k.phase === "strike") {
+      ctx.strokeStyle = "#fff6a0"; ctx.lineWidth = 3; ctx.shadowColor = "#ffe060"; ctx.shadowBlur = 10;
+      ctx.beginPath(); ctx.moveTo(m.wx, m.wy);
+      const n = 9, dx = kp.x - m.wx, dy = kp.y - m.wy, len = Math.sqrt(dx * dx + dy * dy) || 1;
+      for (let j = 1; j < n; j++) { const off = (fxRandom() - 0.5) * 14; ctx.lineTo(m.wx + dx * j / n - dy / len * off, m.wy + dy * j / n + dx / len * off); }
+      ctx.lineTo(kp.x, kp.y); ctx.stroke(); ctx.shadowBlur = 0;
+    } else {
+      ctx.strokeStyle = "rgba(240,240,250,0.7)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(m.wx, m.wy); ctx.quadraticCurveTo((m.wx + kp.x) / 2 + 8, (m.wy + kp.y) / 2 + 8, kp.x, kp.y); ctx.stroke();
+    }
+    const charge = !k ? 0 : k.phase === "charge" ? 1 - k.t / KITE_CHARGE : k.phase === "strike" ? 1 : 0;
+    drawKiteShape(kp.x, kp.y, charge, k && k.phase === "strike" ? k.t : 0, m.swayPhase ?? 0);
+  }
+  for (const f of freeKites) drawKiteShape(f.x, f.y, Math.max(0, 1 - f.next / KITE_FREE_EVERY), f.flash, f.phase);
+  ctx.restore();
+}
 
 // ---- v3.60.0: 鎌付き戦車（案帳 DT-239）----
 const SCYTHE_ENGAGE_R   = 900;    // 群れがこれより近いと回り込みを始める（遠いうちはふつうに巡回）
@@ -11291,6 +11442,7 @@ function updateMovers(dt) {
     if (def.railBound) { updateRailMover(m, dt); continue; }
     if (def.hero) { updateHero(m, dt); continue; }   // v3.35.0: 人類の英雄は自前で動いて斬る
     if (def.part === "rider") { updateElephantRider(m, dt); continue; }   // v3.60.0: 戦象の背の弓兵
+    if (def.kite) { updateKiteSoldier(m, dt); continue; }                 // v3.61.0: 雷凧の兵（その場で凧を揚げている）
     if (def.heroMate) { updateHeroMate(m, dt); continue; }               // v3.60.0: 英雄の仲間
     if (def.scythe && updateScytheChariot(m, dt)) continue;               // v3.60.0: 鎌付き戦車（群れが遠いときはふつうに巡回）
     // 胴は共通の移動・攻撃に乗せたうえで、脚の本数と砲塔だけ先に片付ける
@@ -13661,6 +13813,7 @@ function damageMover(m, damage, srcX, srcY) {
       hapticPulse(300);
     }
 
+    if (m.def.kite) releaseKite(m);   // v3.61.0: 雷凧の兵を倒すと凧が流れる
     // v3.60.0: 戦象が倒れたら背の弓兵も落ちる（報酬は無し）
     if (m.riders) for (const r of m.riders) if (r.alive) { r.alive = false; spawnHitParticles(r.wx, r.wy); }
     // v0.26: 巨獣コア撃破 → 腕も道連れ＋大報酬＋派手演出
@@ -15702,6 +15855,10 @@ function drawMovers() {
       ctx.beginPath(); ctx.moveTo(-4, 16); ctx.quadraticCurveTo(-6, 30, 7, SCYTHE_LEN - 2); ctx.stroke(); ctx.globalAlpha = 1;
     } else if (def.heroMate) {
       drawHeroMateBody(m);
+    } else if (def.name === "kite_soldier") {
+      // v3.61.0 雷凧の兵: 青灰の兵が、凧の方（前）へ向かって糸巻きを構えている
+      ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(0, 0, 7, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#c8a070"; ctx.fillRect(5, -3, 5, 6);
     } else if (def.name === "harpoon_knight") {
       // v3.51.0 竜狩りの騎士: 丸い鎧の騎士と、前へ構えた長い銛
       ctx.fillStyle = def.color;
@@ -26683,7 +26840,7 @@ const CODEX_ENEMY_NAMES = {
   splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
   ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
   flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門",
-  war_elephant: "戦象", war_elephant_rider: "戦象の弓兵", scythe_chariot: "鎌付き戦車", hero_shield: "盾投げの騎士", hero_mage: "大魔法使い", hero_archer: "英雄の弓手",
+  kite_soldier: "雷凧の兵", war_elephant: "戦象", war_elephant_rider: "戦象の弓兵", scythe_chariot: "鎌付き戦車", hero_shield: "盾投げの騎士", hero_mage: "大魔法使い", hero_archer: "英雄の弓手",
   miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
@@ -30425,6 +30582,7 @@ function clearStageCards() {
   orbFacilities.clear();
   stageShards = 0;          // v3.49.0
   stageSpecials.length = 0; // v3.58.0
+  freeKites.length = 0;     // v3.61.0: 流れた凧を次のステージへ持ち越さない
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
   boidGiant.fill(0);
@@ -34708,6 +34866,7 @@ function render(now) {
   drawTwinArcs();     // v3.31.0: 双子竜の雷のアーチ
   drawWhaleInhale();  // v3.57.0: 鯨竜の吸い込み
   drawHeroMateFx();   // v3.60.0: 英雄の仲間の盾・魔法陣
+  drawKites();        // v3.61.0: 雷凧の兵の糸と凧
   drawChainBalls();   // v3.31.0: 鉄鎖の鎖と鉄球
   drawMagnetShards(); // v3.31.0: 磁竜の破片
   drawRollBall();     // v3.29.0: 塊竜の玉（竜はこの上に貼り付いて描かれる）
@@ -37969,6 +38128,7 @@ function tick() {
     updateCanopy(wdt);            // v3.17.0: 大樹海の樹冠の延焼
     updateBeamTowers(wdt);        // v3.34.0: 光線の高原の塔と光線
     updateHeroLand(wdt);          // v3.35.0: 英雄の国（英雄が出てくる・戻ってくる）
+    updateKites(wdt);             // v3.61.0: 雷凧の兵の置き場所・流れた凧
     updateFallFx(wdt);            // v3.36.0: 陥落の演出
     updateWorldTree(wdt);         // v3.19.0: 巨大樹（大樹海の首都）の灯と心臓の魔法
     maybeShowLevelUp();           // v0.6: レベルアップが積まれていれば3択を出す（非モーダル）
