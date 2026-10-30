@@ -1275,7 +1275,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.61.0";
+const GAME_VERSION = "v3.62.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7222,9 +7222,6 @@ const BEAM_RAMP            = 0.12;  // 撃ち始めと撃ち終わりに太さ�
 const BEAM_LOCK_BLINK      = 14;    // 向きが止まった予告の点滅の速さ
 const BEAM_MINI_PER_TOWN   = 1;     // 町ごとの光線の砲の数（まず1。町には前哨堡などの撃つ建物もあるので、増やすのは実機で見てから）
 const BEAM_TICK            = 0.1;   // 当たりの判定の間隔（秒）
-const BEAM_SAMPLE_STEP     = 40;    // 光線に沿って建物を探す間隔（px）
-const BEAM_BUILDING_DPS    = 50;    // 塔の光線が敵の建物に与える秒間威力
-const BEAM_MOVER_DPS       = 40;    // 塔の光線が動く敵に与える秒間威力
 const PRISM_CATCH_EXTRA    = 30;    // プリズム（首都の半径＋これ）に光線が触れたら割れる
 const PRISM_SPLITS         = 6;     // 割れる本数
 const PRISM_SPLIT_LENGTH   = 950;   // 割れた光線の長さ
@@ -7363,43 +7360,22 @@ function updateBeamTowers(dt) {
   for (const s of beamSegments) applyBeamDamage(s, tick);
 }
 
-/** 光線1本ぶんの当たり。竜・敵の建物・動く敵を焼く（光線の塔とプリズムは焼かない）。町の光線の砲は竜だけ */
+/** 光線1本ぶんの当たり。竜だけを焼く。
+ *  v3.62.0（案帳 DT-015・Shooter判定「街が焼けるのはほとんど見えないので訳がわからない。街を焼かなくていい」
+ *  「プリズムに当たったら乱反射するのは派手で良かったので残す。その場合も敵の同士討ちは不要」）:
+ *  敵の建物・動く敵を焼くのをやめた。プリズムで割れた光線も竜だけを焼く */
 function applyBeamDamage(s, tick) {
   const P = BEAM_KINDS[s.kind];
   const halfW = P.halfW * (s.split ? 0.7 : 1);
   const dx = s.x2 - s.x1, dy = s.y2 - s.y1, len = Math.sqrt(dx * dx + dy * dy) || 1;
   const ux = dx / len, uy = dy / len;
   const w2 = halfW * halfW;
-  // 竜
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
     if (pointSegDist2(px[i], py[i], s.x1, s.y1, s.x2, s.y2) > w2) continue;
     hitBoid(i, { shot: P.dragonDps * tick }, -uy, ux);
   }
-  if (!P.hitsAll) return;
-  // 敵の建物（光線に沿って一定間隔で格子を引く。同じ建物を二度焼かないよう印を付ける）
-  const stamp = ++beamStamp;
-  const cell = Math.max(1, Math.ceil((BEAM_SAMPLE_STEP + halfW + BEAM_TOWER_RADIUS) / BUILDING_GRID_CELL));
-  for (let d = 0; d <= len; d += BEAM_SAMPLE_STEP) {
-    buildingGridQueryRadius(s.x1 + ux * d, s.y1 + uy * d, cell, _buildingNeighbourBuf);
-    for (const sIdx of _buildingNeighbourBuf) {
-      const st = settlements[sIdx];
-      if (!st || st.fallen || st.isBoss || st._beamTower || st._beamStamp === stamp) continue;
-      const r = halfW + (st.radius || 10) * 0.6;
-      if (pointSegDist2(st.wx, st.wy, s.x1, s.y1, s.x2, s.y2) > r * r) continue;
-      st._beamStamp = stamp;
-      damageBuilding(sIdx, BEAM_BUILDING_DPS * tick);
-    }
-  }
-  // 動く敵
-  for (const m of movers) {
-    if (!m.alive) continue;
-    const r = halfW + (m.def.radius || 10);
-    if (pointSegDist2(m.wx, m.wy, s.x1, s.y1, s.x2, s.y2) > r * r) continue;
-    damageMover(m, BEAM_MOVER_DPS * tick, s.x1, s.y1);
-  }
 }
-let beamStamp = 0;
 
 /** 光線と、予告の線・塔と砲のレンズ・プリズム（樹冠と同じ層。竜の下） */
 function drawBeams(now) {
@@ -8623,7 +8599,8 @@ const MOVER_DEFS = {
   shieldman: {
     name: "shieldman", showHpBar: true,
     hp: 90, speed: 40, xp: 60, eggDrop: 1, radius: 14,
-    packCount: 4,
+    packCount: 6,   // v3.62.0: 横一列の盾の列（DT-138）に並ぶので4→6
+    shieldLine: true,
     color: "#cfd8e8", glowColor: "#9fd8ff", moveType: "pingpong",
     // 正面 ±SHIELD_ARC の被弾を shieldBlock 倍にする（0 = 完全反射）
     shieldArc: 1.15, shieldBlock: 0.0,
@@ -10802,6 +10779,43 @@ function drawKites() {
   ctx.restore();
 }
 
+// ---- v3.62.0: 盾の列（案帳 DT-138）----
+const SHIELD_LINE_ENGAGE = 750;   // 群れがこれより近いと列を組む
+const SHIELD_LINE_GAP    = 30;    // 隣との間（盾兵の半径14×2＋すき間）
+const SHIELD_LINE_STEP   = 26;    // 列が群れへ進む速さ（ふつうの盾兵40より遅い）
+const SHIELD_LINE_STOP   = 150;   // 群れの重心からこの距離で列は止まる
+const shieldLines = new Map();    // packId → { x, y, fx, fy, at, members }
+/** 隊の列の中で、この盾兵が立つ場所と向き。群れが遠ければ null（ふつうの動きに任せる） */
+function shieldLineSlot(m, centroid, dt) {
+  let L = shieldLines.get(m.packId);
+  if (!L || L.at !== breathTime) {
+    // 1フレームに1回だけ、隊の列（中心・向き・並び順）を進める
+    const members = movers.filter(o => o.alive && o.packId === m.packId && o.def.shieldLine);
+    if (members.length === 0) return null;
+    let ax = 0, ay = 0;
+    for (const o of members) { ax += o.wx; ay += o.wy; }
+    ax /= members.length; ay /= members.length;
+    if (!L) { L = { x: ax, y: ay, fx: 1, fy: 0 }; shieldLines.set(m.packId, L); }
+    L.at = breathTime;
+    const dx = centroid.x - L.x, dy = centroid.y - L.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
+    L.engaged = d < SHIELD_LINE_ENGAGE && countAliveBoids() > 0;
+    if (!L.engaged) { L.x = ax; L.y = ay; return null; }
+    L.fx = dx / d; L.fy = dy / d;
+    if (d > SHIELD_LINE_STOP) { L.x += L.fx * SHIELD_LINE_STEP * dt; L.y += L.fy * SHIELD_LINE_STEP * dt; }
+    // 列の中心が隊から離れすぎないように、隊の重心へ少し寄せる（押されて崩れたら組み直す）
+    L.x += (ax - L.x) * Math.min(1, dt * 0.5); L.y += (ay - L.y) * Math.min(1, dt * 0.5);
+    // 並び順：列の横方向の位置で決める（入れ替わって交差しないように）
+    const px_ = -L.fy, py_ = L.fx;
+    members.sort((p, q) => ((p.wx - L.x) * px_ + (p.wy - L.y) * py_) - ((q.wx - L.x) * px_ + (q.wy - L.y) * py_));
+    L.members = members;
+  }
+  if (!L.engaged) return null;
+  const k = L.members.indexOf(m), n = L.members.length;
+  if (k < 0) return null;
+  const off = (k - (n - 1) / 2) * SHIELD_LINE_GAP;
+  return { x: L.x - L.fy * off, y: L.y + L.fx * off, fx: L.fx, fy: L.fy };
+}
+
 // ---- v3.60.0: 鎌付き戦車（案帳 DT-239）----
 const SCYTHE_ENGAGE_R   = 900;    // 群れがこれより近いと回り込みを始める（遠いうちはふつうに巡回）
 const SCYTHE_ORBIT_R    = 240;    // 回り込むときの半径
@@ -11529,6 +11543,11 @@ function updateMovers(dt) {
     // v3.23.0: 攻撃ヘリは群れの周りを回る（機首の向きは updateMetroGun が群れへ向ける）
     if (def.orbit) { const h = metroHeliTarget(m, centroid, pursuing); if (h) { targetX = h.x; targetY = h.y; } }
 
+    // v3.62.0（案帳 DT-138・Shooter判定「既存の敵の動きだけ変えるのはアリ」）: 盾兵の隊は群れが近いと
+    // 横一列に並び、盾の面を群れへ向けてゆっくり進む（正面は弾く。横と後ろへ回り込む）
+    const lineSlot = def.shieldLine && m.packId !== undefined ? shieldLineSlot(m, centroid, dt) : null;
+    if (lineSlot) { targetX = lineSlot.x; targetY = lineSlot.y; }
+
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
     const d  = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -11593,9 +11612,11 @@ function updateMovers(dt) {
     if (m.shoveX) { m.wx -= m.shoveX; m.wy -= m.shoveY; }
 
     // v0.61: 画面外から来る増援は、群れに近づくまで行軍速度で走る
-    const moveSpeed = (laserLocked || m._ambushHold) ? 0
+    let moveSpeed = (laserLocked || m._ambushHold) ? 0
       : def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1)
         * (frostFields.length ? frostSpeedMultAt(m.wx, m.wy) : 1);   // v3.8.0: 凍て霧
+    // v3.62.0: 盾の列に並んだ盾兵は、自分の場所で止まる（行き過ぎて列の上で震えない）
+    if (lineSlot) moveSpeed = Math.min(moveSpeed, Math.sqrt(dist2(targetX, targetY, m.wx, m.wy)) / Math.max(dt, 1e-3));
     if (def.inertia) {
       // v3.27.0: 攻撃ヘリは速度に慣性がある（加速・減速に時間がかかり、行き過ぎてから戻る）。Shooter指示
       if (m.velX === undefined) { m.velX = 0; m.velY = 0; }
@@ -11653,6 +11674,8 @@ function updateMovers(dt) {
         m.wy = ob.wy + (ody / od) * minD;
       }
     }
+
+    if (lineSlot) { m.headingX = lineSlot.fx; m.headingY = lineSlot.fy; }   // 盾の面（正面）はいつも群れの方
 
     // ---- 攻撃 ----
     const nearestIdx = findNearestAliveBoid(m.wx, m.wy);
@@ -30583,6 +30606,7 @@ function clearStageCards() {
   stageShards = 0;          // v3.49.0
   stageSpecials.length = 0; // v3.58.0
   freeKites.length = 0;     // v3.61.0: 流れた凧を次のステージへ持ち越さない
+  shieldLines.clear();      // v3.62.0
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
   boidGiant.fill(0);
@@ -33189,6 +33213,10 @@ const HERO_SLASH_R          = 30;     // 踏み込みの道筋からこの距離
 const HERO_RECOVER          = 0.6;    // 斬った後に止まる＝殴るすき（秒）
 const HERO_CHAIN_R          = 320;    // 続けて斬る次の竜を探す距離
 const HERO_SPECIAL_DMG      = 0.5;    // 特殊個体はダウンせず、最大体力のこの割合を失う
+// v3.62.0（案帳 DT-107・Shooter判定「倒すのは一体でいいので、周りの竜もノックバックさせて強そうな感じに」）:
+// 斬った所から衝撃が広がり、まわりの竜を外へ吹き飛ばす（傷は入れない）
+const HERO_SLASH_KNOCK_R      = 110;
+const HERO_SLASH_KNOCK_IMPACT = 340;  // 近いほど強い（端で半分）
 const HERO_STUN_PER_IMPACT  = 1 / 200; // 衝撃力100で0.5秒・300で1.5秒
 const HERO_STUN_MAX         = 3;
 const HERO_STUN_DASH_MULT   = 2;      // 踏み込み中に当てると気絶が2倍（迎え撃ち）
@@ -33503,7 +33531,15 @@ function heroSlash(m, h, i) {
   const a = Math.atan2(h.dirY, h.dirX);
   heroFx.push({ kind: "slash", x: px[i], y: py[i], a, t: 0, life: 0.35 });
   heroFx.push({ kind: "halves", x: px[i], y: py[i], a, t: 0, life: 0.5 });
-  triggerShake(0.7, 0.08);
+  heroFx.push({ kind: "burst", x: px[i], y: py[i], t: 0, life: 0.4 });
+  for (let j = 0; j < N; j++) {
+    if (j === i || boidDead[j] || boidDowned[j]) continue;
+    const dx = px[j] - px[i], dy = py[j] - py[i], d2 = dx * dx + dy * dy;
+    if (d2 > HERO_SLASH_KNOCK_R * HERO_SLASH_KNOCK_R) continue;
+    const d = Math.sqrt(d2) || 1;
+    applyImpactToBoid(j, dx / d, dy / d, HERO_SLASH_KNOCK_IMPACT * (1 - 0.5 * d / HERO_SLASH_KNOCK_R));
+  }
+  triggerShake(1.4, 0.1);
   triggerFlash("rgba(255,255,255,0.18)", 0.1);
 }
 
@@ -33714,6 +33750,10 @@ function drawHeroFx() {
         const hx = f.x + Math.cos(f.a + s * Math.PI / 2) * off, hy = f.y + Math.sin(f.a + s * Math.PI / 2) * off;
         ctx.beginPath(); ctx.arc(hx, hy, 5 * (1 - k * 0.5), 0, Math.PI * 2); ctx.fill();
       }
+    } else if (f.kind === "burst") {
+      // v3.62.0: 斬撃の衝撃の輪（まわりの竜が吹き飛ぶ範囲）
+      ctx.globalAlpha = alpha * 0.8; ctx.strokeStyle = HERO_COLORS.rim; ctx.lineWidth = 3 * (1 - k) + 1;
+      ctx.beginPath(); ctx.arc(f.x, f.y, HERO_SLASH_KNOCK_R * (0.3 + 0.7 * k), 0, Math.PI * 2); ctx.stroke();
     } else if (f.kind === "after") {
       ctx.globalAlpha = alpha * 0.5; ctx.fillStyle = HERO_COLORS.body;
       ctx.beginPath(); ctx.arc(f.x, f.y, MOVER_DEFS.hero.radius * 0.9, 0, Math.PI * 2); ctx.fill();
