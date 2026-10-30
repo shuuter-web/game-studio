@@ -453,6 +453,14 @@
   .st-links path.mut    { stroke: #ff9ae0; }
   @keyframes stFlow { to { stroke-dashoffset: -20; } }
   .shop-detail .sd-note { font-size: 11px; color: #a0ecff; margin-top: 4px; }
+  /* v3.59.2: 説明の文字色をはっきり指定する（端末によっては継いだ色で暗く沈んでいた） */
+  .shop-detail { color: #eaf2ff; }
+  .shop-detail .sd-name { color: #ffffff; }
+  .shop-detail .sd-desc { color: rgba(225,238,255,0.9); opacity: 1; }
+  .shop-detail.hint { color: rgba(225,238,255,0.8); opacity: 1; }
+  #levelup-overlay.shop-mode #levelup-title { display: flex; flex-direction: column; align-items: center; gap: 2px; letter-spacing: 0.04em; }
+  #levelup-overlay.shop-mode #levelup-title .shop-mood { font-size: 15px; line-height: 1.5; text-align: center; color: #ffe0a0; padding: 0 12px; white-space: pre-line; letter-spacing: 0.06em; }
+  #levelup-overlay.shop-mode #levelup-title .shop-page { font-size: 11px; letter-spacing: 0.2em; color: #a0ecff; text-shadow: none; }
   .shop-detail { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: rgba(16,24,40,0.9); border-radius: 8px; padding: 8px 10px; margin: 4px 0; }
   .shop-detail .sd-name { font-weight: bold; font-size: 14px; }
   .shop-detail .sd-desc { font-size: 12px; opacity: 0.85; margin-top: 2px; }
@@ -1267,7 +1275,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.59.1";
+const GAME_VERSION = "v3.59.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -20443,8 +20451,10 @@ const STRINGS = {
   hudXp: (n) => `✨${Math.floor(n).toLocaleString()}`,
   shopTitle: "竜の巣",
   // v3.59.0（案帳 DT-238・Shooter指示）: 竜の進化と特殊個体を別の画面に。「買う・購入」とは言わない
-  shopTitleDragon: "竜の巣 — 竜の進化",
-  shopTitleSpecial: "竜の巣 — 特殊個体",
+  // v3.59.2（Shooter指示「タイトルは『竜の巣』ではなく、人を滅ぼして自由を謳歌している感じの一行に」）
+  shopMood: "人の国は灰となり、\n竜たちは思うがままに栄えている",
+  shopTitleDragon: "竜の進化",
+  shopTitleSpecial: "特殊個体",
   shopWallet: (n) => `貯めた経験値 <b>${Math.floor(n).toLocaleString()}</b>`,
   shopCost: (n) => `✨${n.toLocaleString()}`,
   shopSold: "加えた",
@@ -28760,7 +28770,9 @@ function showShop() {
   overlayEl.classList.remove("visible");
   levelupOverlayEl.classList.add("visible", "region-mode", "shop-mode");
   document.body.classList.add("region-picking");
-  armLevelUpCards();
+  // v3.59.2（Shooter指示）: 店は出てすぐ押せる（待ちはステージ中の誤タップ防止のもの。カードは押し始めもその上でないと選ばれない）
+  clearTimeout(levelUpArmTimer);
+  levelupOverlayEl.classList.add("armed");
 }
 function closeShop() {
   shopOpen = false;
@@ -28776,7 +28788,6 @@ function shopGoto(page) {
   shopInfo = null;
   shopSlot = -1;
   renderShop();
-  armLevelUpCards();
 }
 /** 選んだ枠から特殊個体を外す（入れ替え）。同じ種類がもう居なければ、その種類の進化も戻す */
 function shopRemoveSpecialAt(slot) {
@@ -28836,6 +28847,12 @@ function shopNavBar(buttons) {
   if (!bar) { bar = document.createElement("div"); bar.className = "shop-nav"; levelupOverlayEl.appendChild(bar); }
   bar.replaceChildren(...buttons);
 }
+/** 見出し：上に一行（雰囲気）、下に小さく今の画面の名前 */
+function shopSetTitle(page) {
+  levelupTitleEl.innerHTML = `<span class="shop-mood"></span><span class="shop-page"></span>`;
+  levelupTitleEl.querySelector(".shop-mood").textContent = STRINGS.shopMood;
+  levelupTitleEl.querySelector(".shop-page").textContent = page;
+}
 function shopNavButton(label, onPick, cls) {
   const b = document.createElement("button");
   b.className = "tw-go shop-next" + (cls ? " " + cls : "");
@@ -28852,7 +28869,7 @@ function renderShop() {
 
 // ---- 1. 竜の進化（ツリーだけ） ----
 function renderShopDragon() {
-  levelupTitleEl.textContent = STRINGS.shopTitleDragon;
+  shopSetTitle(STRINGS.shopTitleDragon);
   const offers = shopDragonOffers();
   levelupDragonEl.className = "lv-tree-panel";
   levelupDragonEl.innerHTML = "";
@@ -28894,9 +28911,7 @@ function buildShopDragonTree(offers) {
   const offerById = new Map(offers.map(o => [o.def.id, o]));
   const br = runSpeciesBranch[sid] || {};
   const wrap = document.createElement("div");
-  wrap.className = "tr-wrap shop-tree";
-  const h = document.createElement("div"); h.className = "tr-h"; h.textContent = STRINGS.treeDragon;
-  wrap.appendChild(h);
+  wrap.className = "tr-wrap shop-tree";   // 見出し（竜の進化）は画面の名前に出ているので、ツリーには付けない
   const links = [];   // [親の nid, 子の nid]
   const cardText = (id) => STRINGS.cards[id] || { name: "", desc: "" };
   // nid＝線を引くための名前。info＝選べないときに出す説明
@@ -29018,7 +29033,7 @@ function shopPreviewSlots() {
   return slots;
 }
 function renderShopSpecial() {
-  levelupTitleEl.textContent = STRINGS.shopTitleSpecial;
+  shopSetTitle(STRINGS.shopTitleSpecial);
   const max = effSpecialSlots();
   // 上：顔ぶれ（空き枠も）
   levelupDragonEl.className = "lv-tree-panel sp-slots-panel";
