@@ -1280,7 +1280,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.64.1";
+const GAME_VERSION = "v3.65.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1383,7 +1383,7 @@ function debugAdvanceStage() {
 // v3.58.1（Shooter指示）: レベルアップはステージ後の店に行ってしまうのでやめ、ステージ中の強化カードを n 枚出す（経験値が貯まったときと同じ道）。
 function debugStageCards(n) {
   if (gameState !== "playing") return;
-  for (let i = 0; i < n; i++) { stageCardLevel++; queueFallOffer(-1, false); }
+  for (let i = 0; i < n; i++) { stageCardLevel++; queueLevelUp(); }   // v3.65.0: レベルアップ（種類は通常と同じ引き方）
   updateXpHud();
 }
 
@@ -1656,8 +1656,8 @@ const DEBUG_ACTIONS = [
   { label: "★ このステージをクリア", run: () => { if (gameState === "playing") onCapitalFallen(); } },
   { label: "🏁 ラン完了（即）",       run: () => { if (gameState === "playing") triggerRunComplete(); } },
   { label: "💀 全滅させる",           run: () => { if (gameState === "playing") debugDownAll(); } },
-  { label: "⬆ 強化カード +1",        run: () => debugStageCards(1) },
-  { label: "⬆ 強化カード +5",        run: () => debugStageCards(5) },
+  { label: "⬆ レベルアップ +1",      run: () => debugStageCards(1) },
+  { label: "⬆ レベルアップ +5",      run: () => debugStageCards(5) },
   { label: "🐉 竜 +10",              run: () => debugAddDragons(10) },
   { label: "💠 XP +500",             run: () => { if (gameState === "playing") addXp(500); } },
   { label: "🔷 竜晶 +100",           run: () => { profile.crystals += 100; saveProfile(); } },
@@ -21285,13 +21285,16 @@ const STRINGS = {
   // v3.44.2: 宝の設定は「竜玉」（大人の竜から取れる、莫大な力を秘めた玉。取り戻すと竜の魂が解き放たれ、
   // 竜の怒りが宿って、この国を滅ぼすまで群れに力を貸す＝ステージの間だけ効く。案帳 DT-238・Shooter指示）
   fallOfferTitle: "竜玉を取り戻した",
-  fallOfferSub: "竜の怒りが宿る。強化を1つ選ぶ（この国を滅ぼすまで）",
+  fallOfferSub: "強化を1つ選ぶ（このランのあいだずっと効く）",   // v3.65.0: 永続に戻した
   fallOfferTitleRare: "竜玉施設から竜玉を取り戻した",   // v3.49.0
-  fallOfferTitleShard: "竜の力が高まった",   // v3.56.0: 経験値で出る強化カード
+  fallOfferTitleShard: "レベルアップ",   // v3.65.0（DT-497）: 経験値の三択を「レベルアップ」と呼ぶ形に戻した
   fallCardRare: "レア",
   stageJoinName: (name) => `${name}の加勢`,   // v3.58.0: ステージ限定の特殊個体の加入
   stageJoinDesc: (name, have, max) => `${name}がこのステージの間だけ加わる（加勢 ${have}/${max}・連れ歩きの枠とは別）`,
-  stageCardListHead: "このステージで取った強化",
+  stageCardListHead: "取った強化",
+  levelUpEvo: "レベルアップ — 竜の進化",       // v3.65.0
+  levelUpSpecial: "レベルアップ — 特殊個体",
+  statLevelUps: "このステージのレベルアップ",
   fallCards: {
     fsp_direct: { name: "特殊個体の牙",   desc: "特殊個体の直接攻撃の威力 +60%" },
     fsp_shot:   { name: "特殊個体の喉",   desc: "特殊個体のブレスの威力 +60%" },
@@ -21474,7 +21477,8 @@ const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity
 // 群れ全体の通常強化はレベルアップの三択から外してここへ移した（レベルアップは特殊個体の加入・強化と竜の進化が中心になる）。
 // 取った枚数は stageCards に入り、ステージが変わると消える。upCount に足されるので eff* はそのまま効く。
 const GENERAL_CARD_IDS = new Set(["scale", "tide", "magnet", "brood", "resonance", "cat_direct", "cat_shot", "cat_blast"]);
-const FALL_GENERAL_MAX = { scale: 3, resonance: 2, cat_direct: 3, cat_shot: 3, cat_blast: 3 };
+// v3.65.0（案帳 DT-497・Shooter指示「強化カードの効果も永続に戻す。効果を2倍にしたやつは戻す」）: 上限も元のカードの上限に戻した
+const FALL_GENERAL_MAX = {};
 const STAGE_JOIN_MAX = 3;   // v3.58.0: 1ステージで加勢（ステージ限定の加入）できる特殊個体の数
 const stageSpecials = [];  // このステージで加勢した特殊個体の種類
 const FALL_CARD_DEFS = [
@@ -21498,7 +21502,7 @@ const FALL_CARD_DEFS = [
   { id: "f_giant",     icon: "\u{1F996}", max: 2, rare: true },  // 群れの数匹が巨大化
   // v3.58.0（案帳 DT-238・Shooter指示「ステージ中強化カードに、そのステージでだけ加入する特殊個体を」「永続加入とは別枠。加入上限とか」）:
   // 加入カードのある特殊個体ごとに1枚。runSpecials（連れ歩きの枠）には入れず、ステージが変わると消える。上限は STAGE_JOIN_MAX で別に数える
-  ...CARD_DEFS.filter(d => d.specialJoin).map(d => ({ id: "fj_" + d.id.slice(3), icon: d.icon, max: STAGE_JOIN_MAX, stageJoin: d.specialJoin })),
+  // v3.65.0（DT-497）: 特殊個体はレベルアップで加わる（永続）ので、ステージ限定の加勢カードは出さない
 ];
 // 群れが持っていない攻撃の強化は出さない（Shooter指示）。カード → 見る攻撃の成分（special＝特殊個体の攻撃だけを見る）
 const FALL_CARD_NEEDS = {
@@ -21528,7 +21532,7 @@ const RUSH_CARD_ATTACK    = 0.5;    // 逆襲の血 1枚
 const DOWN_EGG_CHANCE     = 0.5;
 // v3.43.1: 陥落カードの通常強化は効き目を倍にする（Shooter指示。再生の潮だけは据え置き）。1枚を2枚分に数える
 // v3.43.3: 大繁殖も据え置き（+25。Shooter指示）
-const GENERAL_CARD_DOUBLE = new Set(["scale", "magnet", "resonance", "cat_direct", "cat_shot", "cat_blast"]);
+const GENERAL_CARD_DOUBLE = new Set();   // v3.65.0（DT-497）: 2倍はやめた（永続に戻したので）
 function genCount(id) { return upCount(id) + (GENERAL_CARD_DOUBLE.has(id) ? (stageCards[id] || 0) : 0); }
 const stageCards = {};              // 陥落カードの id → このステージで取った枚数
 // v3.44.0（案帳 DT-128 手直し）: 全部の陥落でカードを出すと1ステージ約50回と多すぎた。
@@ -22671,6 +22675,58 @@ function stageCardNeed() {
   const early = STAGE_CARD_EARLY_MULT + (1 - STAGE_CARD_EARLY_MULT) * Math.min(stageCardLevel, STAGE_CARD_EARLY_CARDS) / STAGE_CARD_EARLY_CARDS;
   return STAGE_CARD_XP_BASE * (1 + STAGE_CARD_XP_STAGE * runStageIndex) * Math.pow(STAGE_CARD_XP_GROWTH, stageCardLevel) * early;
 }
+// ---- v3.65.0（案帳 DT-497・Shooter指示）: 店（竜の巣）をやめ、ステージ中の三択＝レベルアップに戻す ----
+// 1回のレベルアップは、強化カードだけ／特殊個体（加える・進化・合成）だけ／竜の進化と突然変異だけ、のどれか1つから選ぶ。
+// 強化カードは下に出る三択（スロー）、特殊個体と竜の進化はツリーつきの画面（時間を止める）。
+// 竜の進化は分岐だけ（細かいレベルは刻まない）。進化した直後に続けて進化が出ないよう、間を空ける
+const LEVELUP_WEIGHTS = { cards: 5, special: 3, evo: 3 };
+const EVO_LEVEL_GAP   = 6;   // 竜の進化（突然変異を含む）を選んでから、次の進化が出るまでのレベルアップの回数
+let levelUpCats = [];        // 開くのを待っているレベルアップの種類（"special" / "evo"）
+let levelUpsSinceEvo = 0;    // 最後に竜が進化してからのレベルアップの回数（ランを通して数える）
+let stageLevelUps = 0;       // このステージで取ったレベルアップ（強化カード・竜玉施設のカードを含む）。警戒度はこれを見る
+function dragonEvoOptions() {
+  const out = [], sid = flockSpecies;
+  if (SPECIES_EVO_SPEC[sid]) {
+    const br = speciesBranch(sid);
+    if (!br.t10) out.push(EVO_NODES[`evo.br.${sid}.A`], EVO_NODES[`evo.br.${sid}.B`]);
+    else if (!br.t20) for (const t of tier2Options(sid, br.t10)) out.push(EVO_NODES[`evo.br.${sid}.${t.id}`]);
+  }
+  out.push(...dragonCrossOptions());
+  return out.filter(Boolean);
+}
+function specialLevelOptions() {
+  const out = [];
+  for (const kind of new Set(runSpecials)) {
+    const key = SPECIAL_DEFS[kind]?.key;
+    if (!SPECIAL_EVO_SPEC[key]) continue;
+    if (!runSpBranch[key]) out.push(EVO_NODES[`evo.sbr.${key}.A`], EVO_NODES[`evo.sbr.${key}.B`]);
+    for (const r of FUSION_RECIPES) {
+      if (r.a !== key) continue;
+      if (runSpecials.includes(SPECIAL_KIND_BY_KEY[r.b]) && EVO_NODES[`evo.fuse.${r.id}`]) out.push(EVO_NODES[`evo.fuse.${r.id}`]);
+    }
+  }
+  if (runSpecials.length < effSpecialSlots()) {
+    const pool = CARD_DEFS.filter(d => d.specialJoin && takenCount(d.id) < d.max && !runBanished.has(d.id) && isSpecialUnlocked(d.specialJoin));
+    for (let k = 0; k < JOIN_OFFER_MAX && pool.length > 0; k++) out.push(pool.splice(Math.floor(random() * pool.length), 1)[0]);
+  }
+  return out.filter(Boolean);
+}
+function rollLevelUpCategory() {
+  const avail = [["cards", LEVELUP_WEIGHTS.cards]];
+  if (runSpecials.length < effSpecialSlots() || specialLevelOptions().some(d => d.evo)) avail.push(["special", LEVELUP_WEIGHTS.special]);
+  if (levelUpsSinceEvo >= EVO_LEVEL_GAP && dragonEvoOptions().length > 0) avail.push(["evo", LEVELUP_WEIGHTS.evo]);
+  let roll = random() * avail.reduce((a, [, w]) => a + w, 0);
+  for (const [c, w] of avail) { roll -= w; if (roll <= 0) return c; }
+  return "cards";
+}
+function queueLevelUp() {
+  levelUpsSinceEvo++;
+  const cat = rollLevelUpCategory();
+  if (cat === "cards") { queueFallOffer(-1, false); return; }
+  levelUpCats.push(cat);
+  pendingCards++;
+  maybeShowLevelUp();
+}
 function addXp(value) {
   value = Math.round(value * permaBuff.xpGain);   // v0.21: 恵みライン「成長の律動」
   playerXp   += value;
@@ -22680,7 +22736,7 @@ function addXp(value) {
     while (stageCardXp >= stageCardNeed()) {
       stageCardXp -= stageCardNeed();
       stageCardLevel++;
-      queueFallOffer(-1, false);
+      queueLevelUp();   // v3.65.0（DT-497）
     }
   }
   updateXpHud();
@@ -22714,6 +22770,7 @@ function resetProgression() {
   // v0.85: 加入済みの特殊個体もランごとにゼロへ（カードと同じ寿命）
   runSpecials.length = 0;
   clearStageCards();   // v3.43.0
+  levelUpCats = []; levelUpsSinceEvo = 0;   // v3.65.0
   if (boidSpecial) boidSpecial.fill(SPECIAL_NONE);
   if (boidWakeCharge) boidWakeCharge.fill(0);
   clearWakeTrail();
@@ -22914,7 +22971,16 @@ function maybeShowLevelUp() {
   slowmoTimer = 0;   // v3.50.0: レベルアップは時間を止める（tick が止める）
   levelupTitleEl.textContent = STRINGS.levelUp;  // 竜種選択で書き換わったタイトルを戻す
   // v3.50.0（案帳 DT-238・Shooter指示）: 竜のレベルは自動で上げない（選択肢の1つ）。代わりに進化ツリーを見せる
-  const opts = levelUpOptions();   // v3.50.3: ツリーとカードで同じ選択肢を使う（加入カードは乱数で選ぶので1回だけ引く）
+  // v3.65.0（DT-497）: 種類ごとに選択肢を出す。選べるものが無くなっていたら、強化カードの三択に回す
+  const cat = levelUpCats[0] || "special";
+  const opts = cat === "evo" ? dragonEvoOptions() : specialLevelOptions();
+  if (opts.length === 0) {
+    levelUpCats.shift(); pendingCards--; upgradeCardsVisible = false;
+    queueFallOffer(-1, false);
+    if (pendingCards > 0) maybeShowLevelUp();
+    return;
+  }
+  levelupTitleEl.textContent = cat === "evo" ? STRINGS.levelUpEvo : STRINGS.levelUpSpecial;
   // v3.53.0（案帳 DT-238・Shooter指示）: 下に選択肢、上にツリー。選択肢を押すとその竜・特殊個体のツリーが出て、「これにする」で決まる
   renderLevelUpChoice(opts);
   levelupOverlayEl.classList.add("visible", "lv-center");
@@ -23308,6 +23374,9 @@ function chooseCard(def) {
   }
   dragonLvPendingApplied = false;
   pendingCards--;
+  // v3.65.0（DT-497）: 竜が進化したら、次の進化まで間を空ける。警戒度に数える
+  if (levelUpCats.shift() === "evo" || def.tier || def.becomes) levelUpsSinceEvo = 0;
+  stageLevelUps++;
   markRunSaveDirty();
   updateHUDLevel();
   hapticPulse(30);
@@ -29178,7 +29247,7 @@ function dismissRegionPick() {
 
 /** runStageIndex のステージを地域 shape で始める（新規・次の時代の共通入口）。 */
 function startStage(shape) {
-  clearStageCards();   // v3.43.0: 陥落カードはステージ限定
+  clearStageCards(true);   // v3.65.0（DT-497）: 強化カードは永続（ステージの宝・警戒度の数だけ戻す）
   runShape      = clampShape(shape);
   runEra        = clampEra(runStageIndex);
   runWorldSeed  = stageWorldSeed(runStageIndex);
@@ -29196,6 +29265,7 @@ function startStage(shape) {
 
   buildContinent(0);                       // ワールド生成＋警戒度0＋竜の数を戻す（特殊個体は残る）
   pickTreasureTowns();                     // v3.44.0: 竜の宝を置く町
+  reapplyPermanentCards();                 // v3.65.0: 巨竜化・特殊個体の分身を新しいステージの群れに作り直す
   stageStartTime = performance.now();
   runMaxFlock = Math.max(runMaxFlock, countAliveBoids());
   updateHUDStage();
@@ -29252,7 +29322,6 @@ function triggerStageCleared() {
   awardCrystals(crystalsForStageClear(runStageIndex));
   const bonus = clearBonus(stars, runStageIndex);   // v3.56.0: 評価のボーナス
   const stageXp = runTotalXp - (stageXpAtStart || 0);
-  playerXp += bonus;
   updateXpHud();
   evaluateChallenges();
   const railwayBefore = isRegionUnlocked(SHAPE_RAILWAY);
@@ -29287,7 +29356,7 @@ function triggerStageCleared() {
   // v3.58.2（案帳 DT-238・Shooter指示「リザルト画面はステージクリア画面を送った後別画面に」）: 経験値の勘定は次の画面で見せる
   stageClearPhase = "clear";
   overlayEl.classList.remove("result-mode");
-  stageResult = { stars, stageXp, bonus, bank: playerXp };
+  stageResult = { stars, stageXp, levelUps: alertCount() };   // v3.65.0（DT-497）: 店をやめたので、評価のボーナスと貯めた経験値は出さない
   retryBtn.textContent = STRINGS.stageClearToResult;
   setTimeout(() => overlayTitle.classList.add("show"), 300);
   setTimeout(() => retryBtn.classList.add("visible"), 1200);
@@ -29312,13 +29381,13 @@ function showStageResult() {
     `<div class="result-stars">${starHtml}</div>` +
     `<div class="result-rank">${clearRankName(r.stars)}</div>` +
     `<div class="rs-table">` +
-      `<span>${STRINGS.statStageXp}</span><span class="rs-v">✨${r.stageXp.toLocaleString()}</span>` +
-      `<span class="result-bonus">${STRINGS.statClearBonus}</span><span class="rs-v result-bonus">✨+${r.bonus.toLocaleString()}</span>` +
-      `<span class="rs-sum">${STRINGS.statXpBank}</span><span class="rs-v rs-sum rs-bank" id="rs-bank">✨${(r.bank - r.bonus).toLocaleString()}</span>` +
+      `<span>${STRINGS.statLevelUps}</span><span class="rs-v">${r.levelUps}</span>` +
+      `<span class="rs-sum">${STRINGS.statStageXp}</span><span class="rs-v rs-sum rs-bank" id="rs-bank">✨0</span>` +
     `</div>`;
-  // ボーナスが貯金に入るところを数え上げで見せる（見た目だけ。値はクリアの時点で足してある）
+  // このステージで得た経験値を数え上げで見せる（見た目だけ）
   const bankEl = document.getElementById("rs-bank");
-  const from = r.bank - r.bonus, start = performance.now() + STAGE_RESULT_COUNT_DELAY_MS;
+  r.bonus = r.stageXp;
+  const from = 0, start = performance.now() + STAGE_RESULT_COUNT_DELAY_MS;
   const tick = () => {
     if (stageClearPhase !== "result" || !bankEl.isConnected) return;
     const t = Math.max(0, Math.min(1, (performance.now() - start) / STAGE_RESULT_COUNT_MS));
@@ -29753,7 +29822,7 @@ function proceedToNextStage() {
   overlayTitle.classList.remove("show");
   retryBtn.classList.remove("visible");
   resultStatsEl.classList.remove("visible");
-  showShop();
+  showRegionPick();   // v3.65.0（DT-497）: 店（竜の巣）はやめた。リザルトから地域3択へ
 }
 
 // -----------------------------------------------------------------
@@ -30121,6 +30190,7 @@ function snapshotRunSave() {
     lvUpApplied:   dragonLvPendingApplied, // 開いていたレベルアップで竜のレベルを上げ済みか
     stageCards:    Object.assign({}, stageCards),   // v3.43.0: 陥落カード（ステージ限定）
     stageShards, stageCardXp, stageCardLevel, stageXpAtStart,   // v3.56.0: 経験値の強化カードの進み
+    stageLevelUps, levelUpCats: levelUpCats.slice(), levelUpsSinceEvo,   // v3.65.0
     treasureTowns: [...treasureTowns],              // v3.44.0: まだ取り戻していない竜の宝の町
     orbFacilityKinds: Object.fromEntries([...orbFacilities].map(([t, f]) => [t, f.kind])),   // v3.48.0
   });
@@ -30204,8 +30274,7 @@ function resumeRun() {
   if (regionChoices.length > 0) {
     updateHUDWeapon();
     updateXpHud();
-    if (runStageIndex > 0) showShop();   // v3.55.0: ステージの間で閉じていたら店から
-    else showRegionPick();
+    showRegionPick();   // v3.65.0: 店はやめた
     return;
   }
 
@@ -30221,14 +30290,14 @@ function resumeRun() {
   } else pickTreasureTowns();   // 宝の無い旧セーブ（v3.43 まで）から再開したら選び直す
   stageShards = save.stageShards | 0;   // v3.49.0
   stageCardXp = +save.stageCardXp || 0; stageCardLevel = save.stageCardLevel | 0; stageXpAtStart = +save.stageXpAtStart || runTotalXp;   // v3.56.0
-  // v3.49.0: 巨竜・特殊個体の分身は位置と一緒に持ち越さないので、カードの分だけ作り直す
-  for (let k = 0; k < (stageCards.f_giant || 0); k++) makeGiants();
-  if (stageCards.f_sp_double) for (const kind of runSpecials.slice()) addRunSpecial(kind, true);
-  for (const d of FALL_CARD_DEFS) if (d.stageJoin) for (let k = 0; k < (stageCards[d.id] || 0); k++) { stageSpecials.push(d.stageJoin); addRunSpecial(d.stageJoin, true); }   // v3.58.0: 加勢を戻す
+  stageLevelUps = save.stageLevelUps | 0;   // v3.65.0
+  levelUpCats = Array.isArray(save.levelUpCats) ? save.levelUpCats.filter(c => c === "evo" || c === "special") : [];
+  levelUpsSinceEvo = save.levelUpsSinceEvo | 0;
   renderStageCardIcons();
   stageStartTime = performance.now() - (save.stageElapsedMs || 0);
   // v3.11.7: 群れの数・卵・ボスの状態を戻す（位置は開始地点・HPは満タンから）
   if ((save.flockCount | 0) > 0) { resetBoidsForStageStart(Math.min(MAX_BOIDS, save.flockCount | 0)); resetLeader(); }
+  reapplyPermanentCards();   // v3.49.0→v3.65.0: 巨竜・特殊個体の分身は位置と一緒に持ち越さないので、カードの分だけ作り直す
   totalEggCount = save.eggs | 0;
   dragonLvPendingApplied = !!save.lvUpApplied;
   updateHUDEggs();
@@ -30581,9 +30650,7 @@ function fallenTownCount() {
 }
 /** v3.44.3: このステージで取った陥落カードの枚数。警戒度はこの1つの数だけを見る。 */
 function alertCount() {
-  let n = 0;
-  for (const k in stageCards) n += stageCards[k];
-  return n;
+  return stageLevelUps;   // v3.65.0（DT-497）: 強化カードは永続になったので、このステージで取ったレベルアップの数を数える
 }
 
 /** 次の警戒度に上がるのに必要なカードの枚数（最終段階なら Infinity）。 */
@@ -30824,8 +30891,10 @@ function fallCardText(id) {
 }
 
 /** ステージが変わる・ランが終わるときに、陥落カードと順番待ちを畳む。 */
-function clearStageCards() {
-  for (const k of Object.keys(stageCards)) delete stageCards[k];
+function clearStageCards(keepCards = false) {
+  // v3.65.0（DT-497）: 強化カードは永続。ステージが変わっても残し、ランの始めにだけ消す
+  if (!keepCards) for (const k of Object.keys(stageCards)) delete stageCards[k];
+  stageLevelUps = 0;
   treasureTowns.clear();
   orbFacilities.clear();
   stageShards = 0;          // v3.49.0
@@ -31160,6 +31229,7 @@ function takeFallCard(def, townIndex) {
   const oldMax = effBoidMaxHp();
   const oldSpMult = 1 + SPECIAL_CARD_HP * upCount("fsp_hp");
   stageCards[def.id] = (stageCards[def.id] || 0) + 1;
+  stageLevelUps++;   // v3.65.0: 警戒度はこのステージで取った数で上がる
   if (def.id === "brood") applyCardImmediate("brood");
   if (def.id === "f_giant") makeGiants();   // v3.49.0
   if (def.id === "f_sp_double") for (const k of runSpecials.slice()) addRunSpecial(k, true);
@@ -31177,6 +31247,12 @@ function takeFallCard(def, townIndex) {
   closeFallOffer();
   maybeAdvanceTier(true);
   updateHUDBuildings();
+}
+
+/** v3.65.0（DT-497）: 永続の強化カードのうち、群れに形として乗るもの（巨竜化・特殊個体の分身）を作り直す */
+function reapplyPermanentCards() {
+  for (let k = 0; k < (stageCards.f_giant || 0); k++) makeGiants();
+  if (stageCards.f_sp_double) for (const kind of runSpecials.slice()) addRunSpecial(kind, true);
 }
 
 /** カードを選び終えたら閉じて、順番待ちの次を出す。 */
