@@ -36,8 +36,8 @@
      --hud-band は最上段2行のぶんの高さ。左上・右上はこの下から始める。
      =============================================================== */
   :root {
-    --hud-top:  calc(env(safe-area-inset-top, 0px) + 6px);
-    --hud-band: calc(env(safe-area-inset-top, 0px) + 46px);
+    --hud-top:  calc(env(safe-area-inset-top, 0px) + 18px);   /* v3.67.0: 太くした経験値ゲージ（13px）のぶん下げる */
+    --hud-band: calc(env(safe-area-inset-top, 0px) + 58px);
   }
 
   /* 右下 HUD: FPS */
@@ -321,11 +321,12 @@
     text-align: center;
   }
 
-  /* v0.6: XPバー（画面最上部の極細バー） */
+  /* v0.6: XPバー（画面最上部）。v3.67.0（DT-497・Shooter指示「必要ポイントの数字はゲージの上に」）:
+     4px→13px に太くし、レベルと「いま / 次まで」をゲージの上に重ねる。ノッチに隠れないよう safe-area の下から */
   #xp-bar {
     position: fixed;
-    top: 0; left: 0; right: 0;
-    height: 4px;
+    top: env(safe-area-inset-top, 0px); left: 0; right: 0;
+    height: 13px;
     background: rgba(255,255,255,0.10);
     z-index: 30;
     pointer-events: none;
@@ -338,6 +339,19 @@
     transition: width 0.15s ease-out;
   }
   #xp-fill.near-full { animation: xpPulse 0.5s infinite alternate; }
+  #xp-text {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+    font-size: 10px; line-height: 1; font-weight: bold; color: #fff;
+    text-shadow: 0 0 2px #000, 0 0 3px #000;
+    white-space: nowrap;
+  }
+  /* v3.67.0（DT-497・Shooter指示）: 陥落の咆哮の残り時間と攻撃の上がり幅 */
+  #hud-roar { display: none; margin-top: 2px; font-size: 11px; color: #ffb070; }
+  #hud-roar.on { display: block; }
+  #hud-roar .roar-track { height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; overflow: hidden; margin-top: 1px; }
+  #hud-roar .roar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #ff7040, #ffc080); }
   @keyframes xpPulse { from { filter: brightness(1.0); } to { filter: brightness(1.7); } }
 
   /* v0.6.1: レベルアップ3択カード（非モーダル・画面下部）
@@ -1202,6 +1216,7 @@
   </div>
   <div id="hud-eggrow">&#x1F95A; x <span id="h-eggs">0</span></div>
   <div id="hud-stagecards"></div>
+  <div id="hud-roar"><span id="roar-text"></span><div class="roar-track"><div class="roar-fill" id="roar-fill"></div></div></div>
 </div>
 
 <!-- 右上: ミニマップ -->
@@ -1234,7 +1249,7 @@
 </div>
 
 <!-- v0.6: XPバー -->
-<div id="xp-bar"><div id="xp-fill"></div></div>
+<div id="xp-bar"><div id="xp-fill"></div><span id="xp-text"></span></div>
 
 <!-- v0.6: レベルアップ3択カード -->
 <div id="levelup-overlay">
@@ -1282,7 +1297,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.66.0";
+const GAME_VERSION = "v3.67.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3347,6 +3362,7 @@ function stageAttackMult() {
   if (tierRush.phase === "active") m *= 1 + RUSH_CARD_ATTACK * upCount("f_rush");
   if (upCount("f_egg_power") > 0) m *= 1 + Math.min(EGG_POWER_MAX, EGG_POWER_PER_EGG * totalEggCount);   // v3.49.0
   if (fallRoarTimer > 0) m *= 1 + FALL_ROAR_ATTACK * upCount("f_fall_roar");                            // v3.49.0
+  if (flockOverflow > 0) m *= overflowPowerMult();                                                     // v3.67.0: 上限超えの竜
   return m;
 }
 // v3.43.0: 特殊個体の攻撃だけに重ねる倍率（陥落カード「特殊個体の牙・喉・膂力」）。
@@ -20390,7 +20406,18 @@ function gridQuery(x, y, cellSize, out) {
 // v0.6: 配列確保上限。実際の群れ上限は BASE_FLOCK_CAP + 「大繁殖」カード分（effFlockCap()）
 // で決まり、最大でも MAX_BOIDS を超えない（大繁殖2回で 100+50=150）。
 const MAX_BOIDS = 150;
-const BASE_FLOCK_CAP = 100;
+const BASE_FLOCK_CAP = 100;   // 鯨竜（capMult<1）の上限の元。ふつうの竜種は FLOCK_TOTAL_CAP
+// v3.67.0（DT-497・Shooter指示「群れの上限を1000くらいに。150以降は攻撃力とHPに変換して、見た目だけの竜を足す」）:
+// 動く竜（配列）は MAX_BOIDS=150 のまま。その先は「上限超えの竜」の数 flockOverflow として数えるだけにし、
+// 群れ全体の攻撃・HP の倍率に換算する。見た目は本物2体のあいだに描く竜（drawOverflowDragons）で出す。
+// 1000体を本当に動かすと当たり判定と描画が持たないため。
+const FLOCK_TOTAL_CAP          = 1000;
+const BROOD_TOTAL_PER_CARD     = 100;    // 大繁殖1枚で開く上限
+const OVERFLOW_POWER_PER_BLOCK = 0.5;    // 上限超えの竜 OVERFLOW_POWER_BLOCK 体ごとに攻撃・HP +50%（1000体で約×3.8）
+const OVERFLOW_POWER_BLOCK     = 150;
+const OVERFLOW_DRAW_MAX        = 350;    // 見た目だけの竜を描く最大数（描画の重さの上限）
+const OVERFLOW_DRAW_REACH      = 26;     // 本物の竜から何pxまでの所に描くか（群れの隙間を埋める距離）
+let flockOverflow = 0;
 let N = 0;
 let px, py, vx, vy;
 let boidHp;
@@ -20623,6 +20650,7 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
   // v0.85: 加入済みの特殊個体はスロット1以降に入るので、その分だけ N を下限として確保する
   N = Math.max(1, 1 + runSpecials.length, Math.min(MAX_BOIDS, initialCount | 0));
   N = Math.min(MAX_BOIDS, N);
+  flockOverflow = 0;   // v3.67.0: 上限超えの竜も持ち越さない（続きから再開は呼び出し側で戻す）
 
   // v0.7: 強化カードが持ち越されるため、HPは実効最大値（硬鱗・種族補正込み）で初期化する
   const maxHpNow = effBoidMaxHp();
@@ -20904,7 +20932,13 @@ function spawnBoidAtEgg(wx, wy) {
   let idx = -1;
   for (let j = 1; j < N; j++) if (boidDead[j] && boidSpecial[j] === SPECIAL_NONE) { idx = j; break; }
   if (idx < 0) {
-    if (N >= effFlockCap() || N >= MAX_BOIDS) return false; // 上限到達時は追加しない
+    if (N >= effFlockCap() || N >= MAX_BOIDS) {
+      // v3.67.0: 動く竜が満杯なら、群れ全体の上限まで「上限超えの竜」として数える（攻撃・HP に換算）
+      if (N + flockOverflow >= effFlockTotalCap()) return false;   // 上限到達時は追加しない
+      setFlockOverflow(flockOverflow + 1);
+      spawnDragonAppearEffect(wx, wy);
+      return true;
+    }
     idx = N; // 新しい個体スロット
     N++;     // 有効個体数を先に増やす
   }
@@ -20944,7 +20978,7 @@ function spawnBoidAtEgg(wx, wy) {
   py[idx]                   = wy;
   vx[idx]                   = finalVx;
   vy[idx]                   = finalVy;
-  boidHp[idx]               = BOID_MAX_HP;
+  boidHp[idx]               = BOID_MAX_HP * overflowPowerMult();   // v3.67.0: 上限超えの竜の HP 倍率ぶん（満タンで生まれる）
   boidDead[idx]             = 0;
   boidFadeTimer[idx]        = 0;
   boidHitStopTimer[idx]     = 0;
@@ -20991,7 +21025,9 @@ const STRINGS = {
   statClearBonus: "評価のボーナス",
   clearRankByTier: (t) => `警戒度${t}で撃破`,
   hudXp: (n) => `✨${Math.floor(n).toLocaleString()}`,
-  hudLevel: (lv, cur, need) => `Lv.${lv}　✨${cur.toLocaleString()} / ${need.toLocaleString()}`,   // v3.66.0
+  hudLevel: (lv) => `Lv.${lv}`,   // v3.67.0: 数字はゲージの上（hudXpGauge）へ移した
+  hudXpGauge: (lv, cur, need) => `Lv.${lv}　✨${cur.toLocaleString()} / ${need.toLocaleString()}`,   // v3.67.0（DT-497）
+  hudRoar: (name, pct, sec) => `📢 ${name} 攻撃+${pct}%　${sec}秒`,   // v3.67.0（DT-497）
   shopTitle: "竜の巣",
   // v3.59.0（案帳 DT-238・Shooter指示）: 竜の進化と特殊個体を別の画面に。「買う・購入」とは言わない
   // v3.59.2（Shooter指示「タイトルは『竜の巣』ではなく、人を滅ぼして自由を謳歌している感じの一行に」）
@@ -21322,7 +21358,7 @@ const STRINGS = {
     wind:      { name: "疾風",     desc: "群れの速度 +8%" },
     tide:      { name: "再生の潮", desc: "復帰時間 -15%" },
     magnet:    { name: "吸引域",   desc: "XP吸引範囲 +40%" },
-    brood:     { name: "大繁殖",   desc: "群れ上限 +25、竜 +5" },
+    brood:     { name: "大繁殖",   desc: "群れ上限 +100、竜 +5" },   // v3.67.0: 上限1000に合わせて +25→+100
     resonance: { name: "竜鱗共鳴", desc: "被ダメージ -12%" },
     cat_direct: { name: "直撃の牙",   desc: "直接攻撃（体当たり・爪・刃・舌など）の威力 +12%" },
     cat_shot:   { name: "烈火の喉",   desc: "ブレス（炎・氷槍・影弾・羽根・光）の威力 +12%" },
@@ -21529,6 +21565,23 @@ const GIANT_STOMP_INTERVAL = 1.2;  // 巨竜の踏みつけ（自分のまわり
 const GIANT_STOMP_RADIUS = 70;
 const GIANT_STOMP_DAMAGE = 30;
 let fallRoarTimer = 0;
+// v3.67.0（DT-497・Shooter指示「陥落の咆哮の残り時間がわかる表示を。威力アップが何%かも添えて」）
+const roarHudEl  = document.getElementById("hud-roar");
+const roarTextEl = document.getElementById("roar-text");
+const roarFillEl = document.getElementById("roar-fill");
+let roarHudShown = false;
+let roarHudSec   = -1;
+function updateRoarHud() {
+  const on = fallRoarTimer > 0 && gameState === "playing";
+  if (on !== roarHudShown) { roarHudShown = on; roarHudEl.classList.toggle("on", on); roarHudSec = -1; }
+  if (!on) return;
+  const sec = Math.ceil(fallRoarTimer);
+  if (sec !== roarHudSec) {   // 文字は秒が変わったときだけ書き換える（毎フレームのDOM書き換えを避ける）
+    roarHudSec = sec;
+    roarTextEl.textContent = STRINGS.hudRoar(fallCardText("f_fall_roar").name, Math.round(FALL_ROAR_ATTACK * upCount("f_fall_roar") * 100), sec);
+  }
+  roarFillEl.style.width = (fallRoarTimer / FALL_ROAR_TIME * 100).toFixed(1) + "%";
+}
 const SPECIAL_CARD_DMG    = 0.60;   // 特殊個体の牙・喉・膂力 1枚の上げ幅
 const SPECIAL_CARD_HP     = 0.80;   // 特殊個体の鱗 1枚
 const SPECIAL_CARD_REVIVE = 0.75;   // 特殊個体の再起 1枚ごとの復活時間の倍率
@@ -22609,9 +22662,29 @@ function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * genCoun
 // 「敵が強くなる」と同時に「増やせる数が増える」ので、遷移が損ではなく解放になる。
 // v3.24.0: 警戒度で上限が開く仕組み（55%→70%→85%→100%）をやめ、最初から最大まで育てられるようにした
 // （Shooter指示「群れの上限を警戒度によって上げる理由がよくわからない」）
-function effFlockCap()      {
-  const base = (BASE_FLOCK_CAP + 25 * genCount("brood") + permaBuff.flockCap) * (sp().capMult || 1);   // v3.57.0: 鯨竜は数体だけ
-  return Math.max(1, Math.min(MAX_BOIDS, Math.round(base)));
+/** v3.67.0: 群れ全体の上限（上限超えの竜を含む）。鯨竜は数体だけの竜種なので、従来どおり上限超えは無し。 */
+function effFlockTotalCap() {
+  const capMult = sp().capMult || 1;
+  if (capMult < 1) {   // v3.57.0: 鯨竜は数体だけ
+    const base = (BASE_FLOCK_CAP + 25 * genCount("brood") + permaBuff.flockCap) * capMult;
+    return Math.max(1, Math.min(MAX_BOIDS, Math.round(base)));
+  }
+  return Math.max(1, Math.round((FLOCK_TOTAL_CAP + BROOD_TOTAL_PER_CARD * genCount("brood") + permaBuff.flockCap) * capMult));
+}
+/** 動く竜（配列）の上限。ここを超えた分は flockOverflow に数える。 */
+function effFlockCap()      { return Math.min(MAX_BOIDS, effFlockTotalCap()); }
+/** v3.67.0: 上限超えの竜が群れ全体の攻撃・HP に掛ける倍率。 */
+function overflowPowerMult() { return 1 + OVERFLOW_POWER_PER_BLOCK * flockOverflow / OVERFLOW_POWER_BLOCK; }
+/**
+ * v3.67.0: 上限超えの竜の数を変える唯一の入口。最大HPが倍率ぶん動くので、今のHPも同じ比で動かす
+ * （そうしないと、増えるたびに全員が「削れた」HPバーを出す）。
+ */
+function setFlockOverflow(count) {
+  const before = overflowPowerMult();
+  flockOverflow = Math.max(0, count | 0);
+  const ratio = overflowPowerMult() / before;
+  if (ratio === 1) return;
+  for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i]) boidHp[i] *= ratio;
 }
 function effDmgTakenMult()  { return Math.pow(0.88, genCount("resonance")) * permaBuff.dmgTakenMult; }
 // 武器別強化はタイプ別に保持される（転換しても消えず、そのタイプに戻れば効く。§5.4-C）
@@ -22622,7 +22695,7 @@ function effBeamTargets()   { return 1 + upCount("multibeam"); }
 function effBulletPierce()  { return 1 + upCount("pierce"); }
 function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
 // v0.6-p2: 緋竜（MELEE）は個体HP +50%（仕様 §6.4）
-function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1) * (sp().hpMult || 1) * (upCount("f_gamble") > 0 ? GAMBLE_HP_MULT : 1); }   // v3.8.0: 亀竜は素で硬い
+function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1) * (sp().hpMult || 1) * (upCount("f_gamble") > 0 ? GAMBLE_HP_MULT : 1) * overflowPowerMult(); }   // v3.67.0: 上限超えの竜   // v3.8.0: 亀竜は素で硬い
 // v0.85: 特殊個体は役割ごとのHP倍率を持つ（巌竜は轢進む前提なので 3 倍）。
 // v3.10.0: 極光（旧母竜）だけに掛かっていた専用の倍率 motherHp は撤去（他の特殊個体と同じ扱い）
 function effBoidMaxHpFor(i) {
@@ -23414,6 +23487,7 @@ function dismissLevelUpCards() {
 // v0.6: XPバー・レベルHUD
 // -----------------------------------------------------------------
 const xpFillEl   = document.getElementById("xp-fill");
+const xpTextEl   = document.getElementById("xp-text");
 const hudLevelEl = document.getElementById("h-level");
 
 function updateXpHud() {
@@ -23426,7 +23500,9 @@ function updateXpHud() {
 
 function updateHUDLevel() {
   // v3.66.0（DT-497・Shooter指示「レベルアップの必要ポイントをゲージだけでなく数字も」）: レベルと、次のレベルアップまでの経験値
-  hudLevelEl.textContent = STRINGS.hudLevel(playerLevel, Math.floor(stageCardXp), Math.ceil(stageCardNeed()));
+  // v3.67.0（DT-497・Shooter指示「数字はゲージに隣接させるか、ゲージの上に」）: 数字はゲージの上、群れの欄は Lv だけ
+  hudLevelEl.textContent = STRINGS.hudLevel(playerLevel);
+  xpTextEl.textContent   = STRINGS.hudXpGauge(playerLevel, Math.floor(stageCardXp), Math.ceil(stageCardNeed()));
 }
 
 // =================================================================
@@ -30189,6 +30265,7 @@ function snapshotRunSave() {
     runFormLv, runSpFormLv: Object.assign({}, runSpFormLv),   // v3.50.0
     // v3.11.7: 途中セーブで抜けていたもの（Shooter「竜の数がセーブされていない」）
     flockCount:    N,                      // 群れの数（特殊個体込み）。位置とHPは保存しない＝開始地点から満タンで再開
+    flockOverflow: flockOverflow,          // v3.67.0: 上限超えの竜
     eggs:          totalEggCount,          // 拾った卵（HUD）
     lvUpApplied:   dragonLvPendingApplied, // 開いていたレベルアップで竜のレベルを上げ済みか
     stageCards:    Object.assign({}, stageCards),   // v3.43.0: 陥落カード（ステージ限定）
@@ -30299,7 +30376,7 @@ function resumeRun() {
   renderStageCardIcons();
   stageStartTime = performance.now() - (save.stageElapsedMs || 0);
   // v3.11.7: 群れの数・卵・ボスの状態を戻す（位置は開始地点・HPは満タンから）
-  if ((save.flockCount | 0) > 0) { resetBoidsForStageStart(Math.min(MAX_BOIDS, save.flockCount | 0)); resetLeader(); }
+  if ((save.flockCount | 0) > 0) { resetBoidsForStageStart(Math.min(MAX_BOIDS, save.flockCount | 0)); resetLeader(); setFlockOverflow(save.flockOverflow | 0); }
   reapplyPermanentCards();   // v3.49.0→v3.65.0: 巨竜・特殊個体の分身は位置と一緒に持ち越さないので、カードの分だけ作り直す
   totalEggCount = save.eggs | 0;
   dragonLvPendingApplied = !!save.lvUpApplied;
@@ -31157,9 +31234,28 @@ function makeGiants() {
     spawnDragonAppearEffect(px[i], py[i]);
   }
 }
+/**
+ * v3.67.0（DT-497）: 本物の竜が減った（竜狩りの銛などで枠が空いた）ら、上限超えの竜から1フレーム1体ずつ戻す。
+ * 竜種が変わって全体の上限が下がったときは、上限超えの数を上限に合わせて切り詰める。
+ */
+function refillFlockFromOverflow() {
+  if (flockOverflow <= 0) return;
+  const room = effFlockTotalCap() - N;
+  if (flockOverflow > room) setFlockOverflow(room);
+  if (flockOverflow <= 0) return;
+  let hasSlot = N < effFlockCap();
+  for (let j = 1; !hasSlot && j < N; j++) if (boidDead[j] && boidSpecial[j] === SPECIAL_NONE) hasSlot = true;
+  if (!hasSlot) return;
+  setFlockOverflow(flockOverflow - 1);
+  const c = calcFriendlyCentroid();
+  const a = random() * Math.PI * 2;
+  if (!spawnBoidAtEgg(c.x + Math.cos(a) * 30, c.y + Math.sin(a) * 30)) setFlockOverflow(flockOverflow + 1);
+}
 /** 毎フレーム：咆哮の時計・巨竜の踏みつけ */
 function updateStageCardEffects(dt) {
   if (fallRoarTimer > 0) fallRoarTimer = Math.max(0, fallRoarTimer - dt);
+  updateRoarHud();
+  refillFlockFromOverflow();   // v3.67.0: 本物の竜が減ったら、上限超えの分から戻す
   if (upCount("f_giant") === 0) return;
   for (let i = 0; i < N; i++) {
     if (!boidGiant[i] || boidDead[i] || boidDowned[i]) continue;
@@ -35781,6 +35877,41 @@ function drawBreathAttacks(now) {
 
 // v3.10.0: 極光（旧母竜・虹竜）専用の体格成長・「最初の1体」探しは撤去した（他の特殊個体と同じ扱い）。
 
+/**
+ * v3.67.0（DT-497・Shooter指示「適当な2匹の間に表示だけする、どちらかが死んだら非表示に」）:
+ * 上限超えの竜を、本物の竜2体のあいだ（片方から OVERFLOW_DRAW_REACH px まで）に描く。
+ * 当たり判定も動きの計算も持たない。組み合わせは番号から決まる（乱数を使わない）ので毎フレーム同じ組で、
+ * 本物2体に付いて動くように見える。尻尾は描かない（数が多いので胴体だけ）。
+ */
+function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical) {
+  if (N < 2) return;
+  const count = Math.min(flockOverflow, OVERFLOW_DRAW_MAX);
+  for (let k = 0; k < count; k++) {
+    const a = (k * 7919 + 13) % N;
+    const b = (a + 1 + (k % 7)) % N;
+    if (a === b) continue;
+    if (boidDead[a] || boidDowned[a] || boidDead[b] || boidDowned[b]) continue;   // どちらかが倒れたら描かない
+    const dx = px[b] - px[a], dy = py[b] - py[a];
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const t = ((k * 0.6180339) % 1) * 0.8 + 0.1;              // 2体のあいだのどこか（組ごとに固定）
+    const along = Math.min(dist * t, OVERFLOW_DRAW_REACH);
+    const side = (((k * 0.4142136) % 1) - 0.5) * 16;           // 線の左右に少し散らす
+    const ux = dx / dist, uy = dy / dist;
+    const wx = px[a] + ux * along - uy * side;
+    const wy = py[a] + uy * along + ux * side;
+    const angle = Math.atan2(vy[a] + vy[b], vx[a] + vx[b]);
+    const phase = breathTime * DRAGON_FLAP_SPEED + ((k * 0.7548777) % 1) * Math.PI * 2;
+    const frameIdx = Math.floor((Math.sin(phase) * 0.5 + 0.5) * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
+    ctx.save();
+    ctx.globalAlpha = 0.8;
+    ctx.translate(wx, wy);
+    ctx.rotate(angle);
+    if (evoScale !== 1) ctx.scale(evoScale, evoScale);
+    ctx.drawImage(sprites[frameIdx], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+    ctx.restore();
+  }
+}
+
 function drawBoids() {
   if (wispActive()) { drawWisp(); return; }   // v3.36.0: 鬼火は竜の絵を描かず、灯で描く
   // プリレンダスプライトのDPR（createDragonSprites で使ったものと一致させる）
@@ -35828,6 +35959,8 @@ function drawBoids() {
       boidAngleHistory[base + s] = easeAngle(boidAngleHistory[base + s], boidAngleHistory[base + s - 1], TAIL_EASE_SEG);
     }
   }
+
+  if (flockOverflow > 0 && !onBall) drawOverflowDragons(sprites, evoScale, spritePx, halfLogical);   // v3.67.0: 本物の下に描く
 
   for (let i = 0; i < N; i++) {
     // dead かつフェード完了 → スキップ（従来通り）
@@ -37081,9 +37214,9 @@ function updateHUD() {
   hudUpdateCounter = 0;
 
   const aliveCount = countAliveBoids();
-  hudAlive.textContent = aliveCount;
-  // v0.6: 上限は「大繁殖」カード分を含めた実効上限を表示する
-  hudMax.textContent   = effFlockCap();
+  hudAlive.textContent = aliveCount + flockOverflow;   // v3.67.0: 上限超えの竜も数に入れる
+  // v0.6: 上限は「大繁殖」カード分を含めた実効上限を表示する（v3.67.0: 上限超えを含む全体の上限）
+  hudMax.textContent   = effFlockTotalCap();
   updateHUDEggs();
 }
 
