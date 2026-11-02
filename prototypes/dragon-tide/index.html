@@ -1761,6 +1761,23 @@ function dbgTap(el, fn) {
   el.addEventListener("click", (e) => { e.stopPropagation(); fn(e); });
 }
 
+/**
+ * 案帳 DT-503: 開いたタップの指離しで選ばれない dbgTap。
+ * 竜種選択は「はじめる」の pointerdown で開くので、同じ指を離したときの click が
+ * スマホ（タッチ）ではちょうど指の下に出てきたカードに届き、触っていない竜種で始まってしまっていた。
+ * このボタンの上で押し始めたタップの click だけを受ける（キーボードの決定＝detail 0 は押し始めが無いので通す）。
+ */
+function freshTap(el, fn) {
+  let pressedHere = false;
+  el.addEventListener("pointerdown", (e) => { e.stopPropagation(); pressedHere = true; });
+  el.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!pressedHere && e.detail !== 0) return;
+    pressedHere = false;
+    fn(e);
+  });
+}
+
 function renderDebugPanel() {
   const title = debugPage === "enemies" ? "ENEMIES"
               : debugPage === "specials" ? "SPECIALS"
@@ -8913,7 +8930,13 @@ const MOVER_DEFS = {
   longbowmen: {
     name: "longbowmen", hp: 60, speed: 34, xp: 45, eggDrop: 1, radius: 9, packCount: 5,
     color: "#7c8ea4", glowColor: "#e8dcb8", moveType: "pingpong",
-    attack: { type: "shell", interval: 3.6, range: 430, count: 2, damage: 1.5, aoe: 36, speed: 150, scatter: 60, color: "#e8dcb8" },
+    // 案帳 DT-236 手直し（Shooter「射程内にいても竜に寄ってくるのはおかしい。むしろ距離を取るべき。撃つ時は足が止まって欲しい」）:
+    // 射程の内では寄らない。近い竜が near より近いと後ずさりで離れ、射程の holdAt 倍〜approachAt 倍の間なら立ち止まる。
+    // 寄り直すのは最寄りの竜が射程の approachAt 倍より遠くなってから（行ったり止まったりを繰り返さないように幅を持たせる）
+    keepRange: { near: 250, holdAt: 0.8, approachAt: 0.92, backSpeedMult: 1.0 },
+    // drawTime: 足を止めて弓を引く秒数（引き終えたら放つ）。followTime: 放ったあとも止まっている秒数（2本目が出るまで）
+    attack: { type: "shell", interval: 3.6, range: 430, count: 2, damage: 1.5, aoe: 36, speed: 150, scatter: 60, color: "#e8dcb8",
+              drawTime: 0.7, followTime: 0.5 },
   },
   // v3.63.0（案帳 DT-229・Shooter判定「敵を生む敵は良い。群れへ直接向かわず、横をかすめて行ったり来たりして兵を運ぶ」
   // 「倒すと敵が増える・建物がつぶれるのは不要」）: 落下兵の飛行船。群れの横を通り過ぎながら、群れの後ろへ兵を落下傘で降ろす
@@ -11936,6 +11959,32 @@ function behemothSweepHits(m, core) {
   }
 }
 
+/**
+ * 案帳 DT-236 手直し: 射程を保つ敵（def.keepRange）の立ち位置。
+ * 返り値: { still: true } … その場で止まる（弓を引いている・放った直後・ちょうど良い距離）
+ *         { x, y, back: true } … 最寄りの竜から離れる向きへ下がる
+ *         { x, y } … ふつうに寄る（目標は呼び出し側の追跡・巡回のまま）。射程の外のとき
+ *         faceX/faceY … 射程の内では竜へ向く
+ * 射程の判定は撃つときと同じ「最寄りの竜」で測る（群れの重心だと、端の竜が射程に入っていても寄ってしまう）。
+ */
+function keepRangeStance(m, dt) {
+  const kr = m.def.keepRange, range = m.def.attack.range;
+  if (m.bowStill > 0) m.bowStill = Math.max(0, m.bowStill - dt);
+  const ni = findNearestAliveBoid(m.wx, m.wy);
+  if (ni < 0) { m.bowApproach = true; return m.bowStill > 0 ? { still: true } : null; }
+  const dx = px[ni] - m.wx, dy = py[ni] - m.wy;
+  const d = Math.sqrt(dx * dx + dy * dy) || 1;
+  const faceX = dx / d, faceY = dy / d;
+  if (m.bowStill > 0) return { still: true, faceX, faceY };
+  // 寄るのをやめる距離と寄り直す距離を分けて、射程の縁で歩く・止まるを細かく繰り返さないようにする
+  if (m.bowApproach === undefined) m.bowApproach = true;
+  if (m.bowApproach && d < range * kr.holdAt) m.bowApproach = false;
+  else if (!m.bowApproach && d > range * kr.approachAt) m.bowApproach = true;
+  if (m.bowApproach) { m.bowDrawn = false; return null; }   // 射程の外：ふつうに寄る（引きかけの弓は下ろす）
+  if (d < kr.near) return { x: m.wx - faceX * 200, y: m.wy - faceY * 200, back: true, faceX, faceY };
+  return { still: true, faceX, faceY };
+}
+
 function updateMovers(dt) {
   updateEnemyGroups(dt);   // v2.3.0: 複数パーツのグループ敵（編成など）
   updateMoverDeaths(dt);   // v2.6.0: 大きい敵の最期（崩れ→倒れ込み→残骸）
@@ -12072,6 +12121,9 @@ function updateMovers(dt) {
     // 横一列に並び、盾の面を群れへ向けてゆっくり進む（正面は弾く。横と後ろへ回り込む）
     const lineSlot = def.shieldLine && m.packId !== undefined ? shieldLineSlot(m, centroid, dt) : null;
     if (lineSlot) { targetX = lineSlot.x; targetY = lineSlot.y; }
+    // 案帳 DT-236 手直し: 遠矢の弓隊は射程の内では寄らず、近すぎれば下がり、弓を引く間と放った直後は止まる
+    const bowStance = def.keepRange ? keepRangeStance(m, dt) : null;
+    if (bowStance && !bowStance.still) { targetX = bowStance.x; targetY = bowStance.y; }
 
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
@@ -12130,6 +12182,8 @@ function updateMovers(dt) {
       m.headingX = dirX;
       m.headingY = dirY;
     }
+    // 弓隊は下がるときも竜へ弓を向けたまま（背を向けて逃げる絵にしない）
+    if (bowStance && bowStance.faceX !== undefined) { m.headingX = bowStance.faceX; m.headingY = bowStance.faceY; }
 
     // v2.5.0: 揺れている胴は、**一度あるべき位置へ戻してから**動かす。
     // こうすると移動・旋回・歩行はすべて揺れを知らないまま回り、
@@ -12142,6 +12196,7 @@ function updateMovers(dt) {
         * (frostFields.length ? frostSpeedMultAt(m.wx, m.wy) : 1);   // v3.8.0: 凍て霧
     // v3.62.0: 盾の列に並んだ盾兵は、自分の場所で止まる（行き過ぎて列の上で震えない）
     if (lineSlot) moveSpeed = Math.min(moveSpeed, Math.sqrt(dist2(targetX, targetY, m.wx, m.wy)) / Math.max(dt, 1e-3));
+    if (bowStance) moveSpeed = bowStance.still ? 0 : moveSpeed * (bowStance.back ? def.keepRange.backSpeedMult : 1);
     if (def.inertia) {
       // v3.27.0: 攻撃ヘリは速度に慣性がある（加速・減速に時間がかかり、行き過ぎてから戻る）。Shooter指示
       if (m.velX === undefined) { m.velX = 0; m.velY = 0; }
@@ -12349,6 +12404,18 @@ function updateMovers(dt) {
       // v0.57: 予告円つきの着弾弾を散らして落とす（建物の臼砲と同じ部品）。
       // 「線を外す」ではなく「円から退く」を敵側にも持たせる枠。
       if (nearestD2 < atk.range * atk.range) {
+        // 案帳 DT-236 手直し: drawTime を持つ敵（遠矢の弓隊）は、まず足を止めて弓を引き、引き終えてから放つ。
+        // 止まっている時間（m.bowStill）は keepRangeStance が見て足を止める
+        if (atk.drawTime && !m.bowDrawn) {
+          m.bowDrawn = true;
+          m.bowStill = atk.drawTime + atk.followTime;
+          m.attackTimer = atk.drawTime;
+          continue;
+        }
+        if (atk.drawTime) {
+          m.bowDrawn = false;
+          m.attackTimer = Math.max(0.1, m.attackTimer - atk.drawTime);   // 引く時間のぶん間隔を縮めて、撃つ頻度は元のまま
+        }
         const stx = px[nearestIdx], sty = py[nearestIdx];
         for (let k = 0; k < atk.count; k++) {
           const sa = random() * Math.PI * 2;
@@ -12358,6 +12425,7 @@ function updateMovers(dt) {
         }
       } else {
         m.attackTimer = 0.4;
+        m.bowDrawn = false;   // 引いている間に射程の外へ出たら弓を下ろす（次は引き直してから撃つ）
       }
     } else if (atk.type === "bomb") {
       // v0.7 爆撃気球: 最寄りの竜めがけてAoE爆弾を投下（projectileAoe で着弾時に範囲被害）
@@ -16429,7 +16497,9 @@ function drawMovers() {
       // v3.63.0 遠矢の弓隊: 青灰の兵と長い弓
       ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(0, 0, 6.5, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = "#c8a070"; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.arc(1, 0, 9, -1.2, 1.2); ctx.stroke();
-      ctx.strokeStyle = "rgba(240,240,250,0.6)"; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.moveTo(1 + Math.cos(-1.2) * 9, Math.sin(-1.2) * 9); ctx.lineTo(1 + Math.cos(1.2) * 9, Math.sin(1.2) * 9); ctx.stroke();
+      // 弦。弓を引いている間（DT-236 手直し）は後ろへ引き絞った形にして、止まって狙っているのが見えるようにする
+      const pull = m.bowDrawn ? -5 : 1 + Math.cos(1.2) * 9;
+      ctx.strokeStyle = "rgba(240,240,250,0.6)"; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.moveTo(1 + Math.cos(-1.2) * 9, Math.sin(-1.2) * 9); ctx.lineTo(pull, 0); ctx.lineTo(1 + Math.cos(1.2) * 9, Math.sin(1.2) * 9); ctx.stroke();
     } else if (def.name === "troop_airship") {
       // v3.63.0 落下兵の飛行船: 大きな楕円の気嚢・尾翼・下のゴンドラ。地面に影
       ctx.save(); ctx.rotate(-angle); ctx.globalAlpha = 0.22; ctx.fillStyle = "#000"; ctx.beginPath(); ctx.ellipse(10, 16, 30, 13, angle, 0, Math.PI * 2); ctx.fill(); ctx.restore();
@@ -25173,6 +25243,14 @@ const AIM_R_MAX       = 135;
 const AIM_SPEED       = 650;    // 火の玉の速さ（遠くても届く）
 const AIM_IMPACT      = 180;
 const aimShots = [];
+// 案帳 DT-221 手直し（Shooter「火球は尾を引いて欲しいです」）: 飛んでいる火の玉の後ろに火の粉を残して尾にする。
+// 見た目だけなので乱数は fxRandom()。火の玉は 650px/s と速く、1フレームに10px以上進むので、
+// 前の位置から今の位置までの間にも一定の間隔で置く（間をあけると尾が点線に見える）
+const AIM_TRAIL_SPACING = 7;      // 火の粉を置く間隔 px
+const AIM_TRAIL_LIFE    = 0.42;   // 火の粉が消えるまでの秒数（長いほど尾が長い。650px/s × 0.42 ≒ 270px）
+const AIM_TRAIL_DRIFT   = 22;     // 火の粉の散る速さ px/s（尾が細い一本線にならないように少し広がる）
+const AIM_TRAIL_MAX     = 600;    // 同時に出す火の粉の上限（指先竜が多くても重くならないように）
+const aimTrail = [];
 function aimChargeTime() { return AIM_CHARGE_TIME / (1 + 0.2 * upCount("sp_aim_charge")); }
 function updateAimDragon(i, dt) {
   boidSpecialTimer[i] = Math.min(aimChargeTime(), boidSpecialTimer[i] + dt);
@@ -25194,7 +25272,9 @@ function updateAimShots(dt) {
     const f = aimShots[n];
     f.t += dt;
     const u = Math.min(1, f.t / f.life);
+    const lastX = f.x, lastY = f.y;
     f.x = f.x0 + (f.tx - f.x0) * u; f.y = f.y0 + (f.ty - f.y0) * u;
+    emitAimTrail(f, lastX, lastY);
     if (u < 1) continue;
     const r = AIM_R_MIN + (AIM_R_MAX - AIM_R_MIN) * f.k;
     const dmg = (AIM_DMG_MIN + (AIM_DMG_MAX - AIM_DMG_MIN) * f.k) * (1 + 0.25 * upCount("sp_aim_dmg")) * permaBuff.specialDmg;
@@ -25204,6 +25284,32 @@ function updateAimShots(dt) {
     for (let k = 0; k < 4 + f.k * 10; k++) spawnHitParticles(f.tx + (fxRandom() - 0.5) * r, f.ty + (fxRandom() - 0.5) * r);
     aimShots.splice(n, 1);
   }
+  for (let n = aimTrail.length - 1; n >= 0; n--) {
+    const p = aimTrail[n];
+    p.t += dt;
+    if (p.t >= p.life) { aimTrail.splice(n, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt;
+  }
+}
+/** 火の玉が (fromX, fromY) から今の位置まで進んだ間に、尾の火の粉を並べる */
+function emitAimTrail(f, fromX, fromY) {
+  const segX = f.x - fromX, segY = f.y - fromY;
+  const len = Math.sqrt(segX * segX + segY * segY);
+  f.trailCarry = (f.trailCarry ?? 0) + len;
+  const size = 5 + 9 * f.k;   // 火の玉の半径（drawAimDragons と同じ）。尾の太さも溜めに合わせる
+  while (f.trailCarry >= AIM_TRAIL_SPACING && aimTrail.length < AIM_TRAIL_MAX) {
+    f.trailCarry -= AIM_TRAIL_SPACING;
+    const back = len > 0 ? f.trailCarry / len : 0;   // 今の位置からどれだけ手前に置くか（0〜1）
+    const a = fxRandom() * Math.PI * 2;
+    const drift = AIM_TRAIL_DRIFT * fxRandom();
+    aimTrail.push({
+      x: f.x - segX * back + (fxRandom() - 0.5) * size * 0.6,
+      y: f.y - segY * back + (fxRandom() - 0.5) * size * 0.6,
+      vx: Math.cos(a) * drift, vy: Math.sin(a) * drift,
+      t: 0, life: AIM_TRAIL_LIFE * (0.7 + 0.6 * fxRandom()), s: size * (0.55 + 0.35 * fxRandom()),
+    });
+  }
+  if (aimTrail.length >= AIM_TRAIL_MAX) f.trailCarry = 0;
 }
 /** 溜めの輪（竜のまわり）・指の下の照準・飛んでいる火の玉 */
 function drawAimDragons() {
@@ -25225,9 +25331,27 @@ function drawAimDragons() {
     ctx.beginPath(); ctx.moveTo(pointerWorldX - 8, pointerWorldY); ctx.lineTo(pointerWorldX + 8, pointerWorldY);
     ctx.moveTo(pointerWorldX, pointerWorldY - 8); ctx.lineTo(pointerWorldX, pointerWorldY + 8); ctx.stroke();
   }
+  // 尾：古い火の粉ほど小さく暗く（黄→橙→赤へ）。火の玉の本体より先に描いて、本体が上に乗るようにする
+  for (const p of aimTrail) {
+    const age = p.t / p.life;
+    ctx.globalAlpha = 0.75 * (1 - age);
+    ctx.fillStyle = age < 0.3 ? "#ffd060" : age < 0.65 ? "#ff8a30" : "#c83a20";
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.s * (1 - 0.6 * age), 0, Math.PI * 2); ctx.fill();
+  }
   ctx.globalAlpha = 1;
   for (const f of aimShots) {
     const s = 5 + 9 * f.k;
+    // 火の玉のすぐ後ろの帯（火の粉の上に、出どころへ向かって細くなる光の筋を引く）
+    const fdx = f.x - f.x0, fdy = f.y - f.y0, fd = Math.sqrt(fdx * fdx + fdy * fdy);
+    if (fd > 1) {
+      const streak = Math.min(fd, 60 + 60 * f.k);
+      const ux = fdx / fd, uy = fdy / fd;
+      const grad = ctx.createLinearGradient(f.x, f.y, f.x - ux * streak, f.y - uy * streak);
+      grad.addColorStop(0, "rgba(255,190,80,0.7)"); grad.addColorStop(1, "rgba(255,90,30,0)");
+      ctx.strokeStyle = grad; ctx.lineWidth = s * 1.4; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(f.x - ux * streak, f.y - uy * streak); ctx.stroke();
+      ctx.lineCap = "butt";
+    }
     ctx.fillStyle = "rgba(255,120,40,0.35)"; ctx.beginPath(); ctx.arc(f.x, f.y, s * 1.8, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#ffb040"; ctx.beginPath(); ctx.arc(f.x, f.y, s, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#fff0c0"; ctx.beginPath(); ctx.arc(f.x, f.y, s * 0.45, 0, Math.PI * 2); ctx.fill();
@@ -30600,7 +30724,7 @@ function showSpeciesSelect() {
       `<span><div class="card-name" style="color:${s.color}">${s.icon} ${s.ja}</div>` +
       `<div class="card-desc">${s.desc}</div></span>`;
     // v3.38.0: 指を離したときに選ぶ（デバッグメニューと同じ）。押した瞬間に選ぶとスクロールしようとして選んでしまう
-    dbgTap(btn, (e) => { e.preventDefault(); beginRun(ch.species); });
+    freshTap(btn, (e) => { e.preventDefault(); beginRun(ch.species); });   // DT-503
     cardListEl.appendChild(btn);
   }
   // v3.47.0（案帳 DT-471・Shooter指示）: 解放済みの竜からランダムに選ぶ。解放済みが1種類だけのときは鍵付き
@@ -30619,7 +30743,7 @@ function showSpeciesSelect() {
       `<span><div class="card-name">🎲 ${STRINGS.randomDragon}</div>` +
       `<div class="card-desc">${STRINGS.randomDragonDesc}</div></span>`;
     // ランの乱数は beginRun で引き直すので、ここで random() を1回使っても後の展開には響かない
-    dbgTap(randomBtn, (e) => { e.preventDefault(); beginRun(unlockedSpecies[Math.floor(random() * unlockedSpecies.length)]); });
+    freshTap(randomBtn, (e) => { e.preventDefault(); beginRun(unlockedSpecies[Math.floor(random() * unlockedSpecies.length)]); });
   }
   cardListEl.appendChild(randomBtn);
   // 「もどる」でタイトルへ戻れる（つづきから等を選び直せる）
@@ -30628,7 +30752,7 @@ function showSpeciesSelect() {
   back.style.justifyContent = "center";
   back.style.minHeight = "40px";
   back.innerHTML = `<span class="card-name">${STRINGS.backToTitle}</span>`;
-  dbgTap(back, (e) => { e.preventDefault(); cancelSpeciesSelect(); });
+  freshTap(back, (e) => { e.preventDefault(); cancelSpeciesSelect(); });
   cardListEl.appendChild(back);
   cardListEl.scrollTop = 0;
 
@@ -31470,6 +31594,7 @@ function clearStageCards(keepCards = false) {
   freeKites.length = 0;     // v3.61.0: 流れた凧を次のステージへ持ち越さない
   shieldLines.clear();      // v3.62.0
   aimShots.length = 0;      // v3.64.0
+  aimTrail.length = 0;      // DT-221 手直し: 火の玉の尾
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
   boidGiant.fill(0);
