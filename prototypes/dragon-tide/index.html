@@ -4503,7 +4503,10 @@ function settlementTier(settlement, baseTier) {
 /** その建物に掛かる強さ倍率（時代の底上げ × 警戒度）。 */
 function settlementPowerBoost(settlement, baseTier) {
   const eraBoost  = STAGE_DIFFICULTY_BOOST[currentStage] || { hp: 1, dmg: 1 };
-  const tierBoost = settlement._fixedTier != null ? FIXED_TIER_BOOST
+  // 案帳 DT-499: 強い町（格上の街・要塞都市）の**ふつうの民家**は、普通の町の民家と同じ強さ。
+  // 見た目が同じ民家が強いと「近づいて削られて初めて分かる」ので、上乗せは撃つ建物と役割の建物だけに残す。
+  const tierBoost = settlement._plainHouse ? POWER_TIER_BOOST[clampTier(baseTier)]
+                  : settlement._fixedTier != null ? FIXED_TIER_BOOST
                   : POWER_TIER_BOOST[settlementTier(settlement, baseTier)];
   // 時代は硬さと威力だけを底上げする。連射・弾数・射程は警戒度だけの軸にして、
   // 「同じ文明が警戒を強めた」ことが読み取れるようにする。
@@ -6806,6 +6809,8 @@ function generateStageLayout(stageIndex) {
     }
     const tmeta = townBuildings.find(b => b._townMeta);   // v0.29: 部分壁のため町メタを収集
     if (tmeta) townMetas.push(tmeta._townMeta);
+    // 案帳 DT-499: 格上の街は町の縁を暗い赤の破線で囲む（要塞都市は従来の城郭リム）
+    if (tmeta && offset > 0 && !isFortress) tmeta._townMeta._advanced = true;
     for (const b of townBuildings) result.push(b);
   }
 
@@ -6955,16 +6960,51 @@ function generateStageLayout(stageIndex) {
         : isStrong ? RAMPART_PER_ADVANCED_TOWN : RAMPART_PER_TOWN;
       const frontPool = scored.filter(x => x.front > TOWN_FRONT_COS);
       const half = Math.acos(TOWN_FRONT_COS);
-      for (let k = 0; k < rampartCount; k++) {
-        // 扇を rampartCount 等分した中点の角度
-        const want = meta.frontAngle - half + (k + 0.5) * (half * 2 / rampartCount);
+      // 案帳 DT-499: 表の大きめの棟だけでは4基・6基に足りない町が多い（表の大きい棟は時代兵器が先に取る）。
+      // 足りない分は表の小さい家を前哨堡に建て替える（中くらいの建物の大きさ・体力にそろえる）。
+      let smallFront = null;
+      const smallFrontPool = () => {
+        if (smallFront) return smallFront;
+        smallFront = [];
+        for (const b of result) {
+          if (b._townIndex !== townIndex || b.size !== "small") continue;
+          if (b.isBoss || b._isWall || b._emplacement || b._landmark || b._noAttack || b._townRole) continue;
+          const a = Math.atan2(b.wy - meta.cy, b.wx - meta.cx);
+          const front = Math.cos(wrapAngle(a - meta.frontAngle));
+          if (front <= TOWN_FRONT_COS) continue;
+          smallFront.push({ b, front, dist: Math.hypot(b.wx - meta.cx, b.wy - meta.cy) / (meta.maxExtent || 1) });
+        }
+        return smallFront;
+      };
+      const nearestTo = (pool, want) => {
         let pick = null, bestD = Infinity;
-        for (const x of frontPool) {
+        for (const x of pool) {
           if (x.b._townRole) continue;
           const a = Math.atan2(x.b.wy - meta.cy, x.b.wx - meta.cx);
           // 狙いの角度に近く、かつ外寄りの棟ほど良い（外周に並べて射界を稼ぐ）
           const d = Math.abs(wrapAngle(a - want)) + (1 - x.dist) * 0.5;
           if (d < bestD) { bestD = d; pick = x.b; }
+        }
+        return pick;
+      };
+      for (let k = 0; k < rampartCount; k++) {
+        // 扇を rampartCount 等分した中点の角度
+        const want = meta.frontAngle - half + (k + 0.5) * (half * 2 / rampartCount);
+        let pick = nearestTo(frontPool, want);
+        if (!pick) {
+          pick = nearestTo(smallFrontPool(), want);
+          if (pick) {
+            const bMid = config.buildings.medium;
+            const mid = BUILDING_SIZE_PARAMS.medium;
+            pick.size   = "medium";
+            pick.radius = RAMPART_PROMOTED_RADIUS;
+            pick.maxHp  = pick.hp = Math.round((mid.hpMin + mid.hpMax) / 2);   // 乱数を引かない（同じ種の町並みをずらさない）
+            pick.projectileDamage   = bMid.projectileDamage;
+            pick.projectileInterval = bMid.projectileInterval;
+            pick.projectileSpeed    = bMid.projectileSpeed;
+            pick.projectileColor    = bMid.projectileColor;
+            pick.reward             = bMid.reward;
+          }
         }
         if (!pick) break;
         pick._townRole    = "rampart";
@@ -7025,8 +7065,11 @@ function generateStageLayout(stageIndex) {
         return arr;
       };
       // v0.77: 衝撃砲台も表側優先（時代兵器と同じ側に固めて「表＝守り」を読ませる）
+      // 案帳 DT-499: 衝撃砲台も前哨堡には重ねない（前哨堡の撃ち方が先に動いて、衝撃弾を撃たなくなる）。
+      // 混ぜる前に外すと乱数の引き方が変わって同じ種の町並みがずれるので、混ぜた後で外す。
       const free = sh(all.filter(b => isOnTownFront(b, metaMap2)))
-        .concat(sh(all.filter(b => !isOnTownFront(b, metaMap2))));
+        .concat(sh(all.filter(b => !isOnTownFront(b, metaMap2))))
+        .filter(b => !b._townRole);
       const def = EMPLACEMENT_DEFS[key];
       if (key === "spinTurret") count = Math.min(count, SPIN_TURRET_MAX - spinPlaced);
       for (let k = 0; k < count && k < free.length; k++) {
@@ -7173,6 +7216,11 @@ function generateStageLayout(stageIndex) {
   // ボスは BOSS_HP_STAGE_MULT で既にスケールするため対象外。城壁もステージ別HP設定済みのため対象外。
   // v0.56: 係数は「時代の底上げ（文明ごとの基礎難度）× その建物の警戒度」。
   // 段階0の普通の街は等倍、要塞都市は最大段階ぶん重くなる。
+  // 案帳 DT-499: 強い町の民家に印を付けてから掛ける（民家は普通の町と同じ強さ。上乗せは撃つ建物と役割の建物だけ）
+  for (const b of result) {
+    if (isStrongTownPlainHouse(b)) b._plainHouse = true;
+    else if (b._fortified && !b.isBoss && !b._isWall) applyFortifiedStats(b);
+  }
   for (const b of result) {
     if (b.isBoss || b._isWall) continue;
     const boost = settlementPowerBoost(b, 0);
@@ -8848,12 +8896,27 @@ const FORTIFIED_INTERVAL_MULT = 0.7;   // 発射間隔短縮（撃ってくる�
 function applyTownFortification(townBuildings) {
   for (const b of townBuildings) {
     b._fortified = true;
-    b.maxHp = Math.round(b.maxHp * FORTIFIED_HP_MULT);
-    b.hp    = b.maxHp;
-    b.projectileDamage  *= FORTIFIED_DMG_MULT;
-    b.projectileInterval *= FORTIFIED_INTERVAL_MULT;
     if (b._townMeta) b._townMeta._fortified = true;  // 道路描画で城郭リムを引く
   }
+}
+
+/**
+ * 要塞化の上乗せ（HP・火力・連射）を1棟に掛ける。
+ * 案帳 DT-499: どの建物が「ふつうの民家」かは前哨堡・時代兵器を割り振った後でないと決まらないので、
+ * 要塞化の印（_fortified）だけ先に付け、上乗せは buildSettlements の(8)でまとめて掛ける。
+ */
+function applyFortifiedStats(b) {
+  b.maxHp = Math.round(b.maxHp * FORTIFIED_HP_MULT);
+  b.hp    = b.maxHp;
+  b.projectileDamage  *= FORTIFIED_DMG_MULT;
+  b.projectileInterval *= FORTIFIED_INTERVAL_MULT;
+}
+
+/** 案帳 DT-499: 強い町（格上の街・要塞都市）の、撃つ建物でも役割の建物でもない**ふつうの民家**か。 */
+function isStrongTownPlainHouse(b) {
+  if (b.isBoss || b._isWall || b._isCapital || b._noAttack || b._shrine || b._beamTower) return false;
+  if (b._townIndex === undefined || b._townRole || b._emplacement) return false;
+  return b._fixedTier != null || (b._tierOffset || 0) > 0;
 }
 
 /**
@@ -10207,8 +10270,9 @@ const SPIN_TURRET_DAMAGE  = 1.4;
 const SPIN_TURRET_REACH   = 520;      // 弾の届く距離
 const SPIN_TURRET_COLOR   = "#ffd34a";
 const SPIN_TURRET_PER_FORTRESS_TOWN = 1;
-const SPIN_TURRET_ADVANCED_CHANCE   = 0.35;  // 格上の街に置く確率
-const SPIN_TURRET_MAX = 4;                   // 1つの大陸に置く上限（弾幕だらけにしない）
+// 案帳 DT-499: 強い町は撃つ建物の数で見せるので、格上の街に置く確率と大陸の上限を上げた（旧 0.35 / 4）
+const SPIN_TURRET_ADVANCED_CHANCE   = 0.5;   // 格上の街に置く確率
+const SPIN_TURRET_MAX = 6;                   // 1つの大陸に置く上限（弾幕だらけにしない）
 const SPIN_TURRET_XP_MULT = 4;        // 倒すと経験値多め
 
 // 衝撃砲台のパラメータ。弾自体は敵の「衝撃砲」と同じ仕組み
@@ -10256,9 +10320,12 @@ const RAMPART_DMG_MULT  = 0.85;
 const RAMPART_ARC = 0.70;          // 正面からの許容角（rad。約±40度）
 const RAMPART_SPRITE_OFFSET = Math.PI / 2;   // 絵は砲口が画像の上（-y）向き
 // 1町あたりの基数。格上の街・要塞都市ほど厚い
+// 案帳 DT-499: 強い町の強さは民家ではなく**撃つ建物の数**で見せる（2→4→6。旧 2/3/4）
 const RAMPART_PER_TOWN          = 2;
-const RAMPART_PER_ADVANCED_TOWN = 3;
-const RAMPART_PER_FORTRESS_TOWN = 4;
+const RAMPART_PER_ADVANCED_TOWN = 4;
+const RAMPART_PER_FORTRESS_TOWN = 6;
+// 表の大きめの棟が足りないとき、小さい家を前哨堡に建て替える大きさ（中くらいの建物は16。家並みに収まるよう少し小さく）
+const RAMPART_PROMOTED_RADIUS = 14;
 // 鐘楼が生きている町の発射間隔倍率（1未満＝速く撃つ）
 const BELFRY_INTERVAL_MULT = 0.7;
 // 穀倉を壊したときに出る卵。散らばっている町の卵（1町2〜3個）より明確に多い
@@ -10276,12 +10343,13 @@ function barracksIntervalFor(def) {
   return BARRACKS_INTERVAL * k;
 }
 
-const CONCUSSION_PER_FORTRESS_TOWN = 1;  // 要塞都市（_fixedTier つき）1町あたり
+const CONCUSSION_PER_FORTRESS_TOWN = 2;  // 要塞都市（_fixedTier つき）1町あたり。案帳 DT-499 で 1→2
 const CONCUSSION_PER_ADVANCED_TOWN = 1;  // 格上の街（_tierOffset > 0）1町あたり
 // 格上の街は大陸に15〜20ある（町数×TOWN_ADVANCED_RATIO 0.25）。全部に置くと
 // 大陸に20基以上出て「強い街の設備」に見えなくなったので（実測 14〜26基）、
 // 格上の街は3つに1つだけにする。要塞都市と首都には必ず置く。
-const CONCUSSION_ADVANCED_CHANCE   = 0.34;
+// 案帳 DT-499: 強い町は撃つ建物の数で見せるので 0.34→0.5 に上げた（それでも全部の格上の街には置かない）
+const CONCUSSION_ADVANCED_CHANCE   = 0.5;
 const CONCUSSION_IN_CAPITAL        = 3;  // 首都区画（_isCapital）に置く数
 
 const STAGE_FEATURES = [
@@ -11147,6 +11215,93 @@ function updateBarracks(dt) {
  * ライブ描画（建物レイヤーはキャッシュなのでここには置けない）。
  * v0.57: 焼夷塔専用だったものを全兵器へ広げ、**輪の色で種類を見分けられる**ようにした。
  */
+// -----------------------------------------------------------------
+// 案帳 DT-499: 前哨堡の「射界の扇」と「砲」
+// -----------------------------------------------------------------
+// 扇 … 前哨堡の前の地面に、当たりと同じ形（撃ち始める距離 attackRadius・正面±RAMPART_ARC）を薄い赤で常に敷く。
+//      群れが扇に入っている間（または撃った直後）は濃くする。向きのある建物（前哨堡）だけに付ける
+//      ＝「扇がある建物は向きがある」と覚えられる（全方位に撃つ建物には付けない）。
+// 砲 … 台座の絵とは別の絵を上に重ね、撃った向きへ回す（戦車の砲塔と同じ作り）。
+//      しばらく撃たなければ正面（町の外向き）へ戻る。
+const RAMPART_FAN_FILL       = "255, 72, 60";
+const RAMPART_FAN_ALPHA_IDLE = 0.07;
+const RAMPART_FAN_ALPHA_HOT  = 0.20;
+const RAMPART_FAN_EDGE_IDLE  = 0.22;
+const RAMPART_FAN_EDGE_HOT   = 0.55;
+const RAMPART_FAN_HOT_HOLD   = 1.4;    // 撃ってからこの秒数は濃いまま（次の斉射 1.2 秒をまたぐ）
+const RAMPART_GUN_LEN        = 2.5;    // 砲の絵の長さ＝建物の半径×この値（砲身が台座の前へはみ出す）
+const RAMPART_GUN_MIN_RADIUS = 18;     // 小さい前哨堡（建て替えた家・小集落）でも砲が読める大きさの下限
+const RAMPART_GUN_IDLE_BACK  = 2.5;    // 撃たなくなってから正面へ戻るまでの秒数
+const RAMPART_GUN_TURN_SPEED = 3.0;    // 砲の旋回の速さ（rad/秒）
+// 砲の絵の回転軸（画像に対する割合）。台座の丸い旋回台の中心を画像から実測した値
+const RAMPART_GUN_PIVOT = {
+  e1: { x: 0.490, y: 0.723 }, e2: { x: 0.492, y: 0.623 }, e3: { x: 0.495, y: 0.695 }, e4: { x: 0.494, y: 0.668 },
+  e5: { x: 0.492, y: 0.680 }, e6: { x: 0.493, y: 0.676 }, e7: { x: 0.493, y: 0.707 }, e8: { x: 0.491, y: 0.770 },
+};
+
+function drawRampartFansAndGuns() {
+  const era = "e" + (currentStage + 1);
+  const gunImg = buildingImages[era + "_rampart_gun"];
+  const useGun = !!(gunImg && buildingImages[era + "_rampart_base"]);
+  const pivot = RAMPART_GUN_PIVOT[era] || { x: 0.5, y: 0.7 };
+  const vb = getViewBoundsWorld(RAMPART_RANGE + 60);
+  let centroid = null;   // 群れの重心（画面に前哨堡があるときだけ1回求める）
+  const list = [];
+  for (const s of settlements) {
+    if (!s || s.fallen || s._townRole !== "rampart" || s._rampartAngle === undefined) continue;
+    if (s.wx < vb.minX || s.wx > vb.maxX || s.wy < vb.minY || s.wy > vb.maxY) continue;
+    list.push(s);
+  }
+  if (list.length === 0) return;
+  ctx.save();
+  // (1) 扇（地面）。先に全部敷いてから砲を載せる（扇が隣の前哨堡の砲に掛からないように）
+  for (const s of list) {
+    const reach = s.attackRadius || RAMPART_RANGE;
+    const facing = s._rampartAngle;
+    let hot = s._gunAimAt !== undefined && breathTime - s._gunAimAt < RAMPART_FAN_HOT_HOLD;
+    if (!hot) {
+      if (!centroid) centroid = calcFriendlyCentroid();
+      const dx = centroid.x - s.wx, dy = centroid.y - s.wy;
+      hot = dx * dx + dy * dy < reach * reach &&
+            Math.abs(wrapAngle(Math.atan2(dy, dx) - facing)) <= RAMPART_ARC;
+    }
+    ctx.beginPath();
+    ctx.moveTo(s.wx, s.wy);
+    ctx.arc(s.wx, s.wy, reach, facing - RAMPART_ARC, facing + RAMPART_ARC);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${RAMPART_FAN_FILL}, ${hot ? RAMPART_FAN_ALPHA_HOT : RAMPART_FAN_ALPHA_IDLE})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(${RAMPART_FAN_FILL}, ${hot ? RAMPART_FAN_EDGE_HOT : RAMPART_FAN_EDGE_IDLE})`;
+    ctx.lineWidth = hot ? 2.5 : 1.5;
+    ctx.stroke();
+  }
+  // (2) 砲。撃った向きへ回し、しばらく撃たなければ正面へ戻す
+  if (useGun) {
+    for (const s of list) {
+      const facing = s._rampartAngle;
+      const recent = s._gunAimAt !== undefined && breathTime - s._gunAimAt < RAMPART_GUN_IDLE_BACK;
+      const want = recent ? s._gunAim : facing;
+      if (s._gunAngle === undefined) { s._gunAngle = facing; s._gunT = breathTime; }
+      const dt = Math.max(0, Math.min(0.1, breathTime - s._gunT));
+      s._gunT = breathTime;
+      const diff = wrapAngle(want - s._gunAngle);
+      const step = RAMPART_GUN_TURN_SPEED * dt;
+      s._gunAngle = Math.abs(diff) <= step ? want : s._gunAngle + Math.sign(diff) * step;
+      const h = Math.max(s.radius, RAMPART_GUN_MIN_RADIUS) * RAMPART_GUN_LEN;
+      const w = h * (gunImg.naturalWidth / gunImg.naturalHeight);
+      ctx.save();
+      ctx.translate(s.wx, s.wy);
+      ctx.rotate(s._gunAngle + RAMPART_SPRITE_OFFSET);
+      // 撃った直後は少し下がる（反動）
+      const since = s._gunAimAt !== undefined ? breathTime - s._gunAimAt : Infinity;
+      const kick = since >= 0 && since < 0.18 ? (0.18 - since) / 0.18 : 0;
+      ctx.drawImage(gunImg, -w * pivot.x, -h * pivot.y + kick * s.radius * 0.25, w, h);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
 function drawEmplacements() {
   ctx.save();
   for (const s of settlements) {
@@ -19315,6 +19470,12 @@ function drawFieldPlot(bctx, f) {
   bctx.restore();
 }
 
+// 案帳 DT-499: 格上の街の縁（暗い赤の破線）
+const ADVANCED_TOWN_RIM_COLOR  = "rgba(176, 42, 36, 0.85)";
+const ADVANCED_TOWN_RIM_WIDTH  = 5;
+const ADVANCED_TOWN_RIM_EXPAND = 22;          // 要塞都市の城郭リムと同じ位置
+const ADVANCED_TOWN_RIM_DASH   = [26, 14];
+
 function drawTownRoadsOnLayer(bctx, meta) {
   if (meta._metro) return;   // v3.22.0: 大都会の街区に町の中の道は無い（碁盤の目の道路だけ）
   const { cx, cy, plazaR, streets, townR } = meta;
@@ -19323,22 +19484,37 @@ function drawTownRoadsOnLayer(bctx, meta) {
 
   // v0.7: 要塞都市には町全体を囲う「城郭リム」
   // v0.16.1: 町の外形（円/ブロブ/矩形）に沿って引く
-  if (meta._fortified) {
-    const rimPath = (expand) => {
-      bctx.beginPath();
-      if (meta.outline) {
-        for (let i = 0; i < meta.outline.length; i++) {
-          const p = meta.outline[i];
-          const d = Math.hypot(p.x - cx, p.y - cy) || 1;
-          const ex = cx + (p.x - cx) * (1 + expand / d);
-          const ey = cy + (p.y - cy) * (1 + expand / d);
-          if (i === 0) bctx.moveTo(ex, ey); else bctx.lineTo(ex, ey);
-        }
-        bctx.closePath();
-      } else {
-        bctx.arc(cx, cy, townR + expand, 0, Math.PI * 2);
+  const rimPath = (expand) => {
+    bctx.beginPath();
+    if (meta.outline) {
+      for (let i = 0; i < meta.outline.length; i++) {
+        const p = meta.outline[i];
+        const d = Math.hypot(p.x - cx, p.y - cy) || 1;
+        const ex = cx + (p.x - cx) * (1 + expand / d);
+        const ey = cy + (p.y - cy) * (1 + expand / d);
+        if (i === 0) bctx.moveTo(ex, ey); else bctx.lineTo(ex, ey);
       }
-    };
+      bctx.closePath();
+    } else {
+      bctx.arc(cx, cy, townR + expand, 0, Math.PI * 2);
+    }
+  };
+  // 案帳 DT-499: 格上の街は町の縁を**暗い赤の破線**で囲む。民家は普通の町と同じ強さなので、
+  // 「赤い縁の町＝撃つ建物が多い」を遠目で読ませる（要塞都市の太い城郭リムより一段控えめ）
+  if (meta._advanced && !meta._fortified) {
+    bctx.save();
+    bctx.setLineDash(ADVANCED_TOWN_RIM_DASH);
+    bctx.strokeStyle = "rgba(20, 14, 14, 0.45)";
+    bctx.lineWidth = ADVANCED_TOWN_RIM_WIDTH + 3;
+    rimPath(ADVANCED_TOWN_RIM_EXPAND);
+    bctx.stroke();
+    bctx.strokeStyle = ADVANCED_TOWN_RIM_COLOR;
+    bctx.lineWidth = ADVANCED_TOWN_RIM_WIDTH;
+    rimPath(ADVANCED_TOWN_RIM_EXPAND);
+    bctx.stroke();
+    bctx.restore();
+  }
+  if (meta._fortified) {
     bctx.save();
     bctx.strokeStyle = "rgba(224, 32, 48, 0.35)";
     bctx.lineWidth = 5;
@@ -19443,8 +19619,12 @@ function buildingSpriteKeyFor(settlement) {
     return settlement._emplacement;
   }
   // v0.84: 前哨堡だけは**時代ごとの絵**（投槍架→バリスタ→大弩→大砲→…→ビーム砲）
+  // 案帳 DT-499: 砲は別の絵で上に重ねて回すので、ここは砲を外した台座の絵。
+  // 砲の絵が読めなかったときだけ、砲の描き込まれた旧い絵に戻す（砲が二重にならないように）
   if (settlement._townRole === "rampart") {
-    const eraKey = "e" + (currentStage + 1) + "_rampart";
+    const era = "e" + (currentStage + 1);
+    if (buildingImages[era + "_rampart_base"] && buildingImages[era + "_rampart_gun"]) return era + "_rampart_base";
+    const eraKey = era + "_rampart";
     if (buildingImages[eraKey]) return eraKey;
   }
   // v0.78: 役割を持つ建物も機能ごとの専用の絵
@@ -20480,6 +20660,9 @@ function updateSettlementAttacks(dt) {
         continue;
       }
       settlement.attackTimer = RAMPART_INTERVAL;
+      // 案帳 DT-499: 砲の絵をこの向きへ回す（見た目だけ。乱数も状態も使わない）
+      settlement._gunAim   = base;
+      settlement._gunAimAt = breathTime;
       const shots = settlement._rampartShots ?? RAMPART_COUNT;   // v3.68.0（DT-490）: 小集落の前哨堡は弾が少ない
       const spread = RAMPART_SPREAD * (shots - 1) / (RAMPART_COUNT - 1);
       for (let k = 0; k < shots; k++) {
@@ -28594,7 +28777,7 @@ const CODEX_EMPLACEMENT_DESC = {
 /** 時代兵器がどの文明に何基置かれるか（STAGE_FEATURES から自動で引く）。 */
 function codexEmplacementEras(key) {
   if (key === "concussionBattery") {
-    return `全文明 — 首都${CONCUSSION_IN_CAPITAL}・要塞都市に1・格上の街の一部`;
+    return `全文明 — 首都${CONCUSSION_IN_CAPITAL}・要塞都市に${CONCUSSION_PER_FORTRESS_TOWN}・格上の街の一部`;
   }
   const parts = [];
   for (let era = 0; era < STAGE_FEATURES.length; era++) {
@@ -29105,6 +29288,9 @@ function codexMiscHtml() {
         `<li><b>格上の街</b>（町の約${Math.round(TOWN_ADVANCED_RATIO * 100)}%）：いつも全体より${TOWN_TIER_ADVANCED}段階上</li>` +
         `<li><b>要塞都市・首都の区画・結界の祠</b>：最初から別格の強さ（硬さ ×${FIXED_TIER_BOOST.hp}・威力 ×${FIXED_TIER_BOOST.dmg}）で固定。` +
           `段階が上がっても建て直さない（削った傷が残る）</li>` +
+        `<li><b>強い町のふつうの民家</b>：格上の街・要塞都市でも、普通の町の民家と同じ強さ。` +
+          `上の強さが乗るのは撃つ建物（前哨堡・衝撃砲台など）と役割の建物だけ。` +
+          `強い町は前哨堡が多く（${RAMPART_PER_TOWN}→${RAMPART_PER_ADVANCED_TOWN}→${RAMPART_PER_FORTRESS_TOWN}基）、町の縁が赤い（格上＝破線・要塞＝太い縁）</li>` +
         `<li><b>首都</b>：別格のさらに ×${CAPITAL_POWER_MULT} の硬さ。ラン中ずっと変わらない</li>` +
       `</ul>` +
     `</div>` +
@@ -31694,7 +31880,8 @@ function advanceTier() {
   for (let i = 0; i < settlements.length; i++) {
     const s = settlements[i];
     if (s.isBoss || s._isWall || s.fallen) continue;
-    if (s._fixedTier != null) continue;
+    // 案帳 DT-499: 要塞都市の民家は普通の町の民家と同じ強さなので、補強も普通の町と一緒に受ける
+    if (s._fixedTier != null && !s._plainHouse) continue;
     reinforceSettlementForTier(s, nextTier);
   }
 
@@ -32571,7 +32758,7 @@ function setupStageForResume(tier, fallenPacked) {
     for (let i = 0; i < settlements.length; i++) {
       const s = settlements[i];
       if (s.isBoss || s._isWall || s.fallen) continue;
-      if (s._fixedTier != null) continue;
+      if (s._fixedTier != null && !s._plainHouse) continue;   // 案帳 DT-499: 要塞都市の民家は普通の町と一緒に補強
       reinforceSettlementForTier(s, t);
     }
     rebuildWallsForTier();
@@ -36389,6 +36576,7 @@ function render(now) {
 
   drawAsteroids();     // v1.5.0: 小惑星帯の岩塊とその上の町（動くので毎フレーム描く）
   drawBossCitadel();   // v0.7: ボス城塞スプライト（静的レイヤーのボス円の上に重ねる）
+  drawRampartFansAndGuns();   // 案帳 DT-499: 前哨堡の射界の扇（地面）と、台座の上で回る砲
 
   // v0.14: 建物の攻撃射程リング（薄い円の大量表示）は視覚ノイズだったため廃止
 
@@ -38040,6 +38228,9 @@ const MINIMAP_ENEMY_COLOR  = "#c2673f";   // 敵（建物・移動敵とも）
 // 1町＝1点なら、残りの数がそのまま点の数になる。
 const MINIMAP_TARGET_COLOR = "#ff3b2a";   // まだ陥落していない町の目印
 const MINIMAP_FALLEN_COLOR = "#3a3a3a";   // 陥落した建物
+// 案帳 DT-499: 強い町（格上の街・要塞都市）を囲む輪。町の中心の赤い点（目的地）より暗くして主役を譲る
+const MINIMAP_STRONG_TOWN_COLOR = "rgba(118, 14, 12, 0.95)";
+const MINIMAP_STRONG_TOWN_MIN_R = 3;
 const MINIMAP_SELF_COLOR   = "#9ff4ff";   // 自分の群れ
 // ボスは時代ごとの glowColor を使っていたが、橙系の時代だと敵色と見分けにくい。
 // ミニマップでは**敵・ボス・自分の3色が常に違う**ことを優先して固定色にする。
@@ -38118,6 +38309,23 @@ function rebuildMinimapBase() {
       minimapCtx.fill();
     }
   }
+
+  // 案帳 DT-499: 強い町（格上の街＝破線・要塞都市＝実線）を暗い赤の輪で囲む。陥落した町は外す
+  minimapCtx.save();
+  minimapCtx.strokeStyle = MINIMAP_STRONG_TOWN_COLOR;
+  for (let s = 0; s < settlements.length; s++) {
+    const meta = settlements[s]._townMeta;
+    if (!meta || !(meta._advanced || meta._fortified)) continue;
+    const st = townStats.get(settlements[s]._townIndex);
+    if (st && st.surrendered) continue;
+    const r = Math.max(MINIMAP_STRONG_TOWN_MIN_R, (meta.maxExtent ?? meta.townR ?? 200) * scaleX) + 1;
+    minimapCtx.lineWidth = meta._fortified ? 2.0 : 1.4;
+    minimapCtx.setLineDash(meta._fortified ? [] : [2, 1.5]);
+    minimapCtx.beginPath();
+    minimapCtx.arc(meta.cx * scaleX, meta.cy * scaleY, r, 0, Math.PI * 2);
+    minimapCtx.stroke();
+  }
+  minimapCtx.restore();
 
   minimapBosses = bosses;
   minimapBaseDirty = false;
@@ -38677,6 +38885,25 @@ const BUILDING_IMAGE_SOURCES = {
   e6_rampart: "assets/building_e6_rampart.png",
   e7_rampart: "assets/building_e7_rampart.png",
   e8_rampart: "assets/building_e8_rampart.png",
+  // 案帳 DT-499: 前哨堡は**台座と砲を分けた**（戦車の車体と砲塔と同じ）。台座は砲を外した絵、
+  // 砲は別の絵を台座の上に重ねて、狙う向きへ回す（drawRampartFansAndGuns）。
+  // 砲の絵は無彩色で、砲口が画像の上（-y）を向き、回転軸は RAMPART_GUN_PIVOT。
+  e1_rampart_base: "assets/building_e1_rampart_base.png",
+  e2_rampart_base: "assets/building_e2_rampart_base.png",
+  e3_rampart_base: "assets/building_e3_rampart_base.png",
+  e4_rampart_base: "assets/building_e4_rampart_base.png",
+  e5_rampart_base: "assets/building_e5_rampart_base.png",
+  e6_rampart_base: "assets/building_e6_rampart_base.png",
+  e7_rampart_base: "assets/building_e7_rampart_base.png",
+  e8_rampart_base: "assets/building_e8_rampart_base.png",
+  e1_rampart_gun: "assets/building_e1_rampart_gun.png",
+  e2_rampart_gun: "assets/building_e2_rampart_gun.png",
+  e3_rampart_gun: "assets/building_e3_rampart_gun.png",
+  e4_rampart_gun: "assets/building_e4_rampart_gun.png",
+  e5_rampart_gun: "assets/building_e5_rampart_gun.png",
+  e6_rampart_gun: "assets/building_e6_rampart_gun.png",
+  e7_rampart_gun: "assets/building_e7_rampart_gun.png",
+  e8_rampart_gun: "assets/building_e8_rampart_gun.png",
 };
 const buildingImages = {};
 
