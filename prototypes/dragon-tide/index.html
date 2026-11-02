@@ -1297,7 +1297,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.67.0";
+const GAME_VERSION = "v3.68.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1510,6 +1510,7 @@ const DEBUG_ENEMY_LABELS = {
   railgun_loco: "🚂列車砲列(砲車4両つき)", railgun_car: "🚃列車砲列の砲車",
   railcar: "🚈装甲軌道車", railram: "🚞衝角機関車",
   forest_ambusher: "🌿森の伏兵", forest_giant: "🌳森番の巨人",
+  prism_bearer: "🔺プリズム運び",   // v3.68.0
   metro_car: "🚕渋滞の車", metro_truck: "🚐渋滞の箱バン", metro_police: "🚓パトカー", metro_tank: "🪖戦車", metro_heli: "🚁攻撃ヘリ",
   // v0.57: 文明ごとの看板ユニット
   mammoth_lord: "🦣長牙のマンモス", gilded_colossus: "🗿黄金の巨像", siegetower: "🏰攻城塔",
@@ -1540,6 +1541,8 @@ const DEBUG_ENEMY_ORDER = [
   "railgun_loco", "railcar", "railram",
   // v3.17.0: 大樹海の敵（樹冠が無い地域では隠れも切り拓きも起きない）
   "forest_ambusher", "forest_giant",
+  // v3.68.0: 光線の高原の敵（どの地域でも自分の光線は撃てる）
+  "prism_bearer",
   // v3.22.0: 大都会の敵（道路が無い地域では走れない）
   "metro_car", "metro_truck", "metro_police", "metro_tank", "metro_heli",
 ];
@@ -3356,9 +3359,20 @@ const DRAGON_HIT_BOOST = {
   get shot()   { return (1 + CATEGORY_DMG_PER_CARD * genCount("cat_shot")) * stageAttackMult(); },
   get blast()  { return (1 + CATEGORY_DMG_PER_CARD * genCount("cat_blast")) * stageAttackMult(); },
 };
+// v3.68.0（案帳 DT-497・Shooter指示「★4以上なら★に応じて以降のステージの強化度合いを上げる。強化倍率をどこかに明示」）:
+// このランで ★4 を取るたびに +STAR_BOOST_PER_STAR、★5 なら その2倍。足し算でたまり、以降のステージの群れの攻撃とHPに掛かる。
+// 表示：経験値ゲージの数字の横（「強化 ×1.20」）とステージクリアの画面
+const STAR_BOOST_MIN_STARS = 4;
+const STAR_BOOST_PER_STAR  = 0.1;   // ★4で+10%、★5で+20%
+function starBoostFor(stars) { return stars >= STAR_BOOST_MIN_STARS ? STAR_BOOST_PER_STAR * (stars - STAR_BOOST_MIN_STARS + 1) : 0; }
+function starBoostMult() {
+  let add = 0;
+  for (const h of runHistory) add += starBoostFor(h.stars);
+  return 1 + add;
+}
 /** v3.43.0: 陥落カードの「捨て身の賭け」「逆襲の血」が群れ全体の攻撃に掛ける倍率。 */
 function stageAttackMult() {
-  let m = upCount("f_gamble") > 0 ? GAMBLE_ATTACK_MULT : 1;
+  let m = (upCount("f_gamble") > 0 ? GAMBLE_ATTACK_MULT : 1) * starBoostMult();   // v3.68.0: ★の強化倍率
   if (tierRush.phase === "active") m *= 1 + RUSH_CARD_ATTACK * upCount("f_rush");
   if (upCount("f_egg_power") > 0) m *= 1 + Math.min(EGG_POWER_MAX, EGG_POWER_PER_EGG * totalEggCount);   // v3.49.0
   if (fallRoarTimer > 0) m *= 1 + FALL_ROAR_ATTACK * upCount("f_fall_roar");                            // v3.49.0
@@ -3659,6 +3673,23 @@ const TINY_HAMLET_RADIUS_MAX = 65;
 // v0.74: 「重ならなければ良いくらい」（Shooter指示）まで詰める。
 // クラスタ半径の最大値（TINY_HAMLET_RADIUS_MAX=65）の2倍＋余白＝集落の外周同士が触れない最小値。
 const TINY_HAMLET_MIN_SPACING = TINY_HAMLET_RADIUS_MAX * 2 + 20; // = 150
+// v3.68.0（案帳 DT-490・Shooter指示「ほぼ全部同じ家の数なので、大きさや密度、軒数の差をつけて」）:
+// 小集落の種類。weight の割合で選ぶ。houses＝軒数、radius＝広がり（同じ軒数でも広いほどまばら）、houseScale＝家の大きさ
+// 「ふつう」は今までの小集落と同じ（5〜8軒・半径40〜65）
+const HAMLET_KINDS = [
+  { weight: 3, houses: [2, 4],   radius: [38, 46],  houseScale: [0.8, 0.95] },   // 小さな家の寄り合い（中央の目印から 11+家+16px は空くので、広がりは38から）
+  { weight: 5, houses: [5, 8],   radius: [40, 65],  houseScale: [0.9, 1.15] },   // ふつう
+  { weight: 2, houses: [10, 15], radius: [62, 85],  houseScale: [1.0, 1.3] },    // 大きな村（家も大きく、ぎっしり）
+  { weight: 2, houses: [5, 8],   radius: [80, 105], houseScale: [0.85, 1.05] },  // 散村（まばら）
+];
+const HAMLET_KIND_MAX_R = 105;
+function pickHamletKind() {
+  let sum = 0;
+  for (const k of HAMLET_KINDS) sum += k.weight;
+  let r = random() * sum;
+  for (const k of HAMLET_KINDS) { r -= k.weight; if (r < 0) return k; }
+  return HAMLET_KINDS[1];
+}
 // 既存街区（small/medium/large）クラスタとの最小間隔
 const TINY_HAMLET_FROM_TOWN_GAP = 120;
 // クラスタ内 tiny 棟同士の最小中心間距離（重なり防止）
@@ -5664,6 +5695,9 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
     // --- クラスタ中心の配置 ---
     let centerX = 0, centerY = 0;
     let hamletPlaced = false;
+    // v3.68.0（DT-490）: 小集落の種類（軒数・広がり・家の大きさ）を先に決め、広がりに合わせて間隔を取る
+    const kind    = pickHamletKind();
+    const hamletR = randRange(kind.radius[0], kind.radius[1]);
 
     // v0.74: 先頭 TINY_HAMLET_NEAR_START 個はスタート地点まわりのリングから抽選する。
     // 半径は √補正して面積に対して一様にする（そのままだと中心付近に固まりすぎる）。
@@ -5694,12 +5728,12 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
       // 街向けの余白（TINY_HAMLET_FROM_TOWN_GAP=120）が他の集落の民家にも効いてしまい、
       // 集落中心の実測間隔が 232px まで開いていた（MIN_SPACING=150 が効いていなかった）。
       // 集落同士の距離は下の hamletCenters チェックだけで決める。
-      if (occNear(cx, cy, TINY_HAMLET_RADIUS_MAX + TINY_HAMLET_FROM_TOWN_GAP, true)) continue;
+      if (occNear(cx, cy, hamletR + TINY_HAMLET_FROM_TOWN_GAP, true)) continue;
 
-      // 他クラスタ中心との最小間隔チェック
+      // 他クラスタ中心との最小間隔チェック（v3.68.0: 互いの広がりの和＋余白。小さい集落どうしは詰められる）
       let tooCloseToHamlet = false;
       for (const hc of hamletCenters) {
-        if (dist2(cx, cy, hc.x, hc.y) < hamletSpacing2) {
+        if (dist2(cx, cy, hc.x, hc.y) < (hamletR + hc.r + 20) ** 2) {
           tooCloseToHamlet = true;
           break;
         }
@@ -5713,7 +5747,7 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
 
     if (!hamletPlaced) continue; // このクラスタは配置不能 → スキップ
 
-    hamletCenters.push({ x: centerX, y: centerY });
+    hamletCenters.push({ x: centerX, y: centerY, r: hamletR });
 
     // --- v0.73: 集落のシンボル（Shooter指示「ミニ集落にもシンボル建物を追加」）---
     // クラスタ中央に1棟だけ大きめの建物を建てる。町のランドマークと同じ _landmark
@@ -5732,8 +5766,8 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
     occAdd(centerX, centerY, symbol.radius, false);
 
     // --- クラスタ内の棟を配置 ---
-    const buildingCount = randInt(TINY_PER_HAMLET_MIN, TINY_PER_HAMLET_MAX);
-    const hamletR = randRange(TINY_HAMLET_RADIUS_MIN, TINY_HAMLET_RADIUS_MAX);
+    const buildingCount = randInt(kind.houses[0], kind.houses[1]);   // v3.68.0: 種類で軒数を変える
+    const houseR = Math.round(tinyR * randRange(kind.houseScale[0], kind.houseScale[1]));   // v3.68.0: 家の大きさ
     const hamletHouses = [];   // v0.75: この集落の民家（卵の抽選対象）
 
     for (let k = 0; k < buildingCount; k++) {
@@ -5751,7 +5785,7 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
             wy < TINY_MARGIN || wy > WORLD_H - TINY_MARGIN) continue;
 
         // 既存建物（街区・首都・先に置いた集落の棟）との重なりチェック
-        if (occNear(wx, wy, tinyR + TINY_FROM_EXISTING_GAP, false)) continue;
+        if (occNear(wx, wy, houseR + TINY_FROM_EXISTING_GAP, false)) continue;
 
         // v0.74: ここには以前「クラスタ内の棟同士」と「result 全体」の2つの
         // TINY_MIN_SPACING(20px) チェックがあったが、上の occupied チェックが
@@ -5766,10 +5800,10 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
         // tiny 専用フラグ（ミニマップ・デバッグ等で識別）
         b._tinySettlement = true;
         // tiny の radius は BUILDING_SIZE_PARAMS.tiny.radiusBase で確定
-        b.radius = tinyR;
+        b.radius = houseR;
         result.push(b);
         hamletHouses.push(b);
-        occAdd(wx, wy, tinyR, false);
+        occAdd(wx, wy, houseR, false);
         placed = true;
       }
     }
@@ -5779,6 +5813,222 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
   }
 
   return result;
+}
+
+// =====================================================================
+// v3.68.0（案帳 DT-490・Shooter指示「最序盤にもう少し面白みを。もっと簡単かつ既存要素の組み合わせで」）:
+//   ・スタート近くの小集落を小さな道で適度につなぐ（道があり、スタート近くの小集落ゾーンがある地図だけ）
+//   ・畑を多めに置く ・小川を引く
+//   ・小集落の家の数・広がり（密度）・家の大きさに差をつける（generateTinySettlements の HAMLET_KINDS）
+//   ・たまに攻撃的な建物（前哨堡の小さい版）が立つ小集落もある
+// 道・畑・小川は地面に焼くだけの見た目（当たりは無い）。家は小川と畑の上には建てない
+// =====================================================================
+const COUNTRY_REACH          = TINY_HAMLET_START_RING_OUTER + 150;   // 開始地点からこの距離までの小集落が対象
+const HAMLET_ROAD_MAX        = 620;    // これより離れた小集落どうしは道でつながない（つなぎすぎない）
+const HAMLET_ROAD_EXTRA      = 0.25;   // 木（最小全域木）に加えて、近い2つをもう1本つなぐ割合（輪ができて道らしくなる）
+const HAMLET_ROAD_TOWN_GAP   = 60;     // 町の外周からこれだけ離れていない道は引かない（町の中を抜けない）
+const HAMLET_ROAD_W          = 13;     // 細い道の幅（街道は26）
+const COUNTRY_FIELD_CHANCE   = 0.85;   // 小集落に畑が付く確率
+const COUNTRY_FIELD_CLUSTERS = [1, 3]; // 1つの小集落の畑のまとまりの数
+const COUNTRY_FIELD_TONES    = ["#96804a", "#7a8a4a", "#a08c56", "#8a9a50"];
+const START_STREAM_COUNT     = [1, 2];
+const START_STREAM_FROM      = [650, 1000];  // 開始地点からこの距離のあたりで湧き出す
+const START_STREAM_STEP      = 40;
+const START_STREAM_STEPS     = 45;           // 最長 1800px
+const START_STREAM_W         = 9;            // 小川の幅（川は100前後）
+const START_STREAM_TOWN_GAP  = 80;
+const HAMLET_RAMPART_CHANCE  = 0.12;   // 小集落に前哨堡（小）が立つ確率
+const HAMLET_RAMPART_FROM    = 1100;   // 開始地点からこれより遠い小集落だけ（最初の数十秒は撃たれない）
+const HAMLET_RAMPART_SHOTS   = 3;      // 1射の弾数（町の前哨堡は RAMPART_COUNT=7）
+const HAMLET_RAMPART_RADIUS  = 10;
+
+function onStartStream(x, y, extra) {
+  for (const st of startStreams) if (distPointToPolylineSq(x, y, st) < (START_STREAM_W * 0.5 + extra) ** 2) return true;
+  return false;
+}
+function onCountrysideField(x, y, extra) {
+  for (const f of countrysideFields) {
+    const r = Math.hypot(f.w, f.h) * 0.5 + extra;
+    if (dist2(x, y, f.x, f.y) < r * r) return true;
+  }
+  return false;
+}
+/** 町の外形（中心と半径）。道・小川が町の中を抜けないための判定に使う */
+function countryTownDiscs(buildings) {
+  const out = [], seen = new Set();
+  for (const b of buildings) {
+    const m = b._townMeta;
+    if (!m || seen.has(m)) continue;
+    seen.add(m);
+    out.push({ x: m.cx, y: m.cy, r: (m.townR || 200) });
+  }
+  return out;
+}
+function segHitsDiscs(ax, ay, bx, by, discs, gap) {
+  for (const d of discs) if (pointSegDist2(d.x, d.y, ax, ay, bx, by) < (d.r + gap) ** 2) return true;
+  return false;
+}
+function segCrossesRiver(ax, ay, bx, by) {
+  if (riverPolyline.length < 2) return false;
+  const n = Math.ceil(Math.hypot(bx - ax, by - ay) / 30);
+  for (let k = 0; k <= n; k++) {
+    const t = k / n, x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+    if (distPointToPolylineSq(x, y, riverPolyline) < (riverWidth * 0.5 + 10) ** 2) return true;
+  }
+  return false;
+}
+
+/** 小川：開始地点から少し離れた所で湧き、外へ向かって蛇行しながら流れる。町・川・地図の端に着いたら止まる */
+function generateStartStreams(buildings) {
+  const discs = countryTownDiscs(buildings);
+  const out = [];
+  const count = randInt(START_STREAM_COUNT[0], START_STREAM_COUNT[1]);
+  // 開始地点は地図の端に寄っていることが多い（大陸は左端）。湧き出す点が地図の外なら引き直し、短すぎる小川も引き直す
+  for (let tries = 0; tries < count * 12 && out.length < count; tries++) {
+    const a0 = random() * Math.PI * 2;
+    const r0 = randRange(START_STREAM_FROM[0], START_STREAM_FROM[1]);
+    let x = START_X + Math.cos(a0) * r0, y = START_Y + Math.sin(a0) * r0;
+    if (x < 200 || x > WORLD_W - 200 || y < 200 || y > WORLD_H - 200) continue;
+    if (out.some(l => dist2(x, y, l[0].x, l[0].y) < 600 * 600)) continue;   // 2本目は離れた所から
+    let dir = a0 + randRange(-0.5, 0.5);
+    const line = [{ x, y }];
+    for (let st = 0; st < START_STREAM_STEPS; st++) {
+      // 外へ向かう向きへ少しずつ戻しながら、ゆらゆらと曲がる
+      const out_ = Math.atan2(y - START_Y, x - START_X);
+      dir += wrapAngle(out_ - dir) * 0.08 + randRange(-0.45, 0.45);
+      const nx = x + Math.cos(dir) * START_STREAM_STEP, ny = y + Math.sin(dir) * START_STREAM_STEP;
+      if (nx < 120 || nx > WORLD_W - 120 || ny < 120 || ny > WORLD_H - 120) break;
+      if (discs.some(d => dist2(nx, ny, d.x, d.y) < (d.r + START_STREAM_TOWN_GAP) ** 2)) break;
+      if (buildings.some(b => b.isBoss && dist2(nx, ny, b.wx, b.wy) < (CAPITAL_EXCLUSION_RADIUS) ** 2)) break;
+      x = nx; y = ny; line.push({ x, y });
+      if (riverPolyline.length > 1 && distPointToPolylineSq(x, y, riverPolyline) < (riverWidth * 0.5) ** 2) break;   // 川に注いだ
+    }
+    if (line.length >= 12) out.push(line);
+  }
+  return out;
+}
+
+/** 開始地点近くの小集落を細い道でつなぎ、まわりに畑を敷く。たまに前哨堡（小）を立てる */
+function generateStartCountryside(tinyBuildings, buildings) {
+  const hamlets = tinyBuildings.filter(b => b._landmark === "hamlet" && dist2(b.wx, b.wy, START_X, START_Y) < COUNTRY_REACH ** 2);
+  if (hamlets.length < 3) return;
+  const discs = countryTownDiscs(buildings);
+  // --- 細い道：最小全域木（長すぎる・町を抜ける・川を渡る辺は引かない）＋近い組をいくつか足す ---
+  const nodes = hamlets.map(h => ({ x: h.wx, y: h.wy }));
+  const ok = (a, b) => dist2(a.x, a.y, b.x, b.y) <= HAMLET_ROAD_MAX ** 2 &&
+    !segHitsDiscs(a.x, a.y, b.x, b.y, discs, HAMLET_ROAD_TOWN_GAP) && !segCrossesRiver(a.x, a.y, b.x, b.y);
+  const inTree = new Set([0]), edges = [];
+  const key = (i, j) => i < j ? i * 10000 + j : j * 10000 + i;
+  const used = new Set();
+  while (inTree.size < nodes.length) {
+    let best = null, bd = Infinity;
+    for (const i of inTree) for (let j = 0; j < nodes.length; j++) {
+      if (inTree.has(j)) continue;
+      const d = dist2(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y);
+      if (d < bd) { bd = d; best = [i, j]; }
+    }
+    if (!best) break;
+    inTree.add(best[1]);
+    if (ok(nodes[best[0]], nodes[best[1]])) { edges.push([nodes[best[0]], nodes[best[1]]]); used.add(key(best[0], best[1])); }
+  }
+  const extra = Math.round(nodes.length * HAMLET_ROAD_EXTRA);
+  for (let e = 0; e < extra; e++) {
+    const i = Math.floor(random() * nodes.length);
+    let best = -1, bd = Infinity;
+    for (let j = 0; j < nodes.length; j++) {
+      if (j === i || used.has(key(i, j))) continue;
+      const d = dist2(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y);
+      if (d < bd) { bd = d; best = j; }
+    }
+    if (best >= 0 && ok(nodes[i], nodes[best])) { edges.push([nodes[i], nodes[best]]); used.add(key(i, best)); }
+  }
+  hamletRoadEdges = edges;
+
+  // --- 畑：小集落の外側に、同じ向きの区画を並べたまとまりを1〜3つ ---
+  const near = (x, y, r) => buildings.some(b => !b._isWall && dist2(x, y, b.wx, b.wy) < (r + (b.radius || 0) + 6) ** 2);
+  for (const h of hamlets) {
+    if (random() > COUNTRY_FIELD_CHANCE) continue;
+    const houses = tinyBuildings.filter(b => dist2(b.wx, b.wy, h.wx, h.wy) < 140 * 140);
+    let reach = 30;
+    for (const b of houses) reach = Math.max(reach, Math.sqrt(dist2(b.wx, b.wy, h.wx, h.wy)));
+    const clusters = randInt(COUNTRY_FIELD_CLUSTERS[0], COUNTRY_FIELD_CLUSTERS[1]);
+    const base = random() * Math.PI * 2;
+    for (let c = 0; c < clusters; c++) {
+      const dirA = base + c * (Math.PI * 2 / clusters) + randRange(-0.4, 0.4);
+      const angle = dirA + Math.PI / 2 + randRange(-0.15, 0.15);
+      const cols = randInt(2, 3), rows = random() < 0.5 ? 2 : 1;
+      const pw = randRange(34, 50), ph = randRange(24, 36), gap = 5;
+      const cw = cols * pw + (cols - 1) * gap, ch = rows * ph + (rows - 1) * gap;
+      const dist = reach + 22 + Math.max(cw, ch) * 0.5;
+      const ccx = h.wx + Math.cos(dirA) * dist, ccy = h.wy + Math.sin(dirA) * dist;
+      const R = Math.hypot(cw, ch) * 0.5;
+      if (ccx < 80 || ccx > WORLD_W - 80 || ccy < 80 || ccy > WORLD_H - 80) continue;
+      if (near(ccx, ccy, R)) continue;
+      if (onStartStream(ccx, ccy, R * 0.6)) continue;
+      if (riverPolyline.length > 1 && distPointToPolylineSq(ccx, ccy, riverPolyline) < (riverWidth * 0.5 + R) ** 2) continue;
+      if (discs.some(d => dist2(ccx, ccy, d.x, d.y) < (d.r + R + 20) ** 2)) continue;
+      if (hamletRoadEdges.some(([a, b]) => pointSegDist2(ccx, ccy, a.x, a.y, b.x, b.y) < (R * 0.7 + HAMLET_ROAD_W) ** 2)) continue;
+      if (countrysideFields.some(f => dist2(ccx, ccy, f.x, f.y) < (R + Math.hypot(f.w, f.h)) ** 2 * 0.45)) continue;
+      const ux = Math.cos(angle), uy = Math.sin(angle), vxL = -uy, vyL = ux;
+      for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+        const oc = (col - (cols - 1) / 2) * (pw + gap), orw = (row - (rows - 1) / 2) * (ph + gap);
+        countrysideFields.push({ x: ccx + ux * oc + vxL * orw, y: ccy + uy * oc + vyL * orw, w: pw, h: ph, angle,
+          tone: COUNTRY_FIELD_TONES[(c + col + row) % COUNTRY_FIELD_TONES.length] });
+      }
+    }
+    // --- たまに前哨堡（小）：開始地点の方を向いた砲口。開始地点から離れた小集落だけ ---
+    if (dist2(h.wx, h.wy, START_X, START_Y) > HAMLET_RAMPART_FROM ** 2 && random() < HAMLET_RAMPART_CHANCE) {
+      const toStart = Math.atan2(START_Y - h.wy, START_X - h.wx);
+      let pick = null, bestS = -Infinity;
+      for (const b of houses) {
+        if (b === h || b._townRole) continue;
+        const sc = Math.cos(Math.atan2(b.wy - h.wy, b.wx - h.wx) - toStart);   // 開始地点側の家ほど良い
+        if (sc > bestS) { bestS = sc; pick = b; }
+      }
+      if (pick) {
+        pick._townRole     = "rampart";
+        pick._rampartShots = HAMLET_RAMPART_SHOTS;
+        pick.radius        = HAMLET_RAMPART_RADIUS;
+        pick.attackRadius  = Math.max(pick.attackRadius, RAMPART_RANGE);
+        pick._rampartAngle = toStart;
+        pick._faceAngle    = toStart + RAMPART_SPRITE_OFFSET;
+        pick._noFlip       = true;
+      }
+    }
+  }
+}
+
+/** v3.68.0（DT-490）: 小集落どうしの細い道と小川（地面に焼く） */
+function drawCountrysideOnLayer(bctx) {
+  if (startStreams.length === 0 && hamletRoadEdges.length === 0) return;
+  const config = STAGE_CONFIGS[currentStage];
+  bctx.save();
+  bctx.lineJoin = "round"; bctx.lineCap = "round";
+  for (const line of startStreams) {
+    for (const [w, col, al] of [[START_STREAM_W + 6, "rgba(40,45,40,0.45)", 1], [START_STREAM_W, "rgba(40,78,124,0.9)", 1], [START_STREAM_W * 0.4, "rgba(120,170,220,0.55)", 1]]) {
+      bctx.globalAlpha = al; bctx.strokeStyle = col; bctx.lineWidth = w;
+      bctx.beginPath(); bctx.moveTo(line[0].x, line[0].y);
+      // 頂点の中点をつなぐ二次曲線でなめらかに
+      for (let i = 1; i < line.length - 1; i++) {
+        const mx = (line[i].x + line[i + 1].x) / 2, my = (line[i].y + line[i + 1].y) / 2;
+        bctx.quadraticCurveTo(line[i].x, line[i].y, mx, my);
+      }
+      bctx.lineTo(line[line.length - 1].x, line[line.length - 1].y);
+      bctx.stroke();
+    }
+  }
+  const roadBase = shadeColor(stageBgColor(config), 20), roadWorn = shadeColor(stageBgColor(config), 32);
+  for (const [a, b] of hamletRoadEdges) {
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const bulge = Math.sin(a.x * 0.017 + b.y * 0.011) * 28;   // 座標で決まるたわみ（焼き直しても同じ形）
+    const cx = (a.x + b.x) / 2 - dy / len * bulge, cy = (a.y + b.y) / 2 + dx / len * bulge;
+    for (const [w, col, al] of [[HAMLET_ROAD_W, roadBase, 0.5], [HAMLET_ROAD_W * 0.35, roadWorn, 0.3]]) {
+      bctx.globalAlpha = al; bctx.strokeStyle = col; bctx.lineWidth = w;
+      bctx.beginPath(); bctx.moveTo(a.x, a.y); bctx.quadraticCurveTo(cx, cy, b.x, b.y); bctx.stroke();
+    }
+  }
+  bctx.restore();
+  bctx.globalAlpha = 1;
 }
 
 /**
@@ -6419,7 +6669,12 @@ function generateStageLayout(stageIndex) {
   // v1.2.0: 大陸以外の形では、散らす小集落が川面や大城壁に乗らないよう退ける。
   // 線状都市は開始地点が川の上にあり、まばらな家がそのまま川に建ってしまうため。
   // 大陸は従来どおり（ここで数が変わると、同じ種で組み直したときに保存した破壊状況が合わなくなる）。
+  // v3.68.0（DT-490）: 小川は小集落より先に引く（家が小川の上に建たないように、下の keepLoose で退ける）
+  startStreams = townRoadEdges.length > 0 ? generateStartStreams(result) : [];
+  hamletRoadEdges = []; countrysideFields = [];
   const keepLoose = (b) => {
+    if (onStartStream(b.wx, b.wy, (b.radius || 0) + 4)) return false;      // v3.68.0
+    if (onCountrysideField(b.wx, b.wy, b.radius || 0)) return false;       // v3.68.0（畑は小集落の後に敷く。そのあとに置く家を退ける）
     if (worldShape === SHAPE_CONTINENT) return true;
     if (worldShape === SHAPE_ASTEROIDS) return false;   // 宇宙に地面は無い＝散らばった家も無い
     if (worldShape === SHAPE_METRO) return false;       // v3.22.0: 大都会は区画の建物だけ（道路に家を建てない）
@@ -6432,6 +6687,8 @@ function generateStageLayout(stageIndex) {
   };
   const tinyBuildings = generateTinySettlements(result, boss.wx, boss.wy, config).filter(keepLoose);
   for (const b of tinyBuildings) result.push(b);
+  // v3.68.0（案帳 DT-490）: 道のある地図では、開始地点近くの小集落を細い道でつなぎ、まわりに畑を敷く
+  if (townRoadEdges.length > 0) generateStartCountryside(tinyBuildings, result);
 
   // --- (4b) v0.11: 道沿いの集落 — 街道のところどころに小さな民家群を置く。
   // 「道があるから人が住む」の地理感＋壊す対象の追加供給。卵割当は tiny と同率。
@@ -6610,6 +6867,10 @@ const DAM_FLOOD_DAMAGE = 400;   // 水没した建物へのダメージ（小屋
 let floodWave = null;           // { dist, maxDist, fromIdx } 進行中の洪水（1本だけ）
 
 let riverPolyline    = [];   // [{x,y}, ...] 川の中心線
+// v3.68.0（案帳 DT-490）: 開始地点まわりの田舎（小集落をつなぐ細い道・畑・小川）。見た目だけ（当たりは無い）
+let hamletRoadEdges   = [];   // [[{x,y},{x,y}], ...] 小集落どうしの細い道
+let countrysideFields = [];   // [{x,y,w,h,angle,tone}] 小集落のまわりの畑
+let startStreams      = [];   // [[{x,y}, ...], ...] 小川の中心線
 let riverWidth       = 56;
 let bridgePlacements = [];    // [{x, y, angle}] 街道×川の交点
 
@@ -7241,7 +7502,49 @@ const BEAM_KINDS = {
     detectR: 560, loseR: 760, aimTime: 1.1, lockTime: 0.3, aimTurn: 4.0,
     fireTime: 0.5, coolTime: 1.8, length: 650, halfW: 7, dragonDps: 18, hitsAll: false,
   },
+  // v3.68.0（案帳 DT-015・Shooter指示「三角プリズム持ちの大きめの動く敵も欲しい。首都よりは小さく、
+  //   プリズムで反射するレーザーも相応の太さで」）: プリズム運び。自分の光線を三角プリズムに通し、3本に割って扇に撃つ。
+  //   割れた3本はどれも塔の光線（半幅34）の7割の太さ。予告の線も3本出る。予告の向きを追う速さは塔より遅い（扇の間へ逃げ込める）
+  carrier: {
+    detectR: 900, loseR: 1300, aimTime: 1.6, lockTime: 0.45, aimTurn: 1.2,
+    fireTime: 1.3, coolTime: 2.4, length: 1300, halfW: 24, dragonDps: 22, hitsAll: false,
+  },
 };
+// v3.68.0（DT-015）: プリズム運び
+const PRISM_BEARER_COUNT     = 2;      // 光線の高原に出す数（時代V から1体増える）
+const PRISM_BEARER_START_GAP = 1800;   // 開始地点の近くには出さない
+const PRISM_BEARER_SPREAD    = 0.42;   // 割れた3本の間の角度（rad）＝約24度
+const PRISM_BEARER_SPLITS    = 3;
+const PRISM_BEARER_CATCH     = 34;     // 塔の光線がプリズム運びのこの距離に触れたら、プリズムで3本に割れる
+const PRISM_BEARER_TOWER_W   = 0.8;    // 塔の光線がプリズム運びで割れたときの1本の太さ（塔の光線に対する割合）
+const PRISM_BEARER_TOWER_LEN = 1300;
+/** 生きているプリズム運び */
+function prismBearers() {
+  const out = [];
+  for (const m of movers) if (m.alive && m.def.prismBearer) out.push(m);
+  return out;
+}
+/** プリズム運びの光線を3本に割って beamSegments に積む（扇の真ん中が angle） */
+function pushBearerSplits(x, y, angle, kind, w, halfW, length) {
+  for (let k = 0; k < PRISM_BEARER_SPLITS; k++) {
+    const a = angle + (k - (PRISM_BEARER_SPLITS - 1) / 2) * PRISM_BEARER_SPREAD;
+    beamSegments.push({ x1: x, y1: y, x2: x + Math.cos(a) * length, y2: y + Math.sin(a) * length, split: true, kind, w, hw: halfW });
+  }
+}
+/** 線分がいずれかのプリズム運びに触れるなら { m, len }（いちばん手前） */
+function beamBearerHit(x1, y1, x2, y2, bearers) {
+  let best = null;
+  const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy || 1;
+  for (const m of bearers) {
+    const t = Math.max(0, Math.min(1, ((m.wx - x1) * dx + (m.wy - y1) * dy) / len2));
+    const cx = x1 + dx * t, cy = y1 + dy * t;
+    const r = m.def.radius + PRISM_BEARER_CATCH;
+    if (dist2(cx, cy, m.wx, m.wy) > r * r) continue;
+    const L = Math.sqrt(len2) * t;
+    if (!best || L < best.len) best = { m, len: L };
+  }
+  return best;
+}
 const BEAM_RAMP            = 0.12;  // 撃ち始めと撃ち終わりに太さが変わる秒数（見た目だけ）
 const BEAM_LOCK_BLINK      = 14;    // 向きが止まった予告の点滅の速さ
 const BEAM_MINI_PER_TOWN   = 1;     // 町ごとの光線の砲の数（まず1。町には前哨堡などの撃つ建物もあるので、増やすのは実機で見てから）
@@ -7330,9 +7633,11 @@ function beamPrismHit(x1, y1, x2, y2) {
 /** 光線の塔と町の光線の砲の毎フレーム（予告→撃つ→休む）と、当たりの判定（BEAM_TICK ごと） */
 function updateBeamTowers(dt) {
   beamSegments.length = 0;
-  if (beamTowers.length === 0 || gameState !== "playing") return;
+  const bearers = prismBearers();   // v3.68.0（DT-015）
+  if ((beamTowers.length === 0 && bearers.length === 0) || gameState !== "playing") return;
   const n = countAliveBoids();
   const c = calcFriendlyCentroid();
+  for (const m of bearers) updatePrismBearerBeam(m, n, c, dt);
   for (const t of beamTowers) {
     if (t.fallen) continue;
     const b = t.beam, P = BEAM_KINDS[b.kind];
@@ -7374,7 +7679,15 @@ function updateBeamTowers(dt) {
           x2: prism.wx + Math.cos(a) * PRISM_SPLIT_LENGTH, y2: prism.wy + Math.sin(a) * PRISM_SPLIT_LENGTH, split: true, kind: b.kind, w });
       }
     } else {
-      beamSegments.push({ x1: t.wx, y1: t.wy, x2, y2, split: false, kind: b.kind, w });
+      // v3.68.0（DT-015）: 塔の光線がプリズム運びに当たると、そこで3本に割れて先へ進む
+      const bh = P.hitsAll && bearers.length ? beamBearerHit(t.wx, t.wy, x2, y2, bearers) : null;
+      if (bh) {
+        const bx = t.wx + Math.cos(b.angle) * bh.len, by = t.wy + Math.sin(b.angle) * bh.len;
+        beamSegments.push({ x1: t.wx, y1: t.wy, x2: bx, y2: by, split: false, kind: b.kind, w });
+        pushBearerSplits(bh.m.wx, bh.m.wy, b.angle, b.kind, w, P.halfW * PRISM_BEARER_TOWER_W, PRISM_BEARER_TOWER_LEN);
+      } else {
+        beamSegments.push({ x1: t.wx, y1: t.wy, x2, y2, split: false, kind: b.kind, w });
+      }
     }
   }
   beamTick += dt;
@@ -7384,13 +7697,43 @@ function updateBeamTowers(dt) {
   for (const s of beamSegments) applyBeamDamage(s, tick);
 }
 
+/** v3.68.0（DT-015）: プリズム運びの予告→撃つ→休む。撃つときはプリズムで3本に割れる。予告の終わりから撃ち終わりまで足を止める */
+function updatePrismBearerBeam(m, n, c, dt) {
+  if (!m.beam) m.beam = newBeamState("carrier");
+  const b = m.beam, P = BEAM_KINDS.carrier;
+  if (n === 0) { b.state = "idle"; return; }
+  const d = Math.sqrt(dist2(m.wx, m.wy, c.x, c.y));
+  const toward = Math.atan2(c.y - m.wy, c.x - m.wx);
+  if (b.state === "idle") {
+    if (d <= P.detectR) { b.state = "aim"; b.t = 0; b.angle = toward; }
+    return;
+  }
+  b.t += dt;
+  if (b.state === "aim") {
+    if (d > P.loseR) { b.state = "idle"; return; }
+    if (b.t < P.aimTime - P.lockTime) b.angle = turnTowardRate(b.angle, toward, P.aimTurn, dt);
+    else m.laserLock = Math.max(m.laserLock || 0, 0.05);   // 向きが止まったら足も止める
+    if (b.t >= P.aimTime) { b.state = "fire"; b.t = 0; }
+    return;
+  }
+  if (b.state === "cool") {
+    if (b.t >= P.coolTime) { b.state = d > P.loseR ? "idle" : "aim"; b.t = 0; }
+    return;
+  }
+  if (b.t >= P.fireTime) { b.state = "cool"; b.t = 0; return; }
+  m.laserLock = Math.max(m.laserLock || 0, 0.05);
+  const w = Math.min(1, b.t / BEAM_RAMP, (P.fireTime - b.t) / BEAM_RAMP);
+  pushBearerSplits(m.wx, m.wy, b.angle, "carrier", w, P.halfW, P.length);
+}
+function turnTowardRate(cur, want, rate, dt) { const mx = rate * dt; return cur + Math.max(-mx, Math.min(mx, wrapAngle(want - cur))); }
+
 /** 光線1本ぶんの当たり。竜だけを焼く。
  *  v3.62.0（案帳 DT-015・Shooter判定「街が焼けるのはほとんど見えないので訳がわからない。街を焼かなくていい」
  *  「プリズムに当たったら乱反射するのは派手で良かったので残す。その場合も敵の同士討ちは不要」）:
  *  敵の建物・動く敵を焼くのをやめた。プリズムで割れた光線も竜だけを焼く */
 function applyBeamDamage(s, tick) {
   const P = BEAM_KINDS[s.kind];
-  const halfW = P.halfW * (s.split ? 0.7 : 1);
+  const halfW = s.hw ?? P.halfW * (s.split ? 0.7 : 1);   // v3.68.0: プリズム運びで割れた光線は自分の太さを持つ
   const dx = s.x2 - s.x1, dy = s.y2 - s.y1, len = Math.sqrt(dx * dx + dy * dy) || 1;
   const ux = dx / len, uy = dy / len;
   const w2 = halfW * halfW;
@@ -7403,7 +7746,8 @@ function applyBeamDamage(s, tick) {
 
 /** 光線と、予告の線・塔と砲のレンズ・プリズム（樹冠と同じ層。竜の下） */
 function drawBeams(now) {
-  if (beamTowers.length === 0) return;
+  const bearers = prismBearers();   // v3.68.0（DT-015）
+  if (beamTowers.length === 0 && bearers.length === 0) return;
   ctx.save();
   ctx.lineCap = "round";
   // 予告の線（赤の点線）。向きが止まったら点滅して少し太くなる＝もうすぐ撃つ
@@ -7418,6 +7762,22 @@ function drawBeams(now) {
     ctx.beginPath(); ctx.moveTo(t.wx, t.wy);
     ctx.lineTo(t.wx + Math.cos(b.angle) * P.length, t.wy + Math.sin(b.angle) * P.length); ctx.stroke();
   }
+  // v3.68.0（DT-015）: プリズム運びの予告は3本（割れる向きそのまま）
+  for (const m of bearers) {
+    const b = m.beam;
+    if (!b || b.state !== "aim") continue;
+    const P = BEAM_KINDS.carrier, locked = b.t >= P.aimTime - P.lockTime;
+    ctx.setLineDash([10, 8]);
+    ctx.strokeStyle = BEAM_COLORS.aim;
+    ctx.lineWidth = 2 * (locked ? 1.8 : 1);
+    ctx.globalAlpha = locked ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.001 * BEAM_LOCK_BLINK)) : 1;
+    ctx.beginPath();
+    for (let k = 0; k < PRISM_BEARER_SPLITS; k++) {
+      const a = b.angle + (k - (PRISM_BEARER_SPLITS - 1) / 2) * PRISM_BEARER_SPREAD;
+      ctx.moveTo(m.wx, m.wy); ctx.lineTo(m.wx + Math.cos(a) * P.length, m.wy + Math.sin(a) * P.length);
+    }
+    ctx.stroke();
+  }
   ctx.setLineDash([]);
   ctx.globalAlpha = 1;
   // 光線（外の淡い光・帯・白い芯）。脈打たせる
@@ -7425,7 +7785,7 @@ function drawBeams(now) {
   const pulse = 1 + 0.12 * Math.sin(now * 0.02);
   for (const s of beamSegments) {
     const mini = s.kind === "mini";
-    const hw = BEAM_KINDS[s.kind].halfW * (s.split ? 0.7 : 1) * s.w;
+    const hw = (s.hw ?? BEAM_KINDS[s.kind].halfW * (s.split ? 0.7 : 1)) * s.w;
     const layers = mini
       ? [[hw * 3.2 * pulse, BEAM_COLORS.miniGlow], [hw * 1.6, BEAM_COLORS.miniBand], [hw * 0.6, BEAM_COLORS.miniCore]]
       : [[hw * 2.6 * pulse, BEAM_COLORS.glow], [hw * 1.6, BEAM_COLORS.band], [hw * 0.55, BEAM_COLORS.core]];
@@ -8529,6 +8889,14 @@ const MOVER_DEFS = {
   },
   // v3.60.0（案帳 DT-239）: 鎌付き戦車。右側にだけ大きな鎌。群れのまわりを回り込み、鎌の側ですれ違いざまに薙ぐ。
   // 鎌の無い側（左・前・後ろ）からの攻撃は2倍効く。予告線は無い（鎌の向きで危ない側が分かる）
+  // v3.68.0（案帳 DT-015）: プリズム運び。光線の高原だけ。大きな三角プリズムを担いでゆっくり歩き、
+  // 自分の光線をプリズムで3本に割って扇に撃つ（BEAM_KINDS.carrier）。塔の光線が当たっても3本に割れて先へ飛ぶ。
+  // 首都（半径46）より小さく、ふつうの大物（森番の巨人30）くらい。向き直りはものさしの「遅い」
+  prism_bearer: {
+    name: "prism_bearer", prismBearer: true, showHpBar: true,
+    hp: 900, speed: 30, xp: 520, eggDrop: 4, radius: 28, turnRate: Math.PI / 2 * 0.5,
+    color: "#7f93a6", glowColor: "#9ff0ff", moveType: "patrol",
+  },
   scythe_chariot: {
     name: "scythe_chariot", scythe: true, hp: 380, speed: 125, xp: 240, eggDrop: 3, radius: 18, turnRate: 1.7, showHpBar: true,
     color: "#6f7c8e", glowColor: "#e0e8f0", moveType: "patrol",
@@ -9201,6 +9569,29 @@ function advanceStepTurnVisual(dt) {
       m.drawAngle = m._stepTo;
     }
   }
+}
+
+// =====================================================================
+// v3.68.0（案帳 DT-138・Shooter指示「群れの方を向く能力が高すぎる。基本の追従速度と調整の度合いを
+//   わかりやすく決めて、この敵はこれくらいにした、と説明できるように」）: 敵が群れの方を向く速さのものさし
+// =====================================================================
+// 基本＝毎秒90度（1秒で直角）。敵ごとの値は「基本の何倍か」を5段階から選ぶ。
+// 目安：群れ（速さ約180px/s）が敵のまわりを半径 R で回り込むと、敵から見た群れの向きは毎秒 180/R ラジアン動く。
+//   敵の向く速さがそれより遅ければ、群れはその半径で回り込めば背中を取れる。
+//   回り込める半径 ≒ 180 ÷ 向く速さ(rad/s)：とても遅い 460px／遅い 230px／ふつう 115px／速い 57px。
+// 盾・正面装甲のように「向き」が強さそのものの敵は、遅い以下にする（回り込めば勝てる、が画面で分かる）。
+// 設計書：docs/gdd/dragon-tide-next-steps.md「敵が群れの方を向く速さ」
+const ENEMY_FACE_TURN_BASE = Math.PI / 2;   // 基本の向く速さ（rad/s）＝毎秒90度
+const ENEMY_FACE_TURN = {
+  verySlow: 0.25,   // 毎秒22.5度：巨大な敵・重い車両
+  slow:     0.5,    // 毎秒45度：盾・正面装甲の敵（回り込みが遊びになる）
+  normal:   1,      // 毎秒90度：ふつうの敵
+  fast:     2,      // 毎秒180度：身軽な敵
+};
+/** 角度 cur を want へ、段階 tier（ENEMY_FACE_TURN のキー）の速さで dt 秒ぶん回した角度 */
+function turnToward(cur, want, tier, dt) {
+  const max = ENEMY_FACE_TURN_BASE * ENEMY_FACE_TURN[tier] * dt;
+  return cur + Math.max(-max, Math.min(max, wrapAngle(want - cur)));
 }
 
 /** 角度差を -π..π に畳む。 */
@@ -10579,6 +10970,21 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   }
   // v3.22.0: 大都会の道路は、時代に関係なく車の列が流れている
   if (worldShape === SHAPE_METRO) generateMetroMovers(stageIndex, result, boss);
+  // v3.68.0（案帳 DT-015）: 光線の高原にはプリズム運びが歩いている
+  if (worldShape === SHAPE_PLATEAU) {
+    const count = PRISM_BEARER_COUNT + (stageIndex >= 4 ? 1 : 0);
+    for (let k = 0; k < count; k++) {
+      const m = makeMover(MOVER_DEFS.prism_bearer, () => {
+        for (let tries = 0; tries < 40; tries++) {
+          const x = randRange(400, WORLD_W - 400), y = randRange(400, WORLD_H - 400);
+          if (dist2(x, y, START_X, START_Y) >= PRISM_BEARER_START_GAP ** 2) return { x, y };
+        }
+        return { x: randRange(400, WORLD_W - 400), y: randRange(400, WORLD_H - 400) };
+      });
+      m.maxHp = m.hp = MOVER_DEFS.prism_bearer.hp; m.xpValue = MOVER_DEFS.prism_bearer.xp;
+      result.push(m);
+    }
+  }
 
   // v1.8.0: 多脚戦車を大戦（STAGE7）と最終（STAGE8）に1体。
   if (stageIndex === 6 || stageIndex === 7) {
@@ -10893,6 +11299,10 @@ const SHIELD_LINE_ENGAGE = 750;   // 群れがこれより近いと列を組む
 const SHIELD_LINE_GAP    = 30;    // 隣との間（盾兵の半径14×2＋すき間）
 const SHIELD_LINE_STEP   = 26;    // 列が群れへ進む速さ（ふつうの盾兵40より遅い）
 const SHIELD_LINE_STOP   = 150;   // 群れの重心からこの距離で列は止まる
+// v3.68.0（案帳 DT-138・Shooter判定「群れの方を向く能力が高すぎる」）: 列が群れの方へ向き直る速さ。
+// 前は毎フレーム群れの真正面へ向き直っていた（＝回り込んでも盾がついてくる）。
+// 「遅い」＝毎秒45度。群れが列から約230px以内を回り込めば、盾の向きが追いつかず横・後ろを取れる
+const SHIELD_LINE_TURN   = "slow";
 const shieldLines = new Map();    // packId → { x, y, fx, fy, at, members }
 /** 隊の列の中で、この盾兵が立つ場所と向き。群れが遠ければ null（ふつうの動きに任せる） */
 function shieldLineSlot(m, centroid, dt) {
@@ -10907,9 +11317,13 @@ function shieldLineSlot(m, centroid, dt) {
     if (!L) { L = { x: ax, y: ay, fx: 1, fy: 0 }; shieldLines.set(m.packId, L); }
     L.at = breathTime;
     const dx = centroid.x - L.x, dy = centroid.y - L.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const wasEngaged = L.engaged;
     L.engaged = d < SHIELD_LINE_ENGAGE && countAliveBoids() > 0;
     if (!L.engaged) { L.x = ax; L.y = ay; return null; }
-    L.fx = dx / d; L.fy = dy / d;
+    // v3.68.0: 列を組んだ瞬間だけ群れの方を向き、そのあとは SHIELD_LINE_TURN の速さでしか向き直らない
+    const want = Math.atan2(dy, dx);
+    L.angle = wasEngaged && L.angle !== undefined ? turnToward(L.angle, want, SHIELD_LINE_TURN, dt) : want;
+    L.fx = Math.cos(L.angle); L.fy = Math.sin(L.angle);
     if (d > SHIELD_LINE_STOP) { L.x += L.fx * SHIELD_LINE_STEP * dt; L.y += L.fy * SHIELD_LINE_STEP * dt; }
     // 列の中心が隊から離れすぎないように、隊の重心へ少し寄せる（押されて崩れたら組み直す）
     L.x += (ax - L.x) * Math.min(1, dt * 0.5); L.y += (ay - L.y) * Math.min(1, dt * 0.5);
@@ -11786,7 +12200,7 @@ function updateMovers(dt) {
       }
     }
 
-    if (lineSlot) { m.headingX = lineSlot.fx; m.headingY = lineSlot.fy; }   // 盾の面（正面）はいつも群れの方
+    if (lineSlot) { m.headingX = lineSlot.fx; m.headingY = lineSlot.fy; }   // 盾の面（正面）は列の向き（v3.68.0: 毎秒45度でしか群れへ向き直らない）
 
     // ---- 攻撃 ----
     const nearestIdx = findNearestAliveBoid(m.wx, m.wy);
@@ -12328,7 +12742,9 @@ const TR_HORDE_GAP     = 40;    // 隊列の間隔(px)
 const TR_HORDE_STAGGER = 0.12;  // 1列ずつ出す間隔（一度に湧かせない）
 // v3.16.1: 精鋭を「ガッツリ」強く（Shooter指示「弱すぎた」）。大型の敵はもともと22〜34px/sと遅く、
 // 倍率で速めても群れに追いつけない置物だったので、速さは下限で決める。攻撃は連射も威力も上げる。
-const TR_ELITE_HP      = 8;     // 精鋭の体力倍率
+// v3.68.0（案帳 DT-500・Shooter指示）: 精鋭の追跡者だけが異様に強い（足の速さで竜の旋回の遅さを突き、
+// ノックバックの連発で竜の攻撃をかなり無効化する）。強さの質はそのまま、体力だけ半分に。
+const TR_ELITE_HP      = 4;     // 精鋭の体力倍率（v3.68.0: 8→4）
 const TR_ELITE_SPEED   = 1.35;  // 速さの倍率の下限
 const TR_ELITE_MIN_SPEED = 120; // 速さの下限(px/s)。群れ（150〜200）より少し遅い＝逃げ続けるのは難しい
 const TR_ELITE_FEROCITY = 1.8;  // 攻撃の苛烈さ（間隔÷・威力×）。v3.50.4: 2.5→1.8（案帳 DT-472「衝撃波を連発してきて強すぎる」）
@@ -12388,7 +12804,9 @@ const TR_GATE_HP_STAGE     = 0.5;
 const TR_GATE_SPAWN        = 1.5;     // 1つの門から1体湧く間隔（秒）
 const TR_GATE_DUR          = 25;      // 湧き続ける時間（過ぎたら門は閉じる）
 const TR_GATE_FOLLOW       = 140;     // v3.54.1: 門が群れについてくる速さ（px/秒。群れの最高速より少し遅い＝振り切れば一時的に離れられる）
-const TR_TWIN_STRENGTH     = 0.6;     // 双頭の精鋭：1体ずつは精鋭の追跡者のこの割合の体力
+const TR_TWIN_STRENGTH     = 0.6;     // 双頭の精鋭：経験値・竜晶は精鋭の追跡者のこの割合
+// v3.68.0（案帳 DT-500「他の弱体化は一旦不要」）: 追跡者の体力を半分にしても双頭の精鋭は弱くしない。体力は旧倍率（8）基準のまま
+const TR_TWIN_HP           = 8 * TR_TWIN_STRENGTH;   // 双頭の精鋭の体力倍率（1体ずつ）
 const TR_TWIN_RAGE         = 1.5;     // 片方が倒れたとき、残りの速さと攻撃の倍率
 const TR_TWIN_SYNC         = 2.5;     // この秒数のうちに2体とも倒せば「同時」（怒らない・卵が倍）
 const TR_TWIN_DUR          = 60;
@@ -12621,7 +13039,7 @@ function startTierRush() {
       for (let k = 0; k < 2; k++) {
         const aa = a + (k ? 0.5 : -0.5);
         const m = spawnTrMover(def, c.x + Math.cos(aa) * r, c.y + Math.sin(aa) * r);
-        m.maxHp = m.hp = def.hp * TR_ELITE_HP * TR_TWIN_STRENGTH;
+        m.maxHp = m.hp = def.hp * TR_TWIN_HP;
         m.speedMult = Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed);
         m.xpValue = def.xp * TR_ELITE_XP * TR_TWIN_STRENGTH;
         m._trChase = true; m._trElite = true; m._trReward = "twin"; m._trFerocity = TR_ELITE_FEROCITY;
@@ -13861,6 +14279,8 @@ function damageMover(m, damage, srcX, srcY) {
   m.hp -= damage;
   reportDamage(m, m.wx, m.wy, damage);
   if (m.def.hero && m.hp <= 0) { heroDefeated(m); return; }   // v3.35.0: 英雄は倒れずに退く（最後の戦いだけ倒れる）
+  if (m.def.heroMate && m.mate && m.hp <= 0) mateSpeak(m, "fallen", true);   // v3.68.0（DT-107）: お供も倒れるときに一言
+  if (m.def.heroMate && m.mate && !m.mate.saidLowHp && m.hp > 0 && m.hp < m.maxHp * HERO_SAY_LOW_HP) { m.mate.saidLowHp = true; mateSpeak(m, "lowHp", true); }
   if (m.hp <= 0) {
     m.alive = false;
     m.hp = 0;
@@ -15928,6 +16348,22 @@ function drawMovers() {
       ctx.moveTo(8, -3); ctx.lineTo(12, -5);
       ctx.moveTo(8, 3);  ctx.lineTo(12, 5);
       ctx.stroke();
+    } else if (def.name === "prism_bearer") {
+      // v3.68.0 プリズム運び（DT-015）: 灰青の大きな胴と、担いだ水色の三角プリズム。プリズムは狙う向き（光線の扇の向き）を指す
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.ellipse(-6, 0, 22, 18, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#3a4a58"; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = "#5a6a7a";
+      ctx.beginPath(); ctx.arc(-6, -15, 6, 0, Math.PI * 2); ctx.arc(-6, 15, 6, 0, Math.PI * 2); ctx.fill();
+      const b = m.beam, aimA = b && b.state !== "idle" ? b.angle - angle : 0;
+      ctx.save(); ctx.rotate(aimA);
+      const active = b && (b.state === "fire" || (b.state === "aim" && b.t >= BEAM_KINDS.carrier.aimTime - BEAM_KINDS.carrier.lockTime));
+      ctx.fillStyle = active ? "rgba(245,255,255,0.95)" : "rgba(190,245,255,0.9)";
+      ctx.strokeStyle = "#2a5a70"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(24, 0); ctx.lineTo(-8, -17); ctx.lineTo(-8, 17); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "rgba(255,255,255,0.8)"; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(-8, 0); ctx.lineTo(24, 0); ctx.stroke();
+      ctx.restore();
     } else if (def.name === "moving_fortress") {
       // v3.54.0 動く砦: 四角い塔と四隅の砲台。後ろ（-x）の扉だけ明るい＝弱点
       ctx.fillStyle = def.color;
@@ -17846,6 +18282,7 @@ function generateTerrainObstacles(buildings, boss) {
       fieldSpots.push({ x: f.x, y: f.y, r: Math.hypot(f.w, f.h) * 0.5 });
     }
   }
+  for (const f of countrysideFields) fieldSpots.push({ x: f.x, y: f.y, r: Math.hypot(f.w, f.h) * 0.5 });   // v3.68.0（DT-490）
 
   for (let k = 0; k < count; k++) {
     const type   = random() < 0.55 ? "rock" : "lake";
@@ -17984,6 +18421,7 @@ function paintGroundTile(bctx, bounds) {
 
   // v0.9.1: 街と街をつなぐ街道（地形より下＝湖にかかる部分は湖が上書きして途切れる）
   drawInterTownRoadsOnLayer(bctx);
+  drawCountrysideOnLayer(bctx);   // v3.68.0（DT-490）: 小集落の細い道・小川
 
   // v0.10: 橋（川×街道の交点。川と街道の両方の上に乗る）
   drawBridgesOnLayer(bctx);
@@ -18333,46 +18771,7 @@ function drawTownBasesOnLayer(bctx, bounds) {
 
     // v0.10: 畑 — 縞模様の耕作地＋柵。「人が住み、耕している土地」の記号
     // v0.16: 区画ごとの作付けトーン（tone）で耕地・青作物・実りを混ぜる
-    const fieldImg = terrainImages.field;
-    for (const f of fields) {
-      bctx.save();
-      bctx.translate(f.x, f.y);
-      bctx.rotate(f.angle);
-      if (fieldImg) {
-        // v0.17: セル調の畑スプライト。区画は gap(7px) 分だけ大きく描き、
-        // 隣接区画の柵が連なって「区切られた耕作地」に見えるようにする。
-        // tone を薄い乗算で重ね、耕地/青作物/実りの作付け差を残す。
-        const dw = f.w + 7, dh = f.h + 7;
-        bctx.drawImage(fieldImg, -dw / 2, -dh / 2, dw, dh);
-        if (f.tone) {
-          bctx.globalAlpha = 0.22;
-          bctx.globalCompositeOperation = "multiply";
-          bctx.fillStyle = f.tone;
-          bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
-          bctx.globalCompositeOperation = "source-over";
-          bctx.globalAlpha = 1.0;
-        }
-      } else {
-        // --- ベクターフォールバック ---
-        bctx.globalAlpha = 0.46;
-        bctx.fillStyle = f.tone ?? "#96804a";
-        bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
-        bctx.globalAlpha = 0.35;
-        bctx.strokeStyle = shadeColor(f.tone ?? "#96804a", -46);
-        bctx.lineWidth = 2.5;
-        for (let fx = -f.w / 2 + 6; fx < f.w / 2 - 3; fx += 9) {
-          bctx.beginPath();
-          bctx.moveTo(fx, -f.h / 2 + 4);
-          bctx.lineTo(fx, f.h / 2 - 4);
-          bctx.stroke();
-        }
-        bctx.globalAlpha = 0.55;
-        bctx.strokeStyle = "rgba(70, 52, 30, 0.9)";
-        bctx.lineWidth = 2;
-        bctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
-      }
-      bctx.restore();
-    }
+    for (const f of fields) drawFieldPlot(bctx, f);   // v3.68.0: 畑1区画の絵は小集落の畑（DT-490）と共通にした
 
     // v0.16: 静的装飾 — 井戸・干し草（人の営みの記号）
     for (const d of decor) {
@@ -18400,6 +18799,11 @@ function drawTownBasesOnLayer(bctx, bounds) {
     }
   }
 
+  // v3.68.0（DT-490）: 開始地点まわりの小集落の畑
+  for (const f of countrysideFields) {
+    if (layerBoundsHitCircle(bounds, f.x, f.y, Math.hypot(f.w, f.h))) drawFieldPlot(bctx, f);
+  }
+
   // tiny集落: 各棟の足元に踏み固めた土の広場
   bctx.globalAlpha = 0.30;
   bctx.fillStyle = paveColor;
@@ -18412,6 +18816,48 @@ function drawTownBasesOnLayer(bctx, bounds) {
   }
   bctx.restore();
   bctx.globalAlpha = 1.0;
+}
+
+/** 畑1区画（縞模様の耕作地＋柵）。町の畑と小集落の畑（v3.68.0）で共通 */
+function drawFieldPlot(bctx, f) {
+  const fieldImg = terrainImages.field;
+  bctx.save();
+  bctx.translate(f.x, f.y);
+  bctx.rotate(f.angle);
+  if (fieldImg) {
+    // v0.17: セル調の畑スプライト。区画は gap(7px) 分だけ大きく描き、
+    // 隣接区画の柵が連なって「区切られた耕作地」に見えるようにする。
+    // tone を薄い乗算で重ね、耕地/青作物/実りの作付け差を残す。
+    const dw = f.w + 7, dh = f.h + 7;
+    bctx.drawImage(fieldImg, -dw / 2, -dh / 2, dw, dh);
+    if (f.tone) {
+      bctx.globalAlpha = 0.22;
+      bctx.globalCompositeOperation = "multiply";
+      bctx.fillStyle = f.tone;
+      bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
+      bctx.globalCompositeOperation = "source-over";
+      bctx.globalAlpha = 1.0;
+    }
+  } else {
+    // --- ベクターフォールバック ---
+    bctx.globalAlpha = 0.46;
+    bctx.fillStyle = f.tone ?? "#96804a";
+    bctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
+    bctx.globalAlpha = 0.35;
+    bctx.strokeStyle = shadeColor(f.tone ?? "#96804a", -46);
+    bctx.lineWidth = 2.5;
+    for (let fx = -f.w / 2 + 6; fx < f.w / 2 - 3; fx += 9) {
+      bctx.beginPath();
+      bctx.moveTo(fx, -f.h / 2 + 4);
+      bctx.lineTo(fx, f.h / 2 - 4);
+      bctx.stroke();
+    }
+    bctx.globalAlpha = 0.55;
+    bctx.strokeStyle = "rgba(70, 52, 30, 0.9)";
+    bctx.lineWidth = 2;
+    bctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
+  }
+  bctx.restore();
 }
 
 function drawTownRoadsOnLayer(bctx, meta) {
@@ -19579,8 +20025,10 @@ function updateSettlementAttacks(dt) {
         continue;
       }
       settlement.attackTimer = RAMPART_INTERVAL;
-      for (let k = 0; k < RAMPART_COUNT; k++) {
-        const off = (k - (RAMPART_COUNT - 1) / 2) * (RAMPART_SPREAD / (RAMPART_COUNT - 1));
+      const shots = settlement._rampartShots ?? RAMPART_COUNT;   // v3.68.0（DT-490）: 小集落の前哨堡は弾が少ない
+      const spread = RAMPART_SPREAD * (shots - 1) / (RAMPART_COUNT - 1);
+      for (let k = 0; k < shots; k++) {
+        const off = shots > 1 ? (k - (shots - 1) / 2) * (spread / (shots - 1)) : 0;
         spawnFanProjectileRaw(
           settlement.wx, settlement.wy, base + off,
           settlement.projectileSpeed,
@@ -20412,7 +20860,9 @@ const BASE_FLOCK_CAP = 100;   // 鯨竜（capMult<1）の上限の元。ふつ�
 // 群れ全体の攻撃・HP の倍率に換算する。見た目は本物2体のあいだに描く竜（drawOverflowDragons）で出す。
 // 1000体を本当に動かすと当たり判定と描画が持たないため。
 const FLOCK_TOTAL_CAP          = 1000;
-const BROOD_TOTAL_PER_CARD     = 100;    // 大繁殖1枚で開く上限
+// v3.68.0（案帳 DT-497・Shooter指示「大繁殖で上限を増やす効果は不要。ステージでのみ有効なカードにして、竜の追加数を増やす」）:
+// 大繁殖は上限を開かない。取ったその場で竜を BROOD_DRAGONS 体足すだけ（群れはステージをまたがないので、効くのはそのステージだけ）
+const BROOD_DRAGONS            = 15;     // 大繁殖1枚で足す竜（前は5）
 const OVERFLOW_POWER_PER_BLOCK = 0.5;    // 上限超えの竜 OVERFLOW_POWER_BLOCK 体ごとに攻撃・HP +50%（1000体で約×3.8）
 const OVERFLOW_POWER_BLOCK     = 150;
 const OVERFLOW_DRAW_MAX        = 350;    // 見た目だけの竜を描く最大数（描画の重さの上限）
@@ -20702,6 +21152,13 @@ function resetBoidsForStageStart(initialCount = BOIDS_INITIAL) {
   // ここでスロット0を特別扱いする必要はない。
 }
 
+/** v3.68.0（DT-497）: 群れに加わっている竜の数（ダウン中も含む。死んで抜けた竜は含まない）。HUD の分母 */
+function countJoinedBoids() {
+  let count = 0;
+  for (let i = 0; i < N; i++) if (!boidDead[i]) count++;
+  return count;
+}
+
 function countAliveBoids() {
   // 変更2: ダウン中（boidDowned）は有効個体数から除外する。
   // これによりカメラズーム・ブレス範囲・HUD表示がダウン分だけ薄まり、
@@ -20978,7 +21435,7 @@ function spawnBoidAtEgg(wx, wy) {
   py[idx]                   = wy;
   vx[idx]                   = finalVx;
   vy[idx]                   = finalVy;
-  boidHp[idx]               = BOID_MAX_HP * overflowPowerMult();   // v3.67.0: 上限超えの竜の HP 倍率ぶん（満タンで生まれる）
+  boidHp[idx]               = BOID_MAX_HP * overflowPowerMult() * starBoostMult();   // v3.68.0: ★の強化倍率   // v3.67.0: 上限超えの竜の HP 倍率ぶん（満タンで生まれる）
   boidDead[idx]             = 0;
   boidFadeTimer[idx]        = 0;
   boidHitStopTimer[idx]     = 0;
@@ -21027,6 +21484,9 @@ const STRINGS = {
   hudXp: (n) => `✨${Math.floor(n).toLocaleString()}`,
   hudLevel: (lv) => `Lv.${lv}`,   // v3.67.0: 数字はゲージの上（hudXpGauge）へ移した
   hudXpGauge: (lv, cur, need) => `Lv.${lv}　✨${cur.toLocaleString()} / ${need.toLocaleString()}`,   // v3.67.0（DT-497）
+  hudStarBoost: (mult) => `　⭐強化 ×${mult.toFixed(2)}`,   // v3.68.0（DT-497）: ★4以上で上がる強化倍率
+  statStarBoost: "以降の強化倍率",   // 群れの攻撃・HP に掛かる（★4以上で上がる）
+  statStarBoostUp: (add) => `+${Math.round(add * 100)}%`,
   hudRoar: (name, pct, sec) => `📢 ${name} 攻撃+${pct}%　${sec}秒`,   // v3.67.0（DT-497）
   shopTitle: "竜の巣",
   // v3.59.0（案帳 DT-238・Shooter指示）: 竜の進化と特殊個体を別の画面に。「買う・購入」とは言わない
@@ -21315,6 +21775,27 @@ const STRINGS = {
     repelled: ["退くのではない……備えるのだ……！", "次は……必ず斬る……！"],
     fallen:   ["王よ……申し訳……ありません……"],
   },
+  // v3.68.0（案帳 DT-107・Shooter指示「2段階目以降で増える英雄のお供もセリフを喋って欲しい」）: お供ごとの場面別のセリフ
+  heroMateLines: {
+    shield: {
+      appear: ["英雄殿の背は、この盾が守る！", "盾の騎士、ここに！"],
+      attack: ["盾よ、飛べ！", "受けてみろ！", "弾き返す！"],
+      lowHp:  ["盾が……割れそうだ……！"],
+      fallen: ["英雄殿……あとは……頼みます……"],
+    },
+    mage: {
+      appear: ["陣を敷きます。足元にご注意を", "古の光よ、我に力を"],
+      attack: ["陣よ、開け！", "光の柱よ、竜を焼け！", "逃がしませんよ"],
+      lowHp:  ["詠唱が……乱れる……"],
+      fallen: ["魔力が……尽きました……"],
+    },
+    archer: {
+      appear: ["狙いは外さない", "英雄殿、援護する！"],
+      attack: ["射抜く！", "放て！", "そこだ！"],
+      lowHp:  ["矢が……もう少ない……"],
+      fallen: ["すまない……先に……"],
+    },
+  },
   heroFallen: "英雄を討ち取った",
   // v3.33.0（案帳 DT-076）: 再開ボタンの下に一言。v3.39.0: 「戻らないもの」の説明はやめ、何が起きるかだけを短く書く（Shooter判定）。
   // v3.39.3: 「そのまま残ります」はセーブするときの言い方だった（Shooter判定）。v3.39.4: 建物の一文も外して一言だけに（Shooter指示）
@@ -21358,7 +21839,7 @@ const STRINGS = {
     wind:      { name: "疾風",     desc: "群れの速度 +8%" },
     tide:      { name: "再生の潮", desc: "復帰時間 -15%" },
     magnet:    { name: "吸引域",   desc: "XP吸引範囲 +40%" },
-    brood:     { name: "大繁殖",   desc: "群れ上限 +100、竜 +5" },   // v3.67.0: 上限1000に合わせて +25→+100
+    brood:     { name: "大繁殖",   desc: "竜 +15（このステージだけ）" },   // v3.68.0（DT-497）: 上限は増やさない。ステージでだけ効き、竜を多めに足す
     resonance: { name: "竜鱗共鳴", desc: "被ダメージ -12%" },
     cat_direct: { name: "直撃の牙",   desc: "直接攻撃（体当たり・爪・刃・舌など）の威力 +12%" },
     cat_shot:   { name: "烈火の喉",   desc: "ブレス（炎・氷槍・影弾・羽根・光）の威力 +12%" },
@@ -22666,10 +23147,10 @@ function effMagnetRadius()  { return XP_MAGNET_RADIUS_BASE * (1 + 0.40 * genCoun
 function effFlockTotalCap() {
   const capMult = sp().capMult || 1;
   if (capMult < 1) {   // v3.57.0: 鯨竜は数体だけ
-    const base = (BASE_FLOCK_CAP + 25 * genCount("brood") + permaBuff.flockCap) * capMult;
+    const base = (BASE_FLOCK_CAP + permaBuff.flockCap) * capMult;   // v3.68.0: 大繁殖は上限を開かない
     return Math.max(1, Math.min(MAX_BOIDS, Math.round(base)));
   }
-  return Math.max(1, Math.round((FLOCK_TOTAL_CAP + BROOD_TOTAL_PER_CARD * genCount("brood") + permaBuff.flockCap) * capMult));
+  return Math.max(1, Math.round((FLOCK_TOTAL_CAP + permaBuff.flockCap) * capMult));   // v3.68.0: 大繁殖は上限を開かない
 }
 /** 動く竜（配列）の上限。ここを超えた分は flockOverflow に数える。 */
 function effFlockCap()      { return Math.min(MAX_BOIDS, effFlockTotalCap()); }
@@ -22695,7 +23176,7 @@ function effBeamTargets()   { return 1 + upCount("multibeam"); }
 function effBulletPierce()  { return 1 + upCount("pierce"); }
 function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
 // v0.6-p2: 緋竜（MELEE）は個体HP +50%（仕様 §6.4）
-function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1) * (sp().hpMult || 1) * (upCount("f_gamble") > 0 ? GAMBLE_HP_MULT : 1) * overflowPowerMult(); }   // v3.67.0: 上限超えの竜   // v3.8.0: 亀竜は素で硬い
+function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1) * (sp().hpMult || 1) * (upCount("f_gamble") > 0 ? GAMBLE_HP_MULT : 1) * overflowPowerMult() * starBoostMult(); }   // v3.68.0: ★の強化倍率   // v3.67.0: 上限超えの竜   // v3.8.0: 亀竜は素で硬い
 // v0.85: 特殊個体は役割ごとのHP倍率を持つ（巌竜は轢進む前提なので 3 倍）。
 // v3.10.0: 極光（旧母竜）だけに掛かっていた専用の倍率 motherHp は撤去（他の特殊個体と同じ扱い）
 function effBoidMaxHpFor(i) {
@@ -22714,9 +23195,9 @@ function applyCardImmediate(cardId) {
       if (!boidDead[i] && !boidDowned[i]) boidHp[i] *= ratio;
     }
   } else if (cardId === "brood") {
-    // 上限+25 に加えて即時に竜5体を群れ重心付近へ無償孵化
+    // v3.68.0（DT-497）: 上限は開かず、竜 BROOD_DRAGONS 体を群れ重心付近へ無償孵化
     const centroid = calcFriendlyCentroid();
-    for (let k = 0; k < 5; k++) {
+    for (let k = 0; k < BROOD_DRAGONS; k++) {
       const angle = random() * Math.PI * 2;
       const r     = 30 + random() * 50;
       spawnBoidAtEgg(centroid.x + Math.cos(angle) * r, centroid.y + Math.sin(angle) * r);
@@ -22742,13 +23223,15 @@ function applyCardImmediate(cardId) {
 //   経験値は店の通貨として貯まると同時に、ステージの中で一定量ごとに強化カード（ステージ限定）を1枚選ばせる。
 //   敵を倒しても町を壊しても少しずつ強くなり、いつかはクリアできる。必要量はステージの中で少しずつ増え、ステージが変わると戻る
 let stageCardXp = 0, stageCardLevel = 0, stageXpAtStart = 0;
-const STAGE_CARD_XP_BASE   = 2000;   // v3.66.0（DT-497・Shooter指示「全体的にレベルアップの頻度を半分くらいに」）: 1000→2000
+const STAGE_CARD_XP_BASE   = 4000;   // v3.66.0（DT-497・Shooter指示「全体的にレベルアップの頻度を半分くらいに」）: 1000→2000
+                                     // v3.68.0（DT-497・Shooter指示「さらに半分に。ただし初回はこれ以上遅くしない」）: 2000→4000
 const STAGE_CARD_XP_GROWTH = 1.15;   // 1枚取るごとに次の必要量 ×1.15
 const STAGE_CARD_XP_STAGE  = 0.35;   // ステージ1つ進むごとの必要量の上げ幅（後のステージほど経験値が多いので）
-const STAGE_CARD_EXPECTED  = 15;     // 1ステージで経験値から取れる枚数の見込み（警戒度の必要数に使う）
+const STAGE_CARD_EXPECTED  = 8;      // 1ステージで経験値から取れる枚数の見込み（警戒度の必要数に使う）。v3.68.0: レベルアップが半分になったので 15→8
 // v3.58.0（Shooter指示「序盤の強化までの必要経験値をもっとマイルドに。最初は半分、5回目までに今の必要量に追いつく」）:
 //   1枚目は ×0.5、そこから5枚目（stageCardLevel 4）で ×1 になるまでまっすぐ上げる
-const STAGE_CARD_EARLY_MULT  = 0.2;   // v3.66.0（Shooter指示「最初のレベルアップまではもう少し近く」）: 1枚目 2000×0.2＝400（前は500）
+const STAGE_CARD_EARLY_MULT  = 0.1;   // v3.66.0（Shooter指示「最初のレベルアップまではもう少し近く」）: 1枚目 2000×0.2＝400（前は500）
+                                      // v3.68.0: 必要量の元を倍にしたので 0.2→0.1（1枚目は 4000×0.1＝400 のまま）
 const STAGE_CARD_EARLY_CARDS = 4;
 function stageCardNeed() {
   const early = STAGE_CARD_EARLY_MULT + (1 - STAGE_CARD_EARLY_MULT) * Math.min(stageCardLevel, STAGE_CARD_EARLY_CARDS) / STAGE_CARD_EARLY_CARDS;
@@ -23502,7 +23985,8 @@ function updateHUDLevel() {
   // v3.66.0（DT-497・Shooter指示「レベルアップの必要ポイントをゲージだけでなく数字も」）: レベルと、次のレベルアップまでの経験値
   // v3.67.0（DT-497・Shooter指示「数字はゲージに隣接させるか、ゲージの上に」）: 数字はゲージの上、群れの欄は Lv だけ
   hudLevelEl.textContent = STRINGS.hudLevel(playerLevel);
-  xpTextEl.textContent   = STRINGS.hudXpGauge(playerLevel, Math.floor(stageCardXp), Math.ceil(stageCardNeed()));
+  const boost = starBoostMult();
+  xpTextEl.textContent   = STRINGS.hudXpGauge(playerLevel, Math.floor(stageCardXp), Math.ceil(stageCardNeed())) + (boost > 1 ? STRINGS.hudStarBoost(boost) : "");
 }
 
 // =================================================================
@@ -27232,7 +27716,7 @@ const CODEX_ENEMY_NAMES = {
   walker_hull: "多脚戦車", walker_leg: "多脚戦車の脚",
   railgun_loco: "列車砲列（機関車）", railgun_car: "列車砲列の砲車",
   railcar: "装甲軌道車", railram: "衝角機関車",
-  forest_ambusher: "森の伏兵", forest_giant: "森番の巨人",
+  forest_ambusher: "森の伏兵", forest_giant: "森番の巨人", prism_bearer: "プリズム運び",
   metro_car: "渋滞の車", metro_truck: "渋滞の箱バン", metro_police: "パトカー", metro_tank: "戦車", metro_heli: "攻撃ヘリ",
   raider: "レイダー", treasure: "財宝馬車", eggconvoy: "竜卵の輸送隊",
   caravan: "行商の隊", caravan_guard: "行商の隊の護衛",
@@ -27255,6 +27739,7 @@ const CODEX_SPECIAL_ERA = {
   railram:        "軌道（全文明） — 放射線を行き来する",
   forest_ambusher: "大樹海（全文明） — 樹冠の下で待ち、近づくと飛び出す",
   forest_giant:   "大樹海（全文明） — 森を歩く大物",
+  prism_bearer:   "光線の高原（全文明） — 三角プリズムで光線を3本に割って撃つ。塔の光線も割る",
   metro_car:      "大都会（全文明） — 列になって道路を流れる",
   metro_truck:    "大都会（全文明） — 車列に混じる少し硬い車",
   metro_police:   "大都会（全文明） — 道路を走りながら撃つ",
@@ -28121,7 +28606,7 @@ const CODEX_RUSH_DESC = {
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
   fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は絶えず撃ってくる。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
   gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
-  twinelite: () => `大型の精鋭が2体（1体ずつは精鋭の追跡者の${Math.round(TR_TWIN_STRENGTH * 100)}%の体力）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
+  twinelite: () => `大型の精鋭が2体（1体ずつ体力 ×${+TR_TWIN_HP.toFixed(1)}）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
 function codexRushHtml() {
@@ -29430,7 +29915,10 @@ function triggerStageCleared() {
       `${starsBest ? ' <span class="result-best">自己ベスト更新</span>' : ""}</div>` +
     `${STRINGS.statStageTime}: <span class="stat-value">${formatRunTime(stageTimeMs)}</span><br>` +
     `${STRINGS.statFlock}: <span class="stat-value">${countAliveBoids()}</span><br>` +
-    `${STRINGS.statLives}: <span class="stat-value">${runLives}</span>`;
+    `${STRINGS.statLives}: <span class="stat-value">${runLives}</span><br>` +
+    // v3.68.0（DT-497）: ★4以上で上がる強化倍率を明示する
+    `${STRINGS.statStarBoost}: <span class="stat-value">×${starBoostMult().toFixed(2)}</span>` +
+      (starBoostFor(stars) > 0 ? ` <span class="result-best">${STRINGS.statStarBoostUp(starBoostFor(stars))}</span>` : "");
   resultStatsEl.classList.add("visible");
   // v3.58.2（案帳 DT-238・Shooter指示「リザルト画面はステージクリア画面を送った後別画面に」）: 経験値の勘定は次の画面で見せる
   stageClearPhase = "clear";
@@ -33647,6 +34135,11 @@ const HERO_SPECIAL_DMG      = 0.5;    // 特殊個体はダウンせず、最大
 // 斬った所から衝撃が広がり、まわりの竜を外へ吹き飛ばす（傷は入れない）
 const HERO_SLASH_KNOCK_R      = 110;
 const HERO_SLASH_KNOCK_IMPACT = 340;  // 近いほど強い（端で半分）
+// v3.68.0（案帳 DT-107・Shooter指示「英雄の突撃時の軌道上の竜も吹っ飛んで欲しい」）:
+// 踏み込みの道筋の近くにいた竜を、道筋から横へ弾き飛ばす（傷は入れない）。1回の踏み込みで1体1回まで
+const HERO_DASH_KNOCK_R      = 60;    // 道筋からこの距離まで
+const HERO_DASH_KNOCK_IMPACT = 300;   // 道筋に近いほど強い（端で半分）
+const HERO_DASH_KNOCK_FWD    = 0.35;  // 横へ弾くのに加えて、踏み込みの向きへ押す割合（突き飛ばされて見える）
 const HERO_STUN_PER_IMPACT  = 1 / 200; // 衝撃力100で0.5秒・300で1.5秒
 const HERO_STUN_MAX         = 3;
 const HERO_STUN_DASH_MULT   = 2;      // 踏み込み中に当てると気絶が2倍（迎え撃ち）
@@ -33693,8 +34186,42 @@ function heroSpeak(kind, important = false, m = heroState && heroState.m) {
   const text = lines[Math.floor(fxRandom() * lines.length) % lines.length];
   heroSay = { text, t: 0, x: m ? m.wx : 0, y: m ? m.wy : 0 };
 }
+// v3.68.0（案帳 DT-107）: お供の吹き出し。英雄の吹き出し（heroSay）とは別に、お供ごとに1つまで出す
+const MATE_SAY_ATTACK_P   = 0.3;    // 技を出すたびにセリフを言う確率
+const MATE_SAY_GAP        = 6;      // 小さな場面（技）のセリフは、そのお供の前のセリフからこの秒数あける
+const MATE_SAY_ANY_GAP    = 1.2;    // 小さな場面は、だれか（英雄・ほかのお供）が喋り始めてからこの秒数あける（吹き出しが重ならないように）
+const MATE_SAY_APPEAR_DELAY = [1.4, 2.6, 3.8];   // 出てきた順に、英雄の名乗りのあとで1人ずつ喋る（秒）
+const mateSays = [];    // { owner, text, t, x, y }（お供が倒れても、出ている間はその場に残す）
+/** お供にセリフを言わせる。important でなければ間をあける */
+function mateSpeak(mm, kind, important = false) {
+  const lines = STRINGS.heroMateLines[mm.mate.kind] && STRINGS.heroMateLines[mm.mate.kind][kind];
+  if (!lines || !lines.length) return;
+  const mine = mateSays.find(b => b.owner === mm);
+  if (!important) {
+    if (mine && mine.t < MATE_SAY_GAP) return;
+    if (heroSay && heroSay.t < MATE_SAY_ANY_GAP) return;
+    if (mateSays.some(b => b.t < MATE_SAY_ANY_GAP)) return;
+  }
+  const text = lines[Math.floor(fxRandom() * lines.length) % lines.length];
+  if (mine) { mine.text = text; mine.t = 0; mine.x = mm.wx; mine.y = mm.wy; }
+  else mateSays.push({ owner: mm, text, t: 0, x: mm.wx, y: mm.wy });
+}
+function updateMateSays(dt) {
+  for (const mm of movers) {
+    if (!mm.alive || !mm.mate || mm.mate.appearSay === undefined) continue;
+    mm.mate.appearSay -= dt;
+    if (mm.mate.appearSay <= 0) { mm.mate.appearSay = undefined; mateSpeak(mm, "appear", true); }
+  }
+  for (let k = mateSays.length - 1; k >= 0; k--) {
+    const b = mateSays[k];
+    b.t += dt;
+    if (b.owner.alive) { b.x = b.owner.wx; b.y = b.owner.wy; }
+    else if (b.t >= HERO_SAY_TIME) { mateSays.splice(k, 1); continue; }
+  }
+}
 function resetHeroLand() {
   heroFx.length = 0;
+  mateSays.length = 0;   // v3.68.0
   heroMateFx.length = 0;   // v3.60.0
   heroSay = null;
   heroState = worldShape === SHAPE_HEROLAND
@@ -33757,7 +34284,8 @@ function spawnHeroMates(hero, lv) {
     const mm = makeMover(def, () => ({ x: hero.wx, y: hero.wy }));
     mm.wx = hero.wx + slot[0]; mm.wy = hero.wy + slot[1];
     mm.maxHp = mm.hp = Math.round(def.hp * (1 + HERO_MATE_HP_ERA * currentStage)); mm.xpValue = def.xp;
-    mm.mate = { kind, hero, cool: kind === "mage" ? HM_MAGE_FIRST : 1.5 + random(), busy: false };
+    mm.mate = { kind, hero, cool: kind === "mage" ? HM_MAGE_FIRST : 1.5 + random(), busy: false,
+                appearSay: MATE_SAY_APPEAR_DELAY[Math.min(MATE_SAY_APPEAR_DELAY.length - 1, HERO_MATES_BY_LEVEL[Math.min(lv, HERO_MATES_BY_LEVEL.length) - 1].indexOf(kind))] };   // v3.68.0
     movers.push(mm);
     spawnDragonAppearEffect(mm.wx, mm.wy);
   }
@@ -33789,14 +34317,17 @@ function updateHeroMate(mm, dt) {
   if (st.kind === "shield") {
     if (d2 > HM_SHIELD_RANGE * HM_SHIELD_RANGE) { st.cool = 0.4; return; }
     st.busy = true;
+    if (fxRandom() < MATE_SAY_ATTACK_P) mateSpeak(mm, "attack");   // v3.68.0
     heroMateFx.push({ kind: "shield", owner: mm, x0: mm.wx, y0: mm.wy, tx: px[i], ty: py[i], t: 0, back: false, hit: new Set(), side: random() < 0.5 ? 1 : -1, x: mm.wx, y: mm.wy });
   } else if (st.kind === "mage") {
     const c = calcFriendlyCentroid();
     st.busy = true;
     heroMateFx.push({ kind: "circle", owner: mm, x: c.x, y: c.y, t: 0 });
+    if (fxRandom() < MATE_SAY_ATTACK_P) mateSpeak(mm, "attack");   // v3.68.0
   } else if (st.kind === "archer") {
     if (d2 > HM_ARCHER_RANGE * HM_ARCHER_RANGE) { st.cool = 0.4; return; }
     st.cool = HM_ARCHER_INTERVAL;
+    if (fxRandom() < MATE_SAY_ATTACK_P * 0.5) mateSpeak(mm, "attack");   // v3.68.0: 弓手は撃つ回数が多いので半分
     spawnProjectile(mm.wx, mm.wy, i, HM_ARCHER_SPEED, HM_ARCHER_DAMAGE, "#ffe070", 0, false, 0);
   }
 }
@@ -33911,6 +34442,7 @@ function drawHeroMateBody(mm) {
 /** 英雄の国の毎フレーム（出てくるまでの時間・王城への接近・光の筋の寿命） */
 function updateHeroLand(dt) {
   updateHeroMateFx(dt);   // v3.60.0
+  updateMateSays(dt);     // v3.68.0（DT-107）
   for (let k = heroFx.length - 1; k >= 0; k--) { heroFx[k].t += dt; if (heroFx[k].t >= heroFx[k].life) heroFx.splice(k, 1); }
   if (heroSay) {
     heroSay.t += dt;
@@ -33952,6 +34484,7 @@ function heroStartDash(m, h, i) {
   h.dirX = dx / d; h.dirY = dy / d;
   h.dashX = px[i] + h.dirX * HERO_DASH_OVERSHOOT; h.dashY = py[i] + h.dirY * HERO_DASH_OVERSHOOT;
   h.target = i; h.state = "dash";
+  h.knocked = new Set();   // v3.68.0: この踏み込みで弾いた竜
 }
 
 /** 竜を一刀両断する（普通の竜はダウン。特殊個体は最大体力の半分） */
@@ -33971,6 +34504,23 @@ function heroSlash(m, h, i) {
   }
   triggerShake(1.4, 0.1);
   triggerFlash("rgba(255,255,255,0.18)", 0.1);
+}
+
+/** v3.68.0（DT-107）: 踏み込みの道筋（このフレームに進んだ線分）の近くの竜を横へ弾き飛ばす */
+function heroDashKnock(h, x0, y0, x1, y1) {
+  const r2 = HERO_DASH_KNOCK_R * HERO_DASH_KNOCK_R;
+  for (let j = 0; j < N; j++) {
+    if (j === h.target || boidDead[j] || boidDowned[j] || h.knocked.has(j)) continue;
+    const d2 = pointSegDist2(px[j], py[j], x0, y0, x1, y1);
+    if (d2 > r2) continue;
+    h.knocked.add(j);
+    // 道筋のどちら側にいるかで弾く向きを決める（真上なら右へ）
+    const side = (px[j] - x0) * h.dirY - (py[j] - y0) * h.dirX >= 0 ? 1 : -1;
+    let nx = h.dirY * side + h.dirX * HERO_DASH_KNOCK_FWD, ny = -h.dirX * side + h.dirY * HERO_DASH_KNOCK_FWD;
+    const nl = Math.sqrt(nx * nx + ny * ny) || 1; nx /= nl; ny /= nl;
+    applyImpactToBoid(j, nx, ny, HERO_DASH_KNOCK_IMPACT * (1 - 0.5 * Math.sqrt(d2) / HERO_DASH_KNOCK_R));
+    if (fxRandom() < 0.5) spawnHitParticles(px[j], py[j]);
+  }
 }
 
 function updateHero(m, dt) {
@@ -34019,6 +34569,7 @@ function updateHero(m, dt) {
     m.wx += h.dirX * mv; m.wy += h.dirY * mv;
     m.headingX = h.dirX; m.headingY = h.dirY;
     heroFx.push({ kind: "after", x: x0, y: y0, a: Math.atan2(h.dirY, h.dirX), t: 0, life: 0.18 });
+    heroDashKnock(h, x0, y0, m.wx, m.wy);   // v3.68.0（DT-107）
     // 道筋に入った竜を斬る（狙った竜を優先。続けて斬れる数まで）
     const t = h.target;
     if (t >= 0 && !boidDead[t] && !boidDowned[t] && pointSegDist2(px[t], py[t], x0, y0, m.wx, m.wy) < HERO_SLASH_R * HERO_SLASH_R) {
@@ -34144,6 +34695,11 @@ function drawHero(m) {
 
 /** 英雄の吹き出し（頭の上。字の大きさは画面上で一定） */
 function drawHeroSay() {
+  for (const b of mateSays) drawSayBubble(b, b.owner.def.radius);   // v3.68.0（DT-107）: お供の吹き出し
+  drawSayBubble(heroSay, MOVER_DEFS.hero.radius);                   // 英雄の吹き出しをいちばん上に
+}
+/** 吹き出し1つ（英雄・お供の共通）。r は喋っている人の体の半径（吹き出しをその上に出す） */
+function drawSayBubble(heroSay, r) {
   if (!heroSay || heroSay.t >= HERO_SAY_TIME) return;
   const k = 1 / cam.scale, fs = HERO_SAY_FONT * k;
   const fade = Math.min(1, heroSay.t / 0.12, (HERO_SAY_TIME - heroSay.t) / 0.3);
@@ -34154,7 +34710,7 @@ function drawHeroSay() {
   // 画面の端で切れないよう、吹き出しの横位置だけ画面の中に寄せる（しっぽは英雄の真上のまま）
   const left = worldToScreen(heroSay.x - w / 2, heroSay.y).x, wS = w * cam.scale, margin = HERO_SAY_MARGIN;
   const shift = (Math.max(margin, Math.min(viewW - margin - wS, left)) - left) * k;
-  const x = heroSay.x - w / 2 + shift, y = heroSay.y - MOVER_DEFS.hero.radius * 2.6 - h - 10 * k;
+  const x = heroSay.x - w / 2 + shift, y = heroSay.y - r * 2.6 - h - 10 * k;
   ctx.fillStyle = HERO_SAY_COLORS.bg; ctx.strokeStyle = HERO_SAY_COLORS.rim; ctx.lineWidth = 1.5 * k;
   ctx.beginPath(); ctx.roundRect(x, y, w, h, 6 * k);
   ctx.moveTo(heroSay.x - 5 * k, y + h); ctx.lineTo(heroSay.x, y + h + 7 * k); ctx.lineTo(heroSay.x + 5 * k, y + h);
@@ -37215,8 +37771,9 @@ function updateHUD() {
 
   const aliveCount = countAliveBoids();
   hudAlive.textContent = aliveCount + flockOverflow;   // v3.67.0: 上限超えの竜も数に入れる
-  // v0.6: 上限は「大繁殖」カード分を含めた実効上限を表示する（v3.67.0: 上限超えを含む全体の上限）
-  hudMax.textContent   = effFlockTotalCap();
+  // v3.68.0（案帳 DT-497・Shooter指示「上限の1000は出さなくていい。今死んでいる竜の状況がわかるように、分母は加入している竜の数に」）:
+  // 分母＝群れに加わっている竜（戦えている＋ダウン中）＋上限超えの竜。分子との差がいまダウンしている数
+  hudMax.textContent   = countJoinedBoids() + flockOverflow;
   updateHUDEggs();
 }
 
