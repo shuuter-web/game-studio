@@ -1343,7 +1343,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.69.0";
+const GAME_VERSION = "v3.70.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -4500,13 +4500,31 @@ function settlementTier(settlement, baseTier) {
   return clampTier(baseTier + (settlement._tierOffset || 0));
 }
 
+// DT-499 手直し: 強い町の民家に残す、以前の上乗せの割合（0＝普通の町と同じ、1＝DT-499 より前の強さ）
+const STRONG_TOWN_HOUSE_KEEP = 0.5;
+/** 要塞都市の民家の発射間隔の倍率（要塞化の短縮 FORTIFIED_INTERVAL_MULT を STRONG_TOWN_HOUSE_KEEP だけ残す） */
+function strongTownHouseFortifiedInterval() {
+  return 1 + (FORTIFIED_INTERVAL_MULT - 1) * STRONG_TOWN_HOUSE_KEEP;
+}
+
 /** その建物に掛かる強さ倍率（時代の底上げ × 警戒度）。 */
 function settlementPowerBoost(settlement, baseTier) {
   const eraBoost  = STAGE_DIFFICULTY_BOOST[currentStage] || { hp: 1, dmg: 1 };
   // 案帳 DT-499: 強い町（格上の街・要塞都市）の**ふつうの民家**は、普通の町の民家と同じ強さ。
   // 見た目が同じ民家が強いと「近づいて削られて初めて分かる」ので、上乗せは撃つ建物と役割の建物だけに残す。
-  const tierBoost = settlement._plainHouse ? POWER_TIER_BOOST[clampTier(baseTier)]
-                  : settlement._fixedTier != null ? FIXED_TIER_BOOST
+  // DT-499 手直し（Shooter指示「民家を完全に弱くすると後ろから行った時に弱すぎた。以前の半分くらいは残して」）:
+  // 民家は普通の町の強さを土台に、以前の上乗せ（格上の段階・要塞の段階と要塞化）の硬さと威力を STRONG_TOWN_HOUSE_KEEP だけ残す
+  if (settlement._plainHouse) {
+    const plain  = POWER_TIER_BOOST[clampTier(baseTier)];
+    const strong = settlement._fixedTier != null ? FIXED_TIER_BOOST : POWER_TIER_BOOST[settlementTier(settlement, baseTier)];
+    const fortHp  = settlement._fortified ? FORTIFIED_HP_MULT : 1;
+    const fortDmg = settlement._fortified ? FORTIFIED_DMG_MULT : 1;
+    const keep = (plainValue, oldValue) => plainValue * (1 + (oldValue / plainValue - 1) * STRONG_TOWN_HOUSE_KEEP);
+    return { hp: eraBoost.hp * keep(plain.hp, strong.hp * fortHp), dmg: eraBoost.dmg * keep(plain.dmg, strong.dmg * fortDmg),
+             interval: plain.interval * (settlement._fortified ? strongTownHouseFortifiedInterval() : 1),
+             count: plain.count, range: plain.range };
+  }
+  const tierBoost = settlement._fixedTier != null ? FIXED_TIER_BOOST
                   : POWER_TIER_BOOST[settlementTier(settlement, baseTier)];
   // 時代は硬さと威力だけを底上げする。連射・弾数・射程は警戒度だけの軸にして、
   // 「同じ文明が警戒を強めた」ことが読み取れるようにする。
@@ -5908,6 +5926,12 @@ const COUNTRY_START_FADE     = 540;    // ここまでは畑をまばらにし�
 const COUNTRY_EDGE_FADE      = 260;    // 田園の外縁はこの幅で畑をまばらにして、くっきりした境目を作らない
 const COUNTRY_FARM_CELL      = 520;    // 畑のまとまり（1軒の農家の区画）の大きさの目安
 const COUNTRY_FARM_MEADOW    = 0.12;   // まとまりごと草地・林にする割合
+// DT-490 手直し2（Shooter指示「畑の面積は今の半分くらい。1枚ごとの密度は今くらいで、敷く面積を減らして」）:
+//   区画のうち小集落に近い側のこの割合だけを畑の区画にし、残りは何も敷かない地面のままにする（区画の中の詰まり方は変えない）
+const COUNTRY_FARM_KEEP      = 0.5;
+const COUNTRY_FARM_KEEP_JITTER = 260;  // 小集落からの距離にこれだけゆらぎを足して選ぶ（同心円状にくっきり分かれないように）
+const COUNTRY_TOWN_FIELD_GAP = 8;      // 町の畑（generateTown の fields）からこれだけ離す（DT-490 手直し2「既存の畑と被らないように」）
+const COUNTRY_TOWN_FIELD_STEP = 12;    // 町の畑を障害物の点に刻む間隔
 const COUNTRY_FARM_TURN      = 0.3;    // まとまりの畑を道と直角向きに並べる割合（道から奥へ伸びる短冊）
 const COUNTRY_FARM_DIR_REACH = 380;    // これより近い道の向きに畑をそろえる
 const COUNTRY_PLOT_W         = [58, 118];   // 畑1枚の長辺
@@ -5926,6 +5950,8 @@ const COUNTRY_CROPS = [
   { color: "#8a9a52", weight: 2 },   // 牧草
   { color: "#9a8456", weight: 1 },   // 刈り跡
 ];
+// 田園の畑の濃さ（DT-490 手直し2: 町の畑の絵の淡さに合わせて下げた。前は fill 0.42・furrow 0.28・edge 0.5・hedge 0.85）
+const COUNTRY_FIELD_ALPHA = { fill: 0.2, furrow: 0.13, edge: 0.2, hedge: 0.45 };
 const START_STREAM_COUNT     = [1, 2];
 const START_STREAM_FROM      = [650, 1000];  // 開始地点からこの距離のあたりで湧き出す
 const START_STREAM_STEP      = 40;
@@ -6245,6 +6271,25 @@ function generateStartCountryside(tinyBuildings, buildings) {
     if (dist2(x, y, START_X, START_Y) < near2) block.add(x, y, riverWidth * 0.5 + 10);
   });
   for (const st of startStreams) sampleCountryPolyline(st, 6, (x, y) => block.add(x, y, START_STREAM_W * 0.5 + 5));
+  // 町の畑は町の外縁の外に並ぶので、町の円（discs）だけでは避けられず田園の畑と重なっていた。畑の面を点で埋めて障害物にする
+  {
+    const seenMeta = new Set();
+    for (const b of buildings) {
+      const m = b._townMeta;
+      if (!m || seenMeta.has(m)) continue;
+      seenMeta.add(m);
+      for (const f of m.fields ?? []) {
+        if (dist2(f.x, f.y, START_X, START_Y) > near2) continue;
+        const fx = Math.cos(f.angle), fy = Math.sin(f.angle);
+        const step = COUNTRY_TOWN_FIELD_STEP, r = step * 0.75 + COUNTRY_TOWN_FIELD_GAP;
+        for (let u = -f.w / 2; u <= f.w / 2 + 0.1; u += Math.min(step, f.w / 2)) {
+          for (let v = -f.h / 2; v <= f.h / 2 + 0.1; v += Math.min(step, f.h / 2)) {
+            block.add(f.x + fx * u - fy * v, f.y + fy * u + fx * v, r);
+          }
+        }
+      }
+    }
+  }
 
   /** 傾いた長方形（中心 cx,cy、長辺 w が向き u）が空いているか */
   const rectFree = (cx, cy, w, h, ux, uy) => {
@@ -6278,7 +6323,9 @@ function generateStartCountryside(tinyBuildings, buildings) {
     }
   }
   const meadows = [];
+  const fieldsBefore = countrysideFields.length;
   for (const s of seeds) {
+    s.f0 = countrysideFields.length; s.w0 = countryWoods.length;
     const nbs = seeds.filter(o => o !== s && dist2(o.x, o.y, s.x, s.y) < (COUNTRY_FARM_CELL * 2.2) ** 2);
     const inCell = (px, py) => {
       const own = Math.sqrt(dist2(px, py, s.x, s.y));
@@ -6335,6 +6382,28 @@ function generateStartCountryside(tinyBuildings, buildings) {
       }
       u0 += w + COUNTRY_PLOT_GAP;
     }
+    s.f1 = countrysideFields.length; s.w1 = countryWoods.length;
+  }
+  // 畑の区画を減らす：小集落に近い区画から順に、畑の枚数が COUNTRY_FARM_KEEP の割合になるまで残し、
+  // 残りの区画は畑も林もない地面に戻す（区画の中の詰まり方はそのまま。地図の外にはみ出た区画は枚数0なので数に入らない）
+  {
+    const scored = seeds.filter(s => s.f1 !== undefined).map(s => {
+      let d = Infinity;
+      for (const h of hamlets) d = Math.min(d, Math.sqrt(dist2(s.x, s.y, h.x, h.y)));
+      return { s, score: d + random() * COUNTRY_FARM_KEEP_JITTER };
+    });
+    scored.sort((a, b) => a.score - b.score);
+    const target = (countrysideFields.length - fieldsBefore) * COUNTRY_FARM_KEEP;
+    const dropF = new Set(), dropW = new Set();
+    let kept = 0;
+    for (const { s } of scored) {
+      const n = s.f1 - s.f0;
+      if (kept < target) { kept += n; continue; }
+      for (let i = s.f0; i < s.f1; i++) dropF.add(i);
+      for (let i = s.w0; i < s.w1; i++) dropW.add(i);
+    }
+    countrysideFields = countrysideFields.filter((_, i) => !dropF.has(i));
+    countryWoods      = countryWoods.filter((_, i) => !dropW.has(i));
   }
   // 草地の区画には林を1〜3つ（畑にも道にも家にも掛けない）
   for (const s of meadows) {
@@ -6364,22 +6433,24 @@ function drawCountrysideOnLayer(bctx, bounds) {
     bctx.save();
     bctx.translate(f.x, f.y);
     bctx.rotate(f.angle);
-    bctx.globalAlpha = 0.42;   // 竜・敵・弾より目立たせない
+    // DT-490 手直し2（Shooter指示「畑の描画の薄さが既存の畑と合っていない。合わせて薄く」）:
+    // 町の畑（drawFieldPlot）と同じくらいの淡さに落とした（0.42/0.28/0.5 → COUNTRY_FIELD_ALPHA）
+    bctx.globalAlpha = COUNTRY_FIELD_ALPHA.fill;   // 竜・敵・弾より目立たせない
     bctx.fillStyle = f.tone;
     bctx.fillRect(-hw, -hh, f.w, f.h);
-    bctx.globalAlpha = 0.28;
+    bctx.globalAlpha = COUNTRY_FIELD_ALPHA.furrow;
     bctx.strokeStyle = f.furrow;
     bctx.lineWidth = 1.4;
     bctx.beginPath();
     for (let v = -hh + 4; v < hh - 2; v += 6) { bctx.moveTo(-hw + 3, v); bctx.lineTo(hw - 3, v); }
     bctx.stroke();
-    bctx.globalAlpha = 0.5;
+    bctx.globalAlpha = COUNTRY_FIELD_ALPHA.edge;
     bctx.strokeStyle = "#30261a";
     bctx.lineWidth = 1.5;
     bctx.strokeRect(-hw, -hh, f.w, f.h);
     if (f.hedge) {
       const y = f.hedge * (hh + COUNTRY_PLOT_GAP / 2);
-      bctx.globalAlpha = 0.85;
+      bctx.globalAlpha = COUNTRY_FIELD_ALPHA.hedge;
       bctx.fillStyle = "#2c4524";
       bctx.beginPath();
       for (let x = -hw + 3; x <= hw - 3; x += 7) { bctx.moveTo(x + 3.4, y); bctx.arc(x, y, 3.4, 0, Math.PI * 2); }
@@ -7218,8 +7289,11 @@ function generateStageLayout(stageIndex) {
   // 段階0の普通の街は等倍、要塞都市は最大段階ぶん重くなる。
   // 案帳 DT-499: 強い町の民家に印を付けてから掛ける（民家は普通の町と同じ強さ。上乗せは撃つ建物と役割の建物だけ）
   for (const b of result) {
-    if (isStrongTownPlainHouse(b)) b._plainHouse = true;
-    else if (b._fortified && !b.isBoss && !b._isWall) applyFortifiedStats(b);
+    if (isStrongTownPlainHouse(b)) {
+      b._plainHouse = true;
+      // 硬さと威力は settlementPowerBoost が半分残す。発射間隔は(8)では掛からないので、要塞化の短縮の半分をここで掛ける
+      if (b._fortified) b.projectileInterval *= strongTownHouseFortifiedInterval();
+    } else if (b._fortified && !b.isBoss && !b._isWall) applyFortifiedStats(b);
   }
   for (const b of result) {
     if (b.isBoss || b._isWall) continue;
@@ -11218,24 +11292,16 @@ function updateBarracks(dt) {
 // -----------------------------------------------------------------
 // 案帳 DT-499: 前哨堡の「射界の扇」と「砲」
 // -----------------------------------------------------------------
-// 扇 … 前哨堡の前の地面に、当たりと同じ形（撃ち始める距離 attackRadius・正面±RAMPART_ARC）を薄い赤で常に敷く。
-//      群れが扇に入っている間（または撃った直後）は濃くする。向きのある建物（前哨堡）だけに付ける
-//      ＝「扇がある建物は向きがある」と覚えられる（全方位に撃つ建物には付けない）。
+// 扇 … 前哨堡の前の地面に薄い赤の扇を敷いていたが、DT-499 手直しで撤去した（強い範囲攻撃に見えて目立ちすぎた）。
 // 砲 … 台座の絵とは別の絵を上に重ね、撃った向きへ回す（戦車の砲塔と同じ作り）。
 //      しばらく撃たなければ正面（町の外向き）へ戻る。
-const RAMPART_FAN_FILL       = "255, 72, 60";
-const RAMPART_FAN_ALPHA_IDLE = 0.07;
-const RAMPART_FAN_ALPHA_HOT  = 0.20;
-const RAMPART_FAN_EDGE_IDLE  = 0.22;
-const RAMPART_FAN_EDGE_HOT   = 0.55;
-const RAMPART_FAN_HOT_HOLD   = 1.4;    // 撃ってからこの秒数は濃いまま（次の斉射 1.2 秒をまたぐ）
 const RAMPART_GUN_LEN        = 2.5;    // 砲の絵の長さ＝建物の半径×この値（砲身が台座の前へはみ出す）
 const RAMPART_GUN_MIN_RADIUS = 18;     // 小さい前哨堡（建て替えた家・小集落）でも砲が読める大きさの下限
 const RAMPART_GUN_IDLE_BACK  = 2.5;    // 撃たなくなってから正面へ戻るまでの秒数
 const RAMPART_GUN_TURN_SPEED = 3.0;    // 砲の旋回の速さ（rad/秒）
 // 砲の絵の回転軸（画像に対する割合）。台座の丸い旋回台の中心を画像から実測した値
 const RAMPART_GUN_PIVOT = {
-  e1: { x: 0.490, y: 0.723 }, e2: { x: 0.492, y: 0.623 }, e3: { x: 0.495, y: 0.695 }, e4: { x: 0.494, y: 0.668 },
+  e1: { x: 0.500, y: 0.751 }, e2: { x: 0.492, y: 0.623 }, e3: { x: 0.495, y: 0.695 }, e4: { x: 0.494, y: 0.668 },
   e5: { x: 0.492, y: 0.680 }, e6: { x: 0.493, y: 0.676 }, e7: { x: 0.493, y: 0.707 }, e8: { x: 0.491, y: 0.770 },
 };
 
@@ -11245,7 +11311,6 @@ function drawRampartFansAndGuns() {
   const useGun = !!(gunImg && buildingImages[era + "_rampart_base"]);
   const pivot = RAMPART_GUN_PIVOT[era] || { x: 0.5, y: 0.7 };
   const vb = getViewBoundsWorld(RAMPART_RANGE + 60);
-  let centroid = null;   // 群れの重心（画面に前哨堡があるときだけ1回求める）
   const list = [];
   for (const s of settlements) {
     if (!s || s.fallen || s._townRole !== "rampart" || s._rampartAngle === undefined) continue;
@@ -11254,27 +11319,8 @@ function drawRampartFansAndGuns() {
   }
   if (list.length === 0) return;
   ctx.save();
-  // (1) 扇（地面）。先に全部敷いてから砲を載せる（扇が隣の前哨堡の砲に掛からないように）
-  for (const s of list) {
-    const reach = s.attackRadius || RAMPART_RANGE;
-    const facing = s._rampartAngle;
-    let hot = s._gunAimAt !== undefined && breathTime - s._gunAimAt < RAMPART_FAN_HOT_HOLD;
-    if (!hot) {
-      if (!centroid) centroid = calcFriendlyCentroid();
-      const dx = centroid.x - s.wx, dy = centroid.y - s.wy;
-      hot = dx * dx + dy * dy < reach * reach &&
-            Math.abs(wrapAngle(Math.atan2(dy, dx) - facing)) <= RAMPART_ARC;
-    }
-    ctx.beginPath();
-    ctx.moveTo(s.wx, s.wy);
-    ctx.arc(s.wx, s.wy, reach, facing - RAMPART_ARC, facing + RAMPART_ARC);
-    ctx.closePath();
-    ctx.fillStyle = `rgba(${RAMPART_FAN_FILL}, ${hot ? RAMPART_FAN_ALPHA_HOT : RAMPART_FAN_ALPHA_IDLE})`;
-    ctx.fill();
-    ctx.strokeStyle = `rgba(${RAMPART_FAN_FILL}, ${hot ? RAMPART_FAN_EDGE_HOT : RAMPART_FAN_EDGE_IDLE})`;
-    ctx.lineWidth = hot ? 2.5 : 1.5;
-    ctx.stroke();
-  }
+  // DT-499 手直し（Shooter指示「射界の扇は実際の攻撃に対して目立ちすぎ。めちゃくちゃ強い範囲攻撃がくるように見える」）:
+  // 地面の扇は撤去した。向きは台座の上で回る砲だけで見せる
   // (2) 砲。撃った向きへ回し、しばらく撃たなければ正面へ戻す
   if (useGun) {
     for (const s of list) {
@@ -36576,7 +36622,7 @@ function render(now) {
 
   drawAsteroids();     // v1.5.0: 小惑星帯の岩塊とその上の町（動くので毎フレーム描く）
   drawBossCitadel();   // v0.7: ボス城塞スプライト（静的レイヤーのボス円の上に重ねる）
-  drawRampartFansAndGuns();   // 案帳 DT-499: 前哨堡の射界の扇（地面）と、台座の上で回る砲
+  drawRampartFansAndGuns();   // 案帳 DT-499: 台座の上で回る前哨堡の砲（地面の射界の扇は DT-499 手直しで撤去）
 
   // v0.14: 建物の攻撃射程リング（薄い円の大量表示）は視覚ノイズだったため廃止
 
