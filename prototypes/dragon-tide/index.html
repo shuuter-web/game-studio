@@ -624,6 +624,10 @@
      HUD・地図・進捗を隠し、暗幕の上で中央に置く。カードは「地図の札」風の別デザイン */
   body.region-picking #hud-topbar, body.region-picking #hud-left, body.region-picking #minimap-container,
   body.region-picking #hud, body.region-picking #stage-overlay, body.region-picking #levelup-dragon { display: none !important; }
+  /* v3.71.0（案帳 DT-505・Shooter指示）: タイトル画面では上部の HUD・地図・経験値の帯を出さない。
+     タイトルの背景は群れのアイドル旋回だけを見せる（遊び始めるまで数字や地図は要らない） */
+  body.on-title #hud-topbar, body.on-title #hud-left, body.on-title #minimap-container,
+  body.on-title #xp-bar { display: none !important; }
   #levelup-overlay.region-mode {
     top: 0; justify-content: center; padding: 16px 0;
     background: radial-gradient(ellipse at center, rgba(22,18,10,0.94) 0%, rgba(4,4,10,0.97) 75%);
@@ -1343,7 +1347,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.70.0";
+const GAME_VERSION = "v3.71.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -13401,7 +13405,11 @@ const TR_HORDE_STAGGER = 0.12;  // 1列ずつ出す間隔（一度に湧かせ�
 // 倍率で速めても群れに追いつけない置物だったので、速さは下限で決める。攻撃は連射も威力も上げる。
 // v3.68.0（案帳 DT-500・Shooter指示）: 精鋭の追跡者だけが異様に強い（足の速さで竜の旋回の遅さを突き、
 // ノックバックの連発で竜の攻撃をかなり無効化する）。強さの質はそのまま、体力だけ半分に。
-const TR_ELITE_HP      = 4;     // 精鋭の体力倍率（v3.68.0: 8→4）
+// v3.71.0（案帳 DT-500 手直し・Shooter指示）: 強いのは**高頻度のノックバック範囲攻撃（衝撃波）**を持つ追跡者だけ。
+// それが追跡者の足の速さと重なると凶悪になる。レーザー・砲弾など射撃型の追跡者は全然弱いので弱体化しない。
+// 追跡者は時代の大型の敵がなる（trEraDefs）ので、衝撃波を持つ時代（石器のマンモス王・産業の衝撃兵など）だけ体力を半分にする。
+const TR_ELITE_HP      = 8;     // 精鋭の体力倍率（射撃型など。v3.71.0 で 8 に戻した）
+const TR_ELITE_SHOCKWAVE_HP = 4; // 衝撃波（ノックバック範囲攻撃）を持つ精鋭の体力倍率（v3.68.0 の半分をここだけに残す）
 const TR_ELITE_SPEED   = 1.35;  // 速さの倍率の下限
 const TR_ELITE_MIN_SPEED = 120; // 速さの下限(px/s)。群れ（150〜200）より少し遅い＝逃げ続けるのは難しい
 const TR_ELITE_FEROCITY = 1.8;  // 攻撃の苛烈さ（間隔÷・威力×）。v3.50.4: 2.5→1.8（案帳 DT-472「衝撃波を連発してきて強すぎる」）
@@ -13524,6 +13532,9 @@ function spawnTrMover(def, x, y) {
   spawnDragonAppearEffect(x, y);
   return m;
 }
+
+/** v3.71.0（案帳 DT-500）: 高頻度のノックバック範囲攻撃（衝撃波）を持つ精鋭か。足の速さと重なると別格に強い */
+function isShockwaveElite(def) { return def.attack?.type === "shockwave"; }
 
 /** v3.50.4: 大型包囲・小型の大軍の敵を硬く・苛烈にする */
 function toughenTrMover(m) {
@@ -13656,7 +13667,7 @@ function startTierRush() {
       const a = random() * Math.PI * 2;
       const r = offscreenSpawnRadius();
       const m = spawnTrMover(def, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
-      m.maxHp = m.hp = def.hp * TR_ELITE_HP;
+      m.maxHp = m.hp = def.hp * (isShockwaveElite(def) ? TR_ELITE_SHOCKWAVE_HP : TR_ELITE_HP);
       m.speedMult = Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed);
       m.xpValue = def.xp * TR_ELITE_XP;
       m._trChase = true; m._trElite = true; m._trReward = "elite"; m._trFerocity = TR_ELITE_FEROCITY;
@@ -27723,6 +27734,7 @@ function drawSlashFx() {
 let currentStage = 0;
 
 let gameState = "title";
+let hudHiddenForTitle = false;   // v3.71.0（案帳 DT-505）: body.on-title を付けているか
 let stageClearPhase = "none";
 let stageClearTimer = 0;
 
@@ -29361,7 +29373,7 @@ const CODEX_RUSH_DESC = {
   volley:   () => `町が群れを狙い、予告線のあと一斉に撃つ（${TR_VOLLEY_AT.length}回）`,
   firering: () => `群れを囲む炎の輪が縮んでくる。輪の上は毎秒${TR_RING_DPS}。隙間から抜けられる`,
   convoy:   () => `竜卵を積んだ隊列${TR_CONVOY_COUNT}台が首都へ逃げる。倒すと経験値${TR_CONVOY_XP}と群れの回復`,
-  elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
+  elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}、衝撃波を持つ大型なら ×${TR_ELITE_SHOCKWAVE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
   fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は絶えず撃ってくる。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
   gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
@@ -40056,7 +40068,10 @@ function tick() {
   if (shakeTimer > 0) shakeTimer = Math.max(0, shakeTimer - dt);
 
   render(now);
-  drawMinimap();
+  // v3.71.0（案帳 DT-505）: タイトル画面では上部の UI を隠す。切り替わった時だけ class を触る
+  const onTitle = gameState === "title";
+  if (onTitle !== hudHiddenForTitle) { hudHiddenForTitle = onTitle; document.body.classList.toggle("on-title", onTitle); }
+  if (!onTitle) drawMinimap();   // 隠れている地図は描かない
   updateHUD();
   tickFps(now);
 }
