@@ -1581,6 +1581,7 @@ const DEBUG_ENEMY_LABELS = {
   war_elephant: "🐘戦象(弓兵4人つき)", scythe_chariot: "⚔鎌付き戦車",   // v3.60.0
   scythe_convoy: "⚔⚔鎌付き戦車の車列(3台)", moving_fortress: "🏯動く砦(砲台4基つき)",   // 案帳 DT-239/487 手直し
   stone_titan: "🗿岩脚の巨像",   // v3.74.0（案帳 DT-484）
+  rock_giant: "🗿岩の巨人",   // v3.77.0（案帳 DT-509）
   kite_soldier: "🪁雷凧の兵",   // v3.61.0
   longbowmen: "🏹遠矢の弓隊", troop_airship: "🎈落下兵の飛行船",   // v3.63.0
 };
@@ -1596,7 +1597,7 @@ const DEBUG_ENEMY_ORDER = [
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
-  "walker_hull", "war_elephant", "scythe_chariot", "scythe_convoy", "moving_fortress", "stone_titan", "kite_soldier", "longbowmen", "troop_airship",
+  "walker_hull", "war_elephant", "scythe_chariot", "scythe_convoy", "moving_fortress", "stone_titan", "rock_giant", "kite_soldier", "longbowmen", "troop_airship",
   // v2.0.0: 軌道の敵。線路が無い地域では湧かせられない（押しても何も起きない）
   "railgun_loco", "railcar", "railram",
   // v3.17.0: 大樹海の敵（樹冠が無い地域では隠れも切り拓きも起きない）
@@ -2145,6 +2146,9 @@ const STAGE_SHAPES = [
   // v3.35.0: 英雄の国（正方形・案帳 DT-107）… 地図は大陸と同じ作り。中心の王城から人類の英雄が出てきて、
   // 竜を1体ずつ一刀両断する。撃退するたびに強くなって戻ってくる
   { id: "heroland",  w: 8400, h: 8400,  icon: "⚔" },
+  // v3.77.0: 巨岩信仰の荒地（正方形・案帳 DT-509）… 赤茶けた乾いた地に灰色の巨岩が転がる。町は環状列石に囲まれ、
+  // 首都は巨大な石の偶像を祀る神殿。街は荒地ゆえ守りが薄い代わりに、岩の巨人が町を守って住みついている（倒すまで残る）
+  { id: "wasteland", w: 8400, h: 8400,  icon: "🗿" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
@@ -2157,6 +2161,7 @@ const SHAPE_FOREST    = 7;
 const SHAPE_METRO     = 8;
 const SHAPE_PLATEAU   = 9;
 const SHAPE_HEROLAND  = 10;
+const SHAPE_WASTELAND = 11;   // v3.77.0（案帳 DT-509）
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
 
 function clampShape(v) {
@@ -5060,7 +5065,7 @@ let START_Y = WORLD_H * 0.5;
 function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
   if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST ||
-      shape === SHAPE_METRO || shape === SHAPE_PLATEAU || shape === SHAPE_HEROLAND) {
+      shape === SHAPE_METRO || shape === SHAPE_PLATEAU || shape === SHAPE_HEROLAND || shape === SHAPE_WASTELAND) {
     return { x: 320, y: h - 320 };   // 角（首都は中心）
   }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
@@ -7109,9 +7114,11 @@ function generateStageLayout(stageIndex) {
       .concat(shuffle(all.filter(b => !isOnTownFront(b, metaMap))));
     // v0.57: 時代ごとの兵器をテーブル順に割り当てる（同じ建物に2種は付けない）
     let cursor = 0;
-    for (const [key, count] of feat.emplacements) {
+    for (const [key, baseCount] of feat.emplacements) {
       const def = EMPLACEMENT_DEFS[key];
       if (!def) continue;
+      // v3.77.0（案帳 DT-509）: 荒地は街の守りが貧弱（時代兵器の数を減らす。守りは岩の巨人が担う）
+      const count = worldShape === SHAPE_WASTELAND ? Math.floor(baseCount * WASTELAND_EMPLACEMENT_MULT) : baseCount;
       for (let k = 0; k < count && cursor < larges.length; k++, cursor++) {
         larges[cursor]._emplacement = key;
         larges[cursor].attackRadius = Math.max(larges[cursor].attackRadius, def.range);
@@ -7155,8 +7162,10 @@ function generateStageLayout(stageIndex) {
 
       // v0.81: 前哨堡を**表の扇に散らして**置く。1箇所に固めると横から回れてしまうので、
       // 表の±60度を等分した位置にいちばん近い棟を取る＝重なった射界で面を作る。
-      const rampartCount = isFortress ? RAMPART_PER_FORTRESS_TOWN
+      const rampartBase = isFortress ? RAMPART_PER_FORTRESS_TOWN
         : isStrong ? RAMPART_PER_ADVANCED_TOWN : RAMPART_PER_TOWN;
+      // v3.77.0（案帳 DT-509）: 荒地の前哨堡は半分（最低1基）
+      const rampartCount = worldShape === SHAPE_WASTELAND ? Math.max(1, Math.round(rampartBase * WASTELAND_RAMPART_MULT)) : rampartBase;
       const frontPool = scored.filter(x => x.front > TOWN_FRONT_COS);
       const half = Math.acos(TOWN_FRONT_COS);
       // 案帳 DT-499: 表の大きめの棟だけでは4基・6基に足りない町が多い（表の大きい棟は時代兵器が先に取る）。
@@ -7289,6 +7298,7 @@ function generateStageLayout(stageIndex) {
       byTown.get(key).push(b);
     }
     for (const [, buildings] of byTown) {
+      if (worldShape === SHAPE_WASTELAND) continue;   // v3.77.0（案帳 DT-509）: 荒地の町に衝撃砲台・回転砲塔は無い（首都区画だけ）
       // 要塞都市＝最初から最大段階で固定。格上の街＝警戒度が1つ先
       const isFortress = buildings.some(b => b._fixedTier != null);
       const isAdvanced = buildings.some(b => (b._tierOffset || 0) > 0);
@@ -7315,7 +7325,7 @@ function generateStageLayout(stageIndex) {
   // 線状都市は開始地点が川の上にあり、まばらな家がそのまま川に建ってしまうため。
   // 大陸は従来どおり（ここで数が変わると、同じ種で組み直したときに保存した破壊状況が合わなくなる）。
   // v3.68.0（DT-490）: 小川は小集落より先に引く（家が小川の上に建たないように、下の keepLoose で退ける）
-  startStreams = townRoadEdges.length > 0 ? generateStartStreams(result) : [];
+  startStreams = townRoadEdges.length > 0 && worldShape !== SHAPE_WASTELAND ? generateStartStreams(result) : [];   // v3.77.0: 荒地に小川は無い
   countryLanes = []; countrysideFields = []; countryWoods = [];
   const keepLoose = (b) => {
     if (onStartStream(b.wx, b.wy, (b.radius || 0) + 4)) return false;      // v3.68.0
@@ -7348,7 +7358,7 @@ function generateStageLayout(stageIndex) {
   for (const w of wallSegments) result.push(w);
 
   // --- (5b) v0.29: 一部の町にも部分的な城壁（STAGE3以降。rect町は長方形の壁）---
-  const townWalls = worldShape === SHAPE_METRO ? []
+  const townWalls = worldShape === SHAPE_METRO || worldShape === SHAPE_WASTELAND ? []   // v3.77.0: 荒地の町を囲むのは壁ではなく環状列石
     : generateTownWalls(townMetas.filter(m => !m._rock), stageIndex);   // v1.5.0: 動く町に壁は付けない
   for (const w of townWalls) result.push(w);
 
@@ -7374,6 +7384,7 @@ function generateStageLayout(stageIndex) {
   // --- (6) v0.6-p3: 地形障害物（岩山・湖）を空白地帯へ散布 ---
   // settlements とは別系統（破壊不可）。モジュールスコープの terrainObstacles を更新する。
   terrainObstacles = generateTerrainObstacles(result, boss);
+  if (worldShape === SHAPE_WASTELAND) terrainObstacles = terrainObstacles.filter(o => o.type !== "lake");   // v3.77.0（案帳 DT-509）: 乾いた荒地に湖は無い（岩山は残す）
   if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO) terrainObstacles = [];   // v1.5.0: 宇宙に岩山・湖は無い／v3.22.0: 都会に空き地は無い
   // v2.0.0: 岩山が線路を塞ぐと「通れないはずの線路を列車が走る」ことになる
   if (worldShape === SHAPE_RAILWAY) {
@@ -7382,7 +7393,7 @@ function generateStageLayout(stageIndex) {
 
   // v0.17: 森（非ブロッキングの自然装飾。竜は上を飛ぶ）を空白地帯へ散布
   forestClusters = generateForests(result, boss);
-  if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO) forestClusters = [];
+  if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO || worldShape === SHAPE_WASTELAND) forestClusters = [];   // v3.77.0: 荒地に森は無い
 
   // v3.18.0: 大樹海の樹冠（見た目だけ）。町ごとに覆う量を決めるので建物の後、
   // 森の伏兵が樹冠の下に隠れるので動く敵の前に敷く。他の地域では前の樹冠を消す
@@ -8920,6 +8931,10 @@ const ASTEROID_ROCK_COLOR     = "#5a5248";
 const ASTEROID_ROCK_RIM       = "#2a2622";
 const ASTEROID_CRATER_COLOR   = "rgba(20, 18, 16, 0.35)";
 const ASTEROID_SPACE_BG       = "#05060c";
+// v3.77.0（案帳 DT-509）: 巨岩信仰の荒地の地面。暗い赤茶（ほかの地域の背景も暗色。灰色の巨岩と竜が浮いて見える明るさ）
+const WASTELAND_GROUND_BG     = "#4a2c1c";
+const WASTELAND_EMPLACEMENT_MULT = 0.35;   // 時代兵器（町の大型建物に付く）の数の倍率。荒地は守りが薄い
+const WASTELAND_RAMPART_MULT     = 0.5;    // 前哨堡の数の倍率
 const ASTEROID_STAR_COLOR       = "#cfd8ff";
 const ASTEROID_STAR_ALPHA_BRIGHT = 0.75;   // 地表のスペックルを星として描くときの明るさ
 const ASTEROID_STAR_ALPHA_DIM    = 0.30;
@@ -8933,6 +8948,7 @@ let movingBuildingGridTick = 0;
 
 /** ステージの背景色。小惑星帯は文明によらず宇宙の色。 */
 function stageBgColor(config) {
+  if (worldShape === SHAPE_WASTELAND) return WASTELAND_GROUND_BG;   // v3.77.0: 時代によらず赤茶けた乾いた地（案帳 DT-509）
   return worldShape === SHAPE_ASTEROIDS ? ASTEROID_SPACE_BG : config.bgColor;
 }
 
@@ -9084,7 +9100,7 @@ function placeBossBuilding(stageIndex, config) {
   // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
   if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY ||
       worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_RAILWAY || worldShape === SHAPE_FOREST ||
-      worldShape === SHAPE_METRO || worldShape === SHAPE_PLATEAU || worldShape === SHAPE_HEROLAND) {
+      worldShape === SHAPE_METRO || worldShape === SHAPE_PLATEAU || worldShape === SHAPE_HEROLAND || worldShape === SHAPE_WASTELAND) {
     return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
   }
   if (worldShape === SHAPE_FRONTLINE) {
@@ -9509,6 +9525,12 @@ const MOVER_DEFS = {
     name: "stone_titan", hp: 3000, speed: 22, xp: 1500, eggDrop: 10, radius: 64, turnRate: 0.5,
     color: "#8a7e70", glowColor: "#ffb347", moveType: "patrol", showHpBar: true,
     titan: true, codexSprite: "titan_body", wreckSprite: "titan_body",
+  },
+  // v3.77.0（案帳 DT-509）: 岩の巨人。巨岩信仰の荒地の住人（ラッシュではなく最初から町ごとに立っている）。二足歩行で、左右の足を交互に踏み下ろし、
+  // 数歩ごとに止まって両腕を扇に叩きつける。撃たない。体力は基礎値（出すときに時代で伸ばす。巨像より軽い）、卵10個。動きは updateRockGiant
+  rock_giant: {
+    name: "rock_giant", rockGiant: true, hp: 1000, speed: 34, xp: 1500, eggDrop: 10, radius: 50, turnRate: 1.1,
+    color: "#8a7e70", glowColor: "#ffb347", moveType: "patrol", showHpBar: true, codexSprite: "rockgiant_torso",
   },
   // 案帳 DT-487 手直し: 動く砦の四隅の砲台。砦に乗って動き、自分で狙って撃つ。1基ずつ壊せる（壊すと残骸になって撃たなくなる）
   fortress_turret: {
@@ -11779,6 +11801,12 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   }
   // v3.22.0: 大都会の道路は、時代に関係なく車の列が流れている
   if (worldShape === SHAPE_METRO) generateMetroMovers(stageIndex, result, boss);
+  // v3.77.0（案帳 DT-509）: 巨岩信仰の荒地には岩の巨人が住んでいる。町の一覧ができてから置く（placeRockGiants）。
+  // 警戒度が上がって部隊を湧かし直すときは、居る巨人を倒した分だけ減ったまま引き継ぐ（全快で復活させない）
+  if (worldShape === SHAPE_WASTELAND) {
+    if (tierForCount > 0) { for (const g of movers) if (g.alive && g.def.rockGiant) result.push(g); }
+    else rockGiantPlacePending = true;
+  }
   // v3.68.0（案帳 DT-015）: 光線の高原にはプリズム運びが歩いている
   if (worldShape === SHAPE_PLATEAU) {
     const count = PRISM_BEARER_COUNT + (stageIndex >= 4 ? 1 : 0);
@@ -12975,6 +13003,7 @@ function updateMovers(dt) {
       continue;
     }
     if (def.titan) { updateStoneTitan(m, dt); if (!m.alive) continue; }   // v3.74.0（案帳 DT-484）: 岩脚の巨像の脚
+    if (def.rockGiant) updateRockGiant(m, dt, centroid);                   // v3.77.0（案帳 DT-509）: 岩の巨人の状態・叩きつけ・足
     if (def.fortressParts) updateMovingFortress(m);   // 案帳 DT-487 手直し: 壊れた砲台を残骸にする（本体の移動は共通のまま）
     if (def.kite) { updateKiteSoldier(m, dt); continue; }                 // v3.61.0: 雷凧の兵（その場で凧を揚げている）
     if (m.para) { m.para.t -= dt; if (m.para.t > 0) continue; m.para = null; }   // v3.63.0: 落下傘で降りている間は動かない
@@ -13060,6 +13089,11 @@ function updateMovers(dt) {
     if (def.ambush) {
       const goal = updateAmbusher(m, centroid, dt);
       if (goal) { targetX = goal.x; targetY = goal.y; }
+    }
+    // v3.77.0（案帳 DT-509）: 岩の巨人は持ち場を守る（うろつく・出てくる・戻る）。向かう先は updateRockGiant が決める
+    if (def.rockGiant) {
+      const goal = m._rgGoal;
+      targetX = goal ? goal.x : m.wx + m.headingX; targetY = goal ? goal.y : m.wy + m.headingY;
     }
     // v3.21.3: 飛び道具を持たない敵は、巨大樹の消えない樹冠の下から外へ出る（出た後は入らない＝下の位置の補正）
     const crownExit = worldTreeCrownExitTarget(m);
@@ -14071,7 +14105,25 @@ function drawStoneTitanUnder() {
     if (r.x < vb.minX || r.x > vb.maxX || r.y < vb.minY || r.y > vb.maxY) continue;
     ctx.save();
     ctx.globalAlpha = Math.min(1, (life - age) / Math.min(TITAN_RUBBLE_FADE, life * 0.5));
-    ctx.translate(r.x, r.y); ctx.rotate(r.rot);
+    // v3.77.0（案帳 DT-509）: 岩の巨人は前へ倒れ込む（倒れた場所から山の位置まで滑る）。絵の破片は崩れた体の部品
+    let rx = r.x, ry = r.y;
+    if (r.slide) {
+      const t = Math.min(1, age / r.slide), e = 1 - (1 - t) * (1 - t);
+      rx = r.fromX + (r.x - r.fromX) * e; ry = r.fromY + (r.y - r.fromY) * e;
+    }
+    if (r.kind === "sprite") {
+      const img = enemyImages[r.key];
+      if (img) {
+        const h = r.w * img.naturalHeight / img.naturalWidth, alpha = ctx.globalAlpha;
+        ctx.translate(rx, ry); ctx.rotate(r.rot);
+        ctx.drawImage(img, -r.w / 2, -h / 2, r.w, h);
+        ctx.globalAlpha = alpha * 0.55;   // 崩れて暗く沈む（ctx.filter は使わない。焼いた暗い絵を重ねる）
+        ctx.drawImage(wreckDarkSpriteFor(r.key, img), -r.w / 2, -h / 2, r.w, h);
+      }
+      ctx.restore();
+      continue;
+    }
+    ctx.translate(rx, ry); ctx.rotate(r.rot);
     const g = Math.round(96 + r.shade * 40);
     ctx.fillStyle = `rgb(${g + 8}, ${g}, ${g - 12})`;
     ctx.strokeStyle = "rgba(30, 24, 20, 0.9)"; ctx.lineWidth = 2;
@@ -14142,6 +14194,400 @@ function drawStoneTitanSprite(m) {
   ctx.rotate(Math.PI / 2);   // 絵は前が上
   ctx.drawImage(img, -W / 2, -H / 2, W, H);
   ctx.restore();
+  return true;
+}
+
+// =====================================================================
+// v3.77.0（案帳 DT-509・Shooter判定「住んでいて最初からいる（倒すまで残る）でよいが、たくさんいて欲しい。また、街を守る感じで配置されて欲しい」）:
+// 岩の巨人。巨岩信仰の荒地の住人で、岩脚の巨像（DT-484）と同じ岩の質感の二足歩行。ラッシュではなく最初から町ごとに立っている。
+//   ・持ち場（home）の町のそばでうろつき、群れが町に近づくと出てきて追い、群れが遠ざかると持ち場へ戻る。時間では去らない
+//   ・左右の足を交互に大きく踏み出す。踏み下ろす足の下にだけ黄の点線の輪（予告）→ 踏んだ足のまわりに衝撃波（巨像と同じ）
+//   ・数歩ごとに止まって両腕を振り上げ、前方の扇に叩きつける（扇の予告 → 衝撃 → 動けない隙）。隙が叩きどころ
+//   ・武器は無く撃たない。人間の町は踏まない（足は建物をよける）し、衝撃波が当たるのは竜だけ
+// =====================================================================
+const ROCKGIANT_HP_STAGE       = 0.2;     // 体力＝基礎×(1 + これ×時代の番号)。数が多いので巨像（3000）より軽い基礎値
+const ROCKGIANT_TOWN_SHARE     = 0.4;     // 町のうち、この割合（大きい町から）に1体ずつ立つ
+const ROCKGIANT_TOWN_MIN       = 6;       // 町に立つ巨人の下限・上限（町が少なくても多すぎても数を保つ）
+const ROCKGIANT_TOWN_MAX       = 11;
+const ROCKGIANT_CAPITAL_COUNT  = 2;       // 首都の守り
+const ROCKGIANT_CAPITAL_LATE   = 1;       // 時代V（番号4）以降は首都にもう1体
+const ROCKGIANT_LATE_STAGE     = 4;
+const ROCKGIANT_CAPITAL_RING   = 700;     // 首都からの持ち場の距離（環状列石の外）
+const ROCKGIANT_POST_OUTSIDE   = 90;      // 町の外形からの持ち場の距離（列石の外）
+const ROCKGIANT_POST_SPREAD    = 0.9;     // 持ち場の向きを「開始地点の側」からばらす幅（rad）。群れの来る側を向いて守る
+const ROCKGIANT_PACE_R         = 110;     // 持ち場のまわりでうろつく範囲
+const ROCKGIANT_PACE_PAUSE     = 2.2;     // うろつきの合間に立ち止まる秒数
+const ROCKGIANT_PACE_SPEED     = 0.45;    // うろつくときの速さ（歩く速さ×これ）
+const ROCKGIANT_ARRIVE_R       = 40;      // 持ち場に着いたとみなす距離
+const ROCKGIANT_AGGRO_R        = 760;     // 群れが持ち場からこの距離に入ると出てくる
+const ROCKGIANT_LEASH_R        = 1100;    // 群れが持ち場からこの距離を超えると戻る（出る距離より広い＝行ったり来たりしない）
+const ROCKGIANT_FAR_R          = 2600;    // 群れの重心がこれより遠ければ「近くに居るか」の総当たりを省く
+const ROCKGIANT_STOP_R         = 80;      // 群れの重心にこれだけ近づいたら止まって足を置く
+const ROCKGIANT_ACTIVE_R       = 1000;    // 群れがこれより遠ければ衝撃波・予告・砂ぼこりは出さない（足だけ静かに運ぶ）
+const ROCKGIANT_STEP_EVERY     = 0.8;     // 1歩ごとの間（秒）。左右交互なので同じ足は1.6秒に1回
+const ROCKGIANT_STEP_AIR       = 0.62;    // 足を持ち上げてから踏み下ろすまで（この間、踏む場所に予告の輪）
+const ROCKGIANT_STRIDE         = 2.0;     // 踏み出しの大きさ（歩く速さ×間×これだけ前に足を置く）。巨像より大股
+const ROCKGIANT_MIN_LEAD       = 0.3;     // 歩くときの踏み出しの最小（半径×これ。ゆっくりでも足が胴の前後にはみ出して見える）
+const ROCKGIANT_STANCE         = 0.35;    // 立っているときの足の前後のずれ（半径×これ。胴の下に隠れきらないように）
+const ROCKGIANT_MIN_STEP       = 8;       // 足を置き直す必要がある最小のずれ（静止中は踏まない）
+const ROCKGIANT_HIP            = 0.42;    // 左右の足の間隔の半分＝半径×これ
+const ROCKGIANT_FOOT_W         = 0.8;     // 足の絵の幅＝半径×これ
+const ROCKGIANT_FOOT_CLEAR     = 14;      // 人間の町の建物から足をこれだけ離して置く
+const ROCKGIANT_STOMP_R        = 62;      // 踏んだ足の衝撃波の半径
+const ROCKGIANT_STOMP_DMG      = 5;       // 衝撃波の威力（時代ごとに +1）。巨像より軽いが足は2本・数が多い
+const ROCKGIANT_STOMP_PUSH     = 80;
+const ROCKGIANT_SLAM_EVERY     = 4;       // この歩数ごとに止まって叩きつける（群れが前に居るとき）
+const ROCKGIANT_SLAM_TRIGGER_R = 300;     // 叩きつけに入る距離（いちばん近い竜まで）
+const ROCKGIANT_SLAM_ARC       = 0.6;     // 叩きつけに入る向き（正面からのずれ rad）
+const ROCKGIANT_SLAM_WIND      = 1.1;     // 腕を振り上げて扇の予告を出す秒数
+const ROCKGIANT_SLAM_RECOVER   = 1.3;     // 叩きつけたあとの動けない隙
+const ROCKGIANT_SLAM_R         = 230;     // 扇の半径
+const ROCKGIANT_SLAM_HALF      = 0.85;    // 扇の半角（rad）＝全体で約98度
+const ROCKGIANT_SLAM_DMG       = 9;
+const ROCKGIANT_SLAM_PUSH      = 150;
+const ROCKGIANT_SLAM_SHAKE     = 3.2;
+const ROCKGIANT_STOMP_SHAKE    = 1.6;     // 踏むたびの画面の揺れ（数が多いので巨像より弱い）
+const ROCKGIANT_ARM_W          = 0.62;    // 腕の絵の幅＝半径×これ
+const ROCKGIANT_TORSO_W        = 2.7;     // 胴の絵の幅＝半径×これ
+const ROCKGIANT_ARM_REST       = 0.3;     // 腕を下ろしたときの外への開き（rad）
+const ROCKGIANT_ARM_RAISE_SCALE = 0.4;    // 振り上げた腕を大きく描く割合（カメラに近づく）
+const ROCKGIANT_ARM_KICK_DECAY = 4;       // 叩きつけの勢いが引く速さ（1/秒）
+const ROCKGIANT_LIFT_SCALE     = 0.28;    // 持ち上げた足を大きく描く割合
+const ROCKGIANT_LIFT_OFFSET    = 14;      // 持ち上げた足を浮かせて描く高さ（見た目だけ）
+const ROCKGIANT_RUBBLE_LIFE    = 24;      // 崩れた岩の山が残る秒数
+const ROCKGIANT_FALL_TIME      = 0.55;    // 前へ倒れ込んで山になるまで
+const ROCKGIANT_FALL_FWD       = 0.75;    // 倒れ込む距離＝半径×これ
+const ROCKGIANT_TORSO_ASPECT   = 205 / 320;   // 胴の絵の 高さ÷幅
+const ROCKGIANT_ARM_ASPECT     = 366 / 140;   // 腕の絵の 高さ÷幅
+const ROCKGIANT_FOOT_ASPECT    = 364 / 200;   // 足の絵の 高さ÷幅
+const ROCKGIANT_SHOULDER_X     = 0.15;    // 肩の位置（胴の絵の高さ×これだけ前）
+const ROCKGIANT_SHOULDER_Y     = 0.40;    // 肩の位置（胴の絵の幅×これだけ左右）
+const ROCKGIANT_ARM_PIVOT      = 0.9;     // 腕の絵の付け根（下から）の割合
+const ROCKGIANT_ARM_SWING      = 0.16;    // 歩くときの腕の振り（rad）
+let rockGiantPlacePending = false;   // 町の一覧ができてから置く（kitePlacePending と同じ段取り）
+
+function rockGiantHp(def, stageIndex) { return Math.round(def.hp * (1 + ROCKGIANT_HP_STAGE * stageIndex)); }
+
+/** 持ち場の点（開始地点の側＝群れの来る側を向いて、外形のすぐ外） */
+function rockGiantPost(cx, cy, outerR, seedAngle) {
+  const toStart = Math.atan2(START_Y - cy, START_X - cx);
+  const a = toStart + (seedAngle ?? (random() * 2 - 1)) * ROCKGIANT_POST_SPREAD;
+  const r = outerR + ROCKGIANT_POST_OUTSIDE;
+  return { x: Math.max(120, Math.min(WORLD_W - 120, cx + Math.cos(a) * r)),
+           y: Math.max(120, Math.min(WORLD_H - 120, cy + Math.sin(a) * r)) };
+}
+
+/** 巨人を1体置く。体力・経験値は荒地の基準（経験値は巨像と同じ式＝精鋭の追跡者の経験値×倍率） */
+function spawnRockGiant(post, townIndex) {
+  const def = MOVER_DEFS.rock_giant;
+  const m = makeMover(def, () => ({ x: post.x, y: post.y }));
+  m.wx = post.x; m.wy = post.y;
+  m.maxHp = m.hp = rockGiantHp(def, runStageIndex);
+  m.xpValue = trEraDefs().large.xp * TR_ELITE_XP * TR_TITAN_XP;
+  m._rg = initRockGiant(m, post);
+  m._rg.townIndex = townIndex;
+  movers.push(m);
+  return m;
+}
+
+/** 町の一覧ができたら、大きい町から順に1体ずつ＋首都に2〜3体を置く（案帳 DT-509） */
+function placeRockGiants() {
+  if (!rockGiantPlacePending || townStats.size === 0) return;
+  rockGiantPlacePending = false;
+  const clear2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
+  const metas = new Map();
+  for (const s of settlements) if (s && s._townMeta && s._townIndex !== undefined) metas.set(s._townIndex, s._townMeta);
+  const towns = [];
+  for (const [idx, st] of townStats) {
+    const meta = metas.get(idx);
+    if (!meta || meta._rock || st.surrendered || st.total <= 0 || dist2(st.cx, st.cy, START_X, START_Y) < clear2) continue;
+    towns.push({ idx, total: st.total, cx: st.cx, cy: st.cy, outer: (meta.maxExtent ?? meta.townR ?? 200) + WASTELAND_RING_MARGIN });
+  }
+  towns.sort((a, b) => b.total - a.total);
+  const want = Math.max(ROCKGIANT_TOWN_MIN, Math.min(ROCKGIANT_TOWN_MAX, Math.round(towns.length * ROCKGIANT_TOWN_SHARE)));
+  for (const t of towns.slice(0, want)) spawnRockGiant(rockGiantPost(t.cx, t.cy, t.outer), t.idx);
+  const boss = settlements.find(s => s && s.isBoss);
+  if (!boss) return;
+  const capitalCount = ROCKGIANT_CAPITAL_COUNT + (runStageIndex >= ROCKGIANT_LATE_STAGE ? ROCKGIANT_CAPITAL_LATE : 0);
+  for (let k = 0; k < capitalCount; k++) {
+    const spread = capitalCount === 1 ? 0 : (k / (capitalCount - 1)) * 2 - 1;   // -1〜1 に等分（開始地点の側に並べる）
+    spawnRockGiant(rockGiantPost(boss.wx, boss.wy, ROCKGIANT_CAPITAL_RING - ROCKGIANT_POST_OUTSIDE, spread), -1);
+  }
+}
+
+function initRockGiant(m, post) {
+  const feet = [0, 1].map(() => ({ x: m.wx, y: m.wy, fromX: m.wx, fromY: m.wy, toX: m.wx, toY: m.wy, lift: -1 }));
+  const G = {
+    home: post ?? { x: m.wx, y: m.wy },   // デバッグで出したものは、その場が持ち場
+    mode: "guard", feet, nextFoot: 0, stepTimer: random() * ROCKGIANT_STEP_EVERY,
+    stepsSince: Math.floor(random() * ROCKGIANT_SLAM_EVERY), slam: null, armKick: 0, armLift: 0,
+    pace: null, paceWait: random() * ROCKGIANT_PACE_PAUSE, goal: null, active: false,
+  };
+  for (let k = 0; k < 2; k++) {
+    const f = rockGiantFootRest(m, k, (k === 0 ? 1 : -1) * m.def.radius * ROCKGIANT_STANCE), L = feet[k];   // 立ち姿は片足が前・片足が後ろ
+    L.x = L.toX = L.fromX = f.x; L.y = L.toY = L.fromY = f.y;
+  }
+  return G;
+}
+
+/** 足 k の置き場所（胴の左右。lead は進む向きへ前に置く距離） */
+function rockGiantFootRest(m, k, lead) {
+  const side = k === 0 ? -1 : 1, lat = side * m.def.radius * ROCKGIANT_HIP;
+  return { x: m.wx + m.headingX * lead - m.headingY * lat, y: m.wy + m.headingY * lead + m.headingX * lat };
+}
+
+/** 足の置き場所を人間の建物から外す（町の上は足をよけて歩く。巨像と同じ） */
+function rockGiantAvoidTown(p) {
+  for (const b of settlements) {
+    if (!b || b.fallen) continue;
+    const need = b.radius + ROCKGIANT_FOOT_CLEAR;
+    const dx = p.x - b.wx, dy = p.y - b.wy;
+    if (Math.abs(dx) > need || Math.abs(dy) > need) continue;
+    const d = Math.hypot(dx, dy);
+    if (d >= need) continue;
+    const ux = d > 0 ? dx / d : 1, uy = d > 0 ? dy / d : 0;
+    p.x = b.wx + ux * need; p.y = b.wy + uy * need;
+  }
+  return p;
+}
+
+/** 状態（うろつく／出てくる／戻る）と、今向かう先・速さの倍率を決める */
+function rockGiantDecide(m, G, centroid, dt) {
+  let dHome = Infinity;
+  if (dist2(G.home.x, G.home.y, centroid.x, centroid.y) < ROCKGIANT_FAR_R * ROCKGIANT_FAR_R) {
+    const i = findNearestAliveBoid(G.home.x, G.home.y);
+    if (i >= 0) dHome = Math.hypot(px[i] - G.home.x, py[i] - G.home.y);
+  }
+  // 出る距離より戻る距離を広く取る（境目で行ったり来たりしない）
+  if (G.mode !== "chase" && dHome < ROCKGIANT_AGGRO_R) G.mode = "chase";
+  else if (G.mode === "chase" && dHome > ROCKGIANT_LEASH_R) G.mode = "return";
+  else if (G.mode === "return" && dist2(m.wx, m.wy, G.home.x, G.home.y) < ROCKGIANT_ARRIVE_R ** 2) G.mode = "guard";
+  if (G.mode === "chase") {
+    const near = Math.hypot(centroid.x - m.wx, centroid.y - m.wy) < ROCKGIANT_STOP_R;
+    G.goal = centroid; m.speedMult = near ? 0 : 1;
+  } else if (G.mode === "return") {
+    G.goal = G.home; m.speedMult = 1;
+  } else {
+    // うろつく：持ち場のまわりの点へゆっくり歩き、着いたら少し立ち止まる
+    if (G.pace && dist2(m.wx, m.wy, G.pace.x, G.pace.y) < ROCKGIANT_ARRIVE_R ** 2) { G.pace = null; G.paceWait = ROCKGIANT_PACE_PAUSE * (0.5 + random()); }
+    if (!G.pace && (G.paceWait -= dt) <= 0) {
+      const a = random() * Math.PI * 2, r = random() * ROCKGIANT_PACE_R;
+      G.pace = { x: G.home.x + Math.cos(a) * r, y: G.home.y + Math.sin(a) * r };
+    }
+    G.goal = G.pace; m.speedMult = G.pace ? ROCKGIANT_PACE_SPEED : 0;
+  }
+  return dHome;
+}
+
+/** 叩きつけ：振り上げ（扇の予告）→ 衝撃 → 動けない隙。向きと足を止めるのは共通の laserLock を借りる（レーザーの溜めと同じ作法） */
+function rockGiantSlam(m, G, dt) {
+  const S = G.slam;
+  S.t += dt;
+  if (S.phase === "wind") {
+    G.armLift = Math.min(1, S.t / ROCKGIANT_SLAM_WIND);
+    if (S.t < ROCKGIANT_SLAM_WIND) return;
+    S.phase = "recover"; S.t = 0; G.armLift = 0; G.armKick = 1;
+    attackerNow = moverAttacker(m);
+    const hit = shockwaveHit((ROCKGIANT_SLAM_DMG + runStageIndex) * moverFerocity(), ROCKGIANT_SLAM_PUSH);
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      const dx = px[i] - m.wx, dy = py[i] - m.wy, d = Math.hypot(dx, dy);
+      if (d > ROCKGIANT_SLAM_R || Math.abs(wrapAngle(Math.atan2(dy, dx) - S.ang)) > ROCKGIANT_SLAM_HALF) continue;
+      hitBoid(i, hit, dx / (d || 1), dy / (d || 1));
+    }
+    for (const f of [0.45, 0.85]) for (const s of [-0.6, 0, 0.6]) {   // 扇の中に砂ぼこり（見た目だけ）
+      const a = S.ang + s * ROCKGIANT_SLAM_HALF;
+      spawnExplosionFx(m.wx + Math.cos(a) * ROCKGIANT_SLAM_R * f, m.wy + Math.sin(a) * ROCKGIANT_SLAM_R * f, ROCKGIANT_SLAM_R * 0.28, { dust: true, fire: 0 });
+    }
+    triggerShake(ROCKGIANT_SLAM_SHAKE, 0.2);
+  } else if (S.t >= ROCKGIANT_SLAM_RECOVER) {
+    G.slam = null;
+  }
+}
+
+/** 巨人の1フレーム：状態・叩きつけ・足の踏み替え。向かう先は m._rgGoal に置き、移動は共通の移動（旋回つき）に任せる */
+function updateRockGiant(m, dt, centroid) {
+  const G = m._rg ?? (m._rg = initRockGiant(m));
+  rockGiantDecide(m, G, centroid, dt);
+  G.active = Math.hypot(centroid.x - m.wx, centroid.y - m.wy) < ROCKGIANT_ACTIVE_R;
+  G.armKick = Math.max(0, G.armKick - ROCKGIANT_ARM_KICK_DECAY * dt);
+  if (G.slam) rockGiantSlam(m, G, dt);
+  else {
+    G.armLift = 0;
+    const lifting = G.feet.some(f => f.lift >= 0);
+    if (G.active && !lifting && G.stepsSince >= ROCKGIANT_SLAM_EVERY && m.laserLock <= 0) rockGiantTrySlam(m, G);
+  }
+  if (G.slam) { m.speedMult = 0; G.goal = null; }
+  rockGiantFeet(m, G, dt);
+  m._rgGoal = G.goal;
+}
+
+/** 近くの竜が正面に居れば叩きつけに入る（向きを固定して止まる） */
+function rockGiantTrySlam(m, G) {
+  const i = findNearestAliveBoid(m.wx, m.wy);
+  if (i < 0) return;
+  const dx = px[i] - m.wx, dy = py[i] - m.wy;
+  if (dx * dx + dy * dy > ROCKGIANT_SLAM_TRIGGER_R * ROCKGIANT_SLAM_TRIGGER_R) return;
+  const face = Math.atan2(m.headingY, m.headingX), want = Math.atan2(dy, dx);
+  if (Math.abs(wrapAngle(want - face)) > ROCKGIANT_SLAM_ARC) return;
+  G.slam = { phase: "wind", t: 0, ang: want };
+  G.stepsSince = 0;
+  m.headingX = Math.cos(want); m.headingY = Math.sin(want);
+  m.laserLock = ROCKGIANT_SLAM_WIND + ROCKGIANT_SLAM_RECOVER;
+}
+
+/** 足：持ち上げている足を運んで踏み下ろし、時間が来たら次の足（左右交互）を上げる */
+function rockGiantFeet(m, G, dt) {
+  for (const f of G.feet) {
+    if (f.lift < 0) continue;
+    f.lift += dt;
+    const t = Math.min(1, f.lift / ROCKGIANT_STEP_AIR), e = t * t * (3 - 2 * t);
+    f.x = f.fromX + (f.toX - f.fromX) * e; f.y = f.fromY + (f.toY - f.fromY) * e;
+    if (t < 1) continue;
+    f.lift = -1; f.x = f.toX; f.y = f.toY;
+    G.stepsSince++;
+    if (G.active) rockGiantStomp(m, f);
+  }
+  if (G.slam) return;
+  G.stepTimer -= dt;
+  if (G.stepTimer > 0 || G.feet.some(f => f.lift >= 0)) return;
+  const k = G.nextFoot, f = G.feet[k];
+  const speed = m.def.speed * (m.speedMult ?? 1);
+  if (speed <= 0) { G.stepTimer = 0.15; return; }   // 立ち止まっている間は踏み替えない（足は止まった姿のまま）
+  const lead = Math.max(speed * ROCKGIANT_STEP_EVERY * ROCKGIANT_STRIDE, m.def.radius * ROCKGIANT_MIN_LEAD);
+  const to = rockGiantAvoidTown(rockGiantFootRest(m, k, lead));
+  if (Math.hypot(to.x - f.x, to.y - f.y) < ROCKGIANT_MIN_STEP) { G.stepTimer = 0.15; return; }   // 足がもう置き場所にあれば踏み替えない
+  G.nextFoot = 1 - k; G.stepTimer = ROCKGIANT_STEP_EVERY;
+  f.fromX = f.x; f.fromY = f.y; f.toX = to.x; f.toY = to.y;
+  if (G.active) { f.lift = 0; return; }
+  f.x = to.x; f.y = to.y; G.stepsSince++;   // 遠くの巨人は予告も衝撃波も出さず、足だけ置き直す
+}
+
+function rockGiantStomp(m, f) {
+  attackerNow = moverAttacker(m);
+  emitShockwave(f.x, f.y, ROCKGIANT_STOMP_R, shockwaveHit((ROCKGIANT_STOMP_DMG + runStageIndex) * moverFerocity(), ROCKGIANT_STOMP_PUSH));
+  spawnExplosionFx(f.x, f.y, ROCKGIANT_STOMP_R * 0.5, { dust: true, fire: 0 });
+  for (let c = 0; c < TITAN_CHIPS - 2; c++) {   // 岩のかけら（巨像と同じ見た目）
+    const a = fxRandom() * Math.PI * 2, d = 12 + fxRandom() * ROCKGIANT_STOMP_R * 0.5;
+    titanRubble.push({ x: f.x + Math.cos(a) * d, y: f.y + Math.sin(a) * d, r: 2.5 + fxRandom() * 3.5, rot: fxRandom() * Math.PI, shade: fxRandom(), life: TITAN_CHIP_LIFE });
+  }
+  triggerShake(ROCKGIANT_STOMP_SHAKE, 0.1);
+}
+
+/** 倒れたとき：前へ倒れ込み、頭・腕・足の岩が散らばった山になる（卵と経験値はふつうの撃破で出る） */
+function crumbleRockGiant(m) {
+  const R = m.def.radius, hx = m.headingX, hy = m.headingY, G = m._rg;
+  const ang = Math.atan2(hy, hx);
+  const at = (fwd, lat) => ({ x: m.wx + hx * fwd - hy * lat, y: m.wy + hy * fwd + hx * lat });
+  const piece = (key, p, w, rot) => titanRubble.push({ kind: "sprite", key, x: p.x, y: p.y, w, rot, fromX: m.wx, fromY: m.wy,
+    slide: ROCKGIANT_FALL_TIME, r: 1, shade: 0.5, life: ROCKGIANT_RUBBLE_LIFE });
+  const fall = R * ROCKGIANT_FALL_FWD;
+  piece("rockgiant_torso", at(fall, 0), R * ROCKGIANT_TORSO_W * 0.95, ang + Math.PI / 2 + (fxRandom() - 0.5) * 0.4);
+  for (const side of [-1, 1]) {
+    piece("rockgiant_arm", at(R * 1.2, side * R * 0.95), R * ROCKGIANT_ARM_W, ang + Math.PI / 2 + side * (0.5 + fxRandom() * 0.5));
+    const f = G ? G.feet[side < 0 ? 0 : 1] : null;
+    piece("rockgiant_foot", f ? { x: f.x, y: f.y } : at(-R * 0.4, side * R * 0.3), R * ROCKGIANT_FOOT_W, ang + Math.PI / 2 + (fxRandom() - 0.5) * 0.8);
+  }
+  // 頭・腕・足の岩（前方ほど頭の岩）
+  const rocks = [[1.35, 0, 20, 3], [1.1, 0.5, 13, 3], [1.1, -0.5, 13, 3], [0.6, 0.9, 12, 3], [0.6, -0.9, 12, 3], [0.2, 0.3, 12, 2], [0.2, -0.3, 12, 2], [-0.3, 0.8, 10, 2], [-0.3, -0.8, 10, 2]];
+  for (const [f, l, r, n] of rocks) for (let k = 0; k < n; k++) {
+    const p = at(R * (f + (fxRandom() - 0.5) * 0.3), R * (l + (fxRandom() - 0.5) * 0.3));
+    titanRubble.push({ x: p.x, y: p.y, fromX: m.wx, fromY: m.wy, slide: ROCKGIANT_FALL_TIME,
+      r: r * (0.7 + fxRandom() * 0.6), rot: fxRandom() * Math.PI, shade: fxRandom(), life: ROCKGIANT_RUBBLE_LIFE });
+  }
+  spawnExplosionFx(m.wx + hx * fall, m.wy + hy * fall, R * 0.9, { dust: true, fire: 0 });
+  triggerShake(TITAN_SHAKE * 1.6, 0.25);
+}
+
+/** 巨人の足・予告の輪・扇の予告（胴の下の層。drawStoneTitanUnder のあとに呼ぶ） */
+function drawRockGiantUnder() {
+  const vb = getViewBoundsWorld(300);
+  const footImg = enemyImages.rockgiant_foot;
+  for (const m of movers) {
+    if (!m.alive || !m.def.rockGiant || !m._rg) continue;
+    if (m.wx < vb.minX || m.wx > vb.maxX || m.wy < vb.minY || m.wy > vb.maxY) continue;
+    const G = m._rg, R = m.def.radius, S = G.slam;
+    if (S && S.phase === "wind") {   // 扇の予告：黄の点線の輪郭の中を、叩く瞬間に向けて塗りが広がる
+      const t = Math.min(1, S.t / ROCKGIANT_SLAM_WIND);
+      ctx.save();
+      ctx.translate(m.wx, m.wy); ctx.rotate(S.ang);
+      ctx.globalAlpha = 0.16 + 0.24 * t; ctx.fillStyle = "#ffd060";
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, ROCKGIANT_SLAM_R * t, -ROCKGIANT_SLAM_HALF, ROCKGIANT_SLAM_HALF); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 0.9; ctx.strokeStyle = "#ffd060"; ctx.lineWidth = 2.5; ctx.setLineDash([9, 7]);
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, ROCKGIANT_SLAM_R, -ROCKGIANT_SLAM_HALF, ROCKGIANT_SLAM_HALF); ctx.closePath(); ctx.stroke();
+      ctx.restore();
+    }
+    const ang = Math.atan2(m.headingY, m.headingX);
+    for (const f of G.feet) {
+      const air = f.lift >= 0 ? Math.min(1, f.lift / ROCKGIANT_STEP_AIR) : 0, lifting = Math.sin(Math.PI * air);
+      if (f.lift >= 0) {   // 踏む足の下にだけ予告の輪（巨像と同じ見た目）
+        ctx.save();
+        ctx.globalAlpha = 0.18 + 0.22 * air; ctx.fillStyle = "#ffd060";
+        ctx.beginPath(); ctx.arc(f.toX, f.toY, ROCKGIANT_STOMP_R * air, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.9; ctx.strokeStyle = "#ffd060"; ctx.lineWidth = 2.5; ctx.setLineDash([9, 7]);
+        ctx.beginPath(); ctx.arc(f.toX, f.toY, ROCKGIANT_STOMP_R, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+      if (lifting > 0) {   // 持ち上げた足の影
+        ctx.save(); ctx.globalAlpha = 0.32; ctx.fillStyle = "#000";
+        ctx.beginPath(); ctx.ellipse(f.x, f.y, R * 0.42, R * 0.3, ang, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+      }
+      if (f.lift < 0) drawRockGiantFoot(m, f, footImg, ang, 0);   // 地に着いている足は胴の下。持ち上げた足は胴の上（drawRockGiantLiftedFeet）
+    }
+  }
+}
+
+/** 足1本の絵。lifting（0〜1）が大きいほど浮かせて大きく描く */
+function drawRockGiantFoot(m, f, footImg, ang, lifting) {
+  const R = m.def.radius;
+  ctx.save();
+  ctx.translate(f.x, f.y - lifting * ROCKGIANT_LIFT_OFFSET);
+  ctx.rotate(ang + Math.PI / 2);
+  const w = R * ROCKGIANT_FOOT_W * (1 + ROCKGIANT_LIFT_SCALE * lifting), h = w * ROCKGIANT_FOOT_ASPECT;
+  if (footImg) ctx.drawImage(footImg, -w / 2, -h * 0.55, w, h);
+  else { ctx.fillStyle = m.def.color; ctx.strokeStyle = "#3a322a"; ctx.lineWidth = 2; ctx.fillRect(-w / 2, -h / 2, w, h); ctx.strokeRect(-w / 2, -h / 2, w, h); }
+  ctx.restore();
+}
+
+/** 持ち上げた足を胴の上に描く（カメラに近づく足なので胴より手前。踏み替えが胴の下に隠れず見える） */
+function drawRockGiantLiftedFeet() {
+  const vb = getViewBoundsWorld(300), footImg = enemyImages.rockgiant_foot;
+  for (const m of movers) {
+    if (!m.alive || !m.def.rockGiant || !m._rg) continue;
+    if (m.wx < vb.minX || m.wx > vb.maxX || m.wy < vb.minY || m.wy > vb.maxY) continue;
+    const ang = Math.atan2(m.headingY, m.headingX);
+    for (const f of m._rg.feet) {
+      if (f.lift < 0) continue;
+      drawRockGiantFoot(m, f, footImg, ang, Math.sin(Math.PI * Math.min(1, f.lift / ROCKGIANT_STEP_AIR)));
+    }
+  }
+}
+
+/** 巨人の胴と腕（drawMovers から。呼ぶ側で前＝+x の座標系に回してある） */
+function drawRockGiantSprite(m) {
+  const torso = enemyImages.rockgiant_torso, armImg = enemyImages.rockgiant_arm, G = m._rg;
+  const R = m.def.radius, W = R * ROCKGIANT_TORSO_W, H = W * ROCKGIANT_TORSO_ASPECT;
+  if (!torso) return false;
+  const lift = G ? G.armLift : 0, kick = G ? G.armKick : 0;
+  const air = (f) => f && f.lift >= 0 ? Math.sin(Math.PI * Math.min(1, f.lift / ROCKGIANT_STEP_AIR)) : 0;
+  const swing = G ? air(G.feet[0]) - air(G.feet[1]) : 0;
+  ctx.save();
+  ctx.rotate(Math.PI / 2);   // 絵は前が上
+  ctx.drawImage(torso, -W / 2, -H / 2, W, H);
+  ctx.restore();
+  if (!armImg) return true;
+  for (const side of [-1, 1]) {
+    ctx.save();
+    ctx.translate(H * ROCKGIANT_SHOULDER_X, side * W * ROCKGIANT_SHOULDER_Y);
+    // 振り上げ＝外への開きが閉じて大きくなる（真俯瞰では高さを拡大で表す）。叩きつけの瞬間は内へ振り込む
+    const spread = ROCKGIANT_ARM_REST * (1 - lift) - kick * 0.35 - swing * side * ROCKGIANT_ARM_SWING;
+    const scale = 1 + ROCKGIANT_ARM_RAISE_SCALE * lift + 0.12 * kick;
+    if (lift > 0.05) { ctx.save(); ctx.globalAlpha = 0.3 * lift; ctx.fillStyle = "#000"; ctx.beginPath(); ctx.ellipse(10, 6, R * 0.3, R * 0.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }
+    ctx.rotate(side * spread + Math.PI / 2);
+    const aw = R * ROCKGIANT_ARM_W * scale, ah = aw * ROCKGIANT_ARM_ASPECT;
+    ctx.drawImage(armImg, -aw / 2, -ah * ROCKGIANT_ARM_PIVOT, aw, ah);
+    ctx.restore();
+  }
   return true;
 }
 
@@ -15647,6 +16093,7 @@ function damageMover(m, damage, srcX, srcY) {
     // v2.6.0: 大きい敵はすぐ消えず、崩れて倒れ込んで残骸になる
     if (moverLeavesWreck(m.def)) beginMoverDeath(m);
     if (m.def.titan) crumbleStoneTitan(m);   // v3.74.0（案帳 DT-484）: 脚ごと崩れて岩の山になる
+    if (m.def.rockGiant) crumbleRockGiant(m);   // v3.77.0（案帳 DT-509）: 前へ倒れ込んで岩の山になる
     runKills++;
     // v0.25: エリート撃破の累計（チャレンジ用）
     if (m.def.elite) { profile.eliteKills = (profile.eliteKills || 0) + 1; saveProfile(); }
@@ -15775,7 +16222,8 @@ const DEATH_PUSH_CAP   = 560;   // 倒れ込みの押しの上限
  * 鉄路の車両は**編成が自前で残骸を引きずる**仕組み（drawRailWrecks）を持つので外す。
  */
 function moverLeavesWreck(def) {
-  return !!def && (def.radius || 0) >= DEATH_MIN_RADIUS && !isRailVehicle(def);
+  // v3.77.0（案帳 DT-509）: 岩の巨人は焼け焦げた残骸ではなく、自前の岩の山（crumbleRockGiant）を残す
+  return !!def && (def.radius || 0) >= DEATH_MIN_RADIUS && !isRailVehicle(def) && !def.rockGiant;
 }
 
 /** 最期を始める。多パーツなら手足も一緒に（親へ垂れながら残骸になる）。 */
@@ -17844,6 +18292,12 @@ function drawMovers() {
         ctx.beginPath();
         for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3; ctx.lineTo(Math.cos(a) * def.radius, Math.sin(a) * def.radius); }
         ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+    } else if (def.rockGiant) {
+      // v3.77.0（案帳 DT-509）: 岩の巨人の胴と腕（足は drawRockGiantUnder が先に敷く）
+      if (!drawRockGiantSprite(m)) {
+        ctx.fillStyle = def.color; ctx.strokeStyle = "#3a322a"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(0, 0, def.radius * 0.9, def.radius * 1.2, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
     } else if (def.fortressTurret) {
       // 案帳 DT-487 手直し: 動く砦の四隅の砲台。狙う向き（heading）へ回る。撃った瞬間は砲口が光る
@@ -19915,6 +20369,7 @@ function paintGroundTile(bctx, bounds) {
 
   // v0.9.1: 街区の下地（石畳ベース＋集落の土地面）。道路より先に敷く
   drawTownBasesOnLayer(bctx, bounds);
+  drawWastelandOnLayer(bctx, bounds);   // v3.77.0（案帳 DT-509）: 荒地の巨岩・環状列石・首都の偶像
 
   // 道路ラインを先に描く（建物の下に来る）
   drawRoadsOnLayer(bctx, bounds);
@@ -19995,6 +20450,163 @@ function regenerateGroundDetail() {
     const light = fxRandom() < 0.6;
     groundDetailSpeckles[k] = { x, y, size, light };
   }
+  regenerateWastelandBoulders();   // v3.77.0（案帳 DT-509）
+}
+
+// =====================================================================
+// v3.77.0（案帳 DT-509）: 巨岩信仰の荒地の地面。灰色の巨岩があちこちに転がる（見た目だけ。竜も敵も素通り）。
+// 町は環状列石（立石の輪）に囲まれ、首都は大きな立石の輪の中に石の偶像を祀る。どれも地面レイヤーに1回だけ焼く。
+// 位置は「ステージ生成時に」確定させる（タイルごとに焼き直しても同じ絵になるように。regenerateGroundDetail と同じ理由）
+// =====================================================================
+const WASTELAND_CLUSTER_DENSITY  = 70 / (4800 * 3600);   // 巨岩の群れの数（面積比）
+const WASTELAND_CLUSTER_MIN      = 3;       // 1つの群れの巨岩の数
+const WASTELAND_CLUSTER_EXTRA    = 6;
+const WASTELAND_CLUSTER_SPREAD   = 150;     // 群れの広がり
+const WASTELAND_LONE_DENSITY     = 320 / (4800 * 3600);   // 離れて転がる巨岩
+const WASTELAND_BOULDER_R_MIN    = 9;
+const WASTELAND_BOULDER_R_MAX    = 40;
+const WASTELAND_TOWN_KEEPOUT     = 40;      // 町の列石の輪の外側にこれだけ巨岩を置かない
+const WASTELAND_STONE_GAP        = 36;      // 環状列石の立石の間隔（円周に沿って）
+const WASTELAND_CAPITAL_STONE_GAP = 54;     // 首都の立石の間隔（立石が大きいぶん広い）
+const WASTELAND_STONE_W          = 16;      // 立石の幅（円周の接線方向）
+const WASTELAND_STONE_H          = 24;      // 立石の奥行き（半径方向）
+const WASTELAND_RING_MARGIN      = 36;      // 町の外形から環状列石までの余白
+const WASTELAND_CAPITAL_RING_R   = 600;     // 首都の環状列石の半径（外の城壁リング 484 の外）
+const WASTELAND_CAPITAL_STONE_K  = 1.9;     // 首都の立石は町の立石のこの倍の大きさ
+const WASTELAND_IDOL_W           = 230;     // 首都の中央の石の偶像の幅（絵は岩の巨人の胴を流用。神殿の下に敷く）
+const WASTELAND_IDOL_GUARD_W     = 120;     // 神殿を囲んで外を向く4体の偶像の幅（建物に隠れない城壁と列石の間に立つ）
+const WASTELAND_IDOL_GUARD_R     = 545;     // その偶像の首都からの距離
+let wastelandBoulders = [];   // {x, y, r, rot, shade, pts}
+
+/** 荒地の町の環状列石の（中心, 半径）。首都は大きな輪。ステージ生成後の settlements から求める */
+function wastelandCircles() {
+  const out = [];
+  for (const s of settlements) {
+    if (!s) continue;
+    if (s.isBoss) { out.push({ x: s.wx, y: s.wy, r: WASTELAND_CAPITAL_RING_R, capital: true }); continue; }
+    const m = s._townMeta;
+    if (!m || m._rock) continue;
+    out.push({ x: m.cx, y: m.cy, r: (m.maxExtent ?? m.townR ?? 200) + WASTELAND_RING_MARGIN, capital: false });
+  }
+  return out;
+}
+
+function regenerateWastelandBoulders() {
+  wastelandBoulders = [];
+  if (worldShape !== SHAPE_WASTELAND) return;
+  const circles = wastelandCircles();
+  const free = (x, y, r) => {
+    for (const c of circles) {
+      const need = c.r + WASTELAND_TOWN_KEEPOUT + r;
+      if (Math.abs(x - c.x) < need && Math.abs(y - c.y) < need && dist2(x, y, c.x, c.y) < need * need) return false;
+    }
+    return true;
+  };
+  const add = (x, y) => {
+    const r = WASTELAND_BOULDER_R_MIN + (WASTELAND_BOULDER_R_MAX - WASTELAND_BOULDER_R_MIN) * fxRandom() ** 2;
+    if (x < 0 || y < 0 || x > WORLD_W || y > WORLD_H || !free(x, y, r)) return;
+    const sides = 6 + Math.floor(fxRandom() * 3);
+    const pts = [];
+    for (let k = 0; k < sides; k++) pts.push((0.72 + fxRandom() * 0.28));
+    wastelandBoulders.push({ x, y, r, rot: fxRandom() * Math.PI * 2, shade: fxRandom(), pts });
+  };
+  const clusters = Math.round(WASTELAND_CLUSTER_DENSITY * WORLD_W * WORLD_H);
+  for (let c = 0; c < clusters; c++) {
+    const cx = fxRandom() * WORLD_W, cy = fxRandom() * WORLD_H;
+    const n = WASTELAND_CLUSTER_MIN + Math.floor(fxRandom() * WASTELAND_CLUSTER_EXTRA);
+    for (let k = 0; k < n; k++) {
+      const a = fxRandom() * Math.PI * 2, d = fxRandom() * WASTELAND_CLUSTER_SPREAD;
+      add(cx + Math.cos(a) * d, cy + Math.sin(a) * d);
+    }
+  }
+  const lone = Math.round(WASTELAND_LONE_DENSITY * WORLD_W * WORLD_H);
+  for (let k = 0; k < lone; k++) add(fxRandom() * WORLD_W, fxRandom() * WORLD_H);
+}
+
+/** 灰色の巨岩1つ（落ち影つき。真俯瞰なので影は右下に少しずらす） */
+function drawWastelandBoulder(bctx, b) {
+  bctx.save();
+  bctx.translate(b.x, b.y);
+  bctx.rotate(b.rot);
+  const outline = (scale, ox, oy) => {
+    bctx.beginPath();
+    for (let k = 0; k < b.pts.length; k++) {
+      const a = k * Math.PI * 2 / b.pts.length, rr = b.r * b.pts[k] * scale;
+      const x = Math.cos(a) * rr + ox, y = Math.sin(a) * rr * 0.86 + oy;
+      if (k === 0) bctx.moveTo(x, y); else bctx.lineTo(x, y);
+    }
+    bctx.closePath();
+  };
+  bctx.fillStyle = "rgba(20, 10, 6, 0.38)";
+  outline(1.05, b.r * 0.28, b.r * 0.34); bctx.fill();
+  const g = Math.round(104 + b.shade * 38);
+  bctx.fillStyle = `rgb(${g + 6}, ${g}, ${g - 6})`;
+  bctx.strokeStyle = "rgba(36, 28, 24, 0.85)"; bctx.lineWidth = Math.max(1.5, b.r * 0.07);
+  outline(1, 0, 0); bctx.fill(); bctx.stroke();
+  bctx.fillStyle = `rgba(210, 204, 196, 0.22)`;   // 上面のハイライト
+  outline(0.55, -b.r * 0.12, -b.r * 0.14); bctx.fill();
+  bctx.restore();
+}
+
+/** 立石1本（円周の接線方向が幅）。k は大きさの倍率 */
+function drawWastelandStandingStone(bctx, x, y, angle, k, shade) {
+  const w = WASTELAND_STONE_W * k, h = WASTELAND_STONE_H * k;
+  bctx.save();
+  bctx.translate(x, y);
+  bctx.rotate(angle);   // +x が外向き（半径方向）
+  bctx.fillStyle = "rgba(20, 10, 6, 0.40)";
+  bctx.fillRect(-h / 2 + 3 * k, -w / 2 + 4 * k, h, w);
+  const g = Math.round(122 + shade * 30);
+  bctx.fillStyle = `rgb(${g + 6}, ${g}, ${g - 8})`;
+  bctx.strokeStyle = "rgba(34, 26, 22, 0.9)"; bctx.lineWidth = 2;
+  bctx.beginPath(); bctx.roundRect(-h / 2, -w / 2, h, w, 4 * k); bctx.fill(); bctx.stroke();
+  bctx.fillStyle = "rgba(220, 214, 204, 0.25)";
+  bctx.fillRect(-h / 2 + 3 * k, -w / 2 + 2 * k, h * 0.45, w * 0.35);
+  bctx.restore();
+}
+
+/** 巨岩・環状列石・首都の偶像を、このタイルの範囲に焼く（地面レイヤーの町の下地の上） */
+function drawWastelandOnLayer(bctx, bounds) {
+  if (worldShape !== SHAPE_WASTELAND) return;
+  for (const b of wastelandBoulders) {
+    if (!layerBoundsHitCircle(bounds, b.x, b.y, b.r * 1.4)) continue;
+    drawWastelandBoulder(bctx, b);
+  }
+  for (const c of wastelandCircles()) {
+    if (!layerBoundsHitCircle(bounds, c.x, c.y, c.r + 40)) continue;
+    const k = c.capital ? WASTELAND_CAPITAL_STONE_K : 1;
+    const n = Math.max(12, Math.round(Math.PI * 2 * c.r / (c.capital ? WASTELAND_CAPITAL_STONE_GAP : WASTELAND_STONE_GAP)));
+    for (let i = 0; i < n; i++) {
+      const a = i * Math.PI * 2 / n;
+      // 位置は列の番号だけで決まる（焼き直しても同じ並び）。1本おきに少し高い石＝立石の輪らしい不揃い
+      const shade = ((i * 37) % 11) / 11;
+      drawWastelandStandingStone(bctx, c.x + Math.cos(a) * c.r, c.y + Math.sin(a) * c.r, a, k * (i % 5 === 0 ? 1.18 : 1), shade);
+    }
+    if (c.capital) {
+      drawWastelandIdol(bctx, c.x, c.y, WASTELAND_IDOL_W, 0);
+      for (let q = 0; q < 4; q++) {   // 斜め4方向の守り神像（外を向く）
+        const a = Math.PI / 4 + q * Math.PI / 2;
+        drawWastelandIdol(bctx, c.x + Math.cos(a) * WASTELAND_IDOL_GUARD_R, c.y + Math.sin(a) * WASTELAND_IDOL_GUARD_R, WASTELAND_IDOL_GUARD_W, a + Math.PI / 2);
+      }
+    }
+  }
+}
+
+/** 首都に祀られた石の偶像（巨人の胴の絵を灰色の石像にして敷く。建物レイヤーの首都がその上に立つ） */
+function drawWastelandIdol(bctx, x, y, w, facing) {
+  bctx.save();
+  bctx.translate(x, y);
+  bctx.fillStyle = "rgba(24, 14, 8, 0.35)";
+  bctx.beginPath(); bctx.ellipse(w * 0.04, w * 0.06, w * 0.62, w * 0.5, 0, 0, Math.PI * 2); bctx.fill();
+  bctx.fillStyle = "rgb(112, 100, 90)"; bctx.strokeStyle = "rgba(34, 26, 22, 0.9)"; bctx.lineWidth = 4;
+  bctx.beginPath(); bctx.ellipse(0, 0, w * 0.6, w * 0.48, 0, 0, Math.PI * 2); bctx.fill(); bctx.stroke();   // 台座
+  const img = enemyImages.rockgiant_torso;
+  if (img) {
+    const h = w * img.naturalHeight / img.naturalWidth;
+    bctx.rotate(facing);
+    bctx.drawImage(img, -w / 2, -h / 2, w, h);
+  }
+  bctx.restore();
 }
 
 function drawGroundDetailOnLayer(bctx, bounds) {
@@ -23255,8 +23867,8 @@ const STRINGS = {
   panelAxes: "時代＼地域",
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
-               "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会", "光線の塔が立つ高原", "英雄が守る王国"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国"],
+               "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会", "光線の塔が立つ高原", "英雄が守る王国", "巨岩を拝む荒地"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国", "荒地"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
   regionHint: "地域ごとに土地の形と遊び方が変わる。時代（建物・敵・兵器）はどの地域でも同じ。",
@@ -23286,6 +23898,9 @@ const STRINGS = {
       rule: "群れは光線より少し速い。止まらなければ焼かれない。光線がプリズム（首都）に当たると割れて首都区画を焼く。塔とプリズムは光線では壊れない" },
     { route: "角 → 中心の王城", play: "人類の英雄が王城から出てきて群れを追う。構えから高速で踏み込み、竜を1体ずつ一刀両断する。",
       rule: "衝撃を当てると英雄は吹っ飛んで気絶する。撃退すると王城へ戻り、45秒後に1段強くなって帰ってくる。王城に迫るともう退かず、英雄が立っている間は王城が傷を半分しか受けない" },
+    // v3.77.0（案帳 DT-509）
+    { route: "角 → 中心の石の神殿", play: "赤茶けた荒地に巨岩が転がり、町は環状列石に囲まれる。首都は巨大な石の偶像を祀る神殿。遊び方はほかの地域と同じで、町の守りは薄い。",
+      rule: "岩の巨人が町ごとに住みついて守っている（倒すまで消えない）。群れが町に近づくと出てきて、遠ざかると戻る。足元の予告の輪と、腕を振り上げる扇の予告を見て避け、動けない隙に叩く。巨人は人間の町を踏まない" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -29477,7 +30092,7 @@ const CODEX_ENEMY_NAMES = {
   knights: "騎士団", siegetower: "攻城塔", batteringram: "破城槌", splitter: "分裂体",
   splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
   ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
-  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門", stone_titan: "岩脚の巨像",
+  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門", stone_titan: "岩脚の巨像", rock_giant: "岩の巨人",
   kite_soldier: "雷凧の兵", longbowmen: "遠矢の弓隊", troop_airship: "落下兵の飛行船", paratrooper: "落下兵", war_elephant: "戦象", war_elephant_rider: "戦象の弓兵", scythe_chariot: "鎌付き戦車", scythe_convoy: "鎌付き戦車の車列", fortress_turret: "動く砦の砲台", hero_shield: "盾投げの騎士", hero_mage: "大魔法使い", hero_archer: "英雄の弓手",
   miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
@@ -29503,6 +30118,7 @@ const CODEX_SPECIAL_ERA = {
   moving_fortress: "警戒度ラッシュ「動く砦」",                                              // 案帳 DT-487 手直し
   fortress_turret: "警戒度ラッシュ「動く砦」の四隅",
   stone_titan:     "警戒度ラッシュ「巨人の行軍」",   // v3.74.0（案帳 DT-484）
+  rock_giant:      "巨岩信仰の荒地（全文明） — 町ごとに住みついて守る。倒すまで残る",   // v3.77.0（案帳 DT-509）
   behemoth_core:  "VI 電気 / VIII 最終",
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
   walker_hull:    "VII 大戦 / VIII 最終",
@@ -31279,6 +31895,16 @@ function codexRegionCanvas(shape) {
     dot(18, 22, 2, "#e8ecf4");
     c.strokeStyle = "rgba(255,255,255,0.8)"; c.setLineDash([2, 2]); c.beginPath(); c.moveTo(18, 22); c.lineTo(8, 42); c.stroke(); c.setLineDash([]);
     diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
+  } else if (shape === SHAPE_WASTELAND) {
+    // v3.77.0（案帳 DT-509）: 赤茶の地に灰色の巨岩。町（点）は立石の輪（小さな灰の点）に囲まれ、首都は大きな輪の中の石の偶像
+    c.fillStyle = "rgba(150,110,80,0.35)"; c.fillRect(0, 0, S, S);
+    for (const [x, y, r] of [[6, 20, 2.4], [40, 5, 2], [48, 34, 2.6], [20, 46, 2.2], [34, 44, 1.6], [8, 6, 1.6]]) dot(x, y, r, "#8e8880");
+    for (const [x, y] of [[10, 12], [38, 10], [12, 36], [42, 40], [26, 46]]) {
+      dot(x, y, 2.4, CODEX_RG.town);
+      c.strokeStyle = "#b8b0a4"; c.lineWidth = 1.4; c.setLineDash([1.2, 1.8]); c.beginPath(); c.arc(x, y, 5.2, 0, Math.PI * 2); c.stroke(); c.setLineDash([]);
+    }
+    c.strokeStyle = "#b8b0a4"; c.lineWidth = 2; c.setLineDash([2, 2.4]); c.beginPath(); c.arc(26, 26, 9, 0, Math.PI * 2); c.stroke(); c.setLineDash([]);
+    diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
   }
   return cv;
 }
@@ -31425,7 +32051,7 @@ const REGION_CHOICE_COUNT = 3;
 // 最初から選べる地域。3つあるので初回から3択が成り立つ。残りは条件で解放（§7.4）
 // v3.7.0: 列車（軌道）以外は最初から全部（Shooter指示）。列車だけは初めてステージ5に着いたときに解放する
 const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL, SHAPE_FRONTLINE, SHAPE_SANCTUARY, SHAPE_ASTEROIDS,
-                             SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND];   // v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
+                             SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND];   // v3.77.0: 巨岩信仰の荒地も最初から（案帳 DT-509）／v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
 // 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
 const WIPE_GRACE_SECONDS  = 2;
 
@@ -37694,8 +38320,10 @@ function render(now) {
   drawBehemothLimbs();       // v1.7.0: 巨獣の関節（コア・拳の下に敷く）
   drawWalkerLegs();          // v1.8.0: 多脚戦車の脚（胴と足の下に敷く）
   drawStoneTitanUnder();     // v3.74.0: 岩脚の巨像の岩の山・予告の輪・脚（胴の下に敷く）
+  drawRockGiantUnder();      // v3.77.0（案帳 DT-509）: 岩の巨人の足・予告の輪・扇の予告
   drawTierRushUnder();       // v3.16.0: 猛進の残像・精鋭と輸送隊の輪（敵の下）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
+  drawRockGiantLiftedFeet(); // v3.77.0（案帳 DT-509）: 岩の巨人の持ち上げた足（胴の上）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
   drawRailWrecks();          // v2.2.0: 潰れた車両（連結されたまま引きずられる）
   drawRailTurrets();         // v2.1.0: 砲車の旋回砲塔（車体の絵の上）
@@ -39877,6 +40505,10 @@ const ENEMY_IMAGE_SOURCES = {
   fortress_door:       "assets/mover_fortress_door.png",
   titan_body:          "assets/mover_titan_body.png",   // v3.74.0（案帳 DT-484）: 岩脚の巨像の胴（前が上・腰の穴6つ）
   titan_leg:           "assets/mover_titan_leg.png",    // 脚1本（付け根の玉が下・足の平が上）
+  // v3.77.0（案帳 DT-509）: 岩の巨人（画像生成）。胴は肩と頭つき・前が上。腕は付け根の玉が下・拳が上。足は足首が下・つま先が上
+  rockgiant_torso:     "assets/mover_rockgiant_torso.png",
+  rockgiant_arm:       "assets/mover_rockgiant_arm.png",
+  rockgiant_foot:      "assets/mover_rockgiant_foot.png",
   fortress_gun:        "assets/mover_fortress_gun.png",
   // v1.7.0: 腕の関節板。敵そのものではないので ENEMY_SPRITE_META には載せない
   // （drawMovers は通らず、drawBehemothLimbs が自前の寸法で並べる）
@@ -40131,6 +40763,7 @@ const ENEMY_SPRITE_META = {
   splitter_small: { px: 0.501, py: 0.505, forward: "none", drawScale: 2.80, hover: true },
   // 案帳 DT-487 手直し: 動く砦の残骸（drawMoverWrecks が def.wreckSprite で引く）。本編の描画は drawMovingFortressSprite
   fortress_body:  { px: 0.5, py: 0.5, forward: "up", drawScale: 2.3 },
+  rockgiant_torso: { px: 0.5, py: 0.5, forward: "up", drawScale: 2.7 },   // v3.77.0: 岩の巨人（図鑑の絵用。本編の描画は drawRockGiantSprite）
   titan_body:     { px: 0.5, py: 0.5, forward: "up", drawScale: 2.4 },   // v3.74.0: 岩脚の巨像の残骸（STONE_TITAN_ART.bodyScale と同じ）
 };
 
@@ -41105,6 +41738,7 @@ function tick() {
     updateBeamTowers(wdt);        // v3.34.0: 光線の高原の塔と光線
     updateHeroLand(wdt);          // v3.35.0: 英雄の国（英雄が出てくる・戻ってくる）
     updateKites(wdt);             // v3.61.0: 雷凧の兵の置き場所・流れた凧
+    placeRockGiants();            // v3.77.0（案帳 DT-509）: 荒地の岩の巨人を町のそばに置く（町の一覧ができてから1回だけ）
     updateFallFx(wdt);            // v3.36.0: 陥落の演出
     updateWorldTree(wdt);         // v3.19.0: 巨大樹（大樹海の首都）の灯と心臓の魔法
     maybeShowLevelUp();           // v0.6: レベルアップが積まれていれば3択を出す（非モーダル）
