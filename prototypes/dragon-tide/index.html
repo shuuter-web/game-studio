@@ -1347,7 +1347,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.73.0";
+const GAME_VERSION = "v3.74.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1572,6 +1572,7 @@ const DEBUG_ENEMY_LABELS = {
   concussion: "📣衝撃砲", gravitygun: "🕳重力砲",
   war_elephant: "🐘戦象(弓兵4人つき)", scythe_chariot: "⚔鎌付き戦車",   // v3.60.0
   scythe_convoy: "⚔⚔鎌付き戦車の車列(3台)", moving_fortress: "🏯動く砦(砲台4基つき)",   // 案帳 DT-239/487 手直し
+  stone_titan: "🗿岩脚の巨像",   // v3.74.0（案帳 DT-484）
   kite_soldier: "🪁雷凧の兵",   // v3.61.0
   longbowmen: "🏹遠矢の弓隊", troop_airship: "🎈落下兵の飛行船",   // v3.63.0
 };
@@ -1587,7 +1588,7 @@ const DEBUG_ENEMY_ORDER = [
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
-  "walker_hull", "war_elephant", "scythe_chariot", "scythe_convoy", "moving_fortress", "kite_soldier", "longbowmen", "troop_airship",
+  "walker_hull", "war_elephant", "scythe_chariot", "scythe_convoy", "moving_fortress", "stone_titan", "kite_soldier", "longbowmen", "troop_airship",
   // v2.0.0: 軌道の敵。線路が無い地域では湧かせられない（押しても何も起きない）
   "railgun_loco", "railcar", "railram",
   // v3.17.0: 大樹海の敵（樹冠が無い地域では隠れも切り拓きも起きない）
@@ -9484,6 +9485,14 @@ const MOVER_DEFS = {
     // 別々の絵にして組み立てる。四隅の砲台は別の敵（fortress_turret）で、狙う向きへ回り、壊せばその砲台は撃たなくなる
     fortressParts: true, codexSprite: "fortress_body", wreckSprite: "fortress_body",
   },
+  // v3.74.0（案帳 DT-484）: 岩脚の巨像。警戒度ラッシュ「巨人の行軍」で1体出る。多脚戦車の形を岩にしたもので、砲塔は無く撃たない。
+  // 6本の脚を1本ずつ踏み下ろし、踏んだ足のまわりだけに衝撃波（踏む前にその足の下に予告の輪）。人間の町は踏みつぶさない。
+  // 体力・経験値は出すときに精鋭の追跡者から決める（startTierRush）。歩くのと踏むのは updateStoneTitan
+  stone_titan: {
+    name: "stone_titan", hp: 3000, speed: 22, xp: 1500, eggDrop: 10, radius: 64, turnRate: 0.5,
+    color: "#8a7e70", glowColor: "#ffb347", moveType: "patrol", showHpBar: true,
+    titan: true, codexSprite: "titan_body", wreckSprite: "titan_body",
+  },
   // 案帳 DT-487 手直し: 動く砦の四隅の砲台。砦に乗って動き、自分で狙って撃つ。1基ずつ壊せる（壊すと残骸になって撃たなくなる）
   fortress_turret: {
     name: "fortress_turret", part: "rider", fortressTurret: true, hp: 260, speed: 0, xp: 90, eggDrop: 0, eggChance: 0.5, radius: 11,
@@ -11383,11 +11392,94 @@ const RAMPART_GUN_PIVOT = {
   e5: { x: 0.492, y: 0.680 }, e6: { x: 0.493, y: 0.676 }, e7: { x: 0.493, y: 0.707 }, e8: { x: 0.491, y: 0.770 },
 };
 
+// v3.74.0（DT-499 手直し）: 時代1の投石機は「台（車輪つきの枠）」と「腕（スプーン）」の2枚に分けた。
+// 待っている間は本物どおり腕を後ろへ寝かせ（スプーンは後ろ）、撃つ瞬間に腕が軸を中心に前へ振り上がる。
+// トップビューでは縦の振りは見えないので、腕の絵を前後に縮めて裏返す（長さ＝cos）ことで
+// 「後ろに寝ていた腕が、軸の上で一度短くなって前へ跳ね出る」動きに見せる。真上を通る間は少し大きく描く（カメラに近づく）。
+// 向きは「台の前の太い止め木」と「撃つ瞬間に腕が前へ振れる動き・石が出る向き」で読ませる（Shooter指摘：絵の正しさと向きの両立）
+const CATAPULT_FRAME_LEN      = 2.2;     // 台の絵の長さ＝建物の半径×この値
+const CATAPULT_FRAME_PIVOT    = { x: 0.5, y: 0.55 };   // 台を回す中心（台座の丸の上に台の真ん中が来る）
+const CATAPULT_AXLE_Y         = 0.669;   // 台の絵の中の、縄を巻いた軸の位置（画像の高さに対する割合・実測）
+const CATAPULT_ARM_LEN        = 0.5;     // 腕の長さ（台の長さに対する割合）。寝かせたときにスプーンが台の後ろ端から少し出る
+const CATAPULT_ARM_WIDTH      = 1.7;     // 腕の太さの倍率（絵のままだと台の木組みに埋もれて腕が読めない）
+const CATAPULT_ARM_HUB_Y      = 0.95;    // 腕の絵の中の、軸に掛かる位置（画像の高さに対する割合・実測）
+const CATAPULT_SWING_TIME     = 0.16;    // 前へ振り上がるまでの秒数
+const CATAPULT_HOLD_TIME      = 0.14;    // 前の止め木に当たって止まっている秒数
+const CATAPULT_RETURN_TIME    = 0.65;    // 後ろへ寝かせ直す秒数（そのあと石を載せ直す）
+const CATAPULT_SWING_END      = 2.3;     // 振り切ったときの腕の角度（rad。0＝後ろに寝かせた状態・π/2＝真上）
+const CATAPULT_NEAR_SCALE     = 0.28;    // 真上を通るときに大きく見せる割合
+const CATAPULT_STONE_R        = 0.05; 
+const CATAPULT_CUP_Y          = 0.14;    // 腕の絵の中の、スプーンの真ん中の位置（画像の高さに対する割合・実測）   // スプーンに載せた石の半径（台の長さに対する割合）
+
+/** 撃ってからの秒数 → 腕の角度（0＝後ろに寝ている・CATAPULT_SWING_END＝前へ振り切った） */
+function catapultArmAngle(since) {
+  if (!(since >= 0)) return 0;
+  if (since < CATAPULT_SWING_TIME) {
+    const t = since / CATAPULT_SWING_TIME;
+    return CATAPULT_SWING_END * t * t;   // 縄の力で加速しながら振り上がる
+  }
+  const back = since - CATAPULT_SWING_TIME - CATAPULT_HOLD_TIME;
+  if (back < 0) return CATAPULT_SWING_END;
+  if (back < CATAPULT_RETURN_TIME) {
+    const t = back / CATAPULT_RETURN_TIME;
+    return CATAPULT_SWING_END * (1 - t * t * (3 - 2 * t));
+  }
+  return 0;
+}
+
+/** 投石機の腕（と、載せた石・振りの残像）。台の座標系（-y が前）で、軸を原点として描く */
+function drawCatapultArm(armImg, frameH, since) {
+  const theta = catapultArmAngle(since);
+  const near = 1 + CATAPULT_NEAR_SCALE * Math.sin(Math.min(theta, Math.PI));
+  const len = frameH * CATAPULT_ARM_LEN;
+  const ah = len / CATAPULT_ARM_HUB_Y;
+  const aw = ah * (armImg.naturalWidth / armImg.naturalHeight) * CATAPULT_ARM_WIDTH;
+  const fore = -Math.cos(theta);   // 腕の先が前（-y）へどれだけ出ているか（-1＝真後ろに寝ている）
+  // 振っている最中は、軸から前へ白い扇の残像を引く（振りの勢いを見せる）
+  const swinging = since >= 0 && since < CATAPULT_SWING_TIME + CATAPULT_HOLD_TIME * 0.8;
+  if (swinging) {
+    const fade = since < CATAPULT_SWING_TIME ? 1 : 1 - (since - CATAPULT_SWING_TIME) / (CATAPULT_HOLD_TIME * 0.8);
+    ctx.save();
+    ctx.globalAlpha = 0.35 * fade;
+    ctx.fillStyle = "#f4efe2";
+    ctx.beginPath();
+    ctx.moveTo(-aw * 0.35, 0);
+    ctx.lineTo(-aw * 0.5 * near, -fore * len * near);
+    ctx.lineTo(aw * 0.5 * near, -fore * len * near);
+    ctx.lineTo(aw * 0.35, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.save();
+  // 台と同じ灰色の木なので、濃い影を落として台から浮かせる（腕が台の上にある＝動く部品だと読める）
+  ctx.shadowColor = "rgba(0, 0, 0, 0.75)";
+  ctx.shadowBlur = Math.max(2, frameH * 0.03);
+  ctx.shadowOffsetY = frameH * 0.015;
+  ctx.scale(near, fore * near);
+  ctx.drawImage(armImg, -aw / 2, -ah * CATAPULT_ARM_HUB_Y, aw, ah);
+  ctx.restore();
+  // 石：腕を寝かせ直したあと載せ直す。撃った瞬間から腕が戻るまでは無い（前へ飛んでいった）
+  const loaded = !(since >= 0 && since < CATAPULT_SWING_TIME + CATAPULT_HOLD_TIME + CATAPULT_RETURN_TIME);
+  if (loaded) {
+    const cupY = ah * (CATAPULT_ARM_HUB_Y - CATAPULT_CUP_Y);   // スプーンの真ん中（寝かせた腕なので後ろ＝+y）
+    const r = frameH * CATAPULT_STONE_R;
+    ctx.fillStyle = "#8d8a84";
+    ctx.strokeStyle = "rgba(20, 18, 16, 0.9)";
+    ctx.lineWidth = Math.max(1, r * 0.25);
+    ctx.beginPath(); ctx.arc(0, cupY, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.beginPath(); ctx.arc(-r * 0.3, cupY - r * 0.3, r * 0.4, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
 function drawRampartFansAndGuns() {
   const era = "e" + (currentStage + 1);
   const gunImg = buildingImages[era + "_rampart_gun"];
   const useGun = !!(gunImg && buildingImages[era + "_rampart_base"]);
-  const pivot = RAMPART_GUN_PIVOT[era] || { x: 0.5, y: 0.7 };
+  const armImg = buildingImages[era + "_rampart_arm"];   // v3.74.0: 腕を別にした投石機（時代1）だけにある
+  const catapult = !!(armImg && armImg.naturalHeight);
+  const pivot = catapult ? CATAPULT_FRAME_PIVOT : (RAMPART_GUN_PIVOT[era] || { x: 0.5, y: 0.7 });
   const vb = getViewBoundsWorld(RAMPART_RANGE + 60);
   const list = [];
   for (const s of settlements) {
@@ -11411,15 +11503,22 @@ function drawRampartFansAndGuns() {
       const diff = wrapAngle(want - s._gunAngle);
       const step = RAMPART_GUN_TURN_SPEED * dt;
       s._gunAngle = Math.abs(diff) <= step ? want : s._gunAngle + Math.sign(diff) * step;
-      const h = Math.max(s.radius, RAMPART_GUN_MIN_RADIUS) * RAMPART_GUN_LEN;
+      const h = Math.max(s.radius, RAMPART_GUN_MIN_RADIUS) * (catapult ? CATAPULT_FRAME_LEN : RAMPART_GUN_LEN);
       const w = h * (gunImg.naturalWidth / gunImg.naturalHeight);
       ctx.save();
       ctx.translate(s.wx, s.wy);
       ctx.rotate(s._gunAngle + RAMPART_SPRITE_OFFSET);
-      // 撃った直後は少し下がる（反動）
       const since = s._gunAimAt !== undefined ? breathTime - s._gunAimAt : Infinity;
-      const kick = since >= 0 && since < 0.18 ? (0.18 - since) / 0.18 : 0;
-      ctx.drawImage(gunImg, -w * pivot.x, -h * pivot.y + kick * s.radius * 0.25, w, h);
+      if (catapult) {
+        // 投石機は台が下がらない。腕が前へ振れる
+        ctx.drawImage(gunImg, -w * pivot.x, -h * pivot.y, w, h);
+        ctx.translate(0, h * (CATAPULT_AXLE_Y - pivot.y));
+        drawCatapultArm(armImg, h, since);
+      } else {
+        // 撃った直後は少し下がる（反動）
+        const kick = since >= 0 && since < 0.18 ? (0.18 - since) / 0.18 : 0;
+        ctx.drawImage(gunImg, -w * pivot.x, -h * pivot.y + kick * s.radius * 0.25, w, h);
+      }
       ctx.restore();
     }
   }
@@ -12834,6 +12933,7 @@ function updateMovers(dt) {
       if (def.fortressTurret) updateFortressTurret(m, dt); else updateElephantRider(m, dt);
       continue;
     }
+    if (def.titan) { updateStoneTitan(m, dt); if (!m.alive) continue; }   // v3.74.0（案帳 DT-484）: 岩脚の巨像の脚
     if (def.fortressParts) updateMovingFortress(m);   // 案帳 DT-487 手直し: 壊れた砲台を残骸にする（本体の移動は共通のまま）
     if (def.kite) { updateKiteSoldier(m, dt); continue; }                 // v3.61.0: 雷凧の兵（その場で凧を揚げている）
     if (m.para) { m.para.t -= dt; if (m.para.t > 0) continue; m.para = null; }   // v3.63.0: 落下傘で降りている間は動かない
@@ -13600,9 +13700,10 @@ const TR_ATTACKER_RING   = { get name() { return STRINGS.trAttackerRing; },   to
 // 流星は建物と城壁にだけ当てる（動く敵に当てると、敵を倒した報酬が流星から出てしまう）
 const TR_TARGETS_BUILDINGS = { building: TARGET_AIM, wall: TARGET_AIM, mover: TARGET_NONE };
 const TR_KINDS = ["haste", "siege", "horde", "wind", "meteor", "volley", "firering", "convoy", "elite", "night", "harpoon",   // v3.51.0: 竜狩りの銛
-                  "fortress", "gates", "twinelite"];   // v3.54.0: 動く砦・湧き出る門・双頭の精鋭（案帳 DT-487〜489）
+                  "fortress", "gates", "twinelite",   // v3.54.0: 動く砦・湧き出る門・双頭の精鋭（案帳 DT-487〜489）
+                  "titan"];   // v3.74.0: 巨人の行軍（案帳 DT-484）
 // 敵を出す種類（全部倒すか時間切れで終わる）。それ以外は時間で終わる。
-const TR_UNIT_KINDS = new Set(["siege", "horde", "convoy", "elite", "harpoon", "fortress", "gates", "twinelite"]);
+const TR_UNIT_KINDS = new Set(["siege", "horde", "convoy", "elite", "harpoon", "fortress", "gates", "twinelite", "titan"]);
 const TR_START_DELAY   = 2.4;   // 実時間。警戒度の帯（2.2秒）とスローが引いてから
 const TR_WARN_TIME     = 1.3;   // 予告の長さ（実時間）
 const TR_DURATION      = 12;    // 時間で区切る種類の長さ
@@ -13765,6 +13866,242 @@ function updateMovingFortress(m) {
     if (m.alive) pushWorldText(t.wx, t.wy, STRINGS.trFortressTurretDown, "#ffd060");
   }
 }
+// v3.74.0（案帳 DT-484・Shooter判定「専用の敵が必要。多脚戦車の質感を岩にしたもの。砲塔は無し」「人間の街は踏みつぶさなくていい」）:
+// 巨人の行軍。岩脚の巨像が1体、ゆっくり群れへ歩いてくる。脚を1本ずつ踏み下ろし、踏んだ足のまわりだけが危ない。
+// 胴のまわり全部ではないので、次に踏む足の輪を見て、輪の無い側から胴を叩く遊びになる
+const TR_TITAN_DUR        = 60;     // この時間で去る
+const TR_TITAN_HP         = 2;      // 体力＝精鋭の追跡者の体力×これ
+const TR_TITAN_XP         = 2;      // 経験値＝精鋭の追跡者の経験値×これ
+const TITAN_STEP_EVERY    = 1.0;    // 1本踏み下ろすごとの間（秒）。6本で1巡
+const TITAN_STEP_WARN     = 0.85;   // 足を持ち上げてから踏み下ろすまで（この間、踏む場所に予告の輪）
+const TITAN_STEP_ORDER    = [0, 3, 4, 1, 2, 5];   // 左前→右→左後→右前→左→右後（左右を交互に）
+const TITAN_STOMP_R       = 95;     // 踏んだ足の衝撃波の半径
+const TITAN_STOMP_DMG     = 7;      // 衝撃波の威力（ステージ1つ進むごとに +1。竜の体力は30）
+const TITAN_STOMP_PUSH    = 90;     // 衝撃波で押し飛ばす距離
+const TITAN_LEG_REACH     = 0.8;    // 足を置く位置：腰から外へ 半径×これ
+const TITAN_STRIDE        = 0.5;    // 踏み出しの先読み（1巡で胴が進む距離×これだけ前に足を置く）
+const TITAN_FOOT_CLEAR    = 14;     // 人間の町の建物から足をこれだけ離して置く（踏みつぶさない）
+const TITAN_LEAVE_SPEED   = 40;     // 時間切れで去るときの速さ
+const TITAN_LEAVE_GONE    = 1.3;    // 群れからこの距離（画面外の半径×これ）まで離れたら消える
+const TITAN_LIFT_SCALE    = 0.25;   // 持ち上げた足を大きく描く割合（カメラに近づく）
+const TITAN_LIFT_OFFSET   = 14;     // 持ち上げた足を浮かせて描く高さ（見た目だけ）
+const TITAN_RUBBLE_LIFE   = 14;     // 崩れた岩の山が残る秒数（見た目だけ）
+const TITAN_RUBBLE_FADE   = 2;      // 岩の山が消えるときの薄れる秒数
+const TITAN_SHAKE         = 2.5;    // 踏むたびの画面の揺れ
+const TITAN_CHIPS         = 5;      // 踏んだ足から飛ぶ岩のかけらの数（見た目だけ）
+const TITAN_CHIP_LIFE     = 1.4;    // 岩のかけらが残る秒数
+const TITAN_LEG_WIDTH     = 0.42;   // 脚の絵の幅＝半径×これ（足が遅れて伸びても太らせない）
+// 絵の寸法（実測の割合）。胴は前が絵の上、腰の丸い穴が6つ。脚は付け根の玉が絵の下、足の平が絵の上
+const STONE_TITAN_ART = {
+  bodyScale: 2.4,                 // 胴の絵の幅＝半径×これ
+  bodyAspect: 291 / 320,          // 胴の絵の 高さ÷幅
+  hips: [[0.290, 0.120], [0.705, 0.120], [0.083, 0.495], [0.915, 0.495], [0.290, 0.877], [0.705, 0.877]],   // 左前・右前・左・右・左後・右後
+  legBallY: 0.95, legFootY: 0.16, // 脚の絵の、付け根の玉の中心・足の平の中心（高さに対する割合）
+  legAspect: 83 / 320,            // 脚の絵の 幅÷高さ
+};
+const titanRubble = [];   // 崩れた岩の山（見た目だけ）
+
+/** 腰 k のワールド座標（胴の向きは heading） */
+function titanHip(m, k) {
+  const A = STONE_TITAN_ART, W = m.def.radius * A.bodyScale, H = W * A.bodyAspect;
+  const [fx, fy] = A.hips[k];
+  const fwd = (0.5 - fy) * H, lat = (fx - 0.5) * W;
+  const ca = m.headingX, sa = m.headingY;
+  return { x: m.wx + ca * fwd - sa * lat, y: m.wy + sa * fwd + ca * lat };
+}
+
+/** 足 k の休みの位置（腰から外へ伸ばしたところ）。ahead は進む向きへの先読み */
+function titanFootRest(m, k, ahead) {
+  const h = titanHip(m, k);
+  const dx = h.x - m.wx, dy = h.y - m.wy, d = Math.hypot(dx, dy) || 1;
+  const reach = m.def.radius * TITAN_LEG_REACH;
+  return { x: h.x + dx / d * reach + m.headingX * ahead, y: h.y + dy / d * reach + m.headingY * ahead };
+}
+
+/** 足を置く場所を人間の建物から外す（町の上は脚をよけて歩く） */
+function titanAvoidTown(p) {
+  for (let pass = 0; pass < 2; pass++) {
+    let moved = false;
+    for (const b of settlements) {
+      if (!b || b.fallen) continue;
+      const need = b.radius + TITAN_FOOT_CLEAR;
+      const dx = p.x - b.wx, dy = p.y - b.wy;
+      if (Math.abs(dx) > need || Math.abs(dy) > need) continue;
+      const d = Math.hypot(dx, dy);
+      if (d >= need) continue;
+      const ux = d > 0 ? dx / d : 1, uy = d > 0 ? dy / d : 0;
+      p.x = b.wx + ux * need; p.y = b.wy + uy * need;
+      moved = true;
+    }
+    if (!moved) break;
+  }
+  return p;
+}
+
+/** 岩脚の巨像：脚を1本ずつ踏み下ろす。時間切れのあとは群れから離れて去る */
+function updateStoneTitan(m, dt) {
+  let T = m._titan;
+  if (!T) {
+    T = m._titan = { legs: [], step: 0, timer: TITAN_STEP_EVERY, leaving: false };
+    for (let k = 0; k < STONE_TITAN_ART.hips.length; k++) {
+      const f = titanFootRest(m, k, 0);
+      T.legs.push({ x: f.x, y: f.y, fromX: f.x, fromY: f.y, toX: f.x, toY: f.y, lift: -1 });
+    }
+  }
+  if (T.leaving) {
+    // 去る：共通の移動を止め、群れの反対へ歩いていく（もう踏んでも衝撃波は出さない）
+    m.speedMult = 0;
+    const c = calcFriendlyCentroid();
+    let dx = m.wx - c.x, dy = m.wy - c.y;
+    const d = Math.hypot(dx, dy) || 1;
+    dx /= d; dy /= d;
+    m.headingX = dx; m.headingY = dy;
+    m.wx = Math.max(0, Math.min(WORLD_W, m.wx + dx * TITAN_LEAVE_SPEED * dt));
+    m.wy = Math.max(0, Math.min(WORLD_H, m.wy + dy * TITAN_LEAVE_SPEED * dt));
+    if (d > offscreenSpawnRadius() * TITAN_LEAVE_GONE) { m.alive = false; return; }
+  }
+  // 持ち上げている足：予告の輪を出したまま運び、時間が来たら踏み下ろす
+  for (const L of T.legs) {
+    if (L.lift < 0) continue;
+    L.lift += dt / (T.pace || 1);
+    const t = Math.min(1, L.lift / TITAN_STEP_WARN);
+    const e = t * t * (3 - 2 * t);
+    L.x = L.fromX + (L.toX - L.fromX) * e;
+    L.y = L.fromY + (L.toY - L.fromY) * e;
+    if (t < 1) continue;
+    L.lift = -1;
+    L.x = L.toX; L.y = L.toY;
+    if (T.leaving) continue;
+    attackerNow = moverAttacker(m);
+    emitShockwave(L.x, L.y, TITAN_STOMP_R,
+      shockwaveHit((TITAN_STOMP_DMG + runStageIndex) * moverFerocity(), TITAN_STOMP_PUSH));
+    // 炎ではなく砂ぼこりと岩のかけら（Shooter案「踏み下ろすたびに足元に砂ぼこりと岩のかけら」）
+    spawnExplosionFx(L.x, L.y, TITAN_STOMP_R * 0.55, { dust: true, fire: 0 });
+    for (let c = 0; c < TITAN_CHIPS; c++) {
+      const a = fxRandom() * Math.PI * 2, d = 18 + fxRandom() * TITAN_STOMP_R * 0.5;
+      titanRubble.push({ x: L.x + Math.cos(a) * d, y: L.y + Math.sin(a) * d,
+        r: 3 + fxRandom() * 4, rot: fxRandom() * Math.PI, shade: fxRandom(), life: TITAN_CHIP_LIFE });
+    }
+    triggerShake(TITAN_SHAKE, 0.15);
+  }
+  // 画面の外から行軍で近づくときと去るときは歩くより速いので、そのぶん踏み替えも速める（足が置いていかれない）
+  const speed = T.leaving ? TITAN_LEAVE_SPEED : m.def.speed * (m.speedMult ?? 1) * (m._marching ? BOSS_REINFORCE_MARCH_MULT : 1);
+  T.pace = Math.min(1, m.def.speed / Math.max(1, speed));
+  T.timer -= dt;
+  if (T.timer > 0) return;
+  // 予告の輪は1つずつ（前の足を踏み下ろすまで次の足は上げない。行軍が解けて踏み替えが遅くなった直後に重ならないように）
+  if (T.legs.some(L => L.lift >= 0)) { T.timer = 0; return; }
+  T.timer += TITAN_STEP_EVERY * T.pace;
+  const k = TITAN_STEP_ORDER[T.step % TITAN_STEP_ORDER.length];
+  T.step++;
+  const L = T.legs[k];
+  const ahead = speed * TITAN_STEP_EVERY * T.pace * TITAN_STEP_ORDER.length * TITAN_STRIDE;
+  const to = titanAvoidTown(titanFootRest(m, k, ahead));
+  L.fromX = L.x; L.fromY = L.y; L.toX = to.x; L.toY = to.y; L.lift = 0;
+}
+
+/** 倒れたとき：脚ごと崩れて岩の山になる（見た目だけ。卵と経験値はふつうの撃破で出る） */
+function crumbleStoneTitan(m) {
+  const T = m._titan;
+  const spots = [{ x: m.wx, y: m.wy, n: 9, r: m.def.radius * 0.9 }];
+  if (T) for (const L of T.legs) spots.push({ x: L.x, y: L.y, n: 3, r: 22 });
+  for (const sp of spots) {
+    spawnExplosionFx(sp.x, sp.y, sp.r, { dust: true });
+    for (let k = 0; k < sp.n; k++) {
+      const a = fxRandom() * Math.PI * 2, d = fxRandom() * sp.r;
+      titanRubble.push({ x: sp.x + Math.cos(a) * d, y: sp.y + Math.sin(a) * d,
+        r: 7 + fxRandom() * 11, rot: fxRandom() * Math.PI, shade: fxRandom() });
+    }
+  }
+  triggerShake(TITAN_SHAKE * 2, 0.3);
+}
+
+/** 胴の下に敷くもの：崩れた岩の山・予告の輪・脚（敵の下の層）。岩の山の寿命もここで進める（見た目だけなので描画の時計でよい） */
+function drawStoneTitanUnder() {
+  const vb = getViewBoundsWorld(220);
+  const now = breathTime;
+  for (let i = titanRubble.length - 1; i >= 0; i--) {
+    const r = titanRubble[i];
+    if (r.born === undefined) r.born = now;
+    const age = now - r.born, life = r.life ?? TITAN_RUBBLE_LIFE;
+    if (age > life) { titanRubble.splice(i, 1); continue; }
+    if (r.x < vb.minX || r.x > vb.maxX || r.y < vb.minY || r.y > vb.maxY) continue;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, (life - age) / Math.min(TITAN_RUBBLE_FADE, life * 0.5));
+    ctx.translate(r.x, r.y); ctx.rotate(r.rot);
+    const g = Math.round(96 + r.shade * 40);
+    ctx.fillStyle = `rgb(${g + 8}, ${g}, ${g - 12})`;
+    ctx.strokeStyle = "rgba(30, 24, 20, 0.9)"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let k = 0; k < 6; k++) {
+      const a = k * Math.PI / 3, rr = r.r * (k % 2 ? 0.78 : 1);
+      if (k === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr); else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  const legImg = enemyImages.titan_leg;
+  const A = STONE_TITAN_ART;
+  for (const m of movers) {
+    if (!m.alive || !m.def.titan || !m._titan) continue;
+    if (m.wx < vb.minX || m.wx > vb.maxX || m.wy < vb.minY || m.wy > vb.maxY) continue;
+    const T = m._titan;
+    // 予告の輪：次に踏み下ろす足の下だけ。黄の点線の輪の中を、踏む瞬間に向けて塗りが広がる
+    if (!T.leaving) {
+      for (const L of T.legs) {
+        if (L.lift < 0) continue;
+        const t = Math.min(1, L.lift / TITAN_STEP_WARN);
+        ctx.save();
+        ctx.globalAlpha = 0.18 + 0.22 * t;
+        ctx.fillStyle = "#ffd060";
+        ctx.beginPath(); ctx.arc(L.toX, L.toY, TITAN_STOMP_R * t, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = "#ffd060"; ctx.lineWidth = 2.5; ctx.setLineDash([9, 7]);
+        ctx.beginPath(); ctx.arc(L.toX, L.toY, TITAN_STOMP_R, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+    }
+    // 脚：腰から足まで、脚の絵を伸ばして描く。持ち上げている足は影を落として少し大きく・浮かせる
+    for (let k = 0; k < T.legs.length; k++) {
+      const L = T.legs[k], hip = titanHip(m, k);
+      const lifting = L.lift >= 0 ? Math.sin(Math.PI * Math.min(1, L.lift / TITAN_STEP_WARN)) : 0;
+      if (lifting > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = "#000";
+        ctx.beginPath(); ctx.ellipse(L.x, L.y, 20, 14, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+      const lift = 1 + TITAN_LIFT_SCALE * lifting;
+      const fx = L.x, fy = L.y - lifting * TITAN_LIFT_OFFSET;
+      const dx = fx - hip.x, dy = fy - hip.y, len = Math.hypot(dx, dy) || 1;
+      ctx.save();
+      ctx.translate(hip.x, hip.y);
+      ctx.rotate(Math.atan2(dy, dx) + Math.PI / 2);
+      if (legImg) {
+        const h = len / (A.legBallY - A.legFootY), w = m.def.radius * TITAN_LEG_WIDTH * lift;
+        ctx.drawImage(legImg, -w / 2, -h * A.legBallY, w, h);
+      } else {
+        ctx.fillStyle = m.def.color; ctx.strokeStyle = "#3a322a"; ctx.lineWidth = 2;
+        ctx.fillRect(-7, -len, 14, len); ctx.strokeRect(-7, -len, 14, len);
+      }
+      ctx.restore();
+    }
+  }
+}
+
+/** 岩脚の巨像の胴（drawMovers から。前＝+x の座標系） */
+function drawStoneTitanSprite(m) {
+  const img = enemyImages.titan_body;
+  if (!img) return false;
+  const A = STONE_TITAN_ART, W = m.def.radius * A.bodyScale, H = W * A.bodyAspect;
+  ctx.save();
+  ctx.rotate(Math.PI / 2);   // 絵は前が上
+  ctx.drawImage(img, -W / 2, -H / 2, W, H);
+  ctx.restore();
+  return true;
+}
+
 const TR_GATE_COUNT        = 3;
 const TR_GATE_RING         = 380;     // 群れの重心からの距離
 const TR_GATE_HP_STAGE     = 0.5;
@@ -13994,6 +14331,17 @@ function startTierRush() {
       tr.dur = TR_FORTRESS_DUR;
       break;
     }
+    case "titan": {   // v3.74.0（案帳 DT-484）: 岩脚の巨像が1体。体力・経験値は精鋭の追跡者の倍
+      const large = defs.large, def = MOVER_DEFS.stone_titan;
+      const a = random() * Math.PI * 2, r = offscreenSpawnRadius();
+      const m = spawnTrMover(def, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
+      m.maxHp = m.hp = large.hp * (isShockwaveElite(large) ? TR_ELITE_SHOCKWAVE_HP : TR_ELITE_HP) * TR_TITAN_HP;
+      m.xpValue = large.xp * TR_ELITE_XP * TR_TITAN_XP;
+      m._trChase = true; m._trReward = "titan";
+      d.total = 1;
+      tr.dur = TR_TITAN_DUR;
+      break;
+    }
     case "gates": {   // v3.54.0（案帳 DT-488）
       const a0 = random() * Math.PI * 2;
       for (let k = 0; k < TR_GATE_COUNT; k++) {
@@ -14059,6 +14407,12 @@ function endTierRush() {
     m.alive = false;
     pushWorldText(m.wx, m.wy, STRINGS.trHarpoonLeave, "#c8d4e8");
   }
+  // v3.74.0: 岩脚の巨像は時間切れで去る（群れから離れて歩いていき、画面の外で消える）
+  if (tr.kind === "titan") for (const m of movers) if (m.alive && m.def.titan && !(m._titan && m._titan.leaving)) {
+    if (!m._titan) updateStoneTitan(m, 0);
+    m._titan.leaving = true;
+    pushWorldText(m.wx, m.wy, STRINGS.trTitanLeave, "#d8ccb8");
+  }
   // 時間切れで残った敵は、普通の敵として居残る（追跡だけやめる）
   for (const m of movers) if (m._tr) { m._trChase = false; m._trGoal = null; }
   // 動く砦の砲台も時間切れで撃ち止める（v3.54.0 はラッシュの間だけ撃っていた）
@@ -14080,6 +14434,10 @@ function onTierRushKill(m) {
     pushWorldText(m.wx, m.wy, STRINGS.trFortressDown, "#ffe08a");
     triggerFlash("rgba(255,210,80,0.30)", 0.25);
     hapticPulse(160);
+  } else if (m._trReward === "titan") {     // v3.74.0（案帳 DT-484）
+    pushWorldText(m.wx, m.wy, STRINGS.trTitanDown, "#ffe08a");
+    triggerFlash("rgba(255,210,80,0.30)", 0.25);
+    hapticPulse(180);
   } else if (m._trReward === "twin") {      // v3.54.0: 双頭の精鋭
     awardCrystals(Math.round(TR_ELITE_CRYSTALS * TR_TWIN_STRENGTH));
     pushWorldText(m.wx, m.wy, STRINGS.trEliteDown, "#ffe08a");
@@ -15245,6 +15603,7 @@ function damageMover(m, damage, srcX, srcY) {
     m.hp = 0;
     // v2.6.0: 大きい敵はすぐ消えず、崩れて倒れ込んで残骸になる
     if (moverLeavesWreck(m.def)) beginMoverDeath(m);
+    if (m.def.titan) crumbleStoneTitan(m);   // v3.74.0（案帳 DT-484）: 脚ごと崩れて岩の山になる
     runKills++;
     // v0.25: エリート撃破の累計（チャレンジ用）
     if (m.def.elite) { profile.eliteKills = (profile.eliteKills || 0) + 1; saveProfile(); }
@@ -17434,6 +17793,14 @@ function drawMovers() {
         ctx.strokeStyle = "#3a4452"; ctx.lineWidth = 3; ctx.strokeRect(-34, -34, 68, 68);
         ctx.fillStyle = "#e8c080"; ctx.fillRect(-38, -12, 8, 24);
         ctx.fillStyle = "#2a323e"; ctx.fillRect(-14, -14, 28, 28);
+      }
+    } else if (def.titan) {
+      // v3.74.0（案帳 DT-484）: 岩脚の巨像の胴（脚は drawStoneTitanUnder が先に敷く）
+      if (!drawStoneTitanSprite(m)) {
+        ctx.fillStyle = def.color; ctx.strokeStyle = "#3a322a"; ctx.lineWidth = 3;
+        ctx.beginPath();
+        for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3; ctx.lineTo(Math.cos(a) * def.radius, Math.sin(a) * def.radius); }
+        ctx.closePath(); ctx.fill(); ctx.stroke();
       }
     } else if (def.fortressTurret) {
       // 案帳 DT-487 手直し: 動く砦の四隅の砲台。狙う向き（heading）へ回る。撃った瞬間は砲口が光る
@@ -19926,14 +20293,55 @@ function drawFieldPlot(bctx, f) {
   bctx.restore();
 }
 
-// 案帳 DT-499: 格上の街の縁（暗い赤の破線）
-const ADVANCED_TOWN_RIM_COLOR  = "rgba(176, 42, 36, 0.85)";
-const ADVANCED_TOWN_RIM_WIDTH  = 5;
-const ADVANCED_TOWN_RIM_EXPAND = 22;          // 要塞都市の城郭リムと同じ位置
+// 案帳 DT-499: 格上の街の縁（赤の破線）。v3.74.0: 要塞都市の縁と同じ薄さにそろえる
+// （破線のほうが濃くて「要塞都市より強い町」に見えていた・Shooter指摘）
+const TOWN_RIM_COLOR           = "rgba(224, 32, 48, 0.35)";   // 要塞都市・格上の街で共通の赤
+const TOWN_RIM_WIDTH           = 5;
+const TOWN_RIM_EXPAND          = 22;
+const TOWN_RIM_DARK_COLOR      = "rgba(20, 20, 28, 0.55)";
+const TOWN_RIM_DARK_WIDTH      = 2;
+const TOWN_RIM_DARK_EXPAND     = 27;
 const ADVANCED_TOWN_RIM_DASH   = [26, 14];
+const ADVANCED_TOWN_DARK_DASH  = [18, 22];
+// v3.74.0: 大都会の街は矩形なので、縁も矩形で街の境の道路のすぐ内側に引く（外へ広げると隣の街にかかる）
+const METRO_TOWN_RIM_INSET      = 8;
+const METRO_TOWN_RIM_DARK_INSET = 3;
+
+/** 町の縁（要塞都市＝実線・格上の街＝破線）。外形に沿って引く。大都会は街区の矩形の内側に引く */
+function drawTownRimOnLayer(bctx, meta, rimPath) {
+  if (!meta._fortified && !meta._advanced) return;
+  const dashed = !meta._fortified;
+  bctx.save();
+  bctx.setLineDash(dashed ? ADVANCED_TOWN_RIM_DASH : []);
+  bctx.strokeStyle = TOWN_RIM_COLOR;
+  bctx.lineWidth = TOWN_RIM_WIDTH;
+  rimPath(TOWN_RIM_EXPAND, METRO_TOWN_RIM_INSET);
+  bctx.stroke();
+  bctx.setLineDash(dashed ? ADVANCED_TOWN_DARK_DASH : []);
+  bctx.strokeStyle = TOWN_RIM_DARK_COLOR;
+  bctx.lineWidth = TOWN_RIM_DARK_WIDTH;
+  rimPath(TOWN_RIM_DARK_EXPAND, METRO_TOWN_RIM_DARK_INSET);
+  bctx.stroke();
+  bctx.restore();
+}
+
+/** 大都会の街の外形（矩形）を、境の道路の幅だけ内側に縮めた矩形のパス */
+function metroTownRimPath(bctx, meta, inset) {
+  const o = meta.outline, B = METRO_BLOCK;
+  const x0 = o[0].x, y0 = o[0].y, x1 = o[2].x, y1 = o[2].y;
+  const ix0 = x0 + metroRoadW(Math.round(x0 / B)) / 2 + inset;
+  const ix1 = x1 - metroRoadW(Math.round(x1 / B)) / 2 - inset;
+  const iy0 = y0 + metroRoadW(Math.round(y0 / B)) / 2 + inset;
+  const iy1 = y1 - metroRoadW(Math.round(y1 / B)) / 2 - inset;
+  bctx.beginPath();
+  bctx.rect(ix0, iy0, ix1 - ix0, iy1 - iy0);
+}
 
 function drawTownRoadsOnLayer(bctx, meta) {
-  if (meta._metro) return;   // v3.22.0: 大都会の街区に町の中の道は無い（碁盤の目の道路だけ）
+  if (meta._metro) {   // v3.22.0: 大都会の街区に町の中の道は無い（碁盤の目の道路だけ）
+    drawTownRimOnLayer(bctx, meta, (_expand, inset) => metroTownRimPath(bctx, meta, inset));
+    return;
+  }
   const { cx, cy, plazaR, streets, townR } = meta;
   const ringRadii = meta.ringRadii ?? [meta.ringR];
   const gridRoads = meta.gridRoads ?? [];
@@ -19955,33 +20363,9 @@ function drawTownRoadsOnLayer(bctx, meta) {
       bctx.arc(cx, cy, townR + expand, 0, Math.PI * 2);
     }
   };
-  // 案帳 DT-499: 格上の街は町の縁を**暗い赤の破線**で囲む。民家は普通の町と同じ強さなので、
-  // 「赤い縁の町＝撃つ建物が多い」を遠目で読ませる（要塞都市の太い城郭リムより一段控えめ）
-  if (meta._advanced && !meta._fortified) {
-    bctx.save();
-    bctx.setLineDash(ADVANCED_TOWN_RIM_DASH);
-    bctx.strokeStyle = "rgba(20, 14, 14, 0.45)";
-    bctx.lineWidth = ADVANCED_TOWN_RIM_WIDTH + 3;
-    rimPath(ADVANCED_TOWN_RIM_EXPAND);
-    bctx.stroke();
-    bctx.strokeStyle = ADVANCED_TOWN_RIM_COLOR;
-    bctx.lineWidth = ADVANCED_TOWN_RIM_WIDTH;
-    rimPath(ADVANCED_TOWN_RIM_EXPAND);
-    bctx.stroke();
-    bctx.restore();
-  }
-  if (meta._fortified) {
-    bctx.save();
-    bctx.strokeStyle = "rgba(224, 32, 48, 0.35)";
-    bctx.lineWidth = 5;
-    rimPath(22);
-    bctx.stroke();
-    bctx.strokeStyle = "rgba(20, 20, 28, 0.55)";
-    bctx.lineWidth = 2;
-    rimPath(27);
-    bctx.stroke();
-    bctx.restore();
-  }
+  // 案帳 DT-499: 格上の街は町の縁を赤の破線、要塞都市は赤の実線で囲む。
+  // 「赤い縁の町＝撃つ建物が多い」を遠目で読ませる。v3.74.0: 2つは同じ薄さ（線の種類だけが違う）
+  drawTownRimOnLayer(bctx, meta, (expand) => rimPath(expand));
 
   // v0.10: 通りの中心線を明るく見せる（v0.16: 放射／環状／碁盤目をレイアウト通りに）
   bctx.save();
@@ -22747,7 +23131,7 @@ const STRINGS = {
   // v3.16.0: 警戒度ラッシュ（{egg} は storyEgg で竜卵／星卵に置き換える）
   trNames: {
     haste: "猛進", siege: "大型包囲", horde: "小型の大軍", wind: "強風", meteor: "流星",
-    volley: "一斉射撃", firering: "火の輪", convoy: "{egg}の輸送隊", elite: "精鋭の追跡者", night: "暗夜", harpoon: "竜狩りの銛", fortress: "動く砦", gates: "湧き出る門", twinelite: "双頭の精鋭",
+    volley: "一斉射撃", firering: "火の輪", convoy: "{egg}の輸送隊", elite: "精鋭の追跡者", night: "暗夜", harpoon: "竜狩りの銛", fortress: "動く砦", gates: "湧き出る門", twinelite: "双頭の精鋭", titan: "巨人の行軍",
   },
   trWarn: {
     haste:    "人間たちが{egg}の力で奮い立つ",
@@ -22764,8 +23148,9 @@ const STRINGS = {
     fortress: "砲台を積んだ砦が動き出す",
     gates:    "地面に門が開く",
     twinelite: "二体の精鋭が群れを追ってくる",
+    titan:    "岩の巨像が地面を揺らして歩いてくる",
   },
-  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた", trGateClosed: "門が閉じた", trTwinRage: "怒り狂った", trTwinSync: "同時に討った", trFortressDown: "砦を落とした", trFortressTurretDown: "砲台を壊した",
+  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた", trGateClosed: "門が閉じた", trTwinRage: "怒り狂った", trTwinSync: "同時に討った", trFortressDown: "砦を落とした", trFortressTurretDown: "砲台を壊した", trTitanDown: "巨像を崩した", trTitanLeave: "巨像が去っていく",
   trAttackerMeteor: "流星", trAttackerRing: "火の輪",
   defeatTitle: "力尽きた",
   // v3.41.0（案帳 DT-129・Shooter指示「力尽きた時のメッセージにもほかと同じようにフレーバーを」）:
@@ -29035,7 +29420,7 @@ const CODEX_ENEMY_NAMES = {
   knights: "騎士団", siegetower: "攻城塔", batteringram: "破城槌", splitter: "分裂体",
   splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
   ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
-  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門",
+  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門", stone_titan: "岩脚の巨像",
   kite_soldier: "雷凧の兵", longbowmen: "遠矢の弓隊", troop_airship: "落下兵の飛行船", paratrooper: "落下兵", war_elephant: "戦象", war_elephant_rider: "戦象の弓兵", scythe_chariot: "鎌付き戦車", scythe_convoy: "鎌付き戦車の車列", fortress_turret: "動く砦の砲台", hero_shield: "盾投げの騎士", hero_mage: "大魔法使い", hero_archer: "英雄の弓手",
   miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
@@ -29060,6 +29445,7 @@ const CODEX_SPECIAL_ERA = {
   scythe_convoy:  "III 中世 / IV 近世 — 鎌付き戦車3台が前後に連なって追ってくる（強化版）",   // 案帳 DT-239 手直し
   moving_fortress: "警戒度ラッシュ「動く砦」",                                              // 案帳 DT-487 手直し
   fortress_turret: "警戒度ラッシュ「動く砦」の四隅",
+  stone_titan:     "警戒度ラッシュ「巨人の行軍」",   // v3.74.0（案帳 DT-484）
   behemoth_core:  "VI 電気 / VIII 最終",
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
   walker_hull:    "VII 大戦 / VIII 最終",
@@ -29919,7 +30305,7 @@ function codexMiscHtml() {
           `段階が上がっても建て直さない（削った傷が残る）</li>` +
         `<li><b>強い町のふつうの民家</b>：格上の街・要塞都市でも、普通の町の民家と同じ強さ。` +
           `上の強さが乗るのは撃つ建物（前哨堡・衝撃砲台など）と役割の建物だけ。` +
-          `強い町は前哨堡が多く（${RAMPART_PER_TOWN}→${RAMPART_PER_ADVANCED_TOWN}→${RAMPART_PER_FORTRESS_TOWN}基）、町の縁が赤い（格上＝破線・要塞＝太い縁）</li>` +
+          `強い町は前哨堡が多く（${RAMPART_PER_TOWN}→${RAMPART_PER_ADVANCED_TOWN}→${RAMPART_PER_FORTRESS_TOWN}基）、町の縁が赤い（格上＝破線・要塞＝実線）</li>` +
         `<li><b>首都</b>：別格のさらに ×${CAPITAL_POWER_MULT} の硬さ。ラン中ずっと変わらない</li>` +
       `</ul>` +
     `</div>` +
@@ -29949,6 +30335,7 @@ const CODEX_RUSH_DESC = {
   fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は1基ずつ狙いを付けて撃ってくる（<b>砲台は1基ずつ壊せる</b>。壊した砲台は撃たなくなる）。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
   gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
   twinelite: () => `大型の精鋭が2体（1体ずつ体力 ×${+TR_TWIN_HP.toFixed(1)}。衝撃波を持つ時代は ×${+TR_TWIN_SHOCKWAVE_HP.toFixed(1)}）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
+  titan:    () => `岩でできた多脚の巨像が1体、ゆっくり群れへ歩いてくる（体力は精鋭の追跡者の ×${TR_TITAN_HP}・砲塔は無く撃たない）。脚を1本ずつ踏み下ろし、<b>踏む足の下にだけ予告の輪</b>が出て、踏んだ足のまわり（半径${TITAN_STOMP_R}）に衝撃波。輪の無い側から胴を叩く。人間の町は踏みつぶさない。倒すと岩の山に崩れて卵${MOVER_DEFS.stone_titan.eggDrop}個。${TR_TITAN_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
 function codexRushHtml() {
@@ -37238,6 +37625,7 @@ function render(now) {
   drawFlungMovers();         // v3.44.1: 鉄球で吹き飛ばした敵（見た目だけ）
   drawBehemothLimbs();       // v1.7.0: 巨獣の関節（コア・拳の下に敷く）
   drawWalkerLegs();          // v1.8.0: 多脚戦車の脚（胴と足の下に敷く）
+  drawStoneTitanUnder();     // v3.74.0: 岩脚の巨像の岩の山・予告の輪・脚（胴の下に敷く）
   drawTierRushUnder();       // v3.16.0: 猛進の残像・精鋭と輸送隊の輪（敵の下）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
@@ -39414,6 +39802,8 @@ const ENEMY_IMAGE_SOURCES = {
   // 案帳 DT-487 手直し: 動く砦の本体・後ろの扉・四隅の砲台（drawMovingFortressSprite / drawFortressTurretSprite が組み立てる）
   fortress_body:       "assets/mover_fortress_body.png",
   fortress_door:       "assets/mover_fortress_door.png",
+  titan_body:          "assets/mover_titan_body.png",   // v3.74.0（案帳 DT-484）: 岩脚の巨像の胴（前が上・腰の穴6つ）
+  titan_leg:           "assets/mover_titan_leg.png",    // 脚1本（付け根の玉が下・足の平が上）
   fortress_gun:        "assets/mover_fortress_gun.png",
   // v1.7.0: 腕の関節板。敵そのものではないので ENEMY_SPRITE_META には載せない
   // （drawMovers は通らず、drawBehemothLimbs が自前の寸法で並べる）
@@ -39551,6 +39941,8 @@ const BUILDING_IMAGE_SOURCES = {
   e7_rampart_base: "assets/building_e7_rampart_base.png",
   e8_rampart_base: "assets/building_e8_rampart_base.png",
   e1_rampart_gun: "assets/building_e1_rampart_gun.png",
+  // v3.74.0（DT-499）: 時代1の投石機は台（_gun）と腕（_arm）を分けた。腕はスプーンが画像の上、軸が下（CATAPULT_ARM_HUB_Y）
+  e1_rampart_arm: "assets/building_e1_rampart_arm.png",
   e2_rampart_gun: "assets/building_e2_rampart_gun.png",
   e3_rampart_gun: "assets/building_e3_rampart_gun.png",
   e4_rampart_gun: "assets/building_e4_rampart_gun.png",
@@ -39666,6 +40058,7 @@ const ENEMY_SPRITE_META = {
   splitter_small: { px: 0.501, py: 0.505, forward: "none", drawScale: 2.80, hover: true },
   // 案帳 DT-487 手直し: 動く砦の残骸（drawMoverWrecks が def.wreckSprite で引く）。本編の描画は drawMovingFortressSprite
   fortress_body:  { px: 0.5, py: 0.5, forward: "up", drawScale: 2.3 },
+  titan_body:     { px: 0.5, py: 0.5, forward: "up", drawScale: 2.4 },   // v3.74.0: 岩脚の巨像の残骸（STONE_TITAN_ART.bodyScale と同じ）
 };
 
 // ロード済み敵画像（name → HTMLImageElement。ロード失敗したキーは入らない）
