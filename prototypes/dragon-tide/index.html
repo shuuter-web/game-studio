@@ -1347,7 +1347,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.71.0";
+const GAME_VERSION = "v3.72.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3016,6 +3016,13 @@ function updateCharge(dt) {
 function onChargeEnter() {
   triggerFlash("rgba(180, 225, 255, 0.18)", 0.12);
   hapticPulse(25);
+  // v3.72.0（案帳 DT-506）: 突進に入った瞬間、竜1体ずつの後ろに音の壁を破るような「〈」の衝撃の輪を残す
+  const now = performance.now();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    if (chargeBoomFx.length >= CHARGE_BOOM_MAX) break;
+    chargeBoomFx.push({ x: px[i], y: py[i], angle: Math.atan2(vy[i], vx[i]), born: now });
+  }
 }
 
 
@@ -3093,7 +3100,7 @@ function drawChargeHitFx() {
   ctx.globalAlpha = 1;
 }
 
-function clearChargeHitFx() { chargeHitFx.length = 0; }
+function clearChargeHitFx() { chargeHitFx.length = 0; clearChargeTrailFx(); }
 
 // ---- 実際に効かせる量（溜めで 1 → 最大 へ補間）----
 // 倍率が効くのは **突進中だけ**。溜めが残っていても状態が切れていれば素の値に戻る
@@ -3596,10 +3603,95 @@ const CHARGE_CHEVRON_ARM   = 1.15;   // 腕の長さ（bowR 比）
 // 尖った形だけ線を細くする倍率。丸い弧（軽減あり）の太さは変えない。
 const CHARGE_CHEVRON_WIDTH = 0.85;
 
+// v3.72.0（案帳 DT-506・Shooter「突進のエフェクトをもっとかっこよくしてほしい」）:
+//   ① 細い尾の線 → 竜の幅から細くなる彗星の尾（淡い帯＋白い芯）
+//   ② 溜めが満ちた竜は頭に光がともる（溜まったことが一目で分かる）
+//   ③ 尾から火の粉のような光の粒が後ろへこぼれる（見た目だけ。乱数は fxRandom）
+//   ④ 突進に入った瞬間、竜ごとに後ろへ開く「〈」の衝撃の輪（音の壁を破る絵）
+//   群れの重心に描く図形は使わない（v0.88 の判断どおり、全部を竜1体ずつに紐づける）
+const CHARGE_TAIL_LEN      = 54;    // 最大溜めでの彗星の尾の長さ（px）
+const CHARGE_TAIL_W        = 6.5;   // 尾の付け根の半幅（px）
+const CHARGE_HEAD_GLOW_AT  = 0.85;  // この溜めから頭の光がともる
+const CHARGE_HEAD_GLOW_R   = 13;
+const CHARGE_SPARK_RATE    = 9;     // 突進中の竜1体が1秒にこぼす粒の数（最大溜め）
+const CHARGE_SPARK_LIFE    = 0.45;
+const CHARGE_SPARK_MAX     = 260;
+const CHARGE_BOOM_LIFE     = 0.42;
+const CHARGE_BOOM_MAX      = 60;
+const chargeSparkFx = [];   // {x, y, vx, vy, born, life, s}
+const chargeBoomFx  = [];   // {x, y, angle, born}
+let chargeFxLastT = 0;
+function clearChargeTrailFx() { chargeSparkFx.length = 0; chargeBoomFx.length = 0; }
+
+/** v3.72.0: 彗星の尾・頭の光・こぼれる粒・入った瞬間の衝撃の輪 */
+function drawChargeTrailFx(lv, fxs, liveAlpha) {
+  const now = performance.now();
+  const dt = chargeFxLastT ? Math.min(0.05, (now - chargeFxLastT) / 1000) : 0;
+  chargeFxLastT = now;
+  // 彗星の尾：竜の幅で始まり、後ろへ細くなる三角。淡い帯を1つのパスにまとめて塗る（40体でも1回の描画）
+  ctx.fillStyle = `rgba(120, 200, 255, ${(0.16 + 0.30 * lv) * liveAlpha})`;
+  ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
+    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+    if (sp < 1) continue;
+    const ux = vx[i] / sp, uy = vy[i] / sp, k = boidChargeLevelOf(i);
+    const len = CHARGE_TAIL_LEN * (0.35 + 0.65 * k) * fxs, w = CHARGE_TAIL_W * (0.6 + 0.4 * k) * fxs;
+    ctx.moveTo(px[i] - uy * w, py[i] + ux * w);
+    ctx.lineTo(px[i] - ux * len, py[i] - uy * len);
+    ctx.lineTo(px[i] + uy * w, py[i] - ux * w);
+    ctx.closePath();
+    // こぼれる粒（見た目だけ）
+    if (dt > 0 && boidChargeOn[i] && chargeSparkFx.length < CHARGE_SPARK_MAX && fxRandom() < CHARGE_SPARK_RATE * k * dt) {
+      const side = (fxRandom() - 0.5) * w * 2;
+      const back = 60 + 60 * fxRandom();
+      chargeSparkFx.push({ x: px[i] - ux * len * 0.4 - uy * side, y: py[i] - uy * len * 0.4 + ux * side,
+        vx: -ux * back + (fxRandom() - 0.5) * 30, vy: -uy * back + (fxRandom() - 0.5) * 30,
+        born: now, life: CHARGE_SPARK_LIFE * (0.6 + 0.6 * fxRandom()), s: 1.2 + 1.6 * fxRandom() });
+    }
+  }
+  ctx.fill();
+  // 頭の光（溜めが満ちた竜だけ）
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i] || !boidChargeOn[i]) continue;
+    const k = boidChargeLevelOf(i);
+    if (k < CHARGE_HEAD_GLOW_AT) continue;
+    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]) || 1;
+    const hx = px[i] + vx[i] / sp * 6, hy = py[i] + vy[i] / sp * 6;
+    const g = (k - CHARGE_HEAD_GLOW_AT) / (1 - CHARGE_HEAD_GLOW_AT);
+    ctx.globalAlpha = (0.25 + 0.35 * g) * (0.85 + 0.15 * Math.sin(now * 0.02 + i));
+    ctx.fillStyle = "#bfe8ff";
+    ctx.beginPath(); ctx.arc(hx, hy, CHARGE_HEAD_GLOW_R * fxs, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.5 + 0.3 * g; ctx.fillStyle = "#ffffff";
+    ctx.beginPath(); ctx.arc(hx, hy, CHARGE_HEAD_GLOW_R * 0.35 * fxs, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // こぼれる粒
+  for (let n = chargeSparkFx.length - 1; n >= 0; n--) {
+    const p = chargeSparkFx[n], age = (now - p.born) / 1000;
+    if (age >= p.life) { chargeSparkFx.splice(n, 1); continue; }
+    const u = age / p.life;
+    ctx.globalAlpha = 0.85 * (1 - u);
+    ctx.fillStyle = u < 0.4 ? "#ffffff" : "#8fd4ff";
+    ctx.beginPath(); ctx.arc(p.x + p.vx * age, p.y + p.vy * age, p.s * (1 - 0.5 * u), 0, Math.PI * 2); ctx.fill();
+  }
+  // 入った瞬間の「〈」の衝撃の輪：竜の位置から後ろへ開いて広がる
+  for (let n = chargeBoomFx.length - 1; n >= 0; n--) {
+    const f = chargeBoomFx[n], u = (now - f.born) / 1000 / CHARGE_BOOM_LIFE;
+    if (u >= 1) { chargeBoomFx.splice(n, 1); continue; }
+    const r = (8 + 34 * u) * fxs, back = f.angle + Math.PI, half = 0.9 + 0.4 * u;
+    ctx.globalAlpha = 0.8 * (1 - u);
+    ctx.strokeStyle = "#dff4ff"; ctx.lineWidth = 3 * (1 - u) + 0.8;
+    ctx.beginPath(); ctx.arc(f.x, f.y, r, back - half, back + half); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
 function drawChargeFx() {
   // v0.99.2: 個体ごとに出す。突進していない竜には尾も衝波も付けない
   // （どの竜が乗っているかが見えないと、個体で持続する意味が伝わらない）。
-  if (chargeLevel <= 0.01 && chargeCount === 0) return;
+  if (chargeLevel <= 0.01 && chargeCount === 0 && chargeSparkFx.length === 0 && chargeBoomFx.length === 0) { chargeFxLastT = 0; return; }
   const lv = Math.max(chargeLevel, 0.02);
   const fxs = chg().fxScale;
   // 突進が切れて余韻だけのときは薄くする（効いていないのに派手だと嘘になる）
@@ -3608,11 +3700,13 @@ function drawChargeFx() {
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
   ctx.lineCap = "round";
+  drawChargeTrailFx(lv, fxs, liveAlpha);   // v3.72.0（DT-506）
 
   // ① 個体ごとの尾
   const streak = CHARGE_FX_STREAK_LEN * lv * fxs;
-  ctx.strokeStyle = `rgba(150, 215, 255, ${(0.20 + 0.45 * lv) * liveAlpha})`;
-  ctx.lineWidth = 2.0 + 2.0 * lv;
+  // v3.72.0: 尾の帯（drawChargeTrailFx）の上に、白い芯として細く引く
+  ctx.strokeStyle = `rgba(235, 248, 255, ${(0.25 + 0.5 * lv) * liveAlpha})`;
+  ctx.lineWidth = 1.2 + 1.3 * lv;
   ctx.beginPath();
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
@@ -8033,13 +8127,6 @@ const BEAM_KINDS = {
     detectR: 560, loseR: 760, aimTime: 1.1, lockTime: 0.3, aimTurn: 4.0,
     fireTime: 0.5, coolTime: 1.8, length: 650, halfW: 7, dragonDps: 18, hitsAll: false,
   },
-  // v3.68.0（案帳 DT-015・Shooter指示「三角プリズム持ちの大きめの動く敵も欲しい。首都よりは小さく、
-  //   プリズムで反射するレーザーも相応の太さで」）: プリズム運び。自分の光線を三角プリズムに通し、3本に割って扇に撃つ。
-  //   割れた3本はどれも塔の光線（半幅34）の7割の太さ。予告の線も3本出る。予告の向きを追う速さは塔より遅い（扇の間へ逃げ込める）
-  carrier: {
-    detectR: 900, loseR: 1300, aimTime: 1.6, lockTime: 0.45, aimTurn: 1.2,
-    fireTime: 1.3, coolTime: 2.4, length: 1300, halfW: 24, dragonDps: 22, hitsAll: false,
-  },
 };
 // v3.68.0（DT-015）: プリズム運び
 const PRISM_BEARER_COUNT     = 2;      // 光線の高原に出す数（時代V から1体増える）
@@ -8049,6 +8136,9 @@ const PRISM_BEARER_SPLITS    = 3;
 const PRISM_BEARER_CATCH     = 34;     // 塔の光線がプリズム運びのこの距離に触れたら、プリズムで3本に割れる
 const PRISM_BEARER_TOWER_W   = 0.8;    // 塔の光線がプリズム運びで割れたときの1本の太さ（塔の光線に対する割合）
 const PRISM_BEARER_TOWER_LEN = 1300;
+// v3.72.0（案帳 DT-015 手直し・Shooter「プリズム運びが勝手にレーザーを撃っちゃってるのでそれは無しです。
+//   他のやつが撃ってくるレーザーが当たったら3方向に反射のみで」）: 自分の光線は撃たない。
+//   塔の光線・町の光線の砲（小）のどちらが当たっても3本に割れる
 /** 生きているプリズム運び */
 function prismBearers() {
   const out = [];
@@ -8168,7 +8258,7 @@ function updateBeamTowers(dt) {
   if ((beamTowers.length === 0 && bearers.length === 0) || gameState !== "playing") return;
   const n = countAliveBoids();
   const c = calcFriendlyCentroid();
-  for (const m of bearers) updatePrismBearerBeam(m, n, c, dt);
+  for (const m of bearers) m.prismLit = false;   // v3.72.0: 光線が当たっている間だけプリズムを光らせる（見た目）
   for (const t of beamTowers) {
     if (t.fallen) continue;
     const b = t.beam, P = BEAM_KINDS[b.kind];
@@ -8211,11 +8301,12 @@ function updateBeamTowers(dt) {
       }
     } else {
       // v3.68.0（DT-015）: 塔の光線がプリズム運びに当たると、そこで3本に割れて先へ進む
-      const bh = P.hitsAll && bearers.length ? beamBearerHit(t.wx, t.wy, x2, y2, bearers) : null;
+      const bh = bearers.length ? beamBearerHit(t.wx, t.wy, x2, y2, bearers) : null;
       if (bh) {
         const bx = t.wx + Math.cos(b.angle) * bh.len, by = t.wy + Math.sin(b.angle) * bh.len;
         beamSegments.push({ x1: t.wx, y1: t.wy, x2: bx, y2: by, split: false, kind: b.kind, w });
         pushBearerSplits(bh.m.wx, bh.m.wy, b.angle, b.kind, w, P.halfW * PRISM_BEARER_TOWER_W, PRISM_BEARER_TOWER_LEN);
+        bh.m.prismLit = true;
       } else {
         beamSegments.push({ x1: t.wx, y1: t.wy, x2, y2, split: false, kind: b.kind, w });
       }
@@ -8228,34 +8319,6 @@ function updateBeamTowers(dt) {
   for (const s of beamSegments) applyBeamDamage(s, tick);
 }
 
-/** v3.68.0（DT-015）: プリズム運びの予告→撃つ→休む。撃つときはプリズムで3本に割れる。予告の終わりから撃ち終わりまで足を止める */
-function updatePrismBearerBeam(m, n, c, dt) {
-  if (!m.beam) m.beam = newBeamState("carrier");
-  const b = m.beam, P = BEAM_KINDS.carrier;
-  if (n === 0) { b.state = "idle"; return; }
-  const d = Math.sqrt(dist2(m.wx, m.wy, c.x, c.y));
-  const toward = Math.atan2(c.y - m.wy, c.x - m.wx);
-  if (b.state === "idle") {
-    if (d <= P.detectR) { b.state = "aim"; b.t = 0; b.angle = toward; }
-    return;
-  }
-  b.t += dt;
-  if (b.state === "aim") {
-    if (d > P.loseR) { b.state = "idle"; return; }
-    if (b.t < P.aimTime - P.lockTime) b.angle = turnTowardRate(b.angle, toward, P.aimTurn, dt);
-    else m.laserLock = Math.max(m.laserLock || 0, 0.05);   // 向きが止まったら足も止める
-    if (b.t >= P.aimTime) { b.state = "fire"; b.t = 0; }
-    return;
-  }
-  if (b.state === "cool") {
-    if (b.t >= P.coolTime) { b.state = d > P.loseR ? "idle" : "aim"; b.t = 0; }
-    return;
-  }
-  if (b.t >= P.fireTime) { b.state = "cool"; b.t = 0; return; }
-  m.laserLock = Math.max(m.laserLock || 0, 0.05);
-  const w = Math.min(1, b.t / BEAM_RAMP, (P.fireTime - b.t) / BEAM_RAMP);
-  pushBearerSplits(m.wx, m.wy, b.angle, "carrier", w, P.halfW, P.length);
-}
 function turnTowardRate(cur, want, rate, dt) { const mx = rate * dt; return cur + Math.max(-mx, Math.min(mx, wrapAngle(want - cur))); }
 
 /** 光線1本ぶんの当たり。竜だけを焼く。
@@ -8292,22 +8355,6 @@ function drawBeams(now) {
     ctx.globalAlpha = locked ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.001 * BEAM_LOCK_BLINK)) : 1;
     ctx.beginPath(); ctx.moveTo(t.wx, t.wy);
     ctx.lineTo(t.wx + Math.cos(b.angle) * P.length, t.wy + Math.sin(b.angle) * P.length); ctx.stroke();
-  }
-  // v3.68.0（DT-015）: プリズム運びの予告は3本（割れる向きそのまま）
-  for (const m of bearers) {
-    const b = m.beam;
-    if (!b || b.state !== "aim") continue;
-    const P = BEAM_KINDS.carrier, locked = b.t >= P.aimTime - P.lockTime;
-    ctx.setLineDash([10, 8]);
-    ctx.strokeStyle = BEAM_COLORS.aim;
-    ctx.lineWidth = 2 * (locked ? 1.8 : 1);
-    ctx.globalAlpha = locked ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.001 * BEAM_LOCK_BLINK)) : 1;
-    ctx.beginPath();
-    for (let k = 0; k < PRISM_BEARER_SPLITS; k++) {
-      const a = b.angle + (k - (PRISM_BEARER_SPLITS - 1) / 2) * PRISM_BEARER_SPREAD;
-      ctx.moveTo(m.wx, m.wy); ctx.lineTo(m.wx + Math.cos(a) * P.length, m.wy + Math.sin(a) * P.length);
-    }
-    ctx.stroke();
   }
   ctx.setLineDash([]);
   ctx.globalAlpha = 1;
@@ -9436,7 +9483,7 @@ const MOVER_DEFS = {
   // v3.60.0（案帳 DT-239）: 鎌付き戦車。右側にだけ大きな鎌。群れのまわりを回り込み、鎌の側ですれ違いざまに薙ぐ。
   // 鎌の無い側（左・前・後ろ）からの攻撃は2倍効く。予告線は無い（鎌の向きで危ない側が分かる）
   // v3.68.0（案帳 DT-015）: プリズム運び。光線の高原だけ。大きな三角プリズムを担いでゆっくり歩き、
-  // 自分の光線をプリズムで3本に割って扇に撃つ（BEAM_KINDS.carrier）。塔の光線が当たっても3本に割れて先へ飛ぶ。
+  // v3.72.0（DT-015 手直し）: 自分では撃たない。塔の光線・町の光線の砲が当たると3本に割れて先へ飛ぶ。
   // 首都（半径46）より小さく、ふつうの大物（森番の巨人30）くらい。向き直りはものさしの「遅い」
   prism_bearer: {
     name: "prism_bearer", prismBearer: true, showHpBar: true,
@@ -13472,6 +13519,9 @@ const TR_GATE_FOLLOW       = 140;     // v3.54.1: 門が群れについてくる
 const TR_TWIN_STRENGTH     = 0.6;     // 双頭の精鋭：経験値・竜晶は精鋭の追跡者のこの割合
 // v3.68.0（案帳 DT-500「他の弱体化は一旦不要」）: 追跡者の体力を半分にしても双頭の精鋭は弱くしない。体力は旧倍率（8）基準のまま
 const TR_TWIN_HP           = 8 * TR_TWIN_STRENGTH;   // 双頭の精鋭の体力倍率（1体ずつ）
+// v3.72.0（案帳 DT-500 手直し・Shooter「衝撃波の時代の双頭も調整してください」）: 衝撃波を持つ時代の双頭は
+// 追跡者と同じく体力を半分にする（射撃型の時代の双頭はそのまま）
+const TR_TWIN_SHOCKWAVE_HP = TR_ELITE_SHOCKWAVE_HP * TR_TWIN_STRENGTH;
 const TR_TWIN_RAGE         = 1.5;     // 片方が倒れたとき、残りの速さと攻撃の倍率
 const TR_TWIN_SYNC         = 2.5;     // この秒数のうちに2体とも倒せば「同時」（怒らない・卵が倍）
 const TR_TWIN_DUR          = 60;
@@ -13707,7 +13757,7 @@ function startTierRush() {
       for (let k = 0; k < 2; k++) {
         const aa = a + (k ? 0.5 : -0.5);
         const m = spawnTrMover(def, c.x + Math.cos(aa) * r, c.y + Math.sin(aa) * r);
-        m.maxHp = m.hp = def.hp * TR_TWIN_HP;
+        m.maxHp = m.hp = def.hp * (isShockwaveElite(def) ? TR_TWIN_SHOCKWAVE_HP : TR_TWIN_HP);
         m.speedMult = Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed);
         m.xpValue = def.xp * TR_ELITE_XP * TR_TWIN_STRENGTH;
         m._trChase = true; m._trElite = true; m._trReward = "twin"; m._trFerocity = TR_ELITE_FEROCITY;
@@ -17024,9 +17074,9 @@ function drawMovers() {
       ctx.strokeStyle = "#3a4a58"; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = "#5a6a7a";
       ctx.beginPath(); ctx.arc(-6, -15, 6, 0, Math.PI * 2); ctx.arc(-6, 15, 6, 0, Math.PI * 2); ctx.fill();
-      const b = m.beam, aimA = b && b.state !== "idle" ? b.angle - angle : 0;
-      ctx.save(); ctx.rotate(aimA);
-      const active = b && (b.state === "fire" || (b.state === "aim" && b.t >= BEAM_KINDS.carrier.aimTime - BEAM_KINDS.carrier.lockTime));
+      // v3.72.0（DT-015 手直し）: 自分では撃たない。プリズムは進む向きのまま、ほかの光線が当たっている間だけ白く光る
+      ctx.save();
+      const active = !!m.prismLit;
       ctx.fillStyle = active ? "rgba(245,255,255,0.95)" : "rgba(190,245,255,0.9)";
       ctx.strokeStyle = "#2a5a70"; ctx.lineWidth = 2.5;
       ctx.beginPath(); ctx.moveTo(24, 0); ctx.lineTo(-8, -17); ctx.lineTo(-8, 17); ctx.closePath(); ctx.fill(); ctx.stroke();
@@ -21617,6 +21667,7 @@ const SPECIAL_CHAIN   = 11;   // 鉄鎖：鎖でつながった鉄球を振り�
 const SPECIAL_DRUM    = 12;   // 軍鼓：4秒ごとに群れ全員の攻撃を2秒だけ速くする
 const SPECIAL_LINK    = 13;   // v3.46.0 結び竜：群れの特殊個体どうしを雷の糸で結ぶ（案帳 DT-242）
 const SPECIAL_AIM     = 14;   // v3.64.0 指先竜：時間で火の玉を溜め、指を離した所へ撃ち込む（案帳 DT-221）
+const SPECIAL_RECALL  = 15;   // v3.72.0 呼び戻し竜：指を離した所へ自分が飛んで叩きつけ、群れへ戻る（案帳 DT-483）
 
 // v2.15.0: 名前を「竜」を付けない二つ名にした（Shooter指示）。
 // v2.15.1: 効果・見た目に合うかっこよさで付け直した。コメントや設計メモには旧名が残っているので対応表:
@@ -21653,6 +21704,7 @@ const SPECIAL_DEFS = {
   [SPECIAL_DRUM]:    { key: "drum",    name: "軍鼓",   color: "#d08040", hpMult: 1.8, spriteTint: "#c07038" },
   [SPECIAL_LINK]:    { key: "link",    name: "結び竜", color: "#ffe860", hpMult: 1.8, spriteTint: "#f0d850" },   // v3.46.0（案帳での名前のまま）
   [SPECIAL_AIM]:     { key: "aim",     name: "指先竜", color: "#ff6a3a", hpMult: 1.8, spriteTint: "#ff7040" },   // v3.64.0（案帳での名前のまま）
+  [SPECIAL_RECALL]:  { key: "recall",  name: "呼び戻し竜", color: "#7ad8ff", hpMult: 2.0, spriteTint: "#70c8ff" },   // v3.72.0（案帳での名前のまま）
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -22594,6 +22646,7 @@ const STRINGS = {
     sp_chain:          { name: "鉄鎖",       desc: "鎖でつながった鉄球を引く特殊個体が加わる。急に曲がると鉄球が大きく振られて砕く" },
     sp_drum:           { name: "軍鼓",       desc: "4秒ごとに太鼓を鳴らし、2秒だけ群れ全員の攻撃を速くする特殊個体が加わる" },
     sp_aim:            { name: "指先竜",     desc: "時間で火の玉を溜め、指を離した所へ撃ち込む特殊個体が加わる。溜めるほど大きい" },
+    sp_recall:         { name: "呼び戻し竜", desc: "指を離した所へ自分が一直線に飛んで叩きつけ、群れへ戻ってくる特殊個体が加わる。行き帰りの道の敵にも当たる" },
     sp_link:           { name: "結び竜",     desc: "群れの特殊個体どうしを雷の糸で結び、糸に触れた建物と敵を焼く特殊個体が加わる" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
@@ -22698,6 +22751,7 @@ const CARD_DEFS = [
   // v3.40.0: 「鉄鎖」は竜種（鉄鎖竜）になったので、特殊個体としては加わらない（定義は途中セーブの互換のため残す）
   { id: "sp_drum",          icon: "\u{1F941}", rarity: "star", max: 3, specialJoin: SPECIAL_DRUM, weight: 6 },
   { id: "sp_aim",           icon: "\u{1F446}", rarity: "star", max: 3, specialJoin: SPECIAL_AIM, weight: 6 },   // v3.64.0
+  { id: "sp_recall",        icon: "\u{1FA83}", rarity: "star", max: 3, specialJoin: SPECIAL_RECALL, weight: 6 },   // v3.72.0
   // v3.46.2: 「結び竜」は不採用（案帳 DT-242・Shooter判定。定義は途中セーブの互換のため残す）
   // v3.1.0: 突進（一斉突撃と5枚）・ブレス角（見渡す顎）・速度（疾風）は竜種の個性に移した
 ];
@@ -22925,6 +22979,8 @@ const EVO_SPECIAL_EFFECT_TEXT = {
   sp_link_dmg:      (n) => `（v3.46.2 で外した特殊個体）`,
   sp_aim_dmg:       (n) => `火の玉の威力 +${Math.round(25 * n)}%`,
   sp_aim_charge:    (n) => `溜まる速さ +${Math.round(20 * n)}%（基本 ${AIM_CHARGE_TIME}秒で満タン）`,
+  sp_recall_dmg:    (n) => `叩きつけと体当たりの威力 +${Math.round(25 * n)}%`,
+  sp_recall_shock:  (n) => `着いた所の衝撃の広さと強さ +${Math.round(20 * n)}%（基本 半径${RECALL_SHOCK_R}px）`,
   sp_link_len:      (n) => `（v3.46.2 で外した特殊個体）`,
   sp_laser_dmg:     (n) => `光線の威力 +${Math.round(30 * n)}%（基本 毎秒${SKYLANCE_DPS}）`,
   sp_laser_time:    (n) => `光線を照らし続ける時間 +${Math.round(25 * n)}%（基本 ${SKYLANCE_FIRE_TIME}秒）`,
@@ -23173,6 +23229,10 @@ const SPECIAL_EVO_SPEC = {
   aim:     { L: [["強い火の玉", { sp_aim_dmg: 1 }], ["早い溜め", { sp_aim_charge: 1 }], ["強い火の玉・二", { sp_aim_dmg: 1 }], ["早い溜め・二", { sp_aim_charge: 1 }]],
              A: { name: "隕火", tint: "#c03018", eff: { sp_aim_dmg: 2 } },
              B: { name: "早撃ち", tint: "#ffb060", eff: { sp_aim_charge: 2 } } },
+  // v3.72.0
+  recall:  { L: [["重い叩きつけ", { sp_recall_dmg: 1 }], ["広い衝撃", { sp_recall_shock: 1 }], ["重い叩きつけ・二", { sp_recall_dmg: 1 }], ["広い衝撃・二", { sp_recall_shock: 1 }]],
+             A: { name: "破城", tint: "#3a78c0", eff: { sp_recall_dmg: 2 } },
+             B: { name: "地鳴り", tint: "#a0e8ff", eff: { sp_recall_shock: 2 } } },
   // v3.46.0
   link:    { L: [["強い糸", { sp_link_dmg: 1 }], ["長い糸", { sp_link_len: 1 }], ["強い糸・二", { sp_link_dmg: 1 }], ["長い糸・二", { sp_link_len: 1 }]],
              A: { name: "雷網", tint: "#fff0a0", eff: { sp_link_dmg: 2 } },
@@ -25861,6 +25921,7 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_CHAIN)   updateChainDragon(i, dt);   // v3.31.0
     else if (kind === SPECIAL_DRUM)    drumAlive++;
     else if (kind === SPECIAL_AIM)     updateAimDragon(i, dt);   // v3.64.0
+    else if (kind === SPECIAL_RECALL)  updateRecallDragon(i, dt);   // v3.72.0
   }
   specialHitActive = false;
   updateDrumBeat(dt, drumAlive);   // v3.31.0: 軍鼓の拍は群れで1つ
@@ -25871,6 +25932,7 @@ function updateSpecials(dt) {
   updateSpecialBolts(dt);
   updateMechaRockets(dt);   // v0.95: 飛んでいるロケットは機竜が落ちても進む
   updateAimShots(dt);       // v3.64.0: 指先竜の火の玉
+  updateRecallFlights(dt);  // v3.72.0: 呼び戻し竜の行き帰り
   specialHitActive = false;
 }
 
@@ -25998,6 +26060,155 @@ function drawAimDragons() {
     ctx.fillStyle = "rgba(255,120,40,0.35)"; ctx.beginPath(); ctx.arc(f.x, f.y, s * 1.8, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#ffb040"; ctx.beginPath(); ctx.arc(f.x, f.y, s, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#fff0c0"; ctx.beginPath(); ctx.arc(f.x, f.y, s * 0.45, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---- v3.72.0: 呼び戻し竜（案帳 DT-483・Shooter判定「指先竜の直接攻撃版ですね。差別化のため爆発は無しで直接攻撃＋衝撃で」）----
+// 指を離すと、準備のできた呼び戻し竜が離した場所へ自分で一直線に飛び、着いた所の相手へ直接叩きつける（爆発＝blast は使わない）。
+// 着いた所のまわりは衝撃（impact）だけで押しのける。行きと帰りの道の上の敵・建物にも体当たり（direct）で1回ずつ当たる。
+// 群れへ戻るまで次は使えない。飛んでいる間は群れの外にいるので撃たれやすい（無敵にはしない）。
+// 個体の状態：recallFlights（飛んでいる間だけ）、boidSpecialTimer＝戻ってからの休み（0 で準備完了）
+const RECALL_SPEED_OUT = 950;   // 行きの速さ px/s（指先竜の火の玉より速い＝離した瞬間に刺さる手応え）
+const RECALL_SPEED_BACK = 620;  // 帰りの速さ px/s（群れの最高速より速い＝必ず追いつく）
+const RECALL_MIN_DIST  = 50;    // これより近い所で離しても飛ばない（群れの中での誤爆を防ぐ）
+const RECALL_MAX_DIST  = 900;   // これより遠い所で離したら、この距離で止まる
+const RECALL_PATH_R    = 20;    // 行き帰りの体当たりの太さ（半径）
+const RECALL_PATH_DMG  = 30;
+const RECALL_SLAM_R    = 34;    // 叩きつけが当たる範囲（直接攻撃なので狭い）
+const RECALL_SLAM_DMG  = 120;
+const RECALL_SHOCK_R   = 110;   // 衝撃で押しのける範囲（ダメージは無い）
+const RECALL_SHOCK_IMPACT = 220;
+const RECALL_REJOIN    = 26;    // 群れの重心のこの距離まで戻ったら群れに戻る
+const RECALL_BACK_MAX  = 3.0;   // 帰りがこの秒数を超えたら群れへ戻ったことにする（迷子防止）
+const RECALL_REST      = 0.5;   // 戻ってから次に飛べるまで
+const RECALL_TRAIL_LIFE = 0.35; // 光の尾の残る秒数（見た目だけ）
+const recallFlights = new Map(); // 竜の番号 → { phase: "out"|"back", x0, y0, tx, ty, t, life, hit: Set }
+const recallFx = [];             // 見た目だけ：光の尾の点・地面の割れ
+function recallDmgMult() { return (1 + 0.25 * upCount("sp_recall_dmg")) * permaBuff.specialDmg; }
+function recallShockMult() { return 1 + 0.2 * upCount("sp_recall_shock"); }
+function updateRecallDragon(i, dt) {
+  if (!recallFlights.has(i)) boidSpecialTimer[i] = Math.max(0, boidSpecialTimer[i] - dt);
+}
+/** 指を離した：準備のできた呼び戻し竜それぞれが (tx, ty) へ飛ぶ */
+function recallOnRelease(tx, ty) {
+  if (gameState !== "playing") return;
+  for (let i = 0; i < N; i++) {
+    if (boidSpecial[i] !== SPECIAL_RECALL || boidDead[i] || boidDowned[i]) continue;
+    if (recallFlights.has(i) || boidSpecialTimer[i] > 0) continue;
+    let dx = tx - px[i], dy = ty - py[i];
+    let d = Math.sqrt(dx * dx + dy * dy);
+    if (d < RECALL_MIN_DIST) continue;
+    if (d > RECALL_MAX_DIST) { dx *= RECALL_MAX_DIST / d; dy *= RECALL_MAX_DIST / d; d = RECALL_MAX_DIST; }
+    recallFlights.set(i, { phase: "out", x0: px[i], y0: py[i], tx: px[i] + dx, ty: py[i] + dy, t: 0, life: d / RECALL_SPEED_OUT, hit: new Set() });
+  }
+}
+/** 線分の上（太さ RECALL_PATH_R）の相手に、まだ当たっていなければ体当たりを入れる */
+function recallHitAlong(f, ax, ay, bx, by) {
+  const targets = attackTargets();
+  const mx = (ax + bx) / 2, my = (ay + by) / 2;
+  const half = Math.sqrt(dist2(ax, ay, bx, by)) / 2 + RECALL_PATH_R;
+  const dmg = RECALL_PATH_DMG * recallDmgMult();
+  if (targetHittable(targets, "mover")) for (const m of moversNear(mx, my, half + 40)) {
+    if (!m.alive || f.hit.has(m)) continue;
+    const r = RECALL_PATH_R + moverRadiusOf(m);
+    if (pointSegDist2(m.wx, m.wy, ax, ay, bx, by) > r * r) continue;
+    f.hit.add(m);
+    hitMover(m, { direct: dmg }, ax, ay);
+    spawnCollisionParticles(m.wx, m.wy);
+  }
+  buildingGridQueryRadius(mx, my, Math.max(1, Math.ceil(half / BUILDING_GRID_CELL)), _buildingNeighbourBuf);
+  for (const sIdx of _buildingNeighbourBuf) {
+    const st = settlements[sIdx];
+    if (!st || st.fallen || f.hit.has(st)) continue;
+    if (!targetHittable(targets, settlementTargetClass(st))) continue;
+    const r = RECALL_PATH_R + st.radius;
+    if (pointSegDist2(st.wx, st.wy, ax, ay, bx, by) > r * r) continue;
+    f.hit.add(st);
+    hitBuilding(sIdx, { direct: dmg }, ax, ay);
+  }
+}
+/** 着いた所：狭い範囲へ直接の叩きつけ、広い範囲へ衝撃だけ。爆発（blast）は使わない */
+function recallSlam(x, y) {
+  const targets = attackTargets();
+  const k = recallShockMult();
+  hitInRadius(x, y, RECALL_SLAM_R, { direct: RECALL_SLAM_DMG * recallDmgMult() }, targets);
+  hitInRadius(x, y, RECALL_SHOCK_R * k, { impact: RECALL_SHOCK_IMPACT * k }, targets);
+  triggerShake(2.2, 0.09);
+  hapticPulse(30);
+  recallFx.push({ kind: "crack", x, y, r: RECALL_SHOCK_R * k, t: 0, life: 0.7, rot: fxRandom() * Math.PI * 2 });
+  for (let n = 0; n < 6; n++) spawnCollisionParticles(x + (fxRandom() - 0.5) * 30, y + (fxRandom() - 0.5) * 30);
+}
+function updateRecallFlights(dt) {
+  if (recallFlights.size) {
+    const c = calcFriendlyCentroid();
+    for (const [i, f] of recallFlights) {
+      if (boidDead[i] || boidDowned[i] || boidSpecial[i] !== SPECIAL_RECALL) { recallFlights.delete(i); continue; }
+      const lastX = px[i], lastY = py[i];
+      f.t += dt;
+      if (f.phase === "out") {
+        const u = Math.min(1, f.t / f.life);
+        px[i] = f.x0 + (f.tx - f.x0) * u; py[i] = f.y0 + (f.ty - f.y0) * u;
+        const ux = (f.tx - f.x0), uy = (f.ty - f.y0), ul = Math.sqrt(ux * ux + uy * uy) || 1;
+        vx[i] = ux / ul * RECALL_SPEED_OUT; vy[i] = uy / ul * RECALL_SPEED_OUT;
+        recallHitAlong(f, lastX, lastY, px[i], py[i]);
+        if (u >= 1) { recallSlam(f.tx, f.ty); f.phase = "back"; f.t = 0; f.hit.clear(); }
+      } else {
+        // 帰り：動いている群れの重心へ向かう
+        const dx = c.x - px[i], dy = c.y - py[i], d = Math.sqrt(dx * dx + dy * dy) || 1;
+        const step = Math.min(d, RECALL_SPEED_BACK * dt);
+        px[i] += dx / d * step; py[i] += dy / d * step;
+        vx[i] = dx / d * RECALL_SPEED_BACK * 0.4; vy[i] = dy / d * RECALL_SPEED_BACK * 0.4;
+        recallHitAlong(f, lastX, lastY, px[i], py[i]);
+        if (d <= RECALL_REJOIN || f.t >= RECALL_BACK_MAX) { recallFlights.delete(i); boidSpecialTimer[i] = RECALL_REST; }
+      }
+      recallFx.push({ kind: "trail", x0: lastX, y0: lastY, x: px[i], y: py[i], t: 0, life: RECALL_TRAIL_LIFE });
+    }
+  }
+  for (let n = recallFx.length - 1; n >= 0; n--) {
+    const p = recallFx[n];
+    p.t += dt;
+    if (p.t >= p.life) recallFx.splice(n, 1);
+  }
+}
+/** 準備のできた印（竜のまわりの水色の輪）・光の尾・地面の割れ */
+function drawRecallDragons() {
+  ctx.save();
+  ctx.lineCap = "round";
+  for (let i = 0; i < N; i++) {
+    if (boidSpecial[i] !== SPECIAL_RECALL || boidDead[i] || boidDowned[i]) continue;
+    if (recallFlights.has(i) || boidSpecialTimer[i] > 0) continue;
+    ctx.strokeStyle = "#7ad8ff"; ctx.lineWidth = 2; ctx.globalAlpha = 0.6 + 0.3 * Math.sin(breathTime * 6);
+    ctx.beginPath(); ctx.arc(px[i], py[i], 14, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalCompositeOperation = "lighter";
+  for (const p of recallFx) {
+    if (p.kind !== "trail") continue;
+    const a = 1 - p.t / p.life;
+    ctx.globalAlpha = 0.8 * a;
+    ctx.strokeStyle = "#7ad8ff"; ctx.lineWidth = 10 * a + 2;
+    ctx.beginPath(); ctx.moveTo(p.x0, p.y0); ctx.lineTo(p.x, p.y); ctx.stroke();
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3 * a + 1;
+    ctx.beginPath(); ctx.moveTo(p.x0, p.y0); ctx.lineTo(p.x, p.y); ctx.stroke();
+  }
+  ctx.globalCompositeOperation = "source-over";
+  for (const p of recallFx) {
+    if (p.kind !== "crack") continue;
+    const u = p.t / p.life, a = 1 - u;
+    // 地面の割れ：中心から放射状のひびと、広がる衝撃の輪（炎は出さない＝爆発ではない）
+    ctx.globalAlpha = 0.9 * a;
+    ctx.strokeStyle = "#1a2430"; ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let k = 0; k < 7; k++) {
+      const ang = p.rot + k * Math.PI * 2 / 7, len = p.r * (0.35 + 0.15 * (k % 3));
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + Math.cos(ang + 0.15) * len * 0.5, p.y + Math.sin(ang + 0.15) * len * 0.5);
+      ctx.lineTo(p.x + Math.cos(ang) * len, p.y + Math.sin(ang) * len);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 0.7 * a;
+    ctx.strokeStyle = "#c8f0ff"; ctx.lineWidth = 3 * a + 1;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (0.3 + 0.7 * Math.min(1, u * 2.5)), 0, Math.PI * 2); ctx.stroke();
   }
   ctx.restore();
 }
@@ -28507,7 +28718,7 @@ const CODEX_SPECIAL_ERA = {
   railram:        "軌道（全文明） — 放射線を行き来する",
   forest_ambusher: "大樹海（全文明） — 樹冠の下で待ち、近づくと飛び出す",
   forest_giant:   "大樹海（全文明） — 森を歩く大物",
-  prism_bearer:   "光線の高原（全文明） — 三角プリズムで光線を3本に割って撃つ。塔の光線も割る",
+  prism_bearer:   "光線の高原（全文明） — 自分では撃たない。当たった光線を三角プリズムで3本に割る",
   metro_car:      "大都会（全文明） — 列になって道路を流れる",
   metro_truck:    "大都会（全文明） — 車列に混じる少し硬い車",
   metro_police:   "大都会（全文明） — 道路を走りながら撃つ",
@@ -29377,7 +29588,7 @@ const CODEX_RUSH_DESC = {
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
   fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は絶えず撃ってくる。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
   gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
-  twinelite: () => `大型の精鋭が2体（1体ずつ体力 ×${+TR_TWIN_HP.toFixed(1)}）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
+  twinelite: () => `大型の精鋭が2体（1体ずつ体力 ×${+TR_TWIN_HP.toFixed(1)}。衝撃波を持つ時代は ×${+TR_TWIN_SHOCKWAVE_HP.toFixed(1)}）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
 function codexRushHtml() {
@@ -29563,7 +29774,7 @@ function codexDragonCanvas(species) {
 }
 
 const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST,
-                             SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_LASER];   // v3.31.0 / v3.64.0: 指先竜: 軍鼓（v3.40.0: 鉄鎖は竜種へ）
+                             SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL, SPECIAL_LASER];   // v3.31.0 / v3.64.0: 指先竜: 軍鼓（v3.40.0: 鉄鎖は竜種へ）
 
 function codexSpecialHtml() {
   let html =
@@ -29614,6 +29825,7 @@ const CODEX_SPECIAL_POWERS = {
   [SPECIAL_LASER]:   () => [{ label: "光線", shot: SKYLANCE_DPS, perSec: true }],
   [SPECIAL_CHAIN]:   () => [{ label: "鉄球（秒速250px）", direct: CHAIN_DMG }],
   [SPECIAL_AIM]:     () => [{ label: "火の玉（満タン）", blast: AIM_DMG_MAX, note: `半径${AIM_R_MAX}` }],
+  [SPECIAL_RECALL]:  () => [{ label: "叩きつけ", direct: RECALL_SLAM_DMG }, { label: "行き帰りの体当たり", direct: RECALL_PATH_DMG }],
 };
 const CODEX_SPECIAL_TAG = {
   [SPECIAL_BEACON]:  "★光剣／向きを選ばない削り役",
@@ -29629,6 +29841,7 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_CHAIN]:   "★鉄鎖／急旋回で鉄球を振り回す",
   [SPECIAL_DRUM]:    "★軍鼓／拍に合わせて群れ全員の攻撃が速くなる。自分では打たない",
   [SPECIAL_AIM]:     "★指先竜／指を離した所へ溜めた火の玉。遠くても届く",
+  [SPECIAL_RECALL]:  "★呼び戻し竜／指を離した所へ自分が飛んで叩きつける。爆発しない直接攻撃",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_LASER]:
@@ -29668,6 +29881,9 @@ const CODEX_SPECIAL_DESC = {
     "鎖でつながった鉄球を引いて飛ぶ。鉄球は鎖の長さより遠くへ行けない振り子で、" +
     "<b>急に曲がると前の勢いのまま外側へ大きく振られ</b>、通った所の建物と敵を砕く。" +
     "鉄球が速いほど強く当たり、ゆっくり引きずっているだけのときは当たらない。",
+  [SPECIAL_RECALL]:
+    "<b>指を離した瞬間、離した場所へ</b>呼び戻し竜が光の尾を引いて一直線に飛び、着いた所の相手に<b>直接叩きつける</b>（爆発はしない）。" +
+    "着いた所のまわりは衝撃で押しのけられ、地面が割れる。行き帰りの道の上の敵にも体当たりで当たる。群れへ戻るまで次は使えない。飛んでいる間は群れから離れて撃たれやすい。",
   [SPECIAL_AIM]:
     "時間がたつと火の玉が溜まっていく（竜のまわりの橙の輪）。<b>指を離した瞬間、離した場所へ</b>指先竜から火の玉が飛び、" +
     "着いた所で爆発する。溜めるほど大きく強い。少ししか溜まっていないと小さい。群れから遠い場所にも届く。",
@@ -29689,6 +29905,8 @@ const CODEX_SPECIAL_STAT = {
     `${HEAL_INTERVAL}秒ごとに周りの竜を最大HPの${Math.round(HEAL_FRAC * 100)}%回復（半径 ${HEAL_RADIUS}px） ／ HP ×${SPECIAL_DEFS[SPECIAL_HEAL].hpMult}`,
   [SPECIAL_CHAIN]: () =>
     `鎖 ${CHAIN_LENGTH}px ／ 鉄球の半径 ${CHAIN_BALL_R}px ／ 秒速${CHAIN_MIN_SPEED}px以上で当たる（秒速250pxで ${CHAIN_DMG}・最大 ${CHAIN_DMG * 2.5}） ／ HP ×${SPECIAL_DEFS[SPECIAL_CHAIN].hpMult}`,
+  [SPECIAL_RECALL]: () =>
+    `叩きつけ 威力${RECALL_SLAM_DMG}（半径${RECALL_SLAM_R}px） ／ 衝撃 半径${RECALL_SHOCK_R}px ／ 行き帰りの体当たり 威力${RECALL_PATH_DMG} ／ 届く距離 ${RECALL_MAX_DIST}px ／ 戻ってから${RECALL_REST}秒で次 ／ HP ×${SPECIAL_DEFS[SPECIAL_RECALL].hpMult}`,
   [SPECIAL_AIM]: () =>
     `${AIM_CHARGE_TIME}秒で満タン ／ 爆発 威力${AIM_DMG_MIN}〜${AIM_DMG_MAX}・半径${AIM_R_MIN}〜${AIM_R_MAX}px（溜めに比例） ／ 溜めが${Math.round(AIM_MIN_CHARGE * 100)}%未満なら撃たない ／ HP ×${SPECIAL_DEFS[SPECIAL_AIM].hpMult}`,
   [SPECIAL_DRUM]: () =>
@@ -29830,6 +30048,14 @@ function codexSpecialCanvas(kind) {
     c.strokeStyle = "#9aa0a8"; c.lineWidth = 1.6; c.setLineDash([3, 2]);
     c.beginPath(); c.moveTo(0, 0); c.lineTo(-14, 14); c.stroke(); c.setLineDash([]);
     c.fillStyle = "#4a4e56"; c.beginPath(); c.arc(-15, 15, 6, 0, Math.PI * 2); c.fill();
+    codexDrawSpecialDragon(c, kind, 44);
+  } else if (kind === SPECIAL_RECALL) {
+    // v3.72.0: 右上へ伸びる光の尾と、着く所の地面の割れ
+    c.strokeStyle = "#7ad8ff"; c.lineWidth = 2; c.setLineDash([3, 3]);
+    c.beginPath(); c.moveTo(0, 0); c.lineTo(15, -15); c.stroke(); c.setLineDash([]);
+    c.strokeStyle = "#c8f0ff"; c.lineWidth = 1.4; c.beginPath();
+    for (let k = 0; k < 5; k++) { const a = k * 1.26; c.moveTo(17, -17); c.lineTo(17 + Math.cos(a) * 7, -17 + Math.sin(a) * 7); }
+    c.stroke();
     codexDrawSpecialDragon(c, kind, 44);
   } else if (kind === SPECIAL_AIM) {
     // v3.64.0: 右上へ飛ぶ火の玉と、着く所の照準
@@ -30429,7 +30655,8 @@ const INITIAL_SPECIES  = ["fire"];
 // v3.5.0: 今の7体は全部最初から（Shooter「最初の要素が少なすぎる」）。解放条件は今後足す特殊個体に使う
 const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE,
                           SPECIAL_HEAL, SPECIAL_FROST,   // v3.8.0: 癒し手・凍て霧も最初から
-                          SPECIAL_DRUM, SPECIAL_AIM];  // v3.31.0 / v3.64.0: 指先竜（v3.40.0: 鉄鎖は竜種になったので外した。v3.46.2: 結び竜は不採用）
+                          SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL];   // v3.72.0: 呼び戻し竜も最初から
+                           // v3.31.0 / v3.64.0: 指先竜（v3.40.0: 鉄鎖は竜種になったので外した。v3.46.2: 結び竜は不採用）
 const FORTRESS_FALLEN_GOAL = 300;   // 穿つ楔：要塞・首都区画の建物を累計これだけ壊す
 
 // ctx = { clearedIdx: さっきクリアした時代の添字（無ければ -1）, runComplete: ラン完走か }
@@ -32258,6 +32485,7 @@ function clearStageCards(keepCards = false) {
   freeKites.length = 0;     // v3.61.0: 流れた凧を次のステージへ持ち越さない
   shieldLines.clear();      // v3.62.0
   aimShots.length = 0;      // v3.64.0
+  recallFlights.clear(); recallFx.length = 0;   // v3.72.0
   aimTrail.length = 0;      // DT-221 手直し: 火の玉の尾
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
@@ -33137,7 +33365,7 @@ function inputMove(sx, sy, now) {
 }
 
 function inputEnd() {
-  if (inputMode === "DRAW") { const v = swipeVelocity(); magnetOnSwipe(v.x, v.y); aimOnRelease(pointerWorldX, pointerWorldY); }   // v3.64.0: 指先竜は離した所へ撃つ   // v3.33.0: 磁竜は離したときのスワイプで破片を投げる
+  if (inputMode === "DRAW") { const v = swipeVelocity(); magnetOnSwipe(v.x, v.y); aimOnRelease(pointerWorldX, pointerWorldY); recallOnRelease(pointerWorldX, pointerWorldY); }   // v3.64.0: 指先竜は離した所へ撃つ   // v3.33.0: 磁竜は離したときのスワイプで破片を投げる
   isDrawing = false;
   inputMode = "NONE";
   touchRing.active = false;
@@ -36687,6 +36915,7 @@ function render(now) {
   drawHeroMateFx();   // v3.60.0: 英雄の仲間の盾・魔法陣
   drawKites();        // v3.61.0: 雷凧の兵の糸と凧
   drawAimDragons();   // v3.64.0: 指先竜の溜め・照準・火の玉
+  drawRecallDragons(); // v3.72.0: 呼び戻し竜の光の尾・地面の割れ
   drawChainBalls();   // v3.31.0: 鉄鎖の鎖と鉄球
   drawMagnetShards(); // v3.31.0: 磁竜の破片
   drawRollBall();     // v3.29.0: 塊竜の玉（竜はこの上に貼り付いて描かれる）
@@ -39337,6 +39566,7 @@ const DRAGON_PARTS_ALIAS = {
   ball: "fire", mole: "crimson",   // v3.29.0
   magnet: "shadow", twin: "swallow", chain: "heavy", drum: "rainbow",   // v3.31.0
   aim: "mecha",   // v3.64.0
+  recall: "wedge",   // v3.72.0: 呼び戻し竜は専用の絵ができるまで穿つ楔の絵を水色に
   wisp: "ice",   // v3.36.0（ゲーム中は竜の絵を描かず灯で描く。図鑑などの見本用）
   flail: "heavy",   // v3.40.0
   whale: "gargoyle",   // v3.57.0
