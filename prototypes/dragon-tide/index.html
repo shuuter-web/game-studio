@@ -1571,6 +1571,7 @@ const DEBUG_ENEMY_LABELS = {
   grapeshot: "💥散弾砲車", steamhammer: "🔨蒸気打鉄", repulsor: "🌀反発塔車",
   concussion: "📣衝撃砲", gravitygun: "🕳重力砲",
   war_elephant: "🐘戦象(弓兵4人つき)", scythe_chariot: "⚔鎌付き戦車",   // v3.60.0
+  scythe_convoy: "⚔⚔鎌付き戦車の車列(3台)", moving_fortress: "🏯動く砦(砲台4基つき)",   // 案帳 DT-239/487 手直し
   kite_soldier: "🪁雷凧の兵",   // v3.61.0
   longbowmen: "🏹遠矢の弓隊", troop_airship: "🎈落下兵の飛行船",   // v3.63.0
 };
@@ -1586,7 +1587,7 @@ const DEBUG_ENEMY_ORDER = [
   "shieldman", "splitter", "lurker", "flamewagon", "miasma", "teslawagon",
   "mammoth", "colossus", "knights", "ironclad", "balloon", "raider",
   "warlord", "shockman", "healer", "summoner", "treasure", "behemoth_core",
-  "walker_hull", "war_elephant", "scythe_chariot", "kite_soldier", "longbowmen", "troop_airship",
+  "walker_hull", "war_elephant", "scythe_chariot", "scythe_convoy", "moving_fortress", "kite_soldier", "longbowmen", "troop_airship",
   // v2.0.0: 軌道の敵。線路が無い地域では湧かせられない（押しても何も起きない）
   "railgun_loco", "railcar", "railram",
   // v3.17.0: 大樹海の敵（樹冠が無い地域では隠れも切り拓きも起きない）
@@ -1656,6 +1657,17 @@ function debugSpawnEnemy(key) {
   if (key === "war_elephant") {   // v3.60.0: 背の弓兵ごと
     const el = spawnOne(def, 0, 0);
     for (const r of attachElephantRiders(el)) movers.push(r);
+    return;
+  }
+  if (def.convoyCount) {   // 案帳 DT-239 手直し: 鎌付き戦車の車列。列が群れへ向かないよう、縦（下向き）に並べて出す
+    const lead = spawnOne(def, 0, 0);
+    lead.headingX = 0; lead.headingY = 1;
+    for (const f of attachScytheConvoy(lead)) { movers.push(f); spawnDragonAppearEffect(f.wx, f.wy); }
+    return;
+  }
+  if (key === "moving_fortress") {   // 案帳 DT-487 手直し: 四隅の砲台ごと（ラッシュの外で出したものも撃つ）
+    const fort = spawnOne(def, 0, 0);
+    for (const t of attachFortressTurrets(fort, 1)) movers.push(t);
     return;
   }
   if (key === "behemoth_core") {
@@ -9421,6 +9433,14 @@ const MOVER_DEFS = {
     name: "moving_fortress", hp: 2400, speed: 34, xp: 1200, eggDrop: 6, radius: 42, turnRate: 0.7,
     color: "#6f7c8e", glowColor: "#ffd090", moveType: "patrol", showHpBar: true,
     shieldArc: Math.PI * 2 / 3, shieldBlock: 0.25,   // 正面±120°＝後ろの±60°だけが弱点
+    // 案帳 DT-487 手直し（Shooter「見た目が地味。何かパーツに分かれた敵であってほしい」）: 塔の本体・四隅の砲台・後ろの扉を
+    // 別々の絵にして組み立てる。四隅の砲台は別の敵（fortress_turret）で、狙う向きへ回り、壊せばその砲台は撃たなくなる
+    fortressParts: true, codexSprite: "fortress_body", wreckSprite: "fortress_body",
+  },
+  // 案帳 DT-487 手直し: 動く砦の四隅の砲台。砦に乗って動き、自分で狙って撃つ。1基ずつ壊せる（壊すと残骸になって撃たなくなる）
+  fortress_turret: {
+    name: "fortress_turret", part: "rider", fortressTurret: true, hp: 260, speed: 0, xp: 90, eggDrop: 0, eggChance: 0.5, radius: 11,
+    color: "#4a5664", glowColor: "#ffd060", moveType: "patrol", hpBarWhenHurt: true, codexSprite: "fortress_gun",
   },
   // v3.60.0（案帳 DT-218・Shooter判定「乗っている人と象を別パーツで」「町に逃げるギミックは要らない」）: 戦象。
   // 背の弓兵4人は別の敵（part: "rider"）で、象の背に乗って動き、群れを撃つ。弓兵が残っている間は象の体は固い
@@ -9443,9 +9463,16 @@ const MOVER_DEFS = {
     hp: 900, speed: 30, xp: 520, eggDrop: 4, radius: 28, turnRate: Math.PI / 2 * 0.5,
     color: "#7f93a6", glowColor: "#9ff0ff", moveType: "patrol",
   },
+  // 案帳 DT-239 手直し（Shooter「鎌部分と戦車部分を別々に画像生成して組み立てて」）: 車体と鎌は別の絵（drawScytheChariotSprite）
   scythe_chariot: {
     name: "scythe_chariot", scythe: true, hp: 380, speed: 125, xp: 240, eggDrop: 3, radius: 18, turnRate: 1.7, showHpBar: true,
-    color: "#6f7c8e", glowColor: "#e0e8f0", moveType: "patrol",
+    color: "#6f7c8e", glowColor: "#e0e8f0", moveType: "patrol", codexSprite: "scythe_chariot_body",
+  },
+  // 案帳 DT-239 手直し（Shooter「これが前後に車列になって追いかけてくる強化バージョンも」）: 鎌付き戦車の車列。
+  // convoyCount 台が先頭の通った跡を前後に連なってたどる。先頭が倒れると次の車が先頭を引き継ぐ。中世・近世に1列
+  scythe_convoy: {
+    name: "scythe_convoy", scythe: true, convoyCount: 3, hp: 460, speed: 135, xp: 260, eggDrop: 3, radius: 18, turnRate: 1.6, showHpBar: true,
+    color: "#5e6676", glowColor: "#ffb8a8", moveType: "patrol", codexSprite: "scythe_chariot_body",
   },
   // v3.60.0（案帳 DT-257）: 英雄の仲間。英雄が戻ってくるたびに1人ずつ増える（2回目 盾投げの騎士・3回目 大魔法使い・4回目〜 弓手）
   hero_shield: { name: "hero_shield", heroMate: "shield", hp: 520, speed: 0, xp: 380, eggDrop: 2, radius: 9,
@@ -11629,6 +11656,13 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
     el.maxHp = el.hp = MOVER_DEFS.war_elephant.hp; el.xpValue = MOVER_DEFS.war_elephant.xp;
     result.push(el, ...attachElephantRiders(el));
   }
+  // 案帳 DT-239 手直し: 鎌付き戦車の車列（強化版）を中世・近世に。先頭の後ろに車が連なる
+  for (let k = 0; k < (SCYTHE_CONVOY_BY_STAGE[stageIndex] || 0); k++) {
+    const def = MOVER_DEFS.scythe_convoy;
+    const lead = makeMover(def, randPoint);
+    lead.maxHp = lead.hp = def.hp; lead.xpValue = def.xp;
+    result.push(lead, ...attachScytheConvoy(lead));
+  }
 
   // v0.26: 巨獣（多パーツボス）を後半の一部ステージ（STAGE6・STAGE8）に1体。
   if (stageIndex === 5 || stageIndex === 7) {
@@ -11961,19 +11995,75 @@ const SCYTHE_ORBIT_R    = 240;    // 回り込むときの半径
 const SCYTHE_PASS_R     = 30;     // すれ違うときの半径（鎌が群れを通る）
 const SCYTHE_ORBIT_TIME = 2.6;    // 回り込んでいる秒数（このあとすれ違いに入る）
 const SCYTHE_PASS_TIME  = 2.2;    // すれ違いの秒数
-const SCYTHE_LEN        = 46;     // 鎌の届く長さ（車体の中心から右へ）
+const SCYTHE_LEN        = 46;     // 鎌の届く長さ（車体の中心から右へ）。絵が読めなかったときのベクター描画だけが使う
 const SCYTHE_HIT_W      = 11;     // 鎌の太さ（当たり）
 const SCYTHE_DAMAGE     = 14;     // 竜のHPは30。触れると大きく傷つく
 const SCYTHE_IMPACT     = 140;
 const SCYTHE_REHIT      = 0.8;    // 同じ竜にもう一度当たるまで（秒）
 const SCYTHE_SAFE_MULT  = 2;      // 鎌の無い側から受ける傷の倍率
 const SCYTHE_SIDE_ARC   = 1.0;    // 鎌の側（右）とみなす角度の幅（±rad）
+const SCYTHE_TRAIL_LIFE = 0.6;    // 砂煙の残る秒数（見た目だけ）
+// 案帳 DT-239 手直し: 車体と鎌は別々の絵を組み立てる。寸法は絵の実測（割合）で、半径に掛けて大きさにする。
+// 鎌の当たりも絵から求める（絵が読めなくても同じ当たり＝ロードの成否で遊びが変わらない）
+const SCYTHE_ART = {
+  bodyLen: 3.6,                 // 車体の絵の長さ＝半径×これ（ほかの縦長の敵と同じ規則）
+  bodyAspect: 128 / 320,        // 車体の絵の 幅÷高さ
+  bodyPx: 0.492, bodyPy: 0.62,  // 車体の回転軸（アルファ重心）
+  wheelFx: 0.95, wheelFy: 0.83, // 右の車輪の外側＝鎌の付け根
+  bladeW: 2.2,                  // 鎌の絵の幅＝半径×これ
+  bladeAspect: 154 / 320,       // 鎌の絵の 高さ÷幅
+  hubFx: 0.02, hubFy: 0.82,     // 鎌の絵の軸（左端）
+  tipFx: 0.99, tipFy: 0.02,     // 鎌の切っ先（右上）
+  glintPeriod: 1.6,             // 刃の上を光が走る周期（秒）
+};
+/** 鎌の付け根と切っ先（車体の向きに対する 前＝fwd・右＝lat。半径から求める） */
+function scytheBladeGeom(def) {
+  const A = SCYTHE_ART, R = def.radius;
+  const bodyH = R * A.bodyLen, bodyW = bodyH * A.bodyAspect;
+  const bladeW = R * A.bladeW, bladeH = bladeW * A.bladeAspect;
+  // 絵の座標（右＝lat・下＝後ろ）で、鎌の軸を右の車輪に合わせる
+  const wheelX = (A.wheelFx - A.bodyPx) * bodyW, wheelY = (A.wheelFy - A.bodyPy) * bodyH;
+  const x0 = wheelX - A.hubFx * bladeW, y0 = wheelY - A.hubFy * bladeH;
+  return {
+    bodyW, bodyH, bladeW, bladeH, bladeX: x0, bladeY: y0,
+    hubLat: wheelX, hubFwd: -wheelY,
+    tipLat: x0 + A.tipFx * bladeW, tipFwd: -(y0 + A.tipFy * bladeH),
+  };
+}
+const _scytheGeomCache = new Map();
+function scytheGeomFor(def) {
+  let g = _scytheGeomCache.get(def);
+  if (!g) { g = scytheBladeGeom(def); _scytheGeomCache.set(def, g); }
+  return g;
+}
+function newScytheState() { return { phase: "orbit", t: 0, hit: new Map(), trail: [] }; }
+/** 砂煙の跡と鎌の当たり（単独の戦車・車列の各車で共通） */
+function scytheTrailAndBlade(m, sc, dt) {
+  // 砂煙の跡（見た目だけ）
+  sc.trail.push({ x: m.wx - m.headingX * 14, y: m.wy - m.headingY * 14, t: 0 });
+  for (const p of sc.trail) p.t += dt;
+  while (sc.trail.length && sc.trail[0].t > SCYTHE_TRAIL_LIFE) sc.trail.shift();
+  // 鎌：車体の右（-hy, hx）の、付け根から切っ先までの線分に触れた竜を薙ぐ
+  const g = scytheGeomFor(m.def);
+  const fx = m.headingX, fy = m.headingY, sx = -fy, sy = fx;
+  const x0 = m.wx + sx * g.hubLat + fx * g.hubFwd, y0 = m.wy + sy * g.hubLat + fy * g.hubFwd;
+  const x1 = m.wx + sx * g.tipLat + fx * g.tipFwd, y1 = m.wy + sy * g.tipLat + fy * g.tipFwd;
+  for (const [i, tm] of sc.hit) { if (tm - dt <= 0) sc.hit.delete(i); else sc.hit.set(i, tm - dt); }
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i] || sc.hit.has(i)) continue;
+    const r = SCYTHE_HIT_W * boidBodyScale(i);
+    if (pointSegDist2(px[i], py[i], x0, y0, x1, y1) > r * r) continue;
+    hitBoid(i, { direct: SCYTHE_DAMAGE, impact: SCYTHE_IMPACT }, sx, sy);
+    sc.hit.set(i, SCYTHE_REHIT);
+    spawnHitParticles(px[i], py[i]);
+  }
+}
 /** 回り込みとすれ違い。群れが遠いときは false を返して、ふつうの巡回に任せる */
 function updateScytheChariot(m, dt) {
   const c = calcFriendlyCentroid();
   const rx = m.wx - c.x, ry = m.wy - c.y, d = Math.sqrt(rx * rx + ry * ry) || 1;
   if (d > SCYTHE_ENGAGE_R || countAliveBoids() === 0) return false;
-  if (!m.sc) m.sc = { phase: "orbit", t: 0, hit: new Map(), trail: [] };
+  if (!m.sc) m.sc = newScytheState();
   const sc = m.sc;
   sc.t += dt;
   if (sc.phase === "orbit" && sc.t > SCYTHE_ORBIT_TIME) { sc.phase = "pass"; sc.t = 0; }
@@ -11991,22 +12081,95 @@ function updateScytheChariot(m, dt) {
   const spd = m.def.speed * (frostFields.length ? frostSpeedMultAt(m.wx, m.wy) : 1);
   m.wx = Math.max(40, Math.min(WORLD_W - 40, m.wx + m.headingX * spd * dt));
   m.wy = Math.max(40, Math.min(WORLD_H - 40, m.wy + m.headingY * spd * dt));
-  // 砂煙の跡（見た目だけ）
-  sc.trail.push({ x: m.wx - m.headingX * 14, y: m.wy - m.headingY * 14, t: 0 });
-  for (const p of sc.trail) p.t += dt;
-  while (sc.trail.length && sc.trail[0].t > 0.6) sc.trail.shift();
-  // 鎌：車体の右（-hy, hx）へ伸びる線分に触れた竜を薙ぐ
-  const sx = -m.headingY, sy = m.headingX;
-  const x0 = m.wx + sx * 10, y0 = m.wy + sy * 10, x1 = m.wx + sx * SCYTHE_LEN, y1 = m.wy + sy * SCYTHE_LEN;
-  for (const [i, tm] of sc.hit) { if (tm - dt <= 0) sc.hit.delete(i); else sc.hit.set(i, tm - dt); }
-  for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i] || sc.hit.has(i)) continue;
-    const r = SCYTHE_HIT_W * boidBodyScale(i);
-    if (pointSegDist2(px[i], py[i], x0, y0, x1, y1) > r * r) continue;
-    hitBoid(i, { direct: SCYTHE_DAMAGE, impact: SCYTHE_IMPACT }, sx, sy);
-    sc.hit.set(i, SCYTHE_REHIT);
-    spawnHitParticles(px[i], py[i]);
+  scytheTrailAndBlade(m, sc, dt);
+  return true;
+}
+
+// ---- 案帳 DT-239 手直し: 鎌付き戦車の車列 ----
+// 先頭（convoy を持つ）は単独の戦車と同じに動き、通った跡を記録する。後ろの車（convoyLeader を持つ）は
+// 先頭の跡を「k 台目 × 車間」だけ遅れてなぞる＝曲がるときも同じ所で曲がる列になる。
+// 先頭が倒れたら、生きている次の車が先頭を引き継ぐ（列は崩れずに追い続ける）
+const SCYTHE_CONVOY_BY_STAGE = [0, 0, 1, 1];   // ステージごとの列の数（中世・近世）
+const SCYTHE_CONVOY_GAP      = 60;             // 車間（跡の道のり px）。車体の長さ＋鎌が隣の車に重ならない幅
+const SCYTHE_CONVOY_REC_STEP = 3;              // 跡を1点足す最小の移動（px）
+const SCYTHE_CONVOY_KEEP     = 2;              // 列の長さより何台ぶん余分に跡を残すか
+/** 先頭の後ろに車を足して列にする（足した車を返す。movers には呼ぶ側が入れる） */
+function attachScytheConvoy(leader) {
+  const def = leader.def, n = def.convoyCount;
+  const hx = leader.headingX, hy = leader.headingY;
+  leader.convoy = { members: [], path: [] };
+  // 跡を真後ろへまっすぐ敷いておく（湧いた瞬間から一列に並ぶ）
+  for (let back = (n + SCYTHE_CONVOY_KEEP) * SCYTHE_CONVOY_GAP; back > 0; back -= SCYTHE_CONVOY_GAP / 4)
+    leader.convoy.path.push({ x: leader.wx - hx * back, y: leader.wy - hy * back });
+  for (let k = 1; k < n; k++) {
+    const f = makeMover(def, () => ({ x: leader.wx, y: leader.wy }));
+    f.maxHp = f.hp = leader.maxHp; f.xpValue = leader.xpValue;
+    f.waypoints = leader.waypoints;
+    f.convoyLeader = leader; f.convoyIdx = k;
+    placeScytheFollower(f);
+    leader.convoy.members.push(f);
   }
+  return leader.convoy.members;
+}
+const _convoyPt = { x: 0, y: 0, dx: 0, dy: 0, idx: 0 };
+/** 先頭の今の位置から跡を dist だけさかのぼった点と、そこでの進む向き */
+function convoyPathPoint(leader, dist, out) {
+  const path = leader.convoy.path;
+  let ax = leader.wx, ay = leader.wy, left = dist;
+  out.dx = leader.headingX; out.dy = leader.headingY;
+  for (let i = path.length - 1; i >= 0; i--) {
+    const bx = path[i].x, by = path[i].y;
+    const seg = Math.sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
+    if (seg > 0) { out.dx = (ax - bx) / seg; out.dy = (ay - by) / seg; }
+    if (seg >= left && seg > 0) {
+      const t = left / seg;
+      out.x = ax + (bx - ax) * t; out.y = ay + (by - ay) * t; out.idx = i;
+      return out;
+    }
+    left -= seg; ax = bx; ay = by;
+  }
+  out.x = ax; out.y = ay; out.idx = 0;
+  return out;
+}
+function recordScytheConvoyPath(m) {
+  const path = m.convoy.path, last = path[path.length - 1];
+  if (last && dist2(last.x, last.y, m.wx, m.wy) < SCYTHE_CONVOY_REC_STEP * SCYTHE_CONVOY_REC_STEP) return;
+  path.push({ x: m.wx, y: m.wy });
+  // 列の長さ＋余りより古い跡は捨てる
+  convoyPathPoint(m, (m.convoy.members.length + SCYTHE_CONVOY_KEEP) * SCYTHE_CONVOY_GAP, _convoyPt);
+  if (_convoyPt.idx > 0) path.splice(0, _convoyPt.idx);
+}
+function placeScytheFollower(f) {
+  convoyPathPoint(f.convoyLeader, f.convoyIdx * SCYTHE_CONVOY_GAP, _convoyPt);
+  f.wx = _convoyPt.x; f.wy = _convoyPt.y;
+  f.headingX = _convoyPt.dx; f.headingY = _convoyPt.dy;
+}
+/** 倒れた先頭の跡目（生きている一番前の車）。跡は跡目より前の分を切って引き継ぐ */
+function promoteScytheConvoy(old) {
+  if (old._convoyHeir !== undefined) return old._convoyHeir;
+  const alive = old.convoy.members.filter(f => f.alive);
+  const heir = alive.shift() ?? null;
+  old._convoyHeir = heir;
+  if (!heir) return null;
+  convoyPathPoint(old, heir.convoyIdx * SCYTHE_CONVOY_GAP, _convoyPt);
+  const path = old.convoy.path.slice(0, _convoyPt.idx + 1);
+  delete heir.convoyLeader; delete heir.convoyIdx;
+  heir.convoy = { members: alive, path };
+  heir.wpIdx = old.wpIdx;
+  if (old.sc) { if (!heir.sc) heir.sc = newScytheState(); heir.sc.phase = old.sc.phase; heir.sc.t = old.sc.t; }
+  alive.forEach((f, k) => { f.convoyLeader = heir; f.convoyIdx = k + 1; });
+  return heir;
+}
+/** 後ろの車：先頭の跡をなぞって鎌を振る。自分が先頭を継いだら false（先頭として動かす） */
+function updateScytheFollower(m, dt) {
+  let L = m.convoyLeader;
+  if (!L.alive) {
+    L = promoteScytheConvoy(L);
+    if (!L || L === m || !m.convoyLeader) return false;
+  }
+  placeScytheFollower(m);
+  if (!m.sc) m.sc = newScytheState();
+  scytheTrailAndBlade(m, m.sc, dt);
   return true;
 }
 
@@ -12620,12 +12783,20 @@ function updateMovers(dt) {
     if (def.part === "train") continue;
     if (def.railBound) { updateRailMover(m, dt); continue; }
     if (def.hero) { updateHero(m, dt); continue; }   // v3.35.0: 人類の英雄は自前で動いて斬る
-    if (def.part === "rider") { updateElephantRider(m, dt); continue; }   // v3.60.0: 戦象の背の弓兵
+    if (def.part === "rider") {   // v3.60.0: 戦象の背の弓兵 / 案帳 DT-487 手直し: 動く砦の四隅の砲台
+      if (def.fortressTurret) updateFortressTurret(m, dt); else updateElephantRider(m, dt);
+      continue;
+    }
+    if (def.fortressParts) updateMovingFortress(m);   // 案帳 DT-487 手直し: 壊れた砲台を残骸にする（本体の移動は共通のまま）
     if (def.kite) { updateKiteSoldier(m, dt); continue; }                 // v3.61.0: 雷凧の兵（その場で凧を揚げている）
     if (m.para) { m.para.t -= dt; if (m.para.t > 0) continue; m.para = null; }   // v3.63.0: 落下傘で降りている間は動かない
     if (def.airship && updateTroopAirship(m, dt)) continue;              // v3.63.0: 落下兵の飛行船（群れの横をかすめて往復）
     if (def.heroMate) { updateHeroMate(m, dt); continue; }               // v3.60.0: 英雄の仲間
-    if (def.scythe && updateScytheChariot(m, dt)) continue;               // v3.60.0: 鎌付き戦車（群れが遠いときはふつうに巡回）
+    if (def.scythe) {                                                     // v3.60.0: 鎌付き戦車（群れが遠いときはふつうに巡回）
+      if (m.convoyLeader && updateScytheFollower(m, dt)) continue;        // 案帳 DT-239 手直し: 車列の後ろの車は先頭の跡をなぞる
+      if (m.convoy) recordScytheConvoyPath(m);
+      if (updateScytheChariot(m, dt)) continue;
+    }
     // 胴は共通の移動・攻撃に乗せたうえで、脚の本数と砲塔だけ先に片付ける
     if (def.walker) updateWalkerHull(m, dt);
 
@@ -13043,7 +13214,7 @@ function updateMovers(dt) {
   for (const a of movers) {
     // v1.8.0: 関節パーツ（巨獣の腕・多脚戦車の脚）は押し合いの対象外。
     // 親に付いて動くものを押すと、関節の計算と喧嘩して暴れる
-    if (!a.alive || a.def.part === "arm" || a.def.part === "leg" || a.def.part === "rider" ||
+    if (!a.alive || a.def.part === "arm" || a.def.part === "leg" || a.def.part === "rider" || a.convoyLeader ||   // 車列の後ろの車は跡に乗っているので押さない
         isRailVehicle(a.def) || a.submerged || a.def.roadRunner) continue;
     sepList.push(a);
   }
@@ -13459,10 +13630,94 @@ const TR_HARPOON_DUR      = 45;             // この時間で騎士は引き揚
 // v3.54.0（案帳 DT-487〜489・Shooter指示「ラッシュは強敵か、たくさんの敵が出る形」）
 const TR_FORTRESS_HP_STAGE = 0.6;     // 動く砦：ステージ1つ進むごとの体力の上げ幅
 const TR_FORTRESS_DUR      = 50;
-const TR_FORTRESS_FIRE     = 0.9;     // 四隅の砲台が撃つ間隔（秒）
+const TR_FORTRESS_FIRE     = 0.9;     // 砲台1基が撃つ間隔（秒）。四隅は出だしをずらして代わる代わる撃つ
 const TR_FORTRESS_RANGE    = 460;
 const TR_FORTRESS_SHOT_DMG = 3;       // 1発の威力（ステージ1つ進むごとに +1）
 const TR_FORTRESS_SHOT_SPEED = 170;
+// 案帳 DT-487 手直し（Shooter「見た目が地味。何かパーツに分かれた敵であってほしい」）: 塔の本体・四隅の砲台・後ろの扉を別々の絵で組み立てる。
+// 寸法は絵の実測（割合）。砲台の当たりと位置もここから求める（絵が読めなくても遊びは同じ）
+const FORTRESS_ART = {
+  bodyScale: 2.3,                 // 本体の絵の幅＝半径×これ
+  bodyAspect: 300 / 320,          // 本体の絵の 高さ÷幅
+  cornerFx: 0.17,                 // 四隅の丸い台座の中心（本体の絵に対する割合。左右対称）
+  frontFy: 0.18, rearFy: 0.87,    // 前の台座・後ろの台座の高さ位置
+  turretLen: 3.2,                 // 砲台の絵の長さ＝砲台の半径×これ
+  turretAspect: 183 / 320,        // 砲台の絵の 幅÷高さ
+  turretPy: 0.70,                 // 砲台の回転軸（丸い砲塔の中心）。砲身は絵の上へ伸びる
+  doorW: 0.30,                    // 扉の絵の幅＝本体の幅×これ
+  doorAspect: 249 / 320,          // 扉の絵の 高さ÷幅
+  doorOut: 0.35,                  // 扉が後ろの壁から外へはみ出す割合（下ろした跳ね橋に見える）
+};
+const FORTRESS_TURRET_HP_STAGE = 0.6;   // 砲台の体力：ステージ1つ進むごとの上げ幅（砦と同じ）
+const FORTRESS_TURRET_TURN     = 2.2;   // 砲台が向きを変える速さ（rad/秒）
+const FORTRESS_TURRET_AIM_TOL  = 0.25;  // 狙いがこの角度（rad）に収まったら撃つ
+const FORTRESS_TURRET_MUZZLE   = 0.9;   // 砲口の位置＝砲台の半径×絵の長さ×これ×回転軸から上の割合
+const FORTRESS_TURRET_FLASH    = 0.12;  // 撃ったときの砲口の光（秒・見た目だけ）
+const FORTRESS_TURRET_BLAST    = 26;    // 壊れたときの爆発の大きさ（見た目だけ）
+/** 四隅の台座の位置（砦の向きに対する 前＝fwd・右＝lat） */
+function fortressCornerSeats(def) {
+  const A = FORTRESS_ART, W = def.radius * A.bodyScale, H = W * A.bodyAspect;
+  const lat = (0.5 - A.cornerFx) * W, front = (0.5 - A.frontFy) * H, rear = (A.rearFy - 0.5) * H;
+  return [[front, -lat], [front, lat], [-rear, lat], [-rear, -lat]];
+}
+/** 砦に四隅の砲台を付ける（movers には呼ぶ側が入れる）。hpMult は砦と同じ体力倍率 */
+function attachFortressTurrets(fort, hpMult) {
+  const def = MOVER_DEFS.fortress_turret;
+  const seats = fortressCornerSeats(fort.def);
+  fort._fortress = { turrets: [] };
+  for (let k = 0; k < seats.length; k++) {
+    const t = makeMover(def, () => ({ x: fort.wx, y: fort.wy }));
+    t.maxHp = t.hp = def.hp * hpMult; t.xpValue = def.xp;
+    t.parent = fort; t.seat = seats[k];
+    t.aim = Math.atan2(fort.headingY, fort.headingX) + Math.atan2(seats[k][1], seats[k][0]);   // 外向きに構えて出る
+    t.attackTimer = TR_FORTRESS_FIRE * (k + 1) / seats.length;   // 4基が一斉に撃たないようにずらす
+    t.flash = 0;
+    if (fort._tr) t._tr = true;   // ラッシュの取り消しで砦と一緒に片付ける
+    placeElephantRider(t);        // 戦象の弓兵と同じ「乗り物の座席に付いて動く」置き方
+    t.headingX = Math.cos(t.aim); t.headingY = Math.sin(t.aim);
+    fort._fortress.turrets.push(t);
+  }
+  return fort._fortress.turrets;
+}
+/** 砦の砲台：座席に付いて動き、近い竜へ砲を回して撃つ。砦が倒れたら一緒に崩れる */
+function updateFortressTurret(t, dt) {
+  const fort = t.parent;
+  if (!fort || !fort.alive) {
+    t.alive = false;
+    spawnExplosionFx(t.wx, t.wy, FORTRESS_TURRET_BLAST, { fire: 0.6, dust: true });
+    return;
+  }
+  placeElephantRider(t);
+  t.flash = Math.max(0, t.flash - dt);
+  t.attackTimer -= dt;
+  const i = findNearestAliveBoid(t.wx, t.wy);
+  const inRange = i >= 0 && dist2(px[i], py[i], t.wx, t.wy) <= TR_FORTRESS_RANGE * TR_FORTRESS_RANGE;
+  let want = Math.atan2(fort.headingY, fort.headingX) + Math.atan2(t.seat[1], t.seat[0]);   // 撃つ相手が居なければ外を向く
+  if (inRange) want = Math.atan2(py[i] - t.wy, px[i] - t.wx);
+  const diff = wrapAngle(want - t.aim);
+  t.aim += Math.max(-FORTRESS_TURRET_TURN * dt, Math.min(FORTRESS_TURRET_TURN * dt, diff));
+  t.headingX = Math.cos(t.aim); t.headingY = Math.sin(t.aim);   // 描画は heading の向きに回す
+  // ラッシュの時間が過ぎて居残った砦は撃たない（v3.54.0 と同じ）
+  if (fort._fortress.silenced || !inRange || t.attackTimer > 0 || Math.abs(diff) > FORTRESS_TURRET_AIM_TOL) return;
+  t.attackTimer = TR_FORTRESS_FIRE;
+  t.flash = FORTRESS_TURRET_FLASH;
+  const muzzle = t.def.radius * FORTRESS_ART.turretLen * FORTRESS_ART.turretPy * FORTRESS_TURRET_MUZZLE;
+  const mx = t.wx + t.headingX * muzzle, my = t.wy + t.headingY * muzzle;
+  spawnFanProjectileRaw(mx, my, t.aim, TR_FORTRESS_SHOT_SPEED,
+    (TR_FORTRESS_SHOT_DMG + runStageIndex) * moverFerocity(), "#ffd060", 1, TR_FORTRESS_RANGE + 60);
+}
+/** 砦の本体：壊れた砲台を残骸にする（爆発と一言。撃たなくなったのが分かるように） */
+function updateMovingFortress(m) {
+  const f = m._fortress;
+  if (!f) return;
+  for (const t of f.turrets) {
+    if (t.alive || t._broken) continue;
+    t._broken = true;
+    t._wreckTilt = fxRandom() * 0.8 - 0.4;   // 残骸の傾き（見た目だけ）
+    spawnExplosionFx(t.wx, t.wy, FORTRESS_TURRET_BLAST, { fire: 0.6, dust: true });
+    if (m.alive) pushWorldText(t.wx, t.wy, STRINGS.trFortressTurretDown, "#ffd060");
+  }
+}
 const TR_GATE_COUNT        = 3;
 const TR_GATE_RING         = 380;     // 群れの重心からの距離
 const TR_GATE_HP_STAGE     = 0.5;
@@ -13682,7 +13937,9 @@ function startTierRush() {
       const a = random() * Math.PI * 2, r = offscreenSpawnRadius();
       const m = spawnTrMover(MOVER_DEFS.moving_fortress, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
       m.maxHp = m.hp = MOVER_DEFS.moving_fortress.hp * (1 + TR_FORTRESS_HP_STAGE * runStageIndex);
-      m._trChase = true; m._fortress = { t: TR_FORTRESS_FIRE, corner: 0 }; m._trReward = "fortress";
+      m._trChase = true; m._trReward = "fortress";
+      // 案帳 DT-487 手直し: 四隅の砲台は別の敵（1基ずつ壊せる）。体力は砦と同じ倍率で上がる
+      for (const t of attachFortressTurrets(m, 1 + FORTRESS_TURRET_HP_STAGE * runStageIndex)) movers.push(t);
       d.total = 1;
       tr.dur = TR_FORTRESS_DUR;
       break;
@@ -13754,6 +14011,8 @@ function endTierRush() {
   }
   // 時間切れで残った敵は、普通の敵として居残る（追跡だけやめる）
   for (const m of movers) if (m._tr) { m._trChase = false; m._trGoal = null; }
+  // 動く砦の砲台も時間切れで撃ち止める（v3.54.0 はラッシュの間だけ撃っていた）
+  if (tr.kind === "fortress") for (const m of movers) if (m._fortress) m._fortress.silenced = true;
   tr.phase = "idle";
   tr.kind = null;
   tr.d = {};
@@ -13794,25 +14053,6 @@ function onTierRushKill(m) {
   }
 }
 
-/** v3.54.0（案帳 DT-487）: 動く砦の四隅の砲台。群れが届く範囲にいる間、四隅から順に撃つ */
-function updateTrFortress(dt) {
-  for (const m of movers) {
-    const f = m._fortress;
-    if (!f || !m.alive) continue;
-    f.t -= dt;
-    if (f.t > 0) continue;
-    f.t = TR_FORTRESS_FIRE / 4;   // 四隅で1周が TR_FORTRESS_FIRE
-    const h = Math.atan2(m.headingY, m.headingX);
-    const ca = h + Math.PI / 4 + f.corner * Math.PI / 2;
-    f.corner = (f.corner + 1) % 4;
-    const cx = m.wx + Math.cos(ca) * m.def.radius * 0.9, cy = m.wy + Math.sin(ca) * m.def.radius * 0.9;
-    const idx = findNearestAliveBoid(cx, cy);
-    if (idx < 0 || dist2(px[idx], py[idx], cx, cy) > TR_FORTRESS_RANGE * TR_FORTRESS_RANGE) continue;
-    attackerNow = moverAttacker(m);
-    spawnFanProjectileRaw(cx, cy, Math.atan2(py[idx] - cy, px[idx] - cx), TR_FORTRESS_SHOT_SPEED,
-      (TR_FORTRESS_SHOT_DMG + runStageIndex) * moverFerocity(), "#ffd060", 1, TR_FORTRESS_RANGE + 60);
-  }
-}
 /** v3.54.0（案帳 DT-488）: 湧き出る門。生きている門から一定の間隔で敵が湧く */
 function updateTrGates(d, dt) {
   const c = calcFriendlyCentroid();
@@ -13979,7 +14219,7 @@ function updateTierRush(wdt, dt) {
       break;
     }
     case "meteor": updateTrMeteors(d, wdt); break;
-    case "fortress": updateTrFortress(wdt); break;   // v3.54.0
+    // v3.54.0 の動く砦の砲撃は、案帳 DT-487 手直しで四隅の砲台（fortress_turret）が自分で撃つ形になった
     case "gates": updateTrGates(d, wdt); break;
     case "twinelite": updateTrTwinRage(); break;
     case "volley": updateTrVolley(d); break;
@@ -15271,7 +15511,7 @@ function drawMoverWrecks() {
     if (m.wx < bounds.minX || m.wx > bounds.maxX ||
         m.wy < bounds.minY || m.wy > bounds.maxY) continue;
     const look = moverDeathLook(d);
-    const key  = m.def.sprite ?? m.def.name;
+    const key  = m.def.wreckSprite ?? m.def.sprite ?? m.def.name;   // 案帳 DT-487 手直し: 部品を組み立てる敵は残骸の絵を別に指す
     const img  = enemyImages[key];
     const meta = ENEMY_SPRITE_META[key];
     // v2.6.3: 縮小と焦げ跡はやめた（Shooter判定「小さくするのは理由が不明で変」
@@ -16788,6 +17028,108 @@ function drawRailExtras() {
 }
 
 /** 移動敵の描画（本体＋HPバー＋衝撃波リング）。ワールド座標系で呼ぶ。 */
+/** 案帳 DT-239 手直し: 鎌付き戦車を車体と鎌の2枚の絵で組み立てる（ctx は車体の位置・進む向き(+x)に回してある）。
+ *  鎌の軸を右の車輪に付け、刃の上を光が走る（見た目だけ）。絵が無ければ false */
+function drawScytheChariotSprite(m) {
+  const body = enemyImages.scythe_chariot_body, blade = enemyImages.scythe_blade;
+  if (!body || !blade) return false;
+  const A = SCYTHE_ART, g = scytheGeomFor(m.def);
+  ctx.save();
+  ctx.rotate(Math.PI / 2);   // 絵は前が上
+  ctx.drawImage(body, -A.bodyPx * g.bodyW, -A.bodyPy * g.bodyH, g.bodyW, g.bodyH);
+  ctx.drawImage(blade, g.bladeX, g.bladeY, g.bladeW, g.bladeH);
+  // 光：刃の内側の縁（絵の実測を2次曲線で近似）を付け根から切っ先へ走る
+  const ph = ((breathTime + (m.swayPhase ?? 0)) % A.glintPeriod) / A.glintPeriod;
+  const RUN = 0.45;   // 1周期のうち光が走っている割合
+  if (ph < RUN) {
+    const k = ph / RUN, a = Math.sin(Math.PI * k), u = 1 - k;
+    const ex = u * u * 0.19 + 2 * u * k * 0.75 + k * k * 0.97;
+    const ey = u * u * 0.69 + 2 * u * k * 0.73 + k * k * 0.06;
+    const gx = g.bladeX + ex * g.bladeW, gy = g.bladeY + ey * g.bladeH;
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.3 * a;
+    ctx.drawImage(blade, g.bladeX, g.bladeY, g.bladeW, g.bladeH);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = "#ffffff";
+    const r = 1.2 + 4.5 * a;
+    ctx.beginPath();
+    ctx.moveTo(gx, gy - r); ctx.lineTo(gx + r * 0.22, gy - r * 0.22); ctx.lineTo(gx + r, gy); ctx.lineTo(gx + r * 0.22, gy + r * 0.22);
+    ctx.lineTo(gx, gy + r); ctx.lineTo(gx - r * 0.22, gy + r * 0.22); ctx.lineTo(gx - r, gy); ctx.lineTo(gx - r * 0.22, gy - r * 0.22);
+    ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  return true;
+}
+
+/** 案帳 DT-487 手直し: 動く砦の本体・後ろの扉（弱点。明るく脈打つ）・壊れた砲台の残骸を描く。
+ *  ctx は砦の位置・進む向き(+x)に回してある。絵が無ければ false */
+function drawMovingFortressSprite(m) {
+  const body = enemyImages.fortress_body, door = enemyImages.fortress_door;
+  if (!body || !door) return false;
+  const A = FORTRESS_ART, W = m.def.radius * A.bodyScale, H = W * A.bodyAspect;
+  ctx.save();
+  ctx.rotate(Math.PI / 2);   // 絵は前が上。後ろ＝絵の下
+  ctx.drawImage(body, -W / 2, -H / 2, W, H);
+  // 壊れた砲台：暗い残骸を台座に傾けて置き、細い煙を上げる
+  const tImg = enemyImages.fortress_gun, f = m._fortress;
+  if (f && tImg) {
+    const tL = MOVER_DEFS.fortress_turret.radius * A.turretLen, tW = tL * A.turretAspect;
+    const heading = Math.atan2(m.headingY, m.headingX);
+    for (const t of f.turrets) {
+      if (t.alive) continue;
+      const X = t.seat[1], Y = -t.seat[0];
+      ctx.save();
+      ctx.translate(X, Y);
+      ctx.rotate(wrapAngle(t.aim - heading) + (t._wreckTilt || 0));
+      ctx.drawImage(wreckDarkSpriteFor("fortress_gun", tImg), -tW / 2, -tL * A.turretPy, tW, tL);
+      ctx.restore();
+      for (let k = 0; k < 3; k++) {
+        const ph = (breathTime * 0.7 + k / 3 + (m.swayPhase ?? 0)) % 1;
+        ctx.globalAlpha = 0.35 * (1 - ph);
+        ctx.fillStyle = "#5a5450";
+        ctx.beginPath(); ctx.arc(X + ph * 6, Y - ph * 14, 3 + ph * 5, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+  // 後ろの扉（弱点）：本体の後ろの壁から下ろした跳ね橋のようにはみ出し、まわりが温かく脈打つ
+  const dW = W * A.doorW, dH = dW * A.doorAspect;
+  const dy = H / 2 - dH * (1 - A.doorOut);
+  const pulse = 0.5 + 0.5 * Math.sin(breathTime * 4 + (m.swayPhase ?? 0));
+  ctx.globalAlpha = 0.25 + 0.3 * pulse;
+  ctx.fillStyle = "#ffc860";
+  ctx.beginPath(); ctx.ellipse(0, dy + dH * 0.5, dW * 0.8, dH * 0.85, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.drawImage(door, -dW / 2, dy, dW, dH);
+  ctx.restore();
+  return true;
+}
+
+/** 案帳 DT-487 手直し: 動く砦の砲台1基（ctx は砲台の位置・狙う向き(+x)に回してある） */
+function drawFortressTurretSprite(t) {
+  const A = FORTRESS_ART, img = enemyImages.fortress_gun;
+  const L = t.def.radius * A.turretLen, W = L * A.turretAspect;
+  const muzzle = L * A.turretPy * FORTRESS_TURRET_MUZZLE;
+  if (img) {
+    ctx.save();
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(img, -W / 2, -L * A.turretPy, W, L);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = t.def.color;
+    ctx.beginPath(); ctx.arc(0, 0, t.def.radius * 0.85, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#2a323e"; ctx.fillRect(0, -2.5, muzzle, 5);
+  }
+  if (t.flash > 0) {
+    ctx.globalAlpha = t.flash / FORTRESS_TURRET_FLASH;
+    ctx.fillStyle = "#ffe8a0";
+    ctx.beginPath(); ctx.arc(muzzle, 0, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
 function drawMovers() {
   // v3.23.0: 大都会は車が数千台あるので、画面の外の車・戦車・ヘリは描かない
   const metroVb = worldShape === SHAPE_METRO ? getViewBoundsWorld(140) : null;
@@ -17035,13 +17377,17 @@ function drawMovers() {
       ctx.restore();
     } else if (def.name === "moving_fortress") {
       // v3.54.0 動く砦: 四角い塔と四隅の砲台。後ろ（-x）の扉だけ明るい＝弱点
-      ctx.fillStyle = def.color;
-      ctx.fillRect(-34, -34, 68, 68);
-      ctx.strokeStyle = "#3a4452"; ctx.lineWidth = 3; ctx.strokeRect(-34, -34, 68, 68);
-      ctx.fillStyle = "#e8c080"; ctx.fillRect(-38, -12, 8, 24);
-      ctx.fillStyle = "#4a5664";
-      for (const [x, y] of [[-30, -30], [30, -30], [-30, 30], [30, 30]]) { ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill(); }
-      ctx.fillStyle = "#2a323e"; ctx.fillRect(-14, -14, 28, 28);
+      // 案帳 DT-487 手直し: 本体・扉・壊れた砲台の残骸を絵で組み立てる（生きている砲台は別の敵として上に重なる）
+      if (!drawMovingFortressSprite(m)) {
+        ctx.fillStyle = def.color;
+        ctx.fillRect(-34, -34, 68, 68);
+        ctx.strokeStyle = "#3a4452"; ctx.lineWidth = 3; ctx.strokeRect(-34, -34, 68, 68);
+        ctx.fillStyle = "#e8c080"; ctx.fillRect(-38, -12, 8, 24);
+        ctx.fillStyle = "#2a323e"; ctx.fillRect(-14, -14, 28, 28);
+      }
+    } else if (def.fortressTurret) {
+      // 案帳 DT-487 手直し: 動く砦の四隅の砲台。狙う向き（heading）へ回る。撃った瞬間は砲口が光る
+      drawFortressTurretSprite(m);
     } else if (def.name === "rush_gate") {
       // v3.54.0 湧き出る門: 地面に開いた紫の渦（回して見せる。向きは無いので回転を打ち消す）
       ctx.rotate(-angle + breathTime * 1.5);
@@ -17073,25 +17419,28 @@ function drawMovers() {
       ctx.beginPath(); ctx.arc(0, 0, 4.5, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = "#d8c8a0"; ctx.lineWidth = 1.2;
       ctx.beginPath(); ctx.arc(2, 0, 5, -1.1, 1.1); ctx.stroke();
-    } else if (def.name === "scythe_chariot") {
+    } else if (def.scythe) {
       // v3.60.0 鎌付き戦車: 馬・車体・車輪。右（+y）にだけ銀の三日月の鎌。走るときらっと光る
+      // 案帳 DT-239 手直し: 車体と鎌は別々の絵を組み立てる（drawScytheChariotSprite）。車列の強化版も同じ絵
       if (m.sc) for (const p of m.sc.trail) {   // 砂煙（世界座標なので回転を外して描く）
-        const k = 1 - p.t / 0.6;
+        const k = 1 - p.t / SCYTHE_TRAIL_LIFE;
         ctx.save(); ctx.rotate(-angle); ctx.globalAlpha = 0.18 * k; ctx.fillStyle = "#c8b890";
         ctx.beginPath(); ctx.arc(p.x - m.wx, p.y - m.wy, 6 + 6 * (1 - k), 0, Math.PI * 2); ctx.fill(); ctx.restore();
       }
-      ctx.fillStyle = "#8a6038";
-      ctx.beginPath(); ctx.ellipse(22, 0, 10, 4.5, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(32, 0, 3.5, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = "#4a3418"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(4, 0); ctx.stroke();
-      ctx.fillStyle = "#2a2a30"; ctx.fillRect(-6, -13, 8, 4); ctx.fillRect(-6, 9, 8, 4);
-      ctx.fillStyle = def.color; ctx.fillRect(-10, -9, 15, 18);
-      ctx.strokeStyle = "#3a4458"; ctx.lineWidth = 1.2; ctx.strokeRect(-10, -9, 15, 18);
-      const glint = 0.6 + 0.4 * Math.abs(Math.sin(breathTime * 7 + (m.swayPhase ?? 0)));
-      ctx.fillStyle = "#dfe6ee"; ctx.strokeStyle = "#8a96a8"; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(-3, 10); ctx.quadraticCurveTo(-8, 30, 8, SCYTHE_LEN); ctx.quadraticCurveTo(4, 28, 3, 10); ctx.closePath(); ctx.fill(); ctx.stroke();
-      ctx.globalAlpha = glint; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(-4, 16); ctx.quadraticCurveTo(-6, 30, 7, SCYTHE_LEN - 2); ctx.stroke(); ctx.globalAlpha = 1;
+      if (!drawScytheChariotSprite(m)) {
+        ctx.fillStyle = "#8a6038";
+        ctx.beginPath(); ctx.ellipse(22, 0, 10, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(32, 0, 3.5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#4a3418"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(4, 0); ctx.stroke();
+        ctx.fillStyle = "#2a2a30"; ctx.fillRect(-6, -13, 8, 4); ctx.fillRect(-6, 9, 8, 4);
+        ctx.fillStyle = def.color; ctx.fillRect(-10, -9, 15, 18);
+        ctx.strokeStyle = "#3a4458"; ctx.lineWidth = 1.2; ctx.strokeRect(-10, -9, 15, 18);
+        const glint = 0.6 + 0.4 * Math.abs(Math.sin(breathTime * 7 + (m.swayPhase ?? 0)));
+        ctx.fillStyle = "#dfe6ee"; ctx.strokeStyle = "#8a96a8"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(-3, 10); ctx.quadraticCurveTo(-8, 30, 8, SCYTHE_LEN); ctx.quadraticCurveTo(4, 28, 3, 10); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.globalAlpha = glint; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(-4, 16); ctx.quadraticCurveTo(-6, 30, 7, SCYTHE_LEN - 2); ctx.stroke(); ctx.globalAlpha = 1;
+      }
     } else if (def.heroMate) {
       drawHeroMateBody(m);
     } else if (def.name === "longbowmen") {
@@ -22364,7 +22713,7 @@ const STRINGS = {
     gates:    "地面に門が開く",
     twinelite: "二体の精鋭が群れを追ってくる",
   },
-  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた", trGateClosed: "門が閉じた", trTwinRage: "怒り狂った", trTwinSync: "同時に討った", trFortressDown: "砦を落とした",
+  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた", trGateClosed: "門が閉じた", trTwinRage: "怒り狂った", trTwinSync: "同時に討った", trFortressDown: "砦を落とした", trFortressTurretDown: "砲台を壊した",
   trAttackerMeteor: "流星", trAttackerRing: "火の輪",
   defeatTitle: "力尽きた",
   // v3.41.0（案帳 DT-129・Shooter指示「力尽きた時のメッセージにもほかと同じようにフレーバーを」）:
@@ -28476,7 +28825,7 @@ const CODEX_ENEMY_NAMES = {
   splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
   ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
   flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門",
-  kite_soldier: "雷凧の兵", longbowmen: "遠矢の弓隊", troop_airship: "落下兵の飛行船", paratrooper: "落下兵", war_elephant: "戦象", war_elephant_rider: "戦象の弓兵", scythe_chariot: "鎌付き戦車", hero_shield: "盾投げの騎士", hero_mage: "大魔法使い", hero_archer: "英雄の弓手",
+  kite_soldier: "雷凧の兵", longbowmen: "遠矢の弓隊", troop_airship: "落下兵の飛行船", paratrooper: "落下兵", war_elephant: "戦象", war_elephant_rider: "戦象の弓兵", scythe_chariot: "鎌付き戦車", scythe_convoy: "鎌付き戦車の車列", fortress_turret: "動く砦の砲台", hero_shield: "盾投げの騎士", hero_mage: "大魔法使い", hero_archer: "英雄の弓手",
   miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
   concussion: "衝撃砲", annihilator: "殲滅砲兵", gravitygun: "重力砲",
@@ -28497,6 +28846,9 @@ const CODEX_SPECIAL_ERA = {
   eggconvoy:      "全文明 — 警戒度が上がったとき、首都へ逃げる隊列",
   caravan:        "全文明 — 町と町を結ぶ道を往復する（道の無い地域には出ない）",
   caravan_guard:  "全文明 — 行商の隊の前後",
+  scythe_convoy:  "III 中世 / IV 近世 — 鎌付き戦車3台が前後に連なって追ってくる（強化版）",   // 案帳 DT-239 手直し
+  moving_fortress: "警戒度ラッシュ「動く砦」",                                              // 案帳 DT-487 手直し
+  fortress_turret: "警戒度ラッシュ「動く砦」の四隅",
   behemoth_core:  "VI 電気 / VIII 最終",
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
   walker_hull:    "VII 大戦 / VIII 最終",
@@ -28550,6 +28902,13 @@ function codexAttackLabel(def) {
       return `轢殺 威力${r.damage}・範囲${r.radius}・押し${r.push}（線路の上に居ると轢かれる）`;
     }
     if (def.treasure) return "攻撃しない — 逃げ回る";
+    // 案帳 DT-239/487 手直し
+    if (def.scythe)
+      return `鎌 威力${SCYTHE_DAMAGE}（右側だけ。群れを回り込み、すれ違いざまに薙ぐ／鎌の無い側からは×${SCYTHE_SAFE_MULT}効く）` +
+             (def.convoyCount ? `・${def.convoyCount}台が前後に連なって先頭の跡をたどる（先頭が倒れると次の車が継ぐ）` : "");
+    if (def.fortressParts) return "撃たない — 四隅の砲台4基が撃つ。正面と横は硬く、後ろの扉だけがふつうに効く";
+    if (def.fortressTurret)
+      return `砲 威力${TR_FORTRESS_SHOT_DMG}＋時代・射程${TR_FORTRESS_RANGE}・${TR_FORTRESS_FIRE}秒ごと（狙う向きへ回る。壊すとその砲台は撃たなくなる）`;
     return "攻撃しない";
   }
   const t = a.type;
@@ -29054,12 +29413,13 @@ function codexEnemyHtml() {
     }
     const def = e.def;
     const spriteKey = def.sprite ?? def.name;
-    const src = ENEMY_IMAGE_SOURCES[spriteKey];
+    const src = ENEMY_IMAGE_SOURCES[def.codexSprite ?? spriteKey];   // 案帳 DT-239/487 手直し: 部品を組み立てる敵は代表の部品の絵
     const tags = [];
     if (def.elite) tags.push("エリート");
     if (def.knockback) tags.push("押してくる");
     if (def.flying) tags.push("飛行");
     if (def.packCount) tags.push(`${def.packCount}体の隊`);
+    if (def.convoyCount) tags.push(`${def.convoyCount}台の車列`);
     if (def.shieldArc !== undefined) tags.push("正面を弾く");
     if (def.submerge) tags.push("潜る");
     if (def.splitInto) tags.push("分裂する");
@@ -29375,7 +29735,7 @@ const CODEX_RUSH_DESC = {
   convoy:   () => `竜卵を積んだ隊列${TR_CONVOY_COUNT}台が首都へ逃げる。倒すと経験値${TR_CONVOY_XP}と群れの回復`,
   elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}、衝撃波を持つ大型なら ×${TR_ELITE_SHOCKWAVE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
-  fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は絶えず撃ってくる。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
+  fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は1基ずつ狙いを付けて撃ってくる（<b>砲台は1基ずつ壊せる</b>。壊した砲台は撃たなくなる）。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
   gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
   twinelite: () => `大型の精鋭が2体（1体ずつ体力 ×${+TR_TWIN_HP.toFixed(1)}）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
@@ -38819,6 +39179,13 @@ const ENEMY_IMAGE_SOURCES = {
   walker_foot:   "assets/mover_walker_foot.png",
   // v1.8.0: 砲塔は敵そのものではなく胴の上に重ねる部品（drawWalkerTurrets）
   walker_turret: "assets/mover_walker_turret.png",
+  // 案帳 DT-239 手直し: 鎌付き戦車の車体と鎌（別々に生成して drawScytheChariotSprite が組み立てる。ENEMY_SPRITE_META には載せない）
+  scythe_chariot_body: "assets/mover_scythe_chariot_body.png",
+  scythe_blade:        "assets/mover_scythe_blade.png",
+  // 案帳 DT-487 手直し: 動く砦の本体・後ろの扉・四隅の砲台（drawMovingFortressSprite / drawFortressTurretSprite が組み立てる）
+  fortress_body:       "assets/mover_fortress_body.png",
+  fortress_door:       "assets/mover_fortress_door.png",
+  fortress_gun:        "assets/mover_fortress_gun.png",
   // v1.7.0: 腕の関節板。敵そのものではないので ENEMY_SPRITE_META には載せない
   // （drawMovers は通らず、drawBehemothLimbs が自前の寸法で並べる）
   behemoth_link: "assets/mover_behemoth_link.png",
@@ -39068,6 +39435,8 @@ const ENEMY_SPRITE_META = {
   gravitygun:     { px: 0.500, py: 0.509, forward: "none", drawScale: 2.80, hover: true },
   splitter_mid:   { px: 0.484, py: 0.525, forward: "none", drawScale: 3.29, hover: true },
   splitter_small: { px: 0.501, py: 0.505, forward: "none", drawScale: 2.80, hover: true },
+  // 案帳 DT-487 手直し: 動く砦の残骸（drawMoverWrecks が def.wreckSprite で引く）。本編の描画は drawMovingFortressSprite
+  fortress_body:  { px: 0.5, py: 0.5, forward: "up", drawScale: 2.3 },
 };
 
 // ロード済み敵画像（name → HTMLImageElement。ロード失敗したキーは入らない）
