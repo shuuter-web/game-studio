@@ -217,6 +217,8 @@
   .fo-card.ultra { border-color: #ffd060; box-shadow: 0 0 16px rgba(255,200,80,0.65); background: linear-gradient(160deg, rgba(70,44,10,0.96), rgba(30,16,4,0.96)); }
   .fo-card.ultra .fo-rare { color: #ffd060; }
   .fo-card .fo-rare { position: absolute; top: 4px; right: 8px; font-size: 9px; font-weight: 700; color: #8fd8ff; letter-spacing: 0.1em; }
+  /* 案帳 DT-511: そのステージだけ効くカードの札（レアの札と重ならないよう右下） */
+  .fo-card .fo-stageonly { position: absolute; bottom: 4px; right: 8px; font-size: 9px; font-weight: 700; color: #ffb070; letter-spacing: 0.05em; }
   .fo-card.special { border-color: #c890ff; background: linear-gradient(160deg, rgba(44,30,62,0.96), rgba(20,14,30,0.96)); }
   .fo-card .fo-icon { font-size: 26px; line-height: 1; }
   .fo-card .fo-name { font-size: 13px; font-weight: 700; color: #ffe8c0; }
@@ -1347,7 +1349,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.74.0";
+const GAME_VERSION = "v3.75.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3401,7 +3403,28 @@ function applyImpactToBuilding(settlementIdx, impulse, fromX, fromY) {
     const rr = s.radius || 20;
     spawnImpactAbsorbFx(s.wx - (ddx / dd) * rr, s.wy - (ddy / dd) * rr, ddx / dd, ddy / dd, dmg);
   }
+  // 案帳 DT-510（Shooter「鉄鎖竜でやった建物粉砕を衝撃力共通の効果に」）: 衝撃で壊れた建物は砕け散る
+  const prevShatter = impactShatterCtx;
+  impactShatterCtx = impactShatterCtx || impactShatterFrom(s, impulse, fromX, fromY);
   damageBuilding(settlementIdx, dmg);
+  impactShatterCtx = prevShatter;
+}
+
+// 案帳 DT-510: 衝撃で壊れた建物を砕く向きと速さ。鉄鎖のスマッシュ（chainSmashCtx）と同じ形 { x, y, vx, vy }
+const IMPACT_SHATTER_MIN_SPEED = 260;   // 破片の基の速さの下限（px/秒）。弱い衝撃でも砕けたと見える速さ
+const IMPACT_SHATTER_MAX_SPEED = 700;   // 上限（鉄鎖のスマッシュの速い鉄球くらい）
+const IMPACT_SHATTER_SHARD_CAP = 160;   // 外れた破片がこれ以上あるときは砕かない（爆竜などで一度に大量に壊れても重くしない）
+let impactShatterCtx = null;
+function impactShatterFrom(st, impulse, fromX, fromY) {
+  let dx = 0, dy = 0;
+  if (fromX !== undefined) { dx = st.wx - fromX; dy = st.wy - fromY; }
+  const d = Math.sqrt(dx * dx + dy * dy);
+  // 発生点が建物の真上（踏みつけ等）なら向きが無いので、群れの進む向きへ砕く
+  if (d < 1) { dx = magnetFlockV.x; dy = magnetFlockV.y; }
+  if (dx * dx + dy * dy < 1e-6) { dx = 1; dy = 0; }
+  const dd = Math.sqrt(dx * dx + dy * dy);
+  const v = Math.max(IMPACT_SHATTER_MIN_SPEED, Math.min(IMPACT_SHATTER_MAX_SPEED, impulse));
+  return { x: st.wx, y: st.wy, vx: dx / dd * v, vy: dy / dd * v };
 }
 
 // =====================================================================
@@ -3500,8 +3523,12 @@ function hitBuilding(sIdx, hit, fromX, fromY, bySpecial = false) {
   if (!st || st.fallen) return;
   const sp = bySpecial || specialHitActive;
   const dmg = hitDamage(hit, st.damageResist, sp ? SPECIAL_HIT_BOOST : DRAGON_HIT_BOOST);
+  // 案帳 DT-510: 衝撃を含む一撃で壊れた建物は砕け散る（直接の分で先に壊れても同じ一撃なので砕く）
+  const prevShatter = impactShatterCtx;
+  if (hit.impact > 0) impactShatterCtx = impactShatterFrom(st, hit.impact, fromX, fromY);
   if (dmg > 0) damageBuilding(sIdx, dmg);
   if (hit.impact > 0 && !st.fallen && st.hp > 0) applyImpactToBuilding(sIdx, hit.impact * (sp ? specialImpactMult() : 1), fromX, fromY);
+  impactShatterCtx = prevShatter;
 }
 
 /** 竜へ衝撃を与える。竜は耐衝撃1（押されるだけでダメージにはならない）。 */
@@ -3602,30 +3629,8 @@ const MOVER_KNOCK_DECAY_PER_SEC = 4.5;
 //   ② 個体ごとの衢波（bow wave） … 竜1匹ずつが空気を押している絵。
 //      40体分が並ぶので、群れ全体としては衆波の壁に見える
 // すべて chargeLevel と fxScale で大きさが変わる。
-const CHARGE_FX_STREAK_LEN = 26;   // 最大溜めでの個体の尾の長さ（px）
-const CHARGE_BOW_R0        = 9;    // 衢波の半径（溜め 0 のとき。px）
-const CHARGE_BOW_R1        = 11;   // 溜めが最大のときに足される半径（px）
-const CHARGE_BOW_ARC       = 0.95; // 丸い弧（軽減あり）の半角（rad）
-// v0.89.1: 軽減が無いときの「〉」の形。**先端の内角を直接指定する**。
-// v0.89.0 は「腕を何度後ろへ振るか」で指定していたが、その形だと
-// 先端の内角が実際には **44度** になっており、腕が竜の上まで巻いていた（Shooter指摘）。
-// 内角を直接持つ形にして、見た目と数値を一致させる。
-const CHARGE_CHEVRON_ANGLE = 2.094;  // 先端の内角（rad。120度）
-const CHARGE_CHEVRON_TIP   = 0.90;   // 先端を bowR の何倍だけ前へ置くか
-const CHARGE_CHEVRON_ARM   = 1.15;   // 腕の長さ（bowR 比）
-// 尖った形だけ線を細くする倍率。丸い弧（軽減あり）の太さは変えない。
-const CHARGE_CHEVRON_WIDTH = 0.85;
-
-// v3.72.0（案帳 DT-506・Shooter「突進のエフェクトをもっとかっこよくしてほしい」）:
-//   ① 細い尾の線 → 竜の幅から細くなる彗星の尾（淡い帯＋白い芯）
-//   ② 溜めが満ちた竜は頭に光がともる（溜まったことが一目で分かる）
-//   ③ 尾から火の粉のような光の粒が後ろへこぼれる（見た目だけ。乱数は fxRandom）
-//   ④ 突進に入った瞬間、竜ごとに後ろへ開く「〈」の衝撃の輪（音の壁を破る絵）
-//   群れの重心に描く図形は使わない（v0.88 の判断どおり、全部を竜1体ずつに紐づける）
-const CHARGE_TAIL_LEN      = 54;    // 最大溜めでの彗星の尾の長さ（px）
-const CHARGE_TAIL_W        = 6.5;   // 尾の付け根の半幅（px）
-const CHARGE_HEAD_GLOW_AT  = 0.85;  // この溜めから頭の光がともる
-const CHARGE_HEAD_GLOW_R   = 13;
+// v3.72.0（案帳 DT-506）: ③ 火の粉のような光の粒・④ 突進に入った瞬間の「〈」の衝撃の輪
+// DT-506 手直し: v0.88 の尾の線・v0.89 の「〉」「）」の弧・v3.72.0 の彗星の尾と頭の光は、絵で出す膜と残像に置き換えた（下の drawChargeMembranes / drawChargeGhosts）
 const CHARGE_SPARK_RATE    = 9;     // 突進中の竜1体が1秒にこぼす粒の数（最大溜め）
 const CHARGE_SPARK_LIFE    = 0.45;
 const CHARGE_SPARK_MAX     = 260;
@@ -3636,56 +3641,56 @@ const chargeBoomFx  = [];   // {x, y, angle, born}
 let chargeFxLastT = 0;
 function clearChargeTrailFx() { chargeSparkFx.length = 0; chargeBoomFx.length = 0; }
 
-/** v3.72.0: 彗星の尾・頭の光・こぼれる粒・入った瞬間の衝撃の輪 */
-function drawChargeTrailFx(lv, fxs, liveAlpha) {
-  const now = performance.now();
-  const dt = chargeFxLastT ? Math.min(0.05, (now - chargeFxLastT) / 1000) : 0;
-  chargeFxLastT = now;
-  // 彗星の尾：竜の幅で始まり、後ろへ細くなる三角。淡い帯を1つのパスにまとめて塗る（40体でも1回の描画）
-  ctx.fillStyle = `rgba(120, 200, 255, ${(0.16 + 0.30 * lv) * liveAlpha})`;
-  ctx.beginPath();
+// 案帳 DT-506 手直し（Shooter「おすすめ通り A＋B で」）: ずっと出し続ける部分は線で引かず絵で出す。
+//   ①彗星の尾・②頭の光・尾に乗る白い線はやめた（「意味不明」「ずっと見せるには品質が足りない」）。
+//   ③こぼれる光の粒・④入った瞬間の「〈」の衝撃の輪は残す（一瞬のものとしてOKをもらった）。
+//   A. 衝撃の膜：画像生成した半透明の膜を竜1体ずつの前に重ねる。2コマを重ねがけして小さく揺らす。
+//      溜めるほど大きく・明るく。軽減あり（守る突進）は丸く厚い膜の絵に替える（前の「〉」と「）」の違いを残す）
+//   B. 竜の残像：竜の絵そのものを水色に染めて、少し前の位置に3枚残す
+const CHARGE_MEMBRANE_W0      = 50;    // 膜の幅（溜め 0。px。竜の翼の幅40より少し広く＝翼が膜の内側に収まる）
+const CHARGE_MEMBRANE_W1      = 30;    // 溜めが最大のときに足す幅
+const CHARGE_MEMBRANE_TIP     = 0.46;  // 膜の先端を竜の重心からどれだけ前へ置くか（膜の幅に対する割合）
+const CHARGE_MEMBRANE_SWAY    = 0.06;  // 揺れの幅（大きさの割合）
+const CHARGE_MEMBRANE_A0      = 0.45;  // 膜の濃さ（溜め 0）
+const CHARGE_MEMBRANE_A1      = 0.55;  // 溜めが最大のときに足す濃さ
+const CHARGE_GHOSTS           = 3;     // 残像の枚数
+const CHARGE_GHOST_STEP       = 0.045; // 残像1枚ごとの遅れ（秒）
+const CHARGE_GHOST_ALPHA      = 0.42;  // いちばん近い残像の濃さ（遠いほど薄く）
+const CHARGE_GHOST_TINT       = "#7fd8ff";
+const CHARGE_GHOST_SLOTS      = CHARGE_GHOSTS + 1;
+// 残像の位置の記録（竜ごとに CHARGE_GHOST_STEP 秒おきの位置と向き。見た目だけ）
+// MAX_BOIDS はこの下で宣言されるので、初めて使うときに作る
+let chargeGhostX = null, chargeGhostY = null, chargeGhostA = null;
+let chargeGhostN = null;   // 記録が何枚たまったか（突進が切れたら0へ戻す）
+function ensureChargeGhostBuffers() {
+  if (chargeGhostN) return;
+  chargeGhostX = new Float32Array(MAX_BOIDS * CHARGE_GHOST_SLOTS);
+  chargeGhostY = new Float32Array(MAX_BOIDS * CHARGE_GHOST_SLOTS);
+  chargeGhostA = new Float32Array(MAX_BOIDS * CHARGE_GHOST_SLOTS);
+  chargeGhostN = new Uint8Array(MAX_BOIDS);
+}
+let chargeGhostClock = 0;
+
+/** 粒・入った瞬間の輪（③④）と、粒をこぼす */
+function drawChargeTrailFx(lv, fxs, liveAlpha, dt, now) {
   for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
-    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
+    if (boidDead[i] || boidDowned[i] || !boidChargeOn[i]) continue;
     const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
     if (sp < 1) continue;
     const ux = vx[i] / sp, uy = vy[i] / sp, k = boidChargeLevelOf(i);
-    const len = CHARGE_TAIL_LEN * (0.35 + 0.65 * k) * fxs, w = CHARGE_TAIL_W * (0.6 + 0.4 * k) * fxs;
-    ctx.moveTo(px[i] - uy * w, py[i] + ux * w);
-    ctx.lineTo(px[i] - ux * len, py[i] - uy * len);
-    ctx.lineTo(px[i] + uy * w, py[i] - ux * w);
-    ctx.closePath();
-    // こぼれる粒（見た目だけ）
-    if (dt > 0 && boidChargeOn[i] && chargeSparkFx.length < CHARGE_SPARK_MAX && fxRandom() < CHARGE_SPARK_RATE * k * dt) {
-      const side = (fxRandom() - 0.5) * w * 2;
+    if (dt > 0 && chargeSparkFx.length < CHARGE_SPARK_MAX && fxRandom() < CHARGE_SPARK_RATE * k * dt) {
+      const side = (fxRandom() - 0.5) * 10 * fxs;
       const back = 60 + 60 * fxRandom();
-      chargeSparkFx.push({ x: px[i] - ux * len * 0.4 - uy * side, y: py[i] - uy * len * 0.4 + ux * side,
+      chargeSparkFx.push({ x: px[i] - ux * 14 - uy * side, y: py[i] - uy * 14 + ux * side,
         vx: -ux * back + (fxRandom() - 0.5) * 30, vy: -uy * back + (fxRandom() - 0.5) * 30,
         born: now, life: CHARGE_SPARK_LIFE * (0.6 + 0.6 * fxRandom()), s: 1.2 + 1.6 * fxRandom() });
     }
   }
-  ctx.fill();
-  // 頭の光（溜めが満ちた竜だけ）
-  for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i] || !boidChargeOn[i]) continue;
-    const k = boidChargeLevelOf(i);
-    if (k < CHARGE_HEAD_GLOW_AT) continue;
-    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]) || 1;
-    const hx = px[i] + vx[i] / sp * 6, hy = py[i] + vy[i] / sp * 6;
-    const g = (k - CHARGE_HEAD_GLOW_AT) / (1 - CHARGE_HEAD_GLOW_AT);
-    ctx.globalAlpha = (0.25 + 0.35 * g) * (0.85 + 0.15 * Math.sin(now * 0.02 + i));
-    ctx.fillStyle = "#bfe8ff";
-    ctx.beginPath(); ctx.arc(hx, hy, CHARGE_HEAD_GLOW_R * fxs, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 0.5 + 0.3 * g; ctx.fillStyle = "#ffffff";
-    ctx.beginPath(); ctx.arc(hx, hy, CHARGE_HEAD_GLOW_R * 0.35 * fxs, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-  // こぼれる粒
   for (let n = chargeSparkFx.length - 1; n >= 0; n--) {
     const p = chargeSparkFx[n], age = (now - p.born) / 1000;
     if (age >= p.life) { chargeSparkFx.splice(n, 1); continue; }
     const u = age / p.life;
-    ctx.globalAlpha = 0.85 * (1 - u);
+    ctx.globalAlpha = 0.85 * (1 - u) * liveAlpha;
     ctx.fillStyle = u < 0.4 ? "#ffffff" : "#8fd4ff";
     ctx.beginPath(); ctx.arc(p.x + p.vx * age, p.y + p.vy * age, p.s * (1 - 0.5 * u), 0, Math.PI * 2); ctx.fill();
   }
@@ -3701,10 +3706,90 @@ function drawChargeTrailFx(lv, fxs, liveAlpha) {
   ctx.globalAlpha = 1;
 }
 
+/** B. 竜の残像。位置は CHARGE_GHOST_STEP 秒おきに記録し、記録した位置に水色の竜の絵を薄く重ねる */
+function drawChargeGhosts(dt, liveAlpha) {
+  ensureChargeGhostBuffers();
+  chargeGhostClock += dt;
+  const record = chargeGhostClock >= CHARGE_GHOST_STEP;
+  if (record) chargeGhostClock = chargeGhostClock % CHARGE_GHOST_STEP;
+  const base = evoTintFlockSprites();
+  const sprites = base ? tintedSprites("chargeGhost:" + flockSpecies, base, CHARGE_GHOST_TINT) : null;
+  const spritePx = sprites ? Math.ceil(DRAGON_SPRITE_LOGICAL * Math.min(window.devicePixelRatio || 1, 2)) : 0;
+  const half = DRAGON_SPRITE_LOGICAL / 2;
+  for (let i = 0; i < N; i++) {
+    const on = !boidDead[i] && !boidDowned[i] && (boidChargeOn[i] || boidChargeHold[i] > 0);
+    if (!on) { chargeGhostN[i] = 0; continue; }
+    const s0 = i * CHARGE_GHOST_SLOTS;
+    if (record || chargeGhostN[i] === 0) {
+      // 古い順に1つずつ後ろへずらし、先頭に今の位置を入れる
+      for (let s = CHARGE_GHOST_SLOTS - 1; s > 0; s--) {
+        chargeGhostX[s0 + s] = chargeGhostX[s0 + s - 1]; chargeGhostY[s0 + s] = chargeGhostY[s0 + s - 1]; chargeGhostA[s0 + s] = chargeGhostA[s0 + s - 1];
+      }
+      chargeGhostX[s0] = px[i]; chargeGhostY[s0] = py[i]; chargeGhostA[s0] = Math.atan2(vy[i], vx[i]);
+      if (chargeGhostN[i] < CHARGE_GHOST_SLOTS) chargeGhostN[i]++;
+    }
+    if (!sprites) continue;
+    const scale = boidBodyScale(i);
+    for (let s = 1; s < chargeGhostN[i]; s++) {
+      ctx.save();
+      ctx.globalAlpha = CHARGE_GHOST_ALPHA * (1 - (s - 1) / CHARGE_GHOSTS) * (0.5 + 0.5 * boidChargeLevelOf(i)) * liveAlpha;
+      ctx.translate(chargeGhostX[s0 + s], chargeGhostY[s0 + s]);
+      ctx.rotate(chargeGhostA[s0 + s]);
+      if (scale !== 1) ctx.scale(scale, scale);
+      ctx.drawImage(sprites[0], 0, 0, spritePx, spritePx, -half, -half, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+      ctx.restore();
+    }
+  }
+}
+/** 残像に使う群れの竜の絵（進化の色が乗っていればそれ） */
+function evoTintFlockSprites() {
+  const evoVis = flockEvoVisual();
+  const frames = getSpeciesSprites(flockSpecies);
+  if (!frames || frames.length === 0) return null;
+  return evoVis ? tintedSprites(flockSpecies, frames, evoVis.tint) : frames;
+}
+
+/** A. 衝撃の膜。竜1体ずつの前に、2コマの膜の絵を重ねがけして揺らす */
+function drawChargeMembranes(fxs, liveAlpha, now) {
+  const guard = hasChargeGuard();
+  const imgA = guard ? enemyImages.fx_charge_guard_a : enemyImages.fx_charge_pierce_a;
+  const imgB = guard ? enemyImages.fx_charge_guard_b : enemyImages.fx_charge_pierce_b;
+  if (!imgA || !imgB) return;
+  const t = now / 1000;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
+    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+    if (sp < 1) continue;
+    const k = boidChargeLevelOf(i);
+    const w = (CHARGE_MEMBRANE_W0 + CHARGE_MEMBRANE_W1 * k) * fxs * boidBodyScale(i);
+    const phase = i * 1.7;
+    const sx = 1 + CHARGE_MEMBRANE_SWAY * Math.sin(t * 17 + phase);
+    const sy = 1 + CHARGE_MEMBRANE_SWAY * Math.sin(t * 23 + phase * 1.3);
+    const mix = 0.5 + 0.5 * Math.sin(t * 9 + phase);   // 2コマの重ね具合（止まった絵に見せない）
+    const a = (CHARGE_MEMBRANE_A0 + CHARGE_MEMBRANE_A1 * k) * liveAlpha;
+    ctx.save();
+    ctx.translate(px[i], py[i]);
+    ctx.rotate(Math.atan2(vy[i], vx[i]) + Math.PI / 2);   // 絵の上＝進む向き
+    ctx.scale(sx, sy);
+    const tip = w * CHARGE_MEMBRANE_TIP;
+    ctx.globalAlpha = a * (1 - mix * 0.6);
+    ctx.drawImage(imgA, -w / 2, -tip, w, w * imgA.height / imgA.width);
+    ctx.globalAlpha = a * (0.4 + mix * 0.6);
+    ctx.drawImage(imgB, -w / 2, -tip, w, w * imgB.height / imgB.width);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
 function drawChargeFx() {
-  // v0.99.2: 個体ごとに出す。突進していない竜には尾も衝波も付けない
-  // （どの竜が乗っているかが見えないと、個体で持続する意味が伝わらない）。
-  if (chargeLevel <= 0.01 && chargeCount === 0 && chargeSparkFx.length === 0 && chargeBoomFx.length === 0) { chargeFxLastT = 0; return; }
+  // v0.99.2: 個体ごとに出す。突進していない竜には何も付けない
+  if (chargeLevel <= 0.01 && chargeCount === 0 && chargeSparkFx.length === 0 && chargeBoomFx.length === 0) {
+    chargeFxLastT = 0; if (chargeGhostN) chargeGhostN.fill(0); return;
+  }
+  const now = performance.now();
+  const dt = chargeFxLastT ? Math.min(0.05, (now - chargeFxLastT) / 1000) : 0;
+  chargeFxLastT = now;
   const lv = Math.max(chargeLevel, 0.02);
   const fxs = chg().fxScale;
   // 突進が切れて余韻だけのときは薄くする（効いていないのに派手だと嘘になる）
@@ -3713,87 +3798,9 @@ function drawChargeFx() {
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
   ctx.lineCap = "round";
-  drawChargeTrailFx(lv, fxs, liveAlpha);   // v3.72.0（DT-506）
-
-  // ① 個体ごとの尾
-  const streak = CHARGE_FX_STREAK_LEN * lv * fxs;
-  // v3.72.0: 尾の帯（drawChargeTrailFx）の上に、白い芯として細く引く
-  ctx.strokeStyle = `rgba(235, 248, 255, ${(0.25 + 0.5 * lv) * liveAlpha})`;
-  ctx.lineWidth = 1.2 + 1.3 * lv;
-  ctx.beginPath();
-  for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
-    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
-    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]) || 1;
-    const myStreak = CHARGE_FX_STREAK_LEN * boidChargeLevelOf(i) * fxs;
-    ctx.moveTo(px[i], py[i]);
-    ctx.lineTo(px[i] - (vx[i] / sp) * myStreak, py[i] - (vy[i] / sp) * myStreak);
-  }
-  ctx.stroke();
-
-  // ② 個体ごとの衢波。進行方向の少し前に置くので、
-  //    竜のスプライトを覆わずに「押しのけている」絵になる。
-  //
-  // v0.89: **形が軽減の有無を兵ねる**。
-  //   軽減あり（charge_guard 系を取っている）… 丸い弧。守っているのでバリアで良い
-  //   軽減なし（既定）                   … 尖った「〉」。貫くだけで守らないことが形で分かる
-  const bowR   = (CHARGE_BOW_R0 + CHARGE_BOW_R1 * lv) * fxs;
-  const guard  = hasChargeGuard();
-  const half   = CHARGE_BOW_ARC * (0.72 + 0.28 * lv);
-
-  // 1本の形をパスに積む（外側・内側で同じものを縮尺を変えて使う）
-  const addShape = (a, cx2, cy2, r, scale) => {
-    if (guard) {
-      const h = half * scale;
-      ctx.moveTo(cx2 + Math.cos(a - h) * r, cy2 + Math.sin(a - h) * r);
-      ctx.arc(cx2, cy2, r, a - h, a + h);
-    } else {
-      // 先端を前へ置き、そこから両腕を後ろへ ±（内角/2）で伸ばす＝「〉」。
-      // 腕の後方成分は armLen × cos(67.5°) ≈ 0.38 × armLen なので、
-      // 腕の末端も竜より前に残る（重ならない）。
-      const h = CHARGE_CHEVRON_ANGLE * 0.5;
-      const tipX = cx2 + Math.cos(a) * r * CHARGE_CHEVRON_TIP;
-      const tipY = cy2 + Math.sin(a) * r * CHARGE_CHEVRON_TIP;
-      const armLen = r * CHARGE_CHEVRON_ARM * (0.5 + 0.5 * scale);
-      const back = a + Math.PI;
-      ctx.moveTo(tipX + Math.cos(back - h) * armLen, tipY + Math.sin(back - h) * armLen);
-      ctx.lineTo(tipX, tipY);
-      ctx.lineTo(tipX + Math.cos(back + h) * armLen, tipY + Math.sin(back + h) * armLen);
-    }
-  };
-
-  // 尖った形は先端を死なせないようマイター継ぎにする
-  ctx.lineJoin = guard ? "round" : "miter";
-  ctx.lineCap  = guard ? "round" : "butt";
-
-  // 外側（柔らかいにわみ）
-  const wMul = guard ? 1 : CHARGE_CHEVRON_WIDTH;
-  ctx.strokeStyle = `rgba(190, 235, 255, ${(0.16 + 0.34 * lv) * liveAlpha})`;
-  ctx.lineWidth = (3.0 + 4.0 * lv) * wMul;
-  ctx.beginPath();
-  for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
-    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
-    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
-    if (sp < 1) continue;
-    const a = Math.atan2(vy[i], vx[i]);
-    addShape(a, px[i] + (vx[i] / sp) * bowR * 0.30, py[i] + (vy[i] / sp) * bowR * 0.30, bowR, 1);
-  }
-  ctx.stroke();
-  // 内側（明るい芯。溜めが進むほど白く太くなる）
-  ctx.strokeStyle = `rgba(255, 255, 255, ${(0.14 + 0.46 * lv) * liveAlpha})`;
-  ctx.lineWidth = (1.0 + 2.0 * lv) * wMul;
-  ctx.beginPath();
-  for (let i = 0; i < N; i++) {
-    if (boidDead[i] || boidDowned[i]) continue;
-    if (!boidChargeOn[i] && boidChargeHold[i] <= 0) continue;
-    const sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
-    if (sp < 1) continue;
-    const a = Math.atan2(vy[i], vx[i]);
-    addShape(a, px[i] + (vx[i] / sp) * bowR * 0.30, py[i] + (vy[i] / sp) * bowR * 0.30, bowR, 0.6);
-  }
-  ctx.stroke();
-
+  drawChargeGhosts(dt, liveAlpha);          // B. 残像（竜より下）
+  drawChargeTrailFx(lv, fxs, liveAlpha, dt, now);   // ③④
+  drawChargeMembranes(fxs, liveAlpha, now); // A. 衝撃の膜
   ctx.restore();
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
@@ -9518,6 +9525,9 @@ const MOVER_DEFS = {
     name: "prism_bearer", prismBearer: true, showHpBar: true,
     hp: 900, speed: 30, xp: 520, eggDrop: 4, radius: 28, turnRate: Math.PI / 2 * 0.5,
     color: "#7f93a6", glowColor: "#9ff0ff", moveType: "patrol",
+    // 案帳 DT-015 手直し: 竜に寄りすぎない。最寄りの竜と 260〜400 の間合いを保つ（光線の塔の射程560より内側＝
+    // 塔の光線が群れを追うと、その途中にプリズム運びが入りやすい距離）
+    standoff: { near: 260, far: 400, step: 200 },
   },
   // 案帳 DT-239 手直し（Shooter「鎌部分と戦車部分を別々に画像生成して組み立てて」）: 車体と鎌は別の絵（drawScytheChariotSprite）
   scythe_chariot: {
@@ -12141,8 +12151,8 @@ const SCYTHE_ORBIT_R    = 240;    // 回り込むときの半径
 const SCYTHE_PASS_R     = 30;     // すれ違うときの半径（鎌が群れを通る）
 const SCYTHE_ORBIT_TIME = 2.6;    // 回り込んでいる秒数（このあとすれ違いに入る）
 const SCYTHE_PASS_TIME  = 2.2;    // すれ違いの秒数
-const SCYTHE_LEN        = 46;     // 鎌の届く長さ（車体の中心から右へ）。絵が読めなかったときのベクター描画だけが使う
-const SCYTHE_HIT_W      = 11;     // 鎌の太さ（当たり）
+const SCYTHE_LEN        = 78;     // 鎌の届く長さ（車体の中心から右へ）。絵が読めなかったときのベクター描画だけが使う
+const SCYTHE_HIT_W      = 14;     // 鎌の太さ（当たり）。DT-239 手直しで鎌を約2倍にしたので刃の幅に合わせて太くした
 const SCYTHE_DAMAGE     = 14;     // 竜のHPは30。触れると大きく傷つく
 const SCYTHE_IMPACT     = 140;
 const SCYTHE_REHIT      = 0.8;    // 同じ竜にもう一度当たるまで（秒）
@@ -12156,7 +12166,8 @@ const SCYTHE_ART = {
   bodyAspect: 128 / 320,        // 車体の絵の 幅÷高さ
   bodyPx: 0.492, bodyPy: 0.62,  // 車体の回転軸（アルファ重心）
   wheelFx: 0.95, wheelFy: 0.83, // 右の車輪の外側＝鎌の付け根
-  bladeW: 2.2,                  // 鎌の絵の幅＝半径×これ
+  // 案帳 DT-239 手直し（Shooter「サンプル画像では車体の幅の3倍くらい」）: 車体の幅は 半径×1.44 なので、その3倍＝4.3
+  bladeW: 4.3,                  // 鎌の絵の幅＝半径×これ
   bladeAspect: 154 / 320,       // 鎌の絵の 高さ÷幅
   hubFx: 0.02, hubFy: 0.82,     // 鎌の絵の軸（左端）
   tipFx: 0.99, tipFy: 0.02,     // 鎌の切っ先（右上）
@@ -12887,6 +12898,26 @@ function keepRangeStance(m, dt) {
   return { still: true, faceX, faceY };
 }
 
+/**
+ * 案帳 DT-015 手直し: 竜と間合いを保つ敵（def.standoff = { near, far }）の行き先。
+ * 最寄りの竜が near より近ければ離れる向きへ下がり、near〜far の間では竜を中心に横へ回り込む
+ * （止まると置物に見えるため）。far より遠ければ null＝ふつうの追跡・巡回に任せる。
+ * 最寄りの竜で測るのは、群れの重心だと端の竜がもう体に触れていても「まだ遠い」と判定されるため。
+ */
+function standoffTarget(m) {
+  const so = m.def.standoff;
+  const ni = findNearestAliveBoid(m.wx, m.wy);
+  if (ni < 0) return null;
+  const dx = m.wx - px[ni], dy = m.wy - py[ni];
+  const d = Math.sqrt(dx * dx + dy * dy) || 1;
+  if (d > so.far) return null;
+  const ox = dx / d, oy = dy / d;
+  if (d < so.near) return { x: m.wx + ox * so.step, y: m.wy + oy * so.step };
+  // 回る向きは個体ごとに決める（乱数を使わず位相から＝決定性を崩さない）
+  const side = (m.swayPhase ?? 0) < Math.PI ? 1 : -1;
+  return { x: m.wx - oy * side * so.step + ox * so.step * 0.3, y: m.wy + ox * side * so.step + oy * so.step * 0.3 };
+}
+
 function updateMovers(dt) {
   updateEnemyGroups(dt);   // v2.3.0: 複数パーツのグループ敵（編成など）
   updateMoverDeaths(dt);   // v2.6.0: 大きい敵の最期（崩れ→倒れ込み→残骸）
@@ -13035,6 +13066,8 @@ function updateMovers(dt) {
     // 案帳 DT-236 手直し: 遠矢の弓隊は射程の内では寄らず、近すぎれば下がり、弓を引く間と放った直後は止まる
     const bowStance = def.keepRange ? keepRangeStance(m, dt) : null;
     if (bowStance && !bowStance.still) { targetX = bowStance.x; targetY = bowStance.y; }
+    // 案帳 DT-015 手直し（Shooter「プリズム運びは竜に近づきすぎず、適度な距離を保つように」）
+    if (def.standoff) { const g = standoffTarget(m); if (g) { targetX = g.x; targetY = g.y; } }
 
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
@@ -22340,7 +22373,7 @@ const BASE_FLOCK_CAP = 100;   // 鯨竜（capMult<1）の上限の元。ふつ�
 const FLOCK_TOTAL_CAP          = 1000;
 // v3.68.0（案帳 DT-497・Shooter指示「大繁殖で上限を増やす効果は不要。ステージでのみ有効なカードにして、竜の追加数を増やす」）:
 // 大繁殖は上限を開かない。取ったその場で竜を BROOD_DRAGONS 体足すだけ（群れはステージをまたがないので、効くのはそのステージだけ）
-const BROOD_DRAGONS            = 15;     // 大繁殖1枚で足す竜（前は5）
+const BROOD_DRAGONS            = 50;     // 大繁殖1枚で足す竜（前は5→15。案帳 DT-511 で50）
 const OVERFLOW_POWER_PER_BLOCK = 0.5;    // 上限超えの竜 OVERFLOW_POWER_BLOCK 体ごとに攻撃・HP +50%（1000体で約×3.8）
 const OVERFLOW_POWER_BLOCK     = 150;
 const OVERFLOW_DRAW_MAX        = 350;    // 見た目だけの竜を描く最大数（描画の重さの上限）
@@ -23303,6 +23336,7 @@ const STRINGS = {
   fallOfferTitleShard: "レベルアップ",   // v3.65.0（DT-497）: 経験値の三択を「レベルアップ」と呼ぶ形に戻した
   fallCardRare: "レア",
   fallCardUltra: "激レア",   // v3.66.0
+  fallCardStageOnly: "ステージ限定",   // 案帳 DT-511
   fallOfferTitleUltra: "激レアのレベルアップ",
   levelUpSpecialSub: "特殊個体を加える・進化させる",
   stageJoinName: (name) => `${name}の加勢`,   // v3.58.0: ステージ限定の特殊個体の加入
@@ -23318,7 +23352,7 @@ const STRINGS = {
     fsp_hp:     { name: "特殊個体の鱗",   desc: "特殊個体のHP +80%" },
     fsp_revive: { name: "特殊個体の再起", desc: "特殊個体の復活時間 -25%" },
     f_egg_twin: { name: "双子の卵",       desc: "卵から竜が2体ずつかえる" },
-    f_down_egg: { name: "形見の卵",       desc: "竜が落ちると、半分の確率でその場に卵を残す" },
+    f_down_egg: { name: "形見の卵",       desc: "竜が落ちると、半分の確率でその場に卵を残す（このステージだけ）" },
     f_gamble:   { name: "捨て身の賭け",   desc: "群れのHPが半分になるかわりに、攻撃が2倍" },
     f_rush:     { name: "逆襲の血",       desc: "ラッシュの間、群れの攻撃 +50%" },
     f_egg_power: { name: "卵の力",        desc: "このステージで拾った卵1つにつき、群れの攻撃 +1%（最大 +60%）" },
@@ -23332,7 +23366,7 @@ const STRINGS = {
     wind:      { name: "疾風",     desc: "群れの速度 +8%" },
     tide:      { name: "再生の潮", desc: "復帰時間 -15%" },
     magnet:    { name: "吸引域",   desc: "XP吸引範囲 +40%" },
-    brood:     { name: "大繁殖",   desc: "竜 +15（このステージだけ）" },   // v3.68.0（DT-497）: 上限は増やさない。ステージでだけ効き、竜を多めに足す
+    brood:     { name: "大繁殖",   desc: "竜 +50（このステージだけ）" },   // v3.68.0（DT-497）: 上限は増やさない。ステージでだけ効き、竜を多めに足す
     resonance: { name: "竜鱗共鳴", desc: "被ダメージ -12%" },
     cat_direct: { name: "直撃の牙",   desc: "直接攻撃（体当たり・爪・刃・舌など）の威力 +12%" },
     cat_shot:   { name: "烈火の喉",   desc: "ブレス（炎・氷槍・影弾・羽根・光）の威力 +12%" },
@@ -23495,13 +23529,16 @@ const CARD_ORB = { id: "orb", icon: "\u{1F48E}", rarity: "common", max: Infinity
 // 群れ全体の通常強化はレベルアップの三択から外してここへ移した（レベルアップは特殊個体の加入・強化と竜の進化が中心になる）。
 // 取った枚数は stageCards に入り、ステージが変わると消える。upCount に足されるので eff* はそのまま効く。
 const GENERAL_CARD_IDS = new Set(["scale", "tide", "magnet", "brood", "resonance", "cat_direct", "cat_shot", "cat_blast"]);
+// 案帳 DT-511（Shooter「形見の卵は強すぎるのでステージ限定強化のカテゴリに。大繁殖もカテゴリを移して増える数を50に」）:
+// ほかの強化カードはランのあいだずっと効くが、この2枚はそのステージだけ効く。ステージが変わると外れ、次のステージでまた引ける
+const STAGE_ONLY_CARD_IDS = new Set(["brood", "f_down_egg"]);
 // v3.65.0（案帳 DT-497・Shooter指示「強化カードの効果も永続に戻す。効果を2倍にしたやつは戻す」）: 上限も元のカードの上限に戻した
 const FALL_GENERAL_MAX = {};
 const STAGE_JOIN_MAX = 3;   // v3.58.0: 1ステージで加勢（ステージ限定の加入）できる特殊個体の数
 const stageSpecials = [];  // このステージで加勢した特殊個体の種類
 const FALL_CARD_DEFS = [
   // 効き目を倍にしたぶん、重ねすぎると壊れるものは上限を下げる（竜鱗共鳴2枚で被ダメ -40%、威力3枚で +72%、硬鱗3枚で HP +120%）
-  ...CARD_DEFS.filter(d => GENERAL_CARD_IDS.has(d.id)).map(d => ({ id: d.id, icon: d.icon, max: FALL_GENERAL_MAX[d.id] ?? d.max })),
+  ...CARD_DEFS.filter(d => GENERAL_CARD_IDS.has(d.id)).map(d => ({ id: d.id, icon: d.icon, max: FALL_GENERAL_MAX[d.id] ?? d.max, stageOnly: STAGE_ONLY_CARD_IDS.has(d.id) || undefined })),
   // 特殊個体だけに掛かる強化。群れ全体の強化とは別に重なる（特殊個体を連れていないときは出さない）
   { id: "fsp_direct", icon: "\u{1F9B7}", max: 3, special: true },
   { id: "fsp_shot",   icon: "\u{1F30B}", max: 3, special: true },
@@ -23509,7 +23546,7 @@ const FALL_CARD_DEFS = [
   { id: "fsp_hp",     icon: "\u{1F49C}", max: 3, special: true },
   { id: "fsp_revive", icon: "\u{1F504}", max: 2, special: true },
   { id: "f_egg_twin", icon: "\u{1F423}", max: 1, ultra: true },   // v3.66.0（DT-497）: 強すぎるので激レア
-  { id: "f_down_egg", icon: "\u{1FAB9}", max: 1 },
+  { id: "f_down_egg", icon: "\u{1FAB9}", max: 1, stageOnly: true },   // 案帳 DT-511: 強すぎるのでステージ限定
   { id: "f_gamble",   icon: "\u{1F3B2}", max: 1, ultra: true },
   { id: "f_rush",     icon: "\u{1FA78}", max: 2 },
   // v3.49.0（案帳 DT-238・Shooter指示「ステージ限定なのでいろいろ派手でよい」）
@@ -30917,8 +30954,10 @@ function codexCardHtml() {
       `<b>竜の進化</b>（Lv${EVO_LEVELS.join("・")}で必ず。分岐と突然変異）のどれか1つから選ぶ。` +
       `強化カードの効果はランのあいだずっと残り、同じカードは最大回数まで重ねられる。</div>`;
   const groups = [
-    { name: "通常", hint: "強化カードのレベルアップで出る。", pick: (d) => !d.rare && !d.ultra },
-    { name: "レア", hint: "竜玉施設を落としたときの三択で出やすい。", pick: (d) => d.rare && !d.ultra },
+    { name: "通常", hint: "強化カードのレベルアップで出る。", pick: (d) => !d.rare && !d.ultra && !d.stageOnly },
+    { name: "レア", hint: "竜玉施設を落としたときの三択で出やすい。", pick: (d) => d.rare && !d.ultra && !d.stageOnly },
+    // 案帳 DT-511
+    { name: "ステージ限定", hint: "取ったステージのあいだだけ効く。ステージが変わると外れ、次のステージでまた出る。", pick: (d) => d.stageOnly && !d.ultra },
     { name: "激レア", hint: `強すぎるカード。強化カードのレベルアップの${Math.round(ULTRA_CHANCE * 100)}%（竜玉施設では${Math.round(ULTRA_CHANCE_ORB * 100)}%）で、激レアだけの三択になる。`, pick: (d) => d.ultra },
   ];
   for (const g of groups) {
@@ -33224,6 +33263,7 @@ function fallCardText(id) {
 function clearStageCards(keepCards = false) {
   // v3.65.0（DT-497）: 強化カードは永続。ステージが変わっても残し、ランの始めにだけ消す
   if (!keepCards) for (const k of Object.keys(stageCards)) delete stageCards[k];
+  else for (const k of STAGE_ONLY_CARD_IDS) delete stageCards[k];   // 案帳 DT-511: ステージ限定のカードだけは外す
   stageLevelUps = 0;
   treasureTowns.clear();
   orbFacilities.clear();
@@ -33563,6 +33603,7 @@ function openNextFallOffer() {
     btn.className = "fo-card" + (def.special || spDef ? " special" : "") + (def.rare ? " rare" : "") + (def.ultra ? " ultra" : "");
     btn.innerHTML = `<span class="fo-icon">${def.icon || "\u2728"}</span><span class="fo-text"><span class="fo-name"></span><span class="fo-desc"></span></span>` +
       (def.ultra ? `<span class="fo-rare">${STRINGS.fallCardUltra}</span>` : def.rare ? `<span class="fo-rare">${STRINGS.fallCardRare}</span>` : "") +
+      (def.stageOnly ? `<span class="fo-stageonly">${STRINGS.fallCardStageOnly}</span>` : "") +
       (def.max > 1 && def.max !== Infinity ? `<span class="fo-stack">${have + 1}/${def.max}</span>` : "");
     btn.querySelector(".fo-name").textContent = text.name;
     btn.querySelector(".fo-desc").textContent = text.desc;
@@ -35201,6 +35242,8 @@ const magnetFlockV = { x: 0, y: 0 };   // なました群れの速さ
 /** 建物が壊れたとき（settlementFall）。群れの近くなら、その建物の絵を切った破片を作る */
 function magnetOnBuildingFall(s) {
   if (chainSmashCtx && !s.isBoss) { shatterBuilding(s, chainSmashCtx); return; }   // v3.33.0: 鉄鎖のスマッシュで壊れたら砕け散る
+  // 案帳 DT-510: 鉄鎖に限らず、衝撃を含む一撃で壊れた建物も砕け散る（破片が多すぎるときは見送る）
+  if (impactShatterCtx && !s.isBoss && magnetShards.length < IMPACT_SHATTER_SHARD_CAP) { shatterBuilding(s, impactShatterCtx); return; }
   if (!sp().magnet || s._isWall || s.isBoss) return;
   const key = buildingSpriteKeyFor(s);
   if (!key) return;
@@ -35330,7 +35373,7 @@ function swipeVelocity() {
   if (dtS <= 0.01) return { x: 0, y: 0 };
   return { x: (last.x - first.x) / dtS / cam.scale, y: (last.y - first.y) / dtS / cam.scale };
 }
-/** 鉄鎖のスマッシュで壊れた建物（城壁も）を、鉄球の向きへ砕いて飛ばす。破片は当たった相手を削る */
+/** 鉄鎖のスマッシュ・衝撃（DT-510）で壊れた建物（城壁も）を、当たった向きへ砕いて飛ばす。破片は当たった相手を削る */
 function shatterBuilding(st, from) {
   const key = buildingSpriteKeyFor(st);
   const pieces = st._isWall ? CHAIN_WALL_PIECES : (MAG_PIECES[st.size] ?? 2) + 1;
@@ -39799,6 +39842,11 @@ const ENEMY_IMAGE_SOURCES = {
   // 案帳 DT-239 手直し: 鎌付き戦車の車体と鎌（別々に生成して drawScytheChariotSprite が組み立てる。ENEMY_SPRITE_META には載せない）
   scythe_chariot_body: "assets/mover_scythe_chariot_body.png",
   scythe_blade:        "assets/mover_scythe_blade.png",
+  // 案帳 DT-506 手直し: 突進の衝撃の膜（画像生成。黒地を透過にした光の絵。2コマずつ）
+  fx_charge_pierce_a:  "assets/fx_charge_pierce_a.png",
+  fx_charge_pierce_b:  "assets/fx_charge_pierce_b.png",
+  fx_charge_guard_a:   "assets/fx_charge_guard_a.png",
+  fx_charge_guard_b:   "assets/fx_charge_guard_b.png",
   // 案帳 DT-487 手直し: 動く砦の本体・後ろの扉・四隅の砲台（drawMovingFortressSprite / drawFortressTurretSprite が組み立てる）
   fortress_body:       "assets/mover_fortress_body.png",
   fortress_door:       "assets/mover_fortress_door.png",
