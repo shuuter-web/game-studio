@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.78.0";
+const GAME_VERSION = "v3.79.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9548,7 +9548,7 @@ const MOVER_DEFS = {
   // v3.77.0（案帳 DT-509）: 岩の巨人。巨岩信仰の荒地の住人（ラッシュではなく最初から町ごとに立っている）。二足歩行で、左右の足を交互に踏み下ろし、
   // 数歩ごとに止まって両腕を扇に叩きつける。撃たない。体力は基礎値（出すときに時代で伸ばす。巨像より軽い）、卵10個。動きは updateRockGiant
   rock_giant: {
-    name: "rock_giant", rockGiant: true, hp: 1000, speed: 34, xp: 1500, eggDrop: 10, radius: 50, turnRate: 1.1,
+    name: "rock_giant", rockGiant: true, hp: 2000, speed: 34, xp: 1500, eggDrop: 10, radius: 50, turnRate: 1.1,
     color: "#8a7e70", glowColor: "#ffb347", moveType: "patrol", showHpBar: true, codexSprite: "rockgiant_torso",
   },
   // 案帳 DT-487 手直し: 動く砦の四隅の砲台。砦に乗って動き、自分で狙って撃つ。1基ずつ壊せる（壊すと残骸になって撃たなくなる）
@@ -14910,7 +14910,13 @@ function drawStoneTitanSprite(m) {
 //   ・数歩ごとに止まって両腕を振り上げ、前方の扇に叩きつける（扇の予告 → 衝撃 → 動けない隙）。隙が叩きどころ
 //   ・武器は無く撃たない。人間の町は踏まない（足は建物をよける）し、衝撃波が当たるのは竜だけ
 // =====================================================================
-const ROCKGIANT_HP_STAGE       = 0.2;     // 体力＝基礎×(1 + これ×時代の番号)。数が多いので巨像（3000）より軽い基礎値
+const ROCKGIANT_HP_STAGE       = 0.2;     // 体力＝基礎×(1 + これ×時代の番号)×大きさ²
+// v3.79.0（案帳 DT-509 手直し・Shooter「サイズが小さい。これを最小サイズにして可変サイズに」「もっと耐久力があって良い」）:
+// 1体ごとに大きさを変える。v3.77.0 の大きさが最小。体力は大きさの2乗で伸ばす（基礎も 1000→2000）
+const ROCKGIANT_SCALE_MIN      = 1.0;
+const ROCKGIANT_SCALE_MAX      = 1.8;
+const ROCKGIANT_CAPITAL_SCALE_MIN = 1.5;  // 首都の守りは大きい個体
+const ROCKGIANT_HP_SCALE_POW   = 2;
 const ROCKGIANT_TOWN_SHARE     = 0.4;     // 町のうち、この割合（大きい町から）に1体ずつ立つ
 const ROCKGIANT_TOWN_MIN       = 6;       // 町に立つ巨人の下限・上限（町が少なくても多すぎても数を保つ）
 const ROCKGIANT_TOWN_MAX       = 11;
@@ -14971,6 +14977,9 @@ const ROCKGIANT_ARM_PIVOT      = 0.9;     // 腕の絵の付け根（下から�
 const ROCKGIANT_ARM_SWING      = 0.16;    // 歩くときの腕の振り（rad）
 let rockGiantPlacePending = false;   // 町の一覧ができてから置く（kitePlacePending と同じ段取り）
 
+/** 1体ごとの大きさ（v3.79.0）。衝撃波・扇・止まる距離もこれで伸ばす */
+function rgScale(m) { return m._rg?.scale ?? 1; }
+
 function rockGiantHp(def, stageIndex) { return Math.round(def.hp * (1 + ROCKGIANT_HP_STAGE * stageIndex)); }
 
 /** 持ち場の点（開始地点の側＝群れの来る側を向いて、外形のすぐ外） */
@@ -14983,13 +14992,12 @@ function rockGiantPost(cx, cy, outerR, seedAngle) {
 }
 
 /** 巨人を1体置く。体力・経験値は荒地の基準（経験値は巨像と同じ式＝精鋭の追跡者の経験値×倍率） */
-function spawnRockGiant(post, townIndex) {
+function spawnRockGiant(post, townIndex, scaleMin) {
   const def = MOVER_DEFS.rock_giant;
   const m = makeMover(def, () => ({ x: post.x, y: post.y }));
   m.wx = post.x; m.wy = post.y;
-  m.maxHp = m.hp = rockGiantHp(def, runStageIndex);
   m.xpValue = trEraDefs().large.xp * TR_ELITE_XP * TR_TITAN_XP;
-  m._rg = initRockGiant(m, post);
+  m._rg = initRockGiant(m, post, scaleMin);
   m._rg.townIndex = townIndex;
   movers.push(m);
   return m;
@@ -15016,17 +15024,27 @@ function placeRockGiants() {
   const capitalCount = ROCKGIANT_CAPITAL_COUNT + (runStageIndex >= ROCKGIANT_LATE_STAGE ? ROCKGIANT_CAPITAL_LATE : 0);
   for (let k = 0; k < capitalCount; k++) {
     const spread = capitalCount === 1 ? 0 : (k / (capitalCount - 1)) * 2 - 1;   // -1〜1 に等分（開始地点の側に並べる）
-    spawnRockGiant(rockGiantPost(boss.wx, boss.wy, ROCKGIANT_CAPITAL_RING - ROCKGIANT_POST_OUTSIDE, spread), -1);
+    spawnRockGiant(rockGiantPost(boss.wx, boss.wy, ROCKGIANT_CAPITAL_RING - ROCKGIANT_POST_OUTSIDE, spread), -1, ROCKGIANT_CAPITAL_SCALE_MIN);
   }
 }
 
-function initRockGiant(m, post) {
+/** 大きさを決める。半径などは def を写して1体ごとに持つ（当たり判定・HPバー・絵が def.radius を見るため） */
+function sizeRockGiant(m, scaleMin) {
+  const base = MOVER_DEFS.rock_giant, lo = scaleMin ?? ROCKGIANT_SCALE_MIN;
+  const scale = lo + random() * (ROCKGIANT_SCALE_MAX - lo);
+  m.def = { ...base, radius: base.radius * scale };
+  m.maxHp = m.hp = Math.round(rockGiantHp(base, runStageIndex) * Math.pow(scale, ROCKGIANT_HP_SCALE_POW));
+  return scale;
+}
+
+function initRockGiant(m, post, scaleMin) {
+  const scale = sizeRockGiant(m, scaleMin);
   const feet = [0, 1].map(() => ({ x: m.wx, y: m.wy, fromX: m.wx, fromY: m.wy, toX: m.wx, toY: m.wy, lift: -1 }));
   const G = {
     home: post ?? { x: m.wx, y: m.wy },   // デバッグで出したものは、その場が持ち場
     mode: "guard", feet, nextFoot: 0, stepTimer: random() * ROCKGIANT_STEP_EVERY,
     stepsSince: Math.floor(random() * ROCKGIANT_SLAM_EVERY), slam: null, armKick: 0, armLift: 0,
-    pace: null, paceWait: random() * ROCKGIANT_PACE_PAUSE, goal: null, active: false,
+    pace: null, paceWait: random() * ROCKGIANT_PACE_PAUSE, goal: null, active: false, scale,
   };
   for (let k = 0; k < 2; k++) {
     const f = rockGiantFootRest(m, k, (k === 0 ? 1 : -1) * m.def.radius * ROCKGIANT_STANCE), L = feet[k];   // 立ち姿は片足が前・片足が後ろ
@@ -15068,7 +15086,7 @@ function rockGiantDecide(m, G, centroid, dt) {
   else if (G.mode === "chase" && dHome > ROCKGIANT_LEASH_R) G.mode = "return";
   else if (G.mode === "return" && dist2(m.wx, m.wy, G.home.x, G.home.y) < ROCKGIANT_ARRIVE_R ** 2) G.mode = "guard";
   if (G.mode === "chase") {
-    const near = Math.hypot(centroid.x - m.wx, centroid.y - m.wy) < ROCKGIANT_STOP_R;
+    const near = Math.hypot(centroid.x - m.wx, centroid.y - m.wy) < (ROCKGIANT_STOP_R * rgScale(m));
     G.goal = centroid; m.speedMult = near ? 0 : 1;
   } else if (G.mode === "return") {
     G.goal = G.home; m.speedMult = 1;
@@ -15097,12 +15115,12 @@ function rockGiantSlam(m, G, dt) {
     for (let i = 0; i < N; i++) {
       if (boidDead[i] || boidDowned[i]) continue;
       const dx = px[i] - m.wx, dy = py[i] - m.wy, d = Math.hypot(dx, dy);
-      if (d > ROCKGIANT_SLAM_R || Math.abs(wrapAngle(Math.atan2(dy, dx) - S.ang)) > ROCKGIANT_SLAM_HALF) continue;
+      if (d > (ROCKGIANT_SLAM_R * rgScale(m)) || Math.abs(wrapAngle(Math.atan2(dy, dx) - S.ang)) > ROCKGIANT_SLAM_HALF) continue;
       hitBoid(i, hit, dx / (d || 1), dy / (d || 1));
     }
     for (const f of [0.45, 0.85]) for (const s of [-0.6, 0, 0.6]) {   // 扇の中に砂ぼこり（見た目だけ）
       const a = S.ang + s * ROCKGIANT_SLAM_HALF;
-      spawnExplosionFx(m.wx + Math.cos(a) * ROCKGIANT_SLAM_R * f, m.wy + Math.sin(a) * ROCKGIANT_SLAM_R * f, ROCKGIANT_SLAM_R * 0.28, { dust: true, fire: 0 });
+      spawnExplosionFx(m.wx + Math.cos(a) * (ROCKGIANT_SLAM_R * rgScale(m)) * f, m.wy + Math.sin(a) * (ROCKGIANT_SLAM_R * rgScale(m)) * f, (ROCKGIANT_SLAM_R * rgScale(m)) * 0.28, { dust: true, fire: 0 });
     }
     triggerShake(ROCKGIANT_SLAM_SHAKE, 0.2);
   } else if (S.t >= ROCKGIANT_SLAM_RECOVER) {
@@ -15132,7 +15150,7 @@ function rockGiantTrySlam(m, G) {
   const i = findNearestAliveBoid(m.wx, m.wy);
   if (i < 0) return;
   const dx = px[i] - m.wx, dy = py[i] - m.wy;
-  if (dx * dx + dy * dy > ROCKGIANT_SLAM_TRIGGER_R * ROCKGIANT_SLAM_TRIGGER_R) return;
+  if (dx * dx + dy * dy > (ROCKGIANT_SLAM_TRIGGER_R * rgScale(m)) * (ROCKGIANT_SLAM_TRIGGER_R * rgScale(m))) return;
   const face = Math.atan2(m.headingY, m.headingX), want = Math.atan2(dy, dx);
   if (Math.abs(wrapAngle(want - face)) > ROCKGIANT_SLAM_ARC) return;
   G.slam = { phase: "wind", t: 0, ang: want };
@@ -15170,10 +15188,10 @@ function rockGiantFeet(m, G, dt) {
 
 function rockGiantStomp(m, f) {
   attackerNow = moverAttacker(m);
-  emitShockwave(f.x, f.y, ROCKGIANT_STOMP_R, shockwaveHit((ROCKGIANT_STOMP_DMG + runStageIndex) * moverFerocity(), ROCKGIANT_STOMP_PUSH));
-  spawnExplosionFx(f.x, f.y, ROCKGIANT_STOMP_R * 0.5, { dust: true, fire: 0 });
+  emitShockwave(f.x, f.y, (ROCKGIANT_STOMP_R * rgScale(m)), shockwaveHit((ROCKGIANT_STOMP_DMG + runStageIndex) * moverFerocity(), ROCKGIANT_STOMP_PUSH));
+  spawnExplosionFx(f.x, f.y, (ROCKGIANT_STOMP_R * rgScale(m)) * 0.5, { dust: true, fire: 0 });
   for (let c = 0; c < TITAN_CHIPS - 2; c++) {   // 岩のかけら（巨像と同じ見た目）
-    const a = fxRandom() * Math.PI * 2, d = 12 + fxRandom() * ROCKGIANT_STOMP_R * 0.5;
+    const a = fxRandom() * Math.PI * 2, d = 12 + fxRandom() * (ROCKGIANT_STOMP_R * rgScale(m)) * 0.5;
     titanRubble.push({ x: f.x + Math.cos(a) * d, y: f.y + Math.sin(a) * d, r: 2.5 + fxRandom() * 3.5, rot: fxRandom() * Math.PI, shade: fxRandom(), life: TITAN_CHIP_LIFE });
   }
   triggerShake(ROCKGIANT_STOMP_SHAKE, 0.1);
@@ -15217,9 +15235,9 @@ function drawRockGiantUnder() {
       ctx.save();
       ctx.translate(m.wx, m.wy); ctx.rotate(S.ang);
       ctx.globalAlpha = 0.16 + 0.24 * t; ctx.fillStyle = "#ffd060";
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, ROCKGIANT_SLAM_R * t, -ROCKGIANT_SLAM_HALF, ROCKGIANT_SLAM_HALF); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, (ROCKGIANT_SLAM_R * rgScale(m)) * t, -ROCKGIANT_SLAM_HALF, ROCKGIANT_SLAM_HALF); ctx.closePath(); ctx.fill();
       ctx.globalAlpha = 0.9; ctx.strokeStyle = "#ffd060"; ctx.lineWidth = 2.5; ctx.setLineDash([9, 7]);
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, ROCKGIANT_SLAM_R, -ROCKGIANT_SLAM_HALF, ROCKGIANT_SLAM_HALF); ctx.closePath(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, (ROCKGIANT_SLAM_R * rgScale(m)), -ROCKGIANT_SLAM_HALF, ROCKGIANT_SLAM_HALF); ctx.closePath(); ctx.stroke();
       ctx.restore();
     }
     const ang = Math.atan2(m.headingY, m.headingX);
@@ -15228,44 +15246,36 @@ function drawRockGiantUnder() {
       if (f.lift >= 0) {   // 踏む足の下にだけ予告の輪（巨像と同じ見た目）
         ctx.save();
         ctx.globalAlpha = 0.18 + 0.22 * air; ctx.fillStyle = "#ffd060";
-        ctx.beginPath(); ctx.arc(f.toX, f.toY, ROCKGIANT_STOMP_R * air, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(f.toX, f.toY, (ROCKGIANT_STOMP_R * rgScale(m)) * air, 0, Math.PI * 2); ctx.fill();
         ctx.globalAlpha = 0.9; ctx.strokeStyle = "#ffd060"; ctx.lineWidth = 2.5; ctx.setLineDash([9, 7]);
-        ctx.beginPath(); ctx.arc(f.toX, f.toY, ROCKGIANT_STOMP_R, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(f.toX, f.toY, (ROCKGIANT_STOMP_R * rgScale(m)), 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
       }
       if (lifting > 0) {   // 持ち上げた足の影
         ctx.save(); ctx.globalAlpha = 0.32; ctx.fillStyle = "#000";
         ctx.beginPath(); ctx.ellipse(f.x, f.y, R * 0.42, R * 0.3, ang, 0, Math.PI * 2); ctx.fill(); ctx.restore();
       }
-      if (f.lift < 0) drawRockGiantFoot(m, f, footImg, ang, 0);   // 地に着いている足は胴の下。持ち上げた足は胴の上（drawRockGiantLiftedFeet）
+    }
+    // v3.79.0（案帳 DT-509 手直し・Shooter「歩く時に足のパーツが体より上に表示されてしまっている」）: 持ち上げた足も胴の下に描く
+    for (let k = 0; k < 2; k++) {
+      const f = G.feet[k];
+      drawRockGiantFoot(m, f, footImg, ang, f.lift >= 0 ? Math.sin(Math.PI * Math.min(1, f.lift / ROCKGIANT_STEP_AIR)) : 0, k === 1);
     }
   }
 }
 
 /** 足1本の絵。lifting（0〜1）が大きいほど浮かせて大きく描く */
-function drawRockGiantFoot(m, f, footImg, ang, lifting) {
+function drawRockGiantFoot(m, f, footImg, ang, lifting, mirror) {
   const R = m.def.radius;
   ctx.save();
-  ctx.translate(f.x, f.y - lifting * ROCKGIANT_LIFT_OFFSET);
+  ctx.translate(f.x, f.y - lifting * ROCKGIANT_LIFT_OFFSET * rgScale(m));
   ctx.rotate(ang + Math.PI / 2);
+  // v3.79.0（案帳 DT-509 手直し・Shooter「足のパーツが両方とも左足に見える」）: 絵は左足（親指が右）。右足（k=1）は左右反転する
+  if (mirror) ctx.scale(-1, 1);
   const w = R * ROCKGIANT_FOOT_W * (1 + ROCKGIANT_LIFT_SCALE * lifting), h = w * ROCKGIANT_FOOT_ASPECT;
   if (footImg) ctx.drawImage(footImg, -w / 2, -h * 0.55, w, h);
   else { ctx.fillStyle = m.def.color; ctx.strokeStyle = "#3a322a"; ctx.lineWidth = 2; ctx.fillRect(-w / 2, -h / 2, w, h); ctx.strokeRect(-w / 2, -h / 2, w, h); }
   ctx.restore();
-}
-
-/** 持ち上げた足を胴の上に描く（カメラに近づく足なので胴より手前。踏み替えが胴の下に隠れず見える） */
-function drawRockGiantLiftedFeet() {
-  const vb = getViewBoundsWorld(300), footImg = enemyImages.rockgiant_foot;
-  for (const m of movers) {
-    if (!m.alive || !m.def.rockGiant || !m._rg) continue;
-    if (m.wx < vb.minX || m.wx > vb.maxX || m.wy < vb.minY || m.wy > vb.maxY) continue;
-    const ang = Math.atan2(m.headingY, m.headingX);
-    for (const f of m._rg.feet) {
-      if (f.lift < 0) continue;
-      drawRockGiantFoot(m, f, footImg, ang, Math.sin(Math.PI * Math.min(1, f.lift / ROCKGIANT_STEP_AIR)));
-    }
-  }
 }
 
 /** 巨人の胴と腕（drawMovers から。呼ぶ側で前＝+x の座標系に回してある） */
@@ -39055,7 +39065,6 @@ function render(now) {
   drawRockGiantUnder();      // v3.77.0（案帳 DT-509）: 岩の巨人の足・予告の輪・扇の予告
   drawTierRushUnder();       // v3.16.0: 猛進の残像・精鋭と輸送隊の輪（敵の下）
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
-  drawRockGiantLiftedFeet(); // v3.77.0（案帳 DT-509）: 岩の巨人の持ち上げた足（胴の上）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
   drawRailWrecks();          // v2.2.0: 潰れた車両（連結されたまま引きずられる）
   drawRailTurrets();         // v2.1.0: 砲車の旋回砲塔（車体の絵の上）
