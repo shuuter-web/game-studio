@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.83.0";
+const GAME_VERSION = "v3.84.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7391,7 +7391,9 @@ function generateStageLayout(stageIndex) {
     if (frontlinePlan && overlapsFrontlineWall(b, frontlinePlan)) return false;
     return !(citadelWallPlan && overlapsCitadelWall(b, boss, citadelWallPlan));
   };
-  const tinyBuildings = generateTinySettlements(result, boss.wx, boss.wy, config).filter(keepLoose);
+  const tinyAll = generateTinySettlements(result, boss.wx, boss.wy, config);
+  if (worldShape === SHAPE_SKYLAND) skyAddHamletIslands(tinyAll);   // v3.84.0（案帳 DT-124 手直し）: 出発地のまわりの小集落に島を付ける
+  const tinyBuildings = tinyAll.filter(keepLoose);
   for (const b of tinyBuildings) result.push(b);
 
   // --- (4b) v0.11: 道沿いの集落 — 街道のところどころに小さな民家群を置く。
@@ -11446,8 +11448,20 @@ const BARRACKS_UNIT_BY_STAGE = [
   "knights",    // VII  大戦: 兵士 (hp24)
   "shieldman",  // VIII 未来: 盾兵 (hp90)
 ];
+// v3.84.0（案帳 DT-509 手直し・Shooter「岩の巨人以外の、巨像系の敵はこの地域では出ないように。存在として近いので変な感じがする」
+// 「巨獣と多脚戦車も出さないで」）: 巨岩信仰の荒地では、巨人の役は岩の巨人だけが担う。
+// 時代の顔ぶれ・守備隊・ラッシュの大型から、巨像系（巨像・黄金の巨像・岩脚の巨像）と巨獣・多脚戦車を抜く
+const WASTELAND_BANNED_MOVERS = new Set(["colossus", "gilded_colossus", "stone_titan", "behemoth_core", "behemoth_arm", "walker_hull", "walker_leg"]);
+const WASTELAND_BARRACKS_FALLBACK = "shieldman";   // 兵舎が巨像を出す時代（電気）の代わり
+function wastelandAllowsMover(key) { return worldShape !== SHAPE_WASTELAND || !WASTELAND_BANNED_MOVERS.has(key); }
+/** 出現表（[キー, 数] の並び）から、この地域に出さない敵を抜く */
+function regionSpawnTable(table) {
+  if (!table || worldShape !== SHAPE_WASTELAND) return table;
+  return table.filter(e => wastelandAllowsMover(e[0]));
+}
 function barracksUnitFor(stageIdx) {
-  const key = BARRACKS_UNIT_BY_STAGE[stageIdx];
+  let key = BARRACKS_UNIT_BY_STAGE[stageIdx];
+  if (key && !wastelandAllowsMover(key)) key = WASTELAND_BARRACKS_FALLBACK;
   return MOVER_DEFS[key] ? key : null;
 }
 
@@ -11777,7 +11791,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   // 何個あっても勝手に揃う。
   enemyGroups.length = 0;
   _pendingMovers.length = 0;   // 古い群れへの追加待ちも持ち越さない
-  const spawns = MOVER_SPAWNS_BY_STAGE[stageIndex];
+  const spawns = regionSpawnTable(MOVER_SPAWNS_BY_STAGE[stageIndex]);   // v3.84.0: 荒地は巨像系・巨獣・多脚戦車を抜く（DT-509）
   const result = [];
 
   // v2.4.0: 守備隊は「首都の周り」に湧かせたいので、動く首都の現在地ではなく
@@ -11797,7 +11811,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
 
   // v0.41: ボス直衛の守備隊。巡回点をボス周りのリング内に限定して湧かせる。
   // v3.23.0: 大都会の首都の守りは攻撃ヘリ（屋上にヘリポートがある）
-  const garrison = worldShape === SHAPE_METRO ? [["metro_heli", METRO_HELI_GARRISON]] : (BOSS_GARRISON_BY_STAGE[stageIndex] ?? []);
+  const garrison = worldShape === SHAPE_METRO ? [["metro_heli", METRO_HELI_GARRISON]] : regionSpawnTable(BOSS_GARRISON_BY_STAGE[stageIndex] ?? []);
   function garrisonPoint() {
     const a = random() * Math.PI * 2;
     const r = BOSS_GARRISON_INNER + random() * (BOSS_GARRISON_OUTER - BOSS_GARRISON_INNER);
@@ -11898,7 +11912,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   }
 
   // v1.8.0: 多脚戦車を大戦（STAGE7）と最終（STAGE8）に1体。
-  if (stageIndex === 6 || stageIndex === 7) {
+  if ((stageIndex === 6 || stageIndex === 7) && wastelandAllowsMover("walker_hull")) {   // v3.84.0: 荒地には出さない（DT-509）
     const hull = makeMover(MOVER_DEFS.walker_hull, randPoint);
     hull.maxHp   = MOVER_DEFS.walker_hull.hp;
     hull.hp      = MOVER_DEFS.walker_hull.hp;
@@ -11933,7 +11947,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   }
 
   // v0.26: 巨獣（多パーツボス）を後半の一部ステージ（STAGE6・STAGE8）に1体。
-  if (stageIndex === 5 || stageIndex === 7) {
+  if ((stageIndex === 5 || stageIndex === 7) && wastelandAllowsMover("behemoth_core")) {   // v3.84.0: 荒地には出さない（DT-509）
     const core = makeMover(MOVER_DEFS.behemoth_core, randPoint);
     core.maxHp   = MOVER_DEFS.behemoth_core.hp;
     core.hp      = MOVER_DEFS.behemoth_core.hp;
@@ -11983,9 +11997,26 @@ const SKY_CLIFF_DEPTH       = 16;          // 島の下の岩肌の厚み（真�
 const SKY_RIM_WIDTH         = 5;
 const SKY_STONE_COLOR       = "#cfd3d6";   // 天空城の石の台座
 const SKY_STONE_EDGE        = "#8d949c";
-const SKY_GRID_CELL         = 1000;        // 島の置き場の格子（8×8＝64マス）
-const SKY_TOWN_SCALE_MIN    = 0.60;        // 町の大きさ（島に収まるよう抑える。ふつうの町は約1.0）
-const SKY_TOWN_SCALE_MAX    = 0.95;
+const SKY_TOWN_SCALE_MIN    = 0.45;        // 町の大きさ（島に収まるよう抑える。ふつうの町は約1.0。v3.84.0: 0.60〜0.95 → 0.45〜1.0 で大小をつける）
+const SKY_TOWN_SCALE_MAX    = 1.0;
+// v3.84.0（案帳 DT-124 手直し・Shooter「初期地点以外の浮島が整然と碁盤の目状に並びすぎていておかしい。浮島はもっと大小つけて」）:
+// 町の島は格子のマスではなく、ワールドのどこでも投げて、ほかの島と離れていれば置く（離す幅にもばらつきを足す）
+const SKY_TOWN_TRIES        = 2400;        // 町の中心を投げる回数
+const SKY_TOWN_SPACING_JITTER = 320;       // 島どうしの隙間に足すばらつきの上限（詰まった所と開いた所ができる）
+const SKY_TOWN_SIZE_SKEW    = 1.6;         // 大きさの偏り（1より大きいと小さめの町が多く、ときどき大きな町）
+const SKY_WORLD_MARGIN      = 260;         // ワールドの縁から島の中心までの余白
+const SKY_TOWN_GROW_MAX     = 0.9;         // 町の島を町の外縁より広げる割合の上限（島ごとにばらつく。広い島の端に町が載る形もできる）
+const SKY_TOWN_GROW_SKEW    = 1.5;
+const SKY_DECOR_TRIES       = 400;         // 町の無い小島を投げる回数
+const SKY_DECOR_COUNT       = 30;          // 町の無い小島の上限
+const SKY_DECOR_SIZE_SKEW   = 2.0;
+// v3.84.0（同・Shooter「スタート地点近くに島がなく何にも強化できないまま強い街にあたる」）:
+// 出発地のまわりの小集落（ほかの地域で最初に焼いて育つ場所）の下に小島を浮かべる。雲海に落ちる集落は消えるので、
+// 島を足さないと出発地の近くは出発地の小島だけになっていた
+const SKY_HAMLET_RANGE      = 2300;        // 出発地からこの距離までの小集落に島を付ける
+const SKY_HAMLET_MAX        = 12;          // 小集落の島の上限
+const SKY_HAMLET_GATHER_R   = 150;         // 集落の目印の建物からこの距離の家を同じ集落とみなす
+const SKY_HAMLET_PAD        = 46;          // 集落の家の外側から島の縁までの余白
 const SKY_TOWN_REACH_BASE   = 372;         // 町の中心から一番遠い棟までの上限（倍率1.0のとき・実測）
 const SKY_ISLAND_PAD        = 60;          // 町の外縁から島の縁までの余白
 const SKY_ISLAND_GAP        = 60;          // 島と島の最低限の隙間
@@ -11993,9 +12024,8 @@ const SKY_EXTRA_MAX         = 0.35;        // 町の外縁よりどれだけ島�
 const SKY_CAPITAL_REACH     = WALL_OUTER_RING_RADIUS + 60;   // 天空城の島は首都の城壁の輪を丸ごと載せる
 const SKY_CAPITAL_CLEAR     = 1300;        // 首都の島の周りに町を置かない半径
 const SKY_START_ISLAND_REACH = 330;        // 群れの出発地の近くに浮かぶ小島（まばらな家が建つ）
-const SKY_DECOR_REACH_MIN   = 150;         // 町の無い小島の大きさ
-const SKY_DECOR_REACH_MAX   = 300;
-const SKY_DECOR_CHANCE      = 0.7;         // 余ったマスに小島を浮かべる確率
+const SKY_DECOR_REACH_MIN   = 80;          // 町の無い小島の大きさ（v3.84.0: 150〜300 → 80〜440。小岩のような島から大きな無人島まで）
+const SKY_DECOR_REACH_MAX   = 440;
 const SKY_COVER_PAD         = 24;          // 棟が島に載っていると見なす余白
 const SKY_EDGE_INSET        = 10;          // 地上の敵が縁で止まる位置（島の縁より内側）
 const SKY_SPAWN_INSET       = 40;          // 敵を湧かせる位置の縁からの余白
@@ -12020,7 +12050,6 @@ let skyLookup         = null;   // { cols, rows, cells: (number[]|null)[] }
 let skyCapitalIsland  = -1;
 let skyStartIsland    = -1;
 let skyPlans          = [];     // 町の中心を置いた時点の島の設計図（町の外縁が分かってから島の形にする）
-let skyLeftoverCells  = [];
 let skyCloudShadows   = [];
 let skyWindStreaks    = [];
 let skyShadowSprite   = null;
@@ -12039,6 +12068,26 @@ const WIND_RIDER_SPEARS      = 4;     // 1回の通過で投げる槍の数の�
 const WIND_RIDER_FIRST_THROW = 0.2;
 const WIND_RIDER_THROW_FX    = 0.28;  // 腕を振る見た目の秒数
 const WIND_RIDER_LEAD        = 0.8;   // 動いている竜への先読み（1.0で完全な偏差射撃）
+// v3.84.0（案帳 DT-124 手直し・Shooter「空を飛ぶ敵が全然いなくて暇。編隊を組んでくるなどして。小さな集落がない分を空飛ぶ敵で補って」）:
+// 風乗りの編隊。くの字（V字）に並んだ風乗りが、群れのすぐ横をかすめるように隊列のまま通り過ぎる。
+// 1人ずつの風乗り（速く・遠くを通る）より遅く・近くを通るので、追いかけて薙げる＝雲海の上での稼ぎ場になる。
+// 小集落の少ない地域なので、経験値と卵はここで補う
+const WIND_FORMATION_FIRST    = 5;     // 地域に入ってから最初の編隊まで（秒）
+const WIND_FORMATION_EVERY    = 9;     // 次の編隊まで（秒）
+const WIND_FORMATION_JITTER   = 4;
+const WIND_FORMATION_BASE     = 3;     // 1編隊の人数（時代Iで3人、2時代ごとに +1、最大 WIND_FORMATION_MAX）
+const WIND_FORMATION_PER_ERAS = 2;
+const WIND_FORMATION_MAX      = 7;
+const WIND_FORMATION_CAP      = 16;    // 同時に飛んでいる風乗り（編隊も1人も合わせて）の上限
+const WIND_FORMATION_SPEED    = 165;   // 1人の風乗り（235）より遅い＝追いつける
+const WIND_FORMATION_PASS     = 110;   // 群れの中心からこれだけ横を通る（1人の風乗りは230）
+const WIND_FORMATION_ROW      = 44;    // V字の1列ごとの後ろへのずれ
+const WIND_FORMATION_WING     = 38;    // V字の1列ごとの横へのひらき
+const WIND_FORMATION_SPEARS   = 2;     // 編隊の1人が投げる槍の数の上限（人数が多いので1人ぶんは少なく）
+const WIND_FORMATION_THROW_STAGGER = 0.35;   // 隊列の後ろほど最初の1本を遅らせる（一斉に撃たない）
+const WIND_FORMATION_EXIT     = 900;   // 群れの向こうへこれだけ抜けたら去る
+const WIND_FORMATION_EGG_CHANCE = 0.5;   // 編隊の風乗りの卵（1人の風乗りは0.35）
+let windFormationTimer = 0;
 
 // ---------------------------------------------------------------------
 // 島の引き当て
@@ -12144,42 +12193,29 @@ function skyNearestLanding(x, y) {
 // 島を置く（町の中心 → 町を建てる → 島の形にする）
 // ---------------------------------------------------------------------
 /**
- * 町の中心を 8×8 の格子のマスに1つずつ置く（首都のまわり・出発地のまわりのマスは外す）。
- * 小さな町ほど格子の中でずれて置かれる。余ったマスには小島を浮かべる。
- * 島の形は町の外縁が分かってから作る（buildSkyIslands）ので、ここでは設計図だけ残す。
+ * 町の中心を置く。v3.84.0（案帳 DT-124 手直し）: 8×8 の格子のマスに1つずつ置くと碁盤の目に見えたので、
+ * ワールドのどこでも投げて、ほかの町の島と離れていれば置く形にした（首都のまわり・出発地のまわりは外す）。
+ * 町の大きさは小さめが多く、ときどき大きな町。島の形は町の外縁が分かってから作る（buildSkyIslands）。
  */
 function placeSkylandTownCenters(townWanted, boss) {
   skyPlans = [];
-  skyLeftoverCells = [];
-  const cols = Math.floor(WORLD_W / SKY_GRID_CELL), rows = Math.floor(WORLD_H / SKY_GRID_CELL);
-  const ox = (WORLD_W - cols * SKY_GRID_CELL) / 2, oy = (WORLD_H - rows * SKY_GRID_CELL) / 2;
-  const cells = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    const cx = ox + (c + 0.5) * SKY_GRID_CELL, cy = oy + (r + 0.5) * SKY_GRID_CELL;
-    if (Math.hypot(cx - boss.wx, cy - boss.wy) < SKY_CAPITAL_CLEAR) continue;
-    if (Math.hypot(cx - START_X, cy - START_Y) < START_TOWN_CLEAR_CENTER) continue;
-    cells.push({ cx, cy });
-  }
-  for (let i = cells.length - 1; i > 0; i--) {   // Fisher–Yates
-    const j = Math.floor(random() * (i + 1));
-    [cells[i], cells[j]] = [cells[j], cells[i]];
-  }
   const centers = [];
-  const count = Math.min(townWanted, cells.length);
-  for (let i = 0; i < count; i++) {
-    const cell = cells[i];
-    const scale = randRange(SKY_TOWN_SCALE_MIN, SKY_TOWN_SCALE_MAX);
-    const reachGuess = SKY_TOWN_REACH_BASE * scale + SKY_ISLAND_PAD;
-    const jitter = Math.max(0, SKY_GRID_CELL / 2 - reachGuess - SKY_ISLAND_GAP / 2);
-    centers.push({ x: cell.cx + randRange(-jitter, jitter), y: cell.cy + randRange(-jitter, jitter), maxScale: scale });
+  for (let tries = 0; tries < SKY_TOWN_TRIES && centers.length < townWanted; tries++) {
+    const x = randRange(SKY_WORLD_MARGIN, WORLD_W - SKY_WORLD_MARGIN), y = randRange(SKY_WORLD_MARGIN, WORLD_H - SKY_WORLD_MARGIN);
+    if (Math.hypot(x - boss.wx, y - boss.wy) < SKY_CAPITAL_CLEAR) continue;
+    if (Math.hypot(x - START_X, y - START_Y) < START_TOWN_CLEAR_CENTER) continue;
+    const scale = SKY_TOWN_SCALE_MIN + (SKY_TOWN_SCALE_MAX - SKY_TOWN_SCALE_MIN) * Math.pow(random(), SKY_TOWN_SIZE_SKEW);
+    const reach = SKY_TOWN_REACH_BASE * scale + SKY_ISLAND_PAD;
+    const gap = SKY_ISLAND_GAP + random() * SKY_TOWN_SPACING_JITTER;
+    if (centers.some(c => Math.hypot(x - c.x, y - c.y) < reach + c.reach + gap)) continue;
+    centers.push({ x, y, maxScale: scale, reach });
   }
-  for (let i = count; i < cells.length; i++) skyLeftoverCells.push(cells[i]);
   return centers;
 }
 
 /** 設計図の島どうしが、隙間を空けて並ぶように、それぞれが張り出してよい量を決める。 */
 function skyExtraFor(plan, plans) {
-  let extra = SKY_EXTRA_MAX * plan.reach;
+  let extra = Math.max(SKY_EXTRA_MAX, plan.grow ?? 0) * plan.reach;   // v3.84.0: 町の島ごとに広げる量を変える
   for (const other of plans) {
     if (other === plan) continue;
     const slack = Math.hypot(plan.cx - other.cx, plan.cy - other.cy) -
@@ -12191,7 +12227,8 @@ function skyExtraFor(plan, plans) {
 
 /** 設計図1枚を「円の和」の島にする。核の円＋縁に張り出す円（いびつな塊に見える）＋町の棟のはみ出しを覆う円。 */
 function skyMakeIsland(plan, bound, townBuildings) {
-  const reachPad = plan.reach + SKY_ISLAND_PAD;
+  // v3.84.0: 張り出しの円は、許された広がり（bound）まで使う。広げてよい島は大きく、隣が近い島は小さくまとまる
+  const reachPad = Math.max(plan.reach + SKY_ISLAND_PAD, plan.kind === "capital" ? 0 : bound * 0.94);
   const coreR = plan.kind === "capital" ? plan.reach + SKY_ISLAND_PAD * 0.5
               : plan.kind === "town"    ? plan.reach * 0.72 + SKY_ISLAND_PAD * 0.5
               :                           plan.reach * 0.75;
@@ -12252,16 +12289,19 @@ function buildSkyIslands(buildings, centers, boss) {
     byTown[t].push(b);
   }
   const plans = [{ cx: boss.wx, cy: boss.wy, reach: SKY_CAPITAL_REACH, kind: "capital" }];
-  centers.forEach((c, t) => plans.push({ cx: c.x, cy: c.y, reach: Math.max(reach[t], 120), kind: "town", townIndex: t }));
+  centers.forEach((c, t) => plans.push({ cx: c.x, cy: c.y, reach: Math.max(reach[t], 120), kind: "town", townIndex: t,
+                                         grow: SKY_TOWN_GROW_MAX * Math.pow(random(), SKY_TOWN_GROW_SKEW) }));
   const startPlan = { cx: START_X + 380, cy: START_Y - 380, reach: SKY_START_ISLAND_REACH, kind: "start" };
   plans.push(startPlan);
   const fits = (p) => plans.every(o => Math.hypot(p.cx - o.cx, p.cy - o.cy) >=
                                        p.reach + o.reach + SKY_ISLAND_PAD * 2 + SKY_ISLAND_GAP);
-  for (const cell of skyLeftoverCells) {
-    if (random() > SKY_DECOR_CHANCE) continue;
-    const plan = { cx: cell.cx + randRange(-200, 200), cy: cell.cy + randRange(-200, 200),
-                   reach: randRange(SKY_DECOR_REACH_MIN, SKY_DECOR_REACH_MAX), kind: "decor" };
-    if (fits(plan)) plans.push(plan);
+  // v3.84.0: 町の無い小島も格子に寄せず、どこでも投げて空いていれば置く（小さいものが多く、ときどき大きな無人島）
+  let decor = 0;
+  for (let tries = 0; tries < SKY_DECOR_TRIES && decor < SKY_DECOR_COUNT; tries++) {
+    const plan = { cx: randRange(SKY_WORLD_MARGIN, WORLD_W - SKY_WORLD_MARGIN), cy: randRange(SKY_WORLD_MARGIN, WORLD_H - SKY_WORLD_MARGIN),
+                   reach: SKY_DECOR_REACH_MIN + (SKY_DECOR_REACH_MAX - SKY_DECOR_REACH_MIN) * Math.pow(random(), SKY_DECOR_SIZE_SKEW), kind: "decor" };
+    if (Math.hypot(plan.cx - START_X, plan.cy - START_Y) < SKY_HAMLET_RANGE) continue;   // 出発地のまわりは小集落の島に空けておく
+    if (fits(plan)) { plans.push(plan); decor++; }
   }
   skyPlans = plans;
   skyIslands = [];
@@ -12275,6 +12315,33 @@ function buildSkyIslands(buildings, centers, boss) {
   skyStartIsland = skyIslands.findIndex(i => i.kind === "start");
   skyBuildLookup();
   skyTrimTownFarmland(buildings);
+}
+
+/**
+ * v3.84.0（案帳 DT-124 手直し）: 出発地のまわりの小集落の下に小島を浮かべる。小集落は島より後に作られるので、
+ * 作り終えた小集落の目印の建物（_landmark "hamlet"）を出発地に近い順に見て、ほかの島とぶつからなければ島を足す。
+ * 島の無い集落は、あとの「雲海に家は建たない」で消える。島は小さく（地上の敵の湧く大きさ未満）、最初に焼いて育つ場所になる
+ */
+function skyAddHamletIslands(tinyBuildings) {
+  const symbols = tinyBuildings.filter(b => b._landmark === "hamlet" &&
+    Math.hypot(b.wx - START_X, b.wy - START_Y) < SKY_HAMLET_RANGE && skyIslandAt(b.wx, b.wy, 0) < 0);
+  symbols.sort((a, b) => dist2(a.wx, a.wy, START_X, START_Y) - dist2(b.wx, b.wy, START_X, START_Y));
+  let added = 0;
+  for (const sym of symbols) {
+    if (added >= SKY_HAMLET_MAX) break;
+    if (skyIslandAt(sym.wx, sym.wy, 0) >= 0) continue;   // 先に足した島に載った
+    const houses = tinyBuildings.filter(b => b._tinySettlement && dist2(b.wx, b.wy, sym.wx, sym.wy) < SKY_HAMLET_GATHER_R * SKY_HAMLET_GATHER_R);
+    let reach = 0;
+    for (const b of houses) reach = Math.max(reach, Math.hypot(b.wx - sym.wx, b.wy - sym.wy) + (b.radius || 0));
+    const bound = reach + SKY_HAMLET_PAD;
+    const clear = skyIslands.every(o => Math.hypot(o.cx - sym.wx, o.cy - sym.wy) >= o.bound + bound + SKY_ISLAND_GAP);
+    if (!clear) continue;
+    const isl = skyMakeIsland({ cx: sym.wx, cy: sym.wy, reach, kind: "hamlet" }, bound, houses);
+    skyDecorateIsland(isl);
+    skyIslands.push(isl);
+    added++;
+  }
+  if (added > 0) skyBuildLookup();
 }
 
 /**
@@ -12294,9 +12361,10 @@ function skyTrimTownFarmland(buildings) {
 
 function resetSkyland() {
   skyIslands = []; skyLookup = null; skyCapitalIsland = -1; skyStartIsland = -1;
-  skyPlans = []; skyLeftoverCells = [];
+  skyPlans = [];
   skyCloudShadows = []; skyWindStreaks = [];
   windRiderTimer = WIND_RIDER_FIRST;
+  windFormationTimer = WIND_FORMATION_FIRST;   // v3.84.0（案帳 DT-124 手直し）
 }
 
 /** 雲の影と風の筋の配置（見た目だけ）。地域に入るたびに作り直す。 */
@@ -12436,15 +12504,52 @@ function spawnWindRider(c) {
   return m;
 }
 
+/**
+ * v3.84.0（案帳 DT-124 手直し）: 風乗りの編隊を1つ飛ばす。先頭が群れの横 WIND_FORMATION_PASS を通る向きに飛び、
+ * 後ろの者は先頭と同じ向き・同じ速さのまま V字の位置にずれて並ぶ（隊列が崩れない）
+ */
+function spawnWindFormation(c, count) {
+  const def = MOVER_DEFS.wind_rider;
+  const a = random() * Math.PI * 2, side = random() < 0.5 ? -1 : 1;
+  const lx = c.x + Math.cos(a) * WIND_RIDER_APPROACH, ly = c.y + Math.sin(a) * WIND_RIDER_APPROACH;
+  const toX = c.x - lx, toY = c.y - ly, d = Math.hypot(toX, toY) || 1;
+  const gx = c.x - toY / d * side * WIND_FORMATION_PASS - lx, gy = c.y + toX / d * side * WIND_FORMATION_PASS - ly;
+  const gl = Math.hypot(gx, gy) || 1, dx = gx / gl, dy = gy / gl;
+  for (let k = 0; k < count; k++) {
+    const row = Math.ceil(k / 2), wing = k === 0 ? 0 : (k % 2 === 1 ? -1 : 1);
+    const sx = lx - dx * row * WIND_FORMATION_ROW - dy * wing * row * WIND_FORMATION_WING;
+    const sy = ly - dy * row * WIND_FORMATION_ROW + dx * wing * row * WIND_FORMATION_WING;
+    const m = makeMover(def, () => ({ x: sx, y: sy }));
+    m.wx = sx; m.wy = sy; m.maxHp = m.hp = def.hp; m.xpValue = def.xp;
+    m.eggChance = WIND_FORMATION_EGG_CHANCE;
+    m.wr = { dx, dy, spears: 0, cd: WIND_RIDER_FIRST_THROW + row * WIND_FORMATION_THROW_STAGGER, age: 0, throwT: 0, aim: 0,
+             speed: WIND_FORMATION_SPEED, spearMax: WIND_FORMATION_SPEARS, exit: WIND_FORMATION_EXIT };
+    m.headingX = dx; m.headingY = dy;
+    movers.push(m);
+  }
+}
+
+function windFormationSize() {
+  return Math.min(WIND_FORMATION_MAX, WIND_FORMATION_BASE + Math.floor(runStageIndex / WIND_FORMATION_PER_ERAS));
+}
+
 /** 定期的に風乗りを飛ばす。同時に飛ぶ数には上限がある。 */
 function updateWindRiders(dt) {
   if (worldShape !== SHAPE_SKYLAND || gameState !== "playing" || countAliveBoids() === 0) return;
   windRiderTimer -= dt;
-  if (windRiderTimer > 0) return;
-  windRiderTimer = WIND_RIDER_EVERY + random() * WIND_RIDER_EVERY_JITTER;
+  windFormationTimer -= dt;
+  if (windRiderTimer > 0 && windFormationTimer > 0) return;
   let flying = 0;
   for (const m of movers) if (m.alive && m.def.windRider) flying++;
-  if (flying < WIND_RIDER_CAP) spawnWindRider(calcFriendlyCentroid());
+  if (windRiderTimer <= 0) {
+    windRiderTimer = WIND_RIDER_EVERY + random() * WIND_RIDER_EVERY_JITTER;
+    if (flying < WIND_RIDER_CAP) { spawnWindRider(calcFriendlyCentroid()); flying++; }
+  }
+  if (windFormationTimer <= 0) {
+    windFormationTimer = WIND_FORMATION_EVERY + random() * WIND_FORMATION_JITTER;
+    const n = windFormationSize();
+    if (flying + n <= WIND_FORMATION_CAP) spawnWindFormation(calcFriendlyCentroid(), n);
+  }
 }
 
 /** 風乗り1人ぶん：まっすぐ飛び、横を通るあいだ槍を投げ、群れの向こうへ抜けたら去る。 */
@@ -12452,11 +12557,12 @@ function updateWindRider(m, dt, centroid) {
   if (!m.wr) windRiderInit(m, centroid, random() < 0.5 ? -1 : 1);   // デバッグ出現など、飛ぶ道が決まっていないとき
   const w = m.wr, def = m.def, atk = def.attack;
   w.age += dt;
-  m.wx += w.dx * def.speed * dt; m.wy += w.dy * def.speed * dt;
+  const speed = w.speed ?? def.speed;   // v3.84.0: 編隊は遅く飛ぶ
+  m.wx += w.dx * speed * dt; m.wy += w.dy * speed * dt;
   m.headingX = w.dx; m.headingY = w.dy;
   w.throwT = Math.max(0, w.throwT - dt);
   w.cd -= dt;
-  if (w.cd <= 0 && w.spears < WIND_RIDER_SPEARS) {
+  if (w.cd <= 0 && w.spears < (w.spearMax ?? WIND_RIDER_SPEARS)) {
     const i = findNearestAliveBoid(m.wx, m.wy);
     if (i >= 0 && dist2(px[i], py[i], m.wx, m.wy) <= atk.range * atk.range) {
       const javelin = SHOT_STYLES.findIndex(s => s.key === "javelin");
@@ -12468,7 +12574,7 @@ function updateWindRider(m, dt, centroid) {
     }
   }
   const along = (m.wx - centroid.x) * w.dx + (m.wy - centroid.y) * w.dy;
-  if (along > WIND_RIDER_EXIT || w.age > WIND_RIDER_MAX_AGE) m.alive = false;
+  if (along > (w.exit ?? WIND_RIDER_EXIT) || w.age > WIND_RIDER_MAX_AGE * (def.speed / speed)) m.alive = false;   // 遅い編隊は打ち切りもそのぶん延ばす
 }
 
 /** 風乗りの絵（真俯瞰）。+x が進む向き。三角の凧の翼・翼の下の兵・尾の帯・投げる腕。 */
@@ -15019,7 +15125,15 @@ const ROCKGIANT_RUBBLE_LIFE    = 24;      // 崩れた岩の山が残る秒数
 const ROCKGIANT_FALL_TIME      = 0.55;    // 前へ倒れ込んで山になるまで
 const ROCKGIANT_FALL_FWD       = 0.75;    // 倒れ込む距離＝半径×これ
 const ROCKGIANT_TORSO_ASPECT   = 341 / 360;   // 胴の絵の 高さ÷幅（v3.81.0）
-const ROCKGIANT_HEAD_W         = 0.92;    // 頭の絵の幅＝半径×これ（v3.81.0: 頭を別の部品に）
+const ROCKGIANT_HEAD_W         = 0.68;    // 頭の絵の幅＝半径×これ（v3.81.0: 頭を別の部品に。v3.84.0 DT-509 手直し「頭はもうちょっと小さい方がいい」で 0.92→0.68）
+const ROCKGIANT_BOSS_HEAD_W    = 0.92;    // 首都の大巨人の頭はそのまま
+// v3.84.0（案帳 DT-509 手直し・Shooter「どっちの巨人も、目は見えるようにできるか」）: 頭の前の縁に光る目を2つ描く。
+// 真上から見る絵なので目は描かれていない。眉の下から光が漏れているように、前寄りに小さな光の点を置く
+const ROCKGIANT_EYE_FWD        = 0.30;    // 目の位置（頭の絵の中心から前へ 高さ×これ）
+const ROCKGIANT_EYE_SIDE       = 0.19;    // 目の左右の間隔の半分（頭の絵の幅×これ）
+const ROCKGIANT_EYE_R          = 0.075;   // 目の半径（頭の絵の幅×これ）
+const ROCKGIANT_EYE_COLOR      = "#ffd25a";   // 岩の巨人：琥珀色（肌の黄土の苔と合う）
+const ROCKGIANT_BOSS_EYE_COLOR = "#ff4a24";   // 大巨人：赤い刻みと同じ赤
 const ROCKGIANT_HEAD_FWD       = 0.78;    // 頭の位置（胴の中心から前へ 半径×これ）
 const ROCKGIANT_HEAD_BACK      = 0.16;    // 腕を振り上げたとき頭を後ろへ引く量（半径×これ）
 const ROCKGIANT_ARM_ASPECT     = 366 / 140;   // 腕の絵の 高さ÷幅
@@ -15198,6 +15312,9 @@ function attachBossGiant(boss) {
   w._rg = initRockGiant(w, { x: boss.wx, y: boss.wy }, undefined, GIANT_BOSS_SCALE, true);
   boss._giantBoss = w;
   boss.headingX = w.headingX; boss.headingY = w.headingY;
+  // v3.84.0（案帳 DT-509 手直し・Shooter「ボスの当たり判定は見た目に合わせて」）: 当たりの大きさを建物（半径46）から大巨人の体へ。
+  // 胴の絵は半径×ROCKGIANT_TORSO_W の幅なので、半径そのものがほぼ胴の外形になる（ふつうの岩の巨人と同じ当たりの取り方）
+  boss.radius = w.def.radius;
 }
 
 function giantBossSettlement() {
@@ -15303,7 +15420,7 @@ function rockGiantFootRest(m, k, lead) {
 /** 足の置き場所を人間の建物から外す（町の上は足をよけて歩く。巨像と同じ） */
 function rockGiantAvoidTown(p) {
   for (const b of settlements) {
-    if (!b || b.fallen) continue;
+    if (!b || b.fallen || b._giantBoss) continue;   // v3.84.0: 歩く大巨人（首都）は町ではない。当たりを体の大きさにしたので、自分の足を自分の外へ押し出さない
     const need = b.radius + ROCKGIANT_FOOT_CLEAR;
     const dx = p.x - b.wx, dy = p.y - b.wy;
     if (Math.abs(dx) > need || Math.abs(dy) > need) continue;
@@ -15461,7 +15578,7 @@ function crumbleRockGiant(m, keys = ROCKGIANT_KEYS) {
     slide: ROCKGIANT_FALL_TIME, r: 1, shade: 0.5, life: ROCKGIANT_RUBBLE_LIFE });
   const fall = R * ROCKGIANT_FALL_FWD;
   piece(keys.torso, at(fall, 0), R * ROCKGIANT_TORSO_W * 0.95, ang + Math.PI / 2 + (fxRandom() - 0.5) * 0.4);
-  piece(keys.head, at(fall + R * 1.25, (fxRandom() - 0.5) * R * 0.4), R * ROCKGIANT_HEAD_W, ang + Math.PI / 2 + (fxRandom() - 0.5) * 1.2);   // v3.81.0: 頭は前へ転がる
+  piece(keys.head, at(fall + R * 1.25, (fxRandom() - 0.5) * R * 0.4), R * (keys === ROCKGIANT_BOSS_KEYS ? ROCKGIANT_BOSS_HEAD_W : ROCKGIANT_HEAD_W), ang + Math.PI / 2 + (fxRandom() - 0.5) * 1.2);   // v3.81.0: 頭は前へ転がる
   for (const side of [-1, 1]) {
     piece(keys.arm, at(R * 1.2, side * R * 0.95), R * ROCKGIANT_ARM_W, ang + Math.PI / 2 + side * (0.5 + fxRandom() * 0.5));
     const f = G ? G.feet[side < 0 ? 0 : 1] : null;
@@ -15590,6 +15707,22 @@ function drawRockGiantFoot(m, f, footImg, ang, lifting, mirror, keys = ROCKGIANT
  * v3.81.0: 部品1枚を描く。ボスは玄武岩らしく少し暗く、石像（statueK>0）は灰色の石の版を重ねる
  * （ctx.filter は使わない。iOS Safari が黙って無視するので、焼いた版を重ねる）
  */
+/** 頭の絵の座標（前が上）で光る目を2つ。石像のあいだは光らない（動き出すと灯る） */
+function drawRockGiantEyes(hw, hh, color, statueK) {
+  const lit = 1 - (statueK || 0);
+  if (lit <= 0.02) return;
+  const a = ctx.globalAlpha, r = hw * ROCKGIANT_EYE_R, y = -hh * ROCKGIANT_EYE_FWD;
+  for (const side of [-1, 1]) {
+    const x = side * hw * ROCKGIANT_EYE_SIDE;
+    ctx.globalAlpha = a * lit * 0.35; ctx.fillStyle = color;   // にじむ光
+    ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = a * lit; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.ellipse(x, y, r * 1.25, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fff6d8";   // 芯の白
+    ctx.beginPath(); ctx.arc(x, y, r * 0.45, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = a;
+}
 function rockGiantPart(key, img, x, y, w, h, keys, statueK) {
   ctx.drawImage(img, x, y, w, h);
   if (keys.dark && key === keys.foot) { const a = ctx.globalAlpha; ctx.globalAlpha = a * 0.45; ctx.drawImage(wreckDarkSpriteFor(key, img), x, y, w, h); ctx.globalAlpha = a; }
@@ -15668,11 +15801,13 @@ function drawRockGiantBody(R, G, keys, statueK) {
   rockGiantPart(keys.torso, torso, -W / 2, -H / 2, W, H, keys, statueK);
   ctx.restore();
   if (headImg) {   // 頭：胴の前寄り。歩くと小さく揺れ、腕を振り上げると後ろへ引く（反る）
-    const hw = R * ROCKGIANT_HEAD_W, hh = hw * headImg.naturalHeight / headImg.naturalWidth;
+    const isBoss = keys === ROCKGIANT_BOSS_KEYS;
+    const hw = R * (isBoss ? ROCKGIANT_BOSS_HEAD_W : ROCKGIANT_HEAD_W), hh = hw * headImg.naturalHeight / headImg.naturalWidth;
     ctx.save();
     ctx.translate(R * (ROCKGIANT_HEAD_FWD - ROCKGIANT_HEAD_BACK * pose.raise + 0.1 * pose.plant), swing * R * 0.04);
     ctx.rotate(Math.PI / 2 + swing * 0.06);
     rockGiantPart(keys.head, headImg, -hw / 2, -hh / 2, hw, hh, keys, statueK);
+    drawRockGiantEyes(hw, hh, isBoss ? ROCKGIANT_BOSS_EYE_COLOR : ROCKGIANT_EYE_COLOR, statueK);
     ctx.restore();
   }
   if (!armImg) return true;
@@ -15739,7 +15874,7 @@ function trCapLeft() {
 
 /** その時代の顔ぶれから、ラッシュに使える大型と小型を選ぶ。 */
 function trEraDefs() {
-  const keys = (MOVER_SPAWNS_BY_STAGE[currentStage] ?? []).map(e => e[0]);
+  const keys = regionSpawnTable(MOVER_SPAWNS_BY_STAGE[currentStage] ?? []).map(e => e[0]);
   const ok = keys.map(k => MOVER_DEFS[k]).filter(d => d && d.attack && !d.part && !d.railBound
     && !d.walker && !d.fleer && d.moveType !== "loop" && d.speed > 0);
   let large = null, small = null;
@@ -15793,7 +15928,8 @@ function trName(kind) { return storyEgg(STRINGS.trNames[kind] ?? kind); }
 /** 警戒度が上がったときに1つ予約する（triggerTierAdvance の最後）。 */
 function scheduleTierRush() {
   const boss = bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null;
-  const pool = TR_KINDS.filter(k => !tierRush.used.has(k) && (k !== "convoy" || (boss && !boss.fallen)));
+  const pool = TR_KINDS.filter(k => !tierRush.used.has(k) && (k !== "convoy" || (boss && !boss.fallen))
+    && (k !== "titan" || wastelandAllowsMover("stone_titan")));   // v3.84.0: 荒地に巨人の行軍（岩脚の巨像）は来ない（DT-509）
   if (pool.length === 0) return;
   const kind = pool[Math.floor(random() * pool.length)];
   tierRush.used.add(kind);
@@ -17209,7 +17345,7 @@ function damageMover(m, damage, srcX, srcY) {
     if (m._trReward) onTierRushKill(m);   // v3.16.0: 輸送隊・精鋭の報酬
     let eggs = m.def.eggDrop;
     // v0.8: 確率卵（レイダー用。群れの供給源が完全に絶えないように）
-    if (m.def.eggChance && random() < m.def.eggChance) eggs += 1;
+    { const ec = m.eggChance ?? m.def.eggChance; if (ec && random() < ec) eggs += 1; }   // v3.84.0: 1体ごとの卵の確率（風乗りの編隊）
     for (let k = 0; k < eggs; k++) {
       const angle = random() * Math.PI * 2;
       const r = m.def.radius + 12 + random() * 30;
@@ -22938,11 +23074,27 @@ function isMovingBuilding(b) {
   return !!b && (!!b._rock || !!b._railRide || !!b._giantBoss);   // v3.81.0: 荒地の首都の大巨人
 }
 
+// v3.84.0（案帳 DT-509 手直し）: 当たりが格子のセルより大きい動く建物（荒地の首都の大巨人・半径110）は、
+// 中心のセルだけに入れると、体の縁に居る竜が近くのセルを探しても見つからない。
+// このような大きいものは別に持ち、探すたびに距離で拾う（今は1体だけなので総当たりで軽い）
+const MOVING_BIG_BUILDING_R = BUILDING_GRID_CELL * 0.5;
+const movingBigBuildings = [];
+function pushMovingBigBuildings(wx, wy, cellRadius, out) {
+  const reach = (cellRadius + 1) * BUILDING_GRID_CELL;
+  for (const s of movingBigBuildings) {
+    const b = settlements[s];
+    if (!b) continue;
+    const r = reach + b.radius;
+    if (Math.abs(b.wx - wx) < r && Math.abs(b.wy - wy) < r) out.push(s);
+  }
+}
 function rebuildMovingBuildingGrid() {
   movingBuildingGrid.clear();
+  movingBigBuildings.length = 0;
   for (const s of movingBuildingIdx) {
     const b = settlements[s];
     if (!b) continue;
+    if (b.radius > MOVING_BIG_BUILDING_R) { movingBigBuildings.push(s); continue; }
     const key = ((b.wx / BUILDING_GRID_CELL) | 0) * 100003 + ((b.wy / BUILDING_GRID_CELL) | 0);
     let bucket = movingBuildingGrid.get(key);
     if (!bucket) { bucket = []; movingBuildingGrid.set(key, bucket); }
@@ -22972,6 +23124,7 @@ function buildingGridQuery(wx, wy, out) {
       if (movingBuildingGrid.size > 0) { const r = movingBuildingGrid.get(key); if (r) for (const idx of r) out.push(idx); }
     }
   }
+  if (movingBigBuildings.length > 0) pushMovingBigBuildings(wx, wy, 1, out);
 }
 
 // v0.6: 走査セル半径を指定できる版。「射程延伸」でブレス射程が
@@ -22988,6 +23141,7 @@ function buildingGridQueryRadius(wx, wy, cellRadius, out) {
       if (movingBuildingGrid.size > 0) { const r = movingBuildingGrid.get(key); if (r) for (const idx of r) out.push(idx); }
     }
   }
+  if (movingBigBuildings.length > 0) pushMovingBigBuildings(wx, wy, cellRadius, out);
 }
 
 function rebuildBuildingGrid() {
@@ -23069,6 +23223,8 @@ function collectBuildingsNearFlock() {
   const x0 = minCx - r, x1 = maxCx + r, y0 = minCy - r, y1 = maxCy + r;
   const boxCells     = (x1 - x0 + 1) * (y1 - y0 + 1);
   const perBoidCells = alive * (2 * r + 1) * (2 * r + 1);
+  // v3.84.0: セルより大きい動く建物（荒地の大巨人）は格子に入れていないので、ここで候補に足す（距離は撃つ側が見る）
+  for (const s of movingBigBuildings) _settlementsInRange.add(s);
   if (boxCells > perBoidCells) {
     for (let i = 0; i < N; i++) {
       if (boidDead[i] || boidDowned[i]) continue;
@@ -39811,7 +39967,7 @@ function drawSettlementHPBars() {
  */
 function drawBossHPBar(boss) {
   const hpRatio = Math.max(0, boss.hp / boss.maxHp);
-  const barW    = boss.radius * 2.8;
+  const barW    = Math.min(boss.radius, BOSS_RADIUS) * 2.8;   // v3.84.0: 大巨人の当たりを広げても、バーは今までの幅（画面に収める）
   const barH    = 8;
   const barX    = boss.wx - barW * 0.5;
   const barY    = boss.wy - boss.radius - 18;
