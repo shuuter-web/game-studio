@@ -26,8 +26,10 @@ if (fs.existsSync(nativeDirectory)) {
     throw new Error(`The generated ${platform} project has an unknown/different appId. Preserve any needed local work, then regenerate this ignored directory.`);
   }
 }
-capacitorConfig.appId = config.appId;
-fs.writeFileSync(capacitorFile, `${JSON.stringify(capacitorConfig, null, 2)}\n`);
+if (capacitorConfig.appId !== config.appId) {
+  capacitorConfig.appId = config.appId;
+  fs.writeFileSync(capacitorFile, `${JSON.stringify(capacitorConfig, null, 2)}\n`);
+}
 run(process.execPath, [path.join(ROOT, 'scripts/build-web.mjs')], { cwd: ROOT });
 const capacitorCli = path.join(ROOT, 'node_modules/@capacitor/cli/bin/capacitor');
 if (!fs.existsSync(nativeDirectory)) {

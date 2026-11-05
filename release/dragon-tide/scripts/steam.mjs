@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, readRelease, requireRelease } from './shared.mjs';
+import { verifyWindowsContent } from './verify-windows.mjs';
 
 const release = readRelease();
 const { config, version, buildNumber, commit } = release;
@@ -18,6 +19,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'dist/windows/build-
 if (manifest.version !== version || manifest.buildNumber !== buildNumber || manifest.commit !== commit || manifest.sourceDirty !== false || manifest.appId !== config.appId || manifest.identityConfirmed !== true) {
   throw new Error('Windows output does not match this clean release tag. Rebuild Windows from the tagged commit.');
 }
+verifyWindowsContent(path.join(ROOT, 'dist/windows'), manifest);
 const outputDirectory = path.join(ROOT, 'dist/steam');
 fs.mkdirSync(outputDirectory, { recursive: true });
 // VDF paths are relative to the generated script. Never mark a public branch live automatically.

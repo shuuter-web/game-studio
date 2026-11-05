@@ -2,6 +2,18 @@
 
 対象はSteam / Windows、Android、iOS。すべて買い切り。共通ソースの更新から各ストア向け成果物を作るための手順をまとめる。設計判断は [ADR-0008](../decisions/ADR-0008-dragon-tide-distribution.md) を参照。
 
+## 実装と検証の現在地（2026-11-06）
+
+GitHub masterのv3.88.2（`d514e58`）を取り込んだ専用ブランチ `feat/dragon-tide-release-pipeline` で実装。元の作業フォルダの未コミット変更は保持している。
+
+- 保存読込・梱包・タグ整合性・Steamファイル照合の13件の自動テストを通過。
+- Windows実行ファイルとZIPを生成し、ZIP整合性・全配布ファイルのハッシュを確認。
+- 非表示Electronで起動し、同じ保存領域を使って包装前から包装済みアプリへ再起動してもlocalStorageのテスト値が残ることを確認。実際のプロフィールとラン形式は別のfixtureテストで確認。
+- Androidプロジェクト生成と再同期で、v3.88.2 / build 1の反映を確認。
+- AndroidのGradleビルド、iOSのXcodeビルド、署名・ストア提出は未検証。ローカルにSDK/XcodeがないためGitHub Actionsでの実行が必要。ワークフローは実装済みだが、現時点ではGitHubへのpush待ち。
+
+ゲーム内容の再プレイ・再評価は今回の検証範囲に含めていない。
+
 ## 管理するもの
 
 | 対象 | 管理方法 |

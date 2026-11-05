@@ -34,6 +34,10 @@ export function requireIdentity(config) {
 export function validateReleaseTags(release, tags, requestedTag = '') {
   const expected = releaseTag(release);
   if (requestedTag && requestedTag !== expected) throw new Error(`Tag must be ${expected}, got ${requestedTag}`);
+  for (const tag of tags) {
+    const number = Number(/-build\.(\d+)$/.exec(tag.name)?.[1]);
+    if (tag.name !== expected && number === release.buildNumber) throw new Error(`buildNumber is already used by ${tag.name}`);
+  }
   const existing = tags.find(tag => tag.name === expected);
   if (existing) {
     if (existing.commit !== release.commit) throw new Error(`${expected} already identifies different source; increment buildNumber`);

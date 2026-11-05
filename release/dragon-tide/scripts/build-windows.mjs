@@ -24,7 +24,7 @@ await build({
     win: { target: [{ target: 'zip', arch: ['x64'] }], signAndEditExecutable: false }
   }
 });
-const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'web/release-manifest.json'), 'utf8'));
+const manifest = JSON.parse(fs.readFileSync(path.join(application, 'web/release-manifest.json'), 'utf8'));
 const windowsFiles = {};
 function hashDirectory(directory) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
