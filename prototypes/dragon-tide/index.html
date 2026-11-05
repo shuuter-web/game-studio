@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.85.0";
+const GAME_VERSION = "v3.85.4";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -28804,8 +28804,11 @@ function drawAimDragons() {
 // 攻撃範囲はタップした点から同心円ではなく、竜の突進自体を少し広めの範囲に。指向性をもってぶっ飛ばす」）:
 // 行きは遅く出て加速する。当たりは**飛んでいる体そのもの**（広めの帯）で、その時の速さで威力と吹き飛ばしが決まる。
 // 着いた所の同心円の叩きつけ・衝撃はやめた。吹き飛ばす向きは飛ぶ向き（少し外へ開く）＝指向性のある一撃。
-const RECALL_SPEED_START = 180;   // 行きの初速 px/s（遅く出る＝近くで離すと弱い）
-const RECALL_ACCEL       = 2600;  // 行きの加速度 px/s²（900px 先でほぼ最高速）
+// v3.85.2（案帳 DT-483・Shooter「もう少し初速を下げ加速を上げて。一瞬タメが入る感じ」）:
+// 初速 180→60、加速 2600→4200。出てすぐの RECALL_WINDUP 秒は初速のまま溜めてから、一気に加速する（約480px 先で最高速）
+const RECALL_SPEED_START = 60;    // 行きの初速 px/s（遅く出る＝近くで離すと弱い）
+const RECALL_ACCEL       = 4200;  // 行きの加速度 px/s²（タメのあと約480px 先で最高速）
+const RECALL_WINDUP      = 0.12;  // 出てからこの秒数は加速しない（一瞬のタメ）
 const RECALL_SPEED_MAX   = 2000;  // 行きの最高速 px/s
 const RECALL_SPEED_BACK = 620;  // 帰りの速さ px/s（群れの最高速より速い＝必ず追いつく）
 const RECALL_MIN_DIST  = 50;    // これより近い所で離しても飛ばない（群れの中での誤爆を防ぐ）
@@ -28897,7 +28900,7 @@ function updateRecallFlights(dt) {
       f.t += dt;
       if (f.phase === "out") {
         // 遅く出て加速する（遠くを狙うほど速く・強く着く）
-        f.v = Math.min(RECALL_SPEED_MAX, f.v + RECALL_ACCEL * dt);
+        if (f.t > RECALL_WINDUP) f.v = Math.min(RECALL_SPEED_MAX, f.v + RECALL_ACCEL * dt);
         f.done = Math.min(f.dist, f.done + f.v * dt);
         px[i] = f.x0 + f.ux * f.done; py[i] = f.y0 + f.uy * f.done;
         vx[i] = f.ux * f.v; vy[i] = f.uy * f.v;
@@ -31488,6 +31491,17 @@ const CODEX_SPECIAL_ERA = {
   metro_heli:     "大都会（全文明） — 首都の守り。首都に近づくと増援で飛んでくる",
   splitter_mid:   "分裂体を壊すと出る",
   splitter_small: "分裂体（中）を壊すと出る",
+  // v3.85.4（案帳 DT-218 手直し・Shooter「どこに出るでしょうか」）: 出る時代の表に載らない（別の決め方で出る）敵は「—」になっていた
+  harpoon_knight:     "警戒度ラッシュ「竜狩りの銛」",
+  rush_gate:          "警戒度ラッシュ「湧き出る門」",
+  kite_soldier:       "IV 近世 / V 産業 / VI 電気 — 町のそばで凧を揚げて待つ（どの地域にも8人）",
+  troop_airship:      "V 産業 / VI 電気 / VII 大戦 — 1隻（どの地域にも）",
+  paratrooper:        "落下兵の飛行船から降りてくる",
+  war_elephant:       "II 古代 / III 中世 — 1頭ずつ（どの地域にも。地図のどこかを歩き回る）",
+  war_elephant_rider: "II 古代 / III 中世 — 戦象の背に4人",
+  hero_shield:        "英雄の国 — 英雄の2回目の出撃から一緒に来る",
+  hero_mage:          "英雄の国 — 英雄の3回目の出撃から一緒に来る",
+  hero_archer:        "英雄の国 — 英雄の4回目の出撃から一緒に来る",
 };
 
 /** その敵が出る文明を数字（I〜VIII）で並べた文字列にする。 */
@@ -31530,6 +31544,35 @@ function codexAttackLabel(def) {
     if (def.fortressParts) return "撃たない — 四隅の砲台4基が撃つ。正面と横は硬く、後ろの扉だけがふつうに効く";
     if (def.fortressTurret)
       return `砲 威力${TR_FORTRESS_SHOT_DMG}＋時代・射程${TR_FORTRESS_RANGE}・${TR_FORTRESS_FIRE}秒ごと（狙う向きへ回る。壊すとその砲台は撃たなくなる）`;
+    // v3.85.4（案帳 DT-218 手直し・Shooter「図鑑では攻撃しない、になってるみたいなので修正して。他の奴らも」）:
+    // def.attack を持たず専用の処理で攻撃する敵が「攻撃しない」になっていた。数値は処理の定数から引く
+    if (def.part === "rider")
+      return `矢 威力${WAR_RIDER_DAMAGE}・射程${WAR_RIDER_RANGE}・${WAR_RIDER_INTERVAL}秒ごと（象の背から近い竜を撃つ。4人が残っている間は象が固い）`;
+    if (def.name === "harpoon_knight")
+      return `銛 射程${TR_HARPOON_RANGE}・${TR_HARPOON_INTERVAL}秒ごと（刺さった竜を引きずり、騎士まで引かれると奪われる）`;
+    if (def.name === "rush_gate")
+      return `撃たない — ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧く（${TR_GATE_DUR}秒で閉じる。群れについてくる）`;
+    if (def.titan)
+      return `踏みつけ 範囲${TITAN_STOMP_R}・威力${TITAN_STOMP_DMG}＋時代・押し${TITAN_STOMP_PUSH}（6本の足を${TITAN_STEP_EVERY}秒ごとに1本ずつ。踏む先に予告の輪）`;
+    if (def.rockGiant)
+      return `踏みつけ 範囲${ROCKGIANT_STOMP_R}・威力${ROCKGIANT_STOMP_DMG}＋時代（左右交互に${ROCKGIANT_STEP_EVERY}秒ごと）` +
+             `＋叩きつけ 扇の半径${ROCKGIANT_SLAM_R}・威力${ROCKGIANT_SLAM_DMG}＋時代・押し${ROCKGIANT_SLAM_PUSH}（${ROCKGIANT_SLAM_EVERY}歩ごと・${ROCKGIANT_SLAM_WIND}秒振りかぶって扇の予告）（大きい巨人ほど範囲も広い）`;
+    if (def.kite)
+      return `雷 糸の上 威力${KITE_LINE_DMG}・凧のまわり 半径${KITE_SPLASH_R}・威力${KITE_SPLASH_DMG}（群れが${KITE_ACTIVE_R}以内に来ると${KITE_CHARGE}秒雲が暗くなってから落ちる。兵を倒すと凧が流れて${KITE_FREE_EVERY}秒ごとに雷を落とし、人間の建物も焼く）`;
+    if (def.airship)
+      return `撃たない — ${AIRSHIP_DROP_EVERY}秒ごとに落下兵を${AIRSHIP_DROP_COUNT}人、群れの後ろへ降ろす（1隻で${AIRSHIP_TROOP_CAP}人まで）`;
+    if (def.heroMate === "shield")
+      return `盾投げ 威力${HM_SHIELD_DAMAGE}・射程${HM_SHIELD_RANGE}・衝撃${HM_SHIELD_IMPACT}（弧を描いて飛び、戻ってくる。戻ってから${HM_SHIELD_INTERVAL}秒で次）`;
+    if (def.heroMate === "mage")
+      return `魔法陣 半径${HM_MAGE_R}・威力${HM_MAGE_DAMAGE}（群れの真ん中に${HM_MAGE_CAST}秒かけて描き、光の柱が立つ。描いている間に外へ抜ければ当たらない）`;
+    if (def.heroMate === "archer")
+      return `矢 威力${HM_ARCHER_DAMAGE}・射程${HM_ARCHER_RANGE}・${HM_ARCHER_INTERVAL}秒ごと`;
+    if (def.metroGun) {
+      const g = def.metroGun;
+      return `${g.turret ? "主砲" : "ロケット"} ${g.mainCount > 1 ? g.mainCount + "発 " : ""}範囲${g.mainAoe}・威力${g.mainDamage}・射程${g.mainRange}・${g.mainInterval}秒ごと` +
+             `＋機銃 ${g.mgBurst}連射 威力${g.mgDamage}・射程${g.mgRange}・${g.mgInterval}秒ごと（${g.turret ? "砲塔が群れへ回りきってから撃つ" : "機首を群れへ向けてから撃つ"}）`;
+    }
+    if (def.roadRunner) return "攻撃しない — 道路を流れるだけ";
     return "攻撃しない";
   }
   const t = a.type;
@@ -32686,7 +32729,7 @@ const CODEX_SPECIAL_STAT = {
   [SPECIAL_CHAIN]: () =>
     `鎖 ${CHAIN_LENGTH}px ／ 鉄球の半径 ${CHAIN_BALL_R}px ／ 秒速${CHAIN_MIN_SPEED}px以上で当たる（秒速250pxで ${CHAIN_DMG}・最大 ${CHAIN_DMG * 2.5}） ／ HP ×${SPECIAL_DEFS[SPECIAL_CHAIN].hpMult}`,
   [SPECIAL_RECALL]: () =>
-    `初速 ${RECALL_SPEED_START}px/s から 毎秒${RECALL_ACCEL}px/s 加速（最高 ${RECALL_SPEED_MAX}） ／ 突進 威力${RECALL_DMG_MIN}〜${RECALL_DMG_MAX}・太さ 半径${RECALL_BODY_R_MIN}〜${RECALL_BODY_R_MAX}px（速さで変わる） ／ 帰りの体当たり 威力${RECALL_BACK_DMG} ／ 届く距離 ${RECALL_MAX_DIST}px ／ 戻ってから${RECALL_REST}秒で次 ／ HP ×${SPECIAL_DEFS[SPECIAL_RECALL].hpMult}`,
+    `初速 ${RECALL_SPEED_START}px/s で${RECALL_WINDUP}秒溜めてから 毎秒${RECALL_ACCEL}px/s 加速（最高 ${RECALL_SPEED_MAX}） ／ 突進 威力${RECALL_DMG_MIN}〜${RECALL_DMG_MAX}・太さ 半径${RECALL_BODY_R_MIN}〜${RECALL_BODY_R_MAX}px（速さで変わる） ／ 帰りの体当たり 威力${RECALL_BACK_DMG} ／ 届く距離 ${RECALL_MAX_DIST}px ／ 戻ってから${RECALL_REST}秒で次 ／ HP ×${SPECIAL_DEFS[SPECIAL_RECALL].hpMult}`,
   [SPECIAL_AIM]: () =>
     `${AIM_CHARGE_TIME}秒で満タン ／ 爆発 威力${AIM_DMG_MIN}〜${AIM_DMG_MAX}・半径${AIM_R_MIN}〜${AIM_R_MAX}px（溜めに比例） ／ 溜めが${Math.round(AIM_MIN_CHARGE * 100)}%未満なら撃たない ／ HP ×${SPECIAL_DEFS[SPECIAL_AIM].hpMult}`,
   [SPECIAL_DRUM]: () =>
@@ -37595,7 +37638,8 @@ const CHAIN_SMASH_DMG        = 1.5;   // スマッシュの威力の倍率
 const CHAIN_SMASH_WALL       = 3;     // スマッシュが城壁に足す威力（ふつうの威力のこの倍。城壁も砕く）
 const CHAIN_HITSTOP          = 0.05;  // 当たったとき鉄球が止まる秒数
 const CHAIN_SMASH_HITSTOP    = 0.1;   // スマッシュのときの止まる秒数
-const CHAIN_HIT_SLOW         = 0.85;  // 当たったあとの鉄球の速さ（当たる前のこの倍）
+// v3.85.1（案帳 DT-054 手直し・Shooter「当たった時の速度減衰をもう少し減らして。まとめて薙ぎ払えても良い。ヒットストップは変えずに」）: 0.85→0.95
+const CHAIN_HIT_SLOW         = 0.95;  // 当たったあとの鉄球の速さ（当たる前のこの倍）
 const CHAIN_SHATTER_SPEED    = 0.9;   // 砕けた破片の速さ（鉄球の速さのこの倍・ばらつきあり）
 const CHAIN_SHATTER_SPREAD   = 1.3;   // 砕けた破片が広がる角度（rad）
 const CHAIN_SHARD_DMG        = 14;    // 砕けた破片が当たった相手に与える威力（秒速300pxのとき）
@@ -40567,17 +40611,31 @@ const ONE_SHOT_RED = "#ff2a2a";
 const ONE_SHOT_SHOT_LINE = 1.0;
 const ONE_SHOT_AREA_LINE = 2.2;
 function oneShotBlinkAlpha() { return 0.35 + 0.65 * Math.abs(Math.sin(breathTime * 9)); }
+// v3.85.3（DT-513 手直し・Shooter「範囲攻撃のアラート枠は、攻撃範囲に完全に重ねず、ちょっと外側に出して」）:
+// 赤い枠は攻撃範囲の縁からこの幅だけ外へ出す（範囲そのものの予告の輪と重ならないように）。うすい赤の塗りは範囲の中だけ
+const ONE_SHOT_AREA_GAP = 6;
 /** 範囲攻撃の予告に重ねる赤い点滅の輪（扇なら half に半角） */
 function drawOneShotWarnArea(x, y, r, ang = 0, half = Math.PI) {
   ctx.save();
   ctx.setLineDash([]);
-  ctx.globalAlpha = oneShotBlinkAlpha();
-  ctx.strokeStyle = ONE_SHOT_RED; ctx.lineWidth = ONE_SHOT_AREA_LINE;
+  const blink = oneShotBlinkAlpha();
+  const fan = half < Math.PI;
+  // 塗り：攻撃範囲そのもの
   ctx.beginPath();
-  if (half >= Math.PI) ctx.arc(x, y, r, 0, Math.PI * 2);
+  if (!fan) ctx.arc(x, y, r, 0, Math.PI * 2);
   else { ctx.moveTo(x, y); ctx.arc(x, y, r, ang - half, ang + half); ctx.closePath(); }
+  ctx.globalAlpha = blink * 0.18; ctx.fillStyle = ONE_SHOT_RED; ctx.fill();
+  // 枠：範囲の外側へ ONE_SHOT_AREA_GAP だけ離す。扇は要を後ろへずらして、両側の辺も同じ幅だけ外へ平行に出す
+  const gap = ONE_SHOT_AREA_GAP + ONE_SHOT_AREA_LINE / 2;
+  ctx.beginPath();
+  if (!fan) ctx.arc(x, y, r + gap, 0, Math.PI * 2);
+  else {
+    const back = gap / Math.max(0.25, Math.sin(Math.min(half, Math.PI / 2)));
+    const ax = x - Math.cos(ang) * back, ay = y - Math.sin(ang) * back;
+    ctx.moveTo(ax, ay); ctx.arc(ax, ay, r + gap + back, ang - half, ang + half); ctx.closePath();
+  }
+  ctx.globalAlpha = blink; ctx.strokeStyle = ONE_SHOT_RED; ctx.lineWidth = ONE_SHOT_AREA_LINE;
   ctx.stroke();
-  ctx.globalAlpha *= 0.18; ctx.fillStyle = ONE_SHOT_RED; ctx.fill();
   ctx.restore();
 }
 // 弾の赤丸の位置と大きさ（弾の原点から前へ off、半径 r。どちらも弾の大きさ sc 倍）。
