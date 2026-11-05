@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.86.0";
+const GAME_VERSION = "v3.87.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1585,6 +1585,7 @@ const DEBUG_ENEMY_LABELS = {
   kite_soldier: "🪁雷凧の兵",   // v3.61.0
   longbowmen: "🏹遠矢の弓隊", troop_airship: "🎈落下兵の飛行船",   // v3.63.0
   wind_rider: "🪂風乗りの兵",   // v3.78.0（案帳 DT-124）
+  sky_carrier: "🛳浮き砦(甲板に兵)",   // v3.87.0（案帳 DT-124・2回目）
 };
 
 // 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
@@ -1606,7 +1607,7 @@ const DEBUG_ENEMY_ORDER = [
   // v3.68.0: 光線の高原の敵（どの地域でも自分の光線は撃てる）
   "prism_bearer",
   // v3.78.0: 浮き城の空の敵（どの地域でも飛べる。島の縁の制約は浮き城の空の地上の敵にだけ掛かる）
-  "wind_rider",
+  "wind_rider", "sky_carrier",
   // v3.22.0: 大都会の敵（道路が無い地域では走れない）
   "metro_car", "metro_truck", "metro_police", "metro_tank", "metro_heli",
 ];
@@ -1667,6 +1668,12 @@ function debugSpawnEnemy(key) {
     return;
   }
 
+  if (key === "sky_carrier") {   // v3.87.0: 甲板の敵ごと（時代の飛べない敵）
+    const c = spawnOne(def, 0, 0);
+    skyCarriers.push(c);
+    for (const d of attachSkyDeckUnits(c, runStageIndex)) movers.push(d);
+    return;
+  }
   if (key === "war_elephant") {   // v3.60.0: 背の弓兵ごと
     const el = spawnOne(def, 0, 0);
     for (const r of attachElephantRiders(el)) movers.push(r);
@@ -9689,6 +9696,14 @@ const MOVER_DEFS = {
     color: "#7c8ea4", glowColor: "#fff4d0", moveType: "patrol",
     attack: { type: "fan", interval: 0.85, count: 1, damage: 1.4, speed: 100, range: 430, color: "#f0e4c0" },
   },
+  // v3.87.0（案帳 DT-124・2回目）: 浮き砦。空母のような大きな浮かぶ砦（動く砦の約2.5倍）。雲海の上を島の縁を越えて漂い、
+  // 甲板にその時代の飛べない敵を載せている（甲板の上だけを歩いて撃つ。降ろさない）。横の砲から着弾弾（予告の輪つき）。
+  // 壊すと甲板の敵ごと雲海へ落ちて消える。天空城のまわりを2隻が回り、1隻が雲海を漂う（makeSkyCarriers・updateSkyCarriers）
+  sky_carrier: {
+    name: "sky_carrier", skyCarrier: true, hp: 3200, speed: 30, xp: 1800, eggDrop: 8, radius: 100, turnRate: 0.3,
+    color: "#8a6a44", glowColor: "#ffd890", moveType: "patrol", showHpBar: true,
+    attack: { type: "shell", interval: 3.2, range: 560, count: 3, damage: 2.5, aoe: 48, speed: 150, scatter: 90, color: "#ffcf80" },
+  },
   // v3.61.0（案帳 DT-250）: 雷凧の兵。町の外側で金属の糸の凧を揚げている。凧に雷が落ちると糸全体が1秒だけ雷の線になる
   kite_soldier: {
     name: "kite_soldier", kite: true, hp: 90, speed: 0, xp: 90, eggDrop: 1, radius: 8,
@@ -11980,6 +11995,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
 
   // v3.78.0（案帳 DT-124）: 浮き城の空では地上の敵を島に振り分ける（経路も島の中の点で引き直す）
   if (worldShape === SHAPE_SKYLAND) bindSkyMovers(result, anchor, bossClear2);
+  if (worldShape === SHAPE_SKYLAND) result.push(...makeSkyCarriers(stageIndex));   // v3.87.0（案帳 DT-124・2回目）: 浮き砦
 
   return result;
 }
@@ -12439,6 +12455,7 @@ function skyTrimTownFarmland(buildings) {
 }
 
 function resetSkyland() {
+  skyCarriers = []; skyCarrierFalls = [];   // v3.87.0: 前のワールドの浮き砦
   skyIslands = []; skyLookup = null; skyCapitalIsland = -1; skyStartIsland = -1;
   skyPlans = [];
   skyCloudShadows = []; skyWindStreaks = [];
@@ -12470,7 +12487,8 @@ function buildSkyAtmosphere() {
 function skyBoundMover(m) {
   const def = m.def;
   return !(def.flying || def.part || def.railBound || def.hero || def.heroMate || def.kite || def.airship ||
-           def.roadRunner || def.orbit || def.metroGun || def.windRider || m.parent || m.convoyLeader);
+           def.roadRunner || def.orbit || def.metroGun || def.windRider || m.parent || m.convoyLeader ||
+           def.skyCarrier || m._deck);   // v3.87.0: 浮き砦は雲海の上を漂い、甲板の敵は甲板に縛られる（島には縛らない）
 }
 
 /** 敵を島に載せる（生まれた場所が島の上ならその島。雲海の上なら一番近い島の縁へ降ろす）。 */
@@ -12556,6 +12574,243 @@ function bindSkyMovers(list, anchor, bossClear2) {
     skyShiftFamily(list, m, at.x - m.wx, at.y - m.wy);
     m.wx = at.x; m.wy = at.y;
     m._isl = islIdx;
+  }
+}
+
+// ---------------------------------------------------------------------
+// v3.87.0: 浮き砦（案帳 DT-124・2回目。Shooter判定「空母みたいに飛べない動く敵を載せてくる形。かなり大きめサイズに」）
+// 決めたこと（返答待ちで確かめた形）: 甲板の敵は島へ降ろさず乗ったまま。砦を壊したら甲板の敵も一緒に落ちて消える。
+// 砦は竜と同じ高さを漂う（「落とす」爆弾ではなく、横の砲から撃ち込む着弾弾＝予告の輪つき）。島の縁は越えて動く。
+// 甲板の敵の位置は砦から見た甲板の上の座標（_deck.lx, ly）が正で、毎フレーム砦の位置と向きから世界の座標に直す。
+// 敵の移動と攻撃はふつうの敵と同じ処理に乗せ、動いたあとで甲板の縁に押し戻す（縁から雲海の上へは撃てる）
+// ---------------------------------------------------------------------
+const SKY_CARRIER_ORBIT_COUNT = 2;        // 天空城のまわりを回る砦の数
+const SKY_CARRIER_DRIFT_COUNT = 1;        // 雲海を漂う砦の数
+const SKY_CARRIER_ORBIT_R     = SKY_CAPITAL_REACH + 620;   // 天空城の島の外の雲海を回る
+const SKY_CARRIER_ORBIT_LEAD  = 0.25;     // 輪の上で、今の位置からこの角度（rad）先を目指して進む
+const SKY_CARRIER_DRIFT_START_CLEAR = 2600;   // 漂う砦は出発地からこれだけ離れた所から始める
+const SKY_DECK_HALF_LEN   = 120;          // 甲板の半分の長さ（前後）
+const SKY_DECK_HALF_W     = 40;           // 甲板の半分の幅（左右）
+const SKY_HULL_HALF_LEN   = 138;          // 船体の半分の長さ（舳先まで）
+const SKY_HULL_HALF_W     = 58;
+const SKY_DECK_UNITS_BASE = 4;            // 甲板の敵の数（時代3つごとに +1、最大 SKY_DECK_UNITS_MAX）
+const SKY_DECK_UNITS_MAX  = 6;
+const SKY_DECK_UNIT_MAX_R = 20;           // これより大きい敵は甲板に載せない
+const SKY_DECK_WANDER_EVERY = 3;          // 群れが遠いとき、甲板の上で次の立ち位置を選ぶまでの秒数
+const SKY_DECK_FALL_IMPACT  = 90;         // 砦が落ちたとき、甲板の敵が振り落とされる勢い（衝撃力。見た目だけ）
+const SKY_CARRIER_FALL_TIME = 1.8;        // 砦が雲海へ沈んでいく秒数（見た目だけ）
+const SKY_CARRIER_COLORS = {
+  hull: "#6e5236", hullDark: "#4a3624", deck: "#b48c5c", plank: "rgba(80,56,32,0.35)", stripe: "rgba(255,248,230,0.75)",
+  rim: "#3a2a1c", gun: "#2c2f36", tower: "#8a929c", towerDark: "#5c636c", flag: "#d04a3a", prop: "rgba(230,236,244,0.55)",
+};
+let skyCarriers = [];        // 今のワールドの浮き砦（落ちる演出の検出に使う）
+let skyCarrierFalls = [];    // 雲海へ沈んでいく砦（見た目だけ）{ x, y, angle, t }
+
+/** 浮き砦の甲板に載せる敵の種類（その時代の湧く敵のうち、飛ばない・小さい・特別な動きの無いもの） */
+function skyDeckUnitKinds(stageIndex) {
+  const table = MOVER_SPAWNS_BY_STAGE[Math.min(stageIndex, MOVER_SPAWNS_BY_STAGE.length - 1)] ?? [];
+  const kinds = table.map(e => e[0]).filter(k => {
+    const d = MOVER_DEFS[k];
+    return d && d.attack && !d.flying && (d.radius || 0) <= SKY_DECK_UNIT_MAX_R && !d.submerge && !d.scythe &&
+           !d.convoyCount && !d.splitInto && !d.walker && !d.shieldLine && !d.keepRange && !d.healer && d.attack.type !== "summon";
+  });
+  return kinds.length > 0 ? kinds : ["raider"];
+}
+
+/** 甲板の敵を作る（甲板の上に散らして置く） */
+function attachSkyDeckUnits(carrier, stageIndex) {
+  const kinds = skyDeckUnitKinds(stageIndex);
+  const n = Math.min(SKY_DECK_UNITS_MAX, SKY_DECK_UNITS_BASE + Math.floor(stageIndex / 3));
+  const units = [];
+  for (let k = 0; k < n; k++) {
+    const def = MOVER_DEFS[kinds[Math.floor(random() * kinds.length)]];
+    const lx = -SKY_DECK_HALF_LEN + (k + 0.5) / n * SKY_DECK_HALF_LEN * 2, ly = randRange(-SKY_DECK_HALF_W, SKY_DECK_HALF_W) * 0.7;
+    const u = makeMover(def, () => ({ x: carrier.wx, y: carrier.wy }));
+    u.maxHp = u.hp = def.hp; u.xpValue = def.xp;
+    u._deck = { carrier, lx, ly, wander: random() * SKY_DECK_WANDER_EVERY };
+    u.waypoints = [{ x: carrier.wx, y: carrier.wy }]; u.wpIdx = 0;
+    skyDeckPlace(u);
+    units.push(u);
+  }
+  carrier._deckUnits = units;
+  return units;
+}
+
+/** 甲板の上の座標 → 世界の座標 */
+function skyDeckToWorld(c, lx, ly) {
+  const a = Math.atan2(c.headingY, c.headingX), cs = Math.cos(a), sn = Math.sin(a);
+  return { x: c.wx + lx * cs - ly * sn, y: c.wy + lx * sn + ly * cs };
+}
+function skyDeckPlace(u) {
+  const p = skyDeckToWorld(u._deck.carrier, u._deck.lx, u._deck.ly);
+  u.wx = p.x; u.wy = p.y;
+}
+
+/** 毎フレームの最初：砦と一緒に動かす。群れが遠いときの立ち位置も甲板の上で選び直す。砦が落ちていたら一緒に落ちる（false） */
+function skyDeckFollow(u, dt) {
+  const dk = u._deck, c = dk.carrier;
+  if (!c.alive) {
+    flingMover(u, c.wx, c.wy, SKY_DECK_FALL_IMPACT);
+    u.alive = false;
+    return false;
+  }
+  skyDeckPlace(u);
+  dk.wander -= dt;
+  if (dk.wander <= 0 || !dk.goal) {
+    dk.wander = SKY_DECK_WANDER_EVERY;
+    dk.goal = { lx: randRange(-SKY_DECK_HALF_LEN, SKY_DECK_HALF_LEN), ly: randRange(-SKY_DECK_HALF_W, SKY_DECK_HALF_W) };
+  }
+  const g = skyDeckToWorld(c, dk.goal.lx, dk.goal.ly);
+  u.waypoints[0].x = g.x; u.waypoints[0].y = g.y; u.wpIdx = 0;
+  return true;
+}
+
+/** 動いたあと：甲板の上の座標に戻し、甲板の縁の内側へ押し戻す */
+function skyDeckConfine(u) {
+  const dk = u._deck, c = dk.carrier;
+  const a = Math.atan2(c.headingY, c.headingX), cs = Math.cos(a), sn = Math.sin(a);
+  const dx = u.wx - c.wx, dy = u.wy - c.wy;
+  const r = u.def.radius || 8;
+  dk.lx = Math.max(-SKY_DECK_HALF_LEN + r, Math.min(SKY_DECK_HALF_LEN - r, dx * cs + dy * sn));
+  dk.ly = Math.max(-SKY_DECK_HALF_W + r * 0.5, Math.min(SKY_DECK_HALF_W - r * 0.5, -dx * sn + dy * cs));
+  skyDeckPlace(u);
+}
+
+/** 天空城を回る砦の向かう先（輪の上を少し先へ） */
+function skyCarrierOrbitTarget(m) {
+  const o = m._skyOrbit;
+  const a = Math.atan2(m.wy - o.cy, m.wx - o.cx) + SKY_CARRIER_ORBIT_LEAD * o.dir;
+  return { x: o.cx + Math.cos(a) * o.r, y: o.cy + Math.sin(a) * o.r };
+}
+
+/** ワールドを作るときに浮き砦を置く（甲板の敵も一緒に返す） */
+function makeSkyCarriers(stageIndex) {
+  skyCarriers = []; skyCarrierFalls = [];
+  const out = [];
+  const def = MOVER_DEFS.sky_carrier;
+  const cap = skyIslands[skyCapitalIsland];
+  if (!cap) return out;
+  const base = random() * Math.PI * 2, dir = random() < 0.5 ? 1 : -1;
+  const make = (x, y, hx, hy) => {
+    const c = makeMover(def, () => ({ x, y }));
+    c.wx = x; c.wy = y; c.headingX = hx; c.headingY = hy;
+    c.maxHp = c.hp = def.hp; c.xpValue = def.xp;
+    skyCarriers.push(c);
+    out.push(c, ...attachSkyDeckUnits(c, stageIndex));
+    return c;
+  };
+  for (let k = 0; k < SKY_CARRIER_ORBIT_COUNT; k++) {
+    const a = base + k * Math.PI * 2 / SKY_CARRIER_ORBIT_COUNT;
+    const x = cap.cx + Math.cos(a) * SKY_CARRIER_ORBIT_R, y = cap.cy + Math.sin(a) * SKY_CARRIER_ORBIT_R;
+    const c = make(x, y, -Math.sin(a) * dir, Math.cos(a) * dir);
+    c._skyOrbit = { cx: cap.cx, cy: cap.cy, r: SKY_CARRIER_ORBIT_R, dir };
+  }
+  for (let k = 0; k < SKY_CARRIER_DRIFT_COUNT; k++) {
+    let x = 0, y = 0;
+    for (let t = 0; t < 30; t++) {
+      x = randRange(SKY_WORLD_MARGIN, WORLD_W - SKY_WORLD_MARGIN); y = randRange(SKY_WORLD_MARGIN, WORLD_H - SKY_WORLD_MARGIN);
+      if (Math.hypot(x - START_X, y - START_Y) >= SKY_CARRIER_DRIFT_START_CLEAR && Math.hypot(x - cap.cx, y - cap.cy) >= SKY_CARRIER_ORBIT_R) break;
+    }
+    const c = make(x, y, 1, 0);
+    for (const wp of c.waypoints) { wp.x = randRange(SKY_WORLD_MARGIN, WORLD_W - SKY_WORLD_MARGIN); wp.y = randRange(SKY_WORLD_MARGIN, WORLD_H - SKY_WORLD_MARGIN); }
+  }
+  return out;
+}
+
+/** 落ちた砦を見つけて沈む演出を出す（甲板の敵は skyDeckFollow で振り落とされる） */
+function updateSkyCarriers(dt) {
+  for (let k = skyCarrierFalls.length - 1; k >= 0; k--) {
+    skyCarrierFalls[k].t += dt;
+    if (skyCarrierFalls[k].t >= SKY_CARRIER_FALL_TIME) skyCarrierFalls.splice(k, 1);
+  }
+  if (skyCarriers.length === 0) return;
+  for (const c of skyCarriers) {
+    if (c.alive || c._fell) continue;
+    c._fell = true;
+    skyCarrierFalls.push({ x: c.wx, y: c.wy, angle: Math.atan2(c.headingY, c.headingX), t: 0 });
+    for (let p = 0; p < 4; p++) spawnCollisionParticles(c.wx + randRange(-80, 80), c.wy + randRange(-40, 40));
+    triggerShake(1.2, 0.2);
+  }
+}
+
+/** 船体の形（舳先が +x）。inset だけ内側へ縮める */
+function skyHullPath(g, inset) {
+  const L = SKY_HULL_HALF_LEN - inset, W = SKY_HULL_HALF_W - inset;
+  g.beginPath();
+  g.moveTo(L, 0);
+  g.quadraticCurveTo(L * 0.78, -W, L * 0.45, -W);
+  g.lineTo(-L * 0.92, -W);
+  g.quadraticCurveTo(-L, -W, -L, -W * 0.8);
+  g.lineTo(-L, W * 0.8);
+  g.quadraticCurveTo(-L, W, -L * 0.92, W);
+  g.lineTo(L * 0.45, W);
+  g.quadraticCurveTo(L * 0.78, W, L, 0);
+  g.closePath();
+}
+
+/** 浮き砦の船体（drawMovers のベクター描画の中。ctx は砦の中心へ移して砦の向きへ回してある） */
+function drawSkyCarrierBody(m, angle, alpha = 1) {
+  const C = SKY_CARRIER_COLORS;
+  // 雲海に落ちる影（世界の右下へずらす）と、浮いて見える船底の厚み
+  ctx.save();
+  ctx.rotate(-angle); ctx.translate(SKY_SHADOW_DX * 1.4, SKY_SHADOW_DY * 1.4); ctx.rotate(angle);
+  ctx.globalAlpha = alpha; ctx.fillStyle = SKY_SHADOW_COLOR; skyHullPath(ctx, -6); ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.rotate(-angle); ctx.translate(0, SKY_CLIFF_DEPTH * 1.3); ctx.rotate(angle);
+  ctx.globalAlpha = alpha; ctx.fillStyle = C.hullDark; skyHullPath(ctx, 4); ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  // 横の砲（両舷に5門ずつ）
+  ctx.fillStyle = C.gun;
+  for (let k = 0; k < 5; k++) {
+    const x = -SKY_HULL_HALF_LEN * 0.7 + k * SKY_HULL_HALF_LEN * 0.32;
+    ctx.fillRect(x - 4, -SKY_HULL_HALF_W - 9, 8, 12); ctx.fillRect(x - 4, SKY_HULL_HALF_W - 3, 8, 12);
+  }
+  // 船体と甲板
+  ctx.fillStyle = C.hull; skyHullPath(ctx, 0); ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = C.rim; ctx.stroke();
+  ctx.fillStyle = C.deck; skyHullPath(ctx, 12); ctx.fill();
+  ctx.strokeStyle = C.plank; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = -SKY_HULL_HALF_LEN + 24; x < SKY_HULL_HALF_LEN * 0.6; x += 16) { ctx.moveTo(x, -SKY_HULL_HALF_W + 12); ctx.lineTo(x, SKY_HULL_HALF_W - 12); }
+  ctx.stroke();
+  // 甲板の中央の白い線（空母の飛行甲板に見せる）
+  ctx.setLineDash([14, 10]); ctx.strokeStyle = C.stripe; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-SKY_HULL_HALF_LEN + 20, 0); ctx.lineTo(SKY_HULL_HALF_LEN * 0.7, 0); ctx.stroke();
+  ctx.setLineDash([]);
+  // 艦橋（右舷の後ろ寄り）と旗
+  ctx.fillStyle = C.towerDark; ctx.fillRect(-58, SKY_HULL_HALF_W - 30, 46, 22);
+  ctx.fillStyle = C.tower; ctx.fillRect(-54, SKY_HULL_HALF_W - 27, 38, 15);
+  const wave = Math.sin(breathTime * 6 + (m.swayPhase ?? 0)) * 3;
+  ctx.strokeStyle = C.rim; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-36, SKY_HULL_HALF_W - 20); ctx.lineTo(-36, SKY_HULL_HALF_W - 44); ctx.stroke();
+  ctx.fillStyle = C.flag; ctx.beginPath(); ctx.moveTo(-36, SKY_HULL_HALF_W - 44); ctx.lineTo(-56, SKY_HULL_HALF_W - 40 + wave); ctx.lineTo(-36, SKY_HULL_HALF_W - 35); ctx.closePath(); ctx.fill();
+  // 船尾の2つのプロペラ（回って見える）
+  const spin = breathTime * 14;
+  ctx.strokeStyle = C.prop; ctx.lineWidth = 4;
+  for (const sy of [-SKY_HULL_HALF_W * 0.5, SKY_HULL_HALF_W * 0.5]) {
+    const cx = -SKY_HULL_HALF_LEN - 6;
+    ctx.beginPath();
+    for (let b = 0; b < 3; b++) {
+      const a = spin + b * Math.PI * 2 / 3;
+      ctx.moveTo(cx, sy); ctx.lineTo(cx + Math.cos(a) * 4, sy + Math.sin(a) * 18);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** 落ちていく浮き砦：縮みながら薄れて雲海へ沈む */
+function drawSkyCarrierFalls() {
+  for (const f of skyCarrierFalls) {
+    const k = f.t / SKY_CARRIER_FALL_TIME;
+    ctx.save();
+    ctx.translate(f.x, f.y + k * 40);
+    ctx.rotate(f.angle + k * 0.25);
+    ctx.scale(1 - 0.45 * k, 1 - 0.45 * k);
+    drawSkyCarrierBody({ swayPhase: 0 }, f.angle + k * 0.25, 1 - k);
+    ctx.restore();
   }
 }
 
@@ -13919,6 +14174,7 @@ function updateMovers(dt) {
     // v3.23.0: 大都会の撃たない車は数千台あるので、道路の上を進むだけの軽い処理で済ませる
     if (def.roadRunner && !def.attack && !def.metroGun && m.road) { updateMetroCar(m, dt); continue; }
     attackerNow = moverAttacker(m);   // v3.13.0: この敵が出す攻撃はこの敵のもの
+    if (m._deck && !skyDeckFollow(m, dt)) continue;   // v3.87.0: 浮き砦の甲板の敵は砦と一緒に動く（砦が落ちたら一緒に落ちる）
 
     // v0.26: 巨獣の腕はコアに追従して浮遊し、独自ロジックで叩きつける
     if (def.part === "arm") { updateBehemothArm(m, dt); continue; }
@@ -14036,6 +14292,8 @@ function updateMovers(dt) {
     if (def.roadRunner && m.road) { const g = metroRoadTarget(m); targetX = g.x; targetY = g.y; }
     // v3.23.0: 攻撃ヘリは群れの周りを回る（機首の向きは updateMetroGun が群れへ向ける）
     if (def.orbit) { const h = metroHeliTarget(m, centroid, pursuing); if (h) { targetX = h.x; targetY = h.y; } }
+    // v3.87.0（案帳 DT-124・2回目）: 天空城を回る浮き砦は輪の上を進む（漂う浮き砦はふつうの巡回・追跡）
+    if (def.skyCarrier && m._skyOrbit) { const g = skyCarrierOrbitTarget(m); targetX = g.x; targetY = g.y; }
 
     // v3.62.0（案帳 DT-138・Shooter判定「既存の敵の動きだけ変えるのはアリ」）: 盾兵の隊は群れが近いと
     // 横一列に並び、盾の面を群れへ向けてゆっくり進む（正面は弾く。横と後ろへ回り込む）
@@ -14178,7 +14436,8 @@ function updateMovers(dt) {
     }
 
     // v3.78.0（案帳 DT-124）: 浮き城の空の地上の敵は島の縁で止まる（縁から雲海の上へは撃てる＝この後の攻撃は止めない）
-    if (worldShape === SHAPE_SKYLAND && skyBoundMover(m)) skylandConfineMover(m, moveX, moveY);
+    if (m._deck) skyDeckConfine(m);   // v3.87.0: 甲板の敵は甲板の縁で止まる（縁から撃つ）
+    else if (worldShape === SHAPE_SKYLAND && skyBoundMover(m)) skylandConfineMover(m, moveX, moveY);
 
     if (lineSlot) { m.headingX = lineSlot.fx; m.headingY = lineSlot.fy; }   // 盾の面（正面）は列の向き（v3.68.0: 毎秒45度でしか群れへ向き直らない）
 
@@ -14376,7 +14635,8 @@ function updateMovers(dt) {
     // v1.8.0: 関節パーツ（巨獣の腕・多脚戦車の脚）は押し合いの対象外。
     // 親に付いて動くものを押すと、関節の計算と喧嘩して暴れる
     if (!a.alive || a.def.part === "arm" || a.def.part === "leg" || a.def.part === "rider" || a.convoyLeader ||   // 車列の後ろの車は跡に乗っているので押さない
-        isRailVehicle(a.def) || a.submerged || a.def.roadRunner) continue;
+        isRailVehicle(a.def) || a.submerged || a.def.roadRunner ||
+        a.def.skyCarrier) continue;   // v3.87.0: 浮き砦は竜と同じ高さを漂う（甲板の敵や島の敵と押し合わない）
     sepList.push(a);
   }
   for (let i = 0; i < sepList.length; i++) {
@@ -17574,7 +17834,8 @@ const DEATH_PUSH_CAP   = 560;   // 倒れ込みの押しの上限
  */
 function moverLeavesWreck(def) {
   // v3.77.0（案帳 DT-509）: 岩の巨人は焼け焦げた残骸ではなく、自前の岩の山（crumbleRockGiant）を残す
-  return !!def && (def.radius || 0) >= DEATH_MIN_RADIUS && !isRailVehicle(def) && !def.rockGiant;
+  return !!def && (def.radius || 0) >= DEATH_MIN_RADIUS && !isRailVehicle(def) && !def.rockGiant &&
+         !def.skyCarrier;   // v3.87.0: 浮き砦は残骸を残さず、雲海へ沈んでいく（drawSkyCarrierFalls）
 }
 
 /** 最期を始める。多パーツなら手足も一緒に（親へ垂れながら残骸になる）。 */
@@ -19383,6 +19644,7 @@ function drawFortressTurretSprite(t) {
 }
 
 function drawMovers() {
+  if (skyCarrierFalls.length > 0) drawSkyCarrierFalls();   // v3.87.0: 落ちていく浮き砦（甲板の敵より下）
   // v3.23.0: 大都会は車が数千台あるので、画面の外の車・戦車・ヘリは描かない
   const metroVb = worldShape === SHAPE_METRO ? getViewBoundsWorld(140) : null;
   for (const m of movers) {
@@ -19716,6 +19978,8 @@ function drawMovers() {
       // 弦。弓を引いている間（DT-236 手直し）は後ろへ引き絞った形にして、止まって狙っているのが見えるようにする
       const pull = m.bowDrawn ? -5 : 1 + Math.cos(1.2) * 9;
       ctx.strokeStyle = "rgba(240,240,250,0.6)"; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.moveTo(1 + Math.cos(-1.2) * 9, Math.sin(-1.2) * 9); ctx.lineTo(pull, 0); ctx.lineTo(1 + Math.cos(1.2) * 9, Math.sin(1.2) * 9); ctx.stroke();
+    } else if (def.skyCarrier) {
+      drawSkyCarrierBody(m, angle);   // v3.87.0（案帳 DT-124・2回目）: 画像なしのベクター専用
     } else if (def.windRider) {
       drawWindRider(m, angle);   // v3.78.0（案帳 DT-124）: 画像なしのベクター専用
     } else if (def.name === "troop_airship") {
@@ -31521,7 +31785,7 @@ const CODEX_ENEMY_NAMES = {
   walker_hull: "多脚戦車", walker_leg: "多脚戦車の脚",
   railgun_loco: "列車砲列（機関車）", railgun_car: "列車砲列の砲車",
   railcar: "装甲軌道車", railram: "衝角機関車",
-  forest_ambusher: "森の伏兵", forest_giant: "森番の巨人", prism_bearer: "プリズム運び", wind_rider: "風乗りの兵",
+  forest_ambusher: "森の伏兵", forest_giant: "森番の巨人", prism_bearer: "プリズム運び", wind_rider: "風乗りの兵", sky_carrier: "浮き砦",
   metro_car: "渋滞の車", metro_truck: "渋滞の箱バン", metro_police: "パトカー", metro_tank: "戦車", metro_heli: "攻撃ヘリ",
   raider: "レイダー", treasure: "財宝馬車", eggconvoy: "竜卵の輸送隊",
   caravan: "行商の隊", caravan_guard: "行商の隊の護衛",
@@ -31551,6 +31815,7 @@ const CODEX_SPECIAL_ERA = {
   forest_giant:   "大樹海（全文明） — 森を歩く大物",
   prism_bearer:   "光線の高原（全文明） — 自分では撃たない。当たった光線を三角プリズムで3本に割る",
   wind_rider:     "浮き城の空（全文明） — 12秒ごとに飛んでくる。群れの横をまっすぐ通り過ぎながら槍を投げる",   // v3.78.0（案帳 DT-124）
+  sky_carrier:    "浮き城の空（全文明） — 天空城のまわりを2隻が回り、1隻が雲海を漂う。甲板にその時代の地上の敵を載せている",   // v3.87.0（案帳 DT-124・2回目）
   metro_car:      "大都会（全文明） — 列になって道路を流れる",
   metro_truck:    "大都会（全文明） — 車列に混じる少し硬い車",
   metro_police:   "大都会（全文明） — 道路を走りながら撃つ",
@@ -43320,6 +43585,7 @@ function tick() {
     updateBossReinforcements(wdt); // v0.58: 首都が兵を出し続ける（取り巻きを倒しても消化試合にしない）
     updateEnemyRush(wdt);         // v0.29: 群れ30体以上で定期ラッシュ（ヴァンサバ的）
     updateWindRiders(wdt);        // v3.78.0（案帳 DT-124）: 浮き城の空の風乗りの兵
+    updateSkyCarriers(wdt);       // v3.87.0（案帳 DT-124・2回目）: 浮き砦が落ちる
     updateTierRush(wdt, dt);      // v3.16.0: 警戒度ラッシュ（予告と待ちは実時間）
     updateHarpoonKnights(wdt);    // v3.51.0: 竜狩りの騎士の銛
     updateDeathTimers(wdt);
