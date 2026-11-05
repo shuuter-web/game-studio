@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.88.0";
+const GAME_VERSION = "v3.88.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -13648,18 +13648,29 @@ function makeCaravans() {
 // 「卵は過剰供給なので減るのは問題ない」）----
 // ・持つ卵の数は湧いた時点で決める（確率の卵もここで振る。倒すまで分からない、をやめる）。倒したときに落ちる数と同じ
 // ・小型の隊（packCount）は隊長1体だけが1個。隊員は0。隊長は足元に金の点線の輪
-// ・印は持っている卵そのもの。1〜3個は1個ずつ、4個以上は1個＋「×数」。持っていない敵には何も付けない
+// ・印は持っている卵そのもの。1〜3個は1個ずつ、4個以上は大きい卵1個（v3.88.1 で「×数」をやめた）。持っていない敵には何も付けない
 // ・付け方は体つきで分ける：巨人の胸の宝玉／獣の背の荷／乗り物の舷側に貼った楕円／人や飛ぶものは紐で吊って引く
 const EGG_PACK_LEADER_COUNT = 1;
-const EGG_SHOW_EACH_MAX     = 3;     // これ以下は卵を1個ずつ描く。超えたら1個＋数
-const EGG_ORN_SIZE          = 0.16;  // 卵の短い半径＝敵の半径×これ（EGG_ORN_MIN〜EGG_ORN_MAX）
+const EGG_SHOW_EACH_MAX     = 3;     // これ以下は卵を1個ずつ描く。超えたら大きい卵1個（数字は出さない）
+const EGG_ORN_SIZE          = 0.16;  // 卵の半径＝敵の半径×これ（EGG_ORN_MIN〜EGG_ORN_MAX）
 const EGG_ORN_MIN           = 3.6;
 const EGG_ORN_MAX           = 7;
-const EGG_ORN_ASPECT        = 1.32;  // 卵の長い半径÷短い半径
+// v3.88.1（DT-508 手直し・Shooter「×数字の表示は無しで、個数または大きさで」「黄金の巨像は配置もサイズも完璧」）:
+// 4個以上は大きい卵1個。半径は 体から決めた大きさ と 個数から決めた大きさ の大きい方
+// （黄金の巨像＝5個・体から6.4 ≧ 個数から6.0 なので今までどおり。小さめの体で4個持つ敵は1段大きく出る）
+const EGG_ORN_BIG_BASE      = 3.5;   // 個数から決めた半径 = これ + 個数×EGG_ORN_BIG_PER（上限 EGG_ORN_BIG_MAX）
+const EGG_ORN_BIG_PER       = 0.5;
+const EGG_ORN_BIG_MAX       = 9;
+// v3.88.1（DT-508 手直し・Shooter「建物についている卵のマークと共通点を」「通常は正円、側面に付いている設定なら楕円。卵形はおかしい」）:
+// 絵は建物の卵の印（drawEggBearerMarkers）と同じ作り＝金のにじみ＋金の玉＋淡い縁＋白い芯。ゆっくり明滅する。
+// 形はふつう正円。舷側に貼る敵（side）だけ、体の向きに沿って左右対称につぶした楕円にする
+const EGG_ORN_SIDE_ASPECT   = 1.5;   // 舷側の楕円の長い半径÷短い半径
+const EGG_ORN_HALO          = 1.8;   // にじみの半径÷卵の半径（建物の印は2.2。敵の体の上なので少し控える）
+const EGG_ORN_CORE          = 0.35;  // 白い芯の半径÷卵の半径（建物の印と同じ）
 const EGG_HANG_LEN          = 9;     // 吊った卵の紐の長さ（体の後ろの縁から）
 const EGG_HANG_SWING        = 0.35;  // 吊った卵の揺れ（rad）
 const EGG_LEADER_RING_PAD   = 6;
-const EGG_ORN_COLORS = { body: "#f2c94c", light: "#fff3b8", rim: "#8a5a10", string: "rgba(70,52,30,0.85)", ring: "rgba(255,214,90,0.85)" };
+const EGG_ORN_COLORS = { halo: "#ffd040", body: "#ffe060", rim: "#fff8a0", core: "#ffffff", string: "rgba(70,52,30,0.85)", ring: "rgba(255,214,90,0.85)" };
 // 体つきごとの付け方（ここに無い敵は：飛ぶ・小さい＝吊る、それ以外＝舷側）
 const EGG_MOUNT_BY_ENEMY = {
   colossus: "chest", gilded_colossus: "chest", stone_titan: "chest", rock_giant: "chest", forest_giant: "chest",
@@ -13691,15 +13702,18 @@ function eggMountOf(def) {
   return EGG_MOUNT_BY_ENEMY[def.name] ?? ((def.flying || (def.radius || 10) < EGG_MOUNT_SMALL_R) ? "hang" : "side");
 }
 
-/** 金の卵1つ（中心 x,y・長い軸の向き rot）。光が少しずつ明滅する */
-function drawOrnEgg(x, y, rx, rot, glow) {
-  const ry = rx * EGG_ORN_ASPECT;
+/** 金の卵1つ（中心 x,y・半径 rad・楕円なら長い軸の向き rot）。建物の卵の印と同じ作りで、pulse で明滅する */
+function drawOrnEgg(x, y, rad, aspect, rot, pulse) {
+  const long = rad * aspect;
   ctx.save();
   ctx.translate(x, y); ctx.rotate(rot);
-  ctx.fillStyle = EGG_ORN_COLORS.body; ctx.strokeStyle = EGG_ORN_COLORS.rim; ctx.lineWidth = Math.max(0.8, rx * 0.22);
-  ctx.beginPath(); ctx.ellipse(0, 0, ry, rx, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  ctx.globalAlpha = glow; ctx.fillStyle = EGG_ORN_COLORS.light;
-  ctx.beginPath(); ctx.ellipse(ry * 0.25, -rx * 0.3, ry * 0.35, rx * 0.28, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = pulse * 0.35; ctx.fillStyle = EGG_ORN_COLORS.halo;
+  ctx.beginPath(); ctx.ellipse(0, 0, long * EGG_ORN_HALO, rad * EGG_ORN_HALO, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 0.55 + 0.45 * pulse; ctx.fillStyle = EGG_ORN_COLORS.body; ctx.strokeStyle = EGG_ORN_COLORS.rim;
+  ctx.lineWidth = Math.max(0.6, rad * 0.2);
+  ctx.beginPath(); ctx.ellipse(0, 0, long, rad, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.globalAlpha = pulse * 0.85; ctx.fillStyle = EGG_ORN_COLORS.core;
+  ctx.beginPath(); ctx.ellipse(0, 0, long * EGG_ORN_CORE, rad * EGG_ORN_CORE, 0, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
@@ -13707,8 +13721,10 @@ function drawOrnEgg(x, y, rx, rot, glow) {
 function drawMoverEggs(m, angle) {
   const def = m.def, r = def.radius || 10;
   const n = m.eggs, shown = n > EGG_SHOW_EACH_MAX ? 1 : n;
-  const rx = Math.max(EGG_ORN_MIN, Math.min(EGG_ORN_MAX, r * EGG_ORN_SIZE));
-  const glow = 0.55 + 0.35 * Math.sin(breathTime * 2.4 + (m.swayPhase ?? 0));
+  let rad = Math.max(EGG_ORN_MIN, Math.min(EGG_ORN_MAX, r * EGG_ORN_SIZE));
+  if (n > EGG_SHOW_EACH_MAX) rad = Math.max(rad, Math.min(EGG_ORN_BIG_MAX, EGG_ORN_BIG_BASE + n * EGG_ORN_BIG_PER));
+  // 明滅は建物の印と同じ 1.2秒周期（0.4〜1.0）。敵ごとに少し位相をずらす
+  const pulse = 0.4 + 0.6 * (Math.sin(breathTime * Math.PI * 2 / 1.2 + (m.swayPhase ?? 0)) * 0.5 + 0.5);
   ctx.save();
   ctx.translate(m.wx, m.wy);
   if (m.eggLeader) {   // 隊長の足元の金の点線の輪（遠目でも1体だけ違うと分かる）
@@ -13717,35 +13733,25 @@ function drawMoverEggs(m, angle) {
   }
   ctx.rotate(angle);   // +x が前
   const mount = eggMountOf(def);
-  let labelX = 0, labelY = 0;
+  const aspect = mount === "side" ? EGG_ORN_SIDE_ASPECT : 1;
   for (let k = 0; k < shown; k++) {
     const mid = k - (shown - 1) / 2;
-    let x, y, rot;
+    let x, y, rot = 0;
     if (mount === "chest") {        // 胸の宝玉：前寄りに横一列
-      x = r * 0.32; y = mid * rx * 2.3; rot = Math.PI / 2;
+      x = r * 0.32; y = mid * rad * 2.3;
     } else if (mount === "back") {  // 背の荷：背の後ろ寄りに左右へ振り分け
-      x = -r * 0.25 - Math.floor(k / 2) * rx * 2.2; y = (k % 2 === 0 ? -1 : 1) * r * 0.42; rot = 0;
+      x = -r * 0.25 - Math.floor(k / 2) * rad * 2.2; y = (k % 2 === 0 ? -1 : 1) * r * 0.42;
       if (shown === 1) y = 0;
-    } else if (mount === "side") {  // 舷側に貼った楕円：左右の縁に前後へ並べる
-      x = r * 0.25 - Math.floor(k / 2) * rx * 2.6; y = (k % 2 === 0 ? -1 : 1) * r * 0.78; rot = 0;
+    } else if (mount === "side") {  // 舷側に貼った楕円：左右の縁に前後へ並べる（長い軸は体の向き）
+      x = r * 0.25 - Math.floor(k / 2) * rad * aspect * 2; y = (k % 2 === 0 ? -1 : 1) * r * 0.78;
     } else {                        // 紐で吊って引く：体の後ろへ垂らして揺らす
       const sw = Math.sin(breathTime * 3 + (m.swayPhase ?? 0) + k) * EGG_HANG_SWING + mid * 0.5;
-      const ax = -r * 0.55, ay = mid * rx * 0.8, len = r * 0.5 + EGG_HANG_LEN + rx;
-      x = ax - Math.cos(sw) * len; y = ay + Math.sin(sw) * len; rot = sw;
+      const ax = -r * 0.55, ay = mid * rad * 0.8, len = r * 0.5 + EGG_HANG_LEN + rad;
+      x = ax - Math.cos(sw) * len; y = ay + Math.sin(sw) * len;
       ctx.strokeStyle = EGG_ORN_COLORS.string; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(x + Math.cos(sw) * rx * EGG_ORN_ASPECT, y - Math.sin(sw) * rx * EGG_ORN_ASPECT); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(x + Math.cos(sw) * rad, y - Math.sin(sw) * rad); ctx.stroke();
     }
-    drawOrnEgg(x, y, rx, rot, glow);
-    labelX = x; labelY = y;
-  }
-  if (n > EGG_SHOW_EACH_MAX) {   // 4個以上は1個＋数（文字は回さない）
-    const c = Math.cos(angle), sn = Math.sin(angle);
-    const wx = labelX * c - labelY * sn, wy = labelX * sn + labelY * c;
-    ctx.rotate(-angle);
-    ctx.font = `bold ${Math.round(rx * 2.2 + 4)}px sans-serif`; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(40,26,8,0.85)"; ctx.fillStyle = EGG_ORN_COLORS.light;
-    const t = "×" + n, tx = wx + rx * EGG_ORN_ASPECT + 2, ty = wy;
-    ctx.strokeText(t, tx, ty); ctx.fillText(t, tx, ty);
+    drawOrnEgg(x, y, rad, aspect, rot, pulse);
   }
   ctx.restore();
 }
