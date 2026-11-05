@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.84.1";
+const GAME_VERSION = "v3.85.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5165,6 +5165,16 @@ const START_TOWN_RAMP_OUTER = 3600;
 // 帯の入口に建つ町の大きさ（通常の町に対する倍率）。
 // 石器時代なら 140棟の町が約29棟になる＝**極小集落と普通の町の中間**。
 const START_TOWN_MIN_SCALE = 0.45;
+// v3.85.0（案帳 DT-509 手直し・Shooter「初期地点近くが弱い集落ばかりなせいでいきなり強い街と当たる。ちゃんと先に弱い町が来るように。
+// 序盤の弱いゾーンはもっと狭くしても良い」）: 荒地は首都が真ん中（開始の角から約5500）なので、大陸の帯（町は1600から・3600で通常の大きさ）と
+// 首都のまわりの要塞都市（首都から2600以内＝開始から約2950〜）がほぼくっついていた。荒地だけ、町を開始地点の近くから建て始め、
+// 小さい町の帯を詰め、要塞都市を首都のそばに寄せる＝小集落 → 小さい町 → ふつうの町 → 要塞都市 の順に並ぶ
+const WASTELAND_TOWN_CLEAR_CENTER = 1300;   // 町の中心をこれより開始地点に寄せない（画面の外接円 約960 ＋ 町の広がり）
+const WASTELAND_TOWN_RAMP_OUTER   = 2700;   // ここで通常の町の大きさ
+const WASTELAND_HAMLET_RING_OUTER = 1500;   // 開始地点に寄せる小集落の輪の外側（大陸は 2050）
+const WASTELAND_STRONG_RADIUS     = 1500;   // 首都からこの距離の町が要塞都市（大陸は BOSS_STRONG_RADIUS 2600）
+function startTownClearCenter() { return worldShape === SHAPE_WASTELAND ? WASTELAND_TOWN_CLEAR_CENTER : START_TOWN_CLEAR_CENTER; }
+function startTownRampOuter()   { return worldShape === SHAPE_WASTELAND ? WASTELAND_TOWN_RAMP_OUTER   : START_TOWN_RAMP_OUTER; }
 
 /**
  * その座標の町に掛かる「序盤の帯」の縮小倍率（START_TOWN_MIN_SCALE 〜 1）。
@@ -5172,16 +5182,16 @@ const START_TOWN_MIN_SCALE = 0.45;
  */
 function startBandTownScale(x, y) {
   const d = Math.hypot(x - START_X, y - START_Y);
-  if (d >= START_TOWN_RAMP_OUTER) return 1;
-  const t = Math.max(0, (d - START_TOWN_CLEAR_CENTER) /
-                        (START_TOWN_RAMP_OUTER - START_TOWN_CLEAR_CENTER));
+  const clear = startTownClearCenter(), ramp = startTownRampOuter();
+  if (d >= ramp) return 1;
+  const t = Math.max(0, (d - clear) / (ramp - clear));
   return START_TOWN_MIN_SCALE + (1 - START_TOWN_MIN_SCALE) * Math.min(1, t);
 }
 
 function placeTownCenters(townCount, bossWx, bossWy) {
   // 左端250pxは群れスタート地点なので除外
   const MARGIN_LEFT  = 300;
-  const startClear2  = START_TOWN_CLEAR_CENTER * START_TOWN_CLEAR_CENTER;
+  const startClear2  = startTownClearCenter() ** 2;
   const MARGIN_RIGHT = 150;
   const MARGIN_Y     = 200;
 
@@ -5223,7 +5233,7 @@ function placeTownCenters(townCount, bossWx, bossWy) {
         const dx = cx - START_X, dy = cy - START_Y;
         if (dx * dx + dy * dy < startClear2) {
           const d = Math.sqrt(dx * dx + dy * dy) || 1;
-          const push = START_TOWN_CLEAR_CENTER + randRange(40, 260);
+          const push = startTownClearCenter() + randRange(40, 260);
           cx = START_X + (dx / d) * push;
           cy = START_Y + (dy / d) * push;
           // 押し出した先がマップ外／ボス周辺なら、そのセルは諦める
@@ -5973,7 +5983,7 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
         const t  = random();
         const rr = Math.sqrt(
           TINY_HAMLET_START_RING_INNER ** 2 +
-          t * (TINY_HAMLET_START_RING_OUTER ** 2 - TINY_HAMLET_START_RING_INNER ** 2));
+          t * ((worldShape === SHAPE_WASTELAND ? WASTELAND_HAMLET_RING_OUTER : TINY_HAMLET_START_RING_OUTER) ** 2 - TINY_HAMLET_START_RING_INNER ** 2));
         cx = START_X + Math.cos(a) * rr;
         cy = START_Y + Math.sin(a) * rr;
         if (cx < TINY_MARGIN || cx > WORLD_W - TINY_MARGIN ||
@@ -6983,7 +6993,7 @@ function generateStageLayout(stageIndex) {
   const byBossDist = townCenters
     .map((c, idx) => ({ idx, d2: dist2(c.x, c.y, boss.wx, boss.wy) }))
     .sort((a, b) => a.d2 - b.d2);
-  const strongR2 = BOSS_STRONG_RADIUS * BOSS_STRONG_RADIUS;
+  const strongR2 = (worldShape === SHAPE_WASTELAND ? WASTELAND_STRONG_RADIUS : BOSS_STRONG_RADIUS) ** 2;   // v3.85.0: 荒地は首都のそばだけ
   // v1.2.0: 城塞都市は距離ではなく**環**で決める。内環＝要塞都市、中環＝格上の街、外環＝素の街。
   // 外から一枚ずつ剥いでいくほど相手が固くなる＝同心円の形そのものが難度の勾配になる。
   // v1.4.0: 形ごとの配置関数が c.fortified / c.tierOffset を決めていればそれに従う（抽選しない）。
@@ -7001,7 +7011,7 @@ function generateStageLayout(stageIndex) {
     // 帯の外に町が無い極端な配置のときだけ、全体から選ぶ形に落とす。
     const outside = townCenters
       .map((c, i) => i)
-      .filter(i => Math.hypot(townCenters[i].x - START_X, townCenters[i].y - START_Y) >= START_TOWN_RAMP_OUTER);
+      .filter(i => Math.hypot(townCenters[i].x - START_X, townCenters[i].y - START_Y) >= startTownRampOuter());
     const order = (outside.length >= 2 ? outside : townCenters.map((_, i) => i)).slice();
     for (let i = order.length - 1; i > 0; i--) {
       const j = Math.floor(random() * (i + 1));
@@ -7019,7 +7029,9 @@ function generateStageLayout(stageIndex) {
       if (townCenters[t].tierOffset) townTierOffset.set(t, townCenters[t].tierOffset);
       continue;
     }
-    if (!fortifiedSet.has(t) && random() < TOWN_ADVANCED_RATIO) {
+    // v3.85.0: 荒地は小さい町の帯の中に「1段階先」の町を混ぜない（先に弱い町が来るように）
+    if (!fortifiedSet.has(t) && random() < TOWN_ADVANCED_RATIO &&
+        !(worldShape === SHAPE_WASTELAND && Math.hypot(townCenters[t].x - START_X, townCenters[t].y - START_Y) < startTownRampOuter())) {
       townTierOffset.set(t, TOWN_TIER_ADVANCED);
     }
   }
@@ -15072,9 +15084,11 @@ const ROCKGIANT_SCALE_MIN      = 1.0;
 const ROCKGIANT_SCALE_MAX      = 1.8;
 const ROCKGIANT_CAPITAL_SCALE_MIN = 1.5;  // 首都の守りは大きい個体
 const ROCKGIANT_HP_SCALE_POW   = 2;
-const ROCKGIANT_TOWN_SHARE     = 0.4;     // 町のうち、この割合（大きい町から）に1体ずつ立つ
-const ROCKGIANT_TOWN_MIN       = 6;       // 町に立つ巨人の下限・上限（町が少なくても多すぎても数を保つ）
-const ROCKGIANT_TOWN_MAX       = 11;
+// v3.85.0（案帳 DT-509 手直し・Shooter「あんまり巨人に会えず首都直前にならないと居ない。全部の街に一体ずつ巨人がいるように。弱き街には小さめの巨人を」）:
+// 大きい町の4割だけ → 全部の町に1体ずつ。大きさは町の強さで決める（小さい町の帯は小さめ・ふつうの町・要塞都市は大きめ）
+const ROCKGIANT_WEAK_SCALE     = [0.6, 0.75];  // 帯の入口（一番小さい町）の巨人の大きさ。帯の外へ行くほど ふつう の幅へ近づく
+const ROCKGIANT_TOWN_SCALE     = [1.0, 1.4];   // ふつうの町
+const ROCKGIANT_FORT_SCALE     = [1.4, 1.8];   // 要塞都市（首都のそば）
 const ROCKGIANT_CAPITAL_COUNT  = 2;       // 首都の守り
 const ROCKGIANT_CAPITAL_LATE   = 1;       // 時代V（番号4）以降は首都にもう1体
 const ROCKGIANT_LATE_STAGE     = 4;
@@ -15166,8 +15180,8 @@ function rgScale(m) { return m._rg?.scale ?? 1; }
 function rockGiantHp(def, stageIndex) { return Math.round(def.hp * (1 + ROCKGIANT_HP_STAGE * stageIndex)); }
 
 /** 持ち場の点（開始地点の側＝群れの来る側を向いて、外形のすぐ外） */
-function rockGiantPost(cx, cy, outerR, seedAngle) {
-  const toStart = Math.atan2(START_Y - cy, START_X - cx);
+function rockGiantPost(cx, cy, outerR, seedAngle, awayFromStart) {
+  const toStart = Math.atan2(START_Y - cy, START_X - cx) + (awayFromStart ? Math.PI : 0);
   const a = toStart + (seedAngle ?? (random() * 2 - 1)) * ROCKGIANT_POST_SPREAD;
   const r = outerR + ROCKGIANT_POST_OUTSIDE;
   return { x: Math.max(120, Math.min(WORLD_W - 120, cx + Math.cos(a) * r)),
@@ -15186,22 +15200,43 @@ function spawnRockGiant(post, townIndex, scaleMin, fixedScale) {
   return m;
 }
 
-/** 町の一覧ができたら、大きい町から順に1体ずつ＋首都に2〜3体を置く（案帳 DT-509） */
+/** 町の強さ（帯の縮み・要塞都市）からその町の巨人の大きさを決める（v3.85.0） */
+function rockGiantTownScale(cx, cy, fortified) {
+  const [lo, hi] = fortified ? ROCKGIANT_FORT_SCALE : ROCKGIANT_TOWN_SCALE;
+  const band = (startBandTownScale(cx, cy) - START_TOWN_MIN_SCALE) / (1 - START_TOWN_MIN_SCALE);   // 0＝帯の入口・1＝帯の外
+  const k = fortified ? 1 : Math.max(0, Math.min(1, band));
+  const a = ROCKGIANT_WEAK_SCALE[0] + (lo - ROCKGIANT_WEAK_SCALE[0]) * k;
+  const b = ROCKGIANT_WEAK_SCALE[1] + (hi - ROCKGIANT_WEAK_SCALE[1]) * k;
+  return a + random() * (b - a);
+}
+
+/** 町の一覧ができたら、全部の町に1体ずつ＋首都に2〜3体を置く（案帳 DT-509。v3.85.0 で全部の町に） */
 function placeRockGiants() {
   if (!rockGiantPlacePending || townStats.size === 0) return;
   rockGiantPlacePending = false;
-  const clear2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
-  const metas = new Map();
-  for (const s of settlements) if (s && s._townMeta && s._townIndex !== undefined) metas.set(s._townIndex, s._townMeta);
+  const near2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
+  const metas = new Map(), fortified = new Set();
+  for (const s of settlements) {
+    if (!s || s._townIndex === undefined) continue;
+    if (s._townMeta) metas.set(s._townIndex, s._townMeta);
+    if (s._fortified) fortified.add(s._townIndex);
+  }
+  let maxR = 0;
+  for (const s of settlements) if (s && !s._giantBoss && s.radius > maxR) maxR = s.radius;
+  rockGiantAvoidCells = Math.ceil((maxR + ROCKGIANT_FOOT_CLEAR) / BUILDING_GRID_CELL) + 1;   // ＋1＝足の点がセルの端にあっても取りこぼさない
   const towns = [];
   for (const [idx, st] of townStats) {
     const meta = metas.get(idx);
-    if (!meta || meta._rock || st.surrendered || st.total <= 0 || dist2(st.cx, st.cy, START_X, START_Y) < clear2) continue;
-    towns.push({ idx, total: st.total, cx: st.cx, cy: st.cy, outer: (meta.maxExtent ?? meta.townR ?? 200) + WASTELAND_RING_MARGIN });
+    if (!meta || meta._rock || st.surrendered || st.total <= 0) continue;
+    towns.push({ idx, cx: st.cx, cy: st.cy, outer: (meta.maxExtent ?? meta.townR ?? 200) + WASTELAND_RING_MARGIN });
   }
-  towns.sort((a, b) => b.total - a.total);
-  const want = Math.max(ROCKGIANT_TOWN_MIN, Math.min(ROCKGIANT_TOWN_MAX, Math.round(towns.length * ROCKGIANT_TOWN_SHARE)));
-  for (const t of towns.slice(0, want)) spawnRockGiant(rockGiantPost(t.cx, t.cy, t.outer), t.idx);
+  towns.sort((a, b) => a.idx - b.idx);   // 乱数の順を町の番号で固定する（決定性）
+  for (const t of towns) {
+    // 開始地点に近い町は、持ち場を開始地点と反対の側に取る（最初の画面に巨人が立たないように）
+    const awaySide = dist2(t.cx, t.cy, START_X, START_Y) < near2;
+    const post = rockGiantPost(t.cx, t.cy, t.outer, undefined, awaySide);
+    spawnRockGiant(post, t.idx, undefined, rockGiantTownScale(t.cx, t.cy, fortified.has(t.idx)));
+  }
   const boss = settlements.find(s => s && s.isBoss);
   if (!boss) return;
   placeWastelandIdols(capitalAnchor(boss));
@@ -15418,8 +15453,14 @@ function rockGiantFootRest(m, k, lead) {
 }
 
 /** 足の置き場所を人間の建物から外す（町の上は足をよけて歩く。巨像と同じ） */
+// v3.85.0: 巨人が全部の町に立つ（50〜70体）ようになったので、足の置き場所は全部の建物ではなく建物の格子の近くだけを見る。
+// 見るセルの幅は、ステージで一番大きい建物の半径＋離す幅から決める（placeRockGiants で数える）
+let rockGiantAvoidCells = 2;
+const _rockGiantAvoidBuf = [];
 function rockGiantAvoidTown(p) {
-  for (const b of settlements) {
+  buildingGridQueryRadius(p.x, p.y, rockGiantAvoidCells, _rockGiantAvoidBuf);
+  for (const s of _rockGiantAvoidBuf) {
+    const b = settlements[s];
     if (!b || b.fallen || b._giantBoss) continue;   // v3.84.0: 歩く大巨人（首都）は町ではない。当たりを体の大きさにしたので、自分の足を自分の外へ押し出さない
     const need = b.radius + ROCKGIANT_FOOT_CLEAR;
     const dx = p.x - b.wx, dy = p.y - b.wy;
