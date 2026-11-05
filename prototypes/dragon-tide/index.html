@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.85.4";
+const GAME_VERSION = "v3.86.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -12015,6 +12015,14 @@ const SKY_TOWN_SCALE_MAX    = 1.0;
 // 町の島は格子のマスではなく、ワールドのどこでも投げて、ほかの島と離れていれば置く（離す幅にもばらつきを足す）
 const SKY_TOWN_TRIES        = 2400;        // 町の中心を投げる回数
 const SKY_TOWN_SPACING_JITTER = 320;       // 島どうしの隙間に足すばらつきの上限（詰まった所と開いた所ができる）
+// v3.86.0（案帳 DT-124 手直し・Shooter「他の島と離れていれば、を条件にする必要がない。町が隣接して大きな島になったりして欲しい」）:
+// 町どうしは「町の外縁が重ならない」だけを守り、離す幅の下限をやめた。さらに一部の町はわざと既にある町の隣に置き、
+// 外縁どうしが近い町の島はつなげて1つの大きな島にする（地上の敵はつながった島の中を行き来できる）
+const SKY_TOWN_CLUSTER_P    = 0.3;         // 町を既にある町の隣に置く割合
+const SKY_TOWN_CLUSTER_GAP  = 90;          // 隣に置くときの外縁どうしの隙間の上限
+const SKY_TOWN_MERGE_SLACK  = 100;         // 島の外縁どうしの隙間がこれより狭い町の島はつなげる
+const SKY_TOWN_BRIDGE_STEPS = 4;           // つなぐ2つの町の中心の間に置く円の数
+const SKY_TOWN_BRIDGE_R     = 0.62;        // つなぐ円の半径（小さいほうの町の外縁×これ）
 const SKY_TOWN_SIZE_SKEW    = 1.6;         // 大きさの偏り（1より大きいと小さめの町が多く、ときどき大きな町）
 const SKY_WORLD_MARGIN      = 260;         // ワールドの縁から島の中心までの余白
 const SKY_TOWN_GROW_MAX     = 0.9;         // 町の島を町の外縁より広げる割合の上限（島ごとにばらつく。広い島の端に町が載る形もできる）
@@ -12218,23 +12226,81 @@ function placeSkylandTownCenters(townWanted, boss) {
     if (Math.hypot(x - START_X, y - START_Y) < START_TOWN_CLEAR_CENTER) continue;
     const scale = SKY_TOWN_SCALE_MIN + (SKY_TOWN_SCALE_MAX - SKY_TOWN_SCALE_MIN) * Math.pow(random(), SKY_TOWN_SIZE_SKEW);
     const reach = SKY_TOWN_REACH_BASE * scale + SKY_ISLAND_PAD;
-    const gap = SKY_ISLAND_GAP + random() * SKY_TOWN_SPACING_JITTER;
-    if (centers.some(c => Math.hypot(x - c.x, y - c.y) < reach + c.reach + gap)) continue;
-    centers.push({ x, y, maxScale: scale, reach });
+    // v3.86.0: 一部はわざと既にある町の隣へ（つながって大きな島になる）。ほかはどこでも、町の外縁が重ならなければ置く
+    let tx = x, ty = y, gap = random() * SKY_TOWN_SPACING_JITTER;
+    if (centers.length > 0 && random() < SKY_TOWN_CLUSTER_P) {
+      const host = centers[Math.floor(random() * centers.length)], a = random() * Math.PI * 2;
+      gap = random() * SKY_TOWN_CLUSTER_GAP;
+      tx = host.x + Math.cos(a) * (host.reach + reach + gap); ty = host.y + Math.sin(a) * (host.reach + reach + gap);
+      if (tx < SKY_WORLD_MARGIN || ty < SKY_WORLD_MARGIN || tx > WORLD_W - SKY_WORLD_MARGIN || ty > WORLD_H - SKY_WORLD_MARGIN) continue;
+      if (Math.hypot(tx - boss.wx, ty - boss.wy) < SKY_CAPITAL_CLEAR) continue;
+      if (Math.hypot(tx - START_X, ty - START_Y) < START_TOWN_CLEAR_CENTER) continue;
+      gap = 0;   // 隣の町との隙間はもう入れてある。ほかの町とは外縁が重ならなければよい
+    }
+    if (centers.some(c => Math.hypot(tx - c.x, ty - c.y) < reach + c.reach + gap - 1)) continue;
+    centers.push({ x: tx, y: ty, maxScale: scale, reach });
   }
   return centers;
 }
 
+/** 2つの設計図の島の外縁どうしの隙間（隙間 SKY_ISLAND_GAP を空けたうえで、まだ余っている幅） */
+function skyPlanSlack(a, b) {
+  return Math.hypot(a.cx - b.cx, a.cy - b.cy) - (a.reach + SKY_ISLAND_PAD) - (b.reach + SKY_ISLAND_PAD) - SKY_ISLAND_GAP;
+}
+/** v3.86.0: つなげる町どうし（どちらも町で、外縁が近い） */
+function skyPlansMerge(a, b) {
+  return a.kind === "town" && b.kind === "town" && skyPlanSlack(a, b) < SKY_TOWN_MERGE_SLACK;
+}
 /** 設計図の島どうしが、隙間を空けて並ぶように、それぞれが張り出してよい量を決める。 */
 function skyExtraFor(plan, plans) {
   let extra = Math.max(SKY_EXTRA_MAX, plan.grow ?? 0) * plan.reach;   // v3.84.0: 町の島ごとに広げる量を変える
   for (const other of plans) {
-    if (other === plan) continue;
-    const slack = Math.hypot(plan.cx - other.cx, plan.cy - other.cy) -
-                  (plan.reach + SKY_ISLAND_PAD) - (other.reach + SKY_ISLAND_PAD) - SKY_ISLAND_GAP;
-    extra = Math.min(extra, Math.max(0, slack * 0.5));
+    if (other === plan || skyPlansMerge(plan, other)) continue;   // v3.86.0: つなげる町とは離さない
+    extra = Math.min(extra, Math.max(0, skyPlanSlack(plan, other) * 0.5));
   }
   return extra;
+}
+/**
+ * v3.86.0（案帳 DT-124 手直し）: 外縁が近い町の島をつなげて1つの島にする。2つの町の中心の間に円を並べて橋渡しし、
+ * 円の和をまとめる。地上の敵は島1つの中を動けるので、つながった町の間は行き来する
+ */
+function skyMergeTownIslands(plans, islands) {
+  const root = plans.map((_, k) => k);
+  const find = (k) => { while (root[k] !== k) k = root[k] = root[root[k]]; return k; };
+  const bridges = [];
+  for (let a = 0; a < plans.length; a++) for (let b = a + 1; b < plans.length; b++) {
+    if (!skyPlansMerge(plans[a], plans[b])) continue;
+    bridges.push([a, b]);
+    root[find(b)] = find(a);
+  }
+  if (bridges.length === 0) return islands;
+  for (const [a, b] of bridges) {
+    const pa = plans[a], pb = plans[b], r = Math.min(pa.reach, pb.reach) * SKY_TOWN_BRIDGE_R;
+    for (let k = 1; k <= SKY_TOWN_BRIDGE_STEPS; k++) {
+      const t = k / (SKY_TOWN_BRIDGE_STEPS + 1);
+      islands[a].lobes.push({ x: pa.cx + (pb.cx - pa.cx) * t, y: pa.cy + (pb.cy - pa.cy) * t, r });
+    }
+  }
+  const merged = [];
+  const groupOf = new Map();
+  islands.forEach((isl, k) => {
+    const g = find(k);
+    if (!groupOf.has(g)) { groupOf.set(g, isl); merged.push(isl); return; }
+    const host = groupOf.get(g);
+    host.lobes.push(...isl.lobes);
+    host.area += isl.area;
+    host.reach = Math.max(host.reach, isl.reach);
+    host.merged = (host.merged ?? 1) + 1;
+  });
+  for (const isl of merged) {
+    if (!isl.merged) continue;
+    // 中心は円の重心へ置き直し、外接の半径（引き当て表に使う）を測り直す
+    let wx = 0, wy = 0, w = 0;
+    for (const l of isl.lobes) { const m = l.r * l.r; wx += l.x * m; wy += l.y * m; w += m; }
+    isl.cx = wx / w; isl.cy = wy / w;
+    isl.bound = Math.max(...isl.lobes.map(l => Math.hypot(l.x - isl.cx, l.y - isl.cy) + l.r));
+  }
+  return merged;
 }
 
 /** 設計図1枚を「円の和」の島にする。核の円＋縁に張り出す円（いびつな塊に見える）＋町の棟のはみ出しを覆う円。 */
@@ -12316,13 +12382,14 @@ function buildSkyIslands(buildings, centers, boss) {
     if (fits(plan)) { plans.push(plan); decor++; }
   }
   skyPlans = plans;
-  skyIslands = [];
+  let islands = [];
   for (const plan of plans) {
     const bound = plan.reach + SKY_ISLAND_PAD + skyExtraFor(plan, plans);
-    const isl = skyMakeIsland(plan, bound, plan.kind === "town" ? byTown[plan.townIndex] : []);
-    skyDecorateIsland(isl);
-    skyIslands.push(isl);
+    islands.push(skyMakeIsland(plan, bound, plan.kind === "town" ? byTown[plan.townIndex] : []));
   }
+  islands = skyMergeTownIslands(plans, islands);   // v3.86.0: 外縁が近い町の島はつなげて大きな島に
+  for (const isl of islands) skyDecorateIsland(isl);
+  skyIslands = islands;
   skyCapitalIsland = 0;
   skyStartIsland = skyIslands.findIndex(i => i.kind === "start");
   skyBuildLookup();
