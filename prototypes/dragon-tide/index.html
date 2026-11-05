@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.82.0";
+const GAME_VERSION = "v3.83.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1748,6 +1748,7 @@ const DEBUG_ACTIONS = [
   { label: "⚡ ラッシュを起こす…",     run: () => { debugPage = "rush"; }, keepOpen: true },   // v3.16.1
   { label: "🗺 地域・時代を選んで始める…", run: () => { debugPage = "stage"; debugStageEra = runStageIndex; }, keepOpen: true },   // v3.18.2
   { label: "🐲 竜種を切り替える…",   run: () => { debugPage = "species"; }, keepOpen: true },   // v3.29.1
+  { label: "🃏 強化カードを取る…",   run: () => { debugPage = "cards"; }, keepOpen: true },   // 案帳 DT-513 手直し
   { label: "★ このステージをクリア", run: () => { if (gameState === "playing") onCapitalFallen(); } },
   { label: "🏁 ラン完了（即）",       run: () => { if (gameState === "playing") triggerRunComplete(); } },
   { label: "💀 全滅させる",           run: () => { if (gameState === "playing") debugDownAll(); } },
@@ -1859,6 +1860,7 @@ function renderDebugPanel() {
               : debugPage === "rush" ? "RUSH"
               : debugPage === "stage" ? "STAGE"
               : debugPage === "species" ? "SPECIES"
+              : debugPage === "cards" ? "CARDS"
               : `DEBUG ${GAME_VERSION}`;
   debugPanelEl.innerHTML =
     `<div class="dbg-title">${title}<span class="dbg-close">✕</span></div>` +
@@ -1940,6 +1942,43 @@ function renderDebugPanel() {
         renderDebugPanel();
       }, { color: def.color });
     }
+    return;
+  }
+
+  // 案帳 DT-513 手直し（Shooter「指定したカードをとるデバッグを追加」）: 町で選ぶ強化カードを、押した1枚だけその場で取る。
+  // 三択に目当てのカードが出るまで遊ばずに、カードの効き目（例：捨て身の賭けで赤丸が出るか）を確かめるため。
+  // 三択で取ったときと同じ applyFallCard を通す。上限（max）までしか取れない。特殊個体向けのカードも連れていなくても取れる。
+  // 警戒度は上げない（デバッグで取った枚数で状況が変わると確かめにくい）
+  if (debugPage === "cards") {
+    grid.classList.add("enemies");
+    const addBtn = (text, fn, opts = {}) => {
+      const b = document.createElement("button");
+      b.className = "dbg-btn";
+      if (opts.full) b.style.gridColumn = "1 / -1";
+      if (opts.color) { b.style.color = opts.color; b.style.borderColor = opts.color; }
+      if (opts.dim) b.style.opacity = "0.45";
+      b.textContent = text;
+      dbgTap(b, (e) => { e.stopPropagation(); e.preventDefault(); fn(); });
+      grid.appendChild(b);
+    };
+    addBtn("← もどる", () => { debugPage = "main"; renderDebugPanel(); }, { full: true });
+    for (const def of FALL_CARD_DEFS) {
+      const have = stageCards[def.id] || 0;
+      const full = have + (upgradeCounts[def.id] || 0) >= def.max;
+      const color = def.ultra ? "#ff9ad5" : def.stageOnly ? "#ffd08a" : def.rare ? "#9ad0ff" : def.special ? "#c8a8ff" : null;
+      addBtn(`${def.icon} ${fallCardText(def.id).name} ${have}/${def.max}`, () => {
+        if (gameState !== "playing" || full) return;
+        applyFallCard(def);
+        renderStageCardIcons();
+        markRunSaveDirty();
+        updateHUDBuildings();
+        renderDebugPanel();
+      }, { color, dim: full });
+    }
+    dbgTap(debugPanelEl.querySelector(".dbg-close"), (e) => {
+      e.stopPropagation();
+      toggleDebugPanel(false);
+    });
     return;
   }
 
@@ -35412,10 +35451,24 @@ function openNextFallOffer() {
 
 function takeFallCard(def, townIndex) {
   if (!fallOfferVisible || !fallOfferEl.classList.contains("armed")) return;
+  applyFallCard(def);
+  stageLevelUps++;   // v3.65.0: 警戒度はこのステージで取った数で上がる
+  renderStageCardIcons();
+  markRunSaveDirty();
+  closeFallOffer();
+  maybeAdvanceTier(true);
+  updateHUDBuildings();
+}
+
+/**
+ * 強化カード1枚の効き目を群れに乗せる（三択で取ったときと、デバッグで指定して取ったときの共通部分）。
+ * 案帳 DT-513 手直しでデバッグの「強化カードを取る」から同じ道を通すために切り出した。
+ * 警戒度（stageLevelUps）はここでは数えない：デバッグで取ったカードで警戒度が上がると、確かめたい状況が崩れるため。
+ */
+function applyFallCard(def) {
   const oldMax = effBoidMaxHp();
   const oldSpMult = 1 + SPECIAL_CARD_HP * upCount("fsp_hp");
   stageCards[def.id] = (stageCards[def.id] || 0) + 1;
-  stageLevelUps++;   // v3.65.0: 警戒度はこのステージで取った数で上がる
   if (def.id === "brood") applyCardImmediate("brood");
   if (def.id === "f_giant") makeGiants();   // v3.49.0
   if (def.id === "f_sp_double") for (const k of runSpecials.slice()) addRunSpecial(k, true);
@@ -35428,11 +35481,6 @@ function takeFallCard(def, townIndex) {
     const ratio = (1 + SPECIAL_CARD_HP * upCount("fsp_hp")) / oldSpMult;
     for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i] && boidSpecial[i] !== SPECIAL_NONE) boidHp[i] *= ratio;
   }
-  renderStageCardIcons();
-  markRunSaveDirty();
-  closeFallOffer();
-  maybeAdvanceTier(true);
-  updateHUDBuildings();
 }
 
 /** v3.65.0（DT-497）: 永続の強化カードのうち、群れに形として乗るもの（巨竜化・特殊個体の分身）を作り直す */
