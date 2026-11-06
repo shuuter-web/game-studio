@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.97.0";
+const GAME_VERSION = "v3.98.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -26210,7 +26210,7 @@ const STRINGS = {
     sp_shell:          { name: "籠る殻",     desc: "指を離している間、群れ全体を殻で包んで受ける傷を7割減らす特殊個体が加わる。殻の中では誰も攻撃しない" },
     sp_bundle:         { name: "束ね陣",     desc: "群れの広がりを半分に束ねる特殊個体が加わる。体当たりが強くなり、遠くからの弾の傷が減る。広く薙ぐのは苦手" },
     sp_barrier:        { name: "結界線",     desc: "指を離すと、描いた線が5秒のあいだ光る壁になる特殊個体が加わる。動く敵と敵の弾は越えられず、竜は通れる。張り直しは12秒ごと" },
-    sp_skybow:         { name: "虹弓",       desc: "5秒ごとに、遠くにいる撃つ建物を1つ、虹の矢で射抜く特殊個体が加わる。近くの相手は狙わない" },
+    sp_skybow:         { name: "虹弓",       desc: "5秒ごとに、画面の中のいちばん遠い砲台など（民家は除く）を1つ、虹の矢で射抜く特殊個体が加わる。近くの相手は狙わない" },
     sp_scatter:        { name: "広げ陣",     desc: "群れの広がりを1.8倍に広げる特殊個体が加わる。町を一度に広く薙げるが、撃たれる面も大きくなる" },
     sp_link:           { name: "結び竜",     desc: "群れの特殊個体どうしを雷の糸で結び、糸に触れた建物と敵を焼く特殊個体が加わる" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
@@ -29601,6 +29601,7 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_SKYBOW)  updateSkybowDragon(i, dt);   // v3.95.0（DT-184）
     else if (kind === SPECIAL_BARRIER) updateBarrierDragon(i, dt);   // v3.96.0（DT-211）
   }
+  updateSkybowAims(dt);   // v3.98.0（DT-184 手直し）: 照準の済んだ虹弓が射る（特殊個体の一撃として、竜ごとの処理と同じ扱い）
   specialHitActive = false;
   updateDrumBeat(dt, drumAlive);   // v3.31.0: 軍鼓の拍は群れで1つ
   updateFreeShards(dt);            // v3.33.0: 外れた破片（磁竜の投げ・鉄鎖のスマッシュ）はどの竜種でも動く
@@ -29726,53 +29727,91 @@ function drawShell() {
 
 // ---- v3.95.0: 虹弓（案帳 DT-184 遠矢竜・Shooter判定「極光が単体遠距離攻撃をする感じ。名前も特殊個体らしく」）----
 // 極光は周りの相手を虹の線でまとめて薙ぐ。虹弓はその虹を一本の矢にして、**遠くの撃つ建物を1つだけ**射抜く。
-// SKYBOW_INTERVAL 秒ごとに、自分から SKYBOW_RANGE 以内（ほぼ画面の端まで）にいる「撃ってくる建物」のうち**いちばん遠いもの**へ大きな一撃。
-// SKYBOW_MIN_RANGE より近い相手は狙わない（弱み）。狙える相手がいなければ溜めたまま待ち、現れたらすぐ撃つ。
-// 町に入る前に外から砲台を減らしておける＝慎重に攻める動かし方に向く。
+// v3.98.0（DT-184 手直し・Shooter「スマホだと画面外しか撃たないので面白くない。狙いは画面内に。民家は除外。誰を撃ったか分からない」）:
+//   - 狙えるのは**画面の中**（端から SKYBOW_SCREEN_MARGIN 画面px はみ出すまで）の相手だけ。画面の大きさで届く距離が変わるのは許容（Shooter）
+//   - 狙うのは**本当に撃ってくる守りの建物**だけ（時代兵器・前哨堡・光線塔・首都）。民家は単発で射抜いても意味が無いので外す
+//   - 撃つ前に SKYBOW_AIM_TIME 秒、的に照準（縮む虹の輪と、竜から的への点線）を出してから射る。当たった的には残光の輪を残す
+// SKYBOW_MIN_RANGE より近い相手は狙わない（弱み）。狙える相手がいなければ溜めたまま待ち、現れたらすぐ狙う。
 const SKYBOW_INTERVAL    = 5.0;
 const SKYBOW_RATE_PER_UP = 0.85;   // 速い弦：1つにつき間隔 ×0.85
-const SKYBOW_RANGE       = 620;
-const SKYBOW_MIN_RANGE   = 160;
+const SKYBOW_RANGE       = 620;    // 画面の大きさが分からないとき（ヘッドレス）だけ使う届く距離
+const SKYBOW_MIN_RANGE   = 110;
+const SKYBOW_SCREEN_MARGIN = 24;   // 画面の端からこれだけ（画面px）はみ出した相手までは狙える（「ギリギリ画面外は許容」）
+const SKYBOW_AIM_TIME    = 0.6;    // 照準を出してから射るまで
 const SKYBOW_DAMAGE      = 160;
 const SKYBOW_DMG_PER_UP  = 0.30;   // 強い弦：1つにつき +30%
-const SKYBOW_FX_LIFE     = 0.65;
-const skybowFx = [];   // {x0,y0,x1,y1,t}（見た目だけ）
+const SKYBOW_FX_LIFE     = 1.0;
+const SKYBOW_MARK_LIFE   = 1.6;    // 射抜いた的に残す残光の長さ
+const skybowFx = [];    // {x0,y0,x1,y1,t}（見た目だけ）
+const skybowMarks = []; // {x,y,r,t} 射抜いた的の残光（見た目だけ）
+const skybowAims = [];  // {i, sIdx, t} 照準中（ロジック）
 function skybowInterval() { return SKYBOW_INTERVAL * Math.pow(SKYBOW_RATE_PER_UP, upCount("sp_skybow_rate")); }
 function skybowDamage() { return SKYBOW_DAMAGE * (1 + SKYBOW_DMG_PER_UP * upCount("sp_skybow_dmg")) * permaBuff.specialDmg; }
 /** 撃ってくる建物か（城下の民家・陥落した町・壁は除く） */
 function buildingShootsBack(st) {
   return st && !st.fallen && !st._isWall && !st._noAttack && st.attackRadius > 0 && !isTownSurrendered(st._townIndex);
 }
+/** 虹弓の的になる「守りの建物」か。民家（役割の無い家）は外す（DT-184 手直し） */
+function isSkybowTarget(st) {
+  if (!buildingShootsBack(st)) return false;
+  return !!(st.isBoss || st._emplacement || st._townRole === "rampart" || st._beamTower || st._miniBeam);
+}
+/** 狙える範囲（ワールド座標の矩形）。画面の中＋少しのはみ出し。画面の大きさが無いときは null */
+function skybowViewRect() {
+  if (!(viewW > 0 && viewH > 0 && cam.scale > 0)) return null;
+  const hw = (viewW * 0.5 + SKYBOW_SCREEN_MARGIN) / cam.scale, hh = (viewH * 0.5 + SKYBOW_SCREEN_MARGIN) / cam.scale;
+  return { x0: cam.x - hw, x1: cam.x + hw, y0: cam.y - hh, y1: cam.y + hh };
+}
 const _skybowBuf = [];
-/** (x, y) から最小〜最大の距離にいる撃つ建物のうち、いちばん遠いものの番号（無ければ -1） */
+/** (x, y) から狙える守りの建物のうち、いちばん遠いものの番号（無ければ -1） */
 function findSkybowTarget(x, y) {
-  buildingGridQueryRadius(x, y, Math.max(1, Math.ceil(SKYBOW_RANGE / BUILDING_GRID_CELL)), _skybowBuf);
-  const max2 = SKYBOW_RANGE * SKYBOW_RANGE, min2 = SKYBOW_MIN_RANGE * SKYBOW_MIN_RANGE;
+  const rect = skybowViewRect();
+  const reach = rect ? Math.hypot(rect.x1 - rect.x0, rect.y1 - rect.y0) : SKYBOW_RANGE;
+  buildingGridQueryRadius(x, y, Math.max(1, Math.ceil(reach / BUILDING_GRID_CELL)), _skybowBuf);
+  const max2 = rect ? Infinity : SKYBOW_RANGE * SKYBOW_RANGE, min2 = SKYBOW_MIN_RANGE * SKYBOW_MIN_RANGE;
   let best = -1, bestD2 = -1;
   for (const sIdx of _skybowBuf) {
     const st = settlements[sIdx];
-    if (!buildingShootsBack(st)) continue;
+    if (!isSkybowTarget(st)) continue;
+    if (rect && (st.wx < rect.x0 || st.wx > rect.x1 || st.wy < rect.y0 || st.wy > rect.y1)) continue;
     const d2 = dist2(st.wx, st.wy, x, y);
     if (d2 > max2 || d2 < min2 || d2 <= bestD2) continue;
     best = sIdx; bestD2 = d2;
   }
   return best;
 }
+function skybowAimOf(i) {
+  for (const a of skybowAims) if (a.i === i) return a;
+  return null;
+}
 function updateSkybowDragon(i, dt) {
   const inter = skybowInterval();
   boidSpecialTimer[i] = Math.min(inter, boidSpecialTimer[i] + dt);
   if (boidSpecialTimer[i] < inter) return;
+  if (skybowAimOf(i)) return;   // 照準中（updateSkybowAims が射る）
   const sIdx = findSkybowTarget(px[i], py[i]);
   if (sIdx < 0) return;   // 溜めたまま待つ
-  boidSpecialTimer[i] = 0;
-  const st = settlements[sIdx];
-  hitBuilding(sIdx, { shot: skybowDamage() }, px[i], py[i]);
-  spawnHitParticles(st.wx, st.wy);
-  if (skybowFx.length < 32) skybowFx.push({ x0: px[i], y0: py[i], x1: st.wx, y1: st.wy, t: 0 });
-  hapticPulse(30);
+  skybowAims.push({ i, sIdx, t: 0 });
+}
+/** 照準を進め、時間が来たら射る。竜が倒れた・的が落ちたら照準を外す（溜めは残すので次の的をすぐ探す） */
+function updateSkybowAims(dt) {
+  for (let k = skybowAims.length - 1; k >= 0; k--) {
+    const a = skybowAims[k], i = a.i, st = settlements[a.sIdx];
+    if (boidSpecial[i] !== SPECIAL_SKYBOW || boidDead[i] || boidDowned[i] || !isSkybowTarget(st)) { skybowAims.splice(k, 1); continue; }
+    a.t += dt;
+    if (a.t < SKYBOW_AIM_TIME) continue;
+    skybowAims.splice(k, 1);
+    boidSpecialTimer[i] = 0;
+    hitBuilding(a.sIdx, { shot: skybowDamage() }, px[i], py[i]);
+    spawnHitParticles(st.wx, st.wy);
+    if (skybowFx.length < 32) skybowFx.push({ x0: px[i], y0: py[i], x1: st.wx, y1: st.wy, t: 0 });
+    if (skybowMarks.length < 32) skybowMarks.push({ x: st.wx, y: st.wy, r: st.radius || 12, t: 0 });
+    hapticPulse(30);
+  }
 }
 function updateSkybowFx(dt) {
   for (let k = skybowFx.length - 1; k >= 0; k--) { skybowFx[k].t += dt; if (skybowFx[k].t >= SKYBOW_FX_LIFE) skybowFx.splice(k, 1); }
+  for (let k = skybowMarks.length - 1; k >= 0; k--) { skybowMarks[k].t += dt; if (skybowMarks[k].t >= SKYBOW_MARK_LIFE) skybowMarks.splice(k, 1); }
 }
 /** 虹の矢の筋：竜から的まで一直線の白い芯に虹のにじみ。的の側に矢じりと小さな虹の輪。溜まった虹弓の竜には弓の弧 */
 function drawSkybow() {
@@ -29790,6 +29829,33 @@ function drawSkybow() {
     ctx.beginPath(); ctx.moveTo(f.x1, f.y1); ctx.lineTo(f.x1 - ca * 14 - sa * 6, f.y1 - sa * 14 + ca * 6); ctx.lineTo(f.x1 - ca * 14 + sa * 6, f.y1 - sa * 14 - ca * 6); ctx.closePath(); ctx.fill();
     ctx.globalAlpha = 0.7 * u; ctx.strokeStyle = SPECIAL_DEFS[SPECIAL_SKYBOW].color; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(f.x1, f.y1, 10 + 22 * (1 - u), 0, Math.PI * 2); ctx.stroke();
+  }
+  // 照準：竜から的への虹色の点線と、的へ縮んでいく輪＋十字（「これから誰を射るか」を先に見せる）
+  const bowColor = SPECIAL_DEFS[SPECIAL_SKYBOW].color;
+  for (const a of skybowAims) {
+    const st = settlements[a.sIdx]; if (!st) continue;
+    const u = Math.min(1, a.t / SKYBOW_AIM_TIME), r = (st.radius || 12) + 6 + 30 * (1 - u);
+    ctx.globalAlpha = 0.55 + 0.4 * u; ctx.strokeStyle = bowColor; ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.moveTo(px[a.i], py[a.i]); ctx.lineTo(st.wx, st.wy); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(st.wx, st.wy, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    for (let q = 0; q < 4; q++) {
+      const ang = q * Math.PI / 2, c = Math.cos(ang), sn = Math.sin(ang);
+      ctx.moveTo(st.wx + c * (r + 8), st.wy + sn * (r + 8)); ctx.lineTo(st.wx + c * (r - 6), st.wy + sn * (r - 6));
+    }
+    ctx.stroke();
+  }
+  // 射抜いた的の残光：虹の二重輪が広がりながら消える
+  for (const m of skybowMarks) {
+    const u = 1 - m.t / SKYBOW_MARK_LIFE;
+    ctx.globalAlpha = 0.85 * u; ctx.lineWidth = 3;
+    ctx.strokeStyle = `hsl(${(m.t * 240 + 270) % 360}, 100%, 72%)`;
+    ctx.beginPath(); ctx.arc(m.x, m.y, m.r + 8 + 26 * (1 - u), 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(m.x, m.y, m.r + 4 + 12 * (1 - u), 0, Math.PI * 2); ctx.stroke();
   }
   for (let i = 0; i < N; i++) {
     if (boidSpecial[i] !== SPECIAL_SKYBOW || boidDead[i] || boidDowned[i]) continue;
@@ -34059,7 +34125,7 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_SHELL]:   "★籠る殻／指を離すと群れごと殻にこもる。攻めと守りの切り替え",
   [SPECIAL_BUNDLE]:  "★束ね陣／群れを小さな塊に束ねる。1棟を突き崩す・細い道を抜ける",
   [SPECIAL_BARRIER]: "★結界線／描いた線が壁になる。追ってくる敵・撃ってくる町との間に線を引いて守る",
-  [SPECIAL_SKYBOW]:  "★虹弓／遠くの撃つ建物を虹の矢で先に射抜く。町に入る前に砲台を減らす",
+  [SPECIAL_SKYBOW]:  "★虹弓／画面の中の砲台を虹の矢で先に射抜く。町に入る前に砲台を減らす",
   [SPECIAL_SCATTER]: "★広げ陣／群れを大きな面に広げる。町の上をなでるだけで広く焼ける",
 };
 const CODEX_SPECIAL_DESC = {
@@ -34112,8 +34178,8 @@ const CODEX_SPECIAL_DESC = {
     "竜は壁を通り抜けられる。一度張ると" + BARRIER_COOLDOWN + "秒は張れない（竜のまわりの輪が一周したら張れる）。短いタップでは張らない。" +
     "攻める線と、敵との間に引く守りの線を描き分ける。自分では攻撃しない。",
   [SPECIAL_SKYBOW]:
-    "<b>" + SKYBOW_INTERVAL + "秒ごとに、遠くにいる撃ってくる建物を1つ、虹の矢で射抜く</b>（竜から的まで一直線の虹の筋）。" +
-    "狙うのは届く範囲の中で<b>いちばん遠い</b>撃つ建物。極光の虹を一本に束ねた、単体・遠距離の大きな一撃。" +
+    "<b>" + SKYBOW_INTERVAL + "秒ごとに、画面の中の守りの建物（時代兵器・前哨堡・光線塔・首都）を1つ、虹の矢で射抜く</b>。民家は狙わない。" +
+    "狙うのは画面の中で<b>いちばん遠い</b>相手。射る前に的へ白い照準の輪が縮み、射抜いた的には虹の輪が残る。極光の虹を一本に束ねた、単体・遠距離の大きな一撃。" +
     "近くの相手は狙わないので、町に入る前に外から砲台を減らしておく慎重な攻め方に向く。",
   [SPECIAL_SCATTER]:
     "<b>群れの広がりが1.8倍になり、大きな面になって飛ぶ</b>（隊列の行間・列間も広がる）。" +
@@ -34152,7 +34218,7 @@ const CODEX_SPECIAL_STAT = {
   [SPECIAL_BARRIER]: () =>
     `壁が残る ${BARRIER_LIFE}秒 ／ 張り直し ${BARRIER_COOLDOWN}秒 ／ ${BARRIER_MIN_STROKE}px より短い線では張らない ／ 攻撃なし ／ HP ×${SPECIAL_DEFS[SPECIAL_BARRIER].hpMult}`,
   [SPECIAL_SKYBOW]: () =>
-    `${SKYBOW_INTERVAL}秒ごと ／ 威力 ${SKYBOW_DAMAGE} ／ 届く距離 ${SKYBOW_MIN_RANGE}〜${SKYBOW_RANGE}px（いちばん遠い撃つ建物） ／ HP ×${SPECIAL_DEFS[SPECIAL_SKYBOW].hpMult}`,
+    `${SKYBOW_INTERVAL}秒ごと ／ 威力 ${SKYBOW_DAMAGE} ／ 届く範囲 画面の中（${SKYBOW_MIN_RANGE}px より遠い、いちばん遠い守りの建物） ／ HP ×${SPECIAL_DEFS[SPECIAL_SKYBOW].hpMult}`,
   [SPECIAL_SCATTER]: () =>
     `群れの広がり ×${WIDEN_SPREAD} ／ HP ×${SPECIAL_DEFS[SPECIAL_SCATTER].hpMult}`,
   [SPECIAL_SHELL]: () =>
@@ -36807,6 +36873,7 @@ function clearStageCards(keepCards = false) {
   hushMarks.length = 0; debuffPops.length = 0; shellOn = false; shellReleasedFor = 0; shellAnim = 0;   // v3.92.0
   flockSpreadNow = 1; bundleAlive = false; scatterAlive = false;   // v3.94.0
   skybowFx.length = 0;   // v3.95.0
+  skybowMarks.length = 0; skybowAims.length = 0;   // v3.98.0
   barrierWalls.length = 0; barrierPops.length = 0;   // v3.96.0
   aimTrail.length = 0;      // DT-221 手直し: 火の玉の尾
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
