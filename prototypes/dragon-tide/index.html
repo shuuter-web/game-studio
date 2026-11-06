@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.93.0";
+const GAME_VERSION = "v3.94.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3587,7 +3587,9 @@ function specialImpactMult() { return 1 + SPECIAL_CARD_DMG * upCount("fsp_impact
  * この一撃でダウンした竜は押さない（以前は弾だけがそうしていた。全攻撃をこれに揃えた）。
  */
 function hitBoid(i, hit, nx, ny) {
-  const dmg = hitDamage(hit, DRAGON_DAMAGE_RESIST);
+  let dmg = hitDamage(hit, DRAGON_DAMAGE_RESIST);
+  // v3.94.0（DT-203）: 束ねた群れは遠くからの弾（shot の分）が当たりにくい＝傷を減らす
+  if (hit.shot && bundleAlive) dmg -= hitDamage({ shot: hit.shot }, DRAGON_DAMAGE_RESIST) * (1 - bundleShotTakenMult());
   if (dmg > 0) applyDamageToBoid(i, dmg, hit);
   if (hit.impact > 0 && !boidDowned[i] && !moleUnderground()) applyImpactToBoid(i, nx, ny, hit.impact);
 }
@@ -18340,7 +18342,8 @@ function updateMoverRams() {
   const isMelee = flockWeapon === "melee";
   // v0.87: 突進中は威力と届く範囲が伸び、さらに動く敵を弾き飛ばす。
   // v0.99.2: 突進は個体ごとになったので、威力も届く範囲も**その竜のぶん**を引く。
-  const baseRam = isMelee ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee") : COLLISION_DAMAGE;
+  const baseRam = (isMelee ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee") : COLLISION_DAMAGE)
+                * bundleRamMult();   // v3.94.0（DT-203）
   // 当たり判定の探索半径だけは最大値で取り、実際の判定は個体ごとに絞る
   const maxReach = effChargeReachBonus();
   // v3.23.0: 群れの外接矩形の外にいる敵は竜ごとの判定をしない（大都会は敵が数千いる）
@@ -24483,7 +24486,8 @@ function updateCollisionAttacks(dt) {
           ? effWedgeRamDamage()
           : isMelee
             ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
-            : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i);
+            : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i)
+        * bundleRamMult();   // v3.94.0（DT-203）: 束ねた群れは体当たりが強い
       // v2.5.0: 突進の衝撃力。建物は耐衝撃0＝逃げ場が無いので全部ダメージになる。
       // **通常ダメージとは別勘定**で、ここで初めて建物が「押せない代償」を払う。
       // v2.10.0: 楔竜のひび・陥落判定は hitBuilding（damageBuilding）が持つ
@@ -24926,6 +24930,8 @@ const SPECIAL_AIM     = 14;   // v3.64.0 指先竜：時間で火の玉を溜め
 const SPECIAL_RECALL  = 15;   // v3.72.0 呼び戻し竜：指を離した所へ自分が飛んで叩きつけ、群れへ戻る（案帳 DT-483）
 const SPECIAL_HUSH    = 16;   // v3.92.0 押さえ竜→口封じ：自分が触れた建物を3秒撃てなくする（案帳 DT-163。デバフ系）
 const SPECIAL_SHELL   = 17;   // v3.92.0 籠り竜→籠る殻：指を離している間、群れ全体が殻にこもる（案帳 DT-164）
+const SPECIAL_BUNDLE  = 18;   // v3.94.0 束ね竜→束ね陣：群れの広がりを半分にする（案帳 DT-203）
+const SPECIAL_SCATTER = 19;   // v3.94.0 散らし竜→広げ陣：群れの広がりを1.8倍にする（案帳 DT-204）
 
 // v2.15.0: 名前を「竜」を付けない二つ名にした（Shooter指示）。
 // v2.15.1: 効果・見た目に合うかっこよさで付け直した。コメントや設計メモには旧名が残っているので対応表:
@@ -24965,6 +24971,8 @@ const SPECIAL_DEFS = {
   [SPECIAL_RECALL]:  { key: "recall",  name: "還る槍", color: "#7ad8ff", hpMult: 2.0, spriteTint: "#70c8ff" },   // v3.72.0 呼び戻し竜 → v3.80.0 還る槍（DT-483。槍のように一直線に突き、群れへ還る。穿つ楔と同じ 3+2 の形）
   [SPECIAL_HUSH]:    { key: "hush",    name: "口封じ", color: "#a8acb8", hpMult: 1.8, spriteTint: "#8c90a0" },   // v3.92.0 押さえ竜 → 口封じ（DT-163。触れた建物の口をふさぐ）
   [SPECIAL_SHELL]:   { key: "shell",   name: "籠る殻", color: "#c8c0a8", hpMult: 2.6, spriteTint: "#b0a888" },   // v3.92.0 籠り竜 → 籠る殻（DT-164。還る槍・穿つ楔と同じ 3+2 の形）
+  [SPECIAL_BUNDLE]:  { key: "bundle",  name: "束ね陣", color: "#e0a040", hpMult: 2.2, spriteTint: "#c88830" },   // v3.94.0 束ね竜 → 束ね陣（DT-203。群れを束ねる陣形）
+  [SPECIAL_SCATTER]: { key: "scatter", name: "広げ陣", color: "#a8d870", hpMult: 1.8, spriteTint: "#90c058" },   // v3.94.0 散らし竜 → 広げ陣（DT-204。束ね陣と対）
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -25925,6 +25933,8 @@ const STRINGS = {
     sp_recall:         { name: "還る槍",     desc: "指を離した所へ自分が加速しながら一直線に突っ込み、道の上の相手を吹き飛ばして群れへ戻る特殊個体が加わる。遠くを狙うほど強い" },
     sp_hush:           { name: "口封じ",     desc: "自分が触れた建物を3秒のあいだ撃てなくする特殊個体が加わる。自分の攻撃は弱い" },
     sp_shell:          { name: "籠る殻",     desc: "指を離している間、群れ全体を殻で包んで受ける傷を7割減らす特殊個体が加わる。殻の中では誰も攻撃しない" },
+    sp_bundle:         { name: "束ね陣",     desc: "群れの広がりを半分に束ねる特殊個体が加わる。体当たりが強くなり、遠くからの弾の傷が減る。広く薙ぐのは苦手" },
+    sp_scatter:        { name: "広げ陣",     desc: "群れの広がりを1.8倍に広げる特殊個体が加わる。町を一度に広く薙げるが、撃たれる面も大きくなる" },
     sp_link:           { name: "結び竜",     desc: "群れの特殊個体どうしを雷の糸で結び、糸に触れた建物と敵を焼く特殊個体が加わる" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
@@ -26032,6 +26042,8 @@ const CARD_DEFS = [
   { id: "sp_recall",        icon: "\u{1FA83}", rarity: "star", max: 3, specialJoin: SPECIAL_RECALL, weight: 6 },   // v3.72.0
   { id: "sp_hush",          icon: "\u{1F92B}", rarity: "star", max: 3, specialJoin: SPECIAL_HUSH, weight: 6 },    // v3.92.0（DT-163）
   { id: "sp_shell",         icon: "\u{1F41A}", rarity: "star", max: 3, specialJoin: SPECIAL_SHELL, weight: 6 },   // v3.92.0（DT-164）
+  { id: "sp_bundle",        icon: "\u{1F3AF}", rarity: "star", max: 3, specialJoin: SPECIAL_BUNDLE, weight: 6 },   // v3.94.0（DT-203）
+  { id: "sp_scatter",       icon: "\u{1F33E}", rarity: "star", max: 3, specialJoin: SPECIAL_SCATTER, weight: 6 },  // v3.94.0（DT-204）
   // v3.46.2: 「結び竜」は不採用（案帳 DT-242・Shooter判定。定義は途中セーブの互換のため残す）
   // v3.1.0: 突進（一斉突撃と5枚）・ブレス角（見渡す顎）・速度（疾風）は竜種の個性に移した
 ];
@@ -26273,6 +26285,10 @@ const EVO_SPECIAL_EFFECT_TEXT = {
   sp_hush_reach:    (n) => `触れる範囲 +${HUSH_REACH_PER_UP * n}px（周りの建物もまとめて黙らせる）`,
   sp_shell_guard:   (n) => `殻の中で受ける傷 さらに -${Math.round(SHELL_GUARD_PER_UP * 100 * n)}%（基本 -${Math.round((1 - SHELL_TAKEN_MULT) * 100)}%）`,
   sp_shell_mend:    (n) => `殻の中で毎秒 最大HPの${(SHELL_MEND_PER_UP * 100 * n).toFixed(1)}%回復`,
+  sp_bundle_ram:    (n) => `束ねた群れの体当たり +${Math.round(BUNDLE_RAM_PER_UP * 100 * n)}%（基本 +${Math.round((BUNDLE_RAM_MULT - 1) * 100)}%）`,
+  sp_bundle_guard:  (n) => `弾から受ける傷 さらに -${Math.round(BUNDLE_SHOT_GUARD_PER_UP * 100 * n)}%（基本 -${Math.round((1 - BUNDLE_SHOT_TAKEN_MULT) * 100)}%）`,
+  sp_scatter_wide:  (n) => `群れの広がり さらに +${Math.round(WIDEN_SPREAD_PER_UP * 100 * n)}%（基本 ×${WIDEN_SPREAD}）`,
+  sp_scatter_dodge: (n) => `広がった群れが受ける傷 -${Math.round(WIDEN_GUARD_PER_UP * 100 * n)}%（撃たれやすさを和らげる）`,
   sp_link_len:      (n) => `（v3.46.2 で外した特殊個体）`,
   sp_laser_dmg:     (n) => `光線の威力 +${Math.round(30 * n)}%（基本 毎秒${SKYLANCE_DPS}）`,
   sp_laser_time:    (n) => `光線を照らし続ける時間 +${Math.round(25 * n)}%（基本 ${SKYLANCE_FIRE_TIME}秒）`,
@@ -26532,6 +26548,13 @@ const SPECIAL_EVO_SPEC = {
   shell:   { L: [["厚い殻", { sp_shell_guard: 1 }], ["癒す殻", { sp_shell_mend: 1 }], ["厚い殻・二", { sp_shell_guard: 1 }], ["癒す殻・二", { sp_shell_mend: 1 }]],
              A: { name: "不壊の殻", tint: "#908870", eff: { sp_shell_guard: 2 } },
              B: { name: "眠り繭", tint: "#f0e8c8", eff: { sp_shell_mend: 2 } } },
+  // v3.94.0（DT-203・DT-204）
+  bundle:  { L: [["固い塊", { sp_bundle_ram: 1 }], ["鱗の壁", { sp_bundle_guard: 1 }], ["固い塊・二", { sp_bundle_ram: 1 }], ["鱗の壁・二", { sp_bundle_guard: 1 }]],
+             A: { name: "破城の塊", tint: "#b06820", eff: { sp_bundle_ram: 2 } },
+             B: { name: "鉄の亀甲", tint: "#f0c878", eff: { sp_bundle_guard: 2 } } },
+  scatter: { L: [["広い翼", { sp_scatter_wide: 1 }], ["散り身", { sp_scatter_dodge: 1 }], ["広い翼・二", { sp_scatter_wide: 1 }], ["散り身・二", { sp_scatter_dodge: 1 }]],
+             A: { name: "野火の帳", tint: "#c8f090", eff: { sp_scatter_wide: 2 } },
+             B: { name: "風の散り", tint: "#70a840", eff: { sp_scatter_dodge: 2 } } },
   // v3.46.0
   link:    { L: [["強い糸", { sp_link_dmg: 1 }], ["長い糸", { sp_link_len: 1 }], ["強い糸・二", { sp_link_dmg: 1 }], ["長い糸・二", { sp_link_len: 1 }]],
              A: { name: "雷網", tint: "#fff0a0", eff: { sp_link_dmg: 2 } },
@@ -29406,6 +29429,79 @@ function drawShell() {
   ctx.setLineDash([14, 6]);
   ctx.beginPath(); ctx.arc(cx, cy, R, breathTime * 0.4, breathTime * 0.4 + Math.PI * 2); ctx.stroke();
   ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// ---- v3.94.0: 束ね陣・広げ陣（案帳 DT-203 束ね竜・DT-204 散らし竜。対になる2体）----
+// どちらも「群れの広がり」を変える特殊個体。広がり＝竜どうしの間隔（分離半径）と、線をなぞるときの隊列の行間・列間、
+// 回り込みの輪の半径にまとめて掛ける倍率（flockSpreadNow）。生きている間だけ効き、両方いれば掛け算で重なる。
+// 倍率は急に変えると群れが弾けて見えるので、目標へ毎秒 SPREAD_EASE の速さで寄せる（見た目と隊列だけ。
+// 体当たりと受ける傷の倍率は、その特殊個体が生きているかで即座に切り替える）。
+//   束ね陣：広がり ×0.5。まとまっている分 群れの体当たり ×1.3、遠くからの弾（shot）の傷 ×0.75。
+//           範囲攻撃にはまとめて巻き込まれ、広く薙ぐのは苦手になる（ここは倍率でなく、詰まった並びそのものの結果）。
+//   広げ陣：広がり ×1.8。一度に多くの建物に届き町を広く薙げる。撃たれる面が大きいのが弱み（並びそのものの結果）。
+const BUNDLE_SPREAD            = 0.5;
+const BUNDLE_RAM_MULT          = 1.3;
+const BUNDLE_RAM_PER_UP        = 0.15;   // 固い塊：1つにつき +15%
+const BUNDLE_SHOT_TAKEN_MULT   = 0.75;
+const BUNDLE_SHOT_GUARD_PER_UP = 0.08;   // 鱗の壁：1つにつき さらに8%減
+const BUNDLE_SHOT_TAKEN_MIN    = 0.35;
+const WIDEN_SPREAD           = 1.8;
+const WIDEN_SPREAD_PER_UP    = 0.15;   // 広い翼：1つにつき 広がり +15%（倍率に足す）
+const WIDEN_GUARD_PER_UP     = 0.06;   // 散り身：1つにつき 受ける傷 6%減
+const WIDEN_GUARD_MIN        = 0.6;
+const SPREAD_EASE              = 1.5;    // 広がりの倍率が目標へ寄る速さ（1秒あたりの差の割合）
+let flockSpreadNow = 1;
+function specialKindAlive(kind) {
+  for (let i = 0; i < N; i++) if (boidSpecial[i] === kind && !boidDead[i] && !boidDowned[i]) return true;
+  return false;
+}
+let bundleAlive = false, scatterAlive = false;   // updateFlockSpread が毎フレーム立てる
+function flockSpreadTarget() {
+  let m = 1;
+  if (bundleAlive)  m *= BUNDLE_SPREAD;
+  if (scatterAlive) m *= WIDEN_SPREAD + WIDEN_SPREAD_PER_UP * upCount("sp_scatter_wide");
+  return m;
+}
+function updateFlockSpread(dt) {
+  bundleAlive = specialKindAlive(SPECIAL_BUNDLE);
+  scatterAlive = specialKindAlive(SPECIAL_SCATTER);
+  const target = flockSpreadTarget();
+  flockSpreadNow += (target - flockSpreadNow) * Math.min(1, SPREAD_EASE * dt);
+  if (Math.abs(target - flockSpreadNow) < 0.002) flockSpreadNow = target;
+}
+/** 束ね陣がいるときの群れの体当たりの倍率 */
+function bundleRamMult() { return bundleAlive ? BUNDLE_RAM_MULT + BUNDLE_RAM_PER_UP * upCount("sp_bundle_ram") : 1; }
+/** 束ね陣がいるときの、弾（shot）から受ける傷の倍率 */
+function bundleShotTakenMult() {
+  return bundleAlive ? Math.max(BUNDLE_SHOT_TAKEN_MIN, BUNDLE_SHOT_TAKEN_MULT - BUNDLE_SHOT_GUARD_PER_UP * upCount("sp_bundle_guard")) : 1;
+}
+/** 広げ陣の「散り身」で受ける傷の倍率（強化を取ったときだけ） */
+function scatterTakenMult() { return scatterAlive ? Math.max(WIDEN_GUARD_MIN, 1 - WIDEN_GUARD_PER_UP * upCount("sp_scatter_dodge")) : 1; }
+/** 束ね陣・広げ陣の竜に、群れを結ぶ帯の印（束ねは内向きの矢じり、広げは外向き）を薄く出す */
+function drawSpreadMarks() {
+  if (!bundleAlive && !scatterAlive) return;
+  ctx.save();
+  for (let i = 0; i < N; i++) {
+    const k = boidSpecial[i];
+    if ((k !== SPECIAL_BUNDLE && k !== SPECIAL_SCATTER) || boidDead[i] || boidDowned[i]) continue;
+    const inward = k === SPECIAL_BUNDLE;
+    const col = SPECIAL_DEFS[k].color;
+    const r = 13 * boidBodyScale(i);
+    const pulse = 0.5 + 0.5 * Math.sin(breathTime * 3 + i);
+    ctx.globalAlpha = 0.35 + 0.3 * pulse; ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(px[i], py[i], r, 0, Math.PI * 2); ctx.stroke();
+    for (let q = 0; q < 4; q++) {
+      const a = q * Math.PI / 2 + breathTime * 0.6;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const tip = inward ? r - 4 : r + 6, base = inward ? r + 3 : r + 1;
+      const bx = px[i] + ca * base, by = py[i] + sa * base;
+      ctx.beginPath();
+      ctx.moveTo(px[i] + ca * tip, py[i] + sa * tip);
+      ctx.lineTo(bx - sa * 3, by + ca * 3); ctx.moveTo(px[i] + ca * tip, py[i] + sa * tip); ctx.lineTo(bx + sa * 3, by - ca * 3);
+      ctx.stroke();
+    }
+  }
   ctx.restore();
 }
 
@@ -33378,7 +33474,7 @@ function codexDragonCanvas(species) {
 }
 
 const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST,
-                             SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL, SPECIAL_HUSH, SPECIAL_SHELL, SPECIAL_LASER];   // v3.31.0 / v3.64.0: 指先竜: 軍鼓（v3.40.0: 鉄鎖は竜種へ）
+                             SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL, SPECIAL_HUSH, SPECIAL_SHELL, SPECIAL_BUNDLE, SPECIAL_SCATTER, SPECIAL_LASER];   // v3.31.0 / v3.64.0: 指先竜: 軍鼓（v3.40.0: 鉄鎖は竜種へ）
 
 function codexSpecialHtml() {
   let html =
@@ -33432,6 +33528,8 @@ const CODEX_SPECIAL_POWERS = {
   [SPECIAL_RECALL]:  () => [{ label: "突進（最高速）", direct: RECALL_DMG_MAX, impact: RECALL_KNOCK_MAX }, { label: "突進（初速）", direct: RECALL_DMG_MIN }, { label: "帰りの体当たり", direct: RECALL_BACK_DMG }],
   [SPECIAL_HUSH]:    () => [{ label: "体当たり", direct: COLLISION_DAMAGE }],
   [SPECIAL_SHELL]:   () => [{ label: "体当たり", direct: COLLISION_DAMAGE }],
+  [SPECIAL_BUNDLE]:  () => [{ label: "体当たり（束ねた群れ）", direct: COLLISION_DAMAGE * BUNDLE_RAM_MULT }],
+  [SPECIAL_SCATTER]: () => [{ label: "体当たり", direct: COLLISION_DAMAGE }],
 };
 const CODEX_SPECIAL_TAG = {
   [SPECIAL_BEACON]:  "★光剣／向きを選ばない削り役",
@@ -33450,6 +33548,8 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_RECALL]:  "★還る槍／指を離した所へ加速して突っ込み、吹き飛ばす。遠くを狙うほど強い",
   [SPECIAL_HUSH]:    "★口封じ／触れた建物を黙らせる。撃ってくる建物をなでてから本命を壊す",
   [SPECIAL_SHELL]:   "★籠る殻／指を離すと群れごと殻にこもる。攻めと守りの切り替え",
+  [SPECIAL_BUNDLE]:  "★束ね陣／群れを小さな塊に束ねる。1棟を突き崩す・細い道を抜ける",
+  [SPECIAL_SCATTER]: "★広げ陣／群れを大きな面に広げる。町の上をなでるだけで広く焼ける",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_LASER]:
@@ -33492,6 +33592,13 @@ const CODEX_SPECIAL_DESC = {
   [SPECIAL_HUSH]:
     "<b>自分の体が触れた建物は、3秒のあいだ撃てなくなる</b>（建物の上に灰色の口の印）。群れの他の竜が触れても黙らない。" +
     "撃ってくる建物の上をなでるように線を描いてから、本命の建物を壊す、という順番が生まれる。自分の攻撃はふつうの体当たりだけで弱い。",
+  [SPECIAL_BUNDLE]:
+    "<b>群れの広がりが半分になり、竜どうしがぎゅっと寄る</b>（線をなぞる隊列も、止まったときの輪も小さくなる）。" +
+    "まとまっている分<b>群れ全員の体当たりが強くなり</b>、遠くから飛んでくる弾の傷も減る。そのかわり範囲の攻撃にはまとめて巻き込まれやすく、広い範囲を一度に焼けない。" +
+    "細い通り道や、狙った1棟を突き崩すのに向く。広げ陣と反対の向き（両方いると打ち消し合う）。",
+  [SPECIAL_SCATTER]:
+    "<b>群れの広がりが1.8倍になり、大きな面になって飛ぶ</b>（隊列の行間・列間も広がる）。" +
+    "一度に多くの建物に届くので、町の上を一度なでるだけで広く焼ける。そのかわり撃たれる面が大きく、竜が落ちやすい。狙った1棟を崩すのは苦手。束ね陣と反対の向き。",
   [SPECIAL_SHELL]:
     "<b>指を離している間、群れ全体が殻にこもり、受ける傷が7割減る</b>（灰色の殻の輪が群れを包む）。" +
     "こもっている間は群れの誰も攻撃しない。また描き始めると殻が開く。ラッシュの山を、止まってしのぐ選択ができる。",
@@ -33521,6 +33628,10 @@ const CODEX_SPECIAL_STAT = {
     `鎖 ${CHAIN_LENGTH}px ／ 鉄球の半径 ${CHAIN_BALL_R}px ／ 秒速${CHAIN_MIN_SPEED}px以上で当たる（秒速250pxで ${CHAIN_DMG}・最大 ${CHAIN_DMG * 2.5}） ／ HP ×${SPECIAL_DEFS[SPECIAL_CHAIN].hpMult}`,
   [SPECIAL_HUSH]: () =>
     `触れた建物を ${HUSH_TIME}秒 撃てなくする ／ 体の縁から ${HUSH_REACH}px まで ／ HP ×${SPECIAL_DEFS[SPECIAL_HUSH].hpMult}`,
+  [SPECIAL_BUNDLE]: () =>
+    `群れの広がり ×${BUNDLE_SPREAD} ／ 群れの体当たり ×${BUNDLE_RAM_MULT} ／ 弾から受ける傷 ×${BUNDLE_SHOT_TAKEN_MULT} ／ HP ×${SPECIAL_DEFS[SPECIAL_BUNDLE].hpMult}`,
+  [SPECIAL_SCATTER]: () =>
+    `群れの広がり ×${WIDEN_SPREAD} ／ HP ×${SPECIAL_DEFS[SPECIAL_SCATTER].hpMult}`,
   [SPECIAL_SHELL]: () =>
     `指を離して ${SHELL_DELAY}秒で閉じる ／ 受ける傷 ×${SHELL_TAKEN_MULT} ／ 殻の中は攻撃しない ／ HP ×${SPECIAL_DEFS[SPECIAL_SHELL].hpMult}`,
   [SPECIAL_RECALL]: () =>
@@ -33681,6 +33792,15 @@ function codexSpecialCanvas(kind) {
     c.fillStyle = "#a8acb8"; c.beginPath(); c.arc(14.5, -19, 5, 0, Math.PI * 2); c.fill();
     c.strokeStyle = "#2a2c34"; c.lineWidth = 1.5; c.beginPath(); c.moveTo(11.5, -18.5); c.lineTo(17.5, -18.5); c.stroke();
     codexDrawSpecialDragon(c, kind, 44);
+  } else if (kind === SPECIAL_BUNDLE || kind === SPECIAL_SCATTER) {
+    // v3.94.0: 竜のまわりの小さな竜の点（束ねは寄せて、広げは散らして）
+    const spread = kind === SPECIAL_BUNDLE ? 11 : 21;
+    c.fillStyle = "#ff9a3c";
+    for (let k = 0; k < 6; k++) {
+      const a = k * Math.PI / 3 + 0.3, x = Math.cos(a) * spread, y = Math.sin(a) * spread;
+      c.beginPath(); c.moveTo(x, y - 3.5); c.lineTo(x + 3, y + 2.5); c.lineTo(x - 3, y + 2.5); c.closePath(); c.fill();
+    }
+    codexDrawSpecialDragon(c, kind, 30);
   } else if (kind === SPECIAL_SHELL) {
     // v3.92.0: 竜を包む灰色の殻の輪
     c.strokeStyle = "#c8c0a8"; c.lineWidth = 3; c.setLineDash([6, 3]);
@@ -34309,7 +34429,8 @@ const INITIAL_SPECIES  = ["fire"];
 const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE,
                           SPECIAL_HEAL, SPECIAL_FROST,   // v3.8.0: 癒し手・凍て霧も最初から
                           SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL,   // v3.72.0: 呼び戻し竜も最初から
-                          SPECIAL_HUSH, SPECIAL_SHELL];   // v3.92.0: 口封じ・籠る殻も最初から
+                          SPECIAL_HUSH, SPECIAL_SHELL,   // v3.92.0: 口封じ・籠る殻も最初から
+                          SPECIAL_BUNDLE, SPECIAL_SCATTER];   // v3.94.0: 束ね陣・広げ陣も最初から
                            // v3.31.0 / v3.64.0: 指先竜（v3.40.0: 鉄鎖は竜種になったので外した。v3.46.2: 結び竜は不採用）
 const FORTRESS_FALLEN_GOAL = 300;   // 穿つ楔：要塞・首都区画の建物を累計これだけ壊す
 
@@ -36142,6 +36263,7 @@ function clearStageCards(keepCards = false) {
   aimShots.length = 0;      // v3.64.0
   recallFlights.clear(); recallFx.length = 0;   // v3.72.0
   hushMarks.length = 0; debuffPops.length = 0; shellOn = false; shellReleasedFor = 0; shellAnim = 0;   // v3.92.0
+  flockSpreadNow = 1; bundleAlive = false; scatterAlive = false;   // v3.94.0
   aimTrail.length = 0;      // DT-221 手直し: 火の玉の尾
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
@@ -37604,7 +37726,8 @@ function applyDamageToBoid(boidIndex, damage, hit) {
   // v0.6: 「竜鱗共鳴」カードで被ダメージ軽減
   // v0.89: 突進中の軽減（強化で手に入れたときだけ）。溜めに比例する。
   const dealt = damage * effDmgTakenMult() * (1 - chargeDamageReductionFor(boidIndex))
-              * (shellOn ? shellTakenMult() : 1);   // v3.92.0（DT-164）: 殻の中は7割減
+              * (shellOn ? shellTakenMult() : 1)    // v3.92.0（DT-164）: 殻の中は7割減
+              * scatterTakenMult();                 // v3.94.0（DT-204）: 広げ陣の「散り身」
   boidHp[boidIndex] -= dealt;
   reportDragonDamage(boidIndex, dealt);   // v2.11.0: 軽減を掛けた後の、実際に減った量を出す
   if (boidHp[boidIndex] <= 0) {
@@ -39900,8 +40023,11 @@ function simStep(dt) {
 
   // 隊列を決める値は竜種共通（BASE_CFG）
   // v3.9.5: 間隔は竜種で上書きできる（亀竜はゆったり間を空けて飛ぶ）
-  const perc = mv().perception ?? BASE_CFG.perception;
-  const sepR = mv().separationRadius ?? BASE_CFG.separationRadius;
+  // v3.94.0（DT-203・DT-204）: 束ね陣・広げ陣の広がりの倍率を間隔に掛ける。近傍の範囲は分離半径より狭くしない
+  updateFlockSpread(dt);
+  const spreadK = flockSpreadNow;
+  const sepR = (mv().separationRadius ?? BASE_CFG.separationRadius) * spreadK;
+  const perc = Math.max(mv().perception ?? BASE_CFG.perception, sepR * 1.1);
   const wSep = mv().wSeparation ?? BASE_CFG.wSeparation;
   const wAli = BASE_CFG.wAlignment;
   const wCoh = BASE_CFG.wCohesion;
@@ -39914,7 +40040,7 @@ function simStep(dt) {
   const accelLim = prof.accel === INSTANT ? Infinity : prof.accel * _simSpeedMult;
   const turnLim  = prof.turnRate === INSTANT ? Infinity : prof.turnRate;
   // v0.37: 回り込み半径（0=無効）と跳躍サイクル。ループ外で1回だけ解決する。
-  let   orbitR   = prof.orbitRadius;
+  let   orbitR   = prof.orbitRadius * spreadK;   // v3.94.0: 回り込みの輪も広がりに合わせる
   const hopPer   = prof.hopPeriod;
 
   // v0.37.1: 弧長トレース中は、竜は操縦点ではなく**線上の隊列スロット**を追う。
@@ -40047,12 +40173,12 @@ function simStep(dt) {
       const slot = twinMode ? (i >> 1) : i;
       const row = (slot / traceCols) | 0;
       const col = (slot % traceCols) - (traceCols - 1) * 0.5;
-      const slotArc = leaderArc - row * PATH_TRACE_ROW_GAP;
+      const slotArc = leaderArc - row * PATH_TRACE_ROW_GAP * spreadK;   // v3.94.0: 行間・列間も広がりに合わせる
       // スロットそのものではなく LOOKAHEAD ぶん先を狙う（純追尾）。
       // 直接狙うと到達時に方向が定まらず震える。
       const p = pathPointAtArc(Math.max(0, slotArc + PATH_TRACE_LOOKAHEAD), _tracePtB);
-      tgtX = p.x - p.ty * col * PATH_TRACE_LATERAL;   // 進行方向の法線へ列ぶんずらす
-      tgtY = p.y + p.tx * col * PATH_TRACE_LATERAL;
+      tgtX = p.x - p.ty * col * PATH_TRACE_LATERAL * spreadK;   // 進行方向の法線へ列ぶんずらす
+      tgtY = p.y + p.tx * col * PATH_TRACE_LATERAL * spreadK;
       // v3.36.0: 双子竜はその竜のスロットの位置での線の向きで左右へずらす（群れ全体で1つの向きにすると、
       // Uターンの途中で向きが反転したとたんに左右の目標が入れ替わり、両方の列が交差した）
       if (twinMode) { const side = (i & 1) ? 1 : -1, w = twinHalfWidth(); tgtX -= p.ty * side * w; tgtY += p.tx * side * w; }
@@ -40692,6 +40818,7 @@ function render(now) {
   drawAimDragons();   // v3.64.0: 指先竜の溜め・照準・火の玉
   drawHushMarks();    // v3.92.0: 口封じで黙った建物の口の印
   drawShell();        // v3.92.0: 籠る殻
+  drawSpreadMarks();  // v3.94.0: 束ね陣・広げ陣の印
   drawRecallDragons(); // v3.72.0: 呼び戻し竜の光の尾・地面の割れ
   drawChainBalls();   // v3.31.0: 鉄鎖の鎖と鉄球
   drawMagnetShards(); // v3.31.0: 磁竜の破片
@@ -42851,6 +42978,8 @@ const DRAGON_ELEMENT_COLORS = {
   aim:      { body: "rgba(255, 106, 58, 1.0)",  wing: "rgba(220, 80, 40, 1.0)",   rim: "rgba(120, 40, 20, 0.0)" },   // v3.64.0
   hush:     { body: "rgba(168, 172, 184, 1.0)", wing: "rgba(120, 124, 138, 1.0)", rim: "rgba(60, 62, 70, 0.0)" },   // v3.92.0
   shell:    { body: "rgba(200, 192, 168, 1.0)", wing: "rgba(160, 150, 120, 1.0)", rim: "rgba(90, 84, 64, 0.0)" },    // v3.92.0
+  bundle:   { body: "rgba(224, 160, 64, 1.0)",  wing: "rgba(190, 128, 40, 1.0)",  rim: "rgba(110, 70, 20, 0.0)" },    // v3.94.0
+  scatter:  { body: "rgba(168, 216, 112, 1.0)", wing: "rgba(128, 180, 80, 1.0)",  rim: "rgba(60, 100, 30, 0.0)" },    // v3.94.0
   link:     { body: "rgba(255, 232, 96, 1.0)",  wing: "rgba(220, 196, 64, 1.0)",  rim: "rgba(120, 100, 30, 0.0)" },   // v3.46.0
   heal:     { body: "rgba(150, 240, 170, 1.0)", wing: "rgba(90, 190, 120, 1.0)",  rim: "rgba(40, 110, 60, 0.0)" },
   frost:    { body: "rgba(200, 236, 255, 1.0)", wing: "rgba(140, 190, 230, 1.0)", rim: "rgba(70, 110, 150, 0.0)" },
@@ -43493,6 +43622,7 @@ const DRAGON_PARTS_ALIAS = {
   aim: "mecha",   // v3.64.0
   recall: "wedge",   // v3.72.0: 呼び戻し竜は専用の絵ができるまで穿つ楔の絵を水色に
   hush: "shadow", shell: "heavy",   // v3.92.0: 専用の絵ができるまで既存の絵を灰に
+  bundle: "heavy", scatter: "swallow",   // v3.94.0: 専用の絵ができるまで既存の絵を色替え
   wisp: "ice",   // v3.36.0（ゲーム中は竜の絵を描かず灯で描く。図鑑などの見本用）
   flail: "heavy",   // v3.40.0
   whale: "gargoyle",   // v3.57.0
