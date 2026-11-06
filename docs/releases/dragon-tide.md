@@ -10,7 +10,8 @@ GitHub masterのv3.88.2（`d514e58`）を取り込んだ専用ブランチ `feat
 - Windows実行ファイルとZIPを生成し、ZIP整合性・全配布ファイルのハッシュを確認。
 - 非表示Electronで起動し、同じ保存領域を使って包装前から包装済みアプリへ再起動してもlocalStorageのテスト値が残ることを確認。実際のプロフィールとラン形式は別のfixtureテストで確認。
 - Androidプロジェクト生成と再同期で、v3.88.2 / build 1の反映を確認。
-- AndroidのGradleビルド、iOSのXcodeビルド、署名・ストア提出は未検証。ローカルにSDK/XcodeがないためGitHub Actionsでの実行が必要。ワークフローは実装済みだが、現時点ではGitHubへのpush待ち。
+- [初回GitHub Actions実行](https://github.com/shuuter-web/game-studio/actions/runs/42136073373)で、共通検査・Windows・Android・iOSの全ジョブが成功。Windows ZIP、Android未署名AABとデバッグAPK、iOS未署名xcarchiveをartifactに保存済み。Windowsでは包装済みアプリの起動・保存領域引き継ぎ検査も通過。
+- [ドラフトPR #1](https://github.com/shuuter-web/game-studio/pull/1)でレビュー可能。署名とストア提出は未実施で、正式アプリID・各ストアの資格情報設定が残る。
 
 ゲーム内容の再プレイ・再評価は今回の検証範囲に含めていない。
 
