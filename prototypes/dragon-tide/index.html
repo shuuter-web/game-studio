@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.91.0";
+const GAME_VERSION = "v3.92.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -18336,6 +18336,7 @@ function moversNear(x, y, r) {
 function updateMoverRams() {
   if (movers.length === 0) return;
   if (moleUnderground()) return;   // v3.29.0
+  if (shellOn) return;             // v3.92.0: 殻の中では体当たりしない
   const isMelee = flockWeapon === "melee";
   // v0.87: 突進中は威力と届く範囲が伸び、さらに動く敵を弾き飛ばす。
   // v0.99.2: 突進は個体ごとになったので、威力も届く範囲も**その竜のぶん**を引く。
@@ -23975,6 +23976,7 @@ function updateSettlementAttacks(dt) {
     if (settlement._noAttack) continue;   // v0.41: 城下の民家は撃たない（弾量を街と同等に保つ）
     // v0.79: 陥落した町は撃たない（壊せるし報酬も出るが、危険だけ消える）
     if (isTownSurrendered(settlement._townIndex)) continue;
+    if (settlement._hushUntil > breathTime) continue;   // v3.92.0（DT-163）: 口封じに触れられた建物は撃たない
 
     let inRange = false;
     const atkR2 = settlement.attackRadius * settlement.attackRadius;
@@ -24427,6 +24429,7 @@ function updateBeamAttacks(dt) {
 function updateCollisionAttacks(dt) {
   if (gameState !== "playing") return;
   if (moleUnderground()) return;   // v3.29.0: 土竜は地中の間は体当たりしない
+  if (shellOn) return;             // v3.92.0（DT-164）: 殻の中では体当たりしない
 
   // ヒットストップタイマーとクールダウンを先に進める
   for (let i = 0; i < N; i++) {
@@ -24921,6 +24924,8 @@ const SPECIAL_DRUM    = 12;   // 軍鼓：4秒ごとに群れ全員の攻撃を2
 const SPECIAL_LINK    = 13;   // v3.46.0 結び竜：群れの特殊個体どうしを雷の糸で結ぶ（案帳 DT-242）
 const SPECIAL_AIM     = 14;   // v3.64.0 指先竜：時間で火の玉を溜め、指を離した所へ撃ち込む（案帳 DT-221）
 const SPECIAL_RECALL  = 15;   // v3.72.0 呼び戻し竜：指を離した所へ自分が飛んで叩きつけ、群れへ戻る（案帳 DT-483）
+const SPECIAL_HUSH    = 16;   // v3.92.0 押さえ竜→口封じ：自分が触れた建物を3秒撃てなくする（案帳 DT-163。デバフ系）
+const SPECIAL_SHELL   = 17;   // v3.92.0 籠り竜→籠る殻：指を離している間、群れ全体が殻にこもる（案帳 DT-164）
 
 // v2.15.0: 名前を「竜」を付けない二つ名にした（Shooter指示）。
 // v2.15.1: 効果・見た目に合うかっこよさで付け直した。コメントや設計メモには旧名が残っているので対応表:
@@ -24958,6 +24963,8 @@ const SPECIAL_DEFS = {
   [SPECIAL_LINK]:    { key: "link",    name: "結び竜", color: "#ffe860", hpMult: 1.8, spriteTint: "#f0d850" },   // v3.46.0（案帳での名前のまま）
   [SPECIAL_AIM]:     { key: "aim",     name: "狙い火", color: "#ff6a3a", hpMult: 1.8, spriteTint: "#ff7040" },   // v3.64.0 指先竜 → v3.80.0 狙い火（DT-221。指を離した所を狙って撃つ火の玉）
   [SPECIAL_RECALL]:  { key: "recall",  name: "還る槍", color: "#7ad8ff", hpMult: 2.0, spriteTint: "#70c8ff" },   // v3.72.0 呼び戻し竜 → v3.80.0 還る槍（DT-483。槍のように一直線に突き、群れへ還る。穿つ楔と同じ 3+2 の形）
+  [SPECIAL_HUSH]:    { key: "hush",    name: "口封じ", color: "#a8acb8", hpMult: 1.8, spriteTint: "#8c90a0" },   // v3.92.0 押さえ竜 → 口封じ（DT-163。触れた建物の口をふさぐ）
+  [SPECIAL_SHELL]:   { key: "shell",   name: "籠る殻", color: "#c8c0a8", hpMult: 2.6, spriteTint: "#b0a888" },   // v3.92.0 籠り竜 → 籠る殻（DT-164。還る槍・穿つ楔と同じ 3+2 の形）
 };
 
 // 特殊個体（SPECIAL_NONE / BEACON / HEAVY / DEFLECT）とその内部状態。
@@ -25916,6 +25923,8 @@ const STRINGS = {
     sp_drum:           { name: "軍鼓",       desc: "4秒ごとに太鼓を鳴らし、2秒だけ群れ全員の攻撃を速くする特殊個体が加わる" },
     sp_aim:            { name: "狙い火",     desc: "時間で火の玉を溜め、指を離した所へ撃ち込む特殊個体が加わる。溜めるほど大きい" },
     sp_recall:         { name: "還る槍",     desc: "指を離した所へ自分が加速しながら一直線に突っ込み、道の上の相手を吹き飛ばして群れへ戻る特殊個体が加わる。遠くを狙うほど強い" },
+    sp_hush:           { name: "口封じ",     desc: "自分が触れた建物を3秒のあいだ撃てなくする特殊個体が加わる。自分の攻撃は弱い" },
+    sp_shell:          { name: "籠る殻",     desc: "指を離している間、群れ全体を殻で包んで受ける傷を7割減らす特殊個体が加わる。殻の中では誰も攻撃しない" },
     sp_link:           { name: "結び竜",     desc: "群れの特殊個体どうしを雷の糸で結び、糸に触れた建物と敵を焼く特殊個体が加わる" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
     charge_dmg:   { name: "突進の牙", desc: "突進の威力の伸び +35%（弾き飛ばしも強く）" },
@@ -26021,6 +26030,8 @@ const CARD_DEFS = [
   { id: "sp_drum",          icon: "\u{1F941}", rarity: "star", max: 3, specialJoin: SPECIAL_DRUM, weight: 6 },
   { id: "sp_aim",           icon: "\u{1F446}", rarity: "star", max: 3, specialJoin: SPECIAL_AIM, weight: 6 },   // v3.64.0
   { id: "sp_recall",        icon: "\u{1FA83}", rarity: "star", max: 3, specialJoin: SPECIAL_RECALL, weight: 6 },   // v3.72.0
+  { id: "sp_hush",          icon: "\u{1F92B}", rarity: "star", max: 3, specialJoin: SPECIAL_HUSH, weight: 6 },    // v3.92.0（DT-163）
+  { id: "sp_shell",         icon: "\u{1F41A}", rarity: "star", max: 3, specialJoin: SPECIAL_SHELL, weight: 6 },   // v3.92.0（DT-164）
   // v3.46.2: 「結び竜」は不採用（案帳 DT-242・Shooter判定。定義は途中セーブの互換のため残す）
   // v3.1.0: 突進（一斉突撃と5枚）・ブレス角（見渡す顎）・速度（疾風）は竜種の個性に移した
 ];
@@ -26258,6 +26269,10 @@ const EVO_SPECIAL_EFFECT_TEXT = {
   sp_aim_charge:    (n) => `溜まる速さ +${Math.round(20 * n)}%（基本 ${AIM_CHARGE_TIME}秒で満タン）`,
   sp_recall_dmg:    (n) => `突進と体当たりの威力 +${Math.round(25 * n)}%`,
   sp_recall_shock:  (n) => `突進の太さと吹き飛ばしの強さ +${Math.round(20 * n)}%（基本 半径${RECALL_BODY_R_MIN}〜${RECALL_BODY_R_MAX}px）`,
+  sp_hush_time:     (n) => `撃てなくする時間 +${(HUSH_TIME_PER_UP * n).toFixed(1)}秒（基本 ${HUSH_TIME}秒）`,
+  sp_hush_reach:    (n) => `触れる範囲 +${HUSH_REACH_PER_UP * n}px（周りの建物もまとめて黙らせる）`,
+  sp_shell_guard:   (n) => `殻の中で受ける傷 さらに -${Math.round(SHELL_GUARD_PER_UP * 100 * n)}%（基本 -${Math.round((1 - SHELL_TAKEN_MULT) * 100)}%）`,
+  sp_shell_mend:    (n) => `殻の中で毎秒 最大HPの${(SHELL_MEND_PER_UP * 100 * n).toFixed(1)}%回復`,
   sp_link_len:      (n) => `（v3.46.2 で外した特殊個体）`,
   sp_laser_dmg:     (n) => `光線の威力 +${Math.round(30 * n)}%（基本 毎秒${SKYLANCE_DPS}）`,
   sp_laser_time:    (n) => `光線を照らし続ける時間 +${Math.round(25 * n)}%（基本 ${SKYLANCE_FIRE_TIME}秒）`,
@@ -26510,6 +26525,13 @@ const SPECIAL_EVO_SPEC = {
   recall:  { L: [["重い穂先", { sp_recall_dmg: 1 }], ["広い突進", { sp_recall_shock: 1 }], ["重い穂先・二", { sp_recall_dmg: 1 }], ["広い突進・二", { sp_recall_shock: 1 }]],
              A: { name: "破城", tint: "#3a78c0", eff: { sp_recall_dmg: 2 } },
              B: { name: "大薙ぎ", tint: "#a0e8ff", eff: { sp_recall_shock: 2 } } },   // v3.80.0: 着いた所の輪をやめたので 地鳴り→大薙ぎ（広い突進）
+  // v3.92.0（DT-163・DT-164）
+  hush:    { L: [["長い沈黙", { sp_hush_time: 1 }], ["広い手", { sp_hush_reach: 1 }], ["長い沈黙・二", { sp_hush_time: 1 }], ["広い手・二", { sp_hush_reach: 1 }]],
+             A: { name: "封殺", tint: "#606470", eff: { sp_hush_time: 2 } },
+             B: { name: "沈黙の帳", tint: "#d0d4e0", eff: { sp_hush_reach: 2 } } },
+  shell:   { L: [["厚い殻", { sp_shell_guard: 1 }], ["癒す殻", { sp_shell_mend: 1 }], ["厚い殻・二", { sp_shell_guard: 1 }], ["癒す殻・二", { sp_shell_mend: 1 }]],
+             A: { name: "不壊の殻", tint: "#908870", eff: { sp_shell_guard: 2 } },
+             B: { name: "眠り繭", tint: "#f0e8c8", eff: { sp_shell_mend: 2 } } },
   // v3.46.0
   link:    { L: [["強い糸", { sp_link_dmg: 1 }], ["長い糸", { sp_link_len: 1 }], ["強い糸・二", { sp_link_dmg: 1 }], ["長い糸・二", { sp_link_len: 1 }]],
              A: { name: "雷網", tint: "#fff0a0", eff: { sp_link_dmg: 2 } },
@@ -29064,16 +29086,69 @@ function sanctuaryWardMult() {
   return Math.max(SANCTUARY_WARD_MIN_MULT, 1 - SANCTUARY_WARD_PER_SHRINE * sanctuaryShrinesAlive());
 }
 
-/** ひびを入れる（上書き延長）。 */
-function applyCrack(o) {
+// ---- v3.92.0（案帳 DT-163・Shooter指示「デバフ系特殊個体の一種ということで共通化できる処理は共通化」）----
+// 相手に時間つきの悪い状態を載せる特殊個体（穿つ楔のひび・口封じの沈黙）の共通部品。
+// 状態ごとに「相手に持たせる期限の欄・長さ・描画用の名簿・入った瞬間の見せ方」だけを書けば、
+// 載せる（上書き延長）・効いているか・一帯にまとめて載せる、は同じ関数で済む。
+const MAX_HUSH_MARKS = 120;   // 描画用に覚えておく黙った建物の数
+const hushMarks = [];
+const DEBUFF_DEFS = {
+  crack: { field: "_crackUntil", time: () => effWedgeCrackTime(), marks: crackMarks, max: MAX_CRACK_MARKS,
+           onFresh: (o) => spawnCrackBurst(o.wx, o.wy, (o.radius ?? moverRadiusOf(o)) + 2) },
+  hush:  { field: "_hushUntil",  time: () => hushTime(),          marks: hushMarks,  max: MAX_HUSH_MARKS,
+           onFresh: (o) => spawnDebuffPop(o, "hush") },
+};
+/** 状態 key を相手 o に載せる（効いている最中なら期限だけ延ばす）。 */
+function applyDebuff(o, key) {
   if (!o) return;
-  const fresh = !(o._crackUntil > breathTime);
-  o._crackUntil = breathTime + effWedgeCrackTime();
+  const def = DEBUFF_DEFS[key];
+  const fresh = !(o[def.field] > breathTime);
+  o[def.field] = breathTime + def.time();
   if (fresh) {
-    if (crackMarks.length < MAX_CRACK_MARKS) crackMarks.push(o);
-    spawnCrackBurst(o.wx, o.wy, (o.radius ?? moverRadiusOf(o)) + 2);
+    if (def.marks.length < def.max) def.marks.push(o);
+    def.onFresh(o);
   }
 }
+/** 状態 key が残り何秒か（効いていなければ 0）。 */
+function debuffLeft(o, key) {
+  const t = o ? o[DEBUFF_DEFS[key].field] : undefined;
+  return t > breathTime ? t - breathTime : 0;
+}
+/**
+ * (cx, cy) から半径 R の建物へ状態 key を載せる。edge=true なら建物の縁までの距離で測る（＝触れた建物）。
+ * withMovers=true なら移動敵にも載せる。建物は空間ハッシュで拾うので近傍だけを見る。
+ */
+const _debuffBuf = [];
+function applyDebuffArea(cx, cy, R, key, edge, withMovers) {
+  const reach = R + (edge ? BUILDING_GRID_CELL : 0);
+  buildingGridQueryRadius(cx, cy, Math.max(1, Math.ceil(reach / BUILDING_GRID_CELL)), _debuffBuf);
+  for (const sIdx of _debuffBuf) {
+    const s = settlements[sIdx];
+    if (!s || s.fallen) continue;
+    const rr = R + (edge ? s.radius : 0);
+    const dx = s.wx - cx, dy = s.wy - cy;
+    if (dx * dx + dy * dy > rr * rr) continue;
+    applyDebuff(s, key);
+  }
+  if (!withMovers) return;
+  for (const m of movers) {
+    if (!m.alive) continue;
+    const rr = R + (edge ? moverRadiusOf(m) : 0);
+    const dx = m.wx - cx, dy = m.wy - cy;
+    if (dx * dx + dy * dy > rr * rr) continue;
+    applyDebuff(m, key);
+  }
+}
+// 入った瞬間の小さな見せ方（ひびは crackBursts を持っているので、それ以外の状態用）
+const debuffPops = [];
+const DEBUFF_POP_LIFE = 0.4;
+function spawnDebuffPop(o, key) { if (debuffPops.length < 64) debuffPops.push({ x: o.wx, y: o.wy, r: (o.radius ?? 10) + 4, key, t: 0 }); }
+function updateDebuffPops(dt) {
+  for (let k = debuffPops.length - 1; k >= 0; k--) { debuffPops[k].t += dt; if (debuffPops[k].t >= DEBUFF_POP_LIFE) debuffPops.splice(k, 1); }
+}
+
+/** ひびを入れる（上書き延長）。v3.92.0: デバフの共通部品に載せ替えた */
+function applyCrack(o) { applyDebuff(o, "crack"); }
 
 const _wedgeBuf = [];
 
@@ -29083,22 +29158,7 @@ const _wedgeBuf = [];
  */
 function applyCrackArea(cx, cy) {
   const R = effWedgeCrackRadius();
-  const R2 = R * R;
-  const cell = Math.max(1, Math.ceil(R / BUILDING_GRID_CELL));
-  buildingGridQueryRadius(cx, cy, cell, _wedgeBuf);
-  for (const sIdx of _wedgeBuf) {
-    const s = settlements[sIdx];
-    if (!s || s.fallen) continue;
-    const dx = s.wx - cx, dy = s.wy - cy;
-    if (dx * dx + dy * dy > R2) continue;
-    applyCrack(s);
-  }
-  for (const m of movers) {
-    if (!m.alive) continue;
-    const dx = m.wx - cx, dy = m.wy - cy;
-    if (dx * dx + dy * dy > R2) continue;
-    applyCrack(m);
-  }
+  applyDebuffArea(cx, cy, R, "crack", false, true);   // v3.92.0: 共通部品へ（中心からの距離で測るのは従来どおり）
   // 面で入ったことが分かる大きな輪を1つ足す（個々の印とは別）
   spawnCrackBurst(cx, cy, R * 0.55);
   triggerShake(1.6, 0.08);
@@ -29225,18 +29285,127 @@ function updateSpecials(dt) {
     else if (kind === SPECIAL_DRUM)    drumAlive++;
     else if (kind === SPECIAL_AIM)     updateAimDragon(i, dt);   // v3.64.0
     else if (kind === SPECIAL_RECALL)  updateRecallDragon(i, dt);   // v3.72.0
+    else if (kind === SPECIAL_HUSH)    updateHushDragon(i);   // v3.92.0（DT-163）
   }
   specialHitActive = false;
   updateDrumBeat(dt, drumAlive);   // v3.31.0: 軍鼓の拍は群れで1つ
   updateFreeShards(dt);            // v3.33.0: 外れた破片（磁竜の投げ・鉄鎖のスマッシュ）はどの竜種でも動く
   updateWakeTrail(dt);      // v1.1.0: 航跡の寿命と、中に居る竜への印付け
   updateCrackBursts(dt);    // v1.1.2: ひびが入った瞬間の弾け
+  updateDebuffPops(dt);     // v3.92.0: 口封じが黙らせた瞬間の印
   specialHitActive = true;
   updateSpecialBolts(dt);
   updateMechaRockets(dt);   // v0.95: 飛んでいるロケットは機竜が落ちても進む
   updateAimShots(dt);       // v3.64.0: 指先竜の火の玉
   updateRecallFlights(dt);  // v3.72.0: 呼び戻し竜の行き帰り
   specialHitActive = false;
+}
+
+// ---- v3.92.0: 口封じ（案帳 DT-163・Shooter判定「群れじゃなくて特殊個体自身が触れたら」）----
+// 自分の体が触れた建物は HUSH_TIME 秒撃てない。体当たりの当たり（クールダウンあり）とは別に毎フレーム見るので、
+// 撃ってくる建物の上をなでて通るだけで黙る。攻撃は通常の体当たりだけ（弱い）。
+const HUSH_TIME          = 3.0;
+const HUSH_TIME_PER_UP   = 1.0;
+const HUSH_REACH         = 10;   // 体の縁からさらに何pxまでを「触れた」とみなすか
+const HUSH_REACH_PER_UP  = 16;
+function hushTime()  { return HUSH_TIME + HUSH_TIME_PER_UP * upCount("sp_hush_time"); }
+function hushReach() { return HUSH_REACH + HUSH_REACH_PER_UP * upCount("sp_hush_reach"); }
+function updateHushDragon(i) {
+  applyDebuffArea(px[i], py[i], 6 * boidBodyScale(i) + hushReach(), "hush", true, false);
+}
+/** 黙っている建物の上に灰色の口の印（閉じた口）。残り時間で薄くなる */
+function drawHushMarks() {
+  if (hushMarks.length === 0 && debuffPops.length === 0) return;
+  ctx.save();
+  const col = SPECIAL_DEFS[SPECIAL_HUSH].color;
+  for (const p of debuffPops) {
+    const u = p.t / DEBUFF_POP_LIFE;
+    ctx.globalAlpha = (1 - u) * 0.8; ctx.strokeStyle = col; ctx.lineWidth = 3 * (1 - u) + 1;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (1 + u * 0.8), 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.lineCap = "round";
+  for (let k = hushMarks.length - 1; k >= 0; k--) {
+    const o = hushMarks[k];
+    const left = debuffLeft(o, "hush");
+    if (left <= 0 || o.fallen) { hushMarks.splice(k, 1); continue; }
+    const life = Math.min(1, left / hushTime());
+    const r = o.radius ?? 10;
+    // 建物を薄い灰で覆う（撃たない建物だと遠目にも分かるように）
+    ctx.globalAlpha = 0.28 * (0.5 + 0.5 * life); ctx.fillStyle = "#6a6e7a";
+    ctx.beginPath(); ctx.arc(o.wx, o.wy, r + 1, 0, Math.PI * 2); ctx.fill();
+    // 口の印：灰色の丸に、横一文字の閉じた口と、上から押さえる×
+    const mx = o.wx, my = o.wy - r - 9, mr = 7;
+    ctx.globalAlpha = 0.55 + 0.4 * life;
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#2a2c34"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(mx - 4, my + 1); ctx.lineTo(mx + 4, my + 1); ctx.stroke();
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(mx - 2.5, my - 1.5); ctx.lineTo(mx + 2.5, my + 3.5); ctx.moveTo(mx + 2.5, my - 1.5); ctx.lineTo(mx - 2.5, my + 3.5); ctx.stroke();
+    // 残り時間の弧
+    ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(mx, my, mr + 2.5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * life); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ---- v3.92.0: 籠る殻（案帳 DT-164）----
+// 指を離して SHELL_DELAY 秒たつと、群れ全体が殻にこもる：竜が受ける傷 ×SHELL_TAKEN_MULT（7割減）、
+// そのかわり群れの誰も攻撃しない（竜種の攻撃・特殊個体の技・体当たり）。描き始めると殻が開く。
+// 少し待ってから閉じるのは、線を引き直すための短い離しで攻撃が途切れないようにするため。
+// 「止まる」の扱い：止まる竜種は指を離すと止まる。流れ続ける竜種は殻のまま流れる（動き自体は変えない）。
+const SHELL_DELAY        = 0.3;
+const SHELL_TAKEN_MULT   = 0.3;
+const SHELL_GUARD_PER_UP = 0.05;   // 厚い殻：1つにつき さらに5%減
+const SHELL_TAKEN_MIN    = 0.1;
+const SHELL_MEND_PER_UP  = 0.015;  // 癒す殻：1つにつき 毎秒 最大HPの1.5%
+let shellReleasedFor = 0;
+let shellOn = false;
+let shellAnim = 0;   // 0..1 殻の閉じ具合（見た目だけ）
+function shellTakenMult() { return Math.max(SHELL_TAKEN_MIN, SHELL_TAKEN_MULT - SHELL_GUARD_PER_UP * upCount("sp_shell_guard")); }
+function shellDragonAlive() {
+  for (let i = 0; i < N; i++) if (boidSpecial[i] === SPECIAL_SHELL && !boidDead[i] && !boidDowned[i]) return true;
+  return false;
+}
+function updateShell(dt) {
+  if (isDrawing || !shellDragonAlive()) { shellReleasedFor = 0; shellOn = false; }
+  else { shellReleasedFor += dt; shellOn = shellReleasedFor >= SHELL_DELAY; }
+  shellAnim = Math.max(0, Math.min(1, shellAnim + (shellOn ? dt * 6 : -dt * 8)));
+  const mend = SHELL_MEND_PER_UP * upCount("sp_shell_mend");
+  if (!shellOn || mend <= 0) return;
+  for (let j = 0; j < N; j++) {
+    if (boidDead[j] || boidDowned[j]) continue;
+    const max = effBoidMaxHpFor(j);
+    const add = Math.min(max - boidHp[j], max * mend * dt);
+    if (add <= 0) continue;
+    boidHp[j] += add;
+    runHealTotal += add;
+  }
+}
+/** 殻にこもった群れ：竜ひとつずつに灰色の殻、群れ全体を灰色の輪で包む */
+function drawShell() {
+  if (shellAnim <= 0) return;
+  ctx.save();
+  const col = SPECIAL_DEFS[SPECIAL_SHELL].color;
+  let cx = 0, cy = 0, n = 0;
+  for (let i = 0; i < N; i++) { if (boidDead[i] || boidDowned[i]) continue; cx += px[i]; cy += py[i]; n++; }
+  if (n === 0) { ctx.restore(); return; }
+  cx /= n; cy /= n;
+  let far = 0;
+  ctx.globalAlpha = 0.45 * shellAnim; ctx.fillStyle = "#8a8678"; ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const r = 8 * boidBodyScale(i);
+    ctx.beginPath(); ctx.arc(px[i], py[i], r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    far = Math.max(far, Math.hypot(px[i] - cx, py[i] - cy) + r);
+  }
+  const R = far + 10;
+  ctx.globalAlpha = 0.18 * shellAnim; ctx.fillStyle = col;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 0.8 * shellAnim; ctx.lineWidth = 4;
+  ctx.setLineDash([14, 6]);
+  ctx.beginPath(); ctx.arc(cx, cy, R, breathTime * 0.4, breathTime * 0.4 + Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
 }
 
 // ---- v3.64.0: 指先竜（案帳 DT-221・Shooter判定「火球は特殊個体の竜自身から発射。タップオフで発射。時間経過でチャージ。
@@ -30824,8 +30993,11 @@ function updateWeaponAttacks(dt) {
   if (gameState !== "playing") return;
   breathTime += dt;
   activeBreaths.length = 0;
+  updateShell(dt);   // v3.92.0（DT-164）: 籠る殻。こもっている間は群れの攻撃をまるごと止める
 
-  if (flockWeapon === "beam") {
+  if (shellOn) {
+    // 撃ち終わった弾・爆弾・甲羅弾は飛びきらせる（止めると空中で固まって見える）
+  } else if (flockWeapon === "beam") {
     updateBeamAttacks(dt);
   } else if (flockWeapon === "bullet") {
     updateBulletAttacks(dt);
@@ -30866,7 +31038,7 @@ function updateWeaponAttacks(dt) {
 
   updateBombFuses(dt);   // 投下済みの爆弾は竜種が変わっても炸裂させきる
 
-  if (!moleUnderground()) updateSpecials(dt);   // v0.85: 特殊個体（v3.29.0: 土竜が地中の間は群れごと休む）
+  if (!moleUnderground() && !shellOn) updateSpecials(dt);   // v3.92.0: 殻の中では特殊個体も休む。v0.85: 特殊個体（v3.29.0: 土竜が地中の間は群れごと休む）
   updateDragonProjectiles(dt);
   updateBoulders(dt);       // v3.9.11: 亀竜の甲羅弾（竜種が変わっても飛びきる）
 }
@@ -33205,7 +33377,7 @@ function codexDragonCanvas(species) {
 }
 
 const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST,
-                             SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL, SPECIAL_LASER];   // v3.31.0 / v3.64.0: 指先竜: 軍鼓（v3.40.0: 鉄鎖は竜種へ）
+                             SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL, SPECIAL_HUSH, SPECIAL_SHELL, SPECIAL_LASER];   // v3.31.0 / v3.64.0: 指先竜: 軍鼓（v3.40.0: 鉄鎖は竜種へ）
 
 function codexSpecialHtml() {
   let html =
@@ -33257,6 +33429,8 @@ const CODEX_SPECIAL_POWERS = {
   [SPECIAL_CHAIN]:   () => [{ label: "鉄球（秒速250px）", direct: CHAIN_DMG }],
   [SPECIAL_AIM]:     () => [{ label: "火の玉（満タン）", blast: AIM_DMG_MAX, note: `半径${AIM_R_MAX}` }],
   [SPECIAL_RECALL]:  () => [{ label: "突進（最高速）", direct: RECALL_DMG_MAX, impact: RECALL_KNOCK_MAX }, { label: "突進（初速）", direct: RECALL_DMG_MIN }, { label: "帰りの体当たり", direct: RECALL_BACK_DMG }],
+  [SPECIAL_HUSH]:    () => [{ label: "体当たり", direct: COLLISION_DAMAGE }],
+  [SPECIAL_SHELL]:   () => [{ label: "体当たり", direct: COLLISION_DAMAGE }],
 };
 const CODEX_SPECIAL_TAG = {
   [SPECIAL_BEACON]:  "★光剣／向きを選ばない削り役",
@@ -33273,6 +33447,8 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_DRUM]:    "★軍鼓／拍に合わせて群れ全員の攻撃が速くなる。自分では打たない",
   [SPECIAL_AIM]:     "★狙い火／指を離した所へ溜めた火の玉。遠くても届く",
   [SPECIAL_RECALL]:  "★還る槍／指を離した所へ加速して突っ込み、吹き飛ばす。遠くを狙うほど強い",
+  [SPECIAL_HUSH]:    "★口封じ／触れた建物を黙らせる。撃ってくる建物をなでてから本命を壊す",
+  [SPECIAL_SHELL]:   "★籠る殻／指を離すと群れごと殻にこもる。攻めと守りの切り替え",
 };
 const CODEX_SPECIAL_DESC = {
   [SPECIAL_LASER]:
@@ -33312,6 +33488,12 @@ const CODEX_SPECIAL_DESC = {
     "鎖でつながった鉄球を引いて飛ぶ。鉄球は鎖の長さより遠くへ行けない振り子で、" +
     "<b>急に曲がると前の勢いのまま外側へ大きく振られ</b>、通った所の建物と敵を砕く。" +
     "鉄球が速いほど強く当たり、ゆっくり引きずっているだけのときは当たらない。",
+  [SPECIAL_HUSH]:
+    "<b>自分の体が触れた建物は、3秒のあいだ撃てなくなる</b>（建物の上に灰色の口の印）。群れの他の竜が触れても黙らない。" +
+    "撃ってくる建物の上をなでるように線を描いてから、本命の建物を壊す、という順番が生まれる。自分の攻撃はふつうの体当たりだけで弱い。",
+  [SPECIAL_SHELL]:
+    "<b>指を離している間、群れ全体が殻にこもり、受ける傷が7割減る</b>（灰色の殻の輪が群れを包む）。" +
+    "こもっている間は群れの誰も攻撃しない。また描き始めると殻が開く。ラッシュの山を、止まってしのぐ選択ができる。",
   [SPECIAL_RECALL]:
     "<b>指を離した瞬間、離した場所へ</b>還る槍が光の尾を引いて一直線に突っ込む。<b>遅く出て加速する</b>ので、<b>遠くを狙うほど速く・強く</b>当たる（爆発はしない）。" +
     "当たるのは飛んでいる体そのもの（速いほど広い帯）で、道の上の相手を<b>飛ぶ向きへ吹き飛ばす</b>。帰り道の相手にも弱く当たる。群れへ戻るまで次は使えない。飛んでいる間は群れから離れて撃たれやすい。",
@@ -33336,6 +33518,10 @@ const CODEX_SPECIAL_STAT = {
     `${HEAL_INTERVAL}秒ごとに周りの竜を最大HPの${Math.round(HEAL_FRAC * 100)}%回復（半径 ${HEAL_RADIUS}px） ／ HP ×${SPECIAL_DEFS[SPECIAL_HEAL].hpMult}`,
   [SPECIAL_CHAIN]: () =>
     `鎖 ${CHAIN_LENGTH}px ／ 鉄球の半径 ${CHAIN_BALL_R}px ／ 秒速${CHAIN_MIN_SPEED}px以上で当たる（秒速250pxで ${CHAIN_DMG}・最大 ${CHAIN_DMG * 2.5}） ／ HP ×${SPECIAL_DEFS[SPECIAL_CHAIN].hpMult}`,
+  [SPECIAL_HUSH]: () =>
+    `触れた建物を ${HUSH_TIME}秒 撃てなくする ／ 体の縁から ${HUSH_REACH}px まで ／ HP ×${SPECIAL_DEFS[SPECIAL_HUSH].hpMult}`,
+  [SPECIAL_SHELL]: () =>
+    `指を離して ${SHELL_DELAY}秒で閉じる ／ 受ける傷 ×${SHELL_TAKEN_MULT} ／ 殻の中は攻撃しない ／ HP ×${SPECIAL_DEFS[SPECIAL_SHELL].hpMult}`,
   [SPECIAL_RECALL]: () =>
     `初速 ${RECALL_SPEED_START}px/s で${RECALL_WINDUP}秒溜めてから 毎秒${RECALL_ACCEL}px/s 加速（最高 ${RECALL_SPEED_MAX}） ／ 突進 威力${RECALL_DMG_MIN}〜${RECALL_DMG_MAX}・太さ 半径${RECALL_BODY_R_MIN}〜${RECALL_BODY_R_MAX}px（速さで変わる） ／ 帰りの体当たり 威力${RECALL_BACK_DMG} ／ 届く距離 ${RECALL_MAX_DIST}px ／ 戻ってから${RECALL_REST}秒で次 ／ HP ×${SPECIAL_DEFS[SPECIAL_RECALL].hpMult}`,
   [SPECIAL_AIM]: () =>
@@ -33487,6 +33673,17 @@ function codexSpecialCanvas(kind) {
     c.strokeStyle = "#c8f0ff"; c.lineWidth = 1.4; c.beginPath();
     for (let k = 0; k < 5; k++) { const a = k * 1.26; c.moveTo(17, -17); c.lineTo(17 + Math.cos(a) * 7, -17 + Math.sin(a) * 7); }
     c.stroke();
+    codexDrawSpecialDragon(c, kind, 44);
+  } else if (kind === SPECIAL_HUSH) {
+    // v3.92.0: 右上の建物と、その上の閉じた口の印
+    c.fillStyle = "#a0583a"; c.fillRect(10, -12, 9, 9);
+    c.fillStyle = "#a8acb8"; c.beginPath(); c.arc(14.5, -19, 5, 0, Math.PI * 2); c.fill();
+    c.strokeStyle = "#2a2c34"; c.lineWidth = 1.5; c.beginPath(); c.moveTo(11.5, -18.5); c.lineTo(17.5, -18.5); c.stroke();
+    codexDrawSpecialDragon(c, kind, 44);
+  } else if (kind === SPECIAL_SHELL) {
+    // v3.92.0: 竜を包む灰色の殻の輪
+    c.strokeStyle = "#c8c0a8"; c.lineWidth = 3; c.setLineDash([6, 3]);
+    c.beginPath(); c.arc(0, 0, 19, 0, Math.PI * 2); c.stroke(); c.setLineDash([]);
     codexDrawSpecialDragon(c, kind, 44);
   } else if (kind === SPECIAL_AIM) {
     // v3.64.0: 右上へ飛ぶ火の玉と、着く所の照準
@@ -34110,7 +34307,8 @@ const INITIAL_SPECIES  = ["fire"];
 // v3.5.0: 今の7体は全部最初から（Shooter「最初の要素が少なすぎる」）。解放条件は今後足す特殊個体に使う
 const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE,
                           SPECIAL_HEAL, SPECIAL_FROST,   // v3.8.0: 癒し手・凍て霧も最初から
-                          SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL];   // v3.72.0: 呼び戻し竜も最初から
+                          SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL,   // v3.72.0: 呼び戻し竜も最初から
+                          SPECIAL_HUSH, SPECIAL_SHELL];   // v3.92.0: 口封じ・籠る殻も最初から
                            // v3.31.0 / v3.64.0: 指先竜（v3.40.0: 鉄鎖は竜種になったので外した。v3.46.2: 結び竜は不採用）
 const FORTRESS_FALLEN_GOAL = 300;   // 穿つ楔：要塞・首都区画の建物を累計これだけ壊す
 
@@ -35942,6 +36140,7 @@ function clearStageCards(keepCards = false) {
   shieldLines.clear();      // v3.62.0
   aimShots.length = 0;      // v3.64.0
   recallFlights.clear(); recallFx.length = 0;   // v3.72.0
+  hushMarks.length = 0; debuffPops.length = 0; shellOn = false; shellReleasedFor = 0; shellAnim = 0;   // v3.92.0
   aimTrail.length = 0;      // DT-221 手直し: 火の玉の尾
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
@@ -37403,7 +37602,8 @@ function applyDamageToBoid(boidIndex, damage, hit) {
   if (wipeGraceTimer > 0) return; // v3.0.0: 全滅で戻された直後の無敵
   // v0.6: 「竜鱗共鳴」カードで被ダメージ軽減
   // v0.89: 突進中の軽減（強化で手に入れたときだけ）。溜めに比例する。
-  const dealt = damage * effDmgTakenMult() * (1 - chargeDamageReductionFor(boidIndex));
+  const dealt = damage * effDmgTakenMult() * (1 - chargeDamageReductionFor(boidIndex))
+              * (shellOn ? shellTakenMult() : 1);   // v3.92.0（DT-164）: 殻の中は7割減
   boidHp[boidIndex] -= dealt;
   reportDragonDamage(boidIndex, dealt);   // v2.11.0: 軽減を掛けた後の、実際に減った量を出す
   if (boidHp[boidIndex] <= 0) {
@@ -40393,6 +40593,8 @@ function render(now) {
   drawHeroMateFx();   // v3.60.0: 英雄の仲間の盾・魔法陣
   drawKites();        // v3.61.0: 雷凧の兵の糸と凧
   drawAimDragons();   // v3.64.0: 指先竜の溜め・照準・火の玉
+  drawHushMarks();    // v3.92.0: 口封じで黙った建物の口の印
+  drawShell();        // v3.92.0: 籠る殻
   drawRecallDragons(); // v3.72.0: 呼び戻し竜の光の尾・地面の割れ
   drawChainBalls();   // v3.31.0: 鉄鎖の鎖と鉄球
   drawMagnetShards(); // v3.31.0: 磁竜の破片
@@ -42550,6 +42752,8 @@ const DRAGON_ELEMENT_COLORS = {
   chain:    { body: "rgba(184, 188, 196, 1.0)", wing: "rgba(154, 160, 168, 1.0)", rim: "rgba(90, 94, 100, 0.0)" },
   drum:     { body: "rgba(208, 128, 64, 1.0)",  wing: "rgba(192, 112, 56, 1.0)",  rim: "rgba(110, 60, 25, 0.0)" },
   aim:      { body: "rgba(255, 106, 58, 1.0)",  wing: "rgba(220, 80, 40, 1.0)",   rim: "rgba(120, 40, 20, 0.0)" },   // v3.64.0
+  hush:     { body: "rgba(168, 172, 184, 1.0)", wing: "rgba(120, 124, 138, 1.0)", rim: "rgba(60, 62, 70, 0.0)" },   // v3.92.0
+  shell:    { body: "rgba(200, 192, 168, 1.0)", wing: "rgba(160, 150, 120, 1.0)", rim: "rgba(90, 84, 64, 0.0)" },    // v3.92.0
   link:     { body: "rgba(255, 232, 96, 1.0)",  wing: "rgba(220, 196, 64, 1.0)",  rim: "rgba(120, 100, 30, 0.0)" },   // v3.46.0
   heal:     { body: "rgba(150, 240, 170, 1.0)", wing: "rgba(90, 190, 120, 1.0)",  rim: "rgba(40, 110, 60, 0.0)" },
   frost:    { body: "rgba(200, 236, 255, 1.0)", wing: "rgba(140, 190, 230, 1.0)", rim: "rgba(70, 110, 150, 0.0)" },
@@ -43191,6 +43395,7 @@ const DRAGON_PARTS_ALIAS = {
   magnet: "shadow", twin: "swallow", chain: "heavy", drum: "rainbow",   // v3.31.0
   aim: "mecha",   // v3.64.0
   recall: "wedge",   // v3.72.0: 呼び戻し竜は専用の絵ができるまで穿つ楔の絵を水色に
+  hush: "shadow", shell: "heavy",   // v3.92.0: 専用の絵ができるまで既存の絵を灰に
   wisp: "ice",   // v3.36.0（ゲーム中は竜の絵を描かず灯で描く。図鑑などの見本用）
   flail: "heavy",   // v3.40.0
   whale: "gargoyle",   // v3.57.0
