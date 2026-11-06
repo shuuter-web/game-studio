@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.92.0";
+const GAME_VERSION = "v3.93.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -29290,6 +29290,7 @@ function updateSpecials(dt) {
   specialHitActive = false;
   updateDrumBeat(dt, drumAlive);   // v3.31.0: 軍鼓の拍は群れで1つ
   updateFreeShards(dt);            // v3.33.0: 外れた破片（磁竜の投げ・鉄鎖のスマッシュ）はどの竜種でも動く
+  updateShatterDebris(dt);         // v3.93.0（DT-516）: 砕けた建物の見た目だけのかけら
   updateWakeTrail(dt);      // v1.1.0: 航跡の寿命と、中に居る竜への印付け
   updateCrackBursts(dt);    // v1.1.2: ひびが入った瞬間の弾け
   updateDebuffPops(dt);     // v3.92.0: 口封じが黙らせた瞬間の印
@@ -37944,7 +37945,7 @@ function moleUnderground() { return mole.under && !!sp().burrow; }
 function resetSpeciesMechanics() {
   rollBall = null;
   resetMole();
-  magnetShards = []; magnetPrevC = null; magnetFlockV.x = 0; magnetFlockV.y = 0;   // v3.31.0
+  magnetShards = []; shatterDebris = []; magnetPrevC = null; magnetFlockV.x = 0; magnetFlockV.y = 0;   // v3.31.0
   wisp = null; wispHaunts.length = 0;   // v3.36.0
   flailBall = null; flailPrevC = null;  // v3.40.0
   whale.t = 0; whale.on = false;        // v3.57.0
@@ -38256,27 +38257,120 @@ function swipeVelocity() {
   if (dtS <= 0.01) return { x: 0, y: 0 };
   return { x: (last.x - first.x) / dtS / cam.scale, y: (last.y - first.y) / dtS / cam.scale };
 }
+// 案帳 DT-516（Shooter「かけらの初期位置を元の建物の各部位の位置に。本当に建物が割れているように」）:
+// 建物の絵を升目に切り、各かけらを「その升目が描かれていた場所・向き・大きさ」から飛ばす。
+// 当たり判定を持つかけらの数と乱数の引き方はこれまでと同じ（ゲームの結果を変えない）。
+// 残りの升目は見た目だけのかけら（shatterDebris・fxRandom）で、何にも当たらない
+const SHATTER_GRID          = { tiny: 2, small: 2, medium: 3, large: 4 };   // 建物の絵を何×何に切るか
+const SHATTER_GRID_LANDMARK = 4;     // 神殿・風車・役割の建物（大きい絵）
+const SHATTER_CELL_MIN_FILL = 0.18;  // 升目の中で絵がこれより少ない（ほぼ透明な角）は、かけらにしない
+const SHATTER_BURST         = 3.2;   // 中心からの離れ具合×これ（px/秒）を外向きの速さに足す（真ん中から割れて広がる）
+const SHATTER_DEBRIS_CAP    = 260;   // 見た目だけのかけらがこれ以上あるときは足さない（一度に大量に壊れても重くしない）
+const SHATTER_DEBRIS_DRAG   = MAG_FREE_DRAG * 3;   // 見た目のかけらは地面を滑って早めに止まる
+let shatterDebris = [];
+const _shatterCellCache = new Map();   // 絵のキー＋升目の数 → 絵が載っている升目の番号の一覧（色を変えても透明な所は同じ）
+function shatterCellsFor(key, img, grid) {
+  const ck = key + "#" + grid;
+  let cells = _shatterCellCache.get(ck);
+  if (cells) return cells;
+  cells = [];
+  let data = null;
+  try { data = img.getContext("2d").getImageData(0, 0, img.width, img.height).data; } catch (e) { data = null; }
+  for (let r = 0; r < grid; r++) for (let c = 0; c < grid; c++) {
+    if (!data) { cells.push(r * grid + c); continue; }
+    const x0 = Math.floor(c * img.width / grid), x1 = Math.floor((c + 1) * img.width / grid);
+    const y0 = Math.floor(r * img.height / grid), y1 = Math.floor((r + 1) * img.height / grid);
+    let on = 0, all = 0;
+    for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) { all++; if (data[(y * img.width + x) * 4 + 3] > 64) on++; }
+    if (all > 0 && on / all >= SHATTER_CELL_MIN_FILL) cells.push(r * grid + c);
+  }
+  if (cells.length === 0) cells.push(0);
+  _shatterCellCache.set(ck, cells);
+  return cells;
+}
 /** 鉄鎖のスマッシュ・衝撃（DT-510）で壊れた建物（城壁も）を、当たった向きへ砕いて飛ばす。破片は当たった相手を削る */
 function shatterBuilding(st, from) {
   const key = buildingSpriteKeyFor(st);
   const pieces = st._isWall ? CHAIN_WALL_PIECES : (MAG_PIECES[st.size] ?? 2) + 1;
   const sp0 = Math.sqrt(from.vx * from.vx + from.vy * from.vy) || 1;
   const dir = Math.atan2(from.vy, from.vx);
+  const img = key ? getTintedBuildingSprite(key, st.color) : null;
+  // 建物の描き方（drawSettlementOnLayer の絵の大きさ・向き・左右反転）をそのままなぞる
+  let layout = null;
+  if (img) {
+    const grid = (st._landmark || st._townRole || st._emplacement) ? SHATTER_GRID_LANDMARK : (SHATTER_GRID[st.size] ?? 2);
+    const drawW = st.radius * (st._landmark ? 2.6 : 2.3);
+    const drawH = drawW * (img.height / img.width);
+    const flip = st._noFlip ? 1 : ((Math.floor(st.wx * 7 + st.wy * 13) % 2 === 0) ? 1 : -1);
+    const face = st._faceAngle ?? 0;
+    const cells = shatterCellsFor(key, img, grid);
+    layout = { grid, drawW, drawH, flip, face, cells, cos: Math.cos(face), sin: Math.sin(face) };
+  }
+  // 升目 cell のかけらの、元の場所（ワールド）・絵の切り出し・大きさ
+  const cellPiece = (cell) => {
+    const g = layout.grid, c = cell % g, r = Math.floor(cell / g);
+    const lx = ((c + 0.5) / g - 0.5) * layout.drawW * layout.flip, ly = ((r + 0.5) / g - 0.5) * layout.drawH;
+    return {
+      x: st.wx + lx * layout.cos - ly * layout.sin, y: st.wy + lx * layout.sin + ly * layout.cos,
+      ox: lx * layout.cos - ly * layout.sin, oy: lx * layout.sin + ly * layout.cos,
+      src: { sx: c * img.width / g, sy: r * img.height / g, sw: img.width / g, sh: img.height / g },
+      w: layout.drawW / g, h: layout.drawH / g, flip: layout.flip,
+    };
+  };
+  // 当たるかけらは升目の中から散らして選ぶ（1か所に偏らないよう等間隔）
+  const used = new Set();
   for (let k = 0; k < pieces; k++) {
     const a = dir + (random() - 0.5) * CHAIN_SHATTER_SPREAD;
     const v = sp0 * CHAIN_SHATTER_SPEED * (from.speedMult ?? 1) * (0.7 + 0.6 * random());
-    magnetShards.push({
+    const shard = {
       x: st.wx, y: st.wy, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
       key, color: st.color || CHAIN_WALL_COLOR, q: k % 4, size: MAG_PIECE_SIZE[st.size] ?? 14,
       ang: random() * Math.PI * 2, spin: (random() < 0.5 ? -1 : 1) * (5 + random() * 6),
       free: true, caught: false, life: from.life ?? MAG_GROUND_LIFE, cd: 0, dmg: CHAIN_SHARD_DMG,
+    };
+    if (layout) {
+      const cell = layout.cells[Math.floor(k * layout.cells.length / pieces) % layout.cells.length];
+      used.add(cell);
+      const cp = cellPiece(cell);
+      shard.x = cp.x; shard.y = cp.y; shard.src = cp.src; shard.w = cp.w; shard.h = cp.h; shard.flip = cp.flip;
+      shard.vx += cp.ox * SHATTER_BURST; shard.vy += cp.oy * SHATTER_BURST;
+      shard.ang = layout.face;   // 割れた瞬間は建物と同じ向き。そこから回り出す
+    }
+    magnetShards.push(shard);
+  }
+  // 残りの升目は見た目だけのかけら
+  if (!layout || shatterDebris.length >= SHATTER_DEBRIS_CAP) return;
+  for (const cell of layout.cells) {
+    if (used.has(cell)) continue;
+    const cp = cellPiece(cell);
+    const a = dir + (fxRandom() - 0.5) * CHAIN_SHATTER_SPREAD * 1.4;
+    const v = sp0 * CHAIN_SHATTER_SPEED * (from.speedMult ?? 1) * (0.35 + 0.6 * fxRandom());
+    shatterDebris.push({
+      x: cp.x, y: cp.y, vx: Math.cos(a) * v + cp.ox * SHATTER_BURST, vy: Math.sin(a) * v + cp.oy * SHATTER_BURST,
+      key, color: st.color, src: cp.src, w: cp.w, h: cp.h, flip: cp.flip, size: cp.w,
+      ang: layout.face, spin: (fxRandom() < 0.5 ? -1 : 1) * (3 + fxRandom() * 6),
+      free: true, life: from.life ?? MAG_GROUND_LIFE,
     });
+  }
+}
+/** 見た目だけのかけら（DT-516）。何にも当たらず、滑って止まり、消える */
+function updateShatterDebris(dt) {
+  if (dt <= 0 || shatterDebris.length === 0) return;
+  const drag = Math.exp(-SHATTER_DEBRIS_DRAG * dt);
+  for (let k = shatterDebris.length - 1; k >= 0; k--) {
+    const d = shatterDebris[k];
+    d.vx *= drag; d.vy *= drag;
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    const speed = Math.sqrt(d.vx * d.vx + d.vy * d.vy);
+    d.ang += d.spin * dt * Math.min(1, speed / MAG_HIT_MIN_SPEED);
+    d.life -= dt;
+    if (d.life <= 0) shatterDebris.splice(k, 1);
   }
 }
 /** 破片（建物の絵の4分の1ずつ）を回しながら描く */
 function drawMagnetShards() {
-  if (magnetShards.length === 0) return;
-  for (const s of magnetShards) {
+  if (magnetShards.length === 0 && shatterDebris.length === 0) return;
+  for (const s of shatterDebris.length ? magnetShards.concat(shatterDebris) : magnetShards) {
     // v3.33.0: 速い破片は尾をまとう（飛んでいる破片が攻撃だと分かるように）
     // v3.39.0: 加算の光の帯をやめ、細く薄い土ぼこりの尾にした（光が目立ちすぎて瓦礫っぽさが消えていた・Shooter判定）
     if (s.free && s.vx * s.vx + s.vy * s.vy >= MAG_FAST_SPEED * MAG_FAST_SPEED) {
@@ -38293,7 +38387,10 @@ function drawMagnetShards() {
     ctx.translate(s.x, s.y);
     ctx.rotate(s.ang);
     ctx.globalAlpha = s.free ? Math.min(1, s.life * 2) : 1;
-    if (img) {
+    if (img && s.src) {   // DT-516: 升目に切ったかけらは、元の大きさのまま・建物と同じ左右反転で描く
+      ctx.scale(s.flip || 1, 1);
+      ctx.drawImage(img, s.src.sx, s.src.sy, s.src.sw, s.src.sh, -s.w / 2, -s.h / 2, s.w, s.h);
+    } else if (img) {
       const w = img.width / 2, h = img.height / 2;
       ctx.drawImage(img, (s.q % 2) * w, Math.floor(s.q / 2) * h, w, h, -s.size / 2, -s.size / 2, s.size, s.size * (h / w));
     } else {   // 城壁など絵の無い建物は石の塊
