@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.99.0";
+const GAME_VERSION = "v3.100.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2828,12 +2828,12 @@ const SPECIES_DEFS = {
     move: { maxSpeed: 90, accel: 130, turnRate: 1.2, pathEndMode: "stop" },
   },
   // ---- v3.98.0: 案帳 DT-530（Shooter が足した案「デフォルト竜を変更するかもしれない竜」。最初から選べる）----
-  // 飛竜: 火炎弾を吐き、体当たりでも相手を押す（衝撃つき・speciesRamImpact）。角度150度・射程は進化でも変えない。
+  // 飛竜: 火炎弾を吐き、体当たりでも相手を押す（衝撃つき・speciesRamImpact）。角度90度（v3.100.0 で150度から。Shooter指示）・射程は進化でも変えない。
   // 進化はブレス系（→連射系／単発系）と突進系に分かれる（SPECIES_EVO_SPEC.wyvern・WYVERN_FIRE_FORMS・WYVERN_RAM_FORMS）
   wyvern: {
     ja: "飛竜", en: "Wyvern", icon: "\u{1F409}", color: "#e8743a", element: "wyvern",
-    attack: "wyvernfire", spriteTint: "#d8642a", breathArcDeg: 150,
-    desc: "前方の広い範囲に火炎弾を吐き、体当たりでも相手を押す。標準の動き",
+    attack: "wyvernfire", spriteTint: "#d8642a", breathArcDeg: 90,   // v3.100.0（DT-530 手直し）: 150→90度
+    desc: "前方に火炎弾を吐き、体当たりでも相手を押す。標準の動き",
     move: {},
   },
 };
@@ -31613,7 +31613,7 @@ function drawBoulders() {
 }
 
 // ---- v3.98.0（案帳 DT-530・Shooter が足した案）: 火炎弾（飛竜）----
-// 飛竜は「デフォルト竜を置き換えるかもしれない竜」（Shooter）。前方150度（広め）に火炎弾を吐き、体当たりでも相手を押す（衝撃つき）。
+// 飛竜は「デフォルト竜を置き換えるかもしれない竜」（Shooter）。前方90度（v3.100.0 で150度から狭めた）に火炎弾を吐き、体当たりでも相手を押す（衝撃つき）。
 // 攻撃の角度と射程は**最初から変えない**（進化でも伸ばさない＝ツリーに range・arc を入れない）。
 // 火炎弾は最初に触れた相手のところで小さく爆ぜ、半径の中の相手にまとめて当たる（ブレス＝shot）。
 // 進化の分岐（SPECIES_EVO_SPEC.wyvern）：A＝ブレス系 → A1 連射系（小さい弾を速く）／A2 単発系（大きな火球をゆっくり・押す）、
@@ -31655,7 +31655,7 @@ const fbTravel = new Float32Array(FIREBALL_MAX), fbDmg = new Float32Array(FIREBA
 const fbBlast = new Float32Array(FIREBALL_MAX), fbSize = new Float32Array(FIREBALL_MAX), fbImpact = new Float32Array(FIREBALL_MAX);
 const fbActive = new Uint8Array(FIREBALL_MAX);
 let fbCount = 0;
-function clearFireballs() { fbActive.fill(0); fbCount = 0; }
+function clearFireballs() { fbActive.fill(0); fbCount = 0; fireHitFx.length = 0; }
 function fireballInterval() { return FIREBALL_INTERVAL * wyvernFireForm().interval * effFireIntervalMult("fireball"); }
 
 function updateFireballAttacks(dt) {
@@ -31714,15 +31714,109 @@ function updateFireballs(dt) {
     const hitDef = fbImpact[k] > 0 ? { shot: fbDmg[k], impact: fbImpact[k] } : { shot: fbDmg[k] };
     hitInRadius(x, y, fbBlast[k], hitDef, targets);
     if (fbBlast[k] >= FIREBALL_BLAST_R * 1.5) { spawnExplosionFx(x, y, fbBlast[k], { fire: 0.8 }); triggerShake(1.2, 0.06); }
-    else fallFx.push({ kind: "ring", x, y, r: fbBlast[k], t: 0, life: 0.28 });
+    spawnFireballHitFx(x, y, fbBlast[k]);   // v3.100.0: 輪の線をやめ、画像の炎が爆ぜて少し燃え残る
     spawnHitParticles(x, y);
     fbActive[k] = 0; fbCount--;
   }
 }
 
-/** 火炎弾：橙の芯と黄の光、うしろへ短い火の尾 */
+// v3.100.0（DT-530 手直し）: 火炎弾・爆ぜ・燃え残りは画像生成した絵で描く（絵が読めないときだけ丸の重ね描き）。
+// 見た目だけのものなので乱数は fxRandom、時間は描画側で進める（ロジックの乱数列を動かさない）。
+const FIREBALL_SPRITE_LEN    = 4.6;    // 弾の絵の長さ＝当たりの半径の何倍か（尾まで含む）
+const FIREBALL_SPRITE_CORE   = 0.2;    // 絵の上から芯までの割合（ここを弾の位置に合わせる）
+const FIREBALL_FLICKER_HZ    = 11;     // 2コマを重ねがけして揺らす速さ
+const FIRE_BURST_LIFE        = 0.3;    // 爆ぜの絵が広がって消えるまで（秒）
+const FIRE_BURST_SCALE       = 2.3;    // 爆ぜの絵の大きさ＝爆ぜる半径の何倍か
+const FIRE_BURN_LIFE         = 0.85;   // 当たった所に炎が燃え残る長さ（秒）
+const FIRE_BURN_SCALE        = 1.5;    // 燃え残りの大きさ＝爆ぜる半径の何倍か
+const FIRE_HIT_FX_MAX        = 90;     // 同時に出す爆ぜ・燃え残りの上限（連射系で増えすぎない）
+const fireHitFx = [];
+let fireHitFxLastT = 0;
+function spawnFireballHitFx(x, y, blastR) {
+  if (fireHitFx.length >= FIRE_HIT_FX_MAX) fireHitFx.shift();
+  fireHitFx.push({ x, y, r: blastR, t: 0, rot: fxRandom() * Math.PI * 2, flip: fxRandom() < 0.5 ? -1 : 1, phase: fxRandom() * 10 });
+}
+
+/** 火炎弾：画像の火の玉（2コマ）を進む向きへ回して描く。下に橙の光を薄く敷く */
 function drawFireballs() {
+  const now = performance.now() / 1000;
+  const dtFx = fireHitFxLastT > 0 ? Math.min(0.1, now - fireHitFxLastT) : 0;
+  fireHitFxLastT = now;
+  drawFireballHitFx(dtFx, now);
   if (fbCount === 0) return;
+  const imgA = enemyImages.fx_fireball_a, imgB = enemyImages.fx_fireball_b;
+  if (!imgA || !imgB) { drawFireballsPlain(); return; }
+  ctx.save();
+  for (let k = 0; k < FIREBALL_MAX; k++) {
+    if (!fbActive[k]) continue;
+    const x = fbX[k], y = fbY[k], r = fbSize[k];
+    const len = r * FIREBALL_SPRITE_LEN;
+    ctx.globalAlpha = 0.28; ctx.fillStyle = "#ff6a20";
+    ctx.beginPath(); ctx.arc(x, y, r * 1.7, 0, Math.PI * 2); ctx.fill();
+    const mix = 0.5 + 0.5 * Math.sin(now * FIREBALL_FLICKER_HZ + k * 1.3);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(Math.atan2(fbVy[k], fbVx[k]) + Math.PI / 2);   // 絵の上＝進む向き
+    const wA = len * imgA.width / imgA.height, wB = len * imgB.width / imgB.height;
+    ctx.globalAlpha = 1 - mix * 0.5;
+    ctx.drawImage(imgA, -wA / 2, -len * FIREBALL_SPRITE_CORE, wA, len);
+    ctx.globalAlpha = 0.5 + mix * 0.5;
+    ctx.drawImage(imgB, -wB / 2, -len * FIREBALL_SPRITE_CORE, wB, len);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/** 爆ぜ（広がりながら薄れる炎の輪）と、そのあと少し燃え残る炎 */
+function drawFireballHitFx(dtFx, now) {
+  if (fireHitFx.length === 0) return;
+  const burst = enemyImages.fx_fire_burst, burnA = enemyImages.fx_fire_burn_a, burnB = enemyImages.fx_fire_burn_b;
+  ctx.save();
+  let w = 0;
+  for (let n = 0; n < fireHitFx.length; n++) {
+    const f = fireHitFx[n];
+    f.t += dtFx;
+    if (f.t >= FIRE_BURN_LIFE) continue;
+    fireHitFx[w++] = f;
+    // 燃え残り：すぐ立ち上がり、終わりに向けて小さく薄れる。2コマを重ねがけして揺らす
+    const life = f.t / FIRE_BURN_LIFE;
+    const grow = Math.min(1, f.t / 0.08);
+    const fade = 1 - life * life;
+    const size = f.r * FIRE_BURN_SCALE * grow * (1 - 0.35 * life);
+    const mix = 0.5 + 0.5 * Math.sin(now * 13 + f.phase);
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    ctx.rotate(f.rot * 0.15);   // 炎は上向きの形なので、回しすぎない
+    ctx.scale(f.flip, 1);
+    if (burnA && burnB) {
+      ctx.globalAlpha = 0.9 * fade * (1 - mix * 0.6);
+      ctx.drawImage(burnA, -size / 2, -size * 0.62, size, size * burnA.height / burnA.width);
+      ctx.globalAlpha = 0.9 * fade * (0.4 + mix * 0.6);
+      ctx.drawImage(burnB, -size / 2, -size * 0.62, size, size * burnB.height / burnB.width);
+    } else {
+      ctx.globalAlpha = 0.6 * fade; ctx.fillStyle = "#ff7a28";
+      ctx.beginPath(); ctx.arc(0, 0, size * 0.4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    // 爆ぜ：はじめの短い間だけ、広がりながら消える
+    if (f.t < FIRE_BURST_LIFE) {
+      const b = f.t / FIRE_BURST_LIFE;
+      const bs = f.r * FIRE_BURST_SCALE * (0.55 + 0.6 * b);
+      ctx.save();
+      ctx.translate(f.x, f.y);
+      ctx.rotate(f.rot);
+      ctx.globalAlpha = 1 - b;
+      if (burst) ctx.drawImage(burst, -bs / 2, -bs / 2, bs, bs * burst.height / burst.width);
+      else { ctx.strokeStyle = "#ffb050"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, bs * 0.4, 0, Math.PI * 2); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  fireHitFx.length = w;
+  ctx.restore();
+}
+
+/** 絵が読めなかったときの火炎弾（v3.98.0 の描き方）：橙の芯と黄の光、うしろへ短い火の尾 */
+function drawFireballsPlain() {
   ctx.save();
   for (let k = 0; k < FIREBALL_MAX; k++) {
     if (!fbActive[k]) continue;
@@ -43863,6 +43957,12 @@ const ENEMY_IMAGE_SOURCES = {
   fx_charge_pierce_b:  "assets/fx_charge_pierce_b.png",
   fx_charge_guard_a:   "assets/fx_charge_guard_a.png",
   fx_charge_guard_b:   "assets/fx_charge_guard_b.png",
+  // v3.100.0（案帳 DT-530 手直し・Shooter「火炎弾と燃えるエフェクトは画像生成も利用していい感じに」）: 黒地を透過にした光の絵
+  fx_fireball_a:       "assets/fx_fireball_a.png",    // 火炎弾（進む向き＝上。芯は上寄り、尾が下へ）
+  fx_fireball_b:       "assets/fx_fireball_b.png",
+  fx_fire_burst:       "assets/fx_fire_burst.png",    // 爆ぜた瞬間の炎の輪
+  fx_fire_burn_a:      "assets/fx_fire_burn_a.png",   // 当たった所にしばらく残る炎（2コマ）
+  fx_fire_burn_b:      "assets/fx_fire_burn_b.png",
   // 案帳 DT-487 手直し: 動く砦の本体・後ろの扉・四隅の砲台（drawMovingFortressSprite / drawFortressTurretSprite が組み立てる）
   fortress_body:       "assets/mover_fortress_body.png",
   fortress_door:       "assets/mover_fortress_door.png",
