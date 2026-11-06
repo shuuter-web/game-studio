@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { ROOT, REPO_ROOT, readRelease, releaseTag } from './shared.mjs';
+const release = readRelease();
+const tags = execFileSync('git', ['tag', '--list', 'dragon-tide-v*-build.*'], { cwd: REPO_ROOT, encoding: 'utf8' });
+const numbers = [...tags.matchAll(/-build\.(\d+)/g)].map(match => Number(match[1]));
+release.config.buildNumber = Math.max(release.buildNumber, ...numbers) + 1;
+if (release.config.buildNumber > 2100000000) throw new Error('Android versionCode exhausted');
+fs.writeFileSync(path.join(ROOT, 'config.json'), JSON.stringify(release.config, null, 2) + '\n');
+console.log(`Prepared ${releaseTag({ ...release, buildNumber: release.config.buildNumber })}. Commit config.json with the game changes before tagging.`);

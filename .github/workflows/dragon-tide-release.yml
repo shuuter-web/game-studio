@@ -1,0 +1,206 @@
+name: Dragon Tide builds
+
+on:
+  pull_request:
+    paths:
+      - 'prototypes/dragon-tide/**'
+      - 'release/dragon-tide/**'
+      - 'tools/check.mjs'
+      - '.github/workflows/dragon-tide-release.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'prototypes/dragon-tide/**'
+      - 'release/dragon-tide/**'
+      - 'tools/check.mjs'
+      - '.github/workflows/dragon-tide-release.yml'
+    tags: ['dragon-tide-v*-build.*']
+  workflow_dispatch:
+    inputs:
+      sign_android:
+        description: 'Sign Android AAB using the android-release environment (requires confirmed app identity)'
+        type: boolean
+        default: false
+      sign_ios:
+        description: 'Export a signed iOS IPA using the ios-release environment (run on a release tag)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dragon-tide-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: release/dragon-tide
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      wrappers_changed: ${{ steps.scope.outputs.wrappers_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: release/dragon-tide/package-lock.json
+      - name: Detect native wrapper changes in pull requests
+        id: scope
+        run: |
+          node --input-type=module -e "import fs from 'node:fs'; import {execFileSync} from 'node:child_process'; const changed=process.env.GITHUB_EVENT_NAME==='pull_request' && execFileSync('git',['diff','--name-only',process.env.BASE_SHA,process.env.HEAD_SHA],{encoding:'utf8'}).split(/\r?\n/).some(file=>file.startsWith('release/dragon-tide/') || file==='.github/workflows/dragon-tide-release.yml'); fs.appendFileSync(process.env.GITHUB_OUTPUT,'wrappers_changed='+changed+'\n');"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - run: npm ci
+      - run: npm run check
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      - run: npm run build:web
+
+  windows:
+    needs: check
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || needs.check.outputs.wrappers_changed == 'true'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: release/dragon-tide/package-lock.json
+      - run: npm ci
+      - run: npm run build:windows
+      - run: npm run test:desktop -- --packaged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dragon-tide-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release/dragon-tide/dist/windows/*.zip
+            release/dragon-tide/dist/windows/build-manifest.json
+            release/dragon-tide/dist/web/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  android:
+    needs: check
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || needs.check.outputs.wrappers_changed == 'true'
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.sign_android && 'android-release' || 'build-only' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: release/dragon-tide/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Android SDK platform
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+      - run: npm ci
+      - name: Generate Android project
+        run: npm run mobile:sync -- android
+      - name: Prepare signing identity
+        if: inputs.sign_android
+        run: |
+          npm run mobile:sync -- android --release
+          node --input-type=module -e "import fs from 'node:fs'; const value=process.env.DT_ANDROID_KEYSTORE_BASE64; if(!value) throw new Error('Missing Android upload keystore'); fs.writeFileSync(process.env.DT_ANDROID_KEYSTORE_PATH, Buffer.from(value,'base64'), {mode:0o600});"
+        env:
+          DT_ANDROID_KEYSTORE_BASE64: ${{ secrets.DT_ANDROID_KEYSTORE_BASE64 }}
+          DT_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/dragon-tide-upload.keystore
+      - name: Build unsigned AAB and debug APK
+        if: ${{ !inputs.sign_android }}
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew --no-daemon bundleRelease assembleDebug
+      - name: Build signed AAB
+        if: inputs.sign_android
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew --no-daemon bundleRelease
+        env:
+          DT_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/dragon-tide-upload.keystore
+          DT_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.DT_ANDROID_KEYSTORE_PASSWORD }}
+          DT_ANDROID_KEY_ALIAS: ${{ secrets.DT_ANDROID_KEY_ALIAS }}
+          DT_ANDROID_KEY_PASSWORD: ${{ secrets.DT_ANDROID_KEY_PASSWORD }}
+      - name: Verify Android upload signature
+        if: inputs.sign_android
+        run: |
+          jarsigner -verify android/app/build/outputs/bundle/release/app-release.aab
+          keytool -printcert -jarfile android/app/build/outputs/bundle/release/app-release.aab
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dragon-tide-android-${{ inputs.sign_android && 'signed' || 'unsigned-and-debug' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release/dragon-tide/android/app/build/outputs/bundle/release/*.aab
+            release/dragon-tide/android/app/build/outputs/apk/debug/*.apk
+            release/dragon-tide/dist/web/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove ephemeral signing material
+        if: always() && inputs.sign_android
+        run: node --input-type=module -e "import fs from 'node:fs'; fs.rmSync(process.env.DT_ANDROID_KEYSTORE_PATH,{force:true});"
+        env:
+          DT_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/dragon-tide-upload.keystore
+
+  ios:
+    needs: check
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || needs.check.outputs.wrappers_changed == 'true'
+    runs-on: macos-26
+    environment: ${{ inputs.sign_ios && 'ios-release' || 'build-only' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: release/dragon-tide/package-lock.json
+      - run: npm ci
+      - run: npm run mobile:sync -- ios
+      - name: Archive without distribution signing
+        if: ${{ !inputs.sign_ios }}
+        run: |
+          mkdir -p dist/ios
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS' -archivePath "$PWD/dist/ios/DragonTide.xcarchive" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO archive
+          tar -czf dist/ios/DragonTide-unsigned.xcarchive.tar.gz -C dist/ios DragonTide.xcarchive
+      - name: Archive and export signed App Store IPA
+        if: inputs.sign_ios
+        run: |
+          npm run mobile:sync -- ios --release
+          node scripts/ios-signing.mjs build
+          tar -czf dist/ios/DragonTide-signed.xcarchive.tar.gz -C dist/ios DragonTide.xcarchive
+        env:
+          DT_IOS_CERTIFICATE_BASE64: ${{ secrets.DT_IOS_CERTIFICATE_BASE64 }}
+          DT_IOS_CERTIFICATE_PASSWORD: ${{ secrets.DT_IOS_CERTIFICATE_PASSWORD }}
+          DT_IOS_PROFILE_BASE64: ${{ secrets.DT_IOS_PROFILE_BASE64 }}
+          DT_IOS_TEAM_ID: ${{ secrets.DT_IOS_TEAM_ID }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dragon-tide-ios-${{ inputs.sign_ios && 'signed' || 'unsigned' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release/dragon-tide/dist/ios/*.xcarchive.tar.gz
+            release/dragon-tide/dist/ios/export/*.ipa
+            release/dragon-tide/dist/web/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove ephemeral Apple signing material
+        if: always() && inputs.sign_ios
+        run: node scripts/ios-signing.mjs cleanup
