@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.96.0";
+const GAME_VERSION = "v3.97.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9707,6 +9707,11 @@ const MOVER_DEFS = {
   },
   // v3.78.0（案帳 DT-124）: 風乗りの兵。凧のような翼で滑空する兵。島に縛られず、群れの横をまっすぐ通り過ぎながら槍を投げる。
   // 浮き城の空だけに定期的に飛んでくる（updateWindRiders）。竜と同じ高さ＝竜の攻撃が普通に当たる
+  // v3.97.0（案帳 DT-207）: 輪乗りの騎兵。警戒度ラッシュ「輪乗りの騎兵」で8〜10騎。群れを囲む輪になって回り、内へ矢を射る（updateRingRider）
+  ring_rider: {
+    name: "ring_rider", hp: 110, speed: 280, xp: 70, eggDrop: 0, eggChance: 0.4, radius: 12, turnRate: 4.0,
+    color: "#7c8ea4", glowColor: "#f0e4c0", moveType: "patrol", showHpBar: true,
+  },
   wind_rider: {
     name: "wind_rider", windRider: true, flying: true, hp: 36, speed: 235, xp: 40, eggDrop: 0, eggChance: 0.35, radius: 12,
     color: "#7c8ea4", glowColor: "#fff4d0", moveType: "patrol",
@@ -14536,6 +14541,7 @@ function updateMovers(dt) {
     if (def.part === "train") continue;
     if (def.railBound) { updateRailMover(m, dt); continue; }
     if (def.hero) { updateHero(m, dt); continue; }   // v3.35.0: 人類の英雄は自前で動いて斬る
+    if (m._ring) { updateRingRider(m, dt); continue; }   // v3.97.0（案帳 DT-207）: 輪乗りの騎兵は輪の上の持ち場へ駆けて内へ矢を射る
     if (def.windRider) { updateWindRider(m, dt, centroid); continue; }   // v3.78.0（案帳 DT-124）: 風乗りの兵は群れの横をまっすぐ飛んで槍を投げる
     if (def.part === "rider") {   // v3.60.0: 戦象の背の弓兵 / 案帳 DT-487 手直し: 動く砦の四隅の砲台
       if (def.fortressTurret) updateFortressTurret(m, dt); else updateElephantRider(m, dt);
@@ -15325,9 +15331,10 @@ const TR_ATTACKER_RING   = { get name() { return STRINGS.trAttackerRing; },   to
 const TR_TARGETS_BUILDINGS = { building: TARGET_AIM, wall: TARGET_AIM, mover: TARGET_NONE };
 const TR_KINDS = ["haste", "siege", "horde", "wind", "meteor", "volley", "firering", "convoy", "elite", "night", "harpoon",   // v3.51.0: 竜狩りの銛
                   "fortress", "gates", "twinelite",   // v3.54.0: 動く砦・湧き出る門・双頭の精鋭（案帳 DT-487〜489）
-                  "titan"];   // v3.74.0: 巨人の行軍（案帳 DT-484）
+                  "titan",    // v3.74.0: 巨人の行軍（案帳 DT-484）
+                  "ringride"];   // v3.97.0: 輪乗りの騎兵（案帳 DT-207）
 // 敵を出す種類（全部倒すか時間切れで終わる）。それ以外は時間で終わる。
-const TR_UNIT_KINDS = new Set(["siege", "horde", "convoy", "elite", "harpoon", "fortress", "gates", "twinelite", "titan"]);
+const TR_UNIT_KINDS = new Set(["siege", "horde", "convoy", "elite", "harpoon", "fortress", "gates", "twinelite", "titan", "ringride"]);
 const TR_START_DELAY   = 2.4;   // 実時間。警戒度の帯（2.2秒）とスローが引いてから
 const TR_WARN_TIME     = 1.3;   // 予告の長さ（実時間）
 const TR_DURATION      = 12;    // 時間で区切る種類の長さ
@@ -16647,7 +16654,8 @@ function trName(kind) { return storyEgg(STRINGS.trNames[kind] ?? kind); }
 function scheduleTierRush() {
   const boss = bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null;
   const pool = TR_KINDS.filter(k => !tierRush.used.has(k) && (k !== "convoy" || (boss && !boss.fallen))
-    && (k !== "titan" || wastelandAllowsMover("stone_titan")));   // v3.84.0: 荒地に巨人の行軍（岩脚の巨像）は来ない（DT-509）
+    && (k !== "titan" || wastelandAllowsMover("stone_titan"))
+    && (k !== "ringride" || worldShape !== SHAPE_SKYLAND));   // v3.97.0: 浮き城の空は島が分かれていて、地上の騎兵が群れを囲んで駆けられない   // v3.84.0: 荒地に巨人の行軍（岩脚の巨像）は来ない（DT-509）
   if (pool.length === 0) return;
   const kind = pool[Math.floor(random() * pool.length)];
   tierRush.used.add(kind);
@@ -16816,6 +16824,10 @@ function startTierRush() {
       tr.dur = TR_TWIN_DUR;
       break;
     }
+    case "ringride":   // v3.97.0（案帳 DT-207）
+      startRingRide(d, c, tier);
+      tr.dur = TR_RINGRIDE_DUR;
+      break;
     case "harpoon": {   // v3.51.0（案帳 DT-476）
       const n = Math.min(trCapLeft(), TR_HARPOON_COUNT[tier]);
       const r = offscreenSpawnRadius() * TR_SIEGE_RING;
@@ -16856,6 +16868,8 @@ function endTierRush() {
     m._titan.leaving = true;
     pushWorldText(m.wx, m.wy, STRINGS.trTitanLeave, "#d8ccb8");
   }
+  // v3.97.0: 輪乗りの騎兵は時間切れで輪を崩して逃げる
+  if (tr.kind === "ringride") ringRideScatter(tr.d);
   // 時間切れで残った敵は、普通の敵として居残る（追跡だけやめる）
   for (const m of movers) if (m._tr) { m._trChase = false; m._trGoal = null; }
   // 動く砦の砲台も時間切れで撃ち止める（v3.54.0 はラッシュの間だけ撃っていた）
@@ -17013,6 +17027,139 @@ function drawHarpoonTethers() {
   ctx.restore();
 }
 
+// ---- v3.97.0（案帳 DT-207・Shooter判定「ラッシュ向きの敵。ラッシュにして」）: 警戒度ラッシュ「輪乗りの騎兵」----
+// 騎兵が群れを囲む輪になって回り、内側へ矢を射る。輪の中心は群れを追うが、群れの全速（150〜200px/s）より遅い
+// （TR_RINGRIDE_FOLLOW）ので、止まると囲まれ続け、線を輪の一か所へ向けて突っ切れば外へ抜けられる（抜けてもまた追ってくる）。
+// 騎兵は1騎ずつ倒せる。TR_RINGRIDE_BREAK の割合を倒すと輪が崩れ、残りは外へ逃げて消える（竜晶の報酬）。時間切れでも逃げる。
+// 騎兵の動きは共通の移動に乗せず updateRingRider が持ち場（輪の上の点）へ寄せる。輪の中心と回る角度は tierRush.d.ring が持つ。
+const TR_RINGRIDE_COUNT      = [0, 8, 8, 10];   // 警戒度ごとの騎兵の数（添字＝上がった後の警戒度）
+const TR_RINGRIDE_HP_STAGE   = 0.5;     // ステージ1つ進むごとの体力の上げ幅（def.hp に掛ける）
+const TR_RINGRIDE_DUR        = 40;
+const TR_RINGRIDE_R          = 250;     // 輪の半径
+const TR_RINGRIDE_SPIN       = 0.6;     // 輪が回る速さ（rad/s）
+const TR_RINGRIDE_FOLLOW     = 105;     // 輪の中心が群れを追う速さの上限（px/s）
+const TR_RINGRIDE_GALLOP     = 280;     // 騎兵が持ち場へ寄る速さの上限（px/s）
+const TR_RINGRIDE_SHOT_EVERY = 1.8;
+const TR_RINGRIDE_SHOT_FIRST = 1.2;     // 輪に着いてから最初の矢まで（1騎ずつずらす）
+const TR_RINGRIDE_SHOT_RANGE = 380;
+const TR_RINGRIDE_SHOT_DMG   = 2;       // 矢1本の威力（ステージ1つ進むごとに +TR_RINGRIDE_SHOT_DMG_STAGE）
+const TR_RINGRIDE_SHOT_DMG_STAGE = 0.5;
+const TR_RINGRIDE_SHOT_SPEED = 150;
+const TR_RINGRIDE_ON_RING    = 1.35;    // 中心からこの倍率×半径の内側に来たら「輪に着いた」（ここから撃つ）
+const TR_RINGRIDE_BREAK      = 0.5;     // この割合を倒すと輪が崩れる
+const TR_RINGRIDE_FLEE       = 300;
+const TR_RINGRIDE_FLEE_TIME  = 4;       // 逃げ始めてこの秒数で消える（画面の外まで走り去る）
+const TR_RINGRIDE_CRYSTALS   = 15;
+const TR_RINGRIDE_DRAW_FX    = 0.25;    // 弓を引いた絵を出す秒数
+function startRingRide(d, c, tier) {
+  const n = Math.min(trCapLeft(), TR_RINGRIDE_COUNT[tier]);
+  const def = MOVER_DEFS.ring_rider, r = offscreenSpawnRadius();
+  d.ring = { cx: c.x, cy: c.y, phase: random() * Math.PI * 2, n, broken: false };
+  for (let k = 0; k < n; k++) {
+    const a = d.ring.phase + k * Math.PI * 2 / n;
+    const m = spawnTrMover(def, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
+    m.maxHp = m.hp = def.hp * (1 + TR_RINGRIDE_HP_STAGE * runStageIndex);
+    m._trChase = true;
+    m._ring = { slot: k, cd: TR_RINGRIDE_SHOT_FIRST + k * 0.2, aim: 0, drawT: 0, flee: false, fleeT: 0 };
+  }
+  d.total = n;
+}
+/** 輪を崩す（半分倒された・時間切れ）。残りの騎兵は輪の外へ逃げていく */
+function ringRideScatter(d) {
+  if (!d.ring || d.ring.broken) return;
+  d.ring.broken = true;
+  for (const m of movers) if (m.alive && m._ring && !m._ring.flee) { m._ring.flee = true; m._trChase = false; }
+}
+/** 輪の中心を群れへ寄せ、回し、騎兵の数が半分を切ったら崩す（updateTierRush から） */
+function updateRingRide(d, dt) {
+  const ring = d.ring;
+  if (!ring || ring.broken) return;
+  const c = calcFriendlyCentroid();
+  const dx = c.x - ring.cx, dy = c.y - ring.cy, dd = Math.hypot(dx, dy);
+  if (dd > 0) { const step = Math.min(dd, TR_RINGRIDE_FOLLOW * dt); ring.cx += dx / dd * step; ring.cy += dy / dd * step; }
+  ring.phase += TR_RINGRIDE_SPIN * dt;
+  let alive = 0;
+  for (const m of movers) if (m.alive && m._ring && !m._ring.flee) alive++;
+  if (alive > 0 && alive <= d.total * (1 - TR_RINGRIDE_BREAK)) {
+    pushWorldText(ring.cx, ring.cy - 30, STRINGS.trRingBroken, "#ffe08a");
+    awardCrystals(TR_RINGRIDE_CRYSTALS);
+    triggerFlash("rgba(255,210,80,0.25)", 0.2);
+    hapticPulse(120);
+    ringRideScatter(d);
+  }
+}
+/** 騎兵1騎ぶん：持ち場（輪の上の点）へ駆け、輪に着いたら近い竜へ内向きに矢を射る。崩れたら外へ逃げる（updateMovers から） */
+const _ringBoltStyle = { idx: -1 };
+function updateRingRider(m, dt) {
+  const R = m._ring, d = tierRush.d;
+  R.drawT = Math.max(0, R.drawT - dt);
+  const ring = tierRush.kind === "ringride" ? d.ring : null;
+  if (!ring) R.flee = true;   // ラッシュが打ち切られた・終わった
+  if (R.flee) {
+    const cx = ring ? ring.cx : m.wx - (m.headingX || 1), cy = ring ? ring.cy : m.wy - (m.headingY || 0);
+    const ox = m.wx - cx, oy = m.wy - cy, od = Math.hypot(ox, oy) || 1;
+    m.headingX = ox / od; m.headingY = oy / od;
+    m.wx += m.headingX * TR_RINGRIDE_FLEE * dt; m.wy += m.headingY * TR_RINGRIDE_FLEE * dt;
+    R.fleeT += dt;
+    if (R.fleeT >= TR_RINGRIDE_FLEE_TIME) m.alive = false;
+    return;
+  }
+  const a = ring.phase + R.slot * Math.PI * 2 / ring.n;
+  const tx = ring.cx + Math.cos(a) * TR_RINGRIDE_R, ty = ring.cy + Math.sin(a) * TR_RINGRIDE_R;
+  const dx = tx - m.wx, dy = ty - m.wy, dd = Math.hypot(dx, dy);
+  const step = Math.min(dd, TR_RINGRIDE_GALLOP * dt);
+  if (dd > 0.01) { m.wx += dx / dd * step; m.wy += dy / dd * step; }
+  // 向き：輪の上では回る向き（接線）、遠いときは駆ける向き
+  const onRing = dist2(m.wx, m.wy, ring.cx, ring.cy) <= (TR_RINGRIDE_R * TR_RINGRIDE_ON_RING) ** 2;
+  if (onRing && dd < 40) { m.headingX = -Math.sin(a); m.headingY = Math.cos(a); }
+  else if (dd > 0.01) { m.headingX = dx / dd; m.headingY = dy / dd; }
+  if (!onRing) return;
+  R.cd -= dt;
+  if (R.cd > 0) return;
+  const i = findNearestAliveBoid(m.wx, m.wy);
+  if (i < 0 || dist2(px[i], py[i], m.wx, m.wy) > TR_RINGRIDE_SHOT_RANGE * TR_RINGRIDE_SHOT_RANGE) { R.cd = 0.3; return; }
+  if (_ringBoltStyle.idx < 0) _ringBoltStyle.idx = SHOT_STYLES.findIndex(s => s.key === "bolt");
+  R.aim = Math.atan2(py[i] - m.wy, px[i] - m.wx);
+  const dmg = (TR_RINGRIDE_SHOT_DMG + TR_RINGRIDE_SHOT_DMG_STAGE * runStageIndex) * moverFerocity() * (m._trFerocity || 1);
+  spawnFanProjectileRaw(m.wx, m.wy, R.aim, TR_RINGRIDE_SHOT_SPEED, dmg, "#f0e4c0", 0, TR_RINGRIDE_SHOT_RANGE + 60, 0, _ringBoltStyle.idx);
+  R.cd = TR_RINGRIDE_SHOT_EVERY; R.drawT = TR_RINGRIDE_DRAW_FX;
+}
+/** 輪の道筋（薄い点線の円）。見た目だけ */
+function drawRingRide() {
+  if (tierRush.kind !== "ringride" || tierRush.phase !== "active") return;
+  const ring = tierRush.d.ring;
+  if (!ring || ring.broken) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(160,176,200,0.35)"; ctx.lineWidth = 2; ctx.setLineDash([10, 12]);
+  ctx.lineDashOffset = -ring.phase * TR_RINGRIDE_R;
+  ctx.beginPath(); ctx.arc(ring.cx, ring.cy, TR_RINGRIDE_R, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+/** 輪乗りの騎兵の絵（真俯瞰）。+x が進む向き。馬の胴・首と頭・揺れる尾、背の青灰の兵と、内側（左＝輪の中心側）へ構えた弓 */
+function drawRingRiderBody(m, angle) {
+  const R = m._ring, gait = Math.sin(breathTime * 14 + (m.swayPhase ?? 0));
+  ctx.save(); ctx.rotate(-angle); ctx.globalAlpha = 0.22; ctx.fillStyle = "#000";
+  ctx.beginPath(); ctx.ellipse(3, 5, 17, 8, angle, 0, Math.PI * 2); ctx.fill(); ctx.restore();   // 影
+  ctx.strokeStyle = "#4a3018"; ctx.lineWidth = 2;   // 尾
+  ctx.beginPath(); ctx.moveTo(-13, 0); ctx.quadraticCurveTo(-19, gait * 3, -23, gait * 4); ctx.stroke();
+  ctx.fillStyle = "#7a5230"; ctx.strokeStyle = "#3a2410"; ctx.lineWidth = 1.2;   // 胴
+  ctx.beginPath(); ctx.ellipse(0, 0, 14, 6.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(15, gait * 0.8, 6, 3.4, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();   // 首と頭
+  ctx.fillStyle = "#2a1a0c"; ctx.fillRect(9, -2.2, 4, 4.4);   // たてがみ
+  ctx.fillStyle = m.def.color; ctx.strokeStyle = "#3a4458"; ctx.lineWidth = 1.2;   // 騎兵
+  ctx.beginPath(); ctx.arc(-1, 0, 5.2, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#b8bcc8"; ctx.beginPath(); ctx.arc(-0.5, 0, 2.4, 0, Math.PI * 2); ctx.fill();   // 兜
+  // 弓：撃った向き（多くは輪の内側＝左）へ構える。弓を引いた直後は弦を引き絞る
+  const local = R ? R.aim - angle : -Math.PI / 2;
+  const bx = Math.cos(local) * 6, by = Math.sin(local) * 6;
+  ctx.save(); ctx.translate(-1 + bx, by); ctx.rotate(local);
+  ctx.strokeStyle = "#c8a070"; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.arc(0, 0, 7, -1.2, 1.2); ctx.stroke();
+  const pull = R && R.drawT > 0 ? -4 : Math.cos(1.2) * 7;
+  ctx.strokeStyle = "rgba(240,240,250,0.6)"; ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(Math.cos(-1.2) * 7, Math.sin(-1.2) * 7); ctx.lineTo(pull, 0); ctx.lineTo(Math.cos(1.2) * 7, Math.sin(1.2) * 7); ctx.stroke();
+  ctx.restore();
+}
+
 function trAliveUnits() {
   let n = 0;
   for (const m of movers) if (m.alive && m._tr && (m._trChase || m._trGoal)) n++;
@@ -17073,6 +17220,7 @@ function updateTierRush(wdt, dt) {
     // v3.54.0 の動く砦の砲撃は、案帳 DT-487 手直しで四隅の砲台（fortress_turret）が自分で撃つ形になった
     case "gates": updateTrGates(d, wdt); break;
     case "twinelite": updateTrTwinRage(); break;
+    case "ringride": updateRingRide(d, wdt); break;   // v3.97.0（案帳 DT-207）
     case "volley": updateTrVolley(d); break;
     case "firering": updateTrFireRing(d, wdt); break;
     case "convoy": {
@@ -20335,6 +20483,8 @@ function drawMovers() {
       drawSkyCarrierBody(m, angle);   // v3.87.0（案帳 DT-124・2回目）: 画像なしのベクター専用
     } else if (def.skyMine) {
       drawSkyMine(m, angle);   // v3.95.0（案帳 DT-179）: 画像なしのベクター専用
+    } else if (def.name === "ring_rider") {
+      drawRingRiderBody(m, angle);   // v3.97.0（案帳 DT-207）: 画像なしのベクター専用
     } else if (def.windRider) {
       drawWindRider(m, angle);   // v3.78.0（案帳 DT-124）: 画像なしのベクター専用
     } else if (def.name === "troop_airship") {
@@ -25790,7 +25940,7 @@ const STRINGS = {
   // v3.16.0: 警戒度ラッシュ（{egg} は storyEgg で竜卵／星卵に置き換える）
   trNames: {
     haste: "猛進", siege: "大型包囲", horde: "小型の大軍", wind: "強風", meteor: "流星",
-    volley: "一斉射撃", firering: "火の輪", convoy: "{egg}の輸送隊", elite: "精鋭の追跡者", night: "暗夜", harpoon: "竜狩りの銛", fortress: "動く砦", gates: "湧き出る門", twinelite: "双頭の精鋭", titan: "巨人の行軍",
+    volley: "一斉射撃", firering: "火の輪", convoy: "{egg}の輸送隊", elite: "精鋭の追跡者", night: "暗夜", harpoon: "竜狩りの銛", fortress: "動く砦", gates: "湧き出る門", twinelite: "双頭の精鋭", titan: "巨人の行軍", ringride: "輪乗りの騎兵",
   },
   trWarn: {
     haste:    "人間たちが{egg}の力で奮い立つ",
@@ -25808,8 +25958,9 @@ const STRINGS = {
     gates:    "地面に門が開く",
     twinelite: "二体の精鋭が群れを追ってくる",
     titan:    "岩の巨像が地面を揺らして歩いてくる",
+    ringride: "騎兵が群れを囲みに駆けてくる",
   },
-  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた", trGateClosed: "門が閉じた", trTwinRage: "怒り狂った", trTwinSync: "同時に討った", trFortressDown: "砦を落とした", trFortressTurretDown: "砲台を壊した", trTitanDown: "巨像を崩した", trTitanLeave: "巨像が去っていく",
+  trConvoyCaught: "{egg}を取り戻した", trConvoyEscaped: "逃げられた", trEliteDown: "精鋭を討った", trHarpoonTaken: "竜が奪われた", trHarpoonLeave: "騎士が引き揚げた", trGateClosed: "門が閉じた", trTwinRage: "怒り狂った", trTwinSync: "同時に討った", trFortressDown: "砦を落とした", trFortressTurretDown: "砲台を壊した", trTitanDown: "巨像を崩した", trTitanLeave: "巨像が去っていく", trRingBroken: "輪が崩れた",
   trAttackerMeteor: "流星", trAttackerRing: "火の輪",
   defeatTitle: "力尽きた",
   // v3.41.0（案帳 DT-129・Shooter指示「力尽きた時のメッセージにもほかと同じようにフレーバーを」）:
@@ -32635,7 +32786,7 @@ const CODEX_ENEMY_NAMES = {
   knights: "騎士団", siegetower: "攻城塔", batteringram: "破城槌", splitter: "分裂体",
   splitter_mid: "分裂体（中）", splitter_small: "分裂体（小）",
   ironclad: "陸上甲鉄艦", grenadiers: "擲弾兵隊", grapeshot: "散弾砲車", balloon: "爆撃気球",
-  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門", stone_titan: "岩脚の巨像", rock_giant: "岩の巨人",
+  flamewagon: "火吹き車", armortrain: "装甲列車", steamhammer: "蒸気打鉄", shockman: "衝撃兵", harpoon_knight: "竜狩りの騎士", moving_fortress: "動く砦", rush_gate: "湧き出る門", stone_titan: "岩脚の巨像", rock_giant: "岩の巨人", ring_rider: "輪乗りの騎兵",
   kite_soldier: "雷凧の兵", longbowmen: "遠矢の弓隊", troop_airship: "落下兵の飛行船", paratrooper: "落下兵", war_elephant: "戦象", war_elephant_rider: "戦象の弓兵", scythe_chariot: "鎌付き戦車", scythe_convoy: "鎌付き戦車の車列", fortress_turret: "動く砦の砲台", hero_shield: "盾投げの騎士", hero_mage: "大魔法使い", hero_archer: "英雄の弓手",
   miasma: "瘴気塔", teslawagon: "雷撃塔車", teslagiant: "雷公", repulsor: "反発塔車",
   healer: "治癒塔", warlord: "ウォーロード", summoner: "召喚門", bomberwing: "爆撃飛行隊",
@@ -32685,6 +32836,7 @@ const CODEX_SPECIAL_ERA = {
   splitter_small: "分裂体（中）を壊すと出る",
   // v3.85.4（案帳 DT-218 手直し・Shooter「どこに出るでしょうか」）: 出る時代の表に載らない（別の決め方で出る）敵は「—」になっていた
   harpoon_knight:     "警戒度ラッシュ「竜狩りの銛」",
+  ring_rider:         "警戒度ラッシュ「輪乗りの騎兵」",   // v3.97.0（案帳 DT-207）
   rush_gate:          "警戒度ラッシュ「湧き出る門」",
   kite_soldier:       "浮き城の空（全文明） — 島の縁に何人も立ち、雲海の上へ凧を揚げて待つ（町の島に2人・天空城に3人・小島にも）",
   troop_airship:      "V 産業 / VI 電気 / VII 大戦 — 1隻（どの地域にも）",
@@ -32748,6 +32900,8 @@ function codexAttackLabel(def) {
     // def.attack を持たず専用の処理で攻撃する敵が「攻撃しない」になっていた。数値は処理の定数から引く
     if (def.part === "rider")
       return `矢 威力${WAR_RIDER_DAMAGE}・射程${WAR_RIDER_RANGE}・${WAR_RIDER_INTERVAL}秒ごと（象の背から近い竜を撃つ。4人が残っている間は象が固い）`;
+    if (def.name === "ring_rider")
+      return `矢 威力${TR_RINGRIDE_SHOT_DMG}＋ステージごとに${TR_RINGRIDE_SHOT_DMG_STAGE}・射程${TR_RINGRIDE_SHOT_RANGE}・${TR_RINGRIDE_SHOT_EVERY}秒ごと（群れを囲む輪の上から内へ射る）`;
     if (def.name === "harpoon_knight")
       return `銛 射程${TR_HARPOON_RANGE}・${TR_HARPOON_INTERVAL}秒ごと（刺さった竜を引きずり、騎士まで引かれると奪われる）`;
     if (def.name === "rush_gate")
@@ -33615,6 +33769,7 @@ const CODEX_RUSH_DESC = {
   gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
   twinelite: () => `大型の精鋭が2体（1体ずつ体力 ×${+TR_TWIN_HP.toFixed(1)}。衝撃波を持つ時代は ×${+TR_TWIN_SHOCKWAVE_HP.toFixed(1)}）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
   titan:    () => `岩でできた多脚の巨像が1体、ゆっくり群れへ歩いてくる（体力は精鋭の追跡者の ×${TR_TITAN_HP}・砲塔は無く撃たない）。脚を1本ずつ踏み下ろし、<b>踏む足の下にだけ予告の輪</b>が出て、踏んだ足のまわり（半径${TITAN_STOMP_R}）に衝撃波。輪の無い側から胴を叩く。人間の町は踏みつぶさない。倒すと岩の山に崩れて卵${MOVER_DEFS.stone_titan.eggDrop}個。${TR_TITAN_DUR}秒で去る`,
+  ringride: () => `騎兵（警戒度2〜4で ${TR_RINGRIDE_COUNT.slice(1).join("・")}騎）が群れを囲む半径${TR_RINGRIDE_R}pxの輪になって回り、${TR_RINGRIDE_SHOT_EVERY}秒ごとに内へ矢を射る。輪は群れについてくるが秒速${TR_RINGRIDE_FOLLOW}pxまでなので、<b>止まると囲まれ続け、輪の一か所へ線を向けて突っ切れば抜けられる</b>。${Math.round(TR_RINGRIDE_BREAK * 100)}%を倒すと輪が崩れて残りは逃げる（竜晶${TR_RINGRIDE_CRYSTALS}）。${TR_RINGRIDE_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
 function codexRushHtml() {
@@ -41189,6 +41344,7 @@ function render(now) {
   drawLaserStrikes();        // v0.48: 極太レーザー（予兆＋照射）
   drawTierRushWorld();       // v3.16.0: 流星・一斉射撃の予告線・火の輪
   drawHarpoonTethers();      // v3.51.0: 竜狩りの騎士の綱
+  drawRingRide();            // v3.97.0: 輪乗りの騎兵の輪の道筋
   drawFlood();               // v0.43: 洪水（地面の上・竜より下）
   drawDams();                // v0.43: 堰の見た目
   drawHazardShots();         // v0.63: 危険地帯の見せ弾（誰が撃ったかを見せる）
