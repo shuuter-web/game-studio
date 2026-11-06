@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.90.0";
+const GAME_VERSION = "v3.91.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7211,7 +7211,7 @@ function generateStageLayout(stageIndex) {
   }
 
   // v0.78: 役割を持つ建物を町ごとに置く。
-  // 普通の町は 鐘楼＋穀倉 の2択、格上の街・要塞都市はそこに兵舎が加わって3択。
+  // 普通の町は 穀倉、格上の街・要塞都市はそこに兵舎が加わる（v3.91.0 で鐘楼は外した。案帳 DT-515）。
   // 時代兵器が付いた建物には重ねない（1棟1役）。
   {
     const metaMap = buildTownMetaMap(result);
@@ -7314,8 +7314,7 @@ function generateStageLayout(stageIndex) {
       }
       const gr = take(x => -x.front * 2 + x.dist);
       if (gr) gr._townRole = "granary";
-      const bl = take(x => -x.dist * 3);
-      if (bl) bl._townRole = "belfry";
+      // v3.91.0（案帳 DT-515・Shooter「鐘楼は完全カットで」）: 鐘楼は置かない
     }
   }
 
@@ -10613,12 +10612,10 @@ const CONCUSSION_BATTERY_KNOCK_R = 58;   // 着弾衝撃の半径（周りの竜
 // どれも正解で、群れの規模と残りHPで自然に選択が揺れる。
 // 置き場所は v0.77 の表裏に合わせる（兵舎＝表／穀倉＝裏／鐘楼＝中間）。
 const TOWN_ROLE_DEFS = {
-  belfry:   { label: "鐘楼",  ring: "#ffd86a",
-              desc: "生きている間、その町の建物の発射間隔が短い" },
   granary:  { label: "穀倉",  ring: "#a8e070",
               desc: "壊すと卵がまとめて出る" },
   barracks: { label: "兵舎",  ring: "#ff9a6a",
-              desc: "生きている間、近づくと兵を出し続ける" },
+              desc: "生きている間、近づくと戸口から兵の隊を出し続ける" },
   // v0.81: 表が手強くない（実機判定 2026-09-12）への回答。
   // 表側に**必ず数基**立ち、その文明の通常弾を扇で連射する＝表から入ると弾幕を抜ける必要がある。
   // 全方位ではなく群れの方向へ面で撃つ（全方位はボスと街の中央だけ、という v0.64.1 の方針を守る）。
@@ -10644,21 +10641,35 @@ const RAMPART_PER_ADVANCED_TOWN = 4;
 const RAMPART_PER_FORTRESS_TOWN = 6;
 // 表の大きめの棟が足りないとき、小さい家を前哨堡に建て替える大きさ（中くらいの建物は16。家並みに収まるよう少し小さく）
 const RAMPART_PROMOTED_RADIUS = 14;
-// 鐘楼が生きている町の発射間隔倍率（1未満＝速く撃つ）
-const BELFRY_INTERVAL_MULT = 0.7;
 // 穀倉を壊したときに出る卵。散らばっている町の卵（1町2〜3個）より明確に多い
 const GRANARY_EGG_COUNT = 4;
+// 穀倉の屋根の卵の印：画面上の最小半径(px)と、印どうしの間隔（半径の何倍）。4つ並べるので1つの卵持ち建物（5px）より小さめ
+const GRANARY_EGG_MARK_MIN_PX = 3.6;
+const GRANARY_EGG_MARK_GAP    = 2.6;
 // 兵舎: 群れがこの距離に入ると兵を出す／出す間隔／1棟あたりの同時上限
+// v3.91.0（案帳 DT-519・Shooter「兵が出てる実感が全然なかった。もうちょっと頻繁に、出る時はまとまった数が出るように」）:
+// 1回に1体（6秒ごと・同時2体）だったのを、1回に隊（BARRACKS_SQUAD 体）でまとめて出す形にした。間隔も詰めた
 const BARRACKS_RANGE    = 900;
-const BARRACKS_INTERVAL = 6.0;
-const BARRACKS_CAP      = 2;
+const BARRACKS_INTERVAL = 5.0;
+const BARRACKS_SQUAD    = 4;     // 1回に出す数（軽い兵のとき。重い兵ほど減る）
+const BARRACKS_CAP_SQUADS = 2;   // 1棟あたり同時に居られるのは隊いくつ分まで
+// 戸口から1体ずつ出てくる間隔（秒）・出てくる演出の長さ（秒）
+const BARRACKS_FILE_GAP = 0.22;
+const BARRACKS_DOOR_FX  = 1.4;
 // 出す兵のHPで間隔を伸ばす。文明によって顔ぶれの重さが10倍以上違う（騎士hp24〜巨像hp250）ので、
 // 同じ間隔で出すと後半の兵舎だけ桁違いに強くなる。基準HP＝この値で等倍、最大5倍まで遅くなる。
 const BARRACKS_HP_REFERENCE = 60;
 const BARRACKS_MAX_SLOWDOWN = 5;
+function barracksWeightOf(def) {
+  return Math.min(BARRACKS_MAX_SLOWDOWN, Math.max(1, def.hp / BARRACKS_HP_REFERENCE));
+}
+/** 1回に出す数。重い兵（巨像など）は数を減らし、それでも重い分は間隔で払う */
+function barracksSquadFor(def) {
+  return Math.max(1, Math.round(BARRACKS_SQUAD / barracksWeightOf(def)));
+}
 function barracksIntervalFor(def) {
-  const k = Math.min(BARRACKS_MAX_SLOWDOWN, Math.max(1, def.hp / BARRACKS_HP_REFERENCE));
-  return BARRACKS_INTERVAL * k;
+  const k = barracksWeightOf(def);
+  return BARRACKS_INTERVAL * Math.max(1, k * barracksSquadFor(def) / BARRACKS_SQUAD);
 }
 
 const CONCUSSION_PER_FORTRESS_TOWN = 2;  // 要塞都市（_fixedTier つき）1町あたり。案帳 DT-499 で 1→2
@@ -11251,7 +11262,6 @@ function drawEnemyDebugLabels() {
 // v0.78: 鐘楼が生きている町（townIndex）と、兵舎の一覧。
 // 毎フレーム全建物（数千棟）を走査しないよう、レイアウト生成時と
 // 警戒度の建て直し後に作り直し、陥落時だけ差分で消す。
-let townBelfryAlive = new Set();
 let barracksList = [];
 // v0.80: 町の meta 一覧（「街の向き」表示が毎フレーム使う。
 // settlements を毎フレーム走査すると数千棟になるので索引を持つ）。
@@ -11288,7 +11298,6 @@ function worldTextPinTarget(fx) {
 }
 
 function recomputeTownRoles() {
-  townBelfryAlive = new Set();
   barracksList = [];
   townStats.clear();
   townMetaList = [];
@@ -11302,7 +11311,6 @@ function recomputeTownRoles() {
   for (const s of settlements) {
     if (!s) continue;
     if (s._townRole && !s.fallen) {
-      if (s._townRole === "belfry" && s._townIndex !== undefined) townBelfryAlive.add(s._townIndex);
       if (s._townRole === "barracks") barracksList.push(s);
     }
     // 城壁は町の棟数に数えない（撃たないので陥落判定に関係しない）
@@ -11522,22 +11530,78 @@ function updateBarracks(dt) {
     if (b.fallen) continue;
     if (isTownSurrendered(b._townIndex)) continue;   // v0.79: 陥落した町は兵も出さない
     if (dist2(b.wx, b.wy, c.x, c.y) > r2) continue;
+    // 戸口から1体ずつ出している最中（隊の残り）
+    if (b._barracksQueue > 0) {
+      b._barracksFileTimer -= dt;
+      if (b._barracksFileTimer <= 0) {
+        b._barracksFileTimer = BARRACKS_FILE_GAP;
+        b._barracksQueue--;
+        spawnBarracksSoldier(b, def);
+      }
+      continue;
+    }
     const interval = barracksIntervalFor(def);
     if (b._barracksTimer === undefined) b._barracksTimer = random() * interval;
     b._barracksTimer -= dt;
     if (b._barracksTimer > 0) continue;
     b._barracksTimer = interval;
+    const squad = barracksSquadFor(def);
     let mine = 0;
     for (const m of movers) if (m.alive && m._fromBarracks === b) mine++;
-    if (mine >= BARRACKS_CAP) continue;
-    const mv = makeMover(def, () => ({ x: b.wx, y: b.wy }));
-    mv.wx = b.wx + (random() - 0.5) * 50;
-    mv.wy = b.wy + (random() - 0.5) * 50;
-    mv.xpValue = def.xp;
-    mv._fromBarracks = b;
-    movers.push(mv);
-    spawnDragonAppearEffect(mv.wx, mv.wy);
+    const room = squad * BARRACKS_CAP_SQUADS - mine;
+    if (room <= 0) continue;
+    // 戸口は群れのいる側。ここから隊が1体ずつ出てくる（どこから湧いたかを絵で見せる。DT-519）
+    b._barracksDoorAngle = Math.atan2(c.y - b.wy, c.x - b.wx);
+    b._barracksDoorAt = breathTime;
+    b._barracksQueue = Math.min(squad, room) - 1;
+    b._barracksFileTimer = BARRACKS_FILE_GAP;
+    spawnBarracksSoldier(b, def);
   }
+}
+
+/** 兵舎の戸口から兵を1体出す。v3.91.0（案帳 DT-519・Shooter「0個で良い」）: 兵舎の兵は卵を持たない（隊長にもしない） */
+function spawnBarracksSoldier(b, def) {
+  const a = b._barracksDoorAngle ?? 0;
+  const doorX = b.wx + Math.cos(a) * b.radius, doorY = b.wy + Math.sin(a) * b.radius;
+  const mv = makeMover(def, () => ({ x: doorX, y: doorY }));
+  // 戸口のすぐ外に、横へ少しずつずらして並べる（重ならず列で出てくる）
+  const side = (random() - 0.5) * b.radius * 0.9;
+  mv.wx = doorX + Math.cos(a) * 6 - Math.sin(a) * side;
+  mv.wy = doorY + Math.sin(a) * 6 + Math.cos(a) * side;
+  mv.xpValue = def.xp;
+  mv.eggs = 0; mv.eggLeader = false;
+  mv._fromBarracks = b;
+  movers.push(mv);
+}
+
+/** 兵舎の戸口が開いて兵が出てくる演出（ライブ描画）。戸口が橙に光り、外向きの矢じりが流れる */
+function drawBarracksDoor(s) {
+  if (s._barracksDoorAt === undefined) return;
+  const t = breathTime - s._barracksDoorAt;
+  if (t < 0 || t > BARRACKS_DOOR_FX) return;
+  const fade = 1 - t / BARRACKS_DOOR_FX;
+  const a = s._barracksDoorAngle ?? 0;
+  const w = Math.max(8, s.radius * 0.7);
+  ctx.save();
+  ctx.translate(s.wx + Math.cos(a) * s.radius * 0.85, s.wy + Math.sin(a) * s.radius * 0.85);
+  ctx.rotate(a);
+  // 開いた戸口（暗い口の奥が橙に光る）
+  ctx.globalAlpha = 0.9 * fade;
+  ctx.fillStyle = "#2a1a10";
+  ctx.fillRect(-4, -w / 2, 8, w);
+  ctx.globalAlpha = 0.85 * fade;
+  ctx.fillStyle = "#ffb070";
+  ctx.fillRect(-2, -w / 2 + 2, 4, w - 4);
+  // 外へ流れる矢じり（ここから出てきた、の向き）
+  ctx.strokeStyle = "#ffd0a0"; ctx.lineWidth = 2.2; ctx.lineCap = "round";
+  for (let k = 0; k < 3; k++) {
+    const ph = ((t * 2.2) + k / 3) % 1;
+    ctx.globalAlpha = fade * (1 - ph) * 0.9;
+    const x = 6 + ph * 26;
+    ctx.beginPath(); ctx.moveTo(x - 5, -6); ctx.lineTo(x, 0); ctx.lineTo(x - 5, 6); ctx.stroke();
+  }
+  ctx.lineCap = "butt";
+  ctx.restore();
 }
 
 /**
@@ -11698,19 +11762,10 @@ function drawEmplacements() {
   ctx.save();
   for (const s of settlements) {
     if (!s || s.fallen) continue;
-    // v0.78: 役割を持つ建物（鐘楼・穀倉・兵舎）も同じ作法で輪を出す。
-    // 絵だけだと町の中で埋もれるので、「ここは普通の建物ではない」を輪で予告する。
+    // v3.91.0（案帳 DT-515・Shooter「役割の輪の表示はカット」）: 役割を持つ建物（穀倉・兵舎・前哨堡）の輪は出さない。
+    // 穀倉は屋根の卵の印（drawEggBearerMarkers）、兵舎は兵が出てくる演出、前哨堡は砲で働きを見せる
     if (!s._emplacement && s._townRole) {
-      const rdef = TOWN_ROLE_DEFS[s._townRole];
-      if (rdef) {
-        const rp = 0.5 + 0.5 * Math.sin(breathTime * 2.2 + s.wx * 0.01);
-        ctx.globalAlpha = 0.22 + 0.30 * rp;
-        ctx.strokeStyle = rdef.ring;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(s.wx, s.wy, s.radius + 5 + rp * 3, 0, Math.PI * 2);
-        ctx.stroke();
-      }
+      if (s._townRole === "barracks") drawBarracksDoor(s);
       continue;
     }
     if (!s._emplacement) continue;
@@ -23941,11 +23996,9 @@ function updateSettlementAttacks(dt) {
     if (settlement.attackTimer > 0) continue;
     // 通常建物: 発射頻度を大幅に下げる（×4倍の間隔 = たまに飛ぶ「雰囲気」として残す）
     // ボス: projectileInterval をそのまま使う（定数で設定した高頻度を活かす）
-    // v0.78: 鐘楼が生きている町は発射間隔が短い（鐘楼を先に落とすと弾幕が緩む）
     settlement.attackTimer = settlement.isBoss
       ? settlement.projectileInterval
-      : settlement.projectileInterval * 4.0 *
-        (townBelfryAlive.has(settlement._townIndex) ? BELFRY_INTERVAL_MULT : 1) /
+      : settlement.projectileInterval * 4.0 /
         (orbKind === "furnace" ? ORB_FURNACE_RATE : 1);   // v3.48.0: 竜玉炉の町は撃つのが速い
 
     const targetIdx = findNearestAliveBoid(settlement.wx, settlement.wy);
@@ -24685,8 +24738,6 @@ function settlementFall(settlementIndex) {
       spawnEgg(settlement.wx + Math.cos(angle) * r, settlement.wy + Math.sin(angle) * r);
     }
     triggerFlash("rgba(160,224,112,0.12)", 0.18);
-  } else if (settlement._townRole === "belfry") {
-    townBelfryAlive.delete(settlement._townIndex);
   }
 
   // v0.79: 町の陥落判定。城壁とボスは数えない（recomputeTownRoles と同じ基準）。
@@ -24758,6 +24809,11 @@ function settlementFall(settlementIndex) {
   // v3.49.0（案帳 DT-238）: 竜玉の町（施設の陥落）はレアのカードがすぐ出る。ほかの町は竜玉のかけらが1つ溜まり、3つでカード
   if (townJustSurrendered) {
     if (upCount("f_fall_roar") > 0) { fallRoarTimer = FALL_ROAR_TIME; pushWorldText(leader.x, leader.y - 40, fallCardText("f_fall_roar").name, "#ffb070"); }
+    const triumph = upCount("f_triumph");
+    if (triumph > 0) {
+      healFlock(TRIUMPH_HEAL_BY_COUNT[Math.min(triumph, TRIUMPH_HEAL_BY_COUNT.length - 1)]);
+      pushWorldText(leader.x, leader.y - 58, fallCardText("f_triumph").name, "#9cf0a0");
+    }
     // v3.56.0: ふつうの町の陥落ではカードを出さない（カードは経験値で）。竜玉の町（施設の陥落）のレアは残す
     if (treasureTowns.delete(settlement._townIndex)) queueFallOffer(settlement._townIndex, true);   // 警戒度はカードを取ったときに進む
   }
@@ -25801,6 +25857,7 @@ const STRINGS = {
     f_rush:     { name: "逆襲の血",       desc: "ラッシュの間、群れの攻撃 +50%" },
     f_egg_power: { name: "卵の力",        desc: "このステージで拾った卵1つにつき、群れの攻撃 +1%（最大 +60%）" },
     f_fall_roar: { name: "陥落の咆哮",    desc: "町が陥落するたびに、8秒間 群れの攻撃 +50%" },
+    f_triumph:   { name: "凱旋",          desc: "町が陥落するたびに、群れの竜のHPが回復する（1枚目 35%・2枚目で全快）" },
     f_egg_wave:  { name: "孵化の衝撃",    desc: "卵を拾うたびに、その場で衝撃波が起きてまわりを吹き飛ばす" },
     f_sp_double: { name: "双つ魂",        desc: "連れている特殊個体が2倍になる（あとから加わった特殊個体も2倍）" },
     f_giant:     { name: "巨竜化",        desc: "群れの竜5匹が巨大になる（HP 4倍・まわりを踏みつぶす）" },
@@ -25998,6 +26055,8 @@ const FALL_CARD_DEFS = [
   // v3.49.0（案帳 DT-238・Shooter指示「ステージ限定なのでいろいろ派手でよい」）
   { id: "f_egg_power", icon: "\u{1F95A}", max: 1 },              // 拾った卵の数だけ攻撃が上がる
   { id: "f_fall_roar", icon: "\u{1F4E2}", max: 2 },              // 町が陥落するたびに、しばらく攻撃が上がる
+  // v3.91.0（案帳 DT-525・Shooter「35%回復、100%回復の2段階に。死んでる竜の時間短縮は不要」）
+  { id: "f_triumph",   icon: "\u{1F6A9}", max: 2, rare: true },  // 町が陥落するたびに群れが回復
   { id: "f_egg_wave",  icon: "\u{1F4A5}", max: 1, rare: true },  // 卵を拾うと衝撃波
   { id: "f_sp_double", icon: "\u{1F465}", max: 1, stageOnly: true, special: true },   // 特殊個体が2倍（DT-511 手直し: ステージ限定）
   { id: "f_giant",     icon: "\u{1F996}", max: 2, ultra: true },  // 群れの数匹が巨大化
@@ -26014,6 +26073,7 @@ const EGG_POWER_PER_EGG  = 0.01;   // 卵の力：拾った卵1つで攻撃 +1%
 const EGG_POWER_MAX      = 0.6;
 const FALL_ROAR_TIME     = 8;      // 陥落の咆哮：攻撃が上がっている秒数
 const FALL_ROAR_ATTACK   = 0.5;    // 1枚ごとの上げ幅
+const TRIUMPH_HEAL_BY_COUNT = [0, 0.35, 1.0];   // 凱旋：持っている枚数ごとの、陥落1回で回復する割合（最大HP比）
 const EGG_WAVE_RADIUS    = 150;    // 卵の衝撃波
 const EGG_WAVE_DAMAGE    = 45;
 const EGG_WAVE_IMPACT    = 160;
@@ -32661,7 +32721,7 @@ function codexBuildingHtml() {
               key === "barracks" ? "格上の街・要塞都市だけ" :
               key === "rampart"  ? `どの町にも${RAMPART_PER_TOWN}基（格上${RAMPART_PER_ADVANCED_TOWN}／要塞${RAMPART_PER_FORTRESS_TOWN}）` :
                                    "どの町にも1つ"}` +
-            ` ／ ${key === "granary" ? "町の裏側" : key === "belfry" ? "町の中心寄り" : "町の表側"}</div>` +
+            ` ／ ${key === "granary" ? "町の裏側" : "町の表側"}</div>` +
           `<div class="cx-atk">${def.desc}</div>` +
           (key === "rampart"
             ? codexPowerHtml([{ label: "通常弾（1発）", note: "I〜VIII",
@@ -32670,14 +32730,14 @@ function codexBuildingHtml() {
                                 impact: shotKnockImpulse(fanShotKind(1)) }], "enemy")
             : "") +
           `<div class="cx-stat">${
-            key === "belfry"   ? `町の発射間隔 ×${BELFRY_INTERVAL_MULT}` :
             key === "granary"  ? `卵 ${GRANARY_EGG_COUNT}個（町に散らばる卵は1町2〜3個）` :
             key === "rampart"  ? `${RAMPART_COUNT}発の扇・${RAMPART_INTERVAL}秒ごと・射程${RAMPART_RANGE}` +
                                  `／<b>正面±${Math.round(RAMPART_ARC * 180 / Math.PI)}度にしか撃てない</b>` +
                                  `（1発の威力は普通の弾の${Math.round(RAMPART_DMG_MULT * 100)}%）` :
                                  `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(0)]).toFixed(0)}〜` +
-                                 `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(5)]).toFixed(0)}秒ごとに1体` +
-                                 `（兵の重さで変わる）・同時${BARRACKS_CAP}体まで・射程${BARRACKS_RANGE}`
+                                 `${barracksIntervalFor(MOVER_DEFS[barracksUnitFor(5)]).toFixed(0)}秒ごとに` +
+                                 `${barracksSquadFor(MOVER_DEFS[barracksUnitFor(5)])}〜${barracksSquadFor(MOVER_DEFS[barracksUnitFor(0)])}体が戸口から出てくる` +
+                                 `（兵の重さで変わる）・同時に隊${BARRACKS_CAP_SQUADS}つ分まで・射程${BARRACKS_RANGE}・兵は卵を持たない`
           }</div>` +
         `</div>` +
       `</div>`;
@@ -40700,6 +40760,30 @@ function drawEggBearerMarkers(now) {
     ctx.fill();
   }
 
+  // v3.91.0（案帳 DT-515・Shooter「穀倉は卵を乗せるでOK」）: 穀倉の屋根に、壊すと出る卵の数（GRANARY_EGG_COUNT）だけ
+  // 卵の印を並べて載せる＝「壊すと卵がまとめて出る」が絵のまま読める。印は上の卵持ち建物と同じ作り
+  for (let s = 0; s < settlements.length; s++) {
+    const st = settlements[s];
+    if (st.fallen || st._townRole !== "granary") continue;
+    if (st.wx < bounds.minX || st.wx > bounds.maxX ||
+        st.wy < bounds.minY || st.wy > bounds.maxY) continue;
+    const worldR = Math.max(GRANARY_EGG_MARK_MIN_PX / cam.scale, GRANARY_EGG_MARK_MIN_PX);
+    const gap = worldR * GRANARY_EGG_MARK_GAP;
+    const cols = Math.ceil(Math.sqrt(GRANARY_EGG_COUNT));
+    const rows = Math.ceil(GRANARY_EGG_COUNT / cols);
+    for (let k = 0; k < GRANARY_EGG_COUNT; k++) {
+      const ox = st.wx + ((k % cols) - (cols - 1) / 2) * gap;
+      const oy = st.wy + (Math.floor(k / cols) - (rows - 1) / 2) * gap;
+      ctx.globalAlpha = pulse * 0.35; ctx.fillStyle = "#ffd040";
+      ctx.beginPath(); ctx.arc(ox, oy, worldR * 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = pulse * 0.90; ctx.fillStyle = "#ffe060"; ctx.strokeStyle = "#fff8a0";
+      ctx.lineWidth = Math.max(0.5, 1.5 / cam.scale);
+      ctx.beginPath(); ctx.arc(ox, oy, worldR, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.globalAlpha = pulse * 0.80; ctx.fillStyle = "#ffffff";
+      ctx.beginPath(); ctx.arc(ox, oy, worldR * 0.35, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
   // v0.23: 花火要塞の目印（卵オーブとは色・形を変える＝回転するピンクのスパーク）
   for (let s = 0; s < settlements.length; s++) {
     const st = settlements[s];
@@ -42693,7 +42777,6 @@ const BUILDING_IMAGE_SOURCES = {
 
   // v0.78: **役割を持つ建物**（Shooter指示「どれから倒すかを選べるように」）。
   // 時代ごとではなく**機能ごとに1枚**（時代兵器と同じ扱い）。
-  role_belfry:   "assets/building_role_belfry.png",
   role_granary:  "assets/building_role_granary.png",
   role_barracks: "assets/building_role_barracks.png",
   // v0.84: 前哨堡は**指向性のある絵**（大砲・バリスタ等）に差し替え、時代ごとに用意した。
