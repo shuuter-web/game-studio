@@ -1355,7 +1355,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.88.2";
+const GAME_VERSION = "v3.89.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -11959,7 +11959,8 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
     result.push(sh);
   }
   // v3.61.0: 雷凧の兵（案帳 DT-250）は町の位置が決まってから置く（この時点では町の一覧がまだ前のステージのまま）
-  kitePlacePending = KITE_SOLDIERS_BY_STAGE[stageIndex] || 0;
+  // v3.89.0（DT-250 手直し）: 浮き城の空だけに出す（どの文明でも）。ほかの地域には出さない
+  kitePlacePending = worldShape === SHAPE_SKYLAND ? KITE_SKY_MAX : 0;
   // v3.60.0: 戦象（案帳 DT-218）を古代・中世に。背に弓兵4人（別の敵）
   for (let k = 0; k < (WAR_ELEPHANT_BY_STAGE[stageIndex] || 0); k++) {
     const el = makeMover(MOVER_DEFS.war_elephant, randPoint);
@@ -13125,7 +13126,14 @@ function elephantRidersLeft(el) { return el.riders ? el.riders.some(r => r.alive
 
 // ---- v3.61.0: 雷凧の兵（案帳 DT-250・Shooter判定「出す場所は近世から、町の外側」）----
 // 近世（フランクリンの凧の時代）・産業・電気。普通の町と格上の街の外側に1人ずつ、1つの大陸に8人前後
-const KITE_SOLDIERS_BY_STAGE = [0, 0, 0, 8, 8, 8];
+// v3.89.0（案帳 DT-250 手直し・Shooter「雑においても面白みがないので、浮島ステージの専用敵にして、たくさん配置して」）:
+// 浮き城の空の専用の敵にした（どの文明でも出る。ほかの地域には出ない）。兵は島の縁に立ち、凧を島の外の雲海の上へ揚げる。
+// 島ごとに何人も並べるので、島のまわりを雷の糸が囲う見え方になる（凧のあいだを縫って島に入る遊びになる）
+const KITE_SKY_MAX       = 26;    // 1つのワールドに置く上限
+const KITE_SKY_PER_TOWN  = 2;     // 町の島1つに立つ人数
+const KITE_SKY_PER_CAPITAL = 3;   // 天空城の島
+const KITE_SKY_PER_DECOR = 1;     // 町の無い小島（上限の残りだけ）
+const KITE_SKY_EDGE_IN   = 16;    // 兵が立つ位置（島の縁からこれだけ内側）
 const KITE_TOWN_OFFSET = 150;   // 町の中心から兵までの距離
 const KITE_LINE_LEN    = 130;   // 兵から凧までの糸の長さ（町の外へ向けて揚げる）
 const KITE_ACTIVE_R    = 650;   // 群れがこれより近いときだけ雷雲が集まる
@@ -13146,6 +13154,7 @@ const freeKites = [];
 function placeKiteSoldiers() {
   if (kitePlacePending <= 0 || townStats.size === 0) return;
   const clear2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
+  if (worldShape === SHAPE_SKYLAND && skyIslands.length > 0) { placeSkyKiteSoldiers(clear2); return; }
   const towns = [...townStats.values()].filter(t => !t.surrendered && t.total > 0 && dist2(t.cx, t.cy, START_X, START_Y) > clear2);
   for (let k = 0; k < kitePlacePending && towns.length > 0; k++) {
     const t = towns.splice(Math.floor(random() * towns.length), 1)[0];
@@ -13156,6 +13165,35 @@ function placeKiteSoldiers() {
     m.wx = x; m.wy = y; m.maxHp = m.hp = MOVER_DEFS.kite_soldier.hp; m.xpValue = MOVER_DEFS.kite_soldier.xp;
     m.kiteAng = a;   // 町の外へ向けて揚げる
     movers.push(m);
+  }
+  kitePlacePending = 0;
+}
+/** 浮き城の空：島の縁に兵を立て、凧を外向き（雲海の上）へ揚げる。町の島 → 天空城 → 小島の順に、上限まで */
+function placeSkyKiteSoldiers(clear2) {
+  const byKind = kind => skyIslands.filter(isl => isl.kind === kind && dist2(isl.cx, isl.cy, START_X, START_Y) > clear2);
+  const decor = byKind("decor");
+  for (let k = decor.length - 1; k > 0; k--) { const j = Math.floor(random() * (k + 1)); [decor[k], decor[j]] = [decor[j], decor[k]]; }
+  const plan = [];
+  for (const isl of byKind("town")) plan.push([isl, KITE_SKY_PER_TOWN]);
+  for (const isl of byKind("capital")) plan.push([isl, KITE_SKY_PER_CAPITAL]);
+  for (const isl of decor) plan.push([isl, KITE_SKY_PER_DECOR]);
+  const edge = { x: 0, y: 0, nx: 0, ny: 0 };
+  let placed = 0;
+  for (const [isl, count] of plan) {
+    const a0 = random() * Math.PI * 2;
+    for (let j = 0; j < count && placed < kitePlacePending; j++) {
+      // 島の外の遠い点を島の縁へ押し戻すと、その向きの縁の上の点と外向きの法線が取れる
+      const a = a0 + j * Math.PI * 2 / count + randRange(-0.3, 0.3);
+      const far = isl.bound + 200;
+      if (!skyClampToIsland(isl, isl.cx + Math.cos(a) * far, isl.cy + Math.sin(a) * far, edge)) continue;
+      const x = edge.x - edge.nx * KITE_SKY_EDGE_IN, y = edge.y - edge.ny * KITE_SKY_EDGE_IN;
+      if (x < 60 || y < 60 || x > WORLD_W - 60 || y > WORLD_H - 60) continue;
+      const m = makeMover(MOVER_DEFS.kite_soldier, () => ({ x, y }));
+      m.wx = x; m.wy = y; m.maxHp = m.hp = MOVER_DEFS.kite_soldier.hp; m.xpValue = MOVER_DEFS.kite_soldier.xp;
+      m.kiteAng = Math.atan2(edge.ny, edge.nx);   // 凧は島の外の雲海の上へ
+      movers.push(m); placed++;
+    }
+    if (placed >= kitePlacePending) break;
   }
   kitePlacePending = 0;
 }
@@ -13672,12 +13710,21 @@ const EGG_HANG_SWING        = 0.35;  // 吊った卵の揺れ（rad）
 const EGG_LEADER_RING_PAD   = 6;
 const EGG_ORN_COLORS = { halo: "#ffd040", body: "#ffe060", rim: "#fff8a0", core: "#ffffff", string: "rgba(70,52,30,0.85)", ring: "rgba(255,214,90,0.85)" };
 // 体つきごとの付け方（ここに無い敵は：飛ぶ・小さい＝吊る、それ以外＝舷側）
+// v3.88.3（DT-508 手直し・Shooter「コロッサスの卵は胸じゃなく頭のてっぺん。胸は腕が交差しているので」）: head＝頭のてっぺん
 const EGG_MOUNT_BY_ENEMY = {
-  colossus: "chest", gilded_colossus: "chest", stone_titan: "chest", rock_giant: "chest", forest_giant: "chest",
+  colossus: "head", gilded_colossus: "chest", stone_titan: "chest", rock_giant: "chest", forest_giant: "chest",
   teslagiant: "chest", behemoth_core: "chest", shockman: "chest", prism_bearer: "chest", healer: "chest",
   mammoth: "back", mammoth_lord: "back", war_elephant: "back", bullchariot: "back", caravan: "back",
 };
 const EGG_MOUNT_SMALL_R = 20;
+// 頭のてっぺん：コロッサスの絵は前が上で、平らな頭頂は体の中心から後ろへ半径×0.92（絵の 0.85 の高さ）
+const EGG_HEAD_BACK      = 0.92;
+const EGG_HEAD_SPACING   = 2.1;   // 頭頂に横へ並べる間隔÷卵の半径（頭頂の面に収める）
+// v3.88.3（DT-508 手直し・Shooter「黄金の巨像の胸の卵は以前の楕円形が完璧だったので楕円に」）:
+// 形だけ v3.88.0 の楕円（長い半径÷短い半径 1.32、長い軸は体の横向き）に戻す。色と明滅は建物の印と同じ作りのまま
+const EGG_ORN_SHAPE_BY_ENEMY = {
+  gilded_colossus: { aspect: 1.32, rot: Math.PI / 2 },
+};
 const packEggLeaders = new Map();   // 隊の番号 → 卵を持つ隊長
 
 /** 持つ卵の数を決める（1回だけ。乱数はロジック側なので更新の中から呼ぶ） */
@@ -13733,11 +13780,14 @@ function drawMoverEggs(m, angle) {
   }
   ctx.rotate(angle);   // +x が前
   const mount = eggMountOf(def);
-  const aspect = mount === "side" ? EGG_ORN_SIDE_ASPECT : 1;
+  const shape = EGG_ORN_SHAPE_BY_ENEMY[def.name];
+  const aspect = shape ? shape.aspect : (mount === "side" ? EGG_ORN_SIDE_ASPECT : 1);
   for (let k = 0; k < shown; k++) {
     const mid = k - (shown - 1) / 2;
-    let x, y, rot = 0;
-    if (mount === "chest") {        // 胸の宝玉：前寄りに横一列
+    let x, y, rot = shape ? shape.rot : 0;
+    if (mount === "head") {         // 頭のてっぺん：平らな頭頂に横一列
+      x = -r * EGG_HEAD_BACK; y = mid * rad * EGG_HEAD_SPACING;
+    } else if (mount === "chest") {        // 胸の宝玉：前寄りに横一列
       x = r * 0.32; y = mid * rad * 2.3;
     } else if (mount === "back") {  // 背の荷：背の後ろ寄りに左右へ振り分け
       x = -r * 0.25 - Math.floor(k / 2) * rad * 2.2; y = (k % 2 === 0 ? -1 : 1) * r * 0.42;
@@ -25648,7 +25698,7 @@ const STRINGS = {
     { route: "角 → 中心の石の大巨人", play: "赤茶けた荒地に巨岩が転がり、町は環状列石に囲まれる。首都そのものが玄武岩の大巨人で、首都の区画の中を歩き回る。町の守りは薄い。",
       rule: "岩の巨人が町ごとに住みついて守っている（倒すまで消えない）。群れが町に近づくと出てきて、遠ざかると戻る。足元の予告の輪と、腕を振り上げる扇の予告を見て避け、動けない隙に叩く。巨人は人間の町を踏まない。首都に近づくと、まわりの石像が1体ずつ動き出して増援になる" },
     // v3.78.0（案帳 DT-124 1回目）
-    { route: "角 → 中心の天空城", play: "雲海に緑の浮島が並び、町は島の上に建つ。大きな雲の影が流れ、白い風の筋が走る。凧の翼で滑空する風乗りの兵が、群れの横を通り過ぎながら槍を投げていく。",
+    { route: "角 → 中心の天空城", play: "雲海に緑の浮島が並び、町は島の上に建つ。大きな雲の影が流れ、白い風の筋が走る。凧の翼で滑空する風乗りの兵が、群れの横を通り過ぎながら槍を投げていく。島の縁には雷凧の兵が並び、雲海の上に揚げた凧の糸が雷で光る。",
       rule: "地上の敵は生まれた島から出られない（縁で止まるが、縁から雲海の上へは撃ってくる）。島と島の隙間は追ってこられない場所。首都は中央の一番大きな島" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
@@ -31943,7 +31993,7 @@ const CODEX_SPECIAL_ERA = {
   // v3.85.4（案帳 DT-218 手直し・Shooter「どこに出るでしょうか」）: 出る時代の表に載らない（別の決め方で出る）敵は「—」になっていた
   harpoon_knight:     "警戒度ラッシュ「竜狩りの銛」",
   rush_gate:          "警戒度ラッシュ「湧き出る門」",
-  kite_soldier:       "IV 近世 / V 産業 / VI 電気 — 町のそばで凧を揚げて待つ（どの地域にも8人）",
+  kite_soldier:       "浮き城の空（全文明） — 島の縁に何人も立ち、雲海の上へ凧を揚げて待つ（町の島に2人・天空城に3人・小島にも）",
   troop_airship:      "V 産業 / VI 電気 / VII 大戦 — 1隻（どの地域にも）",
   paratrooper:        "落下兵の飛行船から降りてくる",
   war_elephant:       "II 古代 / III 中世 — 1頭ずつ（どの地域にも。地図のどこかを歩き回る）",
