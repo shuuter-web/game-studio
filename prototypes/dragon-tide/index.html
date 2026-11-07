@@ -1361,7 +1361,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.102.0";
+const GAME_VERSION = "v3.103.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1607,6 +1607,7 @@ const DEBUG_ENEMY_LABELS = {
   sky_mine: "🎈浮き機雷",   // v3.95.0（案帳 DT-179）
   sky_carrier: "🛳浮き砦(甲板に兵)",   // v3.87.0（案帳 DT-124・2回目）
   serpent_crawl: "🐍這い大蛇",   // v3.102.0（案帳 DT-180）
+  serpent_spitter: "🐍毒吐き蛇",   // v3.103.0
 };
 
 // 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
@@ -1630,7 +1631,7 @@ const DEBUG_ENEMY_ORDER = [
   // v3.78.0: 浮き城の空の敵（どの地域でも飛べる。島の縁の制約は浮き城の空の地上の敵にだけ掛かる）
   "wind_rider", "sky_carrier", "sky_mine",
   // v3.102.0: 蛇神の国の敵（どの地域でも這える。町を巻く大蛇は町に付くので出せない）
-  "serpent_crawl",
+  "serpent_crawl", "serpent_spitter",
   // v3.22.0: 大都会の敵（道路が無い地域では走れない）
   "metro_car", "metro_truck", "metro_police", "metro_tank", "metro_heli",
 ];
@@ -9769,6 +9770,15 @@ const MOVER_DEFS = {
     name: "serpent_coil", serpentHead: true, hp: 1300, speed: 0, xp: 1600, eggDrop: 10, radius: 34,
     color: "#5f7186", glowColor: "#ffd060", moveType: "patrol", showHpBar: true, codexSprite: "serpent_head",
   },
+  // v3.103.0（案帳 DT-180・2回目）: 首都の蛇神（輪ごとの頭）と草むらの毒吐き蛇
+  serpent_god: {
+    name: "serpent_god", serpentHead: true, hp: 2600, speed: 0, xp: 2600, eggDrop: 12, radius: 40,
+    color: "#5f7186", glowColor: "#ffd060", moveType: "patrol", showHpBar: true, codexSprite: "serpent_head",
+  },
+  serpent_spitter: {
+    name: "serpent_spitter", spitter: true, hp: 40, speed: 0, xp: 30, eggDrop: 0, eggChance: 0.3, radius: 9,
+    color: "#5f7186", glowColor: "#e8e040", moveType: "patrol", codexSprite: "serpent_head",
+  },
   serpent_crawl: {
     name: "serpent_crawl", serpentHead: true, hp: 520, speed: 0, xp: 700, eggDrop: 4, radius: 24,
     color: "#5f7186", glowColor: "#ffd060", moveType: "patrol", showHpBar: true, codexSprite: "serpent_head",
@@ -12125,7 +12135,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   if (worldShape === SHAPE_SKYLAND) result.push(...makeSkyMines());   // v3.95.0（案帳 DT-179）: 浮き機雷
   // v3.102.0（案帳 DT-180）: 大蛇の頭は胴（serpents）と組なので、警戒度で部隊を湧かし直すときも生きている頭を引き継ぐ
   if (tierForCount > 0) { for (const S of serpents) if (S.m.alive) result.push(S.m); }
-  else { serpents = []; crawlTimer = CRAWL_FIRST_DELAY; serpentPlacePending = worldShape === SHAPE_SERPENT; }
+  else { serpents = []; crawlTimer = CRAWL_FIRST_DELAY; serpentPlacePending = worldShape === SHAPE_SERPENT; poisonGlobs = []; if (boidPoison) boidPoison.fill(0); }
 
   return result;
 }
@@ -14549,7 +14559,7 @@ function standoffTarget(m) {
 //   ・這い大蛇：町から長い大蛇が這い出して群れを追う。群れの前へ回り込むようにうねって進み、
 //     群れが止まっていると胴で輪を作って締める（輪の中の竜に傷）。輪が閉じる前に隙間から抜ければ無傷。頭を叩けば倒せる
 //   どちらも頭は動く敵（movers）の1体なので、竜の攻撃はふつうに当たる。胴は点の列（serpents の pts）で、当たりは竜を押すだけ。
-//   2回目で毒吐き蛇と首都の蛇神（神殿を三重に巻く）を足す
+//   2回目（v3.103.0）で毒吐き蛇と首都の蛇神（神殿を三重に巻く）を足した（下の「2回目」の節）
 // =====================================================================
 const SERPENT_GROUND_BG   = "#1d3322";   // 密林の暗い緑（ほかの地域の背景と同じ暗さ。青灰の蛇が浮いて見える）
 const SERPENT_KEYS        = { head: "serpent_head", body: "serpent_body" };
@@ -14642,6 +14652,8 @@ function placeCoilSerpents() {
     layCoilBody(S);
     serpents.push(S);
   }
+  placeSerpentGod();   // v3.103.0: 首都の蛇神
+  placeSpitters();     // v3.103.0: 草むらの毒吐き蛇
 }
 
 /** 輪の上に胴の点を並べる（頭から尾へ。尾の先は頭の下にもぐる） */
@@ -14702,7 +14714,7 @@ function updateSerpents(dt) {
   for (let k = serpents.length - 1; k >= 0; k--) {
     const S = serpents[k];
     S.t += dt;
-    if (S.kind === "coil") updateCoilSerpent(S, dt);
+    if (S.kind === "coil") updateCoilSerpent(S, dt, centroid);
     else updateCrawlSerpent(S, dt, centroid, flock);
     if (S.state === "gone") { serpents.splice(k, 1); continue; }
     if (S.m.alive) {
@@ -14712,11 +14724,16 @@ function updateSerpents(dt) {
   }
 }
 
-function updateCoilSerpent(S, dt) {
+function updateCoilSerpent(S, dt, centroid) {
   if (S.state === "coil") {
-    if (!S.m.alive) { S.state = "flee"; S.t = 0; S.fleeAng = Math.atan2(S.hy - S.cy, S.hx - S.cx); return; }
+    if (!S.m.alive) {
+      S.state = "flee"; S.t = 0; S.fleeAng = Math.atan2(S.hy - S.cy, S.hx - S.cx);
+      if (S.god) { S.neck.length = 0; onGodRingFreed(S); }   // v3.103.0: 蛇神の輪がほどけた
+      return;
+    }
     S.theta += S.dirSign * COIL_SPIN * dt;
     layCoilBody(S);
+    if (S.god) updateGodLunge(S, dt, centroid);   // v3.103.0: 外の輪の頭は首を伸ばして噛みつきに来る
     return;
   }
   // ほどけて逃げる：頭が町から外へ這い去り、胴は縄のように引かれてほどける
@@ -14895,6 +14912,16 @@ function drawSerpents() {
       else { ctx.fillStyle = MOVER_DEFS.serpent_crawl.color; ctx.beginPath(); ctx.arc(0, 0, w / 2, 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
     }
+    // v3.103.0: 蛇神の伸ばした首（輪の付け根から頭まで）
+    if (S.neck && S.neck.length > 0 && bodyImg) {
+      for (let k = S.neck.length - 1; k >= 0; k--) {
+        const p = S.neck[k];
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(S.ang + Math.PI / 2);
+        ctx.drawImage(bodyImg, -S.w * 0.4, -S.gap * SERPENT_SEG_ART / 2, S.w * 0.8, S.gap * SERPENT_SEG_ART);
+        ctx.restore();
+      }
+    }
+    if (S.m.alive && S.m.submerged) ctx.globalAlpha = alpha * 0.6;   // v3.103.0: 内側の輪の頭は外の輪がほどけるまで潜っている
     if (S.hx >= vb.minX && S.hx <= vb.maxX && S.hy >= vb.minY && S.hy <= vb.maxY) {
       const hw = S.w * SERPENT_HEAD_ART;
       ctx.save();
@@ -14908,7 +14935,7 @@ function drawSerpents() {
         for (const sx of [-1, 1]) { ctx.beginPath(); ctx.arc(sx * hw * 0.2, -hw * 0.12, hw * 0.07, 0, Math.PI * 2); ctx.fill(); }
       }
       ctx.restore();
-      if (S.m.alive) {
+      if (S.m.alive && !S.m.submerged) {
         const ratio = Math.max(0, S.m.hp / S.m.maxHp), barW = S.m.def.radius * 2.4;
         const bx = S.hx - barW / 2, by = S.hy - S.m.def.radius - 22;
         ctx.globalAlpha = 0.9 * alpha;
@@ -14918,6 +14945,232 @@ function drawSerpents() {
       }
     }
     ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------
+// v3.103.0（案帳 DT-180・2回目）: 毒吐き蛇と首都の蛇神
+//   ・毒吐き蛇：町のまわりの草むらに数匹ずつ潜み、群れが近づくと首をもたげて黄の毒を吐く。毒の当たった竜は少しの間遅くなる
+//   ・蛇神：首都の神殿を三重に巻く。輪ごとに頭が1つあり、外の輪から順に頭が神殿を離れて群れへ噛みつきに来る。
+//     内側の輪の頭は外の輪がほどけるまで潜っていて攻撃が当たらない。頭を倒すとその輪がほどける。
+//     三重がほどけるまで首都（神殿）には攻撃がほとんど効かない。最後の頭を倒すと蛇神は逃げる（卵がたくさん）
+// ---------------------------------------------------------------------
+const SPITTER_TOWN_FRAC   = 0.3;    // 毒吐き蛇の草むらがある町の割合
+const SPITTER_PER_NEST    = 3;
+const SPITTER_NEST_GAP    = [70, 150];   // 町の外形から草むらまで
+const SPITTER_NEST_SPREAD = 34;
+const SPITTER_WAKE_R      = 400;    // 群れの竜がこの距離に入ると首をもたげる
+const SPITTER_RANGE       = 430;
+const SPITTER_EVERY       = 2.2;
+const SPITTER_RISE_TIME   = 0.45;
+const SPIT_SPEED          = 210;
+const SPIT_DAMAGE         = 3;
+const SPIT_RADIUS         = 7;
+const SPIT_HIT_R          = 10;     // 竜に当たる距離
+const SPIT_LEAD           = 0.6;    // 狙いの先読み（届くまでの時間に掛ける）
+const SPIT_COLOR          = "#e8e040";   // 敵の弾は黄
+const POISON_TIME         = 2.5;
+const POISON_SLOW         = 0.45;   // 毒の竜は進む距離がこの割合だけ減る
+const POISON_RING_COLOR   = "rgba(190,230,60,0.75)";
+const SPITTER_ART_W       = 20;     // 毒吐き蛇の頭の絵の幅
+const GOD_RINGS           = 3;
+const GOD_INNER_GAP       = 60;     // 首都の建物の外形から内側の輪まで
+const GOD_RING_STEP       = 66;     // 輪どうしの間
+const GOD_WIDTH           = 56;
+const GOD_GAP             = 22;
+const GOD_HEAD_HP         = 2600;   // 1つの輪の頭（時代で伸ばす）
+const GOD_LUNGE_EVERY     = 4.5;    // 外の輪の頭が噛みつきに来る間
+const GOD_LUNGE_AGGRO     = 900;    // 群れが首都からこの距離にいるときだけ来る
+const GOD_LUNGE_REACH     = 520;    // 輪からどこまで首を伸ばすか
+const GOD_LUNGE_SPEED     = 460;
+const GOD_LUNGE_HOLD      = 0.9;    // 伸ばしきって噛みついている時間
+const GOD_RETURN_SPEED    = 260;
+const GOD_NECK_GAP        = 22;
+const GOD_GUARD_DMG       = 0.05;   // 蛇神が巻いている間、首都に通る傷の割合
+const GOD_FINAL_EGGS      = 30;     // 最後の頭を倒したときに追加で落とす卵
+let poisonGlobs = [];               // { x, y, vx, vy, life, dmg }
+let boidPoison = null;              // 竜ごとの毒の残り秒。MAX_BOIDS はこの後で決まるので、初めて使うときに作る
+
+function serpentGodGuarding() {
+  for (const S of serpents) if (S.god && S.state === "coil") return true;
+  return false;
+}
+
+/** 首都に蛇神の三重の輪を巻かせる（placeCoilSerpents の続き。首都の建物が決まってから） */
+function placeSerpentGod() {
+  const boss = settlements.find(s => s && s.isBoss);
+  if (!boss) return;
+  const cap = capitalAnchor(boss);
+  for (let r = 0; r < GOD_RINGS; r++) {
+    const R = (cap.radius || 80) + GOD_INNER_GAP + r * GOD_RING_STEP;
+    const theta = random() * Math.PI * 2;
+    const m = makeSerpentHead(MOVER_DEFS.serpent_god, cap.wx + Math.cos(theta) * R, cap.wy + Math.sin(theta) * R);
+    m.maxHp = m.hp = Math.round(GOD_HEAD_HP * (1 + SERPENT_HP_STAGE * runStageIndex));
+    movers.push(m);
+    const S = { kind: "coil", god: true, ring: r, m, cx: cap.wx, cy: cap.wy, R, theta, dirSign: r % 2 === 0 ? 1 : -1,
+                w: GOD_WIDTH, gap: GOD_GAP, pts: [], hx: m.wx, hy: m.wy, ang: 0, state: "coil", t: 0, biteCd: 0,
+                lunge: "rest", ext: 0, lungeT: GOD_LUNGE_EVERY * (0.6 + 0.4 * r), lungeAng: 0, neck: [] };
+    layCoilBody(S);
+    serpents.push(S);
+  }
+  updateGodShields();
+}
+
+/** 外側から順に、いちばん外の生きている輪の頭だけ攻撃が当たる（内側の頭は潜っている） */
+function updateGodShields() {
+  let outer = -1;
+  for (const S of serpents) if (S.god && S.state === "coil" && S.ring > outer) outer = S.ring;
+  for (const S of serpents) if (S.god && S.m.alive) S.m.submerged = S.ring !== outer;
+}
+
+/** 蛇神の輪の頭：輪の上で休む → 群れへ首を伸ばして噛みつく → 戻る */
+function updateGodLunge(S, dt, centroid) {
+  const anchorX = S.cx + Math.cos(S.theta) * S.R, anchorY = S.cy + Math.sin(S.theta) * S.R;
+  if (S.m.submerged) { S.lunge = "rest"; S.ext = 0; }
+  else if (S.lunge === "rest") {
+    S.lungeT -= dt;
+    if (S.lungeT <= 0 && Math.hypot(centroid.x - S.cx, centroid.y - S.cy) < GOD_LUNGE_AGGRO && countAliveBoids() > 0) {
+      S.lunge = "out"; S.lungeAng = Math.atan2(centroid.y - anchorY, centroid.x - anchorX);
+      S.lungeReach = Math.min(GOD_LUNGE_REACH, Math.hypot(centroid.x - anchorX, centroid.y - anchorY));
+    }
+  } else if (S.lunge === "out") {
+    S.ext += GOD_LUNGE_SPEED * dt;
+    if (S.ext >= S.lungeReach) { S.ext = S.lungeReach; S.lunge = "hold"; S.holdT = GOD_LUNGE_HOLD; }
+  } else if (S.lunge === "hold") {
+    S.holdT -= dt;
+    if (S.holdT <= 0) S.lunge = "back";
+  } else {
+    S.ext -= GOD_RETURN_SPEED * dt;
+    if (S.ext <= 0) { S.ext = 0; S.lunge = "rest"; S.lungeT = GOD_LUNGE_EVERY; }
+  }
+  // 首：輪の上の付け根から頭まで、点を並べる（当たりは無い。噛みつきは頭だけ）
+  S.neck.length = 0;
+  if (S.ext > 0) {
+    S.hx = anchorX + Math.cos(S.lungeAng) * S.ext; S.hy = anchorY + Math.sin(S.lungeAng) * S.ext;
+    S.ang = S.lungeAng;
+    const n = Math.floor(S.ext / GOD_NECK_GAP);
+    for (let k = 1; k <= n; k++) S.neck.push({ x: S.hx - Math.cos(S.lungeAng) * k * GOD_NECK_GAP, y: S.hy - Math.sin(S.lungeAng) * k * GOD_NECK_GAP });
+  }
+}
+
+/** 輪の頭が倒れた：その輪はほどけて逃げる。最後の輪なら蛇神そのものが逃げる（卵を追加で落とす） */
+function onGodRingFreed(S) {
+  updateGodShields();
+  if (serpentGodGuarding()) { pushWorldText(S.hx, S.hy - 40, STRINGS.serpentRingFreed, "#ffd060"); return; }
+  for (let k = 0; k < GOD_FINAL_EGGS; k++) {
+    const a = random() * Math.PI * 2, r = 30 + random() * 90;
+    spawnEgg(S.hx + Math.cos(a) * r, S.hy + Math.sin(a) * r);
+  }
+  pushWorldText(S.cx, S.cy - 60, STRINGS.serpentGodFled, "#ffd060");
+  triggerShake(2.0, 0.1);
+}
+
+/** 草むらの毒吐き蛇を町のまわりに置く（placeCoilSerpents と同じとき） */
+function placeSpitters() {
+  const near2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
+  const metas = new Map();
+  for (const s of settlements) if (s && s._townIndex !== undefined && s._townMeta) metas.set(s._townIndex, s._townMeta);
+  const towns = [...townStats.entries()].filter(([, st]) => !st.surrendered && st.total > 0).sort((a, b) => a[0] - b[0]);
+  for (const [idx, st] of towns) {
+    if (random() >= SPITTER_TOWN_FRAC) continue;
+    const meta = metas.get(idx), r = (meta ? (meta.maxExtent ?? meta.townR ?? 200) : 200) + SPITTER_NEST_GAP[0] + random() * (SPITTER_NEST_GAP[1] - SPITTER_NEST_GAP[0]);
+    const a = random() * Math.PI * 2, nx = st.cx + Math.cos(a) * r, ny = st.cy + Math.sin(a) * r;
+    if (dist2(nx, ny, START_X, START_Y) < near2) continue;
+    for (let k = 0; k < SPITTER_PER_NEST; k++) {
+      const b = random() * Math.PI * 2, d = random() * SPITTER_NEST_SPREAD;
+      const m = makeMover(MOVER_DEFS.serpent_spitter, () => ({ x: nx, y: ny }));
+      m.wx = nx + Math.cos(b) * d; m.wy = ny + Math.sin(b) * d;
+      m.maxHp = m.hp = serpentHp(MOVER_DEFS.serpent_spitter); m.xpValue = MOVER_DEFS.serpent_spitter.xp;
+      m._spit = { rise: 0, cd: random() * SPITTER_EVERY, look: random() * Math.PI * 2 };
+      movers.push(m);
+    }
+  }
+}
+
+/** 毒吐き蛇1匹ぶん（updateMovers から。動かない） */
+function updateSpitter(m, dt) {
+  const s = m._spit || (m._spit = { rise: 0, cd: SPITTER_EVERY, look: 0 });
+  const i = findNearestAliveBoid(m.wx, m.wy);
+  const d = i >= 0 ? Math.sqrt(dist2(px[i], py[i], m.wx, m.wy)) : Infinity;
+  const awake = d < SPITTER_WAKE_R;
+  s.rise = Math.max(0, Math.min(1, s.rise + (awake ? dt : -dt) / SPITTER_RISE_TIME));
+  if (!awake) return;
+  s.look = Math.atan2(py[i] - m.wy, px[i] - m.wx);
+  m.headingX = Math.cos(s.look); m.headingY = Math.sin(s.look);
+  s.cd -= dt;
+  if (s.cd > 0 || s.rise < 1 || d > SPITTER_RANGE) return;
+  s.cd = SPITTER_EVERY;
+  const t = d / SPIT_SPEED * SPIT_LEAD;
+  const a = Math.atan2(py[i] + vy[i] * t - m.wy, px[i] + vx[i] * t - m.wx);
+  poisonGlobs.push({ x: m.wx, y: m.wy, vx: Math.cos(a) * SPIT_SPEED, vy: Math.sin(a) * SPIT_SPEED, life: SPITTER_RANGE * 1.2 / SPIT_SPEED,
+                     dmg: SPIT_DAMAGE * moverFerocity(), src: moverAttacker(m) });
+}
+
+/** 毒の弾と、毒の竜の遅さ（simStep の後。進んだ距離を毒の分だけ戻す＝速さは保ったまま遅く見せる） */
+function updatePoison(dt) {
+  if (!boidPoison) boidPoison = new Float32Array(MAX_BOIDS);
+  for (let k = poisonGlobs.length - 1; k >= 0; k--) {
+    const g = poisonGlobs[k];
+    g.x += g.vx * dt; g.y += g.vy * dt; g.life -= dt;
+    let hit = false;
+    for (let i = 0; i < N && !hit; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      if (dist2(px[i], py[i], g.x, g.y) > SPIT_HIT_R * SPIT_HIT_R) continue;
+      attackerNow = g.src;
+      hitBoid(i, { shot: g.dmg }, 0, 0);
+      boidPoison[i] = POISON_TIME; hit = true;
+    }
+    if (hit || g.life <= 0) poisonGlobs.splice(k, 1);
+  }
+  for (let i = 0; i < N; i++) {
+    if (boidPoison[i] <= 0) continue;
+    boidPoison[i] = Math.max(0, boidPoison[i] - dt);
+    if (boidDead[i] || boidDowned[i]) { boidPoison[i] = 0; continue; }
+    px[i] -= vx[i] * dt * POISON_SLOW; py[i] -= vy[i] * dt * POISON_SLOW;
+  }
+}
+
+function drawPoison() {
+  if (!boidPoison) return;
+  if (poisonGlobs.length === 0) {
+    let any = false;
+    for (let i = 0; i < N && !any; i++) if (boidPoison[i] > 0) any = true;
+    if (!any) return;
+  }
+  ctx.save();
+  for (const g of poisonGlobs) {
+    ctx.fillStyle = SPIT_COLOR; ctx.strokeStyle = "rgba(60,70,10,0.9)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(g.x, g.y, SPIT_RADIUS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  ctx.strokeStyle = POISON_RING_COLOR; ctx.lineWidth = 2;
+  for (let i = 0; i < N; i++) {
+    if (boidPoison[i] <= 0 || boidDead[i] || boidDowned[i]) continue;
+    ctx.globalAlpha = Math.min(1, boidPoison[i] / 0.6);
+    ctx.beginPath(); ctx.arc(px[i], py[i], 9, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** 毒吐き蛇：潜っている間は草むらの小さな渦、首をもたげると短い胴と頭（大蛇と同じ絵を小さく） */
+function drawSpitter(m) {
+  const s = m._spit || { rise: 0, look: 0 };
+  const headImg = enemyImages[SERPENT_KEYS.head], bodyImg = enemyImages[SERPENT_KEYS.body];
+  ctx.save();
+  ctx.translate(m.wx, m.wy);
+  ctx.fillStyle = "rgba(40,80,30,0.85)";   // 草むら
+  ctx.beginPath(); ctx.arc(0, 0, 16, 0, Math.PI * 2); ctx.fill();
+  const lift = s.rise;
+  ctx.rotate(s.look + Math.PI / 2);
+  const w = SPITTER_ART_W * (0.55 + 0.45 * lift);
+  ctx.globalAlpha = 0.45 + 0.55 * lift;
+  if (bodyImg) for (let k = 2; k >= 0; k--) ctx.drawImage(bodyImg, -w * 0.32, 4 + k * 6 - lift * 6, w * 0.64, 9);
+  if (headImg) { const hh = w * headImg.naturalHeight / headImg.naturalWidth; ctx.drawImage(headImg, -w / 2, -hh * 0.7 - lift * 8, w, hh); }
+  else { ctx.fillStyle = m.def.color; ctx.beginPath(); ctx.arc(0, -lift * 8, w * 0.4, 0, Math.PI * 2); ctx.fill(); }
+  ctx.restore();
+  if (m.hp < m.maxHp) {
+    const ratio = Math.max(0, m.hp / m.maxHp), barW = 22;
+    ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(m.wx - barW / 2 - 1, m.wy - 23, barW + 2, 6);
+    ctx.fillStyle = ratio > 0.5 ? m.def.glowColor : "#e04040"; ctx.fillRect(m.wx - barW / 2, m.wy - 22, barW * ratio, 4);
   }
 }
 
@@ -14966,6 +15219,7 @@ function updateMovers(dt) {
     if (def.railBound) { updateRailMover(m, dt); continue; }
     if (def.hero) { updateHero(m, dt); continue; }   // v3.35.0: 人類の英雄は自前で動いて斬る
     if (def.serpentHead) continue;   // v3.102.0（案帳 DT-180）: 大蛇の頭は updateSerpents が胴ごと動かす
+    if (def.spitter) { updateSpitter(m, dt); continue; }   // v3.103.0: 毒吐き蛇は草むらから動かずに毒を吐く
     if (m._ring) { updateRingRider(m, dt); continue; }   // v3.97.0（案帳 DT-207）: 輪乗りの騎兵は輪の上の持ち場へ駆けて内へ矢を射る
     if (def.windRider) { updateWindRider(m, dt, centroid); continue; }   // v3.78.0（案帳 DT-124）: 風乗りの兵は群れの横をまっすぐ飛んで槍を投げる
     if (def.part === "rider") {   // v3.60.0: 戦象の背の弓兵 / 案帳 DT-487 手直し: 動く砦の四隅の砲台
@@ -20578,6 +20832,7 @@ function drawMovers() {
     const def = m.def;
     if (def.hero) { drawHero(m); continue; }   // v3.35.0
     if (def.serpentHead) continue;             // v3.102.0: 大蛇は drawSerpents が胴ごと描く
+    if (def.spitter) { drawSpitter(m); continue; }   // v3.103.0
     if (metroVb && (def.roadRunner || def.metroGun) &&
         (m.wx < metroVb.minX || m.wx > metroVb.maxX || m.wy < metroVb.minY || m.wy > metroVb.maxY)) continue;
     // v1.0.6: 巨人型だけ**描画用の向き**を使う（踏み替えの補間）。
@@ -26205,7 +26460,9 @@ const STRINGS = {
   hudRoar: (name, pct, sec) => `📢 ${name} 攻撃+${pct}%　${sec}秒`,
   hudRage: (name, sec) => `😡 ${name} 攻撃の速さ×1.5・傷半分　${sec}秒`,   // v3.101.0（DT-201）
   hudRageRearm: (name, now, peak) => `😡 ${name} 再び使えるまで 群れ ${now}/${peak}`,
-  rageRoarText: "逆鱗！",   // v3.67.0（DT-497）
+  rageRoarText: "逆鱗！",
+  serpentRingFreed: "蛇神の輪がほどけた",       // v3.103.0（案帳 DT-180）
+  serpentGodFled: "蛇神が逃げた！ 神殿が焼ける",   // v3.67.0（DT-497）
   shopTitle: "竜の巣",
   // v3.59.0（案帳 DT-238・Shooter指示）: 竜の進化と特殊個体を別の画面に。「買う・購入」とは言わない
   // v3.59.2（Shooter指示「タイトルは『竜の巣』ではなく、人を滅ぼして自由を謳歌している感じの一行に」）
@@ -26492,7 +26749,7 @@ const STRINGS = {
       rule: "地上の敵は生まれた島から出られない（縁で止まるが、縁から雲海の上へは撃ってくる）。島と島の隙間は追ってこられない場所。首都は中央の一番大きな島" },
     // v3.102.0（案帳 DT-180 1回目）
     { route: "角 → 中心の神殿", play: "蛇神を祀る暗い緑の密林。格上の街は大蛇にぐるりと巻かれて守られ、ゆっくり回っている。町からは長い大蛇が這い出して、群れの前へ回り込みに来る。",
-      rule: "巻いた胴は攻撃が効かず、越えられない。金の目の頭にだけ攻撃が通り、頭を倒すと蛇がほどけて逃げる（経験値と卵がたくさん）。這い大蛇は群れが止まっていると胴で輪を作って締める。黄の点線の輪が閉じる前に抜ければ無傷" },
+      rule: "巻いた胴は攻撃が効かず、越えられない。金の目の頭にだけ攻撃が通り、頭を倒すと蛇がほどけて逃げる（経験値と卵がたくさん）。這い大蛇は群れが止まっていると胴で輪を作って締める。黄の点線の輪が閉じる前に抜ければ無傷。首都の神殿は蛇神が三重に巻き、外の輪から順に頭が噛みつきに来る。三重がほどけるまで神殿は焼けない。草むらの毒吐き蛇の黄の毒に当たると少し遅くなる" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -29030,6 +29287,7 @@ function damageBuilding(settlementIdx, damage) {
   if (!settlement || settlement.fallen) return;
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   if (settlement.isBoss && heroGuarding()) damage *= HERO_GUARD_DMG;   // v3.35.0: 英雄が立っている間の王城
+  if (settlement.isBoss && serpentGodGuarding()) damage *= GOD_GUARD_DMG;   // v3.103.0（案帳 DT-180）: 蛇神が巻いている間の神殿
   if (settlement._orbFacility === undefined && orbFacilityKindAlive(settlement._townIndex) === "barrier") damage *= ORB_BARRIER_DMG_MULT;   // v3.48.0: 竜玉の結界塔
   settlement.hp -= damage;
   reportDamage(settlement, settlement.wx, settlement.wy, damage);
@@ -33588,7 +33846,7 @@ const CODEX_ENEMY_NAMES = {
   walker_hull: "多脚戦車", walker_leg: "多脚戦車の脚",
   railgun_loco: "列車砲列（機関車）", railgun_car: "列車砲列の砲車",
   railcar: "装甲軌道車", railram: "衝角機関車",
-  forest_ambusher: "森の伏兵", forest_giant: "森番の巨人", prism_bearer: "プリズム運び", wind_rider: "風乗りの兵", sky_carrier: "浮き砦", sky_mine: "浮き機雷", serpent_coil: "町を巻く大蛇", serpent_crawl: "這い大蛇",
+  forest_ambusher: "森の伏兵", forest_giant: "森番の巨人", prism_bearer: "プリズム運び", wind_rider: "風乗りの兵", sky_carrier: "浮き砦", sky_mine: "浮き機雷", serpent_coil: "町を巻く大蛇", serpent_crawl: "這い大蛇", serpent_god: "蛇神", serpent_spitter: "毒吐き蛇",
   metro_car: "渋滞の車", metro_truck: "渋滞の箱バン", metro_police: "パトカー", metro_tank: "戦車", metro_heli: "攻撃ヘリ",
   raider: "レイダー", treasure: "財宝馬車", eggconvoy: "竜卵の輸送隊",
   caravan: "行商の隊", caravan_guard: "行商の隊の護衛",
@@ -33621,7 +33879,9 @@ const CODEX_SPECIAL_ERA = {
   sky_carrier:    "浮き城の空（全文明） — 天空城のまわりを2隻が回り、1隻が雲海を漂う。甲板にその時代の地上の敵を載せている",   // v3.87.0（案帳 DT-124・2回目）
   sky_mine:       "浮き城の空（全文明） — 町の島の外の雲海に、数個ずつ固まって漂う",
   serpent_coil:   "蛇神の国（全文明） — 格上の街をぐるりと巻いて回る。胴は越えられず攻撃も効かない。頭を倒すとほどけて逃げる",   // v3.102.0（案帳 DT-180）
-  serpent_crawl:  "蛇神の国（全文明） — 町から這い出して群れを追う。止まっている群れを胴の輪で締める",   // v3.95.0（案帳 DT-179）
+  serpent_crawl:  "蛇神の国（全文明） — 町から這い出して群れを追う。止まっている群れを胴の輪で締める",
+  serpent_god:    "蛇神の国（全文明） — 首都の神殿を三重に巻く。外の輪から順に頭が噛みつきに来る。三重がほどけるまで神殿は焼けない",   // v3.103.0
+  serpent_spitter: "蛇神の国（全文明） — 町のまわりの草むらに潜む。近づくと首をもたげて黄の毒を吐く（当たった竜は少し遅くなる）",   // v3.95.0（案帳 DT-179）
   metro_car:      "大都会（全文明） — 列になって道路を流れる",
   metro_truck:    "大都会（全文明） — 車列に混じる少し硬い車",
   metro_police:   "大都会（全文明） — 道路を走りながら撃つ",
@@ -42138,6 +42398,7 @@ function render(now) {
   drawRockGiantUnder();      // v3.77.0（案帳 DT-509）: 岩の巨人の足・予告の輪・扇の予告
   drawTierRushUnder();       // v3.16.0: 猛進の残像・精鋭と輸送隊の輪（敵の下）
   drawSerpents();            // v3.102.0（案帳 DT-180）: 大蛇の胴と頭（ほかの動く敵の下）
+  drawPoison();              // v3.103.0: 毒の弾と毒の竜の輪
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
   drawRailWrecks();          // v2.2.0: 潰れた車両（連結されたまま引きずられる）
@@ -45670,6 +45931,7 @@ function tick() {
     maybeAutoSaveRun(now);        // v1.0.0: 壊した建物の自動セーブ（間隔を空けて書く）
     applyObstaclePushout();       // v0.6-p3: 城壁・地形の侵入不可
     serpentPushBoids();           // v3.102.0（案帳 DT-180）: 大蛇の胴は越えられない
+    updatePoison(wdt);            // v3.103.0: 毒の弾と、毒の竜の遅さ
     updateCamera(wdt);
     // v3.16.0: 猛進のあいだは敵側（建物の射撃・弾・動く敵）だけ時間を速める
     rebuildMoverGrid();           // v3.23.0: 竜の攻撃が近くの敵だけを見るための格子（敵が多い地域だけ）
