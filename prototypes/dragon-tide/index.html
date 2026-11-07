@@ -1361,7 +1361,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.104.0";
+const GAME_VERSION = "v3.105.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2862,6 +2862,7 @@ const SPECIES_DEFS = {
   cannon: {
     ja: "砲撃竜", en: "Bombard Dragon", icon: "\u{1F3AF}", color: "#e8c050", element: "cannon",
     attack: "cannonshell", spriteTint: "#c8a040",
+    ramDmgMult: 0.5,   // v3.105.0（DT-174 手直し・Shooter「体当たりの威力も弱く」）: 竜種の体当たり（特殊個体には掛けない）
     desc: "線を描かずにたたくと旗が立ち、群れ全員が旗へ山なりの砲弾を3秒撃ち込む（8秒ごと）。ふだんの弾は弱い。標準の動き",
     move: {},
   },
@@ -19320,7 +19321,7 @@ function updateMoverRams() {
       const ramReach = chargeReachBonusFor(i);
       const myR = m.def.radius + 6 + ramReach;
       if (dx * dx + dy * dy > myR * myR) continue;
-      const ramDamage = baseRam * chargeDamageMultFor(i) * consumeWakeCharge(i);
+      const ramDamage = baseRam * chargeDamageMultFor(i) * consumeWakeCharge(i) * speciesBodyRamMult(i);
       const ramKnock  = chargeKnockbackFor(i);
       // v2.5.0: 衝撃は通常ダメージとは別チャネル。受け手の耐衝撃性能と自由な軸で
       // ノックバックと追加ダメージに振り分けられる
@@ -25448,7 +25449,7 @@ function updateCollisionAttacks(dt) {
           : isMelee
             ? MELEE_COLLISION_DAMAGE * effWeaponDmgMult("melee")
             : COLLISION_DAMAGE) * chargeDamageMultFor(i) * consumeWakeCharge(i)
-        * bundleRamMult() * speciesRamDmgMult();   // v3.98.0（DT-530）: 飛竜の突進系   // v3.94.0（DT-203）: 束ねた群れは体当たりが強い
+        * bundleRamMult() * speciesRamDmgMult() * speciesBodyRamMult(i);   // v3.105.0（DT-174）: 砲撃竜は弱い   // v3.98.0（DT-530）: 飛竜の突進系   // v3.94.0（DT-203）: 束ねた群れは体当たりが強い
       // v2.5.0: 突進の衝撃力。建物は耐衝撃0＝逃げ場が無いので全部ダメージになる。
       // **通常ダメージとは別勘定**で、ここで初めて建物が「押せない代償」を払う。
       // v2.10.0: 楔竜のひび・陥落判定は hitBuilding（damageBuilding）が持つ
@@ -32408,6 +32409,12 @@ function wyvernRamForm() {
 function speciesRamImpact() { const f = wyvernRamForm(); return f ? WYVERN_RAM_IMPACT * f.impact : 0; }
 /** 体当たりの威力の倍率。飛竜の突進系だけ */
 function speciesRamDmgMult() { const f = wyvernRamForm(); return f ? f.dmg : 1; }
+/** v3.105.0（DT-174 手直し）: 竜種ごとの体当たりの倍率（SPECIES_DEFS の ramDmgMult）。特殊個体の体当たりには掛けない */
+function speciesBodyRamMult(i) {
+  if (boidSpecial[i] !== SPECIAL_NONE) return 1;
+  const def = SPECIES_DEFS[flockSpecies];
+  return def && def.ramDmgMult !== undefined ? def.ramDmgMult : 1;
+}
 const fbX = new Float32Array(FIREBALL_MAX), fbY = new Float32Array(FIREBALL_MAX);
 const fbVx = new Float32Array(FIREBALL_MAX), fbVy = new Float32Array(FIREBALL_MAX);
 const fbTravel = new Float32Array(FIREBALL_MAX), fbDmg = new Float32Array(FIREBALL_MAX);
@@ -32600,19 +32607,23 @@ function drawFireballsPlain() {
 // 次に旗を立てられるのは CANNON_FLAG_COOLDOWN 秒後。ふだん（旗の外）は近い相手へ弱い砲弾。
 // 砲弾は「撃った瞬間の狙いの点」へ落ちる（追わない）。動く敵は着くまでに動かれると外れる＝案の弱み。
 const CANNON_SHOT_RANGE        = 150;    // ふだんの砲弾が狙う距離
-const CANNON_SHOT_DAMAGE       = 5;      // ふだんの砲弾は弱め（案の弱み：旗の外では掃討が遅い）
+const CANNON_SHOT_DAMAGE       = 3.5;    // ふだんの砲弾は弱め（案の弱み：旗の外では掃討が遅い）。v3.105.0（DT-174 手直し）: 5→3.5（連射のマシンガンらしさは残して威力だけ下げる）
 const CANNON_SHOT_INTERVAL     = 0.8;
 const CANNON_SHOT_BLAST_R      = 16;
 const CANNON_SHOT_SPEED        = 360;    // ふだんの砲弾は低い弧で速く
 const CANNON_BARRAGE_TIME      = 3.0;    // 旗が立っている秒数
 const CANNON_BARRAGE_RANGE     = 600;    // 竜から旗までがこの距離以内なら撃つ
-const CANNON_BARRAGE_DAMAGE    = 9;
-const CANNON_BARRAGE_INTERVAL  = 0.45;
+// v3.105.0（DT-174 手直し・Shooter「砲弾は弾速ゆっくり目で大きく重い見た目に。連射も抑えめ」）:
+// 0.45秒ごと・威力9 → 0.8秒ごと・威力14（1発を重くして、竜1体の秒間は 20→17.5 と少しだけ下げる）
+const CANNON_BARRAGE_DAMAGE    = 14;
+const CANNON_BARRAGE_INTERVAL  = 0.8;
 const CANNON_BARRAGE_BLAST_R   = 40;
 const CANNON_BARRAGE_SPREAD    = 22;     // 旗のまわりに散る半径（全部が一点に落ちると爆発の輪が重なって読めない）
-const CANNON_BARRAGE_SPEED     = 430;    // 地面に沿った速さ（600px は 1.4 秒）
-const CANNON_ARC_HEIGHT_K      = 0.32;   // 山なりの高さ＝飛ぶ距離 × これ（見た目だけ）
-const CANNON_ARC_HEIGHT_MAX    = 150;
+const CANNON_BARRAGE_SPEED     = 250;    // 地面に沿った速さ（600px は 2.4 秒）。v3.105.0: 430→250（ゆっくり重く落ちる）
+const CANNON_ARC_HEIGHT_K      = 0.4;    // 山なりの高さ＝飛ぶ距離 × これ（見た目だけ）。v3.105.0: 遅くした分、高く上げて重さを出す
+const CANNON_ARC_HEIGHT_MAX    = 200;
+const CANNON_BARRAGE_SHELL_R   = 6.5;    // 砲撃の砲弾の見た目の半径（v3.105.0: 3.6→6.5。大きく重い鉄の玉）
+const CANNON_SHOT_SHELL_R      = 2.4;    // ふだんの砲弾の見た目の半径
 const CANNON_FLAG_COOLDOWN     = 8.0;    // 旗を立ててから次に立てられるまで
 const CANNON_FLAG_RING_R       = 46;     // 旗のまわりの点線の輪
 const CANNON_SHELL_MAX         = 900;
@@ -32630,13 +32641,14 @@ function cannonForm() {
   const br = (runSpeciesBranch && runSpeciesBranch.cannon) || {};
   return CANNON_FORMS[br.t20] || CANNON_FORMS[br.t10] || CANNON_FORMS.base;
 }
-const cannon = { flagT: 0, cooldown: 0, x: 0, y: 0, plantedT: 0, deniedT: 0, deniedX: 0, deniedY: 0 };
+// gaugeSpan: 砲撃が終わった時点の残り待ち時間。ゲージは砲撃が終わってから空の状態で出し始める（v3.105.0・Shooter指示）
+const cannon = { flagT: 0, cooldown: 0, x: 0, y: 0, plantedT: 0, deniedT: 0, deniedX: 0, deniedY: 0, gaugeSpan: 0 };
 const cannonShells = [];   // { x0, y0, tx, ty, t, life, h, dmg, r, big }
 const cannonBlasts = [];   // 見た目だけ：着弾の輪 { x, y, r, t, big }
 const CANNON_BLAST_FX_LIFE = 0.3;
 const CANNON_BLAST_FX_MAX  = 240;
 function clearCannon() {
-  cannon.flagT = 0; cannon.cooldown = 0; cannon.plantedT = 0; cannon.deniedT = 0;
+  cannon.flagT = 0; cannon.cooldown = 0; cannon.plantedT = 0; cannon.deniedT = 0; cannon.gaugeSpan = 0;
   cannonShells.length = 0;
   cannonBlasts.length = 0;
   tapPending = null;
@@ -32667,7 +32679,10 @@ function launchCannonShell(x0, y0, tx, ty, speed, dmg, r, big) {
 }
 function updateCannonAttacks(dt) {
   if (cannon.cooldown > 0) cannon.cooldown = Math.max(0, cannon.cooldown - dt);
-  if (cannon.flagT > 0) cannon.flagT = Math.max(0, cannon.flagT - dt);
+  if (cannon.flagT > 0) {
+    cannon.flagT = Math.max(0, cannon.flagT - dt);
+    if (cannon.flagT === 0) cannon.gaugeSpan = cannon.cooldown;   // 砲撃が終わった：ここから溜まるゲージを出す
+  }
   cannon.plantedT += dt;
   const barrage = cannon.flagT > 0;
   const form    = cannonForm();
@@ -32760,24 +32775,35 @@ function drawCannon() {
     const u = s.t / s.life;
     const gx = s.x0 + (s.tx - s.x0) * u, gy = s.y0 + (s.ty - s.y0) * u;
     const lift = s.h * 4 * u * (1 - u);
-    const rad = s.big ? 3.6 : 2.4;
-    ctx.globalAlpha = 0.3; ctx.fillStyle = "#000";
-    ctx.beginPath(); ctx.arc(gx, gy, rad, 0, Math.PI * 2); ctx.fill();
+    const rad = s.big ? CANNON_BARRAGE_SHELL_R : CANNON_SHOT_SHELL_R;
+    // 影：高く上がるほど小さく薄く（重い玉が落ちてくる距離感）
+    const shadowK = s.big ? 1 - 0.45 * (lift / CANNON_ARC_HEIGHT_MAX) : 1;
+    ctx.globalAlpha = 0.3 * shadowK; ctx.fillStyle = "#000";
+    ctx.beginPath(); ctx.arc(gx, gy, rad * shadowK, 0, Math.PI * 2); ctx.fill();
     // 金の筋：少し前の位置から今の位置へ（山なりの軌跡が見える）
-    const u0 = Math.max(0, u - 0.08);
+    const u0 = Math.max(0, u - (s.big ? 0.05 : 0.08));
     const bx = s.x0 + (s.tx - s.x0) * u0, by = s.y0 + (s.ty - s.y0) * u0 - s.h * 4 * u0 * (1 - u0);
-    ctx.globalAlpha = s.big ? 0.55 : 0.35; ctx.strokeStyle = "#ffd870"; ctx.lineWidth = rad;
+    ctx.globalAlpha = s.big ? 0.4 : 0.35; ctx.strokeStyle = s.big ? "#d89a40" : "#ffd870"; ctx.lineWidth = s.big ? rad * 1.2 : rad;
     ctx.lineCap = "round";
     ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(gx, gy - lift); ctx.stroke();
-    ctx.globalAlpha = 1; ctx.fillStyle = s.big ? "#fff0b0" : "#e8d090";
-    ctx.beginPath(); ctx.arc(gx, gy - lift, rad, 0, Math.PI * 2); ctx.fill();
+    if (s.big) {
+      // v3.105.0（DT-174 手直し）: 砲撃の砲弾は黒鉄の大玉に金の縁と光り（金の小粒だと軽く見える）
+      ctx.globalAlpha = 1; ctx.fillStyle = "#3a3026";
+      ctx.beginPath(); ctx.arc(gx, gy - lift, rad, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#ffcc50"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = "#c8b080";
+      ctx.beginPath(); ctx.arc(gx - rad * 0.35, gy - lift - rad * 0.35, rad * 0.32, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.globalAlpha = 1; ctx.fillStyle = "#e8d090";
+      ctx.beginPath(); ctx.arc(gx, gy - lift, rad, 0, Math.PI * 2); ctx.fill();
+    }
   }
   // 立て直しの待ち：群れの重心に、溜まっていく金の弧（満ちたら旗を立てられる）
-  if (flockWeapon === "shell" && gameState === "playing") {
+  // v3.105.0（DT-174 手直し・Shooter指示）: 砲撃中は出さず、終わってから空の弧で出し始める。溜めている間も不透明
+  if (flockWeapon === "shell" && gameState === "playing" && cannon.flagT <= 0) {
     const c = calcFriendlyCentroid();
-    const full = CANNON_FLAG_COOLDOWN * cannonForm().cooldown;
-    const k = cannon.cooldown > 0 ? 1 - cannon.cooldown / full : 1;
-    ctx.globalAlpha = k >= 1 ? 0.5 + 0.25 * Math.sin(cannon.plantedT * 4) : 0.35;
+    const k = cannon.cooldown > 0 && cannon.gaugeSpan > 0 ? 1 - cannon.cooldown / cannon.gaugeSpan : 1;
+    ctx.globalAlpha = k >= 1 ? 0.85 + 0.15 * Math.sin(cannon.plantedT * 4) : 1;
     ctx.strokeStyle = "#ffd870"; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.arc(c.x, c.y, 30, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * k); ctx.stroke();
   }
@@ -35189,6 +35215,46 @@ function codexDragonMainAttackRaw(def) {
   return { power: null, stat: "" };
 }
 
+// v3.105.0（案帳 DT-174 手直し・Shooter「図鑑全般で、ブレスの発射間隔とDPSも表示して。DPSはデバッグ時のみ」）:
+// 竜1体・強化カード前・1つの相手に全部当たったときの値。間隔で撃たない攻撃（照射・触れている間）は間隔の代わりに「撃ち続ける」と出す。
+// 数字は各攻撃の定数から引く（手書きしない）。DPS は DEBUG_FEATURES_ENABLED のときだけ出す（製品版では隠す）
+function codexDragonFireRates(def) {
+  const kind = ATTACK_DEFS[def.attack].kind;
+  const every = (interval, perShot, label) => ({ label, interval, dps: perShot / interval });
+  const always = (dps, label) => ({ label, interval: 0, dps });
+  switch (kind) {
+    case "beam":      return [always(BREATH_DAMAGE_PER_SEC)];
+    case "bullet":    return [every(BULLET_INTERVAL, BULLET_DAMAGE)];
+    case "missile":   return [every(MISSILE_INTERVAL, MISSILE_DAMAGE)];
+    case "blade":     return [every(BLADE_INTERVAL, BLADE_DAMAGE)];
+    case "scatter":   return [every(SCATTER_INTERVAL, BULLET_DAMAGE, `${SCATTER_COUNT}方向のうち1発`)];
+    case "satellite": return [always(SAT_DPS * SAT_COUNT, `衛星${SAT_COUNT}匹`)];
+    case "divebomb":  return [every(DIVE_INTERVAL, DIVE_DAMAGE)];
+    case "bomb":      return [every(BOMB_INTERVAL, BOMB_DAMAGE)];
+    case "tongue":    return [every(TONGUE_INTERVAL, TONGUE_DAMAGE)];
+    case "shell":     return [every(CANNON_SHOT_INTERVAL, CANNON_SHOT_DAMAGE, "ふだん"),
+                              every(CANNON_BARRAGE_INTERVAL, CANNON_BARRAGE_DAMAGE, "砲撃中")];
+    case "fireball":  return [every(FIREBALL_INTERVAL, FIREBALL_DAMAGE)];
+    case "boulder":   return [every(BOULDER_INTERVAL, BOULDER_DAMAGE)];
+    case "chain":     return [every(THUNDER_INTERVAL, THUNDER_DAMAGE, "1発目")];
+    case "roll":      return [always(ROLL_CRUSH_DPS_BASE, "群れの玉")];
+    case "inhale":    return [always(WHALE_SUCK_DPS, "吸っている間")];
+    case "arc":       return [always(TWIN_ARC_DPS, "アーチの1点")];
+    case "wisp":      return [always(WISP_BURN_PER, "灯1つ")];
+  }
+  return [];   // melee・erupt・magnet・flail は間隔で撃つブレスが無い（体当たり・指の操作しだい）
+}
+function codexDragonFireRateHtml(def) {
+  const rates = codexDragonFireRates(def);
+  if (rates.length === 0) return `<div class="cx-stat">ブレスの発射間隔：なし（間隔で撃つブレスを持たない）</div>`;
+  const parts = rates.map((r) => (r.label ? r.label + " " : "") +
+    (r.interval > 0 ? `${codexNum(r.interval)}秒ごと` : "撃ち続ける") +
+    (DEBUG_FEATURES_ENABLED ? `（DPS ${codexNum(r.dps)}）` : ""));
+  return `<div class="cx-stat">ブレスの発射間隔：${parts.join(" ／ ")}` +
+    (DEBUG_FEATURES_ENABLED ? `　<span style="opacity:.7">※DPSはデバッグ表示・1体・カード前・1つの相手に全部当たったとき</span>` : "") +
+    `</div>`;
+}
+
 // v2.13.0: 攻撃の対象の分類（図鑑での呼び名）
 const CODEX_TARGET_CLASS_NAMES = { building: "建物", mover: "動く敵", wall: "城壁" };
 
@@ -35216,10 +35282,11 @@ function codexDragonHtml() {
     const main  = codexDragonMainAttack(def);
     const melee = ATTACK_DEFS[def.attack].kind === "melee";
     const ch    = Object.assign({}, CHARGE_PROFILE_DEFAULT, def.charge || {});
-    const ram   = melee ? MELEE_COLLISION_DAMAGE : COLLISION_DAMAGE;
+    const ramK  = def.ramDmgMult !== undefined ? def.ramDmgMult : 1;   // v3.105.0（DT-174）: 砲撃竜は体当たりが弱い
+    const ram   = (melee ? MELEE_COLLISION_DAMAGE : COLLISION_DAMAGE) * ramK;
     const powers = [];
     if (main.power) powers.push(main.power);
-    if (!melee) powers.push({ label: "体当たり", direct: COLLISION_DAMAGE });
+    if (!melee) powers.push({ label: "体当たり", direct: COLLISION_DAMAGE * ramK });
     powers.push({ label: "突進（最大溜め）", direct: ram * ch.damageMult, impact: ch.knockback });
     html +=
       `<div class="cx-row" style="border-color:${def.color}66">` +
@@ -35230,6 +35297,7 @@ function codexDragonHtml() {
           `<div class="cx-atk">${def.desc}</div>` +
           codexPowerHtml(powers, "dragon") +
           `<div class="cx-stat">${main.stat}</div>` +
+          codexDragonFireRateHtml(def) +
           `<div class="cx-stat">${codexTargetsLabel(attackTargets(ATTACK_DEFS[def.attack]))}</div>` +
         `</div>` +
       `</div>`;
