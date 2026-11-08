@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.116.0";
+const GAME_VERSION = "v3.116.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -40802,6 +40802,37 @@ function rollOrthonormalize(m) {
 }
 const rollDepth = new Float32Array(MAX_BOIDS);   // 竜が玉のどの高さにいるか（1＝真上、−1＝真下）。描く濃さと大きさに使う
 
+/**
+ * v3.116.1（案帳 DT-180 手直し）: 大蛇の胴は玉も越えられない。竜は serpentPushBoids で胴の外へ押し出されるが、
+ * 塊竜の竜は毎フレーム玉の表面へ貼り直されるので、玉そのものを押し出さないと胴を素通りしていた。
+ * 城壁と同じく玉の半径の半分まではめり込んでよい（胴に押し当てて、その先の町は潰せない＝胴が守りになる）。
+ */
+function rollBallPushOutOfSerpents(b, Rb) {
+  for (const S of serpents) {
+    if (S.state === "flee" || S.state === "dying" || S.state === "gone") continue;
+    const half = S.w * 0.5 + SERPENT_PUSH_GAP;
+    if (S.kind === "coil") {   // 町を巻く大蛇と蛇神：輪の帯の内か外の近い方へ
+      const dx = b.x - S.cx, dy = b.y - S.cy, d = Math.hypot(dx, dy) || 1;
+      const lo = S.R - half - Rb, hi = S.R + half + Rb;
+      if (d <= Math.max(0, lo) || d >= hi) continue;
+      const nx = dx / d, ny = dy / d, out = d >= S.R ? 1 : -1, to = out > 0 ? hi : Math.max(0, lo);
+      b.x = S.cx + nx * to; b.y = S.cy + ny * to;
+      const vn = (b.vx * nx + b.vy * ny) * out;
+      if (vn < 0) { b.vx -= nx * vn * out; b.vy -= ny * vn * out; }
+      continue;
+    }
+    const min = half + Rb, min2 = min * min;   // 這い大蛇：胴の節ごとに円で押し出す
+    for (const p of S.pts) {
+      const dx = b.x - p.x, dy = b.y - p.y, d2 = dx * dx + dy * dy;
+      if (d2 >= min2 || d2 === 0) continue;
+      const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
+      b.x = p.x + nx * min; b.y = p.y + ny * min;
+      const vn = b.vx * nx + b.vy * ny;
+      if (vn < 0) { b.vx -= nx * vn; b.vy -= ny * vn; }
+    }
+  }
+}
+
 /** 玉を1ステップ進め、竜を表面に貼り付ける（simStep の群れの物理の代わり） */
 function stepRollBall(dt) {
   const n = countAliveBoids();
@@ -40850,6 +40881,7 @@ function stepRollBall(dt) {
       const w = settlements[sIdx];
       if (w && !w.fallen && w._isWall) push(w.wx, w.wy, w.radius);
     }
+    rollBallPushOutOfSerpents(b, Rb);   // v3.116.1（案帳 DT-180 手直し「塊竜が蛇を通り抜けてしまう」）
   }
 
   // 大きさ：しばらく壊さないと縮む（一番大きかったときの1割まで）
