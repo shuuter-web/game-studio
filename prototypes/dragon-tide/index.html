@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.115.2";
+const GAME_VERSION = "v3.116.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5197,7 +5197,7 @@ function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST ||
       shape === SHAPE_METRO || shape === SHAPE_PLATEAU || shape === SHAPE_HEROLAND || shape === SHAPE_WASTELAND || shape === SHAPE_SKYLAND ||
       shape === SHAPE_SERPENT) {
-    return { x: 320, y: h - 320 };   // 角（首都は中心）
+    return { x: 320, y: h - 320 };   // 左下の角（首都は中心か、v3.116.0 から右上寄り＝CAPITAL_FAR_SHAPES）
   }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
   return { x: 250, y: h * 0.5 };                                      // 左端中央（従来どおり）
@@ -9253,6 +9253,14 @@ function isStrongTownPlainHouse(b) {
   return b._fixedTier != null || (b._tierOffset || 0) > 0;
 }
 
+// v3.116.0（案帳 DT-534）: 首都をスタートの対角寄りに置く地域（スタートは左下の角）。
+// 縁からの余白は、大樹海の大樹の根（820）・荒地の首都の環状列石（600）・浮き城の空の首都の島が地図に収まる幅
+const CAPITAL_FAR_SHAPES  = new Set([SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND, SHAPE_SKYLAND, SHAPE_SERPENT]);
+const CAPITAL_FAR_MARGIN  = 950;
+const CAPITAL_FAR_SPREAD  = 700;   // 右上の角からばらす幅（縦横それぞれ）
+// 大都会の首都を置く交差点（道路の番号。真ん中の 10,10 と同じく 4 で割って 2 余る＝街境で大通りでない）
+const METRO_FAR_CAPITAL_CROSSINGS = [[14, 2], [18, 2], [18, 6]];
+
 /**
  * ボス集落を「ボス＋リング全体がマップ内に収まる」ワールド右寄り位置に配置する。
  * 小集落クラスタはこの後に生成されるため、ここでは既存建物チェックは不要。
@@ -9261,11 +9269,22 @@ function isStrongTownPlainHouse(b) {
 function placeBossBuilding(stageIndex, config) {
   const bossTheme = config.boss;
   // v1.2.0: 城塞都市は真ん中、線状都市は上流の端（川のほとり）
+  // v3.116.0（案帳 DT-534）: 真ん中に意味がある地域（城塞の同心円・結界の四方の祠・小惑星帯の公転・軌道の放射路線）だけ真ん中に残す
   if (worldShape === SHAPE_CITADEL || worldShape === SHAPE_SANCTUARY ||
-      worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_RAILWAY || worldShape === SHAPE_FOREST ||
-      worldShape === SHAPE_METRO || worldShape === SHAPE_PLATEAU || worldShape === SHAPE_HEROLAND || worldShape === SHAPE_WASTELAND || worldShape === SHAPE_SKYLAND ||
-      worldShape === SHAPE_SERPENT) {
+      worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_RAILWAY) {
     return makeBossBuilding(WORLD_W * 0.5, WORLD_H * 0.5, stageIndex, bossTheme);
+  }
+  // v3.116.0（案帳 DT-534・Shooter「基本スタート地点から遠くがボスの方が順当に街の強さを上げていける」）:
+  // 角から始まる地域で、なんとなく真ん中に首都を置いていたものは、スタートの角の対角（右上）寄りへ移す。
+  // 町の強さは首都に近いほど上がるので、スタートから首都へ向かって順に強くなる
+  if (CAPITAL_FAR_SHAPES.has(worldShape)) {
+    if (worldShape === SHAPE_METRO) {   // 大都会は首都の高層ビルを交差点の上に置く（真ん中と同じ種類の交差点＝大通りでない街境）
+      const [kx, ky] = METRO_FAR_CAPITAL_CROSSINGS[Math.floor(random() * METRO_FAR_CAPITAL_CROSSINGS.length)];
+      return makeBossBuilding(kx * METRO_BLOCK, ky * METRO_BLOCK, stageIndex, bossTheme);
+    }
+    const bx = WORLD_W - CAPITAL_FAR_MARGIN - random() * CAPITAL_FAR_SPREAD;
+    const by = CAPITAL_FAR_MARGIN + random() * CAPITAL_FAR_SPREAD;
+    return makeBossBuilding(bx, by, stageIndex, bossTheme);
   }
   if (worldShape === SHAPE_FRONTLINE) {
     // 本土の奥（上端寄り）。左右はばらす
@@ -27399,22 +27418,22 @@ const STRINGS = {
       rule: "内側の軌道ほど格上。地面が無いので散らばった家は無い" },
     { route: "角 → 中心のターミナル", play: "滅びた文明の鉄路が放射6本と環状2本。無人の列車が今も走り続けている。",
       rule: "列車は線路の上しか走れない。線路から離れれば追ってこない" },
-    { route: "角 → 中心の巨大樹", play: "町に林がかかった森の土地。樹冠の下にも攻撃は届く。首都は人の住む巨大樹で、樹冠の灯から魔法が飛んでくる。",
+    { route: "角 → 対角の巨大樹", play: "町に林がかかった森の土地。樹冠の下にも攻撃は届く。首都は人の住む巨大樹で、樹冠の灯から魔法が飛んでくる。",
       rule: "灯を落とすほど樹の心臓（首都）に攻撃が通る。伏兵は近づくと飛び出す。火のブレスが当たった所の樹冠は燃える" },
-    { route: "角 → 中心の高層ビル", play: "地図じゅうが碁盤の目の道路と建物で埋まった都市。道路を車の列が流れ、渋滞ごとまとめて薙げる。",
+    { route: "角 → 対角の高層ビル", play: "地図じゅうが碁盤の目の道路と建物で埋まった都市。道路を車の列が流れ、渋滞ごとまとめて薙げる。",
       rule: "車は道路の上しか走れない。戦車は大通りだけ。首都に近づくと攻撃ヘリが飛んでくる。壊した区画は建て直されない" },
-    { route: "角 → 中心のプリズム塔", play: "見晴らしのよい高原に光線の塔が立つ。塔は予告の線で群れを狙い、止まった向きへ極太の光線を撃つ。光線は敵の街も焼くので、予告の線の先に街を入れてから横へ避ける。町には小さな光線の砲もある。",
+    { route: "角 → 対角のプリズム塔", play: "見晴らしのよい高原に光線の塔が立つ。塔は予告の線で群れを狙い、止まった向きへ極太の光線を撃つ。光線は敵の街も焼くので、予告の線の先に街を入れてから横へ避ける。町には小さな光線の砲もある。",
       rule: "群れは光線より少し速い。止まらなければ焼かれない。光線がプリズム（首都）に当たると割れて首都区画を焼く。塔とプリズムは光線では壊れない" },
-    { route: "角 → 中心の王城", play: "人類の英雄が王城から出てきて群れを追う。構えから高速で踏み込み、竜を1体ずつ一刀両断する。",
+    { route: "角 → 対角の王城", play: "人類の英雄が王城から出てきて群れを追う。構えから高速で踏み込み、竜を1体ずつ一刀両断する。",
       rule: "衝撃を当てると英雄は吹っ飛んで気絶する。撃退すると王城へ戻り、45秒後に1段強くなって帰ってくる。王城に迫るともう退かず、英雄が立っている間は王城が傷を半分しか受けない" },
     // v3.77.0（案帳 DT-509）
-    { route: "角 → 中心の石の大巨人", play: "赤茶けた荒地に巨岩が転がり、町は環状列石に囲まれる。首都そのものが玄武岩の大巨人で、首都の区画の中を歩き回る。町の守りは薄い。",
+    { route: "角 → 対角の石の大巨人", play: "赤茶けた荒地に巨岩が転がり、町は環状列石に囲まれる。首都そのものが玄武岩の大巨人で、首都の区画の中を歩き回る。町の守りは薄い。",
       rule: "岩の巨人が町ごとに住みついて守っている（倒すまで消えない）。群れが町に近づくと出てきて、遠ざかると戻る。足元の予告の輪と、腕を振り上げる扇の予告を見て避け、動けない隙に叩く。巨人は人間の町を踏まない。首都に近づくと、まわりの石像が1体ずつ動き出して増援になる" },
     // v3.78.0（案帳 DT-124 1回目）
-    { route: "角 → 中心の天空城", play: "雲海に緑の浮島が並び、町は島の上に建つ。大きな雲の影が流れ、白い風の筋が走る。凧の翼で滑空する風乗りの兵が、群れの横を通り過ぎながら槍を投げていく。島の縁には雷凧の兵が並び、雲海の上に揚げた凧の糸が雷で光る。",
+    { route: "角 → 対角の天空城", play: "雲海に緑の浮島が並び、町は島の上に建つ。大きな雲の影が流れ、白い風の筋が走る。凧の翼で滑空する風乗りの兵が、群れの横を通り過ぎながら槍を投げていく。島の縁には雷凧の兵が並び、雲海の上に揚げた凧の糸が雷で光る。",
       rule: "地上の敵は生まれた島から出られない（縁で止まるが、縁から雲海の上へは撃ってくる）。島と島の隙間は追ってこられない場所。首都は中央の一番大きな島" },
     // v3.102.0（案帳 DT-180 1回目）
-    { route: "角 → 中心の神殿", play: "蛇神を祀る暗い緑の密林。格上の街は大蛇にぐるりと巻かれて守られ、ゆっくり回っている。町からは長い大蛇が這い出して、群れの前へ回り込みに来る。",
+    { route: "角 → 対角の神殿", play: "蛇神を祀る暗い緑の密林。格上の街は大蛇にぐるりと巻かれて守られ、ゆっくり回っている。町からは長い大蛇が這い出して、群れの前へ回り込みに来る。",
       rule: "巻いた胴は攻撃が効かず、越えられない。金の目の頭にだけ攻撃が通り、頭を倒すと蛇がほどけて逃げる（経験値と卵がたくさん）。這い大蛇は群れが止まっていると胴で輪を作って締める。黄の点線の輪が閉じる前に抜ければ無傷。首都の神殿は蛇神が三重に巻き、外の輪から順に頭が噛みつきに来る。三重がほどけるまで神殿は焼けない。草むらの毒吐き蛇の黄の毒に当たると少し遅くなる" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
