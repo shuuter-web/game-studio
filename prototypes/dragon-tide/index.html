@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.109.0";
+const GAME_VERSION = "v3.110.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -17786,16 +17786,38 @@ function updateRingRide(d, dt) {
 }
 /** 騎兵1騎ぶん：持ち場（輪の上の点）へ駆け、輪に着いたら近い竜へ内向きに矢を射る。崩れたら外へ逃げる（updateMovers から） */
 const _ringBoltStyle = { idx: -1 };
+const TR_RINGRIDE_TURN      = 2.6;     // v3.110.0: 向きを変えられる速さ（rad/s）。輪（ω0.6）を回るのに十分、急な切り返しはできない
+const TR_RINGRIDE_MIN_SPEED = 70;      // v3.110.0: 持ち場を追い越したときも、この速さより落とさない（馬は後ろへ下がらない）
+const TR_RINGRIDE_ACCEL     = 220;     // v3.110.0: 速さを変えられる量（px/s²）
+const TR_RINGRIDE_CATCH     = 1.2;     // v3.110.0: 持ち場との前後の差1pxあたり、どれだけ速さを足すか（1/s）
+const TR_RINGRIDE_LEAD      = 70;      // v3.110.0: 持ち場のこれだけ先（接線方向）を狙う
+/** 鼻先の向き R.h を、狙う向き want へ曲がれる速さまで寄せる */
+function ringRiderSteer(R, want, dt) {
+  let diff = want - R.h;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+  const maxTurn = TR_RINGRIDE_TURN * dt;
+  R.h += Math.max(-maxTurn, Math.min(maxTurn, diff));
+}
+/** 鼻先の向きへ R.spd だけ進む（横へはずれない） */
+function ringRiderAdvance(m, R, dt) {
+  m.headingX = Math.cos(R.h); m.headingY = Math.sin(R.h);
+  m.wx += m.headingX * R.spd * dt; m.wy += m.headingY * R.spd * dt;
+}
 function updateRingRider(m, dt) {
   const R = m._ring, d = tierRush.d;
   R.drawT = Math.max(0, R.drawT - dt);
   const ring = tierRush.kind === "ringride" ? d.ring : null;
   if (!ring) R.flee = true;   // ラッシュが打ち切られた・終わった
+  // v3.110.0（案帳 DT-207 手直し・Shooter「騎兵が自由にスライド移動してしまっているのが気持ち悪い。ついてくる際はあくまで前進で、
+  // 向きを変えることで追従してほしい」）: 騎兵はいつも鼻先の向きへだけ進む。持ち場（輪の上の点）へは、向きを曲がれる速さ
+  // （TR_RINGRIDE_TURN）までで変え、前後の差は速さを上げ下げして詰める。横へずれる動きは無い
+  if (R.h === undefined) R.h = Math.atan2(m.headingY || 0, m.headingX || 1);
+  if (R.spd === undefined) R.spd = TR_RINGRIDE_GALLOP;
   if (R.flee) {
-    const cx = ring ? ring.cx : m.wx - (m.headingX || 1), cy = ring ? ring.cy : m.wy - (m.headingY || 0);
-    const ox = m.wx - cx, oy = m.wy - cy, od = Math.hypot(ox, oy) || 1;
-    m.headingX = ox / od; m.headingY = oy / od;
-    m.wx += m.headingX * TR_RINGRIDE_FLEE * dt; m.wy += m.headingY * TR_RINGRIDE_FLEE * dt;
+    const cx = ring ? ring.cx : m.wx - Math.cos(R.h), cy = ring ? ring.cy : m.wy - Math.sin(R.h);
+    ringRiderSteer(R, Math.atan2(m.wy - cy, m.wx - cx), dt);   // 輪の外へ向き直りながら走り去る
+    R.spd = Math.min(TR_RINGRIDE_FLEE, R.spd + TR_RINGRIDE_ACCEL * dt);
+    ringRiderAdvance(m, R, dt);
     R.fleeT += dt;
     if (R.fleeT >= TR_RINGRIDE_FLEE_TIME) m.alive = false;
     return;
@@ -17803,12 +17825,16 @@ function updateRingRider(m, dt) {
   const a = ring.phase + R.slot * Math.PI * 2 / ring.n;
   const tx = ring.cx + Math.cos(a) * TR_RINGRIDE_R, ty = ring.cy + Math.sin(a) * TR_RINGRIDE_R;
   const dx = tx - m.wx, dy = ty - m.wy, dd = Math.hypot(dx, dy);
-  const step = Math.min(dd, TR_RINGRIDE_GALLOP * dt);
-  if (dd > 0.01) { m.wx += dx / dd * step; m.wy += dy / dd * step; }
-  // 向き：輪の上では回る向き（接線）、遠いときは駆ける向き
+  // 狙う点：持ち場の少し先（回る向きの接線方向）。近いほど接線に沿うので、輪の上では自然に円を描いて回る
+  const lead = Math.min(TR_RINGRIDE_LEAD, dd);
+  const aimX = tx - Math.sin(a) * TR_RINGRIDE_LEAD, aimY = ty + Math.cos(a) * TR_RINGRIDE_LEAD;
+  ringRiderSteer(R, lead < TR_RINGRIDE_LEAD ? Math.atan2(aimY - m.wy, aimX - m.wx) : Math.atan2(dy, dx), dt);
+  // 速さ：持ち場が鼻先の向きでどれだけ前（後ろ）にあるかで上げ下げする。後ろにあれば遅くして待つ（止まらない・下がらない）
+  const ahead = dx * Math.cos(R.h) + dy * Math.sin(R.h);
+  const want = Math.max(TR_RINGRIDE_MIN_SPEED, Math.min(TR_RINGRIDE_GALLOP, TR_RINGRIDE_SPIN * TR_RINGRIDE_R + ahead * TR_RINGRIDE_CATCH));
+  R.spd += Math.max(-TR_RINGRIDE_ACCEL * dt, Math.min(TR_RINGRIDE_ACCEL * dt, want - R.spd));
+  ringRiderAdvance(m, R, dt);
   const onRing = dist2(m.wx, m.wy, ring.cx, ring.cy) <= (TR_RINGRIDE_R * TR_RINGRIDE_ON_RING) ** 2;
-  if (onRing && dd < 40) { m.headingX = -Math.sin(a); m.headingY = Math.cos(a); }
-  else if (dd > 0.01) { m.headingX = dx / dd; m.headingY = dy / dd; }
   if (!onRing) return;
   R.cd -= dt;
   if (R.cd > 0) return;
