@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.116.1";
+const GAME_VERSION = "v3.116.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -35257,10 +35257,53 @@ function codexPowerDamage(line) {
 /** ダメージ（数か幅）に掛け算・割り算をする（幅のまま） */
 function codexScale(v, k) { return Array.isArray(v) ? [v[0] * k, v[1] * k] : v * k; }
 
+/**
+ * v3.116.2（案帳 DT-533 手直し「特別な攻撃も入れて」）: def.attack を持たず専用の処理で攻撃する敵の DPS。
+ * 数字は図鑑の攻撃の説明（codexAttackLabel）と同じ定数から引く。
+ * 間隔の無い攻撃（触れたとき・倒したとき・歩くたびの1回）は once で「1回の威力」を出す（DPS にしない）。
+ * 傷を与えない攻撃は note で何をするかだけ出す。
+ */
+function codexEnemySpecialFireRates(def) {
+  const every = (interval, perShot, label) => ({ label, interval, dps: codexScale(perShot, 1 / interval) });
+  const always = (dps, label) => ({ label, interval: 0, dps });
+  const once = (dmg, label) => ({ label, once: dmg });
+  const note = (text) => ({ note: text });
+  const kiteCycle = KITE_IDLE + KITE_CHARGE + KITE_STRIKE;   // 雷雲が集まる→暗くなる→落ちる、の1巡（乱数の上乗せは入れない）
+  switch (def.name) {
+    case "walker_leg":      return [once(WALKER_STOMP_DMG, "踏みつけ（脚を踏み替えるたび）")];
+    case "fortress_turret": return [every(TR_FORTRESS_FIRE, TR_FORTRESS_SHOT_DMG, "砲1基（ステージごとに威力+1）")];
+    case "war_elephant_rider": return [every(WAR_RIDER_INTERVAL, WAR_RIDER_DAMAGE, "弓兵1人")];
+    case "ring_rider":      return [every(TR_RINGRIDE_SHOT_EVERY, TR_RINGRIDE_SHOT_DMG, `矢（ステージごとに威力+${TR_RINGRIDE_SHOT_DMG_STAGE}）`)];
+    case "harpoon_knight":  return [note(`傷は無し — ${TR_HARPOON_INTERVAL}秒ごとに銛で竜を1体引きずって奪う`)];
+    case "stone_titan":     return [every(TITAN_STEP_EVERY, TITAN_STOMP_DMG, "踏みつけ（1本ずつ・時代ごとに+1）")];
+    case "rock_giant":      return [every(ROCKGIANT_STEP_EVERY, ROCKGIANT_STOMP_DMG, "踏みつけ（時代ごとに+1）"),
+                                    every(ROCKGIANT_STEP_EVERY * ROCKGIANT_SLAM_EVERY + ROCKGIANT_SLAM_WIND, ROCKGIANT_SLAM_DMG, `叩きつけ（${ROCKGIANT_SLAM_EVERY}歩ごと）`)];
+    case "hero_shield":     return [every(HM_SHIELD_INTERVAL + HM_SHIELD_FLIGHT * 2, HM_SHIELD_DAMAGE, "盾投げ（往復＋待ち）")];
+    case "hero_mage":       return [every(HM_MAGE_INTERVAL, HM_MAGE_DAMAGE, "魔法陣（陣の中の竜それぞれに）")];
+    case "hero_archer":     return [every(HM_ARCHER_INTERVAL, HM_ARCHER_DAMAGE, "矢")];
+    case "hero":            return [note(`一刀両断 — ${codexNum([Math.min(...HERO_INTERVAL_BY_LEVEL), Math.max(...HERO_INTERVAL_BY_LEVEL)])}秒ごとに竜を${Math.min(...HERO_KILLS_BY_LEVEL)}〜${Math.max(...HERO_KILLS_BY_LEVEL) * Math.max(...HERO_DASHES_BY_LEVEL)}体まとめて落とす（段で増える。特殊個体は最大HPの${Math.round(HERO_SPECIAL_DMG * 100)}%）`)];
+    case "serpent_coil":
+    case "serpent_god":     return [every(SERPENT_BITE_EVERY, SERPENT_BITE_DAMAGE, `噛みつき（頭に触れた竜・1回に${SERPENT_BITE_MAX}体まで）`)];
+    case "serpent_crawl":   return [every(SERPENT_BITE_EVERY, SERPENT_BITE_DAMAGE, `噛みつき（1回に${SERPENT_BITE_MAX}体まで）`),
+                                    always(CRAWL_SQUEEZE_DPS, `締める輪の中（${CRAWL_SQUEEZE_TIME}秒）`)];
+    case "serpent_spitter": return [every(SPITTER_EVERY, SPIT_DAMAGE, `毒の弾（当たると${POISON_TIME}秒遅くなる）`)];
+    case "kite_soldier":    return [every(kiteCycle, KITE_LINE_DMG, "糸の雷"), every(kiteCycle, KITE_SPLASH_DMG, "凧のまわりの雷"),
+                                    every(KITE_FREE_EVERY, KITE_SPLASH_DMG, "兵を倒して流れた凧")];
+    case "sky_mine":        return [once(SKY_MINE_DAMAGE, "触れると爆ぜる")];
+    case "blast_rock":      return [once(BLASTROCK_DRAGON_DMG, `爆ぜる（ステージごとに+${BLASTROCK_DRAGON_DMG_STAGE}）`)];
+    case "toppler":         return [once(TOPPLE_CRUSH_DRAGON, "倒れた先の竜")];
+  }
+  if (def.scythe)   return [once(SCYTHE_DAMAGE, "鎌（すれ違うたび）")];
+  if (def.railRam)  return [once(def.railRam.damage, "轢殺（線路の上で轢かれたとき）")];
+  return [];   // 撃たない敵（運ぶ・湧かす・逃げる・道路を流れる）と、回復・召喚
+}
+
 /** 移動敵の DPS。{ label, interval, dps }（interval 0＝触れている間ずっと） */
 function codexEnemyFireRates(def) {
   const every = (interval, perShot, label) => ({ label, interval, dps: codexScale(perShot, 1 / interval) });
   const always = (dps, label) => ({ label, interval: 0, dps });
+  const special = codexEnemySpecialFireRates(def);
+  if (special.length > 0) return special;
   const powers = codexMoverPowers(def);
   if (def.name === "behemoth_arm") {
     return [every(BEHEMOTH_SWEEP_INTERVAL, codexPowerDamage(powers[0]), "薙ぎ払い"),
@@ -35325,14 +35368,53 @@ function codexCapitalFireRates() {
             dps: shotHitDamage(k, p.projectileDamage) / p.projectileInterval }];
 }
 
-/** 敵側の DPS の1行（デバッグ時だけ。interval: 0＝触れている間・-1＝間隔の表示なし） */
+/** DPS の1項目（interval: 0＝触れている間・-1＝間隔の表示なし。once＝間隔の無い1回の威力。note＝傷の無い攻撃の説明） */
+function codexDpsPart(r) {
+  if (r.note) return r.note;
+  if (r.once !== undefined) return (r.label ? r.label + " " : "") + `1回 ${codexNum(r.once)}（間隔なし）`;
+  return (r.label ? r.label + " " : "") +
+    (r.interval > 0 ? `${codexNum(r.interval)}秒ごと → ` : r.interval === 0 ? "撃ち続ける → " : "") +
+    `DPS ${codexNum(r.dps)}`;
+}
+/** 敵側の DPS の1行（デバッグ時だけ） */
 function codexEnemyDpsHtml(rates) {
   if (!DEBUG_FEATURES_ENABLED || rates.length === 0) return "";
-  const parts = rates.map((r) => (r.label ? r.label + " " : "") +
-    (r.interval > 0 ? `${codexNum(r.interval)}秒ごと → ` : r.interval === 0 ? "撃ち続ける → " : "") +
-    `DPS ${codexNum(r.dps)}`);
-  return `<div class="cx-stat">${parts.join(" ／ ")}` +
+  return `<div class="cx-stat">${rates.map(codexDpsPart).join(" ／ ")}` +
     `　<span style="opacity:.7">※DPSはデバッグ表示・1体・苛烈さ前・全部1つの相手に当たったとき</span></div>`;
+}
+
+/**
+ * v3.116.2（案帳 DT-533 手直し「特殊個体もお願いします」）: 特殊個体の DPS（竜種の codexDragonFireRates と同じく
+ * 1体・カード前・1つの相手に全部当たったとき）。自分で攻撃しない特殊個体（煽る風・癒し手・凍て霧・軍鼓）は出さない。
+ * 体当たりだけの特殊個体は間隔が無いので「1回の威力」で出す
+ */
+function codexSpecialFireRates(kind) {
+  const every = (interval, perShot, label) => ({ label, interval, dps: perShot / interval });
+  const always = (dps, label) => ({ label, interval: 0, dps });
+  const once = (dmg, label) => ({ label, once: dmg });
+  switch (kind) {
+    case SPECIAL_RAINBOW: return [every(MOTHER_BREATH_INTERVAL, MOTHER_BREATH_DAMAGE, "虹の薙ぎ払い（1つの相手に）")];
+    case SPECIAL_BEACON:  return [always(BEACON_DPS, "光条に触れている間")];
+    case SPECIAL_HEAVY:   return [once(HEAVY_RAM_DAMAGE, "体当たり")];
+    case SPECIAL_DEFLECT: return [once(DEFLECT_BOLT_DMG * DEFLECT_CAPACITY, `撃ち返し（満杯の${DEFLECT_CAPACITY}発が全部当たったとき）`)];
+    case SPECIAL_MECHA:   return [every(effMechaInterval(), MECHA_DAMAGE * MECHA_SALVO_BASE, `ロケット${MECHA_SALVO_BASE}発（強化で最大${MECHA_SALVO_MAX}発）`)];
+    case SPECIAL_WEDGE:   return [once(WEDGE_RAM_DAMAGE, "体当たり")];
+    case SPECIAL_LASER:   return [every(SKYLANCE_INTERVAL + SKYLANCE_AIM_TIME + SKYLANCE_FIRE_TIME, SKYLANCE_DPS * SKYLANCE_FIRE_TIME, `照射中は毎秒${SKYLANCE_DPS}`)];
+    case SPECIAL_CHAIN:   return [once(CHAIN_DMG, "鉄球（秒速250px）")];
+    case SPECIAL_AIM:     return [every(AIM_CHARGE_TIME, AIM_DMG_MAX, "火の玉（満タンで撃ち続けたとき）")];
+    case SPECIAL_RECALL:  return [once([RECALL_DMG_MIN, RECALL_DMG_MAX], "突進（初速〜最高速）")];
+    case SPECIAL_SKYBOW:  return [every(SKYBOW_INTERVAL, SKYBOW_DAMAGE, "虹の矢")];
+    case SPECIAL_BUNDLE:  return [once(COLLISION_DAMAGE * BUNDLE_RAM_MULT, "体当たり（束ねた群れの1体）")];
+    case SPECIAL_HUSH: case SPECIAL_SHELL: case SPECIAL_SCATTER: case SPECIAL_BARRIER: case SPECIAL_DICE:
+      return [once(COLLISION_DAMAGE, "体当たり")];
+  }
+  return [];
+}
+function codexSpecialDpsHtml(kind) {
+  const rates = codexSpecialFireRates(kind);
+  if (!DEBUG_FEATURES_ENABLED || rates.length === 0) return "";
+  return `<div class="cx-stat">${rates.map(codexDpsPart).join(" ／ ")}` +
+    `　<span style="opacity:.7">※DPSはデバッグ表示・1体・カード前・1つの相手に全部当たったとき</span></div>`;
 }
 
 /** 時代兵器の成分。 */
@@ -36297,6 +36379,7 @@ function codexSpecialHtml() {
           `<div class="cx-atk">${CODEX_SPECIAL_DESC[kind]}</div>` +
           codexPowerHtml(CODEX_SPECIAL_POWERS[kind] ? CODEX_SPECIAL_POWERS[kind]() : [], "dragon") +
           `<div class="cx-stat">${CODEX_SPECIAL_STAT[kind]()}</div>` +
+          codexSpecialDpsHtml(kind) +   // v3.116.2（案帳 DT-533 手直し）
         `</div>` +
       `</div>`;
   }
