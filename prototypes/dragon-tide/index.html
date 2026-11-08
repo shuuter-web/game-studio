@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.110.0";
+const GAME_VERSION = "v3.111.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9660,7 +9660,7 @@ const MOVER_DEFS = {
   },
   // v3.54.0（案帳 DT-487）: 動く砦。四隅の砲台が撃ち続ける大きな攻城塔。正面と横は硬く（受ける傷1/4）、後ろの扉だけがふつうに効く
   moving_fortress: {
-    name: "moving_fortress", hp: 2400, speed: 34, xp: 1200, eggDrop: 6, radius: 42, turnRate: 0.7,
+    name: "moving_fortress", hp: 2400, speed: 34, xp: 1200, eggDrop: 6, radius: 58, turnRate: 0.7,   // v3.111.0（DT-487 手直し「もうちょいサイズが大きいほうが自然」）: 42→58
     color: "#6f7c8e", glowColor: "#ffd090", moveType: "patrol", showHpBar: true,
     shieldArc: Math.PI * 2 / 3, shieldBlock: 0.25,   // 正面±120°＝後ろの±60°だけが弱点
     // 案帳 DT-487 手直し（Shooter「見た目が地味。何かパーツに分かれた敵であってほしい」）: 塔の本体・四隅の砲台・後ろの扉を
@@ -9683,7 +9683,7 @@ const MOVER_DEFS = {
   },
   // 案帳 DT-487 手直し: 動く砦の四隅の砲台。砦に乗って動き、自分で狙って撃つ。1基ずつ壊せる（壊すと残骸になって撃たなくなる）
   fortress_turret: {
-    name: "fortress_turret", part: "rider", fortressTurret: true, hp: 260, speed: 0, xp: 90, eggDrop: 0, eggChance: 0.5, radius: 11,
+    name: "fortress_turret", part: "rider", fortressTurret: true, hp: 260, speed: 0, xp: 90, eggDrop: 0, eggChance: 0.5, radius: 15,   // v3.111.0: 砦に合わせて 11→15
     color: "#4a5664", glowColor: "#ffd060", moveType: "patrol", hpBarWhenHurt: true, codexSprite: "fortress_gun",
   },
   // v3.60.0（案帳 DT-218・Shooter判定「乗っている人と象を別パーツで」「町に逃げるギミックは要らない」）: 戦象。
@@ -21118,11 +21118,12 @@ function drawMovers() {
       // v3.54.0 動く砦: 四角い塔と四隅の砲台。後ろ（-x）の扉だけ明るい＝弱点
       // 案帳 DT-487 手直し: 本体・扉・壊れた砲台の残骸を絵で組み立てる（生きている砲台は別の敵として上に重なる）
       if (!drawMovingFortressSprite(m)) {
+        const k = def.radius / 42;   // v3.111.0: 絵が読めないときの四角も砦の大きさに合わせる
         ctx.fillStyle = def.color;
-        ctx.fillRect(-34, -34, 68, 68);
-        ctx.strokeStyle = "#3a4452"; ctx.lineWidth = 3; ctx.strokeRect(-34, -34, 68, 68);
-        ctx.fillStyle = "#e8c080"; ctx.fillRect(-38, -12, 8, 24);
-        ctx.fillStyle = "#2a323e"; ctx.fillRect(-14, -14, 28, 28);
+        ctx.fillRect(-34 * k, -34 * k, 68 * k, 68 * k);
+        ctx.strokeStyle = "#3a4452"; ctx.lineWidth = 3; ctx.strokeRect(-34 * k, -34 * k, 68 * k, 68 * k);
+        ctx.fillStyle = "#e8c080"; ctx.fillRect(-38 * k, -12 * k, 8 * k, 24 * k);
+        ctx.fillStyle = "#2a323e"; ctx.fillRect(-14 * k, -14 * k, 28 * k, 28 * k);
       }
     } else if (def.titan) {
       // v3.74.0（案帳 DT-484）: 岩脚の巨像の胴（脚は drawStoneTitanUnder が先に敷く）
@@ -42369,9 +42370,42 @@ function simStep(dt) {
 const _obstacleQueryBuf = [];
 const OBSTACLE_PUSH_GAP = 5;
 
+// v3.111.0（案帳 DT-487 手直し・Shooter「砦を通過して後ろを攻撃できてしまうので、蛇神みたいに砦本体は竜が通過できない方がいい。
+// 砲台への体当たりはできるように」）: 動く砦の本体は竜が通り抜けられない。当たりは砦の向きに合わせた四角で、
+// 四隅の砲台の中心を角にとる（砲台は半分以上が四角の外に出る＝外から体当たりできる）。本体の当たり（半径）はこの四角より大きいので、
+// 押し付けられた竜はそのまま本体も叩ける（後ろの扉へは回り込む）
+const _fortressBlockers = [];
+function collectFortressBlockers() {
+  _fortressBlockers.length = 0;
+  for (const m of movers) {
+    if (!m.alive || !m.def.fortressParts) continue;
+    const seats = fortressCornerSeats(m.def);   // [前左, 前右, 後右, 後左]（前＝fwd・右＝lat）
+    const hx = m.headingX || 1, hy = m.headingY || 0, hd = Math.hypot(hx, hy) || 1;
+    _fortressBlockers.push({ x: m.wx, y: m.wy, ux: hx / hd, uy: hy / hd, front: seats[0][0], rear: -seats[2][0], lat: seats[1][1] });
+  }
+}
+/** 個体 i を向きつきの四角（中心 b、前 front・後ろ rear・左右 lat）の外へ、いちばん浅い面から押し出す */
+function pushBoidOutOfFortress(i, b) {
+  const dx = px[i] - b.x, dy = py[i] - b.y;
+  const f = dx * b.ux + dy * b.uy, l = -dx * b.uy + dy * b.ux;
+  const g = OBSTACLE_PUSH_GAP;
+  const pf = b.front + g - f, pr = f + b.rear + g, pl = b.lat + g - l, pL = l + b.lat + g;
+  if (pf <= 0 || pr <= 0 || pl <= 0 || pL <= 0) return;   // 四角の外
+  let nx, ny, depth = Math.min(pf, pr, pl, pL);
+  if (depth === pf) { nx = b.ux; ny = b.uy; }
+  else if (depth === pr) { nx = -b.ux; ny = -b.uy; }
+  else if (depth === pl) { nx = -b.uy; ny = b.ux; }
+  else { nx = b.uy; ny = -b.ux; }
+  px[i] += nx * depth; py[i] += ny * depth;
+  const vDotN = vx[i] * nx + vy[i] * ny;
+  if (vDotN < 0) { vx[i] -= vDotN * nx; vy[i] -= vDotN * ny; }   // 面に沿って滑る（回り込める）
+}
+
 function applyObstaclePushout() {
+  collectFortressBlockers();
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
+    for (const b of _fortressBlockers) pushBoidOutOfFortress(i, b);
 
     // 地形（岩山）: 個数が少ないので全走査。
     // v0.17.1: 湖は単なる背景（当たり判定なし）にしたのでドラゴンは素通りできる
