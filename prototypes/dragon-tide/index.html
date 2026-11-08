@@ -396,7 +396,7 @@
   #hud-roar.on { display: block; }
   #hud-roar .roar-track { height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; overflow: hidden; margin-top: 1px; }
   #hud-roar .roar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #ff7040, #ffc080); }
-  /* v3.101.0（案帳 DT-201）: 逆鱗の咆哮の残り時間と、使ったあと再び使えるまでの群れの数 */
+  /* v3.101.0（案帳 DT-201）: 逆鱗の咆哮の残り時間（v3.106.0: 再び使えるまでの表示はやめた） */
   #hud-rage { display: none; margin-top: 2px; font-size: 11px; color: #ff6a5a; }
   #hud-rage.on { display: block; }
   #hud-rage .roar-track { height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; overflow: hidden; margin-top: 1px; }
@@ -1361,7 +1361,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.106.0";
+const GAME_VERSION = "v3.107.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -26474,7 +26474,6 @@ const STRINGS = {
   statStarBoostUp: (add) => `+${Math.round(add * 100)}%`,
   hudRoar: (name, pct, sec) => `📢 ${name} 攻撃+${pct}%　${sec}秒`,
   hudRage: (name, sec) => `😡 ${name} 攻撃の速さ×1.5・傷半分　${sec}秒`,   // v3.101.0（DT-201）
-  hudRageRearm: (name, now, peak) => `😡 ${name} 再び使えるまで 群れ ${now}/${peak}`,
   rageRoarText: "逆鱗！",
   serpentRingFreed: "蛇神の輪がほどけた",       // v3.103.0（案帳 DT-180）
   serpentGodFled: "蛇神が逃げた！ 神殿が焼ける",   // v3.67.0（DT-497）
@@ -26857,7 +26856,7 @@ const STRINGS = {
     f_egg_wave:  { name: "孵化の衝撃",    desc: "卵を拾うたびに、その場で衝撃波が起きてまわりを吹き飛ばす" },
     f_sp_double: { name: "双つ魂",        desc: "連れている特殊個体が2倍になる（あとから加わった特殊個体も2倍）" },
     f_giant:     { name: "巨竜化",        desc: "群れの竜5匹が巨大になる（HP 4倍・まわりを踏みつぶす）" },
-    f_rage:      { name: "逆鱗",          desc: "群れがこのステージで一番多かったときの1割を切ると咆哮。まわりの敵を押し返し、10秒間 攻撃の速さ×1.5・受ける傷が半分。群れが一番多かった数まで戻ると、また使える" },
+    f_rage:      { name: "逆鱗",          desc: "戦える竜が群れの1割を切ると咆哮（群れの数の表示 今/全体 で 今 が全体の1割未満）。まわりの敵を押し返し、10秒間 攻撃の速さ×1.5・受ける傷が半分。全員が起き上がると、また使える" },
   },
   cards: {
     scale:     { name: "硬鱗",     desc: "竜のHP +20%" },
@@ -27095,10 +27094,12 @@ const GIANT_STOMP_INTERVAL = 1.2;  // 巨竜の踏みつけ（自分のまわり
 const GIANT_STOMP_RADIUS = 70;
 const GIANT_STOMP_DAMAGE = 30;
 let fallRoarTimer = 0;
-// v3.101.0（案帳 DT-201）: 逆鱗。「群れの数」は動ける竜（ダウン中を除く）の数で見る。
-// 一番多かった数はステージごとに数え直す（前のステージの大群を基準にすると、次のステージでいきなり発動してしまう）
-const RAGE_TRIGGER_FRAC  = 0.10;   // 一番多かったときのこの割合を切った瞬間に発動
-const RAGE_MIN_PEAK      = 10;     // 一番多かった数がこれ未満のうちは発動しない（ステージ開始直後の数匹で暴発させない）
+// v3.101.0（案帳 DT-201）: 逆鱗。
+// v3.106.0（DT-201 手直し・Shooter「一番多かった数は常に画面に表示しているので、独自に計算・保存しているなら不要。適切な数字を使って」
+// 「再び使えるまで 今/最大 の表示も不要」）: 基準は HUD の群れの数と同じ「今戦える数／群れに加わっている数（ダウン中も含む）」。
+// 戦える数が加わっている数の1割を切った瞬間に咆哮し、全員が起き上がって 今＝加わっている数 に戻ったら、また使える。
+const RAGE_TRIGGER_FRAC  = 0.10;   // 加わっている数のこの割合を切った瞬間に発動
+const RAGE_MIN_PEAK      = 10;     // 加わっている数がこれ未満のうちは発動しない（ステージ開始直後の数匹で暴発させない）
 const RAGE_TIME          = 10;     // 咆哮のあと強い状態が続く秒数
 const RAGE_INTERVAL_MULT = 1 / 1.5;   // 攻撃の速さ×1.5 ＝ 攻撃の間隔 ÷1.5
 const RAGE_DMG_TAKEN     = 0.5;
@@ -27106,18 +27107,19 @@ const RAGE_PUSH_RADIUS   = 200;
 const RAGE_PUSH_IMPACT   = 420;    // 孵化の衝撃（160）より大きく押し返す。傷は入れない
 const RAGE_RING_COLOR    = "rgba(255,70,50,0.9)";
 const RAGE_PUSH_TARGETS  = { building: TARGET_NONE, mover: TARGET_AIM, wall: TARGET_NONE };
-const rageState = { peak: 0, armed: true, timer: 0 };
+const rageState = { armed: true, timer: 0 };
 function rageActive() { return rageState.timer > 0; }
 function rageIntervalMult() { return rageActive() ? RAGE_INTERVAL_MULT : 1; }
 function rageDmgTakenMult() { return rageActive() ? RAGE_DMG_TAKEN : 1; }
-function resetRageForStage() { rageState.peak = 0; rageState.armed = true; rageState.timer = 0; }
-/** 毎フレーム：一番多かった数を更新し、1割を切った瞬間に咆哮。一番多かった数まで戻ったら、また使えるようにする */
+function resetRageForStage() { rageState.armed = true; rageState.timer = 0; }
+/** 毎フレーム：戦える数が加わっている数の1割を切った瞬間に咆哮。全員そろったら、また使えるようにする */
 function updateRage(dt) {
   if (rageState.timer > 0) rageState.timer = Math.max(0, rageState.timer - dt);
   if (upCount("f_rage") === 0) return;
-  const now = countAliveBoids();
-  if (now >= rageState.peak) { rageState.peak = now; rageState.armed = true; }
-  if (!rageState.armed || rageState.peak < RAGE_MIN_PEAK || now >= rageState.peak * RAGE_TRIGGER_FRAC) return;
+  const now    = countAliveBoids() + flockOverflow;    // HUD の分子と同じ
+  const joined = countJoinedBoids() + flockOverflow;   // HUD の分母と同じ
+  if (now >= joined) { rageState.armed = true; return; }
+  if (!rageState.armed || joined < RAGE_MIN_PEAK || now >= joined * RAGE_TRIGGER_FRAC) return;
   rageState.armed = false;
   rageState.timer = RAGE_TIME;
   const c = calcFriendlyCentroid();
@@ -27129,21 +27131,18 @@ function updateRage(dt) {
 const rageHudEl  = document.getElementById("hud-rage");
 const rageTextEl = document.getElementById("rage-text");
 const rageFillEl = document.getElementById("rage-fill");
-let rageHudKey = "";
+let rageHudSec = -1;
+/** 咆哮の強い状態の残り時間だけを出す（使ったあとの「再び使えるまで」は出さない） */
 function updateRageHud() {
-  const playing = gameState === "playing" && upCount("f_rage") > 0;
-  const mode = !playing ? "" : rageActive() ? "on" : !rageState.armed ? "rearm" : "";
-  rageHudEl.classList.toggle("on", mode !== "");
-  if (mode === "") { rageHudKey = ""; return; }
-  const name = fallCardText("f_rage").name;
-  const now = countAliveBoids();
-  const key = mode === "on" ? mode + Math.ceil(rageState.timer) : mode + now + "/" + rageState.peak;
-  if (key !== rageHudKey) {   // 文字は中身が変わったときだけ書き換える
-    rageHudKey = key;
-    rageTextEl.textContent = mode === "on" ? STRINGS.hudRage(name, Math.ceil(rageState.timer)) : STRINGS.hudRageRearm(name, now, rageState.peak);
+  const on = gameState === "playing" && upCount("f_rage") > 0 && rageActive();
+  rageHudEl.classList.toggle("on", on);
+  if (!on) { rageHudSec = -1; return; }
+  const sec = Math.ceil(rageState.timer);
+  if (sec !== rageHudSec) {   // 文字は秒が変わったときだけ書き換える
+    rageHudSec = sec;
+    rageTextEl.textContent = STRINGS.hudRage(fallCardText("f_rage").name, sec);
   }
-  const frac = mode === "on" ? rageState.timer / RAGE_TIME : now / Math.max(1, rageState.peak);
-  rageFillEl.style.width = (frac * 100).toFixed(1) + "%";
+  rageFillEl.style.width = (rageState.timer / RAGE_TIME * 100).toFixed(1) + "%";
 }
 // v3.67.0（DT-497・Shooter指示「陥落の咆哮の残り時間がわかる表示を。威力アップが何%かも添えて」）
 const roarHudEl  = document.getElementById("hud-roar");
