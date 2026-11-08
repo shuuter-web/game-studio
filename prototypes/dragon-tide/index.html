@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.115.0";
+const GAME_VERSION = "v3.115.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2543,7 +2543,8 @@ function targetAimable(targets, cls) { return targets[cls] === TARGET_AIM; }
 /** その分類に当たるか（狙う・狙わないが当たる のどちらでも当たる）。 */
 function targetHittable(targets, cls) { return targets[cls] !== TARGET_NONE; }
 /** 動く敵が今狙える状態か（潜っている敵は当たらないので狙わない）。 */
-function moverAimable(m) { return !!m && m.alive && !m.submerged; }
+// v3.115.1（DT-437 手直し「ブレスの照準対象にはしないで」）: 倒し木は狙わない（当たれば倒れるが、照準は町と敵へ向ける）
+function moverAimable(m) { return !!m && m.alive && !m.submerged && !m.def.toppler; }
 
 // v3.17.0: 攻撃の属性（案帳 DT-035・Shooter指示）。
 // 攻撃カテゴリ（直接／衝撃／爆発／射撃）＝「どう当たるか」とは別の軸で、属性＝「攻撃が何でできているか」。
@@ -9782,7 +9783,7 @@ const MOVER_DEFS = {
   // v3.115.0（案帳 DT-437）: 倒し木。町のそばに立つ大木（地域によって針葉樹・椰子・石柱・鉄塔に変わる）。
   // 自分では動かず撃たない。倒すと当たった向きの反対へ倒れ、倒れた先の建物・敵・竜をつぶす（updateTopplers・drawTopplers）
   toppler: {
-    name: "toppler", toppler: true, hp: 150, speed: 0, xp: 12, eggDrop: 0, eggChance: 0, radius: 26,
+    name: "toppler", toppler: true, hp: 1, speed: 0, xp: 3,   // v3.115.1（DT-437 手直し「耐久力は1でいい」）: 150→1。数を並べるので経験値も 12→3 eggDrop: 0, eggChance: 0, radius: 26,
     color: "#3f6a34", glowColor: "#c8a060", moveType: "patrol", impactResist: 0,
   },
   wind_rider: {
@@ -18143,9 +18144,13 @@ function drawBlastRockBody(m, angle) {
 // 倒れた幹はそのステージの間、地面に残る（当たりは無い・見た目だけ）。
 const TOPPLE_LEN          = 150;    // 倒れた長さ（大きさ1のとき）
 const TOPPLE_CROWN_R      = 28;     // 立ち木の樹冠の半径（大きさ1のとき）
-const TOPPLE_SCALE_MIN    = 0.7;
+// v3.115.1（DT-437 手直し「現状長すぎるので平均は今の半分くらい。今くらい高いのもたまにはあっていい」）:
+// ふだんは 0.35〜0.7（平均 0.53。前は 0.7〜1.5 の平均 1.1）、TOPPLE_TALL_CHANCE で今くらい（1.0〜1.5）の大木
+const TOPPLE_SCALE_MIN    = 0.35;
+const TOPPLE_SCALE_NORMAL_MAX = 0.7;
+const TOPPLE_TALL_CHANCE  = 0.08;
+const TOPPLE_TALL_MIN     = 1.0;
 const TOPPLE_SCALE_MAX    = 1.5;
-const TOPPLE_HP_STAGE     = 0.35;   // 体力＝基礎×大きさ²×(1 + これ×ステージの番号)
 const TOPPLE_FALL_TIME    = 0.75;   // 倒れきるまで（はじめゆっくり、最後に速く）
 const TOPPLE_CRUSH_HALF_W = 0.55;   // つぶす帯の半幅＝樹冠の半径×これ（先の樹冠の丸はまるごと）
 const TOPPLE_CRUSH_BLD    = 120;    // 建物への傷（×大きさ×(1+TOPPLE_CRUSH_STAGE×ステージ)）。爆ぜ岩(160)より控えめ
@@ -18153,16 +18158,22 @@ const TOPPLE_CRUSH_STAGE  = 0.6;
 const TOPPLE_CRUSH_MOVER  = 90;     // 動く敵への傷（×大きさ）
 const TOPPLE_CRUSH_DRAGON = 9;      // 竜への傷（竜の体力は30。倒れる先に群れを置かないように）
 const TOPPLE_CRUSH_IMPACT = 140;    // 竜を幹の横へ押し出す
-const TOPPLE_PER_TOWN     = 1;      // 町1つに立てる数
-const TOPPLE_EXTRA_CHANCE = 0.45;   // 大きい町（外形 TOPPLE_BIG_TOWN 以上）はこの確率でもう1本
+// v3.115.1（DT-437 手直し「1本とかではなく、ある場所にはたくさん並べる感じ」「鉄塔はまばらでいい。たくさん並べるのは木など
+// たくさんあっておかしく無い物だけ」）: 町の TOPPLE_GROVE_CHANCE に「林」を1つ（大きい町は TOPPLE_EXTRA_CHANCE でもう1つ）、
+// 町の外形に沿って並べる（無い町もあるので「ある場所にはたくさん」になる）。並べる数は形ごと（TOPPLE_STYLE の group）。
+// 鉄塔は1本だけで、立つ町はもっと少ない（TOPPLE_SPARSE_CHANCE）
+const TOPPLE_GROVE_CHANCE = 0.3;    // 町に林がある確率（1ステージ約50町 → 林は15〜18・木は100〜150本）
+const TOPPLE_EXTRA_CHANCE = 0.45;   // 大きい町（外形 TOPPLE_BIG_TOWN 以上）はこの確率で林をもう1つ
 const TOPPLE_BIG_TOWN     = 260;
-const TOPPLE_MAX          = 18;     // 1ステージの上限
-const TOPPLE_OUT_MIN      = 18;     // 町の外形から根元までの距離（倒すと幹の半分以上が町にかかる）
-const TOPPLE_OUT_MAX      = 70;
-const TOPPLE_FALLEN_MAX   = 40;     // 残す倒れた幹の数（古い順に消す）
+const TOPPLE_SPARSE_CHANCE = 0.2;   // 並べない形（鉄塔）をその町に立てる確率
+const TOPPLE_GROVE_GAP    = 1.15;   // 林の中の木の間隔＝樹冠の直径×これ（少し離して1本ずつ見えるように）
+const TOPPLE_GROVE_ROW2   = 0.5;    // 林を2列にする確率（2列目は外側に半分ずらして）
+const TOPPLE_MAX          = 160;    // 1ステージの上限（前は18本）
+const TOPPLE_OUT_MIN      = 8;      // 町の外形から根元までの距離（倒すと幹の半分以上が町にかかる）
+const TOPPLE_OUT_MAX      = 30;
+const TOPPLE_FALLEN_MAX   = 90;     // 残す倒れた幹の数（古い順に消す。数を並べるので 40→90）
 const TOPPLE_FALLEN_FADE  = 0.65;   // 倒れた幹の濃さ（立ち木より薄くして、地面の物に見せる）
 const TOPPLE_HIT_SHAKE_T  = 0.2;    // 当たってから揺れている時間（秒）
-const TOPPLE_HURT_BAR_W   = 1.6;    // 傷ついた立ち木の体力の棒の幅＝樹冠の半径×これ
 // 浮き城の空（島の外は雲海）と小惑星帯には立てない
 const TOPPLE_SKIP_SHAPES  = new Set(["skyland", "asteroids"]);
 // 地域ごとの形。id → 候補（1本ずつ乱数で選ぶ）。ここに無い地域は広葉樹と針葉樹
@@ -18176,14 +18187,15 @@ const TOPPLE_MOTIFS_BY_SHAPE = {
   sanctuary: ["pillar", "broadleaf"],
 };
 const TOPPLE_DEFAULT_MOTIFS = ["broadleaf", "pine"];
-// 形ごとの色と、樹冠（上から見た頭）の大きさ・幹の太さ（樹冠の半径に対する割合）
+// 形ごとの色と、樹冠（上から見た頭）の大きさ・幹の太さ（樹冠の半径に対する割合）・林に並べる数 [最少, 最多]
+// （石柱は列柱として数本、鉄塔は並ぶとおかしいので1本）
 const TOPPLE_STYLE = {
-  broadleaf: { crown: "#3f6a34", light: "#5f8c48", trunk: "#5a3e26", crownK: 1.0, trunkK: 0.32 },
-  pine:      { crown: "#2c5032", light: "#41704a", trunk: "#4e3622", crownK: 0.85, trunkK: 0.26 },
-  palm:      { crown: "#4f8a3c", light: "#78b058", trunk: "#8a6a40", crownK: 1.0, trunkK: 0.22 },
-  deadtree:  { crown: "#6a5848", light: "#8a7660", trunk: "#5a4a3a", crownK: 0.8, trunkK: 0.26 },
-  pillar:    { crown: "#a49a8a", light: "#c8bea8", trunk: "#8c8272", crownK: 0.6, trunkK: 0.5 },
-  pylon:     { crown: "#7a8490", light: "#a8b2bc", trunk: "#6a737e", crownK: 0.7, trunkK: 0.4 },
+  broadleaf: { crown: "#3f6a34", light: "#5f8c48", trunk: "#5a3e26", crownK: 1.0, trunkK: 0.32, group: [5, 10] },
+  pine:      { crown: "#2c5032", light: "#41704a", trunk: "#4e3622", crownK: 0.85, trunkK: 0.26, group: [6, 12] },
+  palm:      { crown: "#4f8a3c", light: "#78b058", trunk: "#8a6a40", crownK: 1.0, trunkK: 0.22, group: [4, 8] },
+  deadtree:  { crown: "#6a5848", light: "#8a7660", trunk: "#5a4a3a", crownK: 0.8, trunkK: 0.26, group: [3, 6] },
+  pillar:    { crown: "#a49a8a", light: "#c8bea8", trunk: "#8c8272", crownK: 0.6, trunkK: 0.5, group: [2, 4] },
+  pylon:     { crown: "#7a8490", light: "#a8b2bc", trunk: "#6a737e", crownK: 0.7, trunkK: 0.4, group: [1, 1] },
 };
 let toppleTrees = [];          // 立っている倒し木（movers の中の1体ずつ）
 let toppleFalls = [];          // { x, y, dx, dy, len, cr, motif, t, landed, src }（倒れる途中と倒れた幹）
@@ -18192,15 +18204,20 @@ let topplePlacePending = false;
 /** 倒し木を1本つくる（大きさと形を決める）。debugSpawnEnemy から来たものは初めて触れたときに決める */
 function initTopple(m, motif, scale) {
   const list = TOPPLE_MOTIFS_BY_SHAPE[STAGE_SHAPES[worldShape].id] || TOPPLE_DEFAULT_MOTIFS;
-  const k = scale ?? randRange(TOPPLE_SCALE_MIN, TOPPLE_SCALE_MAX);
+  const k = scale ?? toppleRandomScale();
   m._topple = { motif: motif || list[Math.floor(random() * list.length)], scale: k, seed: random() * Math.PI * 2 };
-  m.maxHp = m.hp = Math.round(m.def.hp * k * k * (1 + TOPPLE_HP_STAGE * runStageIndex));
+  m.maxHp = m.hp = m.def.hp;   // v3.115.1: 大きさにかかわらず1発で倒れる
   m.xpValue = Math.round(m.def.xp * k);
   m._topple.lastHp = m.hp;   // 最初の描画で「当たった」と揺らさない
   return m._topple;
 }
 
-/** 町の一覧ができたら、町ごとに外形のすぐ外へ立てる（placeRockGiants と同じく1回だけ） */
+/** 1本の大きさ。ふだんは小さめ、たまに大木 */
+function toppleRandomScale() {
+  return random() < TOPPLE_TALL_CHANCE ? randRange(TOPPLE_TALL_MIN, TOPPLE_SCALE_MAX) : randRange(TOPPLE_SCALE_MIN, TOPPLE_SCALE_NORMAL_MAX);
+}
+
+/** 町の一覧ができたら、町ごとに外形のすぐ外へ林を並べる（placeRockGiants と同じく1回だけ） */
 function placeTopplers() {
   if (!topplePlacePending || townStats.size === 0) return;
   topplePlacePending = false;
@@ -18213,18 +18230,45 @@ function placeTopplers() {
     towns.push({ idx, cx: st.cx, cy: st.cy, outer: meta ? (meta.maxExtent ?? meta.townR ?? 200) : 200 });
   }
   towns.sort((a, b) => a.idx - b.idx);   // 乱数の順を町の番号で固定する（決定性）
+  // v3.115.1: 上限で切れるとき番号の若い町に偏らないよう、決まった順をさらに乱数で混ぜる（random() なので決定性は保つ）
+  for (let i = towns.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [towns[i], towns[j]] = [towns[j], towns[i]]; }
   const clear2 = START_MOVER_CLEAR * START_MOVER_CLEAR;
+  const list = TOPPLE_MOTIFS_BY_SHAPE[STAGE_SHAPES[worldShape].id] || TOPPLE_DEFAULT_MOTIFS;
+  const plant = (x, y, motif, scale) => {
+    if (toppleTrees.length >= TOPPLE_MAX) return;
+    if (x < 80 || y < 80 || x > WORLD_W - 80 || y > WORLD_H - 80 || dist2(x, y, START_X, START_Y) < clear2) return;
+    const m = makeMover(MOVER_DEFS.toppler, () => ({ x, y }));
+    m.wx = x; m.wy = y;
+    initTopple(m, motif, scale);
+    toppleTrees.push(m);
+    movers.push(m);
+  };
   for (const t of towns) {
-    const n = TOPPLE_PER_TOWN + (t.outer >= TOPPLE_BIG_TOWN && random() < TOPPLE_EXTRA_CHANCE ? 1 : 0);
-    for (let k = 0; k < n && toppleTrees.length < TOPPLE_MAX; k++) {
-      const a = random() * Math.PI * 2, d = t.outer + randRange(TOPPLE_OUT_MIN, TOPPLE_OUT_MAX);
-      const x = t.cx + Math.cos(a) * d, y = t.cy + Math.sin(a) * d;
-      if (x < 80 || y < 80 || x > WORLD_W - 80 || y > WORLD_H - 80 || dist2(x, y, START_X, START_Y) < clear2) continue;
-      const m = makeMover(MOVER_DEFS.toppler, () => ({ x, y }));
-      m.wx = x; m.wy = y;
-      initTopple(m);
-      toppleTrees.push(m);
-      movers.push(m);
+    const groves = 1 + (t.outer >= TOPPLE_BIG_TOWN && random() < TOPPLE_EXTRA_CHANCE ? 1 : 0);
+    for (let g = 0; g < groves; g++) {
+      const motif = list[Math.floor(random() * list.length)];
+      const [gMin, gMax] = (TOPPLE_STYLE[motif] || TOPPLE_STYLE.broadleaf).group;
+      if (gMax > 1 && random() >= TOPPLE_GROVE_CHANCE) continue;
+      if (gMax <= 1) {   // 鉄塔：1本だけ、立たない町もある
+        if (random() >= TOPPLE_SPARSE_CHANCE) continue;
+        const a = random() * Math.PI * 2, d = t.outer + randRange(TOPPLE_OUT_MIN, TOPPLE_OUT_MAX);
+        plant(t.cx + Math.cos(a) * d, t.cy + Math.sin(a) * d, motif, toppleRandomScale());
+        continue;
+      }
+      // 林：町の外形に沿った弧の上に、間隔をあけて並べる（2列目は外側へ半分ずらす）
+      const count = gMin + Math.floor(random() * (gMax - gMin + 1));
+      const a0 = random() * Math.PI * 2, rows = random() < TOPPLE_GROVE_ROW2 ? 2 : 1;
+      const d0 = t.outer + randRange(TOPPLE_OUT_MIN, TOPPLE_OUT_MAX);
+      const gap = TOPPLE_CROWN_R * TOPPLE_SCALE_NORMAL_MAX * 2 * TOPPLE_GROVE_GAP;
+      const perRow = Math.ceil(count / rows);
+      for (let k = 0; k < count; k++) {
+        const row = k % rows, col = Math.floor(k / rows);
+        const d = d0 + row * gap * 0.85;
+        const along = (col - (perRow - 1) / 2 + row * 0.5) * gap + randRange(-0.2, 0.2) * gap;
+        const a = a0 + along / d;
+        const dj = d + randRange(-0.2, 0.2) * gap;
+        plant(t.cx + Math.cos(a) * dj, t.cy + Math.sin(a) * dj, motif, toppleRandomScale());
+      }
     }
   }
 }
@@ -18409,11 +18453,6 @@ function drawTopplers() {
     ctx.save(); ctx.translate(m.wx + shake, m.wy);
     drawToppleCrown(T.motif, r * 1.12, T.seed, 0);   // 立っている頭は地面より近いので少し大きく
     ctx.restore();
-    if (m.hp < m.maxHp) {
-      const bw = r * TOPPLE_HURT_BAR_W, ratio = Math.max(0, m.hp / m.maxHp);
-      ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(m.wx - bw / 2 - 1, m.wy - r * 1.2 - 9, bw + 2, 6);
-      ctx.fillStyle = MOVER_DEFS.toppler.glowColor; ctx.fillRect(m.wx - bw / 2, m.wy - r * 1.2 - 8, bw * ratio, 4);
-    }
   }
   ctx.restore();
 }
@@ -31969,7 +32008,7 @@ function skylanceHasTarget(ox, oy, a, halfW) {
     if (along >= 0 && along <= SKYLANCE_LEN && Math.abs(-dx * sa + dy * ca) <= halfW + st.radius) return true;
   }
   for (const m of movers) {
-    if (!m.alive) continue;
+    if (!m.alive || m.def.toppler) continue;   // v3.115.1（DT-437）: 倒し木だけでは撃ち始めない
     const dx = m.wx - ox, dy = m.wy - oy, along = dx * ca + dy * sa;
     if (along >= 0 && along <= SKYLANCE_LEN && Math.abs(-dx * sa + dy * ca) <= halfW + moverRadiusOf(m)) return true;
   }
@@ -33618,7 +33657,7 @@ function findThunderTarget(x, y, maxR, targets, i, halfArc) {
     bestD2 = d2; best = { b: sIdx, x: s.wx, y: s.wy };
   }
   if (targetHittable(targets, "mover")) for (const m of movers) {
-    if (!m.alive || _thunderHitM.has(m)) continue;
+    if (!m.alive || _thunderHitM.has(m) || m.def.toppler) continue;   // v3.115.1（DT-437）: 倒し木へは飛ばない
     const d2 = (m.wx - x) * (m.wx - x) + (m.wy - y) * (m.wy - y);
     if (d2 >= bestD2) continue;
     if (i >= 0 && !isInBreathArc(i, m.wx, m.wy, halfArc)) continue;
@@ -34984,7 +35023,7 @@ function codexAttackLabel(def) {
       return `矢 威力${WAR_RIDER_DAMAGE}・射程${WAR_RIDER_RANGE}・${WAR_RIDER_INTERVAL}秒ごと（象の背から近い竜を撃つ。4人が残っている間は象が固い）`;
     if (def.toppler)
       return `撃たない — 倒すと当たった向きの反対へ${TOPPLE_FALL_TIME}秒かけて倒れ、倒れた先（長さ${Math.round(TOPPLE_LEN * TOPPLE_SCALE_MIN)}〜${Math.round(TOPPLE_LEN * TOPPLE_SCALE_MAX)}px）の建物・敵・竜をつぶす` +
-             `（建物に${TOPPLE_CRUSH_BLD}×大きさ・竜に${TOPPLE_CRUSH_DRAGON}。町の反対側から当てて、町の方へ倒す）`;
+             `（建物に${TOPPLE_CRUSH_BLD}×大きさ・竜に${TOPPLE_CRUSH_DRAGON}。町の反対側から当てて、町の方へ倒す。1発で倒れ、ブレスの狙いにはならない。木は町の外に並んで林になる）`;
     if (def.blastRock)
       return `体当たりで爆ぜる 威力${BLASTROCK_DRAGON_DMG}＋ステージごとに${BLASTROCK_DRAGON_DMG_STAGE}・半径${BLASTROCK_BLAST_R}（倒しても${BLASTROCK_FUSE}秒後に爆ぜ、建物・敵・ほかの爆ぜ岩を巻き込む。` +
              `転がり出してから${BLASTROCK_SELF_FUSE}〜${BLASTROCK_SELF_FUSE + BLASTROCK_SELF_FUSE_SPREAD}秒で導火線が尽きて自爆。残りは岩の上のゲージ）`;
