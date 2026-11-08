@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.114.1";
+const GAME_VERSION = "v3.114.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3391,6 +3391,9 @@ function applyImpactToMover(m, fromX, fromY, impulse) {
     damageMover(m, sp.dmg, fromX, fromY);
   }
   if (knock > 0 && m.alive) pushMover(m, nx, ny, knock);
+  // v3.114.2（案帳 DT-180 手直し）: 大蛇の頭は自分の足で動かない（speed 0）ので衝撃が全部傷に回り、押しは0だった。
+  // 傷はそのまま、別に衝撃の一部を押しとして積む（受け取り方は serpentTakeKnock：たわみ＋這い大蛇だけ少し下がる）
+  if (m.def.serpentHead && m.alive) pushMover(m, dx / d, dy / d, impulse * SERPENT_KNOCK_TAKE);
 }
 
 // v2.5.3: 衝撃がノックバックに逃げられず**ダメージとして入った**ときの印。
@@ -14598,6 +14601,18 @@ const SERPENT_BITE_IMPACT = 120;
 const SERPENT_BITE_EVERY  = 0.6;
 const SERPENT_BITE_MAX    = 3;      // 1回の噛みつきで傷つける竜の数
 const SERPENT_HP_STAGE    = 0.25;   // 体力＝基礎×(1 + これ×時代の番号)
+// v3.114.2（案帳 DT-180 手直し・Shooter「今はノックバックを全く受け付けていないが、少しは受け付けてほしい。見た目だけでもいい」）:
+// 頭に入った押し（pushMover が積む knockVx/Vy）を毎フレーム受け取り、
+//   見た目 … 頭と首の近くの胴が押された向きへたわみ、バネで戻る（どの大蛇も）
+//   位置   … 這い大蛇は群れを追っている間だけ、押しの一部ぶん本当に下がる（胴は跡をたどるのでついてくる）
+// 町を巻く大蛇・蛇神は輪の形がそのまま守りなので、位置は動かさず見た目だけにする（巻きがほどけると町の守りが崩れるため）
+const SERPENT_KNOCK_TAKE    = 0.5;    // 頭に入った衝撃のうち押しにする割合（傷は減らさない。applyImpactToMover）
+const SERPENT_KNOCK_SHOVE   = 0.6;    // 押しの速さ→たわみの速さ（見た目）
+const SERPENT_KNOCK_MOVE    = 0.35;   // 這い大蛇が本当に下がる割合（重いので竜ほどは飛ばない）
+const SERPENT_KNOCK_SPRING  = 38;     // たわみを戻す力
+const SERPENT_KNOCK_DAMP    = 5;
+const SERPENT_KNOCK_CAP     = 26;     // たわみの上限（px）。胴の太さの半分くらい＝絵が分解しない
+const SERPENT_KNOCK_BODY    = 10;     // 頭からこの数の胴の点まで、たわみを薄めながら伝える
 // 町を巻く大蛇
 const COIL_MARGIN         = 34;     // 町の外形から胴の中心までの距離
 const COIL_WIDTH          = 52;     // 胴の太さ
@@ -14740,10 +14755,31 @@ function updateSerpents(dt) {
     if (S.kind === "coil") updateCoilSerpent(S, dt, centroid);
     else updateCrawlSerpent(S, dt, centroid, flock);
     if (S.state === "gone") { serpents.splice(k, 1); continue; }
+    serpentTakeKnock(S, dt);
     if (S.m.alive) {
       S.m.wx = S.hx; S.m.wy = S.hy; S.m.headingX = Math.cos(S.ang); S.m.headingY = Math.sin(S.ang);
       serpentBite(S, dt);
     }
+  }
+}
+
+/** 頭に積まれた押しを受け取って、たわみ（見た目）と這い大蛇の位置へ振り分ける */
+function serpentTakeKnock(S, dt) {
+  if (S.kx === undefined) { S.kx = 0; S.ky = 0; S.kvx = 0; S.kvy = 0; }
+  const m = S.m, kx = m.knockVx || 0, ky = m.knockVy || 0;
+  if (kx || ky) {
+    S.kvx += kx * SERPENT_KNOCK_SHOVE; S.kvy += ky * SERPENT_KNOCK_SHOVE;
+    if (S.kind === "crawl" && S.state === "chase") { S.hx += kx * SERPENT_KNOCK_MOVE * dt; S.hy += ky * SERPENT_KNOCK_MOVE * dt; }
+    const kd = Math.exp(-MOVER_KNOCK_DECAY_PER_SEC * dt);
+    m.knockVx = kx * kd; m.knockVy = ky * kd;
+    if (Math.abs(m.knockVx) < 1 && Math.abs(m.knockVy) < 1) { m.knockVx = 0; m.knockVy = 0; }
+  }
+  if (S.kvx || S.kx || S.kvy || S.ky) {
+    springAxis(S, "kx", "kvx", 0, SERPENT_KNOCK_SPRING, SERPENT_KNOCK_DAMP, dt);
+    springAxis(S, "ky", "kvy", 0, SERPENT_KNOCK_SPRING, SERPENT_KNOCK_DAMP, dt);
+    const km = Math.hypot(S.kx, S.ky);
+    if (km > SERPENT_KNOCK_CAP) { S.kx *= SERPENT_KNOCK_CAP / km; S.ky *= SERPENT_KNOCK_CAP / km; }
+    if (Math.abs(S.kx) + Math.abs(S.ky) < 0.05 && Math.abs(S.kvx) + Math.abs(S.kvy) < 0.5) { S.kx = S.ky = S.kvx = S.kvy = 0; }
   }
 }
 
@@ -14922,15 +14958,19 @@ function drawSerpents() {
       else { ctx.strokeStyle = SERPENT_WARN_COLOR; ctx.lineWidth = 2.5; ctx.setLineDash([10, 8]); ctx.stroke(); ctx.setLineDash([]); }
     }
     const n = S.pts.length;
+    // v3.114.2: 押されたたわみ（頭が一番大きく、首から胴へ薄くなる）
+    const kx = S.kx || 0, ky = S.ky || 0, bent = kx !== 0 || ky !== 0;
+    const bend = (k) => (k < SERPENT_KNOCK_BODY ? 1 - (k + 1) / (SERPENT_KNOCK_BODY + 1) : 0);
     for (let k = n - 1; k >= 0; k--) {
       const p = S.pts[k];
       if (p.x < vb.minX || p.x > vb.maxX || p.y < vb.minY || p.y > vb.maxY) continue;
-      const q = k === 0 ? { x: S.hx, y: S.hy } : S.pts[k - 1];
-      const ang = Math.atan2(q.y - p.y, q.x - p.x);
+      const q = k === 0 ? { x: S.hx + kx, y: S.hy + ky } : S.pts[k - 1];
+      const fp = bent ? bend(k) : 0, fq = bent && k > 0 ? bend(k - 1) : 0;   // k=0 の先は頭（q にたわみ込み済み）
+      const ang = Math.atan2(q.y + ky * fq - (p.y + ky * fp), q.x + kx * fq - (p.x + kx * fp));
       const fromTail = n - 1 - k;
       const w = S.w * (fromTail < SERPENT_TAPER_PTS ? SERPENT_TAPER_MIN + (1 - SERPENT_TAPER_MIN) * fromTail / SERPENT_TAPER_PTS : 1);
       ctx.save();
-      ctx.translate(p.x, p.y); ctx.rotate(ang + Math.PI / 2);
+      ctx.translate(p.x + kx * fp, p.y + ky * fp); ctx.rotate(ang + Math.PI / 2);
       if (bodyImg) ctx.drawImage(bodyImg, -w / 2, -S.gap * SERPENT_SEG_ART / 2, w, S.gap * SERPENT_SEG_ART);
       else { ctx.fillStyle = MOVER_DEFS.serpent_crawl.color; ctx.beginPath(); ctx.arc(0, 0, w / 2, 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
@@ -14948,7 +14988,7 @@ function drawSerpents() {
     if (S.hx >= vb.minX && S.hx <= vb.maxX && S.hy >= vb.minY && S.hy <= vb.maxY) {
       const hw = S.w * SERPENT_HEAD_ART;
       ctx.save();
-      ctx.translate(S.hx, S.hy); ctx.rotate(S.ang + Math.PI / 2);
+      ctx.translate(S.hx + kx, S.hy + ky); ctx.rotate(S.ang + Math.PI / 2);
       if (headImg) {
         const hh = hw * headImg.naturalHeight / headImg.naturalWidth;
         ctx.drawImage(headImg, -hw / 2, -hh * 0.62, hw, hh);   // 首の付け根が胴の先に重なるよう、少し前へずらす
@@ -14960,7 +15000,7 @@ function drawSerpents() {
       ctx.restore();
       if (S.m.alive && !S.m.submerged) {
         const ratio = Math.max(0, S.m.hp / S.m.maxHp), barW = S.m.def.radius * 2.4;
-        const bx = S.hx - barW / 2, by = S.hy - S.m.def.radius - 22;
+        const bx = S.hx + kx - barW / 2, by = S.hy + ky - S.m.def.radius - 22;
         ctx.globalAlpha = 0.9 * alpha;
         ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(bx - 1, by - 1, barW + 2, 7);
         ctx.fillStyle = ratio > 0.5 ? S.m.def.glowColor : (ratio > 0.25 ? "#e0c040" : "#e04040");
