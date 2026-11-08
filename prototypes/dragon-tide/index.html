@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.113.0";
+const GAME_VERSION = "v3.114.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -34792,6 +34792,102 @@ function codexMoverPowers(def) {
   return [];   // heal / summon は攻撃ではない
 }
 
+// v3.114.0（案帳 DT-533・Shooter「図鑑のdps表示について、敵の側も追加して」）:
+// 竜の側（codexDragonFireRates）と同じく、1体・強化前（文明・警戒度の苛烈さを掛ける前）・
+// 撃った弾が全部1つの相手に当たったときの平均DPS。数字は成分表（codexMoverPowers 等）と攻撃の定数から引く。
+// デバッグ時（DEBUG_FEATURES_ENABLED）だけ出す。竜側と同じく製品版では隠す
+/** 成分の1行のダメージ（直接＋爆発＋射撃。衝撃は押す力なので足さない）。幅は [最小, 最大] で返す。 */
+function codexPowerDamage(line) {
+  let lo = 0, hi = 0;
+  for (const cat of ["direct", "blast", "shot"]) {
+    const v = line[cat];
+    if (v === undefined) continue;
+    lo += Array.isArray(v) ? v[0] : v;
+    hi += Array.isArray(v) ? v[1] : v;
+  }
+  return lo === hi ? lo : [lo, hi];
+}
+/** ダメージ（数か幅）に掛け算・割り算をする（幅のまま） */
+function codexScale(v, k) { return Array.isArray(v) ? [v[0] * k, v[1] * k] : v * k; }
+
+/** 移動敵の DPS。{ label, interval, dps }（interval 0＝触れている間ずっと） */
+function codexEnemyFireRates(def) {
+  const every = (interval, perShot, label) => ({ label, interval, dps: codexScale(perShot, 1 / interval) });
+  const always = (dps, label) => ({ label, interval: 0, dps });
+  const powers = codexMoverPowers(def);
+  if (def.name === "behemoth_arm") {
+    return [every(BEHEMOTH_SWEEP_INTERVAL, codexPowerDamage(powers[0]), "薙ぎ払い"),
+            every(BEHEMOTH_ARM_SLAM_INTERVAL, codexPowerDamage(powers[1]), "叩きつけ")];
+  }
+  if (def.carGun) {
+    const g = def.carGun;
+    return [every(g.interval, codexScale(codexPowerDamage(powers[0]), g.burst ?? 1), `${g.burst ?? 1}連射`)];
+  }
+  if (def.metroGun) {
+    const g = def.metroGun;
+    return [every(g.mainInterval, g.mainDamage * (g.mainCount ?? 1), g.turret ? "主砲" : "ロケット"),
+            every(g.mgInterval, g.mgDamage * g.mgBurst, "機銃")];
+  }
+  const a = def.attack;
+  if (!a || powers.length === 0 || !(a.interval > 0)) return [];
+  const first = codexPowerDamage(powers[0]);
+  switch (a.type) {
+    case "laser":     return [every(a.interval, a.dps * LASER_FIRE_TIME, `照射中は毎秒${codexNum(a.dps)}`)];
+    case "hazard":    return [always(a.dps ?? a.damage, "帯の上")];
+    case "fan":       return [every(a.interval, codexScale(first, a.count ?? 1), `${a.count ?? 1}連射`)];
+    case "broadside": return [every(a.interval, codexScale(first, (a.count ?? 1) * 2), `${a.count ?? 1}連×左右`)];
+    case "shell":     return [every(a.interval, codexScale(first, a.count ?? 1), `${a.count ?? 1}発`)];
+  }
+  return [every(a.interval, first)];
+}
+
+/** 時代兵器の DPS（1斉射の発数 × 1発 ÷ 間隔） */
+const CODEX_EMPLACEMENT_VOLLEY = {
+  ballista: BALLISTA_COUNT, mortar: MORTAR_COUNT, flak: FLAK_COUNT, rocket: ROCKET_COUNT,
+  concussionBattery: CONCUSSION_BATTERY_COUNT,
+};
+function codexEmplacementFireRates(key) {
+  const def = EMPLACEMENT_DEFS[key];
+  const powers = CODEX_EMPLACEMENT_POWERS[key] ? CODEX_EMPLACEMENT_POWERS[key]() : [];
+  if (powers.length === 0) return [];
+  if (powers[0].perSec) return [{ label: "触れている間", interval: 0, dps: codexPowerDamage(powers[0]) }];
+  if (!(def.interval > 0)) return [];
+  const volley = CODEX_EMPLACEMENT_VOLLEY[key] ?? 1;
+  return [{ label: volley > 1 ? `${volley}発` : "", interval: def.interval,
+            dps: codexScale(codexPowerDamage(powers[0]), volley / def.interval) }];
+}
+
+/** 普通の建物の DPS（文明ごとに 1発 ÷ 間隔。複数発は扇に散るので1方向あたりで出す。全文明の幅） */
+function codexBuildingFireRates(size) {
+  const kind = size === "large" ? 1 : 0;
+  const vals = [];
+  for (const cfg of STAGE_CONFIGS) {
+    const b = cfg.buildings[size];
+    if (!b || !(b.projectileDamage > 0) || !(b.projectileInterval > 0)) continue;
+    vals.push(shotHitDamage(kind, b.projectileDamage) / b.projectileInterval);
+  }
+  if (vals.length === 0) return [];
+  return [{ label: "I〜VIII・1方向あたり", interval: -1, dps: [Math.min(...vals), Math.max(...vals)] }];
+}
+
+/** 首都の通常弾の DPS（7方向の扇に散るので1方向あたり。大技は別の間隔で入る） */
+function codexCapitalFireRates() {
+  const k = fanShotKind(2);
+  const p = BOSS_FIRE_PARAMS;
+  return [{ label: `通常弾（${p.projectileCount}方向のうち1方向）`, interval: p.projectileInterval,
+            dps: shotHitDamage(k, p.projectileDamage) / p.projectileInterval }];
+}
+
+/** 敵側の DPS の1行（デバッグ時だけ。interval: 0＝触れている間・-1＝間隔の表示なし） */
+function codexEnemyDpsHtml(rates) {
+  if (!DEBUG_FEATURES_ENABLED || rates.length === 0) return "";
+  const parts = rates.map((r) => (r.label ? r.label + " " : "") +
+    (r.interval > 0 ? `${codexNum(r.interval)}秒ごと → ` : r.interval === 0 ? "撃ち続ける → " : "") +
+    `DPS ${codexNum(r.dps)}`);
+  return `<div class="cx-stat">${parts.join(" ／ ")}` +
+    `　<span style="opacity:.7">※DPSはデバッグ表示・1体・苛烈さ前・全部1つの相手に当たったとき</span></div>`;
+}
+
 /** 時代兵器の成分。 */
 const CODEX_EMPLACEMENT_POWERS = {
   trebuchet: () => [{ label: "巨岩", blast: TREBUCHET_DAMAGE, impact: impactFromPushDist(SHELL_PUSH_DIST),
@@ -35151,6 +35247,7 @@ function codexEnemyHtml() {
           `<div class="cx-tags">${codexEraLabel(e.key)}${tags.length ? " ／ " + tags.join("・") : ""}</div>` +
           `<div class="cx-atk">${codexAttackLabel(def)}</div>` +
           codexPowerHtml(codexMoverPowers(def), "enemy") +
+          codexEnemyDpsHtml(codexEnemyFireRates(def)) +
           `<div class="cx-stat">HP ${def.hp} ／ XP ${def.xp} ／ 卵 ${codexEggLabel(def)}</div>` +
         `</div>` +
       `</div>`;
@@ -35178,6 +35275,7 @@ function codexBuildingHtml() {
           codexPowerHtml(CODEX_EMPLACEMENT_POWERS[key] ? CODEX_EMPLACEMENT_POWERS[key]() : [], "enemy") +
           `<div class="cx-stat">射程 ${def.range} ／ ${def.interval}秒ごと` +
             `${def.knockback ? " ／ 押してくる" : ""}</div>` +
+          codexEnemyDpsHtml(codexEmplacementFireRates(key)) +
         `</div>` +
       `</div>`;
   }
@@ -35248,6 +35346,7 @@ function codexBuildingHtml() {
           `<div class="cx-stat">射程 ${first.attackRadius}〜${last.attackRadius} ／ ` +
             `${first.projectileInterval}〜${last.projectileInterval}秒ごと ／ ` +
             `1度に${first.projectileCount}〜${last.projectileCount}発</div>` +
+          codexEnemyDpsHtml(codexBuildingFireRates(b.size)) +
         `</div>` +
       `</div>`;
   }
@@ -35278,6 +35377,7 @@ function codexBuildingHtml() {
               CONTINENT_NUMERALS[i] + " " + (CODEX_BOSS_ART_NAMES[f.bossArt] ?? f.bossArt)).join(" ／ ")}</div>` +
         codexPowerHtml(codexCapitalPowers(), "enemy") +
         `<div class="cx-stat">射程 ${BOSS_ATTACK_RADIUS} ／ 衝撃波 半径${BOSS_NOVA_RADIUS}</div>` +
+        codexEnemyDpsHtml(codexCapitalFireRates()) +
       `</div>` +
     `</div></div>`;
 
