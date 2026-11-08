@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.114.0";
+const GAME_VERSION = "v3.114.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9763,7 +9763,7 @@ const MOVER_DEFS = {
   // v3.112.0（案帳 DT-168）: 爆ぜ岩。警戒度ラッシュ「爆ぜ岩の転がり」で四方から転がってくる。人ではない（竜卵の熱で目を覚ました岩の生き物。
   // 近世から先は同じ役を自走爆雷＝車輪の付いた鉄の樽がやる）。触れると爆ぜ、倒しても少し遅れて爆ぜる（updateBlastRock・blastRockExplode）
   blast_rock: {
-    name: "blast_rock", blastRock: true, hp: 40, speed: 120, xp: 8, eggDrop: 0, eggChance: 0, radius: 13, turnRate: 1.6,
+    name: "blast_rock", blastRock: true, hp: 40, speed: 120, xp: 8, eggDrop: 0, eggChance: 0, radius: 19, turnRate: 1.6,   // v3.114.1（DT-168 手直し「もうちょっとサイズは大きく」）: 13→19
     color: "#7a7470", glowColor: "#ff9a40", moveType: "patrol",
   },
   wind_rider: {
@@ -17881,6 +17881,14 @@ const BLASTROCK_CHAIN_EGGS_AT  = 5;      // 1回の誘爆でこの数つなが�
 const BLASTROCK_CHAIN_EGGS     = 2;
 const BLASTROCK_RING_LIFE      = 0.45;   // 爆ぜた赤い輪の長さ（見た目だけ）
 const BLASTROCK_FUSE_MAX       = 64;
+// v3.114.1（案帳 DT-168 手直し・Shooter「爆発までの残り時間を各キャラのところにゲージで表示して」）:
+// 1体ずつ導火線を持たせ、転がり出してから BLASTROCK_SELF_FUSE〜＋SPREAD 秒でその場で自爆する。残りは岩の上のゲージで見せる。
+// 群れまで来るのに4〜5秒かかるので、ほとんどは群れに届いてから火が尽きる＝避け続けるか、町へ連れていって町の中で爆ぜさせるかを選ぶ時間になる
+const BLASTROCK_SELF_FUSE        = 14;
+const BLASTROCK_SELF_FUSE_SPREAD = 4;
+const BLASTROCK_FUSE_BLINK       = 2;    // 残りこの秒数から赤く点滅して「もうすぐ」を見せる
+const BLASTROCK_GAUGE_H          = 4;    // ゲージの太さ（px）
+const BLASTROCK_GAUGE_GAP        = 8;    // 岩の縁からゲージまで
 const BLASTROCK_TARGETS        = { building: TARGET_AIM, wall: TARGET_AIM, mover: TARGET_AIM };
 const blastFuses = [];   // {x, y, t, chain, mech, roll}（倒されて爆ぜる前の岩）
 const blastRings = [];   // {x, y, t}（見た目だけ）
@@ -17899,7 +17907,9 @@ function startBlastRocks(d, c, tier) {
     m._trChase = true;
     m._marching = false;
     m.headingX = -Math.cos(a); m.headingY = -Math.sin(a);
-    m._blast = { wait: Math.floor(k / 4) * TR_BLASTROCK_STAGGER, roll: random() * Math.PI * 2, mech: currentStage >= BLASTROCK_MECH_ERA };
+    const fuse = BLASTROCK_SELF_FUSE + random() * BLASTROCK_SELF_FUSE_SPREAD;
+    m._blast = { wait: Math.floor(k / 4) * TR_BLASTROCK_STAGGER, roll: random() * Math.PI * 2, mech: currentStage >= BLASTROCK_MECH_ERA,
+                 fuse, fuseMax: fuse };
   }
   d.total = n;
 }
@@ -17907,6 +17917,10 @@ function startBlastRocks(d, c, tier) {
 function updateBlastRock(m, dt, centroid) {
   const B = m._blast || (m._blast = { wait: 0, roll: 0, mech: currentStage >= BLASTROCK_MECH_ERA });
   if (B.wait > 0) { B.wait -= dt; return; }
+  if (B.fuseMax) {   // 導火線が尽きたらその場で自爆（触れたときと同じく倒したことにはならない）
+    B.fuse -= dt;
+    if (B.fuse <= 0) { m.alive = false; blastRockExplode(m.wx, m.wy, 0, moverAttacker(m)); return; }
+  }
   const want = Math.atan2(centroid.y - m.wy, centroid.x - m.wx);
   let h = Math.atan2(m.headingY, m.headingX);
   const diff = wrapAngle(want - h);
@@ -17973,6 +17987,7 @@ function blastRockExplode(x, y, chain, src) {
 }
 /** 倒されて爆ぜる前の岩（赤く点滅）と、爆ぜた赤い輪。見た目だけ */
 function drawBlastFuses() {
+  drawBlastRockGauges();
   if (blastFuses.length === 0 && blastRings.length === 0) return;
   ctx.save();
   for (const f of blastFuses) {
@@ -17982,11 +17997,32 @@ function drawBlastFuses() {
     ctx.globalAlpha = on ? 0.75 : 0.25; ctx.fillStyle = "#ff3020";
     ctx.beginPath(); ctx.arc(0, 0, MOVER_DEFS.blast_rock.radius + 2, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+    drawBlastGauge(f.x, f.y, Math.max(0, f.t) / BLASTROCK_FUSE, true);
   }
   for (const r of blastRings) {
     const u = r.t / BLASTROCK_RING_LIFE;
     ctx.globalAlpha = 1 - u; ctx.strokeStyle = "#ff4030"; ctx.lineWidth = 4 * (1 - u) + 1;
     ctx.beginPath(); ctx.arc(r.x, r.y, BLASTROCK_BLAST_R * (0.4 + 0.6 * u), 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.restore();
+}
+/** 爆発までの残りゲージ（岩の上・回さない）。u＝残りの割合。red＝もうすぐ爆ぜる */
+function drawBlastGauge(x, y, u, red) {
+  const r = MOVER_DEFS.blast_rock.radius, w = r * 2 + 6, h = BLASTROCK_GAUGE_H;
+  const gx = x - w / 2, gy = y - r - BLASTROCK_GAUGE_GAP - h;
+  ctx.globalAlpha = 0.75; ctx.fillStyle = "#1a1410"; ctx.fillRect(gx - 1, gy - 1, w + 2, h + 2);
+  ctx.globalAlpha = 1; ctx.fillStyle = red ? "#ff3020" : "#ff9a40";
+  ctx.fillRect(gx, gy, w * Math.max(0, Math.min(1, u)), h);
+}
+/** 転がっている爆ぜ岩それぞれの導火線の残り（drawBlastFuses から。見た目だけ） */
+function drawBlastRockGauges() {
+  ctx.save();
+  for (const m of movers) {
+    if (!m.alive || !m.def.blastRock || !m._blast || !m._blast.fuseMax) continue;
+    const B = m._blast;
+    const near = B.fuse <= BLASTROCK_FUSE_BLINK;
+    const red = near && Math.sin(B.fuse * 18) > 0;   // 残り2秒は点滅
+    drawBlastGauge(m.wx, m.wy, B.fuse / B.fuseMax, red);
   }
   ctx.restore();
 }
@@ -34598,7 +34634,8 @@ function codexAttackLabel(def) {
     if (def.part === "rider")
       return `矢 威力${WAR_RIDER_DAMAGE}・射程${WAR_RIDER_RANGE}・${WAR_RIDER_INTERVAL}秒ごと（象の背から近い竜を撃つ。4人が残っている間は象が固い）`;
     if (def.blastRock)
-      return `体当たりで爆ぜる 威力${BLASTROCK_DRAGON_DMG}＋ステージごとに${BLASTROCK_DRAGON_DMG_STAGE}・半径${BLASTROCK_BLAST_R}（倒しても${BLASTROCK_FUSE}秒後に爆ぜ、建物・敵・ほかの爆ぜ岩を巻き込む）`;
+      return `体当たりで爆ぜる 威力${BLASTROCK_DRAGON_DMG}＋ステージごとに${BLASTROCK_DRAGON_DMG_STAGE}・半径${BLASTROCK_BLAST_R}（倒しても${BLASTROCK_FUSE}秒後に爆ぜ、建物・敵・ほかの爆ぜ岩を巻き込む。` +
+             `転がり出してから${BLASTROCK_SELF_FUSE}〜${BLASTROCK_SELF_FUSE + BLASTROCK_SELF_FUSE_SPREAD}秒で導火線が尽きて自爆。残りは岩の上のゲージ）`;
     if (def.name === "ring_rider")
       return `矢 威力${TR_RINGRIDE_SHOT_DMG}＋ステージごとに${TR_RINGRIDE_SHOT_DMG_STAGE}・射程${TR_RINGRIDE_SHOT_RANGE}・${TR_RINGRIDE_SHOT_EVERY}秒ごと（群れを囲む輪の上から内へ射る）`;
     if (def.name === "harpoon_knight")
@@ -35568,7 +35605,7 @@ const CODEX_RUSH_DESC = {
   gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
   twinelite: () => `大型の精鋭が2体（1体ずつ体力 ×${+TR_TWIN_HP.toFixed(1)}。衝撃波を持つ時代は ×${+TR_TWIN_SHOCKWAVE_HP.toFixed(1)}）。片方を倒すと残りが怒り、速さと攻撃が ×${TR_TWIN_RAGE}。${TR_TWIN_SYNC}秒以内に2体とも倒せば怒らず、卵が倍。${TR_TWIN_DUR}秒で去る`,
   titan:    () => `岩でできた多脚の巨像が1体、ゆっくり群れへ歩いてくる（体力は精鋭の追跡者の ×${TR_TITAN_HP}・砲塔は無く撃たない）。脚を1本ずつ踏み下ろし、<b>踏む足の下にだけ予告の輪</b>が出て、踏んだ足のまわり（半径${TITAN_STOMP_R}）に衝撃波。輪の無い側から胴を叩く。人間の町は踏みつぶさない。倒すと岩の山に崩れて卵${MOVER_DEFS.stone_titan.eggDrop}個。${TR_TITAN_DUR}秒で去る`,
-  blastrock: () => `ひびの光る爆ぜ岩（近世から先は車輪の付いた鉄の樽の自走爆雷）が四方の画面の外から群れへ転がってくる（警戒度2〜4で ${TR_BLASTROCK_COUNT.slice(1).join("・")}体。群れより少し遅い）。<b>群れに触れると爆ぜて</b>まわり${BLASTROCK_BLAST_R}pxの竜に大きな傷。<b>倒しても${BLASTROCK_FUSE}秒後にその場で爆ぜ</b>、まわりの建物・動く敵・ほかの爆ぜ岩を巻き込む（爆ぜ岩どうしは誘爆する）。追ってくる岩を連れて町を横切り、町の中で割ると町ごと崩せる。1回の誘爆で${BLASTROCK_CHAIN_EGGS_AT}体以上つながると卵${BLASTROCK_CHAIN_EGGS}個。全部割るか${TR_UNIT_MAX_TIME}秒で終わる`,
+  blastrock: () => `ひびの光る爆ぜ岩（近世から先は車輪の付いた鉄の樽の自走爆雷）が四方の画面の外から群れへ転がってくる（警戒度2〜4で ${TR_BLASTROCK_COUNT.slice(1).join("・")}体。群れより少し遅い）。<b>群れに触れると爆ぜて</b>まわり${BLASTROCK_BLAST_R}pxの竜に大きな傷。<b>倒しても${BLASTROCK_FUSE}秒後にその場で爆ぜ</b>、まわりの建物・動く敵・ほかの爆ぜ岩を巻き込む（爆ぜ岩どうしは誘爆する）。転がり出してから${BLASTROCK_SELF_FUSE}〜${BLASTROCK_SELF_FUSE + BLASTROCK_SELF_FUSE_SPREAD}秒で導火線が尽きると、その場で自爆する（残りは岩の上のゲージ。残り${BLASTROCK_FUSE_BLINK}秒で赤く点滅）。追ってくる岩を連れて町を横切り、町の中で割ると町ごと崩せる。1回の誘爆で${BLASTROCK_CHAIN_EGGS_AT}体以上つながると卵${BLASTROCK_CHAIN_EGGS}個。全部割るか${TR_UNIT_MAX_TIME}秒で終わる`,
   ringride: () => `騎兵（警戒度2〜4で ${TR_RINGRIDE_COUNT.slice(1).join("・")}騎）が群れを囲む半径${TR_RINGRIDE_R}pxの輪になって回り、${TR_RINGRIDE_SHOT_EVERY}秒ごとに内へ矢を射る。輪は群れについてくるが秒速${TR_RINGRIDE_FOLLOW}pxまでなので、<b>止まると囲まれ続け、輪の一か所へ線を向けて突っ切れば抜けられる</b>。${Math.round(TR_RINGRIDE_BREAK * 100)}%を倒すと輪が崩れて残りは逃げる（竜晶${TR_RINGRIDE_CRYSTALS}）。${TR_RINGRIDE_DUR}秒で去る`,
   harpoon:  () => `竜狩りの騎士（警戒度2〜4で ${TR_HARPOON_COUNT.slice(1).join("・")}体）が群れの端の竜に銛を打ち込み、綱で引きずる（秒速${TR_HARPOON_PULL}px）。騎士のもとまで引かれた竜は<b>本当に減る</b>。放すには騎士を倒すしかない。${TR_HARPOON_DUR}秒で引き揚げる`,
 };
