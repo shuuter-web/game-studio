@@ -890,6 +890,17 @@
   }
   @keyframes hintBlink { 0%,100% { opacity: 1.0; } 50% { opacity: 0.25; } }
 
+  /* v3.120.0（案帳 DT-538）: オートプレイ中の帯（いちばん上に重ねる。やめるボタンだけ押せる） */
+  #autoplay-bar { display: none; position: fixed; left: 50%; transform: translateX(-50%);
+    top: calc(env(safe-area-inset-top, 0px) + 58px); z-index: 70; pointer-events: auto;
+    align-items: center; gap: 10px; padding: 6px 8px 6px 14px; border-radius: 18px;
+    background: rgba(10,14,24,0.78); border: 1px solid rgba(140,216,255,0.5);
+    font-family: monospace; font-size: 13px; color: #cfeaff; white-space: nowrap; max-width: calc(100vw - 32px); }
+  body.autoplay #autoplay-bar { display: flex; }
+  #autoplay-bar .ap-note { font-size: 10px; color: rgba(207,234,255,0.6); }
+  #autoplay-bar button { font-family: monospace; font-size: 13px; color: #fff; background: rgba(120,30,30,0.85);
+    border: 1px solid rgba(255,160,160,0.7); border-radius: 12px; padding: 5px 12px; cursor: pointer; }
+
   /* v3.33.0: つづきからの下の一言（何が起きるか） */
   .title-note { font-size: 11px; line-height: 1.4; color: rgba(255,255,255,0.6); max-width: 280px; text-align: center; margin: -4px auto 6px; }
   /* v0.19: タイトルメニュー（2回目以降のラン。はじめる／つづきから） */
@@ -1355,6 +1366,9 @@
 <div id="codex-overlay"></div>
 <div id="options-overlay"></div>
 
+<!-- v3.120.0（案帳 DT-538）: オートプレイ中の帯 -->
+<div id="autoplay-bar"><span><span class="ap-name"></span><br><span class="ap-note"></span></span><button type="button" class="ap-stop"></button></div>
+
 <!-- v0.25: チャレンジ達成トースト -->
 <div id="challenge-toast"></div>
 
@@ -1367,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.119.0";
+const GAME_VERSION = "v3.120.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1430,6 +1444,9 @@ function reseedRandom(seedValue) {
 
 function random()   { return nextLogicRandom(); }   // ゲーム状態に影響する乱数
 function fxRandom() { return nextFxRandom(); }      // 見た目だけの乱数
+
+// v3.120.0（案帳 DT-538）: オートプレイ中か。プロファイル・ランのセーブを書かない判定に起動直後から使うので、ここで宣言する
+let autoplayActive = false;
 
 // URLで固定されたシード（指定が無ければ null）。ラン開始のたびにこの値へ戻す。
 const fixedSeedParam = new URLSearchParams(location.search).get("seed") || null;
@@ -27158,6 +27175,10 @@ const STRINGS = {
   continentToughness: (mult) => `建物の硬さ ${mult}`,
   continentUnlocked: (name) => `${name} が解放された`,
   startRun: "はじめる",
+  autoplayStart: "👀 オートプレイ",                          // v3.120.0（案帳 DT-538）
+  autoplayBar: (icon, name) => `👀 オートプレイ中 ${icon} ${name}`,
+  autoplayNote: "記録は残りません",
+  autoplayStop: "■ やめる",
   backToTitle: "← もどる",
   openTree: (crystals) => `竜晶の強化　🔷${crystals}`,
   openChallenges: (done, total) => `チャレンジ・解放　${done}/${total}`,
@@ -34071,6 +34092,7 @@ function loadProfile() {
 let profile = loadProfile();
 
 function saveProfile() {
+  if (autoplayActive) return;   // v3.120.0（DT-538）: オートプレイは眺めるだけ。竜晶・解放・記録を残さない（やめたら読み直して元に戻す）
   try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); } catch (_) {}
 }
 
@@ -34140,12 +34162,14 @@ function applyFallenBits(packed) {
 }
 
 function saveRunSave(data) {
+  if (autoplayActive) return;   // v3.120.0: オートプレイで「つづきから」のセーブを上書きしない
   try {
     localStorage.setItem(RUN_SAVE_KEY, JSON.stringify(Object.assign({ version: RUN_SAVE_VERSION }, data)));
   } catch (_) {}
 }
 
 function clearRunSave() {
+  if (autoplayActive) return;   // v3.120.0: オートプレイのラン開始・終了で「つづきから」を消さない
   try { localStorage.removeItem(RUN_SAVE_KEY); } catch (_) {}
 }
 
@@ -34598,6 +34622,7 @@ function challengeCompletion() {
 
 // 未達成のチャレンジを判定し、達成に報酬（竜晶）を付与＋トースト表示。
 function evaluateChallenges() {
+  if (autoplayActive) return;   // v3.120.0: 残らない達成の知らせを出さない
   let changed = false;
   for (const ch of CHALLENGE_DEFS) {
     if (challengeDone(ch.id)) continue;
@@ -37023,6 +37048,15 @@ function refreshTitleMenu() {
   startBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); onTitleStart(); });
   titleMenuEl.appendChild(startBtn);
 
+  // v3.120.0（案帳 DT-538）: オートプレイ（解放済みの竜からランダムに選び、AIが進むのを眺める）
+  if (!autoplayActive) {
+    const autoBtn = document.createElement("button");
+    autoBtn.className = "title-btn";
+    autoBtn.textContent = STRINGS.autoplayStart;
+    autoBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); startAutoplay(); });
+    titleMenuEl.appendChild(autoBtn);
+  }
+
   // v0.20: 恒常強化ツリー（竜晶を持っていなくても開けて、何が伸ばせるか見せる）
   const treeBtn = document.createElement("button");
   treeBtn.className = "title-btn";
@@ -37202,7 +37236,7 @@ function unlockLabel(def) {
 
 /** 条件を満たしたものを解放してトーストを出す。ステージクリア・完走・敗北・加入のたびに呼ぶ。 */
 function evaluateUnlocks(ctx = {}) {
-  if (!profile) return;
+  if (!profile || autoplayActive) return;   // v3.120.0: 残らない解放の知らせを出さない
   const c = Object.assign({ clearedIdx: -1, runComplete: false }, ctx);
   const u = ensureUnlocks();
   const opened = [];
@@ -39879,6 +39913,7 @@ function addTrailPoint(sx, sy, now) {
 
 const SWIPE_SAMPLES_MAX = 24;   // v3.33.0: スワイプを測るために残す指の動きの数
 function inputStart(sx, sy, now) {
+  if (autoplayActive) { inputMode = "NONE"; return; }   // v3.120.0（DT-538）: 線はオートプレイが引く
   // v0.6: ライン描画はプレイ中とステージクリア演出中のみ受け付ける。
   // タイトル/リザルトはDOMオーバーレイが操作を担う。
   // v0.6.1: 3択カード表示中もプレイ継続（カード領域外なら線が引ける）。
@@ -40011,6 +40046,206 @@ canvas.addEventListener("mousedown",  (e) => {
 canvas.addEventListener("mousemove",  (e) => { if (isDrawing || inputMode === "TAP_PENDING") inputMove(e.clientX, e.clientY, performance.now()); });
 canvas.addEventListener("mouseup",    () => inputEnd());
 canvas.addEventListener("mouseleave", () => inputEnd());
+
+// =====================================================================
+// v3.120.0（案帳 DT-538・Shooter指示「今選べる竜種からランダムに竜を選んで勝手に進むのを眺めるオートプレイモード」）
+// =====================================================================
+// タイトルの「👀 オートプレイ」で始める。解放済みの竜種からランダムに1種を選び、AI が線を引いて進む。
+// 線は人の指と同じ入口（beginDraw → inputMove → inputEnd）で引くので、竜種ごとの操作（土竜の割れ目・
+// 指先竜の狙い・砲撃竜の旗など）もそのまま動く。レベルアップ・強化カード・地域の三択・リザルトも
+// 画面のボタンを押して進める（押せるようになるまでの待ちや誤タップ防止も人と同じ道を通る）。
+// ランが終わったらタイトルへ戻り、また別の竜種で始める（やめるまで眺め続けられる）。
+// 眺めるだけのモードなので、竜晶・解放・ベスト記録・「つづきから」のセーブは書かない（やめたら読み直して元に戻す）。
+// 選び方は fxRandom（見た目の乱数）で引く：ゲームの乱数列を AI の迷いでずらさないため。
+const AUTO_TITLE_WAIT_S     = 1.6;   // タイトル → 竜種の一覧を出すまで（何が始まるかを見せる間）
+const AUTO_SPECIES_WAIT_S   = 1.4;   // 竜種の一覧 → 選ぶまで
+const AUTO_UI_WAIT_S        = 1.0;   // 三択・地域・リザルトを見せてから押すまで
+const AUTO_PICK_CONFIRM_S   = 0.7;   // レベルアップで選択肢を押してから「これにする」まで（ツリーが変わるのを見せる）
+const AUTO_STROKE_MIN_S     = 2.6;   // 線を引き直す間隔（最短）
+const AUTO_STROKE_MAX_S     = 4.6;   // 線を引き直す間隔（最長）
+const AUTO_TARGET_NEAREST   = 4;     // 近い建物のうち、この数の中からランダムに狙う（同じ所で詰まらないように）
+const AUTO_BOSS_BIAS_BASE   = 0.12;  // 首都を狙う割合（ステージの始め）
+const AUTO_BOSS_BIAS_PER_S  = 1 / 240;   // ステージが長引くほど首都を狙う（240秒でほぼ首都だけ）
+const AUTO_SWEEP_CHANCE     = 0.3;   // 囲む代わりに、建物を突き抜けて薙ぐ線を引く割合
+const AUTO_SWEEP_OVERSHOOT  = 220;   // 薙ぐ線が建物の先へ伸びる長さ（px）
+const AUTO_LOOP_RADIUS_MIN  = 110;   // 囲む輪の半径の下限（PATH_MIN_SEGMENT=30 でも輪の点が足りるように）
+const AUTO_LOOP_MARGIN      = 60;    // 建物の大きさに足す輪のゆとり（px）
+const AUTO_LOOP_STEP_PX     = 40;    // 輪・線の点の間隔（px）
+const AUTO_CANNON_FLAG_CHANCE = 0.6; // 砲撃竜が狙った建物に旗を立てる割合
+const AUTO_POINTER_ID       = 9001;  // 合成するタップの指の番号（人の指と混ざらない値）
+
+const autoplay = { wait: 0, strokeWait: 0, pickedAt: 0, stageKey: -1 };
+const autoplayBarEl = document.getElementById("autoplay-bar");
+autoplayBarEl.querySelector(".ap-stop").textContent = STRINGS.autoplayStop;
+autoplayBarEl.querySelector(".ap-note").textContent = STRINGS.autoplayNote;
+autoplayBarEl.addEventListener("pointerdown", (e) => e.stopPropagation());
+autoplayBarEl.querySelector(".ap-stop").addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); stopAutoplay(); });
+
+function startAutoplay() {
+  if (autoplayActive || gameState !== "title") return;
+  autoplayActive = true;
+  autoplay.wait = 0.2; autoplay.strokeWait = 0; autoplay.pickedAt = 0; autoplay.stageKey = -1;
+  document.body.classList.add("autoplay");
+  refreshAutoplayBar();
+  refreshTitleMenu();
+}
+
+function stopAutoplay() {
+  if (!autoplayActive) return;
+  autoplayActive = false;
+  document.body.classList.remove("autoplay");
+  inputEnd();
+  perkOfferQueue.length = 0; perkOfferVisible = false; perkOfferSlowmo = 0; perkOfferEl.classList.remove("visible");
+  dismissLevelUpCards();
+  dismissRegionPick();
+  dismissSpeciesSelect();
+  // オートプレイ中に変わったプロファイル（竜晶・解放・ラン数）はメモリの上だけ。保存済みのものへ戻す
+  profile = loadProfile();
+  if (gameState !== "title") returnToTitle();
+  else { refreshTitleBest(); refreshTitleMenu(); titleOverlayEl.classList.add("visible"); }
+}
+
+function refreshAutoplayBar() {
+  const s = SPECIES_DEFS[flockSpecies];
+  const nameEl = autoplayBarEl.querySelector(".ap-name");
+  nameEl.textContent = gameState === "title" ? STRINGS.autoplayBar("", "") : STRINGS.autoplayBar(s ? s.icon : "", s ? s.ja : "");
+  if (s && gameState !== "title") nameEl.style.color = s.color; else nameEl.style.color = "";
+}
+
+/** 画面のボタンを人の指と同じように押す（押して離す＋クリック）。ボタンごとに付いている入口が違うので3つとも送る */
+function autoTap(el) {
+  const o = { bubbles: true, cancelable: true, pointerId: AUTO_POINTER_ID, isPrimary: true, pointerType: "touch" };
+  el.dispatchEvent(new PointerEvent("pointerdown", o));
+  el.dispatchEvent(new PointerEvent("pointerup", o));
+  el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+}
+function autoPickFrom(list) { return list.length ? list[Math.floor(fxRandom() * list.length)] : null; }
+
+/** tick から毎フレーム（実時間）。画面の状態を見て、次に押すもの・引く線を決める */
+function updateAutoplay(dt) {
+  if (gameState === "title" || gameState === "playing" || gameState === "stage-clear" || gameState === "all-clear") refreshAutoplayBarIfChanged();
+  autoplay.wait = Math.max(0, autoplay.wait - dt);
+  if (gameState === "title") { autoplayTitle(); return; }
+  if (gameState === "all-clear") {
+    if (autoplay.wait <= 0 && retryBtn.classList.contains("visible")) { autoplay.wait = AUTO_TITLE_WAIT_S; autoTap(retryBtn); }
+    return;
+  }
+  if (regionPicking) {
+    if (autoplay.wait > 0) return;
+    const card = autoPickFrom([...cardListEl.querySelectorAll(".region-card")]);
+    if (card) { autoplay.wait = AUTO_UI_WAIT_S; autoTap(card); }
+    return;
+  }
+  if (gameState === "stage-clear") {
+    // 結果 → 数え上げが終わったら「次へ」→ 地域の三択（proceedToNextStage が段階ごとに進む）
+    if (autoplay.wait <= 0) { autoplay.wait = AUTO_UI_WAIT_S; proceedToNextStage(); }
+    return;
+  }
+  if (gameState !== "playing") return;
+  if (upgradeCardsVisible) { autoplayLevelUp(); return; }
+  if (perkOfferVisible) {
+    if (autoplay.wait > 0 || !perkOfferEl.classList.contains("armed")) return;
+    const card = autoPickFrom([...perkOfferEl.querySelectorAll(".fo-card")]);
+    if (card) { autoplay.wait = AUTO_UI_WAIT_S; autoTap(card); }
+    return;
+  }
+  autoplay.pickedAt = 0;
+  // ステージが替わったら、開始の見出しを少し見せてから線を引く
+  const stageKey = runStageIndex * 100 + runShape;
+  if (stageKey !== autoplay.stageKey) { autoplay.stageKey = stageKey; autoplay.strokeWait = AUTO_UI_WAIT_S; }
+  if (wipeShowTimer > 0) return;   // 全滅の見せ場では動かさない
+  autoplay.strokeWait -= dt;
+  if (autoplay.strokeWait > 0) return;
+  autoplay.strokeWait = AUTO_STROKE_MIN_S + fxRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
+  dismissStageIntro();
+  autoplayStroke();
+}
+
+let autoplayBarKey = "";
+function refreshAutoplayBarIfChanged() {
+  const key = gameState === "title" ? "title" : flockSpecies;
+  if (key === autoplayBarKey) return;
+  autoplayBarKey = key;
+  refreshAutoplayBar();
+}
+
+function autoplayTitle() {
+  if (autoplay.wait > 0) return;
+  if (!speciesSelecting) {
+    if (isFirstEverRun()) { beginRun("fire"); return; }   // 初回のランは火竜だけ（人の初回と同じ）
+    showSpeciesSelect();
+    autoplay.wait = AUTO_SPECIES_WAIT_S;
+    return;
+  }
+  // 「今選べる竜種」＝竜種の一覧で鍵の付いていないもの
+  const unlocked = SPECIES_CHOICES.map(ch => ch.species).filter(isSpeciesUnlocked);
+  const sid = autoPickFrom(unlocked) || "fire";
+  autoplay.wait = AUTO_UI_WAIT_S;
+  beginRun(sid);
+}
+
+/** レベルアップ：選択肢を1つ押す → 少し見せて「これにする」。出てすぐは押せない（armed 待ち）のは人と同じ */
+function autoplayLevelUp() {
+  if (autoplay.wait > 0) return;
+  const centered = levelupOverlayEl.classList.contains("lv-center");
+  if (centered && !levelupOverlayEl.classList.contains("armed")) return;
+  const go = levelupOverlayEl.querySelector(".tw-go");
+  if (centered && go && !go.disabled && autoplay.pickedAt > 0) {
+    autoplay.pickedAt = 0;
+    autoplay.wait = AUTO_UI_WAIT_S;
+    autoTap(go);
+    return;
+  }
+  const card = autoPickFrom([...cardListEl.querySelectorAll(".upgrade-card:not(.species-locked)")]);
+  if (!card) return;
+  autoTap(card);
+  autoplay.pickedAt = performance.now();
+  autoplay.wait = AUTO_PICK_CONFIRM_S;
+}
+
+/** 狙う建物を決める：近い数棟からランダム。ステージが長引くほど首都を狙う */
+function autoplayTarget(cx, cy) {
+  const boss = bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null;
+  const stageS = (performance.now() - stageStartTime) / 1000;
+  if (boss && !boss.fallen && fxRandom() < AUTO_BOSS_BIAS_BASE + stageS * AUTO_BOSS_BIAS_PER_S) return boss;
+  const near = [];
+  for (const s of settlements) {
+    if (!s || s.fallen) continue;
+    const d = (s.wx - cx) * (s.wx - cx) + (s.wy - cy) * (s.wy - cy);
+    if (near.length < AUTO_TARGET_NEAREST) { near.push({ s, d }); near.sort((a, b) => a.d - b.d); }
+    else if (d < near[near.length - 1].d) { near[near.length - 1] = { s, d }; near.sort((a, b) => a.d - b.d); }
+  }
+  const pick = autoPickFrom(near);
+  return pick ? pick.s : (boss && !boss.fallen ? boss : null);
+}
+
+/** 線を1本引く（人の指と同じ入口を通す。1フレームで描き終える） */
+function autoplayStroke() {
+  const c = calcFriendlyCentroid();
+  const t = autoplayTarget(c.x, c.y);
+  if (!t) return;
+  const pts = [];
+  if (fxRandom() < AUTO_SWEEP_CHANCE) {
+    // 薙ぐ：群れから建物を突き抜けて先まで
+    const dx = t.wx - c.x, dy = t.wy - c.y, d = Math.hypot(dx, dy) || 1;
+    const len = d + AUTO_SWEEP_OVERSHOOT, n = Math.max(2, Math.ceil(len / AUTO_LOOP_STEP_PX));
+    for (let k = 0; k <= n; k++) pts.push({ x: c.x + dx / d * len * k / n, y: c.y + dy / d * len * k / n });
+  } else {
+    // 囲む：建物のまわりに閉じた輪（群れに近い側から描き始める）。閉じた線なので群れは輪を回り続ける
+    const r = Math.max(AUTO_LOOP_RADIUS_MIN, (t.radius || 20) + AUTO_LOOP_MARGIN);
+    const a0 = Math.atan2(c.y - t.wy, c.x - t.wx), dir = fxRandom() < 0.5 ? 1 : -1;
+    const n = Math.max(12, Math.ceil(Math.PI * 2 * r / AUTO_LOOP_STEP_PX));
+    for (let k = 0; k <= n; k++) { const a = a0 + dir * Math.PI * 2 * k / n; pts.push({ x: t.wx + Math.cos(a) * r, y: t.wy + Math.sin(a) * r }); }
+  }
+  for (const p of pts) { p.x = Math.max(0, Math.min(WORLD_W, p.x)); p.y = Math.max(0, Math.min(WORLD_H, p.y)); }
+  const now = performance.now();
+  const s0 = worldToScreen(pts[0].x, pts[0].y);
+  inputEnd();
+  beginDraw(s0.x, s0.y, now);
+  for (let k = 1; k < pts.length; k++) { const s = worldToScreen(pts[k].x, pts[k].y); inputMove(s.x, s.y, now); }
+  inputEnd();
+  if (flockWeapon === "shell" && fxRandom() < AUTO_CANNON_FLAG_CHANCE) cannonPlantFlag(t.wx, t.wy);
+}
 
 // -----------------------------------------------------------------
 // アイドル旋回（ワールド座標でリーダーが徘徊）
@@ -47283,6 +47518,7 @@ function tick() {
 
   if (flashTimer > 0) flashTimer = Math.max(0, flashTimer - dt);
   if (shakeTimer > 0) shakeTimer = Math.max(0, shakeTimer - dt);
+  if (autoplayActive) updateAutoplay(dt);   // v3.120.0（DT-538）: 実時間で動かす（レベルアップで時間が止まっていても選べるように）
 
   render(now);
   // v3.71.0（案帳 DT-505）: タイトル画面では上部の UI を隠す。切り替わった時だけ class を触る
