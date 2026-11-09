@@ -1272,7 +1272,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.123.1";
+const GAME_VERSION = "v3.123.2";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -11192,8 +11192,7 @@ function drawFlood() {
 
 /** 堰の見た目。川に直交する石の壁として live 描画する（建物レイヤーはキャッシュのため）。 */
 function drawDams() {
-  for (const b of settlements) {
-    if (!b || !b._isDam || b.fallen) continue;
+  for (const b of frameMarked.dams) {
     ctx.save();
     ctx.translate(b.wx, b.wy);
     ctx.rotate(b._damAngle ?? 0);
@@ -11708,8 +11707,7 @@ function drawRampartFansAndGuns() {
   const pivot = catapult ? CATAPULT_FRAME_PIVOT : (RAMPART_GUN_PIVOT[era] || { x: 0.5, y: 0.7 });
   const vb = getViewBoundsWorld(RAMPART_RANGE + 60);
   const list = [];
-  for (const s of settlements) {
-    if (!s || s.fallen || s._townRole !== "rampart" || s._rampartAngle === undefined) continue;
+  for (const s of frameMarked.ramparts) {
     if (s.wx < vb.minX || s.wx > vb.maxX || s.wy < vb.minY || s.wy > vb.maxY) continue;
     list.push(s);
   }
@@ -11753,8 +11751,7 @@ function drawRampartFansAndGuns() {
 
 function drawEmplacements() {
   ctx.save();
-  for (const s of settlements) {
-    if (!s || s.fallen) continue;
+  for (const s of frameMarked.emplacements) {   // 時代兵器か役割を持つ、陥落していない建物だけ（render の頭で拾う）
     // v3.91.0（案帳 DT-515・Shooter「役割の輪の表示はカット」）: 役割を持つ建物（穀倉・兵舎・前哨堡）の輪は出さない。
     // 穀倉は屋根の卵の印（drawEggBearerMarkers）、兵舎は兵が出てくる演出、前哨堡は砲で働きを見せる
     if (!s._emplacement && s._townRole) {
@@ -15539,6 +15536,11 @@ function drawSpitter(m) {
   }
 }
 
+// 敵どうしの押し合い（updateMovers の最後）で使い回す入れ物。毎フレーム作り直さない
+const _sepList = [];
+let _sepX = new Float64Array(0), _sepY = new Float64Array(0), _sepR = new Float64Array(0);
+let _sepPack = new Float64Array(0), _sepMovable = new Uint8Array(0);
+
 function updateMovers(dt) {
   updateEnemyGroups(dt);   // v2.3.0: 複数パーツのグループ敵（編成など）
   updateMoverDeaths(dt);   // v2.6.0: 大きい敵の最期（崩れ→倒れ込み→残骸）
@@ -16034,10 +16036,14 @@ function updateMovers(dt) {
   // 隊列の形や進路の読みやすさを壊さない。
   // 動かない敵（砲台・門・要塞・潜行中の個体）は押されない側に固定する
   // ＝配置した場所から勝手にずれない。押し戻しはぶつかった側が全部引き受ける。
-  // mover総数は数十のためO(n^2)で十分。
   // v3.23.0: 押し合いに加わる敵を先に拾ってから総当たりする（大都会は道路の車が数千台あり、
   // 車は押し合いに加わらないのに内側のループで毎回読み飛ばしていた）。順番は movers のまま
-  const sepList = [];
+  // v3.123.2（案帳 DT-542）: 総当たりは数百体（実測で最大550体前後＝1フレーム15万組）になるので、
+  // 位置・半径・群れの番号を型付き配列に写してから回し、終わってから書き戻す。
+  // 組を見る順番・押す量の計算は前と同じ（同じシードで結果が1ビットも変わらないことをヘッドレス再生で確かめた）。
+  // 横の距離だけで届かない組は先に捨てる（|dx| ≥ minD なら dx²+dy² ≥ minD² なので、前の判定でも必ず捨てていた組）
+  const sepList = _sepList;
+  sepList.length = 0;
   for (const a of movers) {
     // v1.8.0: 関節パーツ（巨獣の腕・多脚戦車の脚）は押し合いの対象外。
     // 親に付いて動くものを押すと、関節の計算と喧嘩して暴れる
@@ -16046,18 +16052,30 @@ function updateMovers(dt) {
         a.def.skyCarrier) continue;   // v3.87.0: 浮き砦は竜と同じ高さを漂う（甲板の敵や島の敵と押し合わない）
     sepList.push(a);
   }
-  for (let i = 0; i < sepList.length; i++) {
+  const sepCount = sepList.length;
+  if (_sepX.length < sepCount) {
+    const cap = Math.max(sepCount, _sepX.length * 2, 64);
+    _sepX = new Float64Array(cap); _sepY = new Float64Array(cap); _sepR = new Float64Array(cap);
+    _sepPack = new Float64Array(cap); _sepMovable = new Uint8Array(cap);
+  }
+  const SX = _sepX, SY = _sepY, SR = _sepR, SP = _sepPack, SM = _sepMovable;
+  for (let i = 0; i < sepCount; i++) {
     const a = sepList[i];
-    const aMovable = a.def.speed > 0;
-    for (let j = i + 1; j < sepList.length; j++) {
-      const b = sepList[j];
-      const bMovable = b.def.speed > 0;
+    SX[i] = a.wx; SY[i] = a.wy; SR[i] = a.def.radius;
+    SP[i] = a.packId !== undefined ? a.packId : NaN;   // NaN はどの番号とも等しくならない＝群れに入っていない
+    SM[i] = a.def.speed > 0 ? 1 : 0;
+  }
+  for (let i = 0; i < sepCount; i++) {
+    const aMovable = SM[i] === 1;
+    const aR = SR[i], aPack = SP[i];
+    for (let j = i + 1; j < sepCount; j++) {
+      const bMovable = SM[j] === 1;
       if (!aMovable && !bMovable) continue;   // 動かない者同士は押し合わない
-      const samePack = a.packId !== undefined && a.packId === b.packId;
-      const minD = a.def.radius + b.def.radius +
-                   (samePack ? PACK_SEPARATION_GAP : MOVER_SEPARATION_GAP);
-      const sdx = b.wx - a.wx;
-      const sdy = b.wy - a.wy;
+      const samePack = aPack === SP[j];
+      const minD = aR + SR[j] + (samePack ? PACK_SEPARATION_GAP : MOVER_SEPARATION_GAP);
+      const sdx = SX[j] - SX[i];
+      if (sdx >= minD || sdx <= -minD) continue;
+      const sdy = SY[j] - SY[i];
       const sd2 = sdx * sdx + sdy * sdy;
       if (sd2 >= minD * minD || sd2 <= 0.01) continue;
       const sd = Math.sqrt(sd2);
@@ -16068,10 +16086,12 @@ function updateMovers(dt) {
       // 片方が動けないなら、動ける側が2倍受け持って押し出す
       const aShare = aMovable ? (bMovable ? strength : strength * 2) : 0;
       const bShare = bMovable ? (aMovable ? strength : strength * 2) : 0;
-      if (aShare) { a.wx -= nx * overlap * aShare; a.wy -= ny * overlap * aShare; }
-      if (bShare) { b.wx += nx * overlap * bShare; b.wy += ny * overlap * bShare; }
+      if (aShare) { SX[i] -= nx * overlap * aShare; SY[i] -= ny * overlap * aShare; }
+      if (bShare) { SX[j] += nx * overlap * bShare; SY[j] += ny * overlap * bShare; }
     }
   }
+  for (let i = 0; i < sepCount; i++) { const a = sepList[i]; a.wx = SX[i]; a.wy = SY[i]; }
+  sepList.length = 0;   // 倒れた敵を次のフレームまで握ったままにしない
 
   // v1.0.6: 巨人型の描画用の向きを進める。向きを決める処理（歩行の踏み替えも
   // レーザーの照準も）が全部終わった後に読むので、ここに置く。
@@ -43924,7 +43944,27 @@ function updateLeader(dt) {
 // -----------------------------------------------------------------
 // 描画
 // -----------------------------------------------------------------
+// v3.123.2（案帳 DT-542）: 目印を描く建物（卵持ち・穀倉・花火要塞・時代兵器と役割の建物・前哨堡・堰）を
+// 1フレームに1回だけ拾っておく。以前は描く関数ごとに全建物（6000棟前後）を頭から見ていた（1フレーム6周）。
+// 拾う条件は各関数が見ていた条件そのまま、順番も settlements のまま。描いている間に印は変わらない
+const frameMarked = { eggBearers: [], granaries: [], fireworks: [], emplacements: [], ramparts: [], dams: [] };
+function collectFrameMarkedSettlements() {
+  const f = frameMarked;
+  f.eggBearers.length = 0; f.granaries.length = 0; f.fireworks.length = 0;
+  f.emplacements.length = 0; f.ramparts.length = 0; f.dams.length = 0;
+  for (const st of settlements) {
+    if (!st || st.fallen) continue;
+    if (st.isEggBearer) f.eggBearers.push(st);
+    if (st._townRole === "granary") f.granaries.push(st);
+    if (st.isFirework) f.fireworks.push(st);
+    if (st._emplacement || st._townRole) f.emplacements.push(st);
+    if (st._townRole === "rampart" && st._rampartAngle !== undefined) f.ramparts.push(st);
+    if (st._isDam) f.dams.push(st);
+  }
+}
+
 function render(now) {
+  collectFrameMarkedSettlements();
   const stageConfig = STAGE_CONFIGS[currentStage];
   ctx.fillStyle = stageBgColor(stageConfig);
   ctx.fillRect(0, 0, viewW, viewH);
@@ -44350,9 +44390,7 @@ function drawEggBearerMarkers(now) {
   const bounds = getViewBoundsWorld(EGG_MARGIN);
 
   ctx.save();
-  for (let s = 0; s < settlements.length; s++) {
-    const st = settlements[s];
-    if (st.fallen || !st.isEggBearer) continue;
+  for (const st of frameMarked.eggBearers) {
 
     // ビューポート外の建物はスキップ
     if (st.wx < bounds.minX || st.wx > bounds.maxX ||
@@ -44394,9 +44432,7 @@ function drawEggBearerMarkers(now) {
 
   // v3.91.0（案帳 DT-515・Shooter「穀倉は卵を乗せるでOK」）: 穀倉の屋根に、壊すと出る卵の数（GRANARY_EGG_COUNT）だけ
   // 卵の印を並べて載せる＝「壊すと卵がまとめて出る」が絵のまま読める。印は上の卵持ち建物と同じ作り
-  for (let s = 0; s < settlements.length; s++) {
-    const st = settlements[s];
-    if (st.fallen || st._townRole !== "granary") continue;
+  for (const st of frameMarked.granaries) {
     if (st.wx < bounds.minX || st.wx > bounds.maxX ||
         st.wy < bounds.minY || st.wy > bounds.maxY) continue;
     const worldR = Math.max(GRANARY_EGG_MARK_MIN_PX / cam.scale, GRANARY_EGG_MARK_MIN_PX);
@@ -44417,9 +44453,7 @@ function drawEggBearerMarkers(now) {
   }
 
   // v0.23: 花火要塞の目印（卵オーブとは色・形を変える＝回転するピンクのスパーク）
-  for (let s = 0; s < settlements.length; s++) {
-    const st = settlements[s];
-    if (st.fallen || !st.isFirework) continue;
+  for (const st of frameMarked.fireworks) {
     if (st.wx < bounds.minX || st.wx > bounds.maxX ||
         st.wy < bounds.minY || st.wy > bounds.maxY) continue;
     const ox = st.wx;
