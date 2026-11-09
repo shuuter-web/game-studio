@@ -65,7 +65,7 @@
   重なりは相互押し出しで防止（`PACK_SEPARATION_GAP`=6）— いずれも updateMovers 内
 - pack個体のHPバーは**被弾時のみ表示**（常時表示だとバーだらけになるため）
 - pack採番: `nextPackId` / hp・xp・卵は1体あたりに分割済み（合計は旧値とほぼ同等）
-- 単体スプライト: `mover_mammoth_single.png` / `mover_knight_single.png`（旧一枚絵は不使用）
+- 単体スプライト: `mover_mammoth.png` / `mover_knights.png`（旧 `*_single.png` は不使用のため DT-542 で削除）
 
 ---
 
