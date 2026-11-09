@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.117.0";
+const GAME_VERSION = "v3.117.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9834,9 +9834,11 @@ const MOVER_DEFS = {
   // 甲板にその時代の飛べない敵を載せている（甲板の上だけを歩いて撃つ。降ろさない）。横の砲から着弾弾（予告の輪つき）。
   // 壊すと甲板の敵ごと雲海へ落ちて消える。天空城のまわりを2隻が回り、1隻が雲海を漂う（makeSkyCarriers・updateSkyCarriers）
   sky_carrier: {
-    name: "sky_carrier", skyCarrier: true, hp: 3200, speed: 30, xp: 1800, eggDrop: 8, radius: 100, turnRate: 0.3,
+    // v3.117.0（DT-124 手直し・Shooter「浮砦はもっと大きい方がいい。今の3倍くらい」）: 半径 100→300（絵・甲板も SKY_CARRIER_SCALE 倍）。
+    // 砲は船の舷側から撃つので、届く距離も船が大きくなった分（舷側までの距離の増え 約200）だけ伸ばす 560→760
+    name: "sky_carrier", skyCarrier: true, hp: 3200, speed: 30, xp: 1800, eggDrop: 8, radius: 300, turnRate: 0.3,
     color: "#8a6a44", glowColor: "#ffd890", moveType: "patrol", showHpBar: true,
-    attack: { type: "shell", interval: 3.2, range: 560, count: 3, damage: 2.5, aoe: 48, speed: 150, scatter: 90, color: "#ffcf80" },
+    attack: { type: "shell", interval: 3.2, range: 760, count: 3, damage: 2.5, aoe: 48, speed: 150, scatter: 90, color: "#ffcf80" },
   },
   // v3.61.0（案帳 DT-250）: 雷凧の兵。町の外側で金属の糸の凧を揚げている。凧に雷が落ちると糸全体が1秒だけ雷の線になる
   // v3.95.0（案帳 DT-179）: 浮き機雷。浮き城の空の雲海に固まって漂う。竜が触れると爆ぜる（updateSkyMine）。爆発は竜にだけ効く
@@ -12808,12 +12810,14 @@ function bindSkyMovers(list, anchor, bossClear2) {
 // ---------------------------------------------------------------------
 const SKY_CARRIER_ORBIT_COUNT = 2;        // 天空城のまわりを回る砦の数
 const SKY_CARRIER_DRIFT_COUNT = 1;        // 雲海を漂う砦の数
-const SKY_CARRIER_ORBIT_R     = SKY_CAPITAL_REACH + 620;   // 天空城の島の外の雲海を回る
+// v3.117.0（DT-124 手直し）: 浮き砦を3倍に。絵は船体の形（下の SKY_HULL_*）をこの倍率で描き、甲板の広さも同じ倍率
+const SKY_CARRIER_SCALE       = 3;
+const SKY_CARRIER_ORBIT_R     = SKY_CAPITAL_REACH + 620 + 138 * (SKY_CARRIER_SCALE - 1);   // 天空城の島の外の雲海を回る（船が大きくなった分だけ外へ）
 const SKY_CARRIER_ORBIT_LEAD  = 0.25;     // 輪の上で、今の位置からこの角度（rad）先を目指して進む
 const SKY_CARRIER_DRIFT_START_CLEAR = 2600;   // 漂う砦は出発地からこれだけ離れた所から始める
-const SKY_DECK_HALF_LEN   = 120;          // 甲板の半分の長さ（前後）
-const SKY_DECK_HALF_W     = 40;           // 甲板の半分の幅（左右）
-const SKY_HULL_HALF_LEN   = 138;          // 船体の半分の長さ（舳先まで）
+const SKY_DECK_HALF_LEN   = 120 * SKY_CARRIER_SCALE;   // 甲板の半分の長さ（前後）
+const SKY_DECK_HALF_W     = 40 * SKY_CARRIER_SCALE;    // 甲板の半分の幅（左右）
+const SKY_HULL_HALF_LEN   = 138;          // 船体の半分の長さ（舳先まで）。絵の元の寸法（実際の大きさはこれ×SKY_CARRIER_SCALE）
 const SKY_HULL_HALF_W     = 58;
 const SKY_DECK_UNITS_BASE = 4;            // 甲板の敵の数（時代3つごとに +1、最大 SKY_DECK_UNITS_MAX）
 const SKY_DECK_UNITS_MAX  = 6;
@@ -12898,11 +12902,17 @@ function skyDeckConfine(u) {
   skyDeckPlace(u);
 }
 
+// v3.117.0（DT-124 手直し）: 首都が地図の角寄りに移った（DT-534）うえに砦の輪が大きくなったので、輪の一部が地図の外に出る。
+// 砦の居場所は地図の縁から船の半分の長さだけ内側に収める（輪のはみ出した所は縁に沿って進む）
+const SKY_CARRIER_EDGE = SKY_HULL_HALF_LEN * SKY_CARRIER_SCALE + 60;
+function skyCarrierClamp(x, y) {
+  return { x: Math.max(SKY_CARRIER_EDGE, Math.min(WORLD_W - SKY_CARRIER_EDGE, x)), y: Math.max(SKY_CARRIER_EDGE, Math.min(WORLD_H - SKY_CARRIER_EDGE, y)) };
+}
 /** 天空城を回る砦の向かう先（輪の上を少し先へ） */
 function skyCarrierOrbitTarget(m) {
   const o = m._skyOrbit;
   const a = Math.atan2(m.wy - o.cy, m.wx - o.cx) + SKY_CARRIER_ORBIT_LEAD * o.dir;
-  return { x: o.cx + Math.cos(a) * o.r, y: o.cy + Math.sin(a) * o.r };
+  return skyCarrierClamp(o.cx + Math.cos(a) * o.r, o.cy + Math.sin(a) * o.r);
 }
 
 /** ワールドを作るときに浮き砦を置く（甲板の敵も一緒に返す） */
@@ -12923,7 +12933,7 @@ function makeSkyCarriers(stageIndex) {
   };
   for (let k = 0; k < SKY_CARRIER_ORBIT_COUNT; k++) {
     const a = base + k * Math.PI * 2 / SKY_CARRIER_ORBIT_COUNT;
-    const x = cap.cx + Math.cos(a) * SKY_CARRIER_ORBIT_R, y = cap.cy + Math.sin(a) * SKY_CARRIER_ORBIT_R;
+    const { x, y } = skyCarrierClamp(cap.cx + Math.cos(a) * SKY_CARRIER_ORBIT_R, cap.cy + Math.sin(a) * SKY_CARRIER_ORBIT_R);
     const c = make(x, y, -Math.sin(a) * dir, Math.cos(a) * dir);
     c._skyOrbit = { cx: cap.cx, cy: cap.cy, r: SKY_CARRIER_ORBIT_R, dir };
   }
@@ -12975,14 +12985,17 @@ function drawSkyCarrierBody(m, angle, alpha = 1) {
   const C = SKY_CARRIER_COLORS;
   // 雲海に落ちる影（世界の右下へずらす）と、浮いて見える船底の厚み
   ctx.save();
-  ctx.rotate(-angle); ctx.translate(SKY_SHADOW_DX * 1.4, SKY_SHADOW_DY * 1.4); ctx.rotate(angle);
+  ctx.rotate(-angle); ctx.translate(SKY_SHADOW_DX * 1.4 * SKY_CARRIER_SCALE, SKY_SHADOW_DY * 1.4 * SKY_CARRIER_SCALE); ctx.rotate(angle);
+  ctx.scale(SKY_CARRIER_SCALE, SKY_CARRIER_SCALE);
   ctx.globalAlpha = alpha; ctx.fillStyle = SKY_SHADOW_COLOR; skyHullPath(ctx, -6); ctx.fill();
   ctx.restore();
   ctx.save();
-  ctx.rotate(-angle); ctx.translate(0, SKY_CLIFF_DEPTH * 1.3); ctx.rotate(angle);
+  ctx.rotate(-angle); ctx.translate(0, SKY_CLIFF_DEPTH * 1.3 * SKY_CARRIER_SCALE); ctx.rotate(angle);
+  ctx.scale(SKY_CARRIER_SCALE, SKY_CARRIER_SCALE);
   ctx.globalAlpha = alpha; ctx.fillStyle = C.hullDark; skyHullPath(ctx, 4); ctx.fill();
   ctx.restore();
   ctx.save();
+  ctx.scale(SKY_CARRIER_SCALE, SKY_CARRIER_SCALE);   // v3.117.0: 船体の絵は元の寸法で描いて、まとめて大きくする
   ctx.globalAlpha = alpha;
   // 横の砲（両舷に5門ずつ）
   ctx.fillStyle = C.gun;
