@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.116.4";
+const GAME_VERSION = "v3.117.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7204,7 +7204,7 @@ function generateStageLayout(stageIndex) {
   // v3.34.0: 光線の高原の塔（町の外の野）
   beamTowers = [];
   if (worldShape === SHAPE_PLATEAU) {
-    for (const t of placeBeamTowers(boss, config, townCenters)) { result.push(t); beamTowers.push(t); }
+    for (const t of placeBeamTowers(boss, config, townCenters, result)) { result.push(t); beamTowers.push(t); }
   }
   // v1.4.0: 聖地の祠（参道の突き当たり）
   if (worldShape === SHAPE_SANCTUARY) {
@@ -8290,6 +8290,16 @@ const BEAM_TOWER_START_GAP = 1500;  // 開始地点の近くには立てない�
 const BEAM_TOWER_CAPITAL_GAP = 1100; // 首都の近くにも立てない（首都区画はプリズムの割れた光線で崩す）
 const BEAM_TOWER_HP_MULT   = 2.2;   // 塔の固さ（大きい建物のこの倍）
 const BEAM_TOWER_RADIUS    = 30;
+// v3.117.0（案帳 DT-534 手直し・Shooter「ボスの奥側にレーザー発射台を追加。順当にプレイしたら生き残っている位置に2つ以上」）:
+// 首都をスタートの対角へ移したら、首都のまわりの塔が群れの通り道で先に壊れ、首都のプリズムに光線が当たらなくなった。
+// そこで首都の「奥」（スタートから見て首都の向こう側）に塔を足す。群れが首都を攻めている間、奥の塔は群れを狙うので光線が首都のプリズムを通る
+const BEAM_REAR_TOWER_ANGLES = [-0.75, 0.75, 0];   // スタート→首都の向きからの角度（rad）。足す順。左右の2基は必ず、真後ろは入れば
+const BEAM_REAR_TOWER_DIST   = [560, 760];         // 首都からの距離の幅（首都の手前で戦う群れが、光線の塔の見つける距離 1100 に入る近さ）
+const BEAM_REAR_TOWER_EDGE   = 260;                // 地図の縁からの最小の距離
+const BEAM_REAR_TOWER_CLEAR  = 70;                 // ほかの建物とこれだけ離す
+const BEAM_REAR_TOWER_MIN    = 2;                  // 必ず置く数
+const BEAM_REAR_TOWER_WIDE   = 1.5;                // 決めた向きに入らなかったときに探す向きの幅（rad。スタート→首都の向きから左右）
+const BEAM_REAR_TOWER_DIST_WIDE = [480, 860];      // そのときの距離の幅
 // v3.39.0（案帳 DT-015 手直し・Shooter判定「いつまでも追ってくるレーザーは竜の速さによっては避けられず辛い」）:
 // 追ってくるのは点線の予告の間だけ。予告の最後に向きが止まり（点滅）、極太の光線をその向きのまま撃つ。撃っている間は動かない。
 // 撃ち終わると少し休んで、群れがまだ近ければまた予告から。群れを予告の線の先の街へ誘ってから横へ避けるのが遊びの中心。
@@ -8370,16 +8380,10 @@ let beamTick = 0;
 let beamSegments = [];   // このフレームの光線（描画と当たりの判定で共有）{ x1, y1, x2, y2, split, kind, w }
 
 /** 光線の塔を町の外の野に立てる（ワールド生成から。町・首都の建物が並んだ後） */
-function placeBeamTowers(boss, config, townCenters) {
+function placeBeamTowers(boss, config, townCenters, existing) {
   const bLarge = config.buildings.large;
   const out = [];
-  const count = BEAM_TOWER_COUNT;
-  for (let tries = 0; tries < count * 60 && out.length < count; tries++) {
-    const x = randRange(300, WORLD_W - 300), y = randRange(300, WORLD_H - 300);
-    if (dist2(x, y, START_X, START_Y) < BEAM_TOWER_START_GAP ** 2) continue;
-    if (dist2(x, y, boss.wx, boss.wy) < BEAM_TOWER_CAPITAL_GAP ** 2) continue;
-    if (townCenters.some(c => dist2(x, y, c.x, c.y) < BEAM_TOWER_TOWN_GAP ** 2)) continue;
-    if (out.some(t => dist2(x, y, t.wx, t.wy) < BEAM_TOWER_SPACING ** 2)) continue;
+  const makeTower = (x, y) => {
     const hp = Math.round(randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax) * BEAM_TOWER_HP_MULT);
     const t = makeBuilding(x, y, "large", "#8fa4b4", bLarge, hp);
     t._beamTower   = true;
@@ -8389,7 +8393,38 @@ function placeBeamTowers(boss, config, townCenters) {
     t._noAttack    = true;
     t._fixedTier   = maxPowerTier();
     t.beam = newBeamState("big");
-    out.push(t);
+    return t;
+  };
+  // v3.117.0（DT-534 手直し）: 首都の奥の塔を先に置く
+  const away = Math.atan2(boss.wy - START_Y, boss.wx - START_X);
+  const tryRear = (a, d) => {
+      const x = boss.wx + Math.cos(a) * d, y = boss.wy + Math.sin(a) * d;
+      if (x < BEAM_REAR_TOWER_EDGE || y < BEAM_REAR_TOWER_EDGE || x > WORLD_W - BEAM_REAR_TOWER_EDGE || y > WORLD_H - BEAM_REAR_TOWER_EDGE) return false;
+      if (dist2(x, y, START_X, START_Y) <= dist2(boss.wx, boss.wy, START_X, START_Y)) return false;   // スタートから見て首都より奥だけ
+      if (out.some(t => dist2(x, y, t.wx, t.wy) < (BEAM_REAR_TOWER_DIST[0] * 0.6) ** 2)) return false;
+      if (existing && existing.some(b => dist2(x, y, b.wx, b.wy) < (BEAM_REAR_TOWER_CLEAR + (b.radius || 0)) ** 2)) return false;
+      const t = makeTower(x, y);
+      t._rearTower = true;
+      out.push(t);
+      return true;
+  };
+  for (const offset of BEAM_REAR_TOWER_ANGLES) {
+    for (let tries = 0; tries < 40; tries++) {
+      if (tryRear(away + offset + randRange(-0.25, 0.25), randRange(BEAM_REAR_TOWER_DIST[0], BEAM_REAR_TOWER_DIST[1]))) break;
+    }
+  }
+  // 首都が地図の縁に寄っていて決めた向きに入らなかったときは、奥の半分のどこかで2基まで埋める（2基は必ず置く）
+  for (let tries = 0; tries < 300 && out.length < BEAM_REAR_TOWER_MIN; tries++) {
+    tryRear(away + randRange(-BEAM_REAR_TOWER_WIDE, BEAM_REAR_TOWER_WIDE), randRange(BEAM_REAR_TOWER_DIST_WIDE[0], BEAM_REAR_TOWER_DIST_WIDE[1]));
+  }
+  const count = out.length + BEAM_TOWER_COUNT;   // 奥の塔は数に入れない（野の塔はこれまでどおり14基）
+  for (let tries = 0; tries < count * 60 && out.length < count; tries++) {
+    const x = randRange(300, WORLD_W - 300), y = randRange(300, WORLD_H - 300);
+    if (dist2(x, y, START_X, START_Y) < BEAM_TOWER_START_GAP ** 2) continue;
+    if (dist2(x, y, boss.wx, boss.wy) < BEAM_TOWER_CAPITAL_GAP ** 2) continue;
+    if (townCenters.some(c => dist2(x, y, c.x, c.y) < BEAM_TOWER_TOWN_GAP ** 2)) continue;
+    if (out.some(t => dist2(x, y, t.wx, t.wy) < BEAM_TOWER_SPACING ** 2)) continue;
+    out.push(makeTower(x, y));
   }
   return out;
 }
@@ -9683,7 +9718,9 @@ const MOVER_DEFS = {
   },
   // v3.54.0（案帳 DT-487）: 動く砦。四隅の砲台が撃ち続ける大きな攻城塔。正面と横は硬く（受ける傷1/4）、後ろの扉だけがふつうに効く
   moving_fortress: {
-    name: "moving_fortress", hp: 2400, speed: 34, xp: 1200, eggDrop: 6, radius: 58, turnRate: 0.7,   // v3.111.0（DT-487 手直し「もうちょいサイズが大きいほうが自然」）: 42→58
+    name: "moving_fortress", hp: 2400, speed: 34, xp: 1200, eggDrop: 6, radius: 80, turnRate: 0.7,   // v3.111.0（DT-487 手直し「もうちょいサイズが大きいほうが自然」）: 42→58
+    // v3.117.0（DT-487 手直し「1.4倍は妥当だが画面では変わっていないように見える」）: 群れが育つとカメラが引く（190匹で約0.67倍）ので、
+    // 育った群れの画面で見て1.4倍になるよう 58→80（序盤の寄った画面の旧サイズ 42 の約1.4倍に見える）
     color: "#6f7c8e", glowColor: "#ffd090", moveType: "patrol", showHpBar: true,
     shieldArc: Math.PI * 2 / 3, shieldBlock: 0.25,   // 正面±120°＝後ろの±60°だけが弱点
     // 案帳 DT-487 手直し（Shooter「見た目が地味。何かパーツに分かれた敵であってほしい」）: 塔の本体・四隅の砲台・後ろの扉を
@@ -9706,7 +9743,7 @@ const MOVER_DEFS = {
   },
   // 案帳 DT-487 手直し: 動く砦の四隅の砲台。砦に乗って動き、自分で狙って撃つ。1基ずつ壊せる（壊すと残骸になって撃たなくなる）
   fortress_turret: {
-    name: "fortress_turret", part: "rider", fortressTurret: true, hp: 260, speed: 0, xp: 90, eggDrop: 0, eggChance: 0.5, radius: 15,   // v3.111.0: 砦に合わせて 11→15
+    name: "fortress_turret", part: "rider", fortressTurret: true, hp: 260, speed: 0, xp: 90, eggDrop: 0, eggChance: 0.5, radius: 21,   // v3.111.0: 砦に合わせて 11→15 ／ v3.117.0: 15→21
     color: "#4a5664", glowColor: "#ffd060", moveType: "patrol", hpBarWhenHurt: true, codexSprite: "fortress_gun",
   },
   // v3.60.0（案帳 DT-218・Shooter判定「乗っている人と象を別パーツで」「町に逃げるギミックは要らない」）: 戦象。
@@ -26796,7 +26833,17 @@ const STRINGS = {
   hudRoar: (name, pct, sec) => `📢 ${name} 攻撃+${pct}%　${sec}秒`,
   hudRage: (name, sec) => `😡 ${name} 攻撃の速さ×1.5・傷半分　${sec}秒`,   // v3.101.0（DT-201）
   rageRoarText: "逆鱗！",
-  diceFaceText: ["", "1 外れ…", "2 卵！", "3 ひと息！", "4 一斉崩し！", "5 勢い！", "6 大当たり！"],   // v3.113.0（DT-172）
+  diceFaceText: ["", "1 おまけ", "2 卵！", "3 ひと息！", "4 一斉崩し！", "5 勢い！", "6 大当たり！"],   // v3.113.0（DT-172）／v3.117.0: 1は外れ→おまけ
+  // v3.117.0（DT-172 手直し・Shooter「何が起きてるか全然わからないので効果の説明の一行も追加」）: 目の名前の下に出す説明
+  diceFaceDesc: [
+    () => "",
+    (n) => `竜晶 +${n}（次は1が出ない）`,
+    (n) => `卵が${n}個飛び出す`,
+    () => "群れの傷が全部治り、倒れた竜も起きる",
+    () => "町の焼け残りが一斉に崩れる",
+    (n) => `${n}秒間 群れの攻撃 ×1.5`,
+    (n) => `卵${n}個と竜晶 +10`,
+  ],
   serpentRingFreed: "蛇神の輪がほどけた",       // v3.103.0（案帳 DT-180）
   serpentGodFled: "蛇神が逃げた！ 神殿が焼ける",   // v3.67.0（DT-497）
   shopTitle: "竜の巣",
@@ -27238,7 +27285,7 @@ const STRINGS = {
     sp_hush:           { name: "口封じ",     desc: "自分が触れた建物と動く敵を3秒のあいだ撃てなくする特殊個体が加わる。自分の攻撃は弱い" },
     sp_shell:          { name: "籠る殻",     desc: "指を離している間、群れ全体を殻で包んで受ける傷を7割減らす特殊個体が加わる。殻の中では誰も攻撃しない" },
     sp_bundle:         { name: "束ね陣",     desc: "群れの広がりを半分に束ねる特殊個体が加わる。体当たりが強くなり、遠くからの弾の傷が減る。広く薙ぐのは苦手" },
-    sp_dice:           { name: "賽振り",     desc: "町が陥落するたびに町の上で大きなサイコロを振る特殊個体が加わる。1＝外れ・2＝卵・3＝群れが全快・4＝焼け残りが一斉に崩れる・5＝20秒攻撃1.5倍・6＝大当たり。自分の攻撃は弱い" },
+    sp_dice:           { name: "賽振り",     desc: "町が陥落するたびに町の上で大きなサイコロを振る特殊個体が加わる。1＝竜晶少し・2＝卵・3＝群れが全快・4＝焼け残りが一斉に崩れる・5＝20秒攻撃1.5倍・6＝大当たり。自分の攻撃は弱い" },
     sp_barrier:        { name: "結界線",     desc: "指を離すと、描いた線が5秒のあいだ光る壁になる特殊個体が加わる。動く敵と敵の弾は越えられず、竜は通れる。壁が消えたらすぐ張り直せる" },
     sp_skybow:         { name: "虹弓",       desc: "5秒ごとに、画面の中のいちばん遠い砲台など（民家は除く）を1つ、虹の矢で射抜く特殊個体が加わる。近くの相手は狙わない" },
     sp_scatter:        { name: "広げ陣",     desc: "群れの広がりを1.8倍に広げる特殊個体が加わる。町を一度に広く薙げるが、撃たれる面も大きくなる" },
@@ -30797,12 +30844,18 @@ function drawHushMarks() {
 // ---- v3.113.0: 賽振り（案帳 DT-172 博打竜・Shooter「サイコロの効果を1〜6まで考えて」→ 案のとおり採用）----
 // 町が陥落するたびに、陥落した町の上で大きなサイコロを振る（何匹連れていても1つ）。DICE_ROLL_TIME 秒転がってから目が出て、その目の効き目が出る。
 // 陥落の報酬が毎回同じ量で単調、という問題に「何が出るか」の山で効かせる。目の期待値はふつうの陥落の報酬より少し上
-//   1＝外れ（次の1回は1が出ない＝外れが続かない）／2＝卵／3＝ひと息（全回復・倒れた竜もすぐ起きる）／
+//   1＝おまけ（竜晶が少し。次の1回は1が出ない。v3.117.0 までは何も起きない外れ）／2＝卵／3＝ひと息（全回復・倒れた竜もすぐ起きる）／
 //   4＝一斉崩し（その町の焼け残りが一斉に崩れる）／5＝勢い（群れの攻撃×1.5）／6＝大当たり（卵と竜晶・金の柱）
 // サイコロの目は random()（ゲームの乱数）で決める＝?seed で同じ目が出る。転がる絵の目は fxRandom()（見た目だけ）
 const DICE_ROLL_TIME    = 0.9;    // 転がる時間（秒）
-const DICE_SHOW_TIME    = 1.6;    // 目が出てから消えるまで
-const DICE_SIZE         = 34;     // サイコロの一辺（px）
+const DICE_SHOW_TIME    = 2.4;    // 目が出てから消えるまで（v3.117.0: 1.6→2.4。説明の一行を読めるように。陥落の文字（3.4秒）より先に消える）
+const DICE_SIZE         = 34;     // サイコロの一辺（px）。v3.117.0 からは画面上の大きさ（カメラが引いても同じ大きさ）
+const DICE_CRYSTALS_1   = 2;      // v3.117.0（DT-172 手直し・Shooter「ハズレはイラっとするので、実質ハズレにちかい弱い効果を」）: 1の目は竜晶が少し
+// v3.117.0（DT-172 手直し・Shooter「サイコロの上に陥落の文字が出てサイコロが隠れる。文字と同じ階層に、マップ追従も含めて」）:
+// サイコロは陥落の文字と同じ層・同じ寄せ方（画面の外なら画面の端に寄せる）で描き、陥落の文字の下にサイコロ→目の名前→説明の順に並べる
+const DICE_LABEL_PX     = 20;     // 目の名前の字の大きさ（画面上のpx）
+const DICE_DESC_PX      = 14;     // 説明の字の大きさ
+const DICE_GAP_PX       = 10;     // 陥落の文字とサイコロ・目の名前の間
 const DICE_EGGS_2       = 2;
 const DICE_EGGS_6       = 6;
 const DICE_CRYSTALS_6   = 10;
@@ -30834,28 +30887,35 @@ function rollFallDice(townIndex) {
   let r = random() * total, face = 6;
   for (let f = 1; f <= 6; f++) { r -= weights[f]; if (r < 0) { face = f; break; } }
   diceNoOne = face === 1;
-  diceRolls.push({ x: st.cx, y: st.cy, townIndex, t: 0, face, shown: false });
+  // 陥落の文字（pushWorldText の pin）と同じ所に付く。文字の浮き上がりに合わせるため、文字の残り時間も控える
+  const label = worldTextFx.find(fx => fx.pin && fx.x === st.cx && fx.y === st.cy);
+  diceRolls.push({ x: st.cx, y: st.cy, townIndex, t: 0, face, shown: false, label: label || null, value: 0 });
 }
 function updateDiceRolls(dt) {
   if (diceAttackTimer > 0) diceAttackTimer = Math.max(0, diceAttackTimer - dt);
   for (let k = diceRolls.length - 1; k >= 0; k--) {
     const d = diceRolls[k];
     d.t += dt;
+    if (d.label && d.label.life <= 0) d.label = null;
+    // 陥落の文字と同じ寄せ方で画面に収める（文字が先に消えたときも、サイコロだけで同じ動きを続ける）
+    const pin = worldTextPinTarget(d);
+    if (d.sx === undefined) { d.sx = pin.x; d.sy = pin.y; }
+    const ease = 1 - Math.exp(-WORLD_TEXT_PIN_EASE * dt);
+    d.sx += (pin.x - d.sx) * ease; d.sy += (pin.y - d.sy) * ease;
     if (!d.shown && d.t >= DICE_ROLL_TIME) { d.shown = true; applyDiceFace(d); }
     if (d.t >= DICE_ROLL_TIME + DICE_SHOW_TIME) diceRolls.splice(k, 1);
   }
 }
 function applyDiceFace(d) {
-  const col = DICE_FACE_COLORS[d.face];
-  pushWorldText(d.x, d.y - DICE_SIZE - 10, STRINGS.diceFaceText[d.face], col, true);
   switch (d.face) {
-    case 1: break;   // 外れ（次は1が出ない）
-    case 2: diceDropEggs(d, DICE_EGGS_2 + DICE_BIG_EGGS * diceBig()); break;
+    case 1: d.value = DICE_CRYSTALS_1; awardCrystals(DICE_CRYSTALS_1); break;   // おまけ（次は1が出ない）
+    case 2: d.value = DICE_EGGS_2 + DICE_BIG_EGGS * diceBig(); diceDropEggs(d, d.value); break;
     case 3: diceRestoreFlock(); break;
     case 4: diceCollapseTown(d.townIndex); break;
-    case 5: diceAttackTimer = DICE_ATTACK_TIME + DICE_BIG_TIME * diceBig(); break;
+    case 5: d.value = diceAttackTimer = DICE_ATTACK_TIME + DICE_BIG_TIME * diceBig(); break;
     case 6:
-      diceDropEggs(d, DICE_EGGS_6 + 2 * DICE_BIG_EGGS * diceBig());
+      d.value = DICE_EGGS_6 + 2 * DICE_BIG_EGGS * diceBig();
+      diceDropEggs(d, d.value);
       awardCrystals(DICE_CRYSTALS_6);
       triggerFlash("rgba(255,210,80,0.35)", 0.3);
       hapticPulse(180);
@@ -30910,32 +30970,77 @@ function drawDiceRolls() {
   for (const d of diceRolls) {
     const rolling = d.t < DICE_ROLL_TIME;
     const out = Math.max(0, d.t - DICE_ROLL_TIME - DICE_SHOW_TIME + 0.4) / 0.4;
-    const face = rolling ? 1 + Math.floor(fxRandom() * 6) : d.face;
-    const col = DICE_FACE_COLORS[face];
-    if (!rolling && d.face === 6) {   // 大当たり：金の柱
+    if (!rolling && d.face === 6) {   // 大当たり：金の柱（町の上の地面から立つ）
       const u = Math.min(1, (d.t - DICE_ROLL_TIME) / 0.3);
       const g = ctx.createLinearGradient(d.x, d.y - 220, d.x, d.y);
       g.addColorStop(0, "rgba(255,220,90,0)"); g.addColorStop(1, "rgba(255,220,90,0.55)");
       ctx.globalAlpha = (1 - out) * u; ctx.fillStyle = g;
       ctx.fillRect(d.x - 22, d.y - 220, 44, 220);
     }
+  }
+  ctx.restore();
+}
+/** v3.117.0（DT-172 手直し）: サイコロと目の名前・説明。陥落の文字と同じ層（drawWorldTextFx の直後）で、陥落の文字の下に
+ *  サイコロ→目の名前→説明の順に縦に並べる。陥落の文字と同じく画面の外なら画面の端へ寄せて出す（マップに追従）。
+ *  文字と同じ大きさで見せたいので画面の座標で描く。下に入りきらない（文字が画面の下の端に寄っている）ときは文字の上に並べる */
+function drawDiceOnTextLayer() {
+  if (diceRolls.length === 0) return;
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.textAlign = "center";
+  for (const d of diceRolls) {
+    if (d.sx === undefined) continue;
+    const rolling = d.t < DICE_ROLL_TIME;
+    const out = Math.max(0, d.t - DICE_ROLL_TIME - DICE_SHOW_TIME + 0.4) / 0.4;
+    const face = rolling ? 1 + Math.floor(fxRandom() * 6) : d.face;
+    const col = DICE_FACE_COLORS[face];
+    // 陥落の文字（寄せた位置＋浮き上がり）の画面の位置
+    const fx = d.label;
+    const riseT = fx ? 1 - fx.life / (fx.dur ?? WORLD_TEXT_FX_DURATION) : Math.min(1, d.t / WORLD_TEXT_PIN_DURATION);
+    const anchorX = fx && fx.sx !== undefined ? fx.sx : d.sx;
+    const anchorY = (fx && fx.sy !== undefined ? fx.sy : d.sy) - 26 * riseT * cam.scale;   // 陥落の文字のベースライン
+    const desc = rolling ? "" : STRINGS.diceFaceDesc[d.face](d.value);
+    // 並べる高さ：サイコロ・目の名前・説明
+    const blockH = DICE_GAP_PX + DICE_SIZE + DICE_GAP_PX + DICE_LABEL_PX + 6 + DICE_DESC_PX;
+    const below = anchorY + DICE_GAP_PX + blockH <= viewH - 8;
+    let y = below ? anchorY + DICE_GAP_PX : anchorY - WORLD_TEXT_FONT_PX - DICE_GAP_PX - blockH;
+    // 説明が画面の左右からはみ出さないように、横の位置だけ内側へ寄せる
+    ctx.font = `bold ${DICE_DESC_PX}px sans-serif`;
+    const halfW = Math.max(DICE_SIZE, desc ? ctx.measureText(desc).width : 0) / 2 + 8;
+    const x = Math.max(halfW, Math.min(viewW - halfW, anchorX));
+    ctx.globalAlpha = 1 - out;
+    // サイコロ
     ctx.save();
-    const hop = rolling ? Math.abs(Math.sin(d.t * 14)) * 14 * (1 - d.t / DICE_ROLL_TIME) : 0;
-    ctx.translate(d.x, d.y - DICE_SIZE * 0.6 - hop);
+    const hop = rolling ? Math.abs(Math.sin(d.t * 14)) * 10 * (1 - d.t / DICE_ROLL_TIME) : 0;
+    ctx.translate(x, y + DICE_GAP_PX + DICE_SIZE / 2 - hop);
     ctx.rotate(rolling ? d.t * 11 : 0);
     const S = DICE_SIZE * (rolling ? 1 : 1 + 0.15 * Math.max(0, 1 - (d.t - DICE_ROLL_TIME) * 4));
-    ctx.globalAlpha = 1 - out;
+    ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = 6;
     ctx.fillStyle = d.face === 1 && !rolling ? "#d8dce2" : "#fff8e8"; ctx.strokeStyle = col; ctx.lineWidth = 3;
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(-S / 2, -S / 2, S, S, S * 0.18); else ctx.rect(-S / 2, -S / 2, S, S);
     ctx.fill(); ctx.stroke();
+    ctx.shadowBlur = 0;
     ctx.fillStyle = face === 1 ? "#c03020" : "#3a2a18";
     for (const [px0, py0] of DICE_PIPS[face]) { ctx.beginPath(); ctx.arc(px0 * S * 0.27, py0 * S * 0.27, S * (face === 1 ? 0.12 : 0.085), 0, Math.PI * 2); ctx.fill(); }
-    if (!rolling && d.face === 1) {   // 外れ：ひび
-      ctx.strokeStyle = "#5a5e68"; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(-S * 0.4, -S * 0.3); ctx.lineTo(-S * 0.05, 0); ctx.lineTo(S * 0.1, -S * 0.15); ctx.lineTo(S * 0.4, S * 0.35); ctx.stroke();
-    }
     ctx.restore();
+    if (rolling) continue;
+    // 目の名前と説明の一行（サイコロの下）
+    y += DICE_GAP_PX + DICE_SIZE + DICE_GAP_PX + DICE_LABEL_PX;
+    ctx.strokeStyle = "rgba(0,0,0,0.7)";
+    ctx.font = `bold ${DICE_LABEL_PX}px monospace`;
+    ctx.lineWidth = 4;
+    ctx.strokeText(STRINGS.diceFaceText[d.face], x, y);
+    ctx.fillStyle = DICE_FACE_COLORS[d.face];
+    ctx.fillText(STRINGS.diceFaceText[d.face], x, y);
+    if (desc) {
+      y += DICE_DESC_PX + 6;
+      ctx.font = `bold ${DICE_DESC_PX}px sans-serif`;
+      ctx.lineWidth = 3.5;
+      ctx.strokeText(desc, x, y);
+      ctx.fillStyle = "#fff8e8";
+      ctx.fillText(desc, x, y);
+    }
   }
   ctx.restore();
 }
@@ -43571,6 +43676,7 @@ function render(now) {
   drawParticles();
   drawTownFrontMarkers();  // v0.80: 街の向きの仮表示（デバッグメニューで消せる）
   drawWorldTextFx();    // v0.79/81: 陥落・逃走の表示（建物の上・竜の下）
+  drawDiceOnTextLayer(); // v3.117.0（DT-172 手直し）: 賽振りのサイコロは陥落の文字と同じ層に、文字に重ならないよう下に並べる
   drawAppearEffects();  // 変更2: 竜出現リングエフェクト（ワールド座標系）
   drawDownEffects();    // 変更2(追加): 竜やられリングエフェクト（ワールド座標系）
 
