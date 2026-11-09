@@ -1392,7 +1392,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.121.1";
+const GAME_VERSION = "v3.122.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1642,6 +1642,7 @@ const DEBUG_ENEMY_LABELS = {
   sky_carrier: "🛳浮き砦(甲板に兵)",   // v3.87.0（案帳 DT-124・2回目）
   serpent_crawl: "🐍這い大蛇",   // v3.102.0（案帳 DT-180）
   serpent_spitter: "🐍毒吐き蛇",   // v3.103.0
+  sword_runner: "🗡剣士", sword_charger: "🗡突進の剣士",   // v3.122.0（案帳 DT-535）
 };
 
 // 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
@@ -1666,6 +1667,8 @@ const DEBUG_ENEMY_ORDER = [
   "wind_rider", "sky_carrier", "sky_mine",
   // v3.102.0: 蛇神の国の敵（どの地域でも這える。町を巻く大蛇は町に付くので出せない）
   "serpent_crawl", "serpent_spitter",
+  // v3.122.0: 剣の道の国の敵（どの地域でも走って斬れる）
+  "sword_runner", "sword_charger",
   // v3.22.0: 大都会の敵（道路が無い地域では走れない）
   "metro_car", "metro_truck", "metro_police", "metro_tank", "metro_heli",
 ];
@@ -2269,6 +2272,9 @@ const STAGE_SHAPES = [
   // v3.102.0: 蛇神の国（正方形・案帳 DT-180）… 暗い緑の密林。地図は大陸と同じ作りで首都は中心。
   // 格上の街は大蛇が巻いて守り、町からは大蛇が這い出して群れを囲みに来る
   { id: "serpent",   w: 8400, h: 8400,  icon: "🐍" },
+  // v3.122.0: 剣の道の国（正方形・案帳 DT-535 1回目）… 近づいて斬る敵だけの国。弾を撃つ物が1つも無い。
+  // スタート（左下の角）から首都（右上寄り）まで白っぽい参道「剣の道」が蛇行して通り、町はその両脇に並ぶ
+  { id: "swordway",  w: 8400, h: 8400,  icon: "🗡" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
@@ -2283,7 +2289,8 @@ const SHAPE_PLATEAU   = 9;
 const SHAPE_HEROLAND  = 10;
 const SHAPE_WASTELAND = 11;   // v3.77.0（案帳 DT-509）
 const SHAPE_SKYLAND   = STAGE_SHAPES.findIndex(sh => sh.id === "skyland");
-const SHAPE_SERPENT   = STAGE_SHAPES.findIndex(sh => sh.id === "serpent");   // v3.102.0（案帳 DT-180）   // v3.78.0: 番号は直書きしない（地域の追加と衝突しない）
+const SHAPE_SERPENT   = STAGE_SHAPES.findIndex(sh => sh.id === "serpent");
+const SHAPE_SWORD     = STAGE_SHAPES.findIndex(sh => sh.id === "swordway");   // v3.122.0（案帳 DT-535）   // v3.102.0（案帳 DT-180）   // v3.78.0: 番号は直書きしない（地域の追加と衝突しない）
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
 
 function clampShape(v) {
@@ -5213,7 +5220,7 @@ function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
   if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST ||
       shape === SHAPE_METRO || shape === SHAPE_PLATEAU || shape === SHAPE_HEROLAND || shape === SHAPE_WASTELAND || shape === SHAPE_SKYLAND ||
-      shape === SHAPE_SERPENT) {
+      shape === SHAPE_SERPENT || shape === SHAPE_SWORD) {
     return { x: 320, y: h - 320 };   // 左下の角（首都は中心か、v3.116.0 から右上寄り＝CAPITAL_FAR_SHAPES）
   }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
@@ -7034,6 +7041,7 @@ function generateStageLayout(stageIndex) {
   for (const rock of asteroidRocks) releaseAsteroidRock(rock);   // v1.5.0: 前のワールドの岩塊の絵を捨てる
   asteroidRocks     = [];
   resetSkyland();   // v3.78.0: 前のワールドの浮島・雲の影を捨てる
+  swordPath = []; swordBamboo = []; swordFx.length = 0; resetSwordCapital();   // v3.122.0（案帳 DT-535）: 剣の道・竹林・斬りの跡
   railLines         = [];
   railBossLine      = -1;   // v2.4.0: 御召線（ボス専用線）
   railCenter        = null;
@@ -7061,6 +7069,7 @@ function generateStageLayout(stageIndex) {
                     : worldShape === SHAPE_RAILWAY   ? placeRailwayTownCenters(boss)
                     : worldShape === SHAPE_METRO     ? placeMetroTownCenters(boss)   // v3.22.0: 3×3ブロックずつ
                     : worldShape === SHAPE_SKYLAND   ? placeSkylandTownCenters(townWanted, boss)   // v3.78.0: 浮島の格子に1町ずつ
+                    : worldShape === SHAPE_SWORD     ? placeSwordTownCenters(townWanted, boss)     // v3.122.0: 剣の道の両脇に並べる
                     : placeTownCenters(townWanted, boss.wx, boss.wy);
 
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
@@ -9158,6 +9167,7 @@ let movingBuildingGridTick = 0;
 function stageBgColor(config) {
   if (worldShape === SHAPE_WASTELAND) return WASTELAND_GROUND_BG;   // v3.77.0: 時代によらず赤茶けた乾いた地（案帳 DT-509）
   if (worldShape === SHAPE_SKYLAND) return SKY_CLOUD_BG;   // v3.78.0: 雲海
+  if (worldShape === SHAPE_SWORD) return SWORD_GROUND_BG;       // v3.122.0（案帳 DT-535）: 竹林の暗い緑
   if (worldShape === SHAPE_SERPENT) return SERPENT_GROUND_BG;   // v3.102.0: 時代によらず暗い緑の密林（案帳 DT-180）
   return worldShape === SHAPE_ASTEROIDS ? ASTEROID_SPACE_BG : config.bgColor;
 }
@@ -9307,7 +9317,7 @@ function isStrongTownPlainHouse(b) {
 
 // v3.116.0（案帳 DT-534）: 首都をスタートの対角寄りに置く地域（スタートは左下の角）。
 // 縁からの余白は、大樹海の大樹の根（820）・荒地の首都の環状列石（600）・浮き城の空の首都の島が地図に収まる幅
-const CAPITAL_FAR_SHAPES  = new Set([SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND, SHAPE_SKYLAND, SHAPE_SERPENT]);
+const CAPITAL_FAR_SHAPES  = new Set([SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND, SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD]);
 const CAPITAL_FAR_MARGIN  = 950;
 const CAPITAL_FAR_SPREAD  = 700;   // 右上の角からばらす幅（縦横それぞれ）
 // 大都会の首都を置く交差点（道路の番号。真ん中の 10,10 と同じく 4 で割って 2 余る＝街境で大通りでない）
@@ -9885,6 +9895,17 @@ const MOVER_DEFS = {
   serpent_god: {
     name: "serpent_god", serpentHead: true, hp: 2600, speed: 0, xp: 2600, eggDrop: 12, radius: 40,
     color: "#5f7186", glowColor: "#ffd060", moveType: "patrol", showHpBar: true, codexSprite: "serpent_head",
+  },
+  // v3.122.0（案帳 DT-535 1回目）: 剣の道の国の敵。どちらも弾を撃たず、近づいて斬る（動きと斬りは updateSwordUnit）。
+  // 剣士は「走る・間合いを測る」をくり返して寄ってきて、目の前で白い弧の予告から斬る。
+  // 突進の剣士（Shooter「緩急つけて突進してくる感じのやつも」）は、止まって溜め（向きの線を出す）→ 一気に駆け抜けて斬る → すき
+  sword_runner: {
+    name: "sword_runner", sword: "runner", hp: 30, speed: 165, xp: 16, eggDrop: 0, eggChance: 0.2, radius: 9,
+    packCount: 4, color: "#7d8b9a", glowColor: "#f0f4ff", moveType: "patrol",
+  },
+  sword_charger: {
+    name: "sword_charger", sword: "charger", hp: 110, speed: 60, xp: 45, eggDrop: 1, radius: 13,
+    color: "#5f6c7c", glowColor: "#ffe0a0", moveType: "patrol", hpBarWhenHurt: true,
   },
   serpent_spitter: {
     name: "serpent_spitter", spitter: true, hp: 40, speed: 0, xp: 30, eggDrop: 0, eggChance: 0.3, radius: 9,
@@ -11687,6 +11708,7 @@ function regionSpawnTable(table) {
   return table.filter(e => wastelandAllowsMover(e[0]));
 }
 function barracksUnitFor(stageIdx) {
+  if (worldShape === SHAPE_SWORD) return "sword_runner";   // v3.122.0（DT-535）: 道場（兵舎）は剣士を送り出す
   let key = BARRACKS_UNIT_BY_STAGE[stageIdx];
   if (key && !wastelandAllowsMover(key)) key = WASTELAND_BARRACKS_FALLBACK;
   return MOVER_DEFS[key] ? key : null;
@@ -12066,7 +12088,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   enemyGroups.length = 0;
   _pendingMovers.length = 0;   // 古い群れへの追加待ちも持ち越さない
   packEggLeaders.clear();      // v3.88.0（案帳 DT-508）: 隊の卵を持つ隊長の控えも作り直す
-  const spawns = regionSpawnTable(MOVER_SPAWNS_BY_STAGE[stageIndex]);   // v3.84.0: 荒地は巨像系・巨獣・多脚戦車を抜く（DT-509）
+  const spawns = worldShape === SHAPE_SWORD ? swordSpawnTable(stageIndex) : regionSpawnTable(MOVER_SPAWNS_BY_STAGE[stageIndex]);   // v3.122.0（DT-535）: 剣の道の国は斬る敵だけ   // v3.84.0: 荒地は巨像系・巨獣・多脚戦車を抜く（DT-509）
   const result = [];
 
   // v2.4.0: 守備隊は「首都の周り」に湧かせたいので、動く首都の現在地ではなく
@@ -12086,7 +12108,9 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
 
   // v0.41: ボス直衛の守備隊。巡回点をボス周りのリング内に限定して湧かせる。
   // v3.23.0: 大都会の首都の守りは攻撃ヘリ（屋上にヘリポートがある）
-  const garrison = worldShape === SHAPE_METRO ? [["metro_heli", METRO_HELI_GARRISON]] : regionSpawnTable(BOSS_GARRISON_BY_STAGE[stageIndex] ?? []);
+  const garrison = worldShape === SHAPE_METRO ? [["metro_heli", METRO_HELI_GARRISON]]
+                 : worldShape === SHAPE_SWORD ? SWORD_GARRISON   // v3.122.0（DT-535）
+                 : regionSpawnTable(BOSS_GARRISON_BY_STAGE[stageIndex] ?? []);
   function garrisonPoint() {
     const a = random() * Math.PI * 2;
     const r = BOSS_GARRISON_INNER + random() * (BOSS_GARRISON_OUTER - BOSS_GARRISON_INNER);
@@ -12187,7 +12211,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   }
 
   // v1.8.0: 多脚戦車を大戦（STAGE7）と最終（STAGE8）に1体。
-  if ((stageIndex === 6 || stageIndex === 7) && wastelandAllowsMover("walker_hull")) {   // v3.84.0: 荒地には出さない（DT-509）
+  if ((stageIndex === 6 || stageIndex === 7) && wastelandAllowsMover("walker_hull") && worldShape !== SHAPE_SWORD) {   // v3.122.0: 剣の道の国にも出さない（撃つ）   // v3.84.0: 荒地には出さない（DT-509）
     const hull = makeMover(MOVER_DEFS.walker_hull, randPoint);
     hull.maxHp   = MOVER_DEFS.walker_hull.hp;
     hull.hp      = MOVER_DEFS.walker_hull.hp;
@@ -12197,10 +12221,10 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   }
 
   // v3.45.0: 行商の隊（案帳 DT-269）。町と町を結ぶ道（townRoadEdges）の上を往復する。前後に護衛が2人
-  result.push(...makeCaravans());
+  if (worldShape !== SHAPE_SWORD) result.push(...makeCaravans());   // v3.122.0（DT-535）: 行商の護衛は撃つので、剣の道の国には出さない
 
   // v3.63.0: 落下兵の飛行船（案帳 DT-229）を産業〜大戦に1隻
-  for (let k = 0; k < (AIRSHIP_BY_STAGE[stageIndex] || 0); k++) {
+  for (let k = 0; k < (worldShape === SHAPE_SWORD ? 0 : AIRSHIP_BY_STAGE[stageIndex] || 0); k++) {   // v3.122.0: 剣の道の国には来ない（落下兵が撃つ）
     const sh = makeMover(MOVER_DEFS.troop_airship, randPoint);
     sh.maxHp = sh.hp = MOVER_DEFS.troop_airship.hp; sh.xpValue = MOVER_DEFS.troop_airship.xp;
     result.push(sh);
@@ -12209,7 +12233,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   // v3.89.0（DT-250 手直し）: 浮き城の空だけに出す（どの文明でも）。ほかの地域には出さない
   kitePlacePending = worldShape === SHAPE_SKYLAND ? KITE_SKY_MAX : 0;
   // v3.60.0: 戦象（案帳 DT-218）を古代・中世に。背に弓兵4人（別の敵）
-  for (let k = 0; k < (WAR_ELEPHANT_BY_STAGE[stageIndex] || 0); k++) {
+  for (let k = 0; k < (worldShape === SHAPE_SWORD ? 0 : WAR_ELEPHANT_BY_STAGE[stageIndex] || 0); k++) {   // v3.122.0: 剣の道の国には来ない（背の弓兵が撃つ）
     const el = makeMover(MOVER_DEFS.war_elephant, randPoint);
     el.maxHp = el.hp = MOVER_DEFS.war_elephant.hp; el.xpValue = MOVER_DEFS.war_elephant.xp;
     result.push(el, ...attachElephantRiders(el));
@@ -12223,7 +12247,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   }
 
   // v0.26: 巨獣（多パーツボス）を後半の一部ステージ（STAGE6・STAGE8）に1体。
-  if ((stageIndex === 5 || stageIndex === 7) && wastelandAllowsMover("behemoth_core")) {   // v3.84.0: 荒地には出さない（DT-509）
+  if ((stageIndex === 5 || stageIndex === 7) && wastelandAllowsMover("behemoth_core") && worldShape !== SHAPE_SWORD) {   // v3.122.0: 剣の道の国にも出さない / v3.84.0: 荒地には出さない（DT-509）
     const core = makeMover(MOVER_DEFS.behemoth_core, randPoint);
     core.maxHp   = MOVER_DEFS.behemoth_core.hp;
     core.hp      = MOVER_DEFS.behemoth_core.hp;
@@ -14687,6 +14711,397 @@ function standoffTarget(m) {
 //   どちらも頭は動く敵（movers）の1体なので、竜の攻撃はふつうに当たる。胴は点の列（serpents の pts）で、当たりは竜を押すだけ。
 //   2回目（v3.103.0）で毒吐き蛇と首都の蛇神（神殿を三重に巻く）を足した（下の「2回目」の節）
 // =====================================================================
+// =====================================================================
+// v3.122.0（案帳 DT-535 1回目）: 剣の道の国 — 近づいて斬る敵だけの国
+// 弾を撃つ物が1つも無い（updateSettlementAttacks が撃たない・湧き元は swordSubDef で斬る兵に替える）。
+// 地図：スタート（左下）から首都（右上寄り）まで白っぽい参道「剣の道」が蛇行し、町はその両脇に並ぶ。地面は竹林の暗い緑。
+// 敵：剣士（走る・間合いを測るをくり返して寄り、白い弧の予告から斬る）と、
+//     突進の剣士（Shooter「緩急つけて突進してくる感じのやつも」：止まって溜め→線の上を一気に駆け抜けて斬る→すき）。
+// 首都：撃たない。群れが近いと破線の輪を出し、輪の中を回し斬りで払う（後のすきに踏み込む）
+// =====================================================================
+const SWORD_GROUND_BG       = "#1c3220";   // 竹林の暗い緑（ほかの地域の背景と同じ暗さ）
+const SWORD_PATH_STEP       = 120;         // 参道の点の間隔（px）
+const SWORD_PATH_AMP        = 650;         // 参道の蛇行の振れ幅（px。両端では0に細る）
+const SWORD_PATH_WAVES      = 2.5;         // スタートから首都までの蛇行の数
+const SWORD_PATH_MARGIN     = 260;         // 参道を地図の縁からこれだけ離す
+const SWORD_PATH_WIDTH      = 120;         // 参道の幅（px）
+const SWORD_PATH_COLOR      = "rgba(214,202,160,0.42)";
+const SWORD_PATH_EDGE       = "rgba(120,110,80,0.35)";
+const SWORD_TOWN_SPACING    = 640;         // 参道に沿って町を置く間隔（参道の長さで）
+const SWORD_TOWN_SIDE_MIN   = 560;         // 参道から町の中心までの距離（片側）
+const SWORD_TOWN_SIDE_MAX   = 760;
+const SWORD_TOWN_FAR_MIN    = 1500;        // 2列目（参道から遠い側の町）の距離。地図の広さを埋める
+const SWORD_TOWN_FAR_MAX    = 1900;
+const SWORD_TOWN_FAR_P      = 0.55;        // 2列目を置く割合
+const SWORD_TOWN_GAP        = 620;         // 町の中心どうしの最小の間隔
+const SWORD_TOWN_EDGE       = 320;         // 町の中心を地図の縁からこれだけ離す
+const SWORD_BAMBOO_COUNT    = 34;          // 竹林の帯の数
+const SWORD_BAMBOO_CLEAR    = 260;         // 竹林の帯を参道からこれだけ離す
+const SWORD_PURSUIT_RANGE   = 900;         // 剣士が群れに気づいて寄ってくる距離（ふつうの敵は MOVER_PURSUIT_RANGE）
+// 剣士
+const SWORD_SPRINT_MIN = 0.9, SWORD_SPRINT_MAX = 1.6;   // 走る時間（秒）
+const SWORD_STALK_MIN  = 0.45, SWORD_STALK_MAX = 0.9;   // 間合いを測って歩く時間（秒）
+const SWORD_STALK_MULT = 0.25;             // 間合いを測る間の速さ（走る速さに対して）
+const SWORD_SLASH_REACH   = 56;            // 斬りの届く距離（体の縁から）
+const SWORD_SLASH_ARC     = 1.15;          // 斬りの弧の半分の角度（rad）
+const SWORD_SLASH_WINDUP  = 0.3;           // 構え（白い弧の予告）の秒数
+const SWORD_SLASH_RECOVER = 0.45;          // 斬った後に止まっている秒数
+const SWORD_SLASH_COOL    = 1.0;           // 次に構えるまでの最短の秒数
+const SWORD_SLASH_DMG     = 3;             // 1回の斬りの傷（竜の最大HPは30。時代の苛烈さを掛ける）
+const SWORD_SLASH_IMPACT  = 60;
+// 突進の剣士
+const SWORD_CHARGE_TRIGGER  = 420;         // 群れがこの距離に入ったら止まって溜める
+const SWORD_CHARGE_AIM      = 0.85;        // 溜め（向きの線の予告）の秒数
+const SWORD_CHARGE_SPEED    = 900;         // 駆け抜ける速さ（px/s）
+const SWORD_CHARGE_OVERSHOOT = 160;        // 狙った竜の先まで駆け抜ける長さ
+const SWORD_CHARGE_MAX      = 560;         // 駆け抜ける長さの上限
+const SWORD_CHARGE_HIT_R    = 22;          // 駆け抜ける線から斬れる幅（体の縁から）
+const SWORD_CHARGE_DMG      = 6;
+const SWORD_CHARGE_IMPACT   = 120;
+const SWORD_CHARGE_RECOVER  = 1.2;         // 駆け抜けた後のすき（止まっている）
+const SWORD_CHARGE_COOL     = 1.6;         // すきの後、次に溜めるまで
+// 首都の回し斬り
+const SWORD_CAP_RING        = WALL_OUTER_RING_RADIUS + 140;   // 回し斬りの輪の半径（城壁の外の寄り付きまで払う）
+const SWORD_CAP_TRIGGER     = SWORD_CAP_RING + 120;           // 群れの竜がこの距離に入ったら構える
+const SWORD_CAP_WIND        = 1.2;         // 輪の予告の秒数
+const SWORD_CAP_COOL        = 3.2;         // 払った後、次に構えるまで（この間に踏み込む）
+const SWORD_CAP_DMG         = 7;
+const SWORD_CAP_IMPACT      = 180;
+const SWORD_FX_SLASH_LIFE   = 0.25, SWORD_FX_DASH_LIFE = 0.3, SWORD_FX_SPIN_LIFE = 0.45;
+// 剣の道の国で起こしてよい警戒度ラッシュ（撃つ・降らす・弾を出す敵を連れてくるものは起こさない）
+const SWORD_RUSH_KINDS = new Set(["haste", "siege", "horde", "wind", "night", "convoy", "blastrock"]);
+// 時代ごとの顔ぶれ：[剣士の隊, 突進の剣士]（時代が進むほど少しずつ多い）
+function swordSpawnTable(stageIndex) {
+  return [["sword_runner", 3 + Math.floor(stageIndex / 2)], ["sword_charger", 2 + Math.floor(stageIndex / 3)]];
+}
+const SWORD_GARRISON = [["sword_runner", 2], ["sword_charger", 3]];
+
+let swordPath = [];     // 参道の点の列（スタート → 首都）
+let swordBamboo = [];   // 竹林の帯 { x, y, rx, ry, a }
+const swordFx = [];     // 斬りの跡 { kind, x, y, a, x2, y2, r, t, life }
+const swordCap = { st: "idle", t: 0, cool: 0 };
+function resetSwordCapital() { swordCap.st = "idle"; swordCap.t = 0; swordCap.cool = 0; }
+
+/** 剣の道の国では、撃つ敵を斬る兵に替える（大きい敵は突進の剣士・小さい敵は剣士）。ほかの地域・撃たない敵はそのまま */
+function swordSubDef(def) {
+  if (worldShape !== SHAPE_SWORD || !def || def.sword || !def.attack) return def;
+  return (def.radius || 0) >= 16 ? MOVER_DEFS.sword_charger : MOVER_DEFS.sword_runner;
+}
+
+/** 参道を引く（スタートから首都へ。蛇行は両端で0に細る） */
+function generateSwordPath(boss) {
+  const sx = START_X, sy = START_Y, dx = boss.wx - sx, dy = boss.wy - sy;
+  const len = Math.hypot(dx, dy) || 1, nx = -dy / len, ny = dx / len;
+  const n = Math.max(2, Math.ceil(len / SWORD_PATH_STEP));
+  const phase = random() * Math.PI * 2;
+  const pts = [];
+  for (let k = 0; k <= n; k++) {
+    const t = k / n;
+    const off = SWORD_PATH_AMP * Math.sin(t * SWORD_PATH_WAVES * Math.PI * 2 + phase) * Math.sin(t * Math.PI);
+    pts.push({
+      x: Math.max(SWORD_PATH_MARGIN, Math.min(WORLD_W - SWORD_PATH_MARGIN, sx + dx * t + nx * off)),
+      y: Math.max(SWORD_PATH_MARGIN, Math.min(WORLD_H - SWORD_PATH_MARGIN, sy + dy * t + ny * off)),
+    });
+  }
+  return pts;
+}
+
+/** 点から参道までの距離の2乗 */
+function swordPathDist2(x, y) {
+  let best = Infinity;
+  for (let k = 1; k < swordPath.length; k++) {
+    const a = swordPath[k - 1], b = swordPath[k];
+    best = Math.min(best, pointSegDist2(x, y, a.x, a.y, b.x, b.y));
+  }
+  return best;
+}
+
+/** 町の中心：参道に沿って両脇に交互に並べ、ところどころ2列目も置く。竹林の帯も一緒に決める */
+function placeSwordTownCenters(townWanted, boss) {
+  swordPath = generateSwordPath(boss);
+  const centers = [];
+  const startClear2 = startTownClearCenter() ** 2, capClear2 = CAPITAL_EXCLUSION_RADIUS ** 2;
+  const tryPlace = (x, y) => {
+    if (x < SWORD_TOWN_EDGE || y < SWORD_TOWN_EDGE || x > WORLD_W - SWORD_TOWN_EDGE || y > WORLD_H - SWORD_TOWN_EDGE) return false;
+    if (dist2(x, y, START_X, START_Y) < startClear2 || dist2(x, y, boss.wx, boss.wy) < capClear2) return false;
+    if (swordPathDist2(x, y) < SWORD_TOWN_SIDE_MIN * SWORD_TOWN_SIDE_MIN * 0.8) return false;   // 蛇行の内側で参道に寄りすぎない
+    if (centers.some(c => dist2(x, y, c.x, c.y) < SWORD_TOWN_GAP * SWORD_TOWN_GAP)) return false;
+    centers.push({ x, y });
+    return true;
+  };
+  let walked = 0, nextAt = SWORD_TOWN_SPACING * 0.5, side = random() < 0.5 ? 1 : -1;
+  for (let k = 1; k < swordPath.length && centers.length < townWanted; k++) {
+    const a = swordPath[k - 1], b = swordPath[k];
+    const seg = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    walked += seg;
+    if (walked < nextAt) continue;
+    nextAt += SWORD_TOWN_SPACING;
+    const nx = -(b.y - a.y) / seg, ny = (b.x - a.x) / seg;
+    const near = randRange(SWORD_TOWN_SIDE_MIN, SWORD_TOWN_SIDE_MAX);
+    tryPlace(b.x + nx * near * side, b.y + ny * near * side);
+    if (random() < SWORD_TOWN_FAR_P && centers.length < townWanted) {
+      const far = randRange(SWORD_TOWN_FAR_MIN, SWORD_TOWN_FAR_MAX);
+      tryPlace(b.x - nx * far * side, b.y - ny * far * side);
+    }
+    side = -side;
+  }
+  // 竹林の帯（参道と町に掛からない所に、斜めの細長い濃い緑）
+  swordBamboo = [];
+  for (let tries = 0; tries < SWORD_BAMBOO_COUNT * 8 && swordBamboo.length < SWORD_BAMBOO_COUNT; tries++) {
+    const x = randRange(200, WORLD_W - 200), y = randRange(200, WORLD_H - 200);
+    const rx = randRange(260, 620), ry = randRange(70, 140);
+    if (swordPathDist2(x, y) < (rx + SWORD_BAMBOO_CLEAR) ** 2) continue;
+    if (centers.some(c => dist2(x, y, c.x, c.y) < (rx + 420) ** 2)) continue;
+    if (dist2(x, y, boss.wx, boss.wy) < (rx + CAPITAL_EXCLUSION_RADIUS + 200) ** 2) continue;
+    swordBamboo.push({ x, y, rx, ry, a: randRange(-0.6, 0.6) - Math.PI / 4, seed: Math.floor(random() * 1e6) });
+  }
+  return centers;
+}
+
+/** 地面のタイルに竹林の帯と参道を焼く */
+function drawSwordwayOnLayer(bctx, bounds) {
+  if (worldShape !== SHAPE_SWORD || swordPath.length < 2) return;
+  for (const b of swordBamboo) {
+    if (!layerBoundsHitCircle(bounds, b.x, b.y, b.rx + 20)) continue;
+    bctx.save();
+    bctx.translate(b.x, b.y); bctx.rotate(b.a);
+    bctx.fillStyle = "rgba(8,30,12,0.55)";
+    bctx.beginPath(); bctx.ellipse(0, 0, b.rx, b.ry, 0, 0, Math.PI * 2); bctx.fill();
+    // 竹の株（見た目だけ。位置は帯ごとの種で決める＝焼き直しても同じ模様）
+    let r = b.seed;
+    const rnd = () => { r = (r * 1103515245 + 12345) % 2147483648; return r / 2147483648; };
+    bctx.fillStyle = "rgba(90,140,70,0.45)";
+    const n = Math.round(b.rx * b.ry / 900);
+    for (let k = 0; k < n; k++) {
+      const u = rnd() * 2 - 1, v = rnd() * 2 - 1;
+      if (u * u + v * v > 1) continue;
+      bctx.beginPath(); bctx.arc(u * b.rx, v * b.ry, 3 + rnd() * 3, 0, Math.PI * 2); bctx.fill();
+    }
+    bctx.restore();
+  }
+  bctx.save();
+  bctx.lineCap = "round"; bctx.lineJoin = "round";
+  bctx.strokeStyle = SWORD_PATH_EDGE; bctx.lineWidth = SWORD_PATH_WIDTH + 18;
+  bctx.beginPath(); bctx.moveTo(swordPath[0].x, swordPath[0].y);
+  for (let k = 1; k < swordPath.length; k++) bctx.lineTo(swordPath[k].x, swordPath[k].y);
+  bctx.stroke();
+  bctx.strokeStyle = SWORD_PATH_COLOR; bctx.lineWidth = SWORD_PATH_WIDTH;
+  bctx.stroke();
+  bctx.restore();
+}
+
+/**
+ * 剣士・突進の剣士の1フレーム。{ x, y, speed }（x が無ければ向かう先は共通のまま）を返す。
+ * pursuing＝共通の追跡（MOVER_PURSUIT_RANGE）に入っているか。剣士はもっと遠くから気づく
+ */
+function updateSwordUnit(m, dt, centroid, pursuing) {
+  const def = m.def;
+  const S = m._sw || (m._sw = { st: def.sword === "charger" ? "approach" : "run", t: 0, cool: random() * 0.8,
+                                sprint: true, pace: randRange(SWORD_SPRINT_MIN, SWORD_SPRINT_MAX), aimX: 1, aimY: 0 });
+  S.cool = Math.max(0, S.cool - dt);
+  const near = dist2(m.wx, m.wy, centroid.x, centroid.y) < SWORD_PURSUIT_RANGE * SWORD_PURSUIT_RANGE;
+  const chase = pursuing || (near && gameState === "playing");
+  const face = (speed) => ({ x: m.wx + S.aimX * 10, y: m.wy + S.aimY * 10, speed });
+  const i = findNearestAliveBoid(m.wx, m.wy);
+  const di = i >= 0 ? Math.sqrt(dist2(px[i], py[i], m.wx, m.wy)) : Infinity;
+  if (def.sword === "charger") return updateSwordCharger(m, S, dt, i, di, chase, centroid, face);
+
+  if (S.st === "windup") {
+    S.t -= dt;
+    if (S.t <= 0) {
+      swordSlash(m, S);
+      S.st = "recover"; S.t = SWORD_SLASH_RECOVER; S.cool = SWORD_SLASH_COOL;
+    }
+    return face(0);
+  }
+  if (S.st === "recover") {
+    S.t -= dt;
+    if (S.t <= 0) S.st = "run";
+    return face(0);
+  }
+  // 走る ↔ 間合いを測る をくり返す（ずっと同じ速さで寄ってくるだけにしない）
+  S.pace -= dt;
+  if (S.pace <= 0) {
+    S.sprint = !S.sprint;
+    S.pace = S.sprint ? randRange(SWORD_SPRINT_MIN, SWORD_SPRINT_MAX) : randRange(SWORD_STALK_MIN, SWORD_STALK_MAX);
+  }
+  if (i >= 0 && S.cool <= 0 && di < def.radius + SWORD_SLASH_REACH * 0.85) {
+    S.aimX = (px[i] - m.wx) / (di || 1); S.aimY = (py[i] - m.wy) / (di || 1);
+    S.st = "windup"; S.t = SWORD_SLASH_WINDUP;
+    return face(0);
+  }
+  if (!chase) return { speed: def.speed * 0.45 };   // 群れが遠いうちは歩いて巡回
+  const sp = def.speed * (S.sprint ? 1 : SWORD_STALK_MULT);
+  // 目の前まで来たら最寄りの竜へ（重心は群れの真ん中なので、縁の竜の横を素通りしない）
+  if (i >= 0 && di < 220) return { x: px[i], y: py[i], speed: sp };
+  return { x: centroid.x, y: centroid.y, speed: sp };
+}
+
+function updateSwordCharger(m, S, dt, i, di, chase, centroid, face) {
+  const def = m.def;
+  if (S.st === "aim") {
+    S.t -= dt;
+    if (S.t <= 0) { S.st = "dash"; S.hit = new Set(); }
+    return face(0);
+  }
+  if (S.st === "dash") {
+    const rx = S.endX - m.wx, ry = S.endY - m.wy, rem = Math.sqrt(rx * rx + ry * ry);
+    const mv = Math.min(SWORD_CHARGE_SPEED * dt, rem);
+    const x1 = m.wx + S.aimX * mv, y1 = m.wy + S.aimY * mv;
+    const reach = def.radius + SWORD_CHARGE_HIT_R, r2 = reach * reach;
+    const dmg = SWORD_CHARGE_DMG * moverFerocity();
+    for (let j = 0; j < N; j++) {
+      if (boidDead[j] || boidDowned[j] || S.hit.has(j)) continue;
+      if (pointSegDist2(px[j], py[j], m.wx, m.wy, x1, y1) > r2) continue;
+      S.hit.add(j);
+      const side = (px[j] - m.wx) * S.aimY - (py[j] - m.wy) * S.aimX >= 0 ? 1 : -1;
+      hitBoid(j, { direct: dmg, impact: SWORD_CHARGE_IMPACT }, S.aimY * side, -S.aimX * side);
+      if (fxRandom() < 0.6) spawnHitParticles(px[j], py[j]);
+    }
+    swordFx.push({ kind: "dash", x: m.wx, y: m.wy, x2: x1, y2: y1, t: 0, life: SWORD_FX_DASH_LIFE });
+    if (rem <= SWORD_CHARGE_SPEED * dt + 0.5) { S.st = "recover"; S.t = SWORD_CHARGE_RECOVER; S.cool = SWORD_CHARGE_COOL; }
+    return { x: S.endX + S.aimX, y: S.endY + S.aimY, speed: mv / Math.max(dt, 1e-4) };
+  }
+  if (S.st === "recover") {
+    S.t -= dt;
+    if (S.t <= 0) S.st = "approach";
+    return face(0);
+  }
+  // 寄っていく（遅い）→ 間合いに入ったら止まって溜める
+  if (chase && i >= 0 && S.cool <= 0 && di < SWORD_CHARGE_TRIGGER) {
+    S.aimX = (px[i] - m.wx) / (di || 1); S.aimY = (py[i] - m.wy) / (di || 1);
+    const len = Math.min(SWORD_CHARGE_MAX, di + SWORD_CHARGE_OVERSHOOT);
+    S.endX = Math.max(40, Math.min(WORLD_W - 40, m.wx + S.aimX * len));
+    S.endY = Math.max(40, Math.min(WORLD_H - 40, m.wy + S.aimY * len));
+    S.st = "aim"; S.t = SWORD_CHARGE_AIM;
+    return face(0);
+  }
+  if (!chase) return { speed: def.speed * 0.6 };
+  return { x: centroid.x, y: centroid.y, speed: def.speed };
+}
+
+/** 剣士の斬り：目の前の弧（届く距離・角度）に入っている竜それぞれに傷 */
+function swordSlash(m, S) {
+  const reach = m.def.radius + SWORD_SLASH_REACH, r2 = reach * reach, cosArc = Math.cos(SWORD_SLASH_ARC);
+  const dmg = SWORD_SLASH_DMG * moverFerocity();
+  for (let j = 0; j < N; j++) {
+    if (boidDead[j] || boidDowned[j]) continue;
+    const dx = px[j] - m.wx, dy = py[j] - m.wy, d2 = dx * dx + dy * dy;
+    if (d2 > r2) continue;
+    const d = Math.sqrt(d2) || 1;
+    if ((dx * S.aimX + dy * S.aimY) / d < cosArc) continue;
+    hitBoid(j, { direct: dmg, impact: SWORD_SLASH_IMPACT }, dx / d, dy / d);
+  }
+  swordFx.push({ kind: "slash", x: m.wx, y: m.wy, a: Math.atan2(S.aimY, S.aimX), r: reach, t: 0, life: SWORD_FX_SLASH_LIFE });
+}
+
+/** 首都の回し斬り（群れが近いと輪を出して構え、輪の中を払う）と、斬りの跡の寿命 */
+function updateSwordCapital(dt) {
+  for (let k = swordFx.length - 1; k >= 0; k--) { swordFx[k].t += dt; if (swordFx[k].t >= swordFx[k].life) swordFx.splice(k, 1); }
+  if (worldShape !== SHAPE_SWORD || gameState !== "playing" || bossSettlementIdx < 0) return;
+  const boss = settlements[bossSettlementIdx];
+  if (!boss || boss.fallen) { swordCap.st = "idle"; return; }
+  swordCap.cool = Math.max(0, swordCap.cool - dt);
+  if (swordCap.st === "wind") {
+    swordCap.t -= dt;
+    if (swordCap.t > 0) return;
+    const prev = attackerNow;
+    attackerNow = settlementAttacker(boss);
+    const r2 = SWORD_CAP_RING * SWORD_CAP_RING, dmg = SWORD_CAP_DMG * moverFerocity();
+    for (let j = 0; j < N; j++) {
+      if (boidDead[j] || boidDowned[j]) continue;
+      const dx = px[j] - boss.wx, dy = py[j] - boss.wy, d2 = dx * dx + dy * dy;
+      if (d2 > r2) continue;
+      const d = Math.sqrt(d2) || 1;
+      hitBoid(j, { direct: dmg, impact: SWORD_CAP_IMPACT }, dx / d, dy / d);
+    }
+    attackerNow = prev;
+    swordFx.push({ kind: "spin", x: boss.wx, y: boss.wy, r: SWORD_CAP_RING, a: fxRandom() * Math.PI * 2, t: 0, life: SWORD_FX_SPIN_LIFE });
+    triggerShake(1.2, 0.08);
+    swordCap.st = "idle"; swordCap.cool = SWORD_CAP_COOL;
+    return;
+  }
+  if (swordCap.cool > 0) return;
+  const t2 = SWORD_CAP_TRIGGER * SWORD_CAP_TRIGGER;
+  for (let j = 0; j < N; j++) {
+    if (boidDead[j] || boidDowned[j]) continue;
+    if (dist2(px[j], py[j], boss.wx, boss.wy) < t2) { swordCap.st = "wind"; swordCap.t = SWORD_CAP_WIND; return; }
+  }
+}
+
+/** 首都の回し斬りの予告の輪と、斬りの跡（ワールド座標。敵の下に描く） */
+function drawSwordFx() {
+  if (worldShape === SHAPE_SWORD && swordCap.st === "wind" && bossSettlementIdx >= 0) {
+    const boss = settlements[bossSettlementIdx];
+    if (boss && !boss.fallen) {
+      const k = 1 - swordCap.t / SWORD_CAP_WIND;
+      ctx.save();
+      ctx.fillStyle = `rgba(255,255,255,${0.04 + 0.1 * k})`;
+      ctx.beginPath(); ctx.arc(boss.wx, boss.wy, SWORD_CAP_RING, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(255,255,255,${0.45 + 0.45 * k})`; ctx.lineWidth = 4;
+      ctx.setLineDash([22, 16]); ctx.lineDashOffset = -breathTime * 60;
+      ctx.beginPath(); ctx.arc(boss.wx, boss.wy, SWORD_CAP_RING, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+  }
+  if (swordFx.length === 0) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const f of swordFx) {
+    const k = 1 - f.t / f.life;
+    if (f.kind === "slash") {
+      ctx.strokeStyle = `rgba(255,255,255,${0.9 * k})`; ctx.lineWidth = 3 + 3 * k;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.85 + 0.15 * (1 - k)), f.a - SWORD_SLASH_ARC, f.a + SWORD_SLASH_ARC); ctx.stroke();
+    } else if (f.kind === "dash") {
+      ctx.strokeStyle = `rgba(255,240,210,${0.5 * k})`; ctx.lineWidth = 10 * k + 2;
+      ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(f.x2, f.y2); ctx.stroke();
+    } else if (f.kind === "spin") {
+      ctx.strokeStyle = `rgba(255,255,255,${0.85 * k})`; ctx.lineWidth = 8 * k + 2;
+      const sweep = Math.PI * 2 * Math.min(1, (1 - k) * 2.2);
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r, f.a, f.a + sweep); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+/** 剣士・突進の剣士（青灰の体に白い刀。構え・溜めの予告もここで描く） */
+function drawSwordUnit(m) {
+  const def = m.def, S = m._sw, r = def.radius;
+  const a = Math.atan2(m.headingY, m.headingX);
+  ctx.save();
+  ctx.translate(m.wx, m.wy);
+  if (S && S.st === "windup") {   // 斬りの予告：目の前の白い弧（だんだん濃く）
+    const k = 1 - S.t / SWORD_SLASH_WINDUP;
+    ctx.strokeStyle = `rgba(255,255,255,${0.25 + 0.5 * k})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, r + SWORD_SLASH_REACH, a - SWORD_SLASH_ARC, a + SWORD_SLASH_ARC); ctx.stroke();
+  }
+  if (S && S.st === "aim") {      // 突進の予告：駆け抜ける線（だんだん濃く・太く）
+    const k = 1 - S.t / SWORD_CHARGE_AIM;
+    ctx.strokeStyle = `rgba(255,236,200,${0.25 + 0.55 * k})`; ctx.lineWidth = 2 + 6 * k;
+    ctx.setLineDash([14, 10]);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(S.endX - m.wx, S.endY - m.wy); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.rotate(a);
+  const crouch = S && S.st === "aim" ? 0.88 : 1;
+  ctx.scale(crouch, 1 / crouch);
+  ctx.fillStyle = def.color; ctx.strokeStyle = def.glowColor; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  if (def.sword === "charger") {   // 赤い襷（見分け）
+    ctx.strokeStyle = "#c8283a"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(-r * 0.7, -r * 0.7); ctx.lineTo(r * 0.7, r * 0.7); ctx.stroke();
+  }
+  // 刀：構え・溜めの間は前へ、走る間は脇に
+  const ready = S && (S.st === "windup" || S.st === "aim" || S.st === "dash");
+  ctx.strokeStyle = "#f4f8ff"; ctx.lineWidth = def.sword === "charger" ? 2.5 : 2;
+  ctx.beginPath();
+  if (ready) { ctx.moveTo(r * 0.6, 0); ctx.lineTo(r * 2.4, 0); }
+  else { ctx.moveTo(r * 0.2, r * 0.8); ctx.lineTo(-r * 1.2, r * 1.4); }
+  ctx.stroke();
+  ctx.restore();
+}
+
 const SERPENT_GROUND_BG   = "#1d3322";   // 密林の暗い緑（ほかの地域の背景と同じ暗さ。青灰の蛇が浮いて見える）
 const SERPENT_KEYS        = { head: "serpent_head", body: "serpent_body" };
 const SERPENT_HEAD_ART    = 1.55;   // 頭の絵の幅＝胴の太さ×これ
@@ -15504,6 +15919,9 @@ function updateMovers(dt) {
     if (bowStance && !bowStance.still) { targetX = bowStance.x; targetY = bowStance.y; }
     // 案帳 DT-015 手直し（Shooter「プリズム運びは竜に近づきすぎず、適度な距離を保つように」）
     if (def.standoff) { const g = standoffTarget(m); if (g) { targetX = g.x; targetY = g.y; } }
+    // v3.122.0（案帳 DT-535）: 剣の道の国の剣士・突進の剣士は、向かう先と速さを自前で決める（移動・押し返し・地形は共通のまま）
+    const swordMove = def.sword ? updateSwordUnit(m, dt, centroid, pursuing) : null;
+    if (swordMove && swordMove.x !== undefined) { targetX = swordMove.x; targetY = swordMove.y; }
 
     const dx = targetX - m.wx;
     const dy = targetY - m.wy;
@@ -15577,6 +15995,7 @@ function updateMovers(dt) {
     // v3.62.0: 盾の列に並んだ盾兵は、自分の場所で止まる（行き過ぎて列の上で震えない）
     if (lineSlot) moveSpeed = Math.min(moveSpeed, Math.sqrt(dist2(targetX, targetY, m.wx, m.wy)) / Math.max(dt, 1e-3));
     if (bowStance) moveSpeed = bowStance.still ? 0 : moveSpeed * (bowStance.back ? def.keepRange.backSpeedMult : 1);
+    if (swordMove) moveSpeed = swordMove.speed * (frostFields.length ? frostSpeedMultAt(m.wx, m.wy) : 1);
     if (def.inertia) {
       // v3.27.0: 攻撃ヘリは速度に慣性がある（加速・減速に時間がかかり、行き過ぎてから戻る）。Shooter指示
       if (m.velX === undefined) { m.velX = 0; m.velY = 0; }
@@ -15651,6 +16070,7 @@ function updateMovers(dt) {
     if (def.metroGun) { updateMetroGun(m, dt); continue; }   // v3.23.0: 戦車の旋回砲塔・攻撃ヘリ
     const atk = def.attack;
     if (!atk) continue;        // v0.25.1: 財宝馬車など無攻撃ユニット
+    if (worldShape === SHAPE_SWORD) continue;   // v3.122.0（DT-535）: 剣の道の国では撃たない（湧き元で斬る兵に替えているが、取りこぼしの保険）
     if (def.manualAttack) continue;   // v1.9.0: 自前で撃つ敵（多脚戦車の主砲）
     if (m.submerged) continue; // v0.42: 潜行中は撃たない
     if (m.ambushState === "hide") continue;   // v3.18.0: 森の伏兵は潜っている間は撃たない
@@ -15955,6 +16375,7 @@ function updateBossArt(dt) {
   const boss = settlements[bossSettlementIdx];
   if (!boss || boss.fallen) return;
   if (boss._worldTree) return;   // v3.19.0: 巨大樹は灯と心臓の魔法で戦う（updateWorldTree）
+  if (worldShape === SHAPE_SWORD) return;   // v3.122.0（案帳 DT-535）: 剣の道の国の首都は撃たない（回し斬りだけ。updateSwordCapital）
 
   bossArtTimer -= dt;
   if (bossArtTimer > 0) return;
@@ -16129,6 +16550,7 @@ let rushTimer = RUSH_INTERVAL;
 
 // 群れ重心の外周にラッシュ用の敵を1体湧かせる（_rushWave タグ付き）。
 function spawnRushMover(def, centroid) {
+  def = swordSubDef(def);   // v3.122.0（DT-535）
   const a  = random() * Math.PI * 2;
   const r  = RUSH_SPAWN_RADIUS + randRange(-50, 110);
   const wx = Math.max(60, Math.min(WORLD_W - 60, centroid.x + Math.cos(a) * r));
@@ -17444,6 +17866,7 @@ function trCapLeft() {
 
 /** その時代の顔ぶれから、ラッシュに使える大型と小型を選ぶ。 */
 function trEraDefs() {
+  if (worldShape === SHAPE_SWORD) return { large: MOVER_DEFS.sword_charger, small: MOVER_DEFS.sword_runner };   // v3.122.0（DT-535）
   const keys = regionSpawnTable(MOVER_SPAWNS_BY_STAGE[currentStage] ?? []).map(e => e[0]);
   const ok = keys.map(k => MOVER_DEFS[k]).filter(d => d && d.attack && !d.part && !d.railBound
     && !d.walker && !d.fleer && d.moveType !== "loop" && d.speed > 0);
@@ -17456,6 +17879,7 @@ function trEraDefs() {
 }
 
 function spawnTrMover(def, x, y) {
+  def = swordSubDef(def);   // v3.122.0（DT-535）
   x = Math.max(60, Math.min(WORLD_W - 60, x));
   y = Math.max(60, Math.min(WORLD_H - 60, y));
   const m = makeMover(def, () => ({ x, y }));
@@ -17501,7 +17925,8 @@ function scheduleTierRush() {
   const pool = TR_KINDS.filter(k => !tierRush.used.has(k) && (k !== "convoy" || (boss && !boss.fallen))
     && (k !== "titan" || wastelandAllowsMover("stone_titan"))
     && (k !== "ringride" || worldShape !== SHAPE_SKYLAND)
-    && (k !== "blastrock" || worldShape !== SHAPE_SKYLAND));   // v3.112.0: 浮き城の空は島が分かれていて、地面を転がる岩が群れへ来られない   // v3.97.0: 浮き城の空は島が分かれていて、地上の騎兵が群れを囲んで駆けられない   // v3.84.0: 荒地に巨人の行軍（岩脚の巨像）は来ない（DT-509）
+    && (k !== "blastrock" || worldShape !== SHAPE_SKYLAND)
+    && (worldShape !== SHAPE_SWORD || SWORD_RUSH_KINDS.has(k)));   // v3.122.0（DT-535）: 剣の道の国は撃つ・降らすラッシュを起こさない   // v3.112.0: 浮き城の空は島が分かれていて、地面を転がる岩が群れへ来られない   // v3.97.0: 浮き城の空は島が分かれていて、地上の騎兵が群れを囲んで駆けられない   // v3.84.0: 荒地に巨人の行軍（岩脚の巨像）は来ない（DT-509）
   if (pool.length === 0) return;
   const kind = pool[Math.floor(random() * pool.length)];
   tierRush.used.add(kind);
@@ -18786,7 +19211,7 @@ function offscreenSpawnRadius() {
  * @returns {number} 実際に出た頭数
  */
 function spawnBossReinforcement(defKey, boss, angle) {
-  const def = MOVER_DEFS[defKey];
+  const def = MOVER_DEFS[defKey] && swordSubDef(MOVER_DEFS[defKey]);   // v3.122.0（DT-535）: 剣の道の国の援軍も斬る兵
   if (!def) return 0;
   // v0.61: 群れ重心を基準に「画面の外」へ置く。首都からの相対ではなく群れからの相対に
   // するのは、**画面に映っていないこと**が湧きの条件だから（首都が画面外のこともある）。
@@ -19014,13 +19439,14 @@ function updateRaiderSpawns(dt) {
   const spawnCount = Math.min(1 + (random() < 0.5 ? 1 : 0), RAIDER_MAX_ALIVE - aliveRaiders);
   for (let k = 0; k < spawnCount; k++) {
     const angle = random() * Math.PI * 2;
-    const raider = makeMover(MOVER_DEFS.raider, () => ({
+    const raiderDef = swordSubDef(MOVER_DEFS.raider);   // v3.122.0（DT-535）: 剣の道の国は剣士が出てくる
+    const raider = makeMover(raiderDef, () => ({
       x: Math.max(100, Math.min(WORLD_W - 100, boss.wx + randRange(-800, 800))),
       y: Math.max(100, Math.min(WORLD_H - 100, boss.wy + randRange(-800, 800))),
     }));
     raider.wx = boss.wx + Math.cos(angle) * (boss.radius + 34);
     raider.wy = boss.wy + Math.sin(angle) * (boss.radius + 34);
-    raider.xpValue = MOVER_DEFS.raider.xp;   // v0.14: XPのステージスケール廃止
+    raider.xpValue = raiderDef.xp;   // v0.14: XPのステージスケール廃止
     movers.push(raider);
     spawnCollisionParticles(raider.wx, raider.wy);
   }
@@ -21243,6 +21669,7 @@ function drawMovers() {
     if (def.hero) { drawHero(m); continue; }   // v3.35.0
     if (def.serpentHead) continue;             // v3.102.0: 大蛇は drawSerpents が胴ごと描く
     if (def.spitter) { drawSpitter(m); continue; }   // v3.103.0
+    if (def.sword) { drawSwordUnit(m); continue; }   // v3.122.0（案帳 DT-535）
     if (metroVb && (def.roadRunner || def.metroGun) &&
         (m.wx < metroVb.minX || m.wx > metroVb.maxX || m.wy < metroVb.minY || m.wy > metroVb.maxY)) continue;
     // v1.0.6: 巨人型だけ**描画用の向き**を使う（踏み替えの補間）。
@@ -23585,6 +24012,7 @@ function paintGroundTile(bctx, bounds) {
 
   // v0.17: 森（非ブロッキングの自然装飾。文明の外側に広がる林）
   drawForestsOnLayer(bctx, bounds);
+  drawSwordwayOnLayer(bctx, bounds);   // v3.122.0（案帳 DT-535）: 竹林の帯と、首都への参道「剣の道」
 
   // v0.9.1: 街区の下地（石畳ベース＋集落の土地面）。道路より先に敷く
   drawTownBasesOnLayer(bctx, bounds);
@@ -25327,6 +25755,8 @@ function fireEmplacement(s, targetIdx) {
 }
 
 function updateSettlementAttacks(dt) {
+  // v3.122.0（案帳 DT-535）: 剣の道の国は弾を撃つ物が1つも無い（建物・首都・時代兵器も撃たない。首都は回し斬りだけ）
+  if (worldShape === SHAPE_SWORD) return;
   // (A) 逆引き方式: ドラゴン側から「近くの建物」を空間ハッシュで収集する。
   // 群れ全体でO(N × (2*cellRadius+1)^2) ≈ O(N × 49)。
   // 群れから遠い大多数の建物は Set に入らないため全ドラゴン走査から除外される。
@@ -27139,8 +27569,8 @@ const STRINGS = {
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
                "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会", "光線の塔が立つ高原", "英雄が守る王国", "巨岩を拝む荒地",
-               "雲海に浮かぶ浮き城の空", "蛇神を祀る密林の国"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国", "荒地", "浮島", "蛇神"],
+               "雲海に浮かぶ浮き城の空", "蛇神を祀る密林の国", "剣の道の国"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国", "荒地", "浮島", "蛇神", "剣の道"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
   regionHint: "地域ごとに土地の形と遊び方が変わる。時代（建物・敵・兵器）はどの地域でも同じ。",
@@ -27179,6 +27609,9 @@ const STRINGS = {
     // v3.102.0（案帳 DT-180 1回目）
     { route: "角 → 対角の神殿", play: "蛇神を祀る暗い緑の密林。格上の街は大蛇にぐるりと巻かれて守られ、ゆっくり回っている。町からは長い大蛇が這い出して、群れの前へ回り込みに来る。",
       rule: "巻いた胴は攻撃が効かず、越えられない。金の目の頭にだけ攻撃が通り、頭を倒すと蛇がほどけて逃げる（経験値と卵がたくさん）。這い大蛇は群れが止まっていると胴で輪を作って締める。黄の点線の輪が閉じる前に抜ければ無傷。首都の神殿は蛇神が三重に巻き、外の輪から順に頭が噛みつきに来る。三重がほどけるまで神殿は焼けない。草むらの毒吐き蛇の黄の毒に当たると少し遅くなる" },
+    // v3.122.0（案帳 DT-535 1回目）
+    { route: "角 → 剣の道の先の首都", play: "剣に取りつかれた人々の国。竹林の暗い緑の中を、白っぽい参道「剣の道」が首都まで蛇行して通り、町はその両脇に並ぶ。弾を撃つ物が1つも無い。",
+      rule: "敵は近づいて斬るだけ（建物も首都も撃たない）。剣士は走っては間合いを測って寄ってきて、白い弧の予告のあとに斬る。突進の剣士は止まって向きの線を出して溜め、線の上を一気に駆け抜けて斬る（駆け抜けた後はすき）。首都は群れが近いと破線の輪を出して、輪の中を回し斬りで払う。止まると囲まれるので、動き続けて折り返しで刈る" },
   ],
   panelHint: "クリアしたステージの上下左右が開く",
   continentLocked: (prev) => `${prev} を制圧すると解放`,
@@ -34759,6 +35192,7 @@ const CODEX_ENEMY_NAMES = {
   railgun_loco: "列車砲列（機関車）", railgun_car: "列車砲列の砲車",
   railcar: "装甲軌道車", railram: "衝角機関車",
   forest_ambusher: "森の伏兵", forest_giant: "森番の巨人", prism_bearer: "プリズム運び", wind_rider: "風乗りの兵", sky_carrier: "浮き砦", sky_mine: "浮き機雷", serpent_coil: "町を巻く大蛇", serpent_crawl: "這い大蛇", serpent_god: "蛇神", serpent_spitter: "毒吐き蛇",
+  sword_runner: "剣士", sword_charger: "突進の剣士",   // v3.122.0（案帳 DT-535）
   metro_car: "渋滞の車", metro_truck: "渋滞の箱バン", metro_police: "パトカー", metro_tank: "戦車", metro_heli: "攻撃ヘリ",
   raider: "レイダー", treasure: "財宝馬車", eggconvoy: "竜卵の輸送隊",
   caravan: "行商の隊", caravan_guard: "行商の隊の護衛",
@@ -34793,6 +35227,8 @@ const CODEX_SPECIAL_ERA = {
   serpent_coil:   "蛇神の国（全文明） — 格上の街をぐるりと巻いて回る。胴は越えられず攻撃も効かない。頭を倒すとほどけて逃げる",   // v3.102.0（案帳 DT-180）
   serpent_crawl:  "蛇神の国（全文明） — 町から這い出して群れを追う。止まっている群れを胴の輪で締める",
   serpent_god:    "蛇神の国（全文明） — 首都の神殿を三重に巻く。外の輪から順に頭が噛みつきに来る。三重がほどけるまで神殿は焼けない",   // v3.103.0
+  sword_runner:   "剣の道の国（全文明） — 4人の隊で走っては間合いを測って寄ってくる。目の前で白い弧の予告から斬る。道場からも出てくる",   // v3.122.0（案帳 DT-535）
+  sword_charger:  "剣の道の国（全文明） — 止まって向きの線を出して溜め、線の上を一気に駆け抜けて斬る。駆け抜けた後はしばらく動けない",
   serpent_spitter: "蛇神の国（全文明） — 町のまわりの草むらに潜む。近づくと首をもたげて黄の毒を吐く（当たった竜は少し遅くなる）",   // v3.95.0（案帳 DT-179）
   metro_car:      "大都会（全文明） — 列になって道路を流れる",
   metro_truck:    "大都会（全文明） — 車列に混じる少し硬い車",
@@ -35112,6 +35548,8 @@ function codexEnemySpecialFireRates(def) {
     case "serpent_crawl":   return [every(SERPENT_BITE_EVERY, SERPENT_BITE_DAMAGE, `噛みつき（1回に${SERPENT_BITE_MAX}体まで）`),
                                     always(CRAWL_SQUEEZE_DPS, `締める輪の中（${CRAWL_SQUEEZE_TIME}秒）`)];
     case "serpent_spitter": return [every(SPITTER_EVERY, SPIT_DAMAGE, `毒の弾（当たると${POISON_TIME}秒遅くなる）`)];
+    case "sword_runner":    return [every(SWORD_SLASH_WINDUP + SWORD_SLASH_RECOVER + SWORD_SLASH_COOL, SWORD_SLASH_DMG, "斬り（目の前の弧の中の竜それぞれに）")];   // v3.122.0（DT-535）
+    case "sword_charger":   return [every(SWORD_CHARGE_AIM + SWORD_CHARGE_RECOVER + SWORD_CHARGE_COOL, SWORD_CHARGE_DMG, "駆け抜け斬り（線の上の竜それぞれに）")];
     case "kite_soldier":    return [every(kiteCycle, KITE_LINE_DMG, "糸の雷"), every(kiteCycle, KITE_SPLASH_DMG, "凧のまわりの雷"),
                                     every(KITE_FREE_EVERY, KITE_SPLASH_DMG, "兵を倒して流れた凧")];
     case "sky_mine":        return [once(SKY_MINE_DAMAGE, "触れると爆ぜる")];
@@ -37015,6 +37453,14 @@ function codexRegionCanvas(shape) {
     c.strokeStyle = "#6f8296"; c.lineWidth = 2.2; c.beginPath(); c.moveTo(6, 26); c.bezierCurveTo(12, 20, 16, 32, 22, 26); c.stroke();
     dot(22, 26, 1.6, "#ffd060");
     diamond(26, 26, 3.2); dot(4, 48, 2.2, CODEX_RG.start);
+  } else if (shape === SHAPE_SWORD) {
+    // v3.122.0（案帳 DT-535）: 竹林の濃い帯と、左下から右上の首都へ蛇行する白っぽい参道。町は参道の両脇
+    c.fillStyle = "rgba(10,40,16,0.6)";
+    for (const [x, y, w, h] of [[2, 4, 18, 10], [32, 30, 18, 9], [4, 30, 12, 8]]) c.fillRect(x, y, w, h);
+    c.strokeStyle = "rgba(226,214,170,0.85)"; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(4, 48); c.bezierCurveTo(26, 46, 14, 26, 30, 22); c.bezierCurveTo(40, 19, 38, 10, 44, 8); c.stroke();
+    for (const [x, y] of [[12, 38], [20, 50], [16, 26], [30, 32], [26, 14], [40, 26]]) dot(x, y, 2.4, CODEX_RG.town);
+    diamond(44, 8, 3.4); dot(4, 48, 2.2, CODEX_RG.start);
   }
   return cv;
 }
@@ -37173,7 +37619,7 @@ const REGION_CHOICE_COUNT = 3;
 // v3.7.0: 列車（軌道）以外は最初から全部（Shooter指示）。列車だけは初めてステージ5に着いたときに解放する
 const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL, SHAPE_FRONTLINE, SHAPE_SANCTUARY, SHAPE_ASTEROIDS,
                              SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND,
-                             SHAPE_SKYLAND, SHAPE_SERPENT];   // v3.102.0: 蛇神の国も最初から（案帳 DT-180）   // v3.78.0: 浮き城の空も最初から（案帳 DT-124）   // v3.77.0: 巨岩信仰の荒地も最初から（案帳 DT-509）／v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
+                             SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD];   // v3.122.0: 剣の道の国も最初から（案帳 DT-535）   // v3.102.0: 蛇神の国も最初から（案帳 DT-180）   // v3.78.0: 浮き城の空も最初から（案帳 DT-124）   // v3.77.0: 巨岩信仰の荒地も最初から（案帳 DT-509）／v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
 // 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
 const WIPE_GRACE_SECONDS  = 2;
 
@@ -43924,6 +44370,7 @@ function render(now) {
   drawRockGiantUnder();      // v3.77.0（案帳 DT-509）: 岩の巨人の足・予告の輪・扇の予告
   drawTierRushUnder();       // v3.16.0: 猛進の残像・精鋭と輸送隊の輪（敵の下）
   drawSerpents();            // v3.102.0（案帳 DT-180）: 大蛇の胴と頭（ほかの動く敵の下）
+  drawSwordFx();             // v3.122.0（案帳 DT-535）: 首都の回し斬りの予告の輪・斬りの跡（敵の下）
   drawPoison();              // v3.103.0: 毒の弾と毒の竜の輪
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
@@ -47528,6 +47975,7 @@ function tick() {
     placeRockGiants();            // v3.77.0（案帳 DT-509）: 荒地の岩の巨人を町のそばに置く（町の一覧ができてから1回だけ）
     placeCoilSerpents();          // v3.102.0（案帳 DT-180）: 格上の街を大蛇に巻かせる（町の一覧ができてから1回だけ）
     updateSerpents(wdt);          // v3.102.0: 大蛇の動き・輪で締める・噛みつき
+    updateSwordCapital(wdt);      // v3.122.0（案帳 DT-535）: 剣の道の国の首都の回し斬り・斬りの跡
     updateFallFx(wdt);            // v3.36.0: 陥落の演出
     updateWorldTree(wdt);         // v3.19.0: 巨大樹（大樹海の首都）の灯と心臓の魔法
     maybeShowLevelUp();           // v0.6: レベルアップが積まれていれば3択を出す（非モーダル）
