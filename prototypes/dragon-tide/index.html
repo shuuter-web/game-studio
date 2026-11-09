@@ -1367,7 +1367,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.118.3";
+const GAME_VERSION = "v3.119.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -27242,6 +27242,7 @@ const STRINGS = {
     f_triumph:   { name: "凱旋",          desc: "町が陥落するたびに、群れの竜のHPが回復する（1枚目 35%・2枚目で全快）" },
     f_egg_wave:  { name: "孵化の衝撃",    desc: "卵を拾うたびに、その場で衝撃波が起きてまわりを吹き飛ばす" },
     f_salute:    { name: "祝砲",          desc: "レベルが上がるたびに群れから金色の輪が広がり、まわりを吹き飛ばす（2枚で輪が広がる）" },   // 案帳 DT-400
+    f_dice:      { name: "博打の賽",      desc: "町が陥落するたびに町の上でサイコロを振る。1＝竜晶少し・2＝卵・3＝群れが全快・4＝焼け残りが一斉に崩れる・5＝20秒攻撃1.5倍・6＝大当たり（2枚で6が出やすく、卵と勢いが増える）" },   // 案帳 DT-172
     f_sp_double: { name: "双つ魂",        desc: "連れている特殊個体が2倍になる（あとから加わった特殊個体も2倍）" },
     f_giant:     { name: "巨竜化",        desc: "群れの竜5匹が巨大になる（HP 4倍・まわりを踏みつぶす）" },
     f_rage:      { name: "逆鱗",          desc: "戦える竜が群れの1割を切ると咆哮（群れの数の表示 今/全体 で 今 が全体の1割未満）。まわりの敵を押し返し、10秒間 攻撃の速さ×1.5・受ける傷が半分。全員が起き上がると、また使える" },
@@ -27415,7 +27416,7 @@ const CARD_DEFS = [
   { id: "sp_hush",          icon: "\u{1F92B}", rarity: "star", max: 3, specialJoin: SPECIAL_HUSH, weight: 6 },    // v3.92.0（DT-163）
   { id: "sp_shell",         icon: "\u{1F41A}", rarity: "star", max: 3, specialJoin: SPECIAL_SHELL, weight: 6 },   // v3.92.0（DT-164）
   { id: "sp_bundle",        icon: "\u{1F3AF}", rarity: "star", max: 3, specialJoin: SPECIAL_BUNDLE, weight: 6 },   // v3.94.0（DT-203）
-  { id: "sp_dice",          icon: "\u{1F3B2}", rarity: "star", max: 3, specialJoin: SPECIAL_DICE, weight: 6 },   // v3.113.0（DT-172）
+  // v3.119.0（DT-172 手直し・Shooter「この効果は特殊個体ではなくレア強化カードの効果に」）: 賽振りは加わらない。サイコロはレアの強化カード「博打の賽」（f_dice）へ。定義は途中セーブの互換のため残す
   { id: "sp_barrier",       icon: "\u{1F6A7}", rarity: "star", max: 3, specialJoin: SPECIAL_BARRIER, weight: 6 },   // v3.96.0（DT-211）
   { id: "sp_skybow",        icon: "\u{1F3F9}", rarity: "star", max: 3, specialJoin: SPECIAL_SKYBOW, weight: 6 },   // v3.95.0（DT-184）
   { id: "sp_scatter",       icon: "\u{1F33E}", rarity: "star", max: 3, specialJoin: SPECIAL_SCATTER, weight: 6 },  // v3.94.0（DT-204）
@@ -27457,6 +27458,7 @@ const PERK_CARD_DEFS = [
   { id: "f_triumph",   icon: "\u{1F6A9}", max: 2, rare: true },  // 町が陥落するたびに群れが回復
   { id: "f_egg_wave",  icon: "\u{1F4A5}", max: 1, rare: true },  // 卵を拾うと衝撃波
   { id: "f_salute",    icon: "\u{1F386}", max: 2, rare: true },  // 案帳 DT-400: レベルアップのたびに祝砲
+  { id: "f_dice",      icon: "\u{1F3B2}", max: 2, rare: true },  // 案帳 DT-172 手直し: 町が陥落するたびにサイコロ（賽振りの効果をカードに）
   { id: "f_sp_double", icon: "\u{1F465}", max: 1, stageOnly: true, special: true },   // 特殊個体が2倍（DT-511 手直し: ステージ限定）
   { id: "f_giant",     icon: "\u{1F996}", max: 2, ultra: true },  // 群れの数匹が巨大化
   // v3.101.0（案帳 DT-201・Shooter「効果2だけでいい。発動は10%を切ったら。群れの数がmaxまで回復したら再度有効化」）
@@ -30899,15 +30901,16 @@ const DICE_PIPS = [[], [[0, 0]], [[-1, -1], [1, 1]], [[-1, -1], [0, 0], [1, 1]],
 const diceRolls = [];   // {x, y, townIndex, t, face, shown}
 let diceNoOne = false;      // 前の目が1だった（次は1が出ない）
 let diceAttackTimer = 0;
-function diceLuck() { return upCount("sp_dice_luck"); }
-function diceBig()  { return upCount("sp_dice_big"); }
-function hasLiveDiceDragon() {
-  for (let i = 0; i < N; i++) if (boidSpecial[i] === SPECIAL_DICE && !boidDead[i] && !boidDowned[i]) return true;
-  return false;
-}
+// v3.119.0（DT-172 手直し）: サイコロはレアの強化カード「博打の賽」（f_dice）の効果。1枚で振る、2枚目で
+// 幸運の賽（6が出やすい）と大きな賽（卵・勢いが増える）を1つずつ足す。賽振りの進化（sp_dice_*）は途中セーブの互換のため数えたまま
+const DICE_CARD_EXTRA_FROM = 2;   // この枚数目から上乗せ
+function diceCardExtra() { return Math.max(0, upCount("f_dice") - DICE_CARD_EXTRA_FROM + 1); }
+function diceLuck() { return upCount("sp_dice_luck") + diceCardExtra(); }
+function diceBig()  { return upCount("sp_dice_big") + diceCardExtra(); }
+function hasDiceCard() { return upCount("f_dice") > 0; }
 /** 陥落した町の上でサイコロを振る（settlementFall の陥落から）。目はここで決め、出るのは転がり終わってから */
 function rollFallDice(townIndex) {
-  if (gameState !== "playing" || !hasLiveDiceDragon()) return;
+  if (gameState !== "playing" || !hasDiceCard()) return;
   const st = townStats.get(townIndex);
   if (!st) return;
   const weights = [0, diceNoOne ? 0 : 1, 1, 1, 1, 1, 1 + DICE_LUCK_PER_UP * diceLuck()];
@@ -36141,7 +36144,7 @@ function codexDragonCanvas(species) {
 }
 
 const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST,
-                             SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL, SPECIAL_HUSH, SPECIAL_SHELL, SPECIAL_BUNDLE, SPECIAL_SCATTER, SPECIAL_SKYBOW, SPECIAL_BARRIER, SPECIAL_DICE, SPECIAL_LASER];   // v3.31.0 / v3.64.0: 指先竜: 軍鼓（v3.40.0: 鉄鎖は竜種へ）
+                             SPECIAL_DRUM, SPECIAL_AIM, SPECIAL_RECALL, SPECIAL_HUSH, SPECIAL_SHELL, SPECIAL_BUNDLE, SPECIAL_SCATTER, SPECIAL_SKYBOW, SPECIAL_BARRIER, SPECIAL_LASER];   // v3.119.0: 賽振りは強化カード「博打の賽」へ（DT-172）   // v3.31.0 / v3.64.0: 指先竜: 軍鼓（v3.40.0: 鉄鎖は竜種へ）
 
 function codexSpecialHtml() {
   let html =
@@ -37162,8 +37165,7 @@ const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIA
                           SPECIAL_HUSH, SPECIAL_SHELL,   // v3.92.0: 口封じ・籠る殻も最初から
                           SPECIAL_BUNDLE, SPECIAL_SCATTER,   // v3.94.0: 束ね陣・広げ陣も最初から
                           SPECIAL_SKYBOW,    // v3.95.0: 虹弓も最初から
-                          SPECIAL_BARRIER,   // v3.95.0: 虹弓も最初から
-                          SPECIAL_DICE];     // v3.113.0: 賽振りも最初から
+                          SPECIAL_BARRIER];  // v3.95.0: 虹弓も最初から（v3.119.0: 賽振りは強化カードへ移したので外した）
                            // v3.31.0 / v3.64.0: 指先竜（v3.40.0: 鉄鎖は竜種になったので外した。v3.46.2: 結び竜は不採用）
 const FORTRESS_FALLEN_GOAL = 300;   // 穿つ楔：要塞・首都区画の建物を累計これだけ壊す
 
