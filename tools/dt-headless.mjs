@@ -32,6 +32,8 @@ const advanceEvery = Number(argValue("advance-every", "0"));
 const profileTop = Number(argValue("profile", "0"));
 // 指定すると、報告のたびにこの式をページで評価して一緒に出す（調査用。例 --probe "movers.length"）
 const probeExpr = argValue("probe", "");
+// 指定すると、ランが始まった直後にその時代・地域へ差し替える（例 --stage 3,8 ＝時代4の大都会。地域の番号は STAGE_SHAPES の順）
+const stageArg = argValue("stage", "");
 // 固定歩幅。ゲーム側の BASE_CFG.fixedStepMs と同じ 16ms で刻む
 const STEP_MS = 16;
 
@@ -111,6 +113,15 @@ const fingerprint = () => page.evaluate(() => {
   for (const m of movers) { feed(r(m.x || 0)); feed(r(m.y || 0)); feed(r(m.hp || 0)); }
   return { hash: (h >>> 0).toString(16).padStart(8, "0"), state: gameState, stage: runStageIndex, level: playerLevel, dragons: N, aliveBuildings: alive, movers: movers.length };
 });
+
+if (stageArg) {
+  const [era, shape] = stageArg.split(",").map(Number);
+  for (let guard = 0; !(await page.evaluate(() => gameState === "playing")); guard++) {
+    if (guard > 5000) throw new Error("ランが始まらなかった");
+    await page.evaluate((ms) => window.__dtStep(ms), STEP_MS);
+  }
+  await page.evaluate(([e, sh]) => debugStartStage(e, sh), [era, shape]);
+}
 
 let cdp = null;
 if (profileTop > 0) {
