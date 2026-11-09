@@ -117,6 +117,10 @@ node tools/check.mjs prototypes/dragon-tide/index.html
 `Edit`・`Write`・`MultiEdit` の後に PostToolUse フックで自動実行され、失敗すると差し戻される
 （`.claude/settings.json`）。検査を足したいときは `tools/check.mjs` の `CHECKS` に関数を追加する。
 
+**Dragon Tide のヘッドレス再生**（DT-542〜）: `node tools/dt-headless.mjs --seed 4242 --species random --advance-every 1500 --every 1000`
+は時計・タイマーを差し替えてオートプレイを決定的に回し、1000歩ごとに状態の指紋を出す。
+リファクタリング・整理の前後で同じ引数の出力が一致すれば挙動は変わっていない（変更前の版は `git show HEAD:prototypes/dragon-tide/index.html > prototypes/dragon-tide/_base.html` で書き出して `--file` で渡す。画像の相対パスが効くよう同じフォルダに置く。`_base.html` はコミットしない）。
+
 **乱数は決定性を壊さないこと**（Dragon Tide v0.38.0〜）:
 ゲーム状態に影響する乱数は `random()`、見た目だけの乱数は `fxRandom()` を使う。
 `Math.random()` の直接呼び出しは禁止（どうしても必要な行には `// allow-math-random`）。
