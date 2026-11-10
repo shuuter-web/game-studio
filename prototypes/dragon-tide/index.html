@@ -1281,7 +1281,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.126.1";
+const GAME_VERSION = "v3.127.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9679,7 +9679,12 @@ const MOVER_DEFS = {
     // v3.117.0（DT-124 手直し・Shooter「浮砦はもっと大きい方がいい。今の3倍くらい」）: 半径 100→300（絵・甲板も SKY_CARRIER_SCALE 倍）。
     // 砲は船の舷側から撃つので、届く距離も船が大きくなった分（舷側までの距離の増え 約200）だけ伸ばす 560→760
     // v3.121.1（DT-124 手直し・Shooter「甲板の敵ではなくて、浮砦自体の体力の話でした」）: 砦そのものの体力を5倍 3200→16000
-    name: "sky_carrier", skyCarrier: true, hp: 16000, speed: 30, xp: 1800, eggDrop: 8, radius: 300, turnRate: 0.3,
+    // v3.127.0（DT-124 手直し・Shooter「浮砦に砦の建物部分を追加して、そこだけ攻撃を受けるようにしましょう」）:
+    // 甲板の真ん中に砦の建物（石の櫓）を建て、当たりの半径を船全体（300）から建物だけ（80）に絞る。
+    // 体当たり・ブレス・弾はどれも敵の中心と半径で当たりを見るので、半径を絞れば建物以外（船体・甲板）は素通りになる。
+    // 船体の絵・甲板の広さ・地図の縁の内側への収め方は SKY_CARRIER_SCALE と SKY_HULL_* で決めていて、この半径は使わない
+    // （建物の絵の大きさだけがこの半径から決まる＝drawSkyKeep。絵と当たりがずれないように）
+    name: "sky_carrier", skyCarrier: true, hp: 16000, speed: 30, xp: 1800, eggDrop: 8, radius: 80, turnRate: 0.3,
     color: "#8a6a44", glowColor: "#ffd890", moveType: "patrol", showHpBar: true,
     attack: { type: "shell", interval: 3.2, range: 760, count: 3, damage: 2.5, aoe: 48, speed: 150, scatter: 90, color: "#ffcf80" },
   },
@@ -12740,7 +12745,12 @@ const SKY_CARRIER_FALL_TIME = 1.8;        // 砦が雲海へ沈んでいく秒�
 const SKY_CARRIER_COLORS = {
   hull: "#6e5236", hullDark: "#4a3624", deck: "#b48c5c", plank: "rgba(80,56,32,0.35)", stripe: "rgba(255,248,230,0.75)",
   rim: "#3a2a1c", gun: "#2c2f36", tower: "#8a929c", towerDark: "#5c636c", flag: "#d04a3a", prop: "rgba(230,236,244,0.55)",
+  keepWall: "#9aa0a6", keepWallDark: "#5e646c", keepRoof: "#a8452e", keepRoofDark: "#6e2a1c", keepCrack: "rgba(30,24,20,0.75)",
 };
+// v3.127.0（DT-124 手直し）: 砦の建物（甲板の真ん中の石の櫓）。当たりはここだけ（MOVER_DEFS.sky_carrier.radius）。
+// 絵の外壁の半分の幅＝当たりの半径 × この割合（角まで含めて当たりの円にほぼ収まる大きさ）
+const SKY_KEEP_DRAW_FRAC   = 0.86;
+const SKY_KEEP_CRACK_BELOW = 0.5;   // 体力がこれを下回ったら建物にひびを描く（削れているのが見えるように）
 let skyCarriers = [];        // 今のワールドの浮き砦（落ちる演出の検出に使う）
 let skyCarrierFalls = [];    // 雲海へ沈んでいく砦（見た目だけ）{ x, y, angle, t }
 
@@ -12766,12 +12776,19 @@ function attachSkyDeckUnits(carrier, stageIndex) {
     const u = makeMover(def, () => ({ x: carrier.wx, y: carrier.wy }));
     u.maxHp = u.hp = def.hp; u.xpValue = def.xp;   // v3.121.1: 甲板の敵の体力は元どおり（5倍は砦そのものの話だった）
     u._deck = { carrier, lx, ly, wander: random() * SKY_DECK_WANDER_EVERY };
+    skyDeckAvoidKeep(carrier, u._deck, def.radius || 8);
     u.waypoints = [{ x: carrier.wx, y: carrier.wy }]; u.wpIdx = 0;
     skyDeckPlace(u);
     units.push(u);
   }
   carrier._deckUnits = units;
   return units;
+}
+
+/** v3.127.0: 甲板の敵は砦の建物の上には立たない（建物の前後へ押し出す） */
+function skyDeckAvoidKeep(c, dk, r) {
+  const k = c.def.radius + r;
+  if (Math.abs(dk.lx) < k && Math.abs(dk.ly) < k) dk.lx = (dk.lx < 0 ? -1 : 1) * k;
 }
 
 /** 甲板の上の座標 → 世界の座標 */
@@ -12811,6 +12828,7 @@ function skyDeckConfine(u) {
   const r = u.def.radius || 8;
   dk.lx = Math.max(-SKY_DECK_HALF_LEN + r, Math.min(SKY_DECK_HALF_LEN - r, dx * cs + dy * sn));
   dk.ly = Math.max(-SKY_DECK_HALF_W + r * 0.5, Math.min(SKY_DECK_HALF_W - r * 0.5, -dx * sn + dy * cs));
+  skyDeckAvoidKeep(c, dk, r);
   skyDeckPlace(u);
 }
 
@@ -12927,12 +12945,6 @@ function drawSkyCarrierBody(m, angle, alpha = 1) {
   ctx.setLineDash([14, 10]); ctx.strokeStyle = C.stripe; ctx.lineWidth = 2.5;
   ctx.beginPath(); ctx.moveTo(-SKY_HULL_HALF_LEN + 20, 0); ctx.lineTo(SKY_HULL_HALF_LEN * 0.7, 0); ctx.stroke();
   ctx.setLineDash([]);
-  // 艦橋（右舷の後ろ寄り）と旗
-  ctx.fillStyle = C.towerDark; ctx.fillRect(-58, SKY_HULL_HALF_W - 30, 46, 22);
-  ctx.fillStyle = C.tower; ctx.fillRect(-54, SKY_HULL_HALF_W - 27, 38, 15);
-  const wave = Math.sin(breathTime * 6 + (m.swayPhase ?? 0)) * 3;
-  ctx.strokeStyle = C.rim; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-36, SKY_HULL_HALF_W - 20); ctx.lineTo(-36, SKY_HULL_HALF_W - 44); ctx.stroke();
-  ctx.fillStyle = C.flag; ctx.beginPath(); ctx.moveTo(-36, SKY_HULL_HALF_W - 44); ctx.lineTo(-56, SKY_HULL_HALF_W - 40 + wave); ctx.lineTo(-36, SKY_HULL_HALF_W - 35); ctx.closePath(); ctx.fill();
   // 船尾の2つのプロペラ（回って見える）
   const spin = breathTime * 14;
   ctx.strokeStyle = C.prop; ctx.lineWidth = 4;
@@ -12942,6 +12954,57 @@ function drawSkyCarrierBody(m, angle, alpha = 1) {
     for (let b = 0; b < 3; b++) {
       const a = spin + b * Math.PI * 2 / 3;
       ctx.moveTo(cx, sy); ctx.lineTo(cx + Math.cos(a) * 4, sy + Math.sin(a) * 18);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+  drawSkyKeep(m, angle, alpha);
+}
+
+/** v3.127.0（DT-124 手直し）: 甲板の真ん中の砦の建物。石の外壁（狭間つき）の中に赤い屋根の櫓と旗。
+ *  大きさは当たりの半径から決める（ここだけが攻撃を受ける）。体力が減るとひびが入る。ctx は船の中心・船の向き */
+function drawSkyKeep(m, angle, alpha) {
+  const C = SKY_CARRIER_COLORS, H = MOVER_DEFS.sky_carrier.radius * SKY_KEEP_DRAW_FRAC;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  // 甲板に落ちる建物の影（世界の右下へ）
+  ctx.save(); ctx.rotate(-angle); ctx.translate(14, 18); ctx.rotate(angle);
+  ctx.fillStyle = "rgba(20,14,8,0.35)"; ctx.fillRect(-H, -H, H * 2, H * 2);
+  ctx.restore();
+  // 外壁と狭間（四辺に凸凹）
+  ctx.fillStyle = C.keepWallDark; ctx.fillRect(-H, -H, H * 2, H * 2);
+  ctx.fillStyle = C.keepWall; ctx.fillRect(-H + 6, -H + 6, H * 2 - 12, H * 2 - 12);
+  const step = H / 3, mw = step * 0.55;
+  ctx.fillStyle = C.keepWallDark;
+  for (let t = -H + step * 0.5; t < H; t += step) {
+    ctx.fillRect(t - mw / 2, -H - 7, mw, 9); ctx.fillRect(t - mw / 2, H - 2, mw, 9);
+    ctx.fillRect(-H - 7, t - mw / 2, 9, mw); ctx.fillRect(H - 2, t - mw / 2, 9, mw);
+  }
+  // 四隅の小さな塔
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+    ctx.fillStyle = C.keepWallDark; ctx.beginPath(); ctx.arc(sx * H, sy * H, 15, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.keepRoof; ctx.beginPath(); ctx.arc(sx * H, sy * H, 10, 0, Math.PI * 2); ctx.fill();
+  }
+  // 真ん中の櫓（上から見た四角錐の屋根：明るい面と暗い面）
+  const R = H * 0.6;
+  ctx.fillStyle = C.keepRoofDark; ctx.fillRect(-R, -R, R * 2, R * 2);
+  ctx.fillStyle = C.keepRoof;
+  ctx.beginPath(); ctx.moveTo(-R, -R); ctx.lineTo(R, -R); ctx.lineTo(0, 0); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-R, -R); ctx.lineTo(-R, R); ctx.lineTo(0, 0); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = C.rim; ctx.lineWidth = 2; ctx.strokeRect(-R, -R, R * 2, R * 2);
+  ctx.beginPath(); ctx.moveTo(-R, -R); ctx.lineTo(R, R); ctx.moveTo(R, -R); ctx.lineTo(-R, R); ctx.stroke();
+  // 旗（てっぺん）
+  const wave = Math.sin(breathTime * 6 + (m.swayPhase ?? 0)) * 6;
+  ctx.fillStyle = C.flag; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-34, -8 + wave); ctx.lineTo(0, -16); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = C.rim; ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+  // 削れてきたらひび（体力の割合で本数が増える）
+  const ratio = m.maxHp ? m.hp / m.maxHp : 1;
+  if (ratio < SKY_KEEP_CRACK_BELOW) {
+    const n = 2 + Math.floor((SKY_KEEP_CRACK_BELOW - ratio) / SKY_KEEP_CRACK_BELOW * 4);
+    ctx.strokeStyle = C.keepCrack; ctx.lineWidth = 2.5; ctx.beginPath();
+    for (let k = 0; k < n; k++) {
+      const a = k * 2.39996, x0 = Math.cos(a) * H * 0.95, y0 = Math.sin(a) * H * 0.95;
+      ctx.moveTo(x0, y0); ctx.lineTo(x0 * 0.55 + y0 * 0.12, y0 * 0.55 - x0 * 0.12); ctx.lineTo(x0 * 0.25, y0 * 0.3);
     }
     ctx.stroke();
   }
