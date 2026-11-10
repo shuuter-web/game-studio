@@ -1281,7 +1281,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.124.1";
+const GAME_VERSION = "v3.125.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -27472,6 +27472,7 @@ const STRINGS = {
     f_dice:      { name: "博打の賽",      desc: "町が陥落するたびに町の上でサイコロを振る。1＝竜晶少し・2＝卵・3＝群れが全快・4＝焼け残りが一斉に崩れる・5＝20秒攻撃1.5倍・6＝大当たり（2枚で6が出やすく、卵と勢いが増える）" },   // 案帳 DT-172
     f_sp_double: { name: "双つ魂",        desc: "連れている特殊個体が2倍になる（あとから加わった特殊個体も2倍）" },
     f_giant:     { name: "巨竜化",        desc: "群れの竜5匹が巨大になる（HP 4倍・まわりを踏みつぶす）" },
+    f_lance:     { name: "一番槍",        desc: "線の先頭を飛ぶ1体（特殊個体も）が大きくなり、受ける傷が4割に。0.5秒ごとに前を槍で突く（攻撃60）。先頭が穿つ楔・口封じなら、突いた所にひび・口封じを入れて威力1.5倍（2枚で威力1.7倍・突きが届く）" },
     f_rage:      { name: "逆鱗",          desc: "戦える竜が群れの1割を切ると咆哮（群れの数の表示 今/全体 で 今 が全体の1割未満）。まわりの敵を押し返し、10秒間 攻撃の速さ×1.5・受ける傷が半分。全員が起き上がると、また使える" },
   },
   cards: {
@@ -27656,6 +27657,8 @@ const PERK_CARD_DEFS = [
   { id: "f_giant",     icon: "\u{1F996}", max: 2, artifact: true },  // 群れの数匹が巨大化
   // v3.101.0（案帳 DT-201・Shooter「効果2だけでいい。発動は10%を切ったら。群れの数がmaxまで回復したら再度有効化」）
   { id: "f_rage",      icon: "\u{1F621}", max: 1, artifact: true },  // 群れが減りきったら咆哮
+  // v3.125.0（案帳 DT-548・Shooter「一番前だけ」「特殊個体も対象」「デバフ系の前に出る特殊個体とシナジー」「一体にする分さらに強く」）
+  { id: "f_lance",     icon: "\u{1F5E1}", max: 2, artifact: true },  // 線の先頭の1体が大きく強くなり、前を突く
   // v3.58.0（案帳 DT-238・Shooter指示「ステージ中強化カードに、そのステージでだけ加入する特殊個体を」「永続加入とは別枠。加入上限とか」）:
   // 加入カードのある特殊個体ごとに1枚。runSpecials（連れ歩きの枠）には入れず、ステージが変わると消える。上限は STAGE_JOIN_MAX で別に数える
   // v3.65.0（DT-497）: 特殊個体はレベルアップで加わる（永続）ので、ステージ限定の加勢カードは出さない
@@ -27684,6 +27687,23 @@ const GIANT_HP_MULT      = 4;
 const GIANT_STOMP_INTERVAL = 1.2;  // 巨竜の踏みつけ（自分のまわりへの爆発）
 const GIANT_STOMP_RADIUS = 70;
 const GIANT_STOMP_DAMAGE = 30;
+// v3.125.0（案帳 DT-548）: 一番槍。先頭は「リーダー（線をなぞる見えない先導点）にいちばん近い戦える竜」。
+// 巨竜化（5匹）と違って1体だけなので、1体あたりはそれより強くする（Shooter「一体にする分さらに強く」）
+const LANCE_PICK_EVERY    = 0.2;    // 先頭を選び直す間（秒）。毎フレームだと群れの揺れで入れ替わってちらつく
+const LANCE_SWITCH_MARGIN = 24;     // 今の先頭よりこれだけリーダーに近い竜が出たら入れ替える（ちらつき防止）
+const LANCE_SCALE         = 1.6;    // 先頭の大きさ（ほかの大きさの倍率に掛ける）
+const LANCE_TAKEN_MULT    = 0.4;    // 先頭が受ける傷の倍率（真っ先に撃たれる位置なので硬くする）
+const LANCE_THRUST_EVERY  = 0.5;    // 槍で突く間（秒）
+const LANCE_THRUST_DAMAGE = 60;     // 突き1回の攻撃（直撃。直撃の強化が効く）
+const LANCE_THRUST_REACH  = 34;     // 竜の前、どれだけ先を突くか（px）
+const LANCE_THRUST_RADIUS = 30;     // 突いた所の当たりの半径
+const LANCE_CARD2_DAMAGE  = 1.7;    // 2枚目：威力の倍率
+const LANCE_CARD2_REACH   = 1.5;    // 2枚目：届く距離・当たりの倍率
+const LANCE_DEBUFF_SYNERGY = 1.5;   // 先頭がデバフ系の特殊個体（穿つ楔・口封じ）のときの突きの威力
+const LANCE_COLOR         = "rgba(255,208,96,0.95)";
+// 先頭がこの特殊個体なら、突いた所にその状態（DEBUFF_DEFS の key）を入れる。edge＝建物の縁で測る
+const LANCE_DEBUFF_BY_SPECIAL = { [SPECIAL_WEDGE]: { key: "crack", edge: false }, [SPECIAL_HUSH]: { key: "hush", edge: true } };
+let lanceIdx = -1;   // いまの先頭（いなければ -1）
 let fallRoarTimer = 0;
 // v3.101.0（案帳 DT-201）: 逆鱗。
 // v3.106.0（DT-201 手直し・Shooter「一番多かった数は常に画面に表示しているので、独自に計算・保存しているなら不要。適切な数字を使って」
@@ -30486,6 +30506,9 @@ function moverRadiusOf(m) { return (m.def && m.def.radius) || 10; }
 
 /** 描画・当たり判定に使う体格倍率（母竜の成長と巌竜の巨体を一本化）。 */
 function boidBodyScale(i) {
+  return i === lanceIdx ? boidBodyScaleBase(i) * LANCE_SCALE : boidBodyScaleBase(i);   // v3.125.0（DT-548）: 一番槍
+}
+function boidBodyScaleBase(i) {
   if (boidSpecial[i] === SPECIAL_HEAVY && !boidDowned[i] && !boidDead[i]) return effHeavyScale();
   if (boidGiant[i] && !boidDead[i]) return GIANT_SCALE;   // v3.49.0: 巨竜化
   if (sp().bodyScale && boidSpecial[i] === SPECIAL_NONE) return sp().bodyScale;   // v3.57.0: 鯨竜の巨体
@@ -39305,6 +39328,73 @@ function makeGiants() {
     spawnDragonAppearEffect(px[i], py[i]);
   }
 }
+// v3.125.0（案帳 DT-548）: 一番槍（lanceIdx は LANCE_ 定数の所で宣言。boidBodyScale から早い時期に読まれるため）
+let lancePickTimer = 0;
+let lanceThrustTimer = 0;
+const lanceThrustFx = [];   // 突いた所の見せ方 { x, y, a, r, born }（born＝breathTime）
+const LANCE_FX_LIFE = 0.22;
+function lanceAlive(i) { return i >= 0 && i < N && !boidDead[i] && !boidDowned[i]; }
+function pickLance() {
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < N; i++) {
+    if (!lanceAlive(i)) continue;
+    const dx = px[i] - leader.x, dy = py[i] - leader.y, d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  if (lanceAlive(lanceIdx) && best !== lanceIdx) {
+    const dx = px[lanceIdx] - leader.x, dy = py[lanceIdx] - leader.y;
+    if (Math.sqrt(dx * dx + dy * dy) - Math.sqrt(bestD) < LANCE_SWITCH_MARGIN) return;   // 差が小さいうちは今の先頭のまま
+  }
+  lanceIdx = best;
+}
+function updateLance(dt) {
+  const cards = upCount("f_lance");
+  if (cards === 0) { lanceIdx = -1; return; }
+  if (!lanceAlive(lanceIdx)) lanceIdx = -1;
+  lancePickTimer -= dt;
+  if (lancePickTimer <= 0 || lanceIdx < 0) { lancePickTimer = LANCE_PICK_EVERY; pickLance(); }
+  if (lanceIdx < 0) return;
+  lanceThrustTimer -= dt;
+  if (lanceThrustTimer > 0) return;
+  lanceThrustTimer = LANCE_THRUST_EVERY;
+  const i = lanceIdx;
+  const a = Math.atan2(vy[i], vx[i]);
+  const big = cards >= 2;
+  const reach = (LANCE_THRUST_REACH * (big ? LANCE_CARD2_REACH : 1)) + 6 * boidBodyScale(i);
+  const r = LANCE_THRUST_RADIUS * (big ? LANCE_CARD2_REACH : 1);
+  const tx = px[i] + Math.cos(a) * reach, ty = py[i] + Math.sin(a) * reach;
+  const debuff = LANCE_DEBUFF_BY_SPECIAL[boidSpecial[i]];
+  // デバフを先に入れる＝ひびが入った相手にはこの突きから余計に通る（穿つ楔とのシナジー）
+  if (debuff) applyDebuffArea(tx, ty, r, debuff.key, debuff.edge, true);
+  const dmg = LANCE_THRUST_DAMAGE * (big ? LANCE_CARD2_DAMAGE : 1) * (debuff ? LANCE_DEBUFF_SYNERGY : 1);
+  if (hitInRadius(tx, ty, r, { direct: dmg }) > 0) spawnCollisionParticles(tx, ty);
+  if (lanceThrustFx.length < 8) lanceThrustFx.push({ x: px[i], y: py[i], a, r: reach + r, born: breathTime });
+}
+/** 先頭の金の縁取りと、槍の突きの筋（竜の上に描く） */
+function drawLance() {
+  for (let k = lanceThrustFx.length - 1; k >= 0; k--) if (breathTime - lanceThrustFx[k].born >= LANCE_FX_LIFE || breathTime < lanceThrustFx[k].born) lanceThrustFx.splice(k, 1);
+  if (lanceIdx < 0 && lanceThrustFx.length === 0) return;
+  ctx.save();
+  ctx.strokeStyle = LANCE_COLOR; ctx.lineCap = "round";
+  if (lanceAlive(lanceIdx)) {
+    const i = lanceIdx;
+    ctx.lineWidth = 2.5;
+    ctx.globalAlpha = 0.75 + 0.25 * Math.sin(breathTime * 8);
+    ctx.beginPath(); ctx.arc(px[i], py[i], 11 * boidBodyScale(i), 0, Math.PI * 2); ctx.stroke();
+  }
+  for (const f of lanceThrustFx) {
+    const u = (breathTime - f.born) / LANCE_FX_LIFE;
+    ctx.globalAlpha = 1 - u;
+    ctx.lineWidth = 5 * (1 - u) + 1;
+    const r0 = f.r * 0.3, r1 = f.r * (0.6 + 0.4 * u);
+    ctx.beginPath();
+    ctx.moveTo(f.x + Math.cos(f.a) * r0, f.y + Math.sin(f.a) * r0);
+    ctx.lineTo(f.x + Math.cos(f.a) * r1, f.y + Math.sin(f.a) * r1);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 /**
  * v3.67.0（DT-497）: 本物の竜が減った（竜狩りの銛などで枠が空いた）ら、上限超えの竜から1フレーム1体ずつ戻す。
  * 竜種が変わって全体の上限が下がったときは、上限超えの数を上限に合わせて切り詰める。
@@ -39328,6 +39418,7 @@ function updateStageCardEffects(dt) {
   updateRoarHud();
   updateRage(dt); updateRageHud();   // v3.101.0（DT-201）
   refillFlockFromOverflow();   // v3.67.0: 本物の竜が減ったら、上限超えの分から戻す
+  updateLance(dt);             // v3.125.0（DT-548）
   if (upCount("f_giant") === 0) return;
   for (let i = 0; i < N; i++) {
     if (!boidGiant[i] || boidDead[i] || boidDowned[i]) continue;
@@ -40899,7 +40990,8 @@ function applyDamageToBoid(boidIndex, damage, hit) {
   // v0.89: 突進中の軽減（強化で手に入れたときだけ）。溜めに比例する。
   const dealt = damage * effDmgTakenMult() * (1 - chargeDamageReductionFor(boidIndex))
               * (shellOn ? shellTakenMult() : 1)    // v3.92.0（DT-164）: 殻の中は7割減
-              * scatterTakenMult();                 // v3.94.0（DT-204）: 広げ陣の「散り身」
+              * scatterTakenMult()                  // v3.94.0（DT-204）: 広げ陣の「散り身」
+              * (boidIndex === lanceIdx ? LANCE_TAKEN_MULT : 1);   // v3.125.0（DT-548）: 一番槍
   boidHp[boidIndex] -= dealt;
   reportDragonDamage(boidIndex, dealt);   // v2.11.0: 軽減を掛けた後の、実際に減った量を出す
   if (boidHp[boidIndex] <= 0) {
@@ -44096,6 +44188,7 @@ function render(now) {
   drawDrumRings();         // v3.31.0: 軍鼓の拍の輪
   drawCrackMarks();          // v1.1.1: 楔竜が入れたひび（相手の上）
   drawWakeCharged();         // v1.1.0: 次の一撃が乗っている竜の輪（竜の上）
+  drawLance();               // v3.125.0（DT-548）: 一番槍の金の縁取りと突き
   drawChargeHitFx();         // v0.88: 突進が乗った一撃の衝撃（当たった面なので竜の上）
   drawSpecialOver();         // v0.85: 呑竜が溜めている弾（竜の上）
   drawSpecialBolts();        // v0.85: 呑竜が撃ち返した弾
