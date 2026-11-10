@@ -53,9 +53,11 @@ inputMode = "DRAW"; isDrawing = true; pathClear(); …
 ```
 
 - 線が引けるのは **`playing` と `stage-clear`** のときだけ。
-- **カード選択中も線は引ける**（`upgrade-card` の実体だけが `pointer-events: auto`、
+- **カード選択中も線は引ける**（強化カード・特殊個体の三択 `#perk-offer`。カードの実体だけが `pointer-events: auto`、
   親オーバーレイは `none`）。スローモー（`SLOWMO_SCALE = 0.25` / `SLOWMO_DURATION = 7.0秒`）で
   プレイを止めない設計。
+  - 例外（v3.124.1 時点）：**竜の進化の画面**（Lv20/40/60・`#levelup-overlay.lv-center`）と**アーティファクトの三択**（`#perk-offer.artifact`）は
+    時間を止めて画面の中央に出し、暗幕が `pointer-events: auto` なので線は引けない
 - 座標変換は `screenToWorld(sx, sy)` = `(s - view*0.5) / cam.scale + cam`。**ズーム倍率が操作ゲインに直結する**（§6）。
 
 ### 2-4. キーボード（デバッグ／タイトル用のみ）
@@ -282,7 +284,7 @@ Bは `updateLeader` 冒頭で `screenToWorld(touchRing.x, touchRing.y)` を毎�
 
 ## 11. 恒久ルール（操作まわりで守るもの）
 
-- **モーダルでプレイを止めない**（カードはスローモーで非モーダル。現状もこの方針）。
+- **モーダルでプレイを止めない**（強化カード・特殊個体の三択はスローモーで非モーダル）。例外は竜の進化の画面とアーティファクトの三択の2つだけ（時間を止めて中央。[next-steps §4](../gdd/dragon-tide-next-steps.md)）。
 - **敗北なし**。操作ミスがペナルティにならない設計を保つ。
 - **トップビュー厳守**。
 - 全ユーザー向け文字列は `STRINGS` 経由、数値は定数に集約。
