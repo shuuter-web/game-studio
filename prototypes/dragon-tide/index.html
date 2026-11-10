@@ -200,7 +200,8 @@
   #stagecard-list .sl-row .sl-name { font-weight: 700; white-space: nowrap; }
   #stagecard-list .sl-row .sl-desc { color: rgba(230,225,210,0.8); font-size: 10px; }
   /* v3.43.0: 強化カードの三択（v3.43.0 は町の陥落で選んでいた。v3.56.0 から経験値のレベルアップ・竜玉の町で出す） */
-  /* v3.49.0（案帳 DT-238）: 止めずにスロー。画面下に縦の3択（レベルアップの三択と同じ置き方）。暗幕は無く、カードの外は線を描ける */
+  /* v3.49.0（案帳 DT-238）: 止めずにスロー。画面下に縦の3択。暗幕は無く、カードの外は線を描ける。
+     v3.124.1（DT-539 手直し）: 強化カード・特殊個体の三択はこのまま。アーティファクトの三択だけ下の .artifact で時間を止めて中央に出す */
   #perk-offer { position: fixed; left: 0; right: 0; bottom: 0; display: none; flex-direction: column; align-items: center;
     z-index: 46; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 0 10px calc(10px + env(safe-area-inset-bottom));
     pointer-events: none; background: linear-gradient(to top, rgba(4,6,12,0.78), rgba(4,6,12,0)); }
@@ -417,9 +418,9 @@
   #hud-rage .roar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #d0201a, #ff8a70); }
   @keyframes xpPulse { from { filter: brightness(1.0); } to { filter: brightness(1.7); } }
 
-  /* v0.6.1: レベルアップ3択カード（非モーダル・画面下部）
-     時間停止をやめてスローモー0.25倍速に変更。オーバーレイは下部だけを覆い、
-     pointer-events:none で背後のcanvasへ線描画を通す（カード本体のみ操作可）。 */
+  /* v0.6.1: レベルアップ3択カード（非モーダル・画面下部）の器。下部だけを覆い、pointer-events:none で背後のcanvasへ線描画を通す。
+     v3.124.1（DT-539 手直し）: いまのレベルアップで使うのは竜の進化（Lv20/40/60）だけで、必ず下の .lv-center（時間を止めて中央）で出す。
+     強化カード・特殊個体の三択は #perk-offer（スロー）。ステージの間の地域の三択も .region-mode で中央に出すので、この下部の置き方はいまは素の形として残っているだけ */
   #levelup-overlay {
     position: fixed;
     left: 0; right: 0; bottom: 0;
@@ -1280,7 +1281,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.124.0";
+const GAME_VERSION = "v3.124.1";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -27774,7 +27775,7 @@ const treasureTowns = new Set();    // まだ取り戻していない宝のあ�
 const PERK_OFFER_ARM_MS = 700;      // v3.47.0: 強化カードが出てから押せるようになるまで（ミリ秒）
 let perkOfferArmTimer = 0;
 const perkOfferQueue = [];          // カードを出す順番を待っている陥落 { townIndex, rare }。同時に落ちたら1つずつ出す
-let perkOfferVisible = false;       // v3.49.0: 出している間はスロー（止めない）
+let perkOfferVisible = false;       // v3.49.0: 出している間はスロー（止めない）。v3.124.0: アーティファクトの三択だけは止める
 let perkOfferArtifact = false;       // v3.124.0（DT-539）: いま出ているのがアーティファクトの三択か（時間を止める）
 let perkOfferSlowmo = 0;            // スローが続く残り秒数（実時間。過ぎたら通常速度でカードだけ残る）
 const CARD_RARITY_WEIGHT = { common: 10, rare: 4, star: 3 };
@@ -28956,6 +28957,8 @@ function stageCardNeed() {
 // ---- v3.65.0（案帳 DT-497・Shooter指示）: 店（竜の巣）をやめ、ステージ中の三択＝レベルアップに戻す ----
 // 1回のレベルアップは、強化カードだけ／特殊個体（加える・進化・合成）だけ／竜の進化と突然変異だけ、のどれか1つから選ぶ。
 // 強化カードは下に出る三択（スロー）、特殊個体と竜の進化はツリーつきの画面（時間を止める）。
+// v3.66.0 から：時間を止めたツリーつきの画面は竜の進化だけ。特殊個体は強化カードと同じ下の三択（スロー）。
+// v3.124.0 から：強化カードのレベルアップの5%はアーティファクトの三択（時間を止めて中央）
 // 竜の進化は分岐だけ（細かいレベルは刻まない）。進化した直後に続けて進化が出ないよう、間を空ける
 const LEVELUP_WEIGHTS = { cards: 5, special: 3, evo: 3 };
 let levelUpCats = [];        // 開くのを待っているレベルアップの種類（"special" / "evo"）
@@ -29228,9 +29231,11 @@ function drawXpGems() {
 
 // -----------------------------------------------------------------
 // v0.6.1: レベルアップ3択カードUI（非モーダル・スローモー方式）
-// 時間停止をやめ、カード表示中はワールドを SLOWMO_SCALE 倍速で進める。
-// 線描画は継続でき、SLOWMO_DURATION 秒たつと通常速度に戻る（カードは選ぶまで残る）。
-// ゲームオーバーが存在しないため、選択中の被弾リスクはほぼ無い。
+// カード表示中はワールドを SLOWMO_SCALE 倍速で進める。線描画は継続でき、
+// SLOWMO_DURATION 秒たつと通常速度に戻る（カードは選ぶまで残る）。
+// v3.124.1（DT-539 手直し）時点の止め方：スロー＝強化カード・特殊個体の三択（#perk-offer）。
+// 時間を止める＝竜の進化の画面（この #levelup-overlay の .lv-center）とアーティファクトの三択（#perk-offer.artifact）。
+// スロー・止めるの切り替えは tick の先頭で行う
 // -----------------------------------------------------------------
 const levelupOverlayEl = document.getElementById("levelup-overlay");
 const levelupTitleEl   = document.getElementById("levelup-title");
@@ -29269,8 +29274,8 @@ function triggerChargeHitStop(i) {
 }
 
 /**
- * pendingCards が残っていれば3択カードを画面下部に出す。tick の playing 分岐末尾から呼ぶ。
- * ゲームは止めない（スローモーのみ）。表示中は新たに開かない（選択後に次を開く）。
+ * pendingCards が残っていれば竜の進化の画面を出す。tick の playing 分岐末尾から呼ぶ。
+ * v3.50.0 から時間を止めて画面の中央に出す（v0.6.1 の「止めない・画面下部」は前の仕組み）。表示中は新たに開かない（選択後に次を開く）。
  */
 function maybeShowLevelUp() {
   if (gameState !== "playing" || pendingCards <= 0 || upgradeCardsVisible) return;
@@ -34044,7 +34049,8 @@ function drawSlashFx() {
 // -----------------------------------------------------------------
 // ステージ状態管理
 // v0.6.1: gameState = "title" | "playing" | "stage-clear" | "all-clear"
-// （3択カードは非モーダル化したため "levelup" 状態は廃止。playing のままスローモーになる）
+// （3択カードは非モーダル化したため "levelup" 状態は廃止。playing のままスローモーになる。
+//  竜の進化の画面・アーティファクトの三択は playing のまま tick が時間を止める）
 // 全滅（defeat）は存在しない — ダウンした竜は必ず復帰する（仕様 §2.2）。
 // -----------------------------------------------------------------
 let currentStage = 0;
@@ -47554,7 +47560,7 @@ function tick() {
   } else if (gameState === "playing" && (upgradeCardsVisible || (perkOfferVisible && perkOfferArtifact))) {
     // 止める（描画だけは下で続く）。v3.124.0（DT-539）: アーティファクトの三択も止める
   } else if (gameState === "playing") {
-    // v0.6.1: カード表示中はスローモー（時間停止は廃止）。
+    // v0.6.1: カード表示中はスローモー（強化カード・特殊個体の三択。竜の進化・アーティファクトは上で止めている）。
     // timeScale はイージングで目標値に寄せ、急停止・急再開のカクつきを防ぐ。
     // v0.51: 時代遷移も同じスローモー枠を使う（プレイは止めない。
     // ラン中に3回起きるので、止めるとテンポを殺すため）。
