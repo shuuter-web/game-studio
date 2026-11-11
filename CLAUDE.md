@@ -121,6 +121,10 @@ node tools/check.mjs prototypes/dragon-tide/index.html
 は時計・タイマーを差し替えてオートプレイを決定的に回し、1000歩ごとに状態の指紋を出す。
 リファクタリング・整理の前後で同じ引数の出力が一致すれば挙動は変わっていない（変更前の版は `git show HEAD:prototypes/dragon-tide/index.html > prototypes/dragon-tide/_base.html` で書き出して `--file` で渡す。画像の相対パスが効くよう同じフォルダに置く。`_base.html` はコミットしない）。
 
+**Dragon Tide の攻撃の強さの計測**（DT-550〜）: `node tools/dt-bench.mjs --all-species` / `--all-specials` は、街を1つだけ残し
+（撃ってこない・倒れたら10秒で建て直す）、群れ20匹で決まった線（輪・薙ぎ・真ん中で離す）を60秒引いて、竜1匹・特殊個体1体の1秒の傷を表にする。
+オートプレイでの計測は群れの増え方や狙いの癖で竜種ごとに大きくずれるので、強さの比較はこちらで行う。数値を変える案は `--file` に書き換えた写しを渡して先に測る。
+
 **乱数は決定性を壊さないこと**（Dragon Tide v0.38.0〜）:
 ゲーム状態に影響する乱数は `random()`、見た目だけの乱数は `fxRandom()` を使う。
 `Math.random()` の直接呼び出しは禁止（どうしても必要な行には `// allow-math-random`）。
