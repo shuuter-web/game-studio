@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.132.0";
+const GAME_VERSION = "v3.133.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1347,6 +1347,7 @@ const DEBUG_FEATURES_ENABLED = DEBUG_FEATURES_ALLOWED && !new URLSearchParams(lo
 // 使い方:
 //   ?seed=12345 を付けて開くと、そのシードでランが固定され何度でも同じ展開を再現できる。
 //   シード無しの場合は起動ごとに引き直し、現在値は debugGetSeed() で取得できる。
+//   v3.133.0（DT-555）: 固定なしのランも文字のシード（例 "r1903766117"）を作り、それを ?seed= に渡せば同じランになる。
 // -----------------------------------------------------------------
 function makeRandomGenerator(seedValue) {   // mulberry32
   let state = seedValue >>> 0;
@@ -1371,11 +1372,14 @@ function hashSeed(text) {
 }
 
 let currentSeed        = 0;
+// ?seed= に渡せばこのランをやり直せる文字（DT-555）。畳んだ後の数 currentSeed を渡しても文字として畳み直されて別のランになるため、畳む前を持っておく
+let currentSeedText    = "";
 let nextLogicRandom    = null;
 let nextFxRandom       = null;
 
 function reseedRandom(seedValue) {
   currentSeed = (typeof seedValue === "number") ? (seedValue >>> 0) : hashSeed(seedValue);
+  currentSeedText = String(seedValue);
   nextLogicRandom = makeRandomGenerator(currentSeed);
   // 演出用は別ストリーム。ロジック側の消費数に一切影響されないよう種をずらす。
   nextFxRandom    = makeRandomGenerator((currentSeed ^ 0x9E3779B9) >>> 0);
@@ -1392,11 +1396,14 @@ let autoplayActive = false;
 const fixedSeedParam = new URLSearchParams(location.search).get("seed") || null;
 
 // ラン開始時に呼ぶ。?seed= 指定時は毎ランその値へ固定＝完全再現できる。
+// 固定なしのときも「r＋起動時刻の数」という文字で引く（DT-555）。数のまま引くと、報告に出る値を ?seed= に渡したとき
+// 文字として畳み直されて別のランになるため。今までの ?seed=4242 などの記録はそのまま同じランになる
 function reseedForNewRun() {
-  return reseedRandom(fixedSeedParam !== null ? fixedSeedParam : (Date.now() >>> 0));
+  return reseedRandom(fixedSeedParam !== null ? fixedSeedParam : `r${Date.now() >>> 0}`);
 }
 
-function debugGetSeed() { return currentSeed; }
+// ?seed= に渡せば同じランになる文字を返す（不具合報告・デバッグ表示用）
+function debugGetSeed() { return currentSeedText; }
 
 // -----------------------------------------------------------------
 // v1.0.0: ワールド種（つづきから で同じ大陸を組み直すため）
@@ -48575,8 +48582,8 @@ function buildReportStatusLines() {
   const playing = gameState !== "title";
   const nowMs = reportPaused ? reportPausedAt : performance.now();
   lines.push(`版: ${GAME_VERSION}`);
-  // ?seed= の値は文字列として畳まれるので、固定したランは URL に付けた値そのものを書く（それを渡せば同じランになる）
-  lines.push(fixedSeedParam !== null ? `シード: ${fixedSeedParam}（?seed=${fixedSeedParam} で固定）` : `シード: ${debugGetSeed()}（固定なし）`);
+  // 固定なしのランも debugGetSeed() は ?seed= にそのまま渡せる文字（DT-555）
+  lines.push(fixedSeedParam !== null ? `シード: ${fixedSeedParam}（?seed=${fixedSeedParam} で固定）` : `シード: ${debugGetSeed()}（固定なし・?seed=${debugGetSeed()} で同じラン）`);
   lines.push(`場面: ${gameState}`);
   if (playing) {
     lines.push(`経過時間: ステージ ${formatReportClock(nowMs - stageStartTime)} ／ ラン ${formatReportClock(nowMs - runStartTime)}`);
