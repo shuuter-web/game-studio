@@ -1281,7 +1281,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.130.0";
+const GAME_VERSION = "v3.131.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -15865,7 +15865,7 @@ function drawPoison() {
 const MUSHROOM_GROUND_BG      = "#2a2232";   // 暗い紫がかった土（ほかの地域の背景と同じ暗さ）
 const MUSH_GROW_EVERY_FIRST   = 8.0;    // ステージ1の画面の外の里が1棟生やす間隔（秒）
 const MUSH_GROW_EVERY_LAST    = 5.0;    // ステージ8では少し早く
-const MUSH_GROW_ONSCREEN_MULT = 0.25;   // 画面の中の里は間隔をこの倍に（8秒→2秒、ステージ8で1.25秒）
+const MUSH_GROW_ONSCREEN_MULT = 0.1;    // 画面の中の里は間隔をこの倍に（8秒→0.8秒、ステージ8で0.5秒）。v3.131.0: 0.25→0.1（DT-551 手直し「画面内ではもっとガンガン増えていい」）
 const MUSH_OFFSCREEN_CAP      = 2;      // 画面の外の里は、最初の家の数のこの倍で止まる
 const MUSH_ONSCREEN_HARD_CAP  = 8;      // 画面の中は上限なし…だが、重くならないための保険としてこの倍で止める
 const MUSH_VIEW_MARGIN        = 80;     // 画面の縁からこれだけ外までは「画面の中」とみなす（生える瞬間が見えるように）
@@ -15887,9 +15887,29 @@ const SPORE_DAMAGE            = 3;      // 小さな傷（時代と警戒度の�
 const SPORE_HIT_R             = 11;     // 竜に当たる距離
 const SPORE_RADIUS            = 6;
 const SPORE_LEAD              = 0.5;    // 狙いの先読み（届くまでの時間に掛ける）
-const SPORE_MAX_PER_VILLAGE   = 8;      // 里1つで同時に飛ぶ胞子玉の上限（弾幕にしないため。見え方を見て調整）
-const SPORE_COLOR             = "#f0dc50";   // 敵の弾は黄
-let mushVillages  = null;   // Map 里のキー → { key, members: [建物], initial, timer, cx, cy, r, spores }
+// v3.131.0（DT-551 手直し「一旦制限なしで」）: 里ごとの同時8個の上限は外した。
+// 残すのは、重くならないための保険の上限だけ（胞子玉1つごとに竜全部と当たりを見るため）。ふつうの遊びでは届かない数
+const SPORE_SAFETY_CAP        = 600;
+// v3.131.0（DT-551 手直し「胞子弾の色が竜卵と同じ」）: 卵（黄〜橙）と見分けるため、淡い黄緑に毛羽の輪
+const SPORE_COLOR             = "#b8f07c";
+const SPORE_RIM_COLOR         = "rgba(40,96,24,0.95)";
+const SPORE_HALO_COLOR        = "rgba(184,240,124,0.22)";
+// v3.131.0（DT-551 手直し「小さい家も、小さい胞子弾を」）: 町に属さない小集落の家は、小さく弱い胞子玉を撃つ。
+// 小集落は開始地点のまわりなので、小さい胞子玉が落ちても家は生えない（序盤の田園が埋まらないように）
+const SPORE_SMALL_RADIUS      = 3.5;
+const SPORE_SMALL_DAMAGE_MULT = 0.5;
+// v3.131.0（DT-551 手直し「前哨堡も胞子弾を」）: 前哨堡は扇に3つ撃つ
+const SPORE_RAMPART_COUNT     = 3;
+const SPORE_RAMPART_SPREAD    = 0.5;    // 扇の全幅（rad）
+const MUSH_HAMLET_KEY         = "hamlet";
+// v3.131.0（DT-551 手直し「強い街の建物もキノコで」）: 強い町（要塞化した町）のキノコの家は、濃い赤紫の笠に黒鉄の縁
+const MUSH_FORT_CAP_COLORS    = ["#7a1630", "#6c1228", "#861a36"];
+const MUSH_FORT_RIM_COLOR     = "#1c181e";
+// v3.131.0（DT-551 手直し「動く敵の全てにキノコの傘の飾りを」）: 動く敵の頭にかぶせる笠の大きさ（敵の半径に掛ける・上下限）
+const MUSH_MOVER_CAP_SCALE    = 0.62;
+const MUSH_MOVER_CAP_MIN      = 3.5;
+const MUSH_MOVER_CAP_MAX      = 16;
+let mushVillages  = null;   // Map 里のキー → { key, members: [建物], shooters: [前哨堡], initial, timer, cx, cy, r, hamlet }
 let mushNewborn   = [];     // { s, t } 生えたての家（縁を光らせる）
 let sporeBalls    = [];     // { x, y, vx, vy, life, dmg, src, v }
 let mushClock     = 0;
@@ -15899,27 +15919,42 @@ function resetMushroom() { mushVillages = null; mushNewborn = []; sporeBalls = [
 
 /** キノコの家として描く建物か（役目のある建物・砲台・要塞・首都の本体はそのままの絵） */
 function isMushroomHouse(s) {
-  return worldShape === SHAPE_MUSHROOM && !!s && !s.isBoss && !s._isWall && !s._fortified && !s._townRole && !s._landmark &&
+  return worldShape === SHAPE_MUSHROOM && !!s && !s.isBoss && !s._isWall && !s._townRole && !s._landmark &&
          s._orbFacility === undefined && !s._isDam && !s._emplacement && !s._noFlip && !s._isCapital && !isMovingBuilding(s);
 }
 function mushVillageKey(s) {
   if (s._townIndex !== undefined && s._townIndex !== null) return s._townIndex;
-  return s._isCapitalSmall ? "capital" : null;
+  return s._isCapitalSmall ? "capital" : MUSH_HAMLET_KEY;   // v3.131.0: 町に属さない家は小集落の組（撃つだけ・生えない）
+}
+function newMushVillage(key) {
+  return { key, members: [], shooters: [], initial: 0, timer: 0, cx: 0, cy: 0, r: 0, hamlet: key === MUSH_HAMLET_KEY };
 }
 
 function initMushVillages() {
   mushVillages = new Map();
+  const ramparts = [];
   for (const s of settlements) {
-    if (!isMushroomHouse(s) || s.fallen) continue;
+    if (!s || s.fallen) continue;
+    if (worldShape === SHAPE_MUSHROOM && s._townRole === "rampart" && !isMovingBuilding(s)) { ramparts.push(s); continue; }
+    if (!isMushroomHouse(s)) continue;
     const key = mushVillageKey(s);
-    if (key === null) continue;
     let v = mushVillages.get(key);
-    if (!v) { v = { key, members: [], initial: 0, timer: 0, cx: 0, cy: 0, r: 0, spores: 0 }; mushVillages.set(key, v); }
+    if (!v) { v = newMushVillage(key); mushVillages.set(key, v); }
     v.members.push(s); v.initial++; v.cx += s.wx; v.cy += s.wy;
+  }
+  // 前哨堡は家を生やさず、胞子玉を撃つだけ（落ちた胞子玉は、その里の家を写して生やす）
+  for (const s of ramparts) {
+    const key = mushVillageKey(s);
+    let v = mushVillages.get(key);
+    if (!v) { v = newMushVillage(key); mushVillages.set(key, v); }
+    v.shooters.push(s);
+    if (v.initial === 0) { v.cx += s.wx; v.cy += s.wy; }
   }
   const every = mushGrowEvery();
   for (const v of mushVillages.values()) {
-    v.cx /= v.initial; v.cy /= v.initial;
+    const n = v.initial || v.shooters.length;
+    v.cx /= n; v.cy /= n;
+    for (const s of v.shooters) v.r = Math.max(v.r, Math.hypot(s.wx - v.cx, s.wy - v.cy) + s.radius);
     for (const s of v.members) v.r = Math.max(v.r, Math.hypot(s.wx - v.cx, s.wy - v.cy) + s.radius);
     v.timer = random() * every;   // 里ごとに生えるタイミングをずらす
   }
@@ -15933,7 +15968,10 @@ function mushVillageOnScreen(v, view) {
   return v.cx + v.r > view.x0 && v.cx - v.r < view.x1 && v.cy + v.r > view.y0 && v.cy - v.r < view.y1;
 }
 function mushAliveCount(v) { let n = 0; for (const s of v.members) if (!s.fallen) n++; return n; }
-function mushVillageCap(v, onScreen) { return v.initial * (onScreen ? MUSH_ONSCREEN_HARD_CAP : MUSH_OFFSCREEN_CAP); }
+function mushVillageCap(v, onScreen) {
+  if (v.hamlet) return 0;   // 小集落は生えない
+  return v.initial * (onScreen ? MUSH_ONSCREEN_HARD_CAP : MUSH_OFFSCREEN_CAP);
+}
 
 /** (x, y) に半径 r の家を置けるか（地図の中・首都の外・地形の外・ほかの建物と重ならない） */
 function mushSpotFree(x, y, r) {
@@ -15944,10 +15982,20 @@ function mushSpotFree(x, y, r) {
   buildingGridQuery(x, y, _mushQueryBuf);
   for (const idx of _mushQueryBuf) {
     const b = settlements[idx];
-    if (!b) continue;
+    if (!b || b.fallen) continue;   // v3.131.0（DT-551 手直し「残骸より新しいキノコを優先」）: 落ちた建物の跡には生えてよい
     if (Math.hypot(x - b.wx, y - b.wy) < b.radius + r + MUSH_GROW_GAP) return false;
   }
   return true;
+}
+
+/** v3.131.0: 新しい家が重なる、落ちた建物の残骸を消す（_mushGone は描かず、建て直しもしない） */
+function clearRubbleUnder(x, y, r) {
+  buildingGridQuery(x, y, _mushQueryBuf);
+  for (const idx of _mushQueryBuf) {
+    const b = settlements[idx];
+    if (!b || !b.fallen || b._mushGone || b.isBoss || b._isWall || isMovingBuilding(b)) continue;
+    if (Math.hypot(x - b.wx, y - b.wy) < b.radius + r) b._mushGone = true;
+  }
 }
 
 /** 里 v に、親の家 parent を写した家を (x, y) に生やす。生やした建物を返す */
@@ -15957,6 +16005,8 @@ function spawnMushHouse(v, parent, x, y) {
               attackTimer: random() * (parent.projectileInterval || 1),
               _sporeCd: MUSH_NEWBORN_TIME + random() * SPORE_EVERY };
   delete s._attacker;
+  delete s._mushGone;
+  clearRubbleUnder(x, y, s.radius);
   settlements.push(s);
   const idx = settlements.length - 1;
   buildingGridInsert(idx, x, y);
@@ -15986,6 +16036,7 @@ function paintGrownMushHouse(idx) {
 
 /** 里の生きている家のどれかの隣に1棟生やす */
 function growMushVillage(v) {
+  if (v.hamlet) return false;
   const alive = v.members.filter(s => !s.fallen);
   if (alive.length === 0) return false;   // 全部刈られた里はもう広がらない
   for (let k = 0; k < MUSH_GROW_TRIES; k++) {
@@ -16025,19 +16076,31 @@ function updateMushroom(dt) {
   const flockReach = SPORE_RANGE + spread;
   for (const v of mushVillages.values()) {
     if (Math.hypot(v.cx - centroid.x, v.cy - centroid.y) > flockReach + v.r) continue;
-    for (const s of v.members) {
-      if (s.fallen) continue;
-      if (s._sporeCd === undefined) s._sporeCd = random() * SPORE_EVERY;
-      s._sporeCd -= dt;
-      if (s._sporeCd > 0) continue;
-      s._sporeCd = SPORE_RECHECK;
-      if (v.spores >= SPORE_MAX_PER_VILLAGE) continue;
-      const i = findNearestAliveBoid(s.wx, s.wy);
-      if (i < 0) continue;
-      const d = Math.hypot(px[i] - s.wx, py[i] - s.wy);
-      if (d > SPORE_RANGE) continue;
-      s._sporeCd = SPORE_EVERY;
-      fireSpore(v, s, i, d);
+    for (let list = 0; list < 2; list++) {
+      const arr = list === 0 ? v.members : v.shooters;
+      for (const s of arr) {
+        if (s.fallen) continue;
+        if (s._sporeCd === undefined) s._sporeCd = random() * SPORE_EVERY;
+        s._sporeCd -= dt;
+        if (s._sporeCd > 0) continue;
+        s._sporeCd = SPORE_RECHECK;
+        if (sporeBalls.length >= SPORE_SAFETY_CAP) continue;
+        const i = findNearestAliveBoid(s.wx, s.wy);
+        if (i < 0) continue;
+        const d = Math.hypot(px[i] - s.wx, py[i] - s.wy);
+        if (d > SPORE_RANGE) continue;
+        s._sporeCd = SPORE_EVERY;
+        if (list === 0) fireSpore(v, s, i, d, s, 0);
+        else {
+          // 前哨堡：落ちた胞子玉が写す家は、その里の生きている家（無ければ生えない）
+          let tmpl = null;
+          for (const h of v.members) if (!h.fallen) { tmpl = h; break; }
+          for (let k = 0; k < SPORE_RAMPART_COUNT; k++) {
+            const off = (k - (SPORE_RAMPART_COUNT - 1) / 2) * (SPORE_RAMPART_SPREAD / (SPORE_RAMPART_COUNT - 1));
+            fireSpore(v, s, i, d, tmpl, off);
+          }
+        }
+      }
     }
   }
   // (3) 胞子玉。竜に当たれば小さな傷、外れて落ちたらそこに家が1棟生える（里の上限の内で）
@@ -16045,19 +16108,20 @@ function updateMushroom(dt) {
     const g = sporeBalls[k];
     g.x += g.vx * dt; g.y += g.vy * dt; g.life -= dt;
     let hit = false;
+    const hitR = g.hitR;
     for (let i = 0; i < N && !hit; i++) {
       if (boidDead[i] || boidDowned[i]) continue;
-      if (dist2(px[i], py[i], g.x, g.y) > SPORE_HIT_R * SPORE_HIT_R) continue;
+      if (dist2(px[i], py[i], g.x, g.y) > hitR * hitR) continue;
       attackerNow = g.src;
       hitBoid(i, { shot: g.dmg }, 0, 0);
       hit = true;
     }
     if (!hit && g.life > 0) continue;
     sporeBalls.splice(k, 1);
-    g.v.spores = Math.max(0, g.v.spores - 1);
     if (hit) continue;
     const onScreen = g.x > view.x0 && g.x < view.x1 && g.y > view.y0 && g.y < view.y1;
     const parent = g.parent;
+    if (!parent || parent.fallen && !g.v.members.some(h => !h.fallen)) continue;
     if (mushAliveCount(g.v) >= mushVillageCap(g.v, onScreen)) continue;
     if (!mushSpotFree(g.x, g.y, parent.radius)) continue;
     spawnMushHouse(g.v, parent, g.x, g.y);
@@ -16066,14 +16130,18 @@ function updateMushroom(dt) {
   if (grew) updateHUDBuildings();
 }
 
-function fireSpore(v, s, i, d) {
+/** s が竜 i（距離 d）へ胞子玉を撃つ。parent＝外れて落ちたときに写す家（null なら生えない）、off＝扇のずらし（rad） */
+function fireSpore(v, s, i, d, parent, off) {
   const lead = d / SPORE_SPEED * SPORE_LEAD;
   const tx = px[i] + vx[i] * lead, ty = py[i] + vy[i] * lead;
-  const a = Math.atan2(ty - s.wy, tx - s.wx);
+  const a = Math.atan2(ty - s.wy, tx - s.wx) + off;
   const travel = Math.max(40, Math.hypot(tx - s.wx, ty - s.wy));
+  const small = v.hamlet;
   sporeBalls.push({ x: s.wx, y: s.wy, vx: Math.cos(a) * SPORE_SPEED, vy: Math.sin(a) * SPORE_SPEED, life: travel / SPORE_SPEED,
-                    dmg: SPORE_DAMAGE * moverFerocity(), src: settlementAttacker(s), v, parent: s });
-  v.spores++;
+                    dmg: SPORE_DAMAGE * moverFerocity() * (small ? SPORE_SMALL_DAMAGE_MULT : 1), src: settlementAttacker(s), v,
+                    parent: small ? null : parent,
+                    r: small ? SPORE_SMALL_RADIUS : SPORE_RADIUS,
+                    hitR: SPORE_HIT_R - (small ? SPORE_RADIUS - SPORE_SMALL_RADIUS : 0) });
 }
 
 /** キノコの家を建物レイヤーに描く。上から見た赤い笠に白い点、笠の下に根元と小さな戸口 */
@@ -16081,6 +16149,7 @@ function drawMushroomHouseOnLayer(c, s) {
   const x = s.wx, y = s.wy;
   const r = s.radius * 1.05;
   const seed = Math.abs(Math.floor(x * 7 + y * 13));
+  const fort = !!s._fortified || s._fixedTier != null || (s._tierOffset || 0) > 0;   // 強い町（要塞化・格上の町）
   if (s.fallen) {
     // 灰色にしぼんだ笠
     c.globalAlpha = 0.55;
@@ -16099,9 +16168,19 @@ function drawMushroomHouseOnLayer(c, s) {
   c.fillStyle = "#4a2c1c";
   c.fillRect(x - r * 0.13, y + r * 0.6, r * 0.26, r * 0.32);
   // 笠
-  c.fillStyle = MUSH_CAP_COLORS[seed % MUSH_CAP_COLORS.length];
+  c.fillStyle = fort ? MUSH_FORT_CAP_COLORS[seed % MUSH_FORT_CAP_COLORS.length] : MUSH_CAP_COLORS[seed % MUSH_CAP_COLORS.length];
   c.beginPath(); c.arc(x, y, r * 0.9, 0, Math.PI * 2); c.fill();
-  c.strokeStyle = "rgba(80,16,12,0.85)"; c.lineWidth = 1.2; c.stroke();
+  if (fort) {
+    // 強い町：黒鉄の太い縁に鋲（ほかの地域の要塞化と同じ「明らかに強そう」を笠で出す）
+    c.strokeStyle = MUSH_FORT_RIM_COLOR; c.lineWidth = Math.max(2, r * 0.18); c.stroke();
+    c.fillStyle = "#b8b0a8";
+    for (let k = 0; k < 6; k++) {
+      const a = k * Math.PI / 3 + seed * 0.1;
+      c.beginPath(); c.arc(x + Math.cos(a) * r * 0.9, y + Math.sin(a) * r * 0.9, Math.max(0.9, r * 0.08), 0, Math.PI * 2); c.fill();
+    }
+  } else {
+    c.strokeStyle = "rgba(80,16,12,0.85)"; c.lineWidth = 1.2; c.stroke();
+  }
   c.globalAlpha = 0.2; c.fillStyle = "#ffffff";
   c.beginPath(); c.arc(x - r * 0.28, y - r * 0.3, r * 0.4, 0, Math.PI * 2); c.fill();
   c.globalAlpha = 1;
@@ -16144,12 +16223,48 @@ function drawMushroomFx() {
     ctx.beginPath(); ctx.arc(n.s.wx, n.s.wy, n.s.radius * (0.95 + 0.5 * (1 - pop)) + 2, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.globalAlpha = 1;
-  // 胞子玉：黄色いふわっとした玉
+  // 胞子玉：淡い黄緑のふわっとした玉に、毛羽の点の輪（卵の黄色と見分ける）
   for (const g of sporeBalls) {
-    ctx.fillStyle = "rgba(240,220,80,0.25)";
-    ctx.beginPath(); ctx.arc(g.x, g.y, SPORE_RADIUS + 4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = SPORE_COLOR; ctx.strokeStyle = "rgba(90,70,10,0.9)"; ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.arc(g.x, g.y, SPORE_RADIUS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    if (g.x < view.x0 || g.x > view.x1 || g.y < view.y0 || g.y > view.y1) continue;
+    const r = g.r;
+    ctx.fillStyle = SPORE_HALO_COLOR;
+    ctx.beginPath(); ctx.arc(g.x, g.y, r + 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = SPORE_COLOR; ctx.strokeStyle = SPORE_RIM_COLOR; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(g.x, g.y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = SPORE_RIM_COLOR;
+    const spin = mushClock * 1.5;
+    for (let k = 0; k < 6; k++) {
+      const a = spin + k * Math.PI / 3;
+      ctx.beginPath(); ctx.arc(g.x + Math.cos(a) * (r + 2), g.y + Math.sin(a) * (r + 2), 0.9, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+/**
+ * v3.131.0（DT-551 手直し「動く敵は時代に応じた共通の奴らでいいが、全てにキノコの傘の飾りを。兵隊は頭にかぶってる感じ」）:
+ * 動く敵の真上（上から見た頭）に、小さな赤い笠に白い点をかぶせる。見た目だけ（乱数も状態も使わない）
+ */
+function drawMushroomMoverCaps() {
+  if (worldShape !== SHAPE_MUSHROOM) return;
+  const view = viewWorldRect(40);
+  ctx.save();
+  for (const m of movers) {
+    if (!m.alive || m.submerged || m.death) continue;
+    if (m.wx < view.x0 || m.wx > view.x1 || m.wy < view.y0 || m.wy > view.y1) continue;
+    const def = m.def;
+    const r = Math.max(MUSH_MOVER_CAP_MIN, Math.min(MUSH_MOVER_CAP_MAX, (def.radius || 8) * MUSH_MOVER_CAP_SCALE));
+    const x = m.wx, y = m.wy;
+    ctx.globalAlpha = 0.3; ctx.fillStyle = "#000000";
+    ctx.beginPath(); ctx.arc(x + r * 0.15, y + r * 0.2, r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#d8402e"; ctx.strokeStyle = "rgba(80,16,12,0.9)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#fff6ee";
+    const d = Math.max(0.8, r * 0.2);
+    ctx.beginPath(); ctx.arc(x - r * 0.35, y - r * 0.3, d, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + r * 0.4, y - r * 0.05, d, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x - r * 0.05, y + r * 0.42, d, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
 }
@@ -25206,6 +25321,8 @@ function drawSettlementOnLayer(bctx, settlement) {
   bctx.save();
   bctx.globalAlpha = alpha;
 
+  // v3.131.0（DT-551 手直し）: 新しいキノコの家が上に生えた残骸は描かない
+  if (settlement._mushGone) { bctx.restore(); return; }
   // v3.130.0（案帳 DT-551）: 増えるキノコの里の家はキノコの家（落とすと灰色にしぼむ）
   if (isMushroomHouse(settlement)) { drawMushroomHouseOnLayer(bctx, settlement); bctx.restore(); return; }
 
@@ -37773,7 +37890,7 @@ function codexRegionCanvas(shape) {
       dot(x, y, 3.2, "#d8402e"); dot(x - 1, y - 1, 0.9, "#fff6ee");
       for (let k = 0; k < 4; k++) dot(x + Math.cos(k * 1.6 + x) * 6, y + Math.sin(k * 1.6 + x) * 6, 1.6, "#e0503a");
     }
-    c.fillStyle = "rgba(240,220,80,0.9)"; dot(26, 30, 1.6, "#f0dc50");
+    dot(26, 30, 1.6, "#b8f07c");
     diamond(44, 8, 3.4); dot(4, 48, 2.2, CODEX_RG.start);
   } else if (shape === SHAPE_SWORD) {
     // v3.122.0（案帳 DT-535）: 竹林の濃い帯と、左下から右上の首都へ蛇行する白っぽい参道。町は参道の両脇
@@ -39379,6 +39496,7 @@ function rebuildRuinsForTier(baseTier) {
     if (s.isBoss || s._isWall) continue;
     // 時代固定ではなく「段階固定」の要塞は再建しない。落としたら落としたまま
     if (s._fixedTier != null) continue;
+    if (s._mushGone) continue;   // v3.131.0（DT-551）: 上にキノコの家が生えた跡は建て直さない
     if (s.fallen) ruins.push(s);
   }
   const budget = Math.round(ruins.length * TIER_REBUILD_RATIO);
@@ -44864,6 +44982,7 @@ function render(now) {
   drawRailWrecks();          // v2.2.0: 潰れた車両（連結されたまま引きずられる）
   drawRailTurrets();         // v2.1.0: 砲車の旋回砲塔（車体の絵の上）
   drawMetroTurretsAndRotors();   // v3.23.0: 大都会の戦車の砲塔・攻撃ヘリの回転翼
+  drawMushroomMoverCaps();   // v3.131.0（DT-551 手直し）: 増えるキノコの里の動く敵にキノコの笠
   drawRailExtras();          // v2.0.0: 前照灯・粘着編成の標識
   drawCanopy();              // v3.17.0: 大樹海の樹冠（敵と街の上・竜とブレスの下）
   drawSkylandCloudShadows(); // v3.78.0: 浮き城の空の雲の影（町・地面・地上の敵の上、竜の下）
