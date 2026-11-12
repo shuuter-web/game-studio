@@ -1281,7 +1281,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.128.0";
+const GAME_VERSION = "v3.129.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -27280,31 +27280,54 @@ function spawnEgg(wx, wy) {
   return -1;
 }
 
-// v3.128.0（案帳 DT-546 案A「まとめる」）: 卵も経験値と同じ吸引範囲（「吸引域」で広がる）に入ると群れへ転がって寄る。
-// 卵の磁石を別のアーティファクトにせず吸引域にまとめたのは、「経験値は寄るのに卵は寄らない」理由を
-// プレイヤーに説明できないため（Shooter判断）。卵は重いので経験値（毎秒600px）よりずっと遅い。
-const EGG_ATTRACT_SPEED = 120;   // 卵が群れへ転がる速さ（px/s）
-
-function attractEggs(dt) {
-  if (dt <= 0) return;
-  const magnetRadius = effMagnetRadius();
-  const magnetR2 = magnetRadius * magnetRadius;
+// v3.129.0（案帳 DT-546 手直し・Shooter「卵がいきなり寄ってくるのは変。Bにしましょう」）:
+// 卵を吸引域で寄せる案A（v3.128.0）はやめ、アーティファクト「親竜の呼び声」にした。
+// 経験値（竜晶のかけら）はただの石なので吸い寄せられるが、卵は生きているので、
+// 指を離している間だけ群れが呼び、遠くの卵が**自分で**転がってくる（吸引域＝いつも・近く／呼び声＝止まったときだけ・遠く）。
+// 「止まっている間」を指を離している間で判定するのは、止まれない竜種（UFO・鮫竜など）でも使えるようにするため。
+const PARENT_CALL_RADIUS_BY_COUNT = [0, 600, 900];   // 持っている枚数ごとの、呼び声が届く半径（px）
+const PARENT_CALL_DELAY     = 0.4;    // 指を離してから呼び始めるまで（秒）。線を引き直す一瞬の離しでは呼ばない
+const PARENT_CALL_SPEED     = 160;    // 呼ばれた卵が群れへ転がる速さ（px/s）
+const PARENT_CALL_RING_EVERY = 1.2;   // 呼んでいる間、金の輪を広げる間隔（秒）
+const PARENT_CALL_RING_LIFE = 0.9;
+const PARENT_CALL_COLOR     = "rgba(255,214,90,0.85)";
+const eggCalled = new Uint8Array(MAX_EGGS);   // 1＝呼ばれて転がっている（見た目の揺れと点線に使う）
+const parentCallState = { releasedFor: 0, ringTimer: 0, cx: 0, cy: 0, active: false };
+function resetParentCallForStage() {
+  parentCallState.releasedFor = 0; parentCallState.ringTimer = 0; parentCallState.active = false;
+  eggCalled.fill(0);
+}
+/** 毎フレーム：指を離している間、呼び声の届く卵を群れの重心へ転がす */
+function updateParentCall(dt) {
+  const cards = upCount("f_call");
+  parentCallState.releasedFor = isDrawing ? 0 : parentCallState.releasedFor + dt;
+  const active = cards > 0 && parentCallState.releasedFor >= PARENT_CALL_DELAY && countAliveBoids() > 0;
+  if (!active) {
+    if (parentCallState.active) eggCalled.fill(0);
+    parentCallState.active = false; parentCallState.ringTimer = 0;
+    return;
+  }
+  const radius = PARENT_CALL_RADIUS_BY_COUNT[Math.min(cards, PARENT_CALL_RADIUS_BY_COUNT.length - 1)];
+  const c = calcFriendlyCentroid();
+  parentCallState.cx = c.x; parentCallState.cy = c.y;
+  if (!parentCallState.active || parentCallState.ringTimer <= 0) {   // 呼び始めと、その後は一定間隔で金の輪
+    fallFx.push({ kind: "ring", x: c.x, y: c.y, r: radius, t: 0, life: PARENT_CALL_RING_LIFE, color: PARENT_CALL_COLOR });
+    parentCallState.ringTimer = PARENT_CALL_RING_EVERY;
+  }
+  parentCallState.ringTimer -= dt;
+  parentCallState.active = true;
+  const r2 = radius * radius;
   for (let e = 0; e < MAX_EGGS; e++) {
+    eggCalled[e] = 0;
     if (!eggActive[e]) continue;
-    let nearest = -1;
-    let nearestD2 = magnetR2;
-    for (let i = 0; i < N; i++) {
-      if (boidDead[i] || boidDowned[i]) continue;
-      const dx = px[i] - eggWx[e];
-      const dy = py[i] - eggWy[e];
-      const d2 = dx * dx + dy * dy;
-      if (d2 < nearestD2) { nearestD2 = d2; nearest = i; }
-    }
-    if (nearest < 0) continue;   // 範囲外の卵はその場で待つ
-    const d = Math.sqrt(nearestD2) || 1;
-    const step = Math.min(d, EGG_ATTRACT_SPEED * dt);
-    eggWx[e] += (px[nearest] - eggWx[e]) / d * step;
-    eggWy[e] += (py[nearest] - eggWy[e]) / d * step;
+    const dx = c.x - eggWx[e], dy = c.y - eggWy[e];
+    const d2 = dx * dx + dy * dy;
+    if (d2 > r2) continue;   // 届かない卵はその場で待つ
+    const d = Math.sqrt(d2) || 1;
+    const step = Math.min(d, PARENT_CALL_SPEED * dt);
+    eggWx[e] += dx / d * step;
+    eggWy[e] += dy / d * step;
+    eggCalled[e] = 1;
   }
 }
 
@@ -27828,13 +27851,14 @@ const STRINGS = {
     f_sp_double: { name: "双つ魂",        desc: "連れている特殊個体が2倍になる（あとから加わった特殊個体も2倍）" },
     f_giant:     { name: "巨竜化",        desc: "群れの竜5匹が巨大になる（HP 4倍・まわりを踏みつぶす）" },
     f_lance:     { name: "一番槍",        desc: "線の先頭を飛ぶ1体（特殊個体も）が大きくなり、受ける傷が4割に。0.5秒ごとに前を槍で突く（攻撃60）。先頭が穿つ楔・口封じなら、突いた所にひび・口封じを入れて威力1.5倍（2枚で威力1.7倍・突きが届く）" },
+    f_call:      { name: "親竜の呼び声",  desc: "指を離している間、群れが呼んで、まわり600pxの卵が群れへ転がってくる（2枚で900px）" },
     f_rage:      { name: "逆鱗",          desc: "戦える竜が群れの1割を切ると咆哮（群れの数の表示 今/全体 で 今 が全体の1割未満）。まわりの敵を押し返し、10秒間 攻撃の速さ×1.5・受ける傷が半分。全員が起き上がると、また使える" },
   },
   cards: {
     scale:     { name: "硬鱗",     desc: "竜のHP +20%" },
     wind:      { name: "疾風",     desc: "群れの速度 +8%" },
     tide:      { name: "再生の潮", desc: "復帰時間 -15%" },
-    magnet:    { name: "吸引域",   desc: "経験値と卵を引き寄せる範囲 +40%" },   // v3.128.0（案帳 DT-546 案A）: 卵も寄せる
+    magnet:    { name: "吸引域",   desc: "XP吸引範囲 +40%" },   // v3.129.0（DT-546 手直し）: 卵は寄せない（親竜の呼び声へ）
     brood:     { name: "大繁殖",   desc: "竜 +50（このステージだけ）" },   // v3.68.0（DT-497）: 上限は増やさない。ステージでだけ効き、竜を多めに足す
     resonance: { name: "竜鱗共鳴", desc: "被ダメージ -12%" },
     cat_direct: { name: "直撃の牙",   desc: "直接攻撃（体当たり・爪・刃・舌など）の威力 +12%" },
@@ -28014,6 +28038,8 @@ const PERK_CARD_DEFS = [
   { id: "f_rage",      icon: "\u{1F621}", max: 1, artifact: true },  // 群れが減りきったら咆哮
   // v3.125.0（案帳 DT-548・Shooter「一番前だけ」「特殊個体も対象」「デバフ系の前に出る特殊個体とシナジー」「一体にする分さらに強く」）
   { id: "f_lance",     icon: "\u{1F5E1}", max: 2, artifact: true },  // 線の先頭の1体が大きく強くなり、前を突く
+  // v3.129.0（案帳 DT-546 案B）: 指を離している間、遠くの卵を呼び寄せる
+  { id: "f_call",      icon: "\u{1F4E3}", max: 2, artifact: true },
   // v3.58.0（案帳 DT-238・Shooter指示「ステージ中強化カードに、そのステージでだけ加入する特殊個体を」「永続加入とは別枠。加入上限とか」）:
   // 加入カードのある特殊個体ごとに1枚。runSpecials（連れ歩きの枠）には入れず、ステージが変わると消える。上限は STAGE_JOIN_MAX で別に数える
   // v3.65.0（DT-497）: 特殊個体はレベルアップで加わる（永続）ので、ステージ限定の加勢カードは出さない
@@ -39429,6 +39455,7 @@ function clearStageCards(keepCards = false) {
   stageCardXp = 0; stageCardLevel = 0; stageXpAtStart = runTotalXp;   // v3.56.0
   fallRoarTimer = 0;
   resetRageForStage();   // v3.101.0（DT-201）
+  resetParentCallForStage();   // v3.129.0（DT-546）
   resetDiceForStage();   // v3.113.0（DT-172）
   boidGiant.fill(0);
   perkOfferQueue.length = 0;
@@ -39784,6 +39811,7 @@ function updateStageCardEffects(dt) {
   updateRage(dt); updateRageHud();   // v3.101.0（DT-201）
   refillFlockFromOverflow();   // v3.67.0: 本物の竜が減ったら、上限超えの分から戻す
   updateLance(dt);             // v3.125.0（DT-548）
+  updateParentCall(dt);        // v3.129.0（DT-546）: 親竜の呼び声
   if (upCount("f_giant") === 0) return;
   for (let i = 0; i < N; i++) {
     if (!boidGiant[i] || boidDead[i] || boidDowned[i]) continue;
@@ -46108,13 +46136,25 @@ function drawParticles() {
 
 function drawEggs() {
   ctx.save();
+  if (parentCallState.active) {   // v3.129.0（DT-546）: 呼ばれている卵と群れの間に薄い金の点線
+    ctx.strokeStyle = PARENT_CALL_COLOR; ctx.globalAlpha = 0.35; ctx.lineWidth = 1.5; ctx.setLineDash([4, 6]);
+    ctx.beginPath();
+    for (let e = 0; e < MAX_EGGS; e++) {
+      if (!eggActive[e] || !eggCalled[e]) continue;
+      ctx.moveTo(eggWx[e], eggWy[e]); ctx.lineTo(parentCallState.cx, parentCallState.cy);
+    }
+    ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+  }
+  const wobbleT = performance.now() / 1000;
   for (let e = 0; e < MAX_EGGS; e++) {
     if (!eggActive[e]) continue;
+    // 呼ばれて転がっている卵は左右に揺れる（見た目だけ。位置は変えない）
+    const wob = eggCalled[e] ? Math.sin(wobbleT * 14 + e) * 2 : 0;
     ctx.fillStyle = "rgba(255, 200, 40, 0.90)";
     ctx.strokeStyle = "rgba(255, 240, 120, 0.60)";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(eggWx[e], eggWy[e], 5, 0, Math.PI * 2);
+    ctx.arc(eggWx[e] + wob, eggWy[e], 5, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
@@ -48086,7 +48126,6 @@ function tick() {
     updateParticles(wdt);
     updateAppearEffects(wdt);     // 変更2: 竜出現エフェクト更新
     updateDownEffects(wdt);       // 変更2(追加): 竜やられエフェクト更新
-    attractEggs(wdt);             // v3.128.0（案帳 DT-546）: 吸引域の中の卵が群れへ転がる
     collectNearbyEggs();
     updateXpGems(wdt);            // v0.6: XPジェムの飛散・吸引・回収
     updateSlashFx(wdt);           // v0.8: 緋竜の斬閃FX
