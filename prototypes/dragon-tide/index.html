@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.134.0";
+const GAME_VERSION = "v3.135.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -37367,7 +37367,7 @@ function codexDragonMainAttackRaw(def) {
                stat: `玉の下を通った相手を押し潰す（竜1体ごとに秒間+${ROLL_CRUSH_DPS_PER}） ／ 壊すほど玉が大きく（最大で半径${1 + ROLL_GROW_MAX}倍）、速く、曲がりにくくなる ／ 縮むのは一番大きかったときの${Math.round((1 - ROLL_SHRINK_FLOOR) * 100)}%まで` };
     case "erupt":  // v3.29.0
       return { power: { label: label + "（1か所）", blast: MOLE_ERUPT_BASE },
-               stat: `描いている間は地中（撃たれない・最大${MOLE_BREATH_MAX}秒） ／ 指を離すと線に沿って幅${MOLE_ERUPT_WIDTH * 2}pxが割れる（竜1体ごとに+${MOLE_ERUPT_PER}） ／ 線が${MOLE_REF_LEN}pxより長いと1か所は弱くなる` };
+               stat: `描いている間は地中（撃たれない・最大${MOLE_BREATH_MAX}秒） ／ 指を離すと線に沿って幅${MOLE_ERUPT_WIDTH * 2}pxが割れる（竜1体ごとに+${MOLE_ERUPT_PER}） ／ 線が${MOLE_REF_LEN}pxより長いと1か所は弱くなる ／ 地割れは線をなぞって走り、走り終わって${MOLE_REBURROW_COOL}秒は潜れない` };
     case "magnet":  // v3.31.0
       return { power: { label: label + "（回る破片1つ）", direct: MAG_ORBIT_DMG },
                stat: `${MAG_GRAB_R}px以内で壊れた建物の絵が破片になって周りを回る（最大${MAG_SHARDS_MAX}個） ／ 急に曲がると外へ飛び、速さに応じて最大${MAG_THROW_DMG * 2}で当たる` };
@@ -42612,11 +42612,19 @@ const MOLE_ERUPT_WIDTH     = 46;     // 地割れの幅（半径）
 const MOLE_ERUPT_BASE      = 10;     // 1点あたりの威力＝これ＋竜1体ごとの上乗せ×竜の数（線が短いとき）
 const MOLE_ERUPT_PER       = 2.5;
 const MOLE_REF_LEN         = 600;    // 線がこの長さを超えると、超えた分だけ1点あたりの威力が下がる
-const MOLE_RUN_TIME        = 0.5;    // 地割れが線の始めから終わりまで走る秒数
+// v3.135.0（案帳 DT-046 手直し・Shooter「地割れを連打できて強すぎる。地面が隆起するエフェクトが次々出てくる（線をなぞってくる）
+// 感じにして手応えを出しつつ、連打を抑制」）: 線の長さに関係なく0.5秒で走らせていたのをやめ、決まった速さで線をなぞらせる。
+// 地割れが走り終わって MOLE_REBURROW_COOL 秒たつまでは潜り直せない（短く描いて離すをくり返す連打を止める）
+const MOLE_RUN_SPEED       = 650;    // 地割れが線をなぞる速さ（px/秒）
+const MOLE_RUN_MIN         = 0.35;   // 短い線でも走るのにこれだけかかる（連打の間隔の下限）
+const MOLE_REBURROW_COOL   = 0.6;    // 走り終わってから潜り直せるまで
+const MOLE_HEAVE_LIFE      = 0.7;    // 地面が盛り上がって崩れるまでの秒数（見た目）
 const MOLE_CRACK_LIFE      = 1.8;    // 地割れの跡が見えている秒数
-const MOLE_COLORS = { mound: "#6a5034", moundLight: "#9a7a50", crack: "#140c06", glow: "#ff9a3a", breath: "#d8b070" };
+const MOLE_COLORS = { mound: "#6a5034", moundLight: "#9a7a50", crack: "#140c06", glow: "#ff9a3a", breath: "#d8b070",
+                      shadow: "rgba(0,0,0,0.62)", shadowSoft: "rgba(0,0,0,0.22)", locked: "rgba(160,150,140,0.7)" };
 
-const mole = { under: false, breath: MOLE_BREATH_MAX, stroke: [], queue: [], cracks: [], needLift: false };
+// cool＝潜り直せるまでの残り（地割れが走っている間は走り終わり＋MOLE_REBURROW_COOL）。heaves＝盛り上がる地面（見た目）
+const mole = { under: false, breath: MOLE_BREATH_MAX, stroke: [], queue: [], cracks: [], heaves: [], needLift: false, cool: 0, coolMax: 0 };
 
 function moleUnderground() { return mole.under && !!sp().burrow; }
 /** 竜種の特別な状態（塊竜の玉・土竜の地中）を初期化する。竜種が変わったとき・ステージの頭に呼ぶ */
@@ -42631,7 +42639,7 @@ function resetSpeciesMechanics() {
 }
 function resetMole() {
   mole.under = false; mole.breath = MOLE_BREATH_MAX; mole.stroke.length = 0;
-  mole.queue.length = 0; mole.cracks.length = 0; mole.needLift = false;
+  mole.queue.length = 0; mole.cracks.length = 0; mole.heaves.length = 0; mole.needLift = false; mole.cool = 0; mole.coolMax = 0;
 }
 /** 描いた線を記録する（inputStart / inputMove から） */
 function moleRecordStroke(wx, wy, start) {
@@ -42644,9 +42652,10 @@ function moleRecordStroke(wx, wy, start) {
 function updateMoleAttacks(dt) {
   const breathMax = MOLE_BREATH_MAX * effWeaponRangeMult("erupt");
   if (!isDrawing) mole.needLift = false;
+  if (mole.cool > 0) mole.cool = Math.max(0, mole.cool - dt);
   if (!mole.under) {
     mole.breath = Math.min(breathMax, mole.breath + MOLE_BREATH_REGEN / effFireIntervalMult("erupt") * dt);
-    if (isDrawing && !mole.needLift && mole.breath >= MOLE_MIN_BREATH && mole.stroke.length > 0) {
+    if (isDrawing && !mole.needLift && mole.cool <= 0 && mole.breath >= MOLE_MIN_BREATH && mole.stroke.length > 0) {
       mole.under = true;
       moleDust(1);
     }
@@ -42664,10 +42673,17 @@ function updateMoleAttacks(dt) {
     if (q.t > 0) continue;
     hitInRadius(q.x, q.y, q.w, { blast: q.dmg }, attackTargets());
     if (fxRandom() < 0.5) spawnCollisionParticles(q.x, q.y);
+    mole.heaves.push({ x: q.x, y: q.y, w: q.w, t: 0, seed: (Math.round(q.x) * 7 + Math.round(q.y) * 13) & 1023 });
+    triggerShake(0.9, 0.06);
     mole.queue.splice(k, 1);
+  }
+  for (let k = mole.heaves.length - 1; k >= 0; k--) {
+    mole.heaves[k].t += dt;
+    if (mole.heaves[k].t >= MOLE_HEAVE_LIFE) mole.heaves.splice(k, 1);
   }
   for (let k = mole.cracks.length - 1; k >= 0; k--) {
     mole.cracks[k].life -= dt;
+    mole.cracks[k].age = (mole.cracks[k].age || 0) + dt;
     if (mole.cracks[k].life <= 0) mole.cracks.splice(k, 1);
   }
 }
@@ -42694,9 +42710,12 @@ function moleErupt() {
   const n = countAliveBoids();
   const dmg = (MOLE_ERUPT_BASE + MOLE_ERUPT_PER * n) * effWeaponDmgMult("erupt") * Math.min(1, MOLE_REF_LEN / Math.max(1, len));
   const w = MOLE_ERUPT_WIDTH * Math.sqrt(effWeaponRangeMult("erupt"));
-  pts.forEach((p, k) => mole.queue.push({ x: p.x, y: p.y, w, dmg, t: (k / Math.max(1, pts.length - 1)) * MOLE_RUN_TIME }));
-  mole.cracks.push({ pts, life: MOLE_CRACK_LIFE, w });
-  triggerShake(2.2, 0.3);
+  // 決まった速さで線をなぞる（長い線ほど走り切るのに時間がかかる）
+  const run = Math.max(MOLE_RUN_MIN, len / MOLE_RUN_SPEED);
+  pts.forEach((p, k) => mole.queue.push({ x: p.x, y: p.y, w, dmg, t: (k / Math.max(1, pts.length - 1)) * run }));
+  mole.cracks.push({ pts, life: MOLE_CRACK_LIFE + run, w, run, age: 0 });
+  mole.cool = mole.coolMax = run + MOLE_REBURROW_COOL;
+  triggerShake(1.4, 0.2);
   hapticPulse(60);
   mole.stroke.length = 0;
 }
@@ -42710,40 +42729,89 @@ function moleDust(scale) {
 }
 /** 地割れの跡（建物の上・竜の下） */
 function drawMoleCracks() {
-  if (mole.cracks.length === 0) return;
+  drawMoleCoolRing();
+  if (mole.cracks.length === 0 && mole.heaves.length === 0) return;
   ctx.save();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   for (const c of mole.cracks) {
-    const t = c.life / MOLE_CRACK_LIFE;
+    const t = Math.min(1, c.life / MOLE_CRACK_LIFE);
+    // v3.135.0（DT-046 手直し）: 割れ目は地割れが走った所まで（先頭が線をなぞって伸びていく）
+    const shown = c.run ? Math.min(c.pts.length, Math.floor((c.age / c.run) * (c.pts.length - 1)) + 1) : c.pts.length;
+    if (shown < 1) continue;
     ctx.globalAlpha = Math.min(1, t * 1.5) * 0.5;
     ctx.strokeStyle = MOLE_COLORS.glow;
     ctx.lineWidth = c.w * 0.45;
     ctx.beginPath();
-    c.pts.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    for (let k = 0; k < shown; k++) { const p = c.pts[k]; if (k) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); }
     ctx.stroke();
     ctx.globalAlpha = Math.min(1, t * 1.5);
     ctx.strokeStyle = MOLE_COLORS.crack;
     ctx.lineWidth = 6;
     ctx.beginPath();
     // 地割れはジグザグに（点の位置から決めるので毎フレーム同じ形）
-    c.pts.forEach((p, k) => {
+    for (let k = 0; k < shown; k++) {
+      const p = c.pts[k];
       const j = ((Math.round(p.x) * 31 + Math.round(p.y) * 17) % 13) - 6;
       if (k) ctx.lineTo(p.x + j, p.y - j); else ctx.moveTo(p.x, p.y);
-    });
+    }
     ctx.stroke();
+  }
+  // 盛り上がる地面：土の山がぐっと持ち上がり、てっぺんが割れて岩が突き出し、崩れて消える
+  for (const h of mole.heaves) {
+    const k = h.t / MOLE_HEAVE_LIFE;
+    const rise = k < 0.3 ? k / 0.3 : 1 - (k - 0.3) / 0.7 * 0.6;   // 0.2秒で持ち上がり、ゆっくり崩れる
+    const r = h.w * (0.45 + 0.35 * rise);
+    ctx.globalAlpha = k < 0.7 ? 1 : 1 - (k - 0.7) / 0.3;
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.beginPath(); ctx.ellipse(h.x + r * 0.15, h.y + r * 0.2, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = MOLE_COLORS.mound;
+    ctx.beginPath(); ctx.ellipse(h.x, h.y, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = MOLE_COLORS.moundLight;
+    ctx.beginPath(); ctx.ellipse(h.x - r * 0.2, h.y - r * 0.25, r * 0.55 * rise, r * 0.4 * rise, 0, 0, Math.PI * 2); ctx.fill();
+    // てっぺんの割れ目から突き出す岩（点の位置で向きを決める＝毎フレーム同じ）
+    ctx.fillStyle = "#3a2c1e";
+    for (let q = 0; q < 3; q++) {
+      const a = h.seed * 0.7 + q * 2.1, len = r * 0.7 * rise;
+      const bx = h.x + Math.cos(a) * r * 0.15, by = h.y + Math.sin(a) * r * 0.15;
+      ctx.beginPath();
+      ctx.moveTo(bx + Math.cos(a + 1.6) * 3, by + Math.sin(a + 1.6) * 3);
+      ctx.lineTo(bx + Math.cos(a) * len, by + Math.sin(a) * len);
+      ctx.lineTo(bx + Math.cos(a - 1.6) * 3, by + Math.sin(a - 1.6) * 3);
+      ctx.fill();
+    }
+    ctx.strokeStyle = MOLE_COLORS.glow; ctx.lineWidth = 2; ctx.globalAlpha *= (1 - k);
+    ctx.beginPath(); ctx.arc(h.x, h.y, r * (1 + 0.6 * k), 0, Math.PI * 2); ctx.stroke();
   }
   ctx.restore();
 }
-/** 地中の群れ：竜の代わりに土の盛り上がりと、息の残りの輪を描く */
+/** v3.135.0（DT-046 手直し）: 潜り直せるまでの間、群れの上に灰色の輪が満ちていく（描いても潜れない理由を見せる） */
+function drawMoleCoolRing() {
+  if (!sp().burrow || mole.under || mole.cool <= 0 || mole.coolMax <= 0) return;
+  const c = calcFriendlyCentroid();
+  ctx.save();
+  ctx.strokeStyle = MOLE_COLORS.locked;
+  ctx.lineWidth = 4 / cam.scale;
+  ctx.beginPath(); ctx.arc(c.x, c.y - 46 / cam.scale, 12 / cam.scale, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - mole.cool / mole.coolMax)); ctx.stroke();
+  ctx.restore();
+}
+/** 地中の群れ：竜の代わりに地面の下を進む黒い影と、息の残りの輪を描く
+ *  v3.135.0（DT-046 手直し・Shooter「土色の卵みたいな今の形は厳しい。いっそ黒い影に」）: 土の盛り上がりをやめ、
+ *  竜の形の黒い影（胴・頭・広げた翼）にした。影のふちはにじませ、地面の下にいる感じを出す */
 function drawMoleMounds() {
   ctx.save();
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i]) continue;
     const a = Math.atan2(vy[i], vx[i]);
-    ctx.fillStyle = MOLE_COLORS.mound;
-    ctx.beginPath(); ctx.ellipse(px[i], py[i], 8, 5.5, a, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = MOLE_COLORS.moundLight;
-    ctx.beginPath(); ctx.ellipse(px[i] - 1.5, py[i] - 1.5, 4, 2.6, a, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.translate(px[i], py[i]); ctx.rotate(a);
+    ctx.fillStyle = MOLE_COLORS.shadowSoft;
+    ctx.beginPath(); ctx.ellipse(-1, 0, 13, 9, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = MOLE_COLORS.shadow;
+    ctx.beginPath(); ctx.ellipse(0, 0, 8, 3.6, 0, 0, Math.PI * 2); ctx.fill();          // 胴
+    ctx.beginPath(); ctx.arc(8.5, 0, 2.8, 0, Math.PI * 2); ctx.fill();                   // 頭
+    ctx.beginPath(); ctx.moveTo(2, 0); ctx.lineTo(-4, -9); ctx.lineTo(-3, 0); ctx.lineTo(-4, 9); ctx.closePath(); ctx.fill();   // 翼
+    ctx.beginPath(); ctx.moveTo(-7, -1.2); ctx.lineTo(-14, 0); ctx.lineTo(-7, 1.2); ctx.closePath(); ctx.fill();               // 尾
+    ctx.restore();
   }
   const c = calcFriendlyCentroid();
   const frac = Math.max(0, mole.breath / (MOLE_BREATH_MAX * effWeaponRangeMult("erupt")));
