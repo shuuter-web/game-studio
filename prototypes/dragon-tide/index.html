@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.135.0";
+const GAME_VERSION = "v3.136.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16325,14 +16325,13 @@ function drawMushroomMoverCaps() {
 //             輪は MUSH_BOSS_RAIN_FALL 秒後に降り、中の竜に傷。降った輪の中には家が生える。
 //   菌糸の線：首都から群れの方へ白い菌糸の線を3本伸ばす（MUSH_BOSS_THREAD_WIND 秒）。伸び切ると線の上に
 //             キノコが一斉に生えて、線の上の竜に傷。生えたキノコは家として残る（11/13 Shooter「そのまま家になっていい」）。
-// 弱いところ（このゲームで初めての「タイミングで弱点」・11/13 Shooter「試しにやってみて」）：
-//   胞子の雨を吹いた直後の MUSH_BOSS_WEAK_TIME 秒は笠が持ち上がり、裏のひだが金色に光る。この間だけ傷が MUSH_BOSS_WEAK_MULT 倍。
-//   伝えるために、笠の持ち上がり・光るひだ・首都のまわりの脈打つ金の輪・「ひだが光った！傷×2」の文字・当たったときの金の火花を重ねる。
+// v3.136.0（DT-554 手直し・11/14 Shooter「タイミング弱点は演出として全然ダメなのでカット」）:
+//   胞子の雨の直後だけ傷が2倍になる「弱いところ」（光るひだ・金の輪・文字・火花）は外した。首都への傷はいつも同じ。
 // 生える家は首都の城下の里（無ければ首都に近い里）の家を写す。里の上限（mushVillageCap）はそのまま効く（重くならない保険）。
 // -----------------------------------------------------------------
 const MUSH_BOSS_TRIGGER       = 620;    // いちばん近い竜がこの距離に入ったら技を出す
 const MUSH_BOSS_FIRST_COOL    = 1.2;    // 群れが来てから最初の技まで
-const MUSH_BOSS_COOL          = 1.5;    // 技と技のあいだ（胞子の雨の後は、弱いところが閉じるころに次が来る）
+const MUSH_BOSS_COOL          = 1.5;    // 技と技のあいだ（胞子の雨の後は、輪が降るのを待つ分だけ長い）
 const MUSH_BOSS_PUFF          = 1.0;    // 笠をふくらませる（胞子の雨の溜め）
 const MUSH_BOSS_RAIN_FALL     = 1.5;    // 輪が出てから胞子が降るまで
 const MUSH_BOSS_RAIN_R        = 42;     // 輪の半径
@@ -16352,9 +16351,6 @@ const MUSH_BOSS_THREAD_HALF   = 20;     // 線の上とみなす幅の半分（�
 const MUSH_BOSS_THREAD_DMG    = 6;
 const MUSH_BOSS_THREAD_IMPACT = 120;
 const MUSH_BOSS_THREAD_STEP   = 26;     // 線に沿って家を生やす間隔
-const MUSH_BOSS_WEAK_TIME     = 3.0;    // 弱いところが開いている秒数
-const MUSH_BOSS_WEAK_MULT     = 2;      // 弱いところが開いている間の傷の倍率
-const MUSH_BOSS_WEAK_SPARK_EVERY = 0.12; // 当たったときの金の火花を出す最短の間（見た目だけ）
 const MUSH_BOSS_CAP_SCALE     = 1.18;   // 笠の絵の半径（当たりの半径に掛ける）
 const MUSH_BOSS_FX_LIFE       = 0.5;    // 降った輪・生えた線の光が残る秒数
 const MUSH_BOSS_DUST_LIFE     = 2.2;    // 倒れたときの胞子の粉
@@ -16363,7 +16359,6 @@ const MUSH_BOSS_RING_COLOR    = "rgba(184,240,124,0.95)";   // 胞子玉と同�
 const MUSH_BOSS_RING_FILL     = "rgba(184,240,124,0.13)";
 const MUSH_BOSS_RING_GROW     = "rgba(184,240,124,0.32)";
 const MUSH_BOSS_THREAD_COLOR  = "rgba(240,236,250,0.9)";
-const MUSH_BOSS_WEAK_COLOR    = "#ffd34a";
 const MUSH_BOSS_CAP_COLOR     = "#c8362a";
 const MUSH_BOSS_CAP_EDGE      = "#50100c";
 let mushBossFx = [];   // { kind: "rain"|"thread"|"dust", ... t, life }
@@ -16371,20 +16366,11 @@ let mushBossFx = [];   // { kind: "rain"|"thread"|"dust", ... t, life }
 /** 生成の最後に呼ぶ（剣鬼と同じ。首都の位置を基準に並べ終えてから） */
 function attachMushBoss(boss) {
   if (!boss) return;
-  boss._mushBoss = { st: "idle", t: 0, cool: MUSH_BOSS_FIRST_COOL, next: "rain", rings: [], threads: [], weak: 0, puffK: 0, sparkAt: -1 };
+  boss._mushBoss = { st: "idle", t: 0, cool: MUSH_BOSS_FIRST_COOL, next: "rain", rings: [], threads: [], puffK: 0 };
 }
 function mushBossSettlement() {
   const b = bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null;
   return b && b._mushBoss ? b : null;
-}
-/** 弱いところが開いているか（damageBuilding から） */
-function mushBossWeakOpen(s) { return !!s._mushBoss && s._mushBoss.weak > 0; }
-function mushBossTakeHit(s) {
-  const B = s._mushBoss;
-  if (mushClock - B.sparkAt < MUSH_BOSS_WEAK_SPARK_EVERY) return;
-  B.sparkAt = mushClock;
-  const a = fxRandom() * Math.PI * 2;
-  mushBossFx.push({ kind: "spark", x: s.wx + Math.cos(a) * s.radius * 0.7, y: s.wy + Math.sin(a) * s.radius * 0.7, t: 0, life: 0.35 });
 }
 
 /** 大笠茸の家を生やす元（城下の里。無ければ首都にいちばん近い、生きている家のある里） */
@@ -16418,8 +16404,7 @@ function updateMushBoss(dt, view) {
   if (!boss || boss.fallen) return false;
   const B = boss._mushBoss;
   let grew = false;
-  if (B.weak > 0) B.weak = Math.max(0, B.weak - dt);
-  // 降るのを待っている輪（溜めの後も弱いところとは別に数える）
+  // 降るのを待っている輪
   for (let k = B.rings.length - 1; k >= 0; k--) {
     const ring = B.rings[k];
     ring.t -= dt;
@@ -16449,7 +16434,7 @@ function updateMushBoss(dt, view) {
   return grew;
 }
 
-/** 笠がふくらみ切った：群れのまわりに輪を置き、弱いところを開く */
+/** 笠がふくらみ切った：群れのまわりに輪を置く */
 function mushBossReleaseRain(boss, B) {
   const t = Math.max(0, Math.min(1, currentStage / (STAGE_CONFIGS.length - 1)));
   const count = Math.round(MUSH_BOSS_RAIN_MIN + (MUSH_BOSS_RAIN_MAX - MUSH_BOSS_RAIN_MIN) * t);
@@ -16462,8 +16447,6 @@ function mushBossReleaseRain(boss, B) {
       B.rings.push({ x: px[i] + Math.cos(a) * d, y: py[i] + Math.sin(a) * d, r: MUSH_BOSS_RAIN_R, t: MUSH_BOSS_RAIN_FALL });
     }
   }
-  B.weak = MUSH_BOSS_WEAK_TIME;
-  pushWorldText(boss.wx, boss.wy - boss.radius * MUSH_BOSS_CAP_SCALE - 26, STRINGS.mushBossWeak, MUSH_BOSS_WEAK_COLOR);
   triggerShake(1.2, 0.12);
 }
 
@@ -16541,7 +16524,7 @@ function mushBossThreadBloom(boss, B, view) {
 
 /** 倒れた：胞子の粉を大きく散らす（見た目だけ） */
 function mushBossCrumble(boss) {
-  boss._mushBoss.st = "fallen"; boss._mushBoss.rings = []; boss._mushBoss.threads = []; boss._mushBoss.weak = 0;
+  boss._mushBoss.st = "fallen"; boss._mushBoss.rings = []; boss._mushBoss.threads = [];
   for (let k = 0; k < MUSH_BOSS_DUST_COUNT; k++) {
     const a = fxRandom() * Math.PI * 2, sp = 30 + fxRandom() * 140;
     mushBossFx.push({ kind: "dust", x: boss.wx, y: boss.wy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
@@ -16597,10 +16580,6 @@ function drawMushBossFx() {
       const age = f.t;
       ctx.fillStyle = `rgba(200,230,160,${0.7 * k})`;
       ctx.beginPath(); ctx.arc(f.x + f.vx * age * (1 - age / (f.life * 2)), f.y + f.vy * age * (1 - age / (f.life * 2)), f.r * (1 + age), 0, Math.PI * 2); ctx.fill();
-    } else if (f.kind === "spark") {
-      ctx.strokeStyle = `rgba(255,220,90,${k})`; ctx.lineWidth = 2;
-      const s = 4 + 8 * (1 - k);
-      ctx.beginPath(); ctx.moveTo(f.x - s, f.y); ctx.lineTo(f.x + s, f.y); ctx.moveTo(f.x, f.y - s); ctx.lineTo(f.x, f.y + s); ctx.stroke();
     }
   }
   ctx.restore();
@@ -16620,35 +16599,14 @@ function drawMushBoss(boss) {
     ctx.restore();
     return;
   }
-  const weak = B.weak > 0;
-  const weakK = weak ? Math.min(1, (MUSH_BOSS_WEAK_TIME - B.weak) / 0.2) : 0;   // 笠が持ち上がる（0.2秒で上がり切る）
   const puff = B.st === "puff" ? B.puffK : 0;
   const swell = 1 + 0.12 * puff + 0.03 * Math.sin(breathTime * (puff > 0 ? 18 : 1.6));
-  const lift = R * 0.32 * weakK;   // 持ち上がった笠は上（-y）へずれ、裏のひだが下に見える
   // 影
   ctx.globalAlpha = 0.32; ctx.fillStyle = "#000000";
   ctx.beginPath(); ctx.ellipse(x + R * 0.1, y + R * 0.18, R * swell, R * 0.9 * swell, 0, 0, Math.PI * 2); ctx.fill();
   ctx.globalAlpha = 1;
-  // 弱いところ：首都のまわりに脈打つ金の輪（どこを狙えばいいかを遠くからでも分かるように）
-  if (weak) {
-    const pulse = 0.5 + 0.5 * Math.sin(breathTime * 10);
-    ctx.strokeStyle = MUSH_BOSS_WEAK_COLOR; ctx.globalAlpha = 0.45 + 0.4 * pulse; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.arc(x, y, R * (1.25 + 0.08 * pulse), 0, Math.PI * 2); ctx.stroke();
-    ctx.globalAlpha = 1;
-    // 裏のひだ：放射状の金の筋（笠の下＝持ち上がった分だけ下に見える）
-    ctx.fillStyle = "#6a4a20";
-    ctx.beginPath(); ctx.arc(x, y, R * 0.92, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = MUSH_BOSS_WEAK_COLOR; ctx.lineWidth = 2; ctx.globalAlpha = 0.7 + 0.3 * pulse;
-    for (let k = 0; k < 24; k++) {
-      const a = k * Math.PI / 12;
-      ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * R * 0.2, y + Math.sin(a) * R * 0.2); ctx.lineTo(x + Math.cos(a) * R * 0.9, y + Math.sin(a) * R * 0.9); ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = "#e8dcc0";   // 柄
-    ctx.beginPath(); ctx.arc(x, y, R * 0.22, 0, Math.PI * 2); ctx.fill();
-  }
   // 笠
-  const cy = y - lift, rr = R * swell * (weak ? 0.9 : 1);
+  const cy = y, rr = R * swell;
   ctx.fillStyle = MUSH_BOSS_CAP_COLOR; ctx.strokeStyle = MUSH_BOSS_CAP_EDGE; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.arc(x, cy, rr, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   ctx.globalAlpha = 0.18; ctx.fillStyle = "#ffffff";
@@ -28461,7 +28419,7 @@ const STRINGS = {
     "人間はまたいつか、卵に手を伸ばすだろう。そのときは{dragon}もまた、何度でも戻ってくる。",
   // 名前の無い建物（役割も時代兵器も持たないもの）の呼び名
   attackerHouse: "民家", attackerTownBuilding: "町の建物", attackerLargeBuilding: "大型の建物",
-  attackerCapital: "首都", attackerRailBoss: "司令列車", attackerSwordBoss: "剣鬼", attackerMushBoss: "大笠茸", mushBossRain: "胞子の雨", mushBossThread: "菌糸の線", mushBossWeak: "ひだが光った！ 傷×2", attackerBossNova: "反発衝撃波",
+  attackerCapital: "首都", attackerRailBoss: "司令列車", attackerSwordBoss: "剣鬼", attackerMushBoss: "大笠茸", mushBossRain: "胞子の雨", mushBossThread: "菌糸の線", attackerBossNova: "反発衝撃波",
   // v3.16.0: 警戒度ラッシュ（{egg} は storyEgg で竜卵／星卵に置き換える）
   trNames: {
     haste: "猛進", siege: "大型包囲", horde: "小型の大軍", wind: "強風", meteor: "流星",
@@ -28587,7 +28545,7 @@ const STRINGS = {
       rule: "敵は近づいて斬るだけ（建物も首都も撃たない）。剣士は走っては間合いを測って寄ってきて、白い弧の予告のあとに斬る。突進の剣士は止まって向きの線を出して溜め、線の上を一気に駆け抜けて斬る（駆け抜けた後はすき）。撃つはずの建物からは、撃つかわりに足軽が1人ずつ出てくる。大太刀は大きな扇を赤く塗ってから広く薙ぐ。鎌付き戦車も走る。首都は大道場の主・剣鬼が区画の中を歩き、届く所を赤く塗ってから一文字（長い帯）か回し斬り（まわりの円）で斬る（塗りが満ちたら斬る。斬った後に踏み込む）。止まると囲まれるので、動き続けて折り返しで刈る" },
     // v3.130.0（案帳 DT-551 1回目）
     { route: "角 → 対角の首都", play: "湿った谷の里。人々は大きなキノコをくり抜いた家に住み、キノコの家は胞子を飛ばして隣に新しい家を生やす。放っておくと里がどんどん広がる。",
-      rule: "家は時間ごとに隣へ1棟ずつ生える（画面の外の里は最初の2倍まで。目の前の里は早く、どこまでも広がる）。群れが近づくと家が遅い黄色の胞子玉を撃ち、外れて落ちた胞子玉はそこにまた家を生やす。避けるほど里が外へ広がるので、早めに刈るか、外側から削る。首都は動かない大キノコ「大笠茸」で、群れのまわりに黄緑の点線の輪を出して胞子の雨を降らせ（輪の中に家が生える）、首都から白い菌糸の線を伸ばして線の上にキノコを生やして刺す。胞子の雨を吹いた直後の3秒だけ笠が持ち上がって裏のひだが金色に光り、傷が2倍になる。輪をよけてすぐ首都へ飛び込む" },
+      rule: "家は時間ごとに隣へ1棟ずつ生える（画面の外の里は最初の2倍まで。目の前の里は早く、どこまでも広がる）。群れが近づくと家が遅い黄色の胞子玉を撃ち、外れて落ちた胞子玉はそこにまた家を生やす。避けるほど里が外へ広がるので、早めに刈るか、外側から削る。首都は動かない大キノコ「大笠茸」で、群れのまわりに黄緑の点線の輪を出して胞子の雨を降らせ（輪の中に家が生える）、首都から白い菌糸の線を伸ばして線の上にキノコを生やして刺す。輪と線をよけながら首都を削る" },
   ],
   startRun: "はじめる",
   autoplayStart: "👀 オートプレイ",                          // v3.120.0（案帳 DT-538）
@@ -31097,7 +31055,7 @@ function damageBuilding(settlementIdx, damage) {
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   if (settlement.isBoss && heroGuarding()) damage *= HERO_GUARD_DMG;   // v3.35.0: 英雄が立っている間の王城
   if (settlement.isBoss && serpentGodGuarding()) damage *= GOD_GUARD_DMG;
-  if (settlement._mushBoss && mushBossWeakOpen(settlement)) { damage *= MUSH_BOSS_WEAK_MULT; mushBossTakeHit(settlement); }   // v3.134.0（案帳 DT-554）: 笠の裏のひだが光っている間   // v3.103.0（案帳 DT-180）: 蛇神が巻いている間の神殿
+  // v3.103.0（案帳 DT-180）: 蛇神が巻いている間の神殿
   if (settlement._orbFacility === undefined && orbFacilityKindAlive(settlement._townIndex) === "barrier") damage *= ORB_BARRIER_DMG_MULT;   // v3.48.0: 竜玉の結界塔
   settlement.hp -= damage;
   reportDamage(settlement, settlement.wx, settlement.wy, damage);
