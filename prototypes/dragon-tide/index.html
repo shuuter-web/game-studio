@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.137.0";
+const GAME_VERSION = "v3.138.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -15964,6 +15964,29 @@ const MUSH_HAMLET_KEY         = "hamlet";
 // v3.131.0（DT-551 手直し「強い街の建物もキノコで」）: 強い町（要塞化した町）のキノコの家は、濃い赤紫の笠に黒鉄の縁
 const MUSH_FORT_CAP_COLORS    = ["#7a1630", "#6c1228", "#861a36"];
 const MUSH_FORT_RIM_COLOR     = "#1c181e";
+// v3.138.0（案帳 DT-570・Shooter「キノコの家は色違いがあって色によって撃ってくる効果が違うと良い」「ひとまずはボスの菌糸の線でのみ」）:
+// 大笠茸の菌糸の線で生えるキノコだけ、線ごとに色が付く。3本の線に赤・青・黄・紫から重ならないように1色ずつ（赤も出る＝11/15 Shooter）。
+// 色ごとに近づいた群れへのふるまいが違うので、どの線から崩すかに理由ができる。色の家からは家を生やさない（青の連射が積み上がらないように）。
+//   赤：今のキノコの家と同じ（遅い胞子玉・外れた所に家が生える）
+//   青：狙って連射する（射程長め・間隔短め・弾が速い・先読みあり）。傷は赤と同じ小ささ
+//   黄：青と同じ射程と狙い。連射は少ない。竜に当たるか狙った所まで飛ぶとはじけ、まわりの竜に傷
+//   紫：撃たない。まわりに毒霧を出し続け、霧の中の竜は遅くなる（傷なし）
+const MUSH_LINE_COLORS = ["red", "blue", "yellow", "purple"];
+const MUSH_COLOR_DEFS = {
+  blue:   { cap: ["#3c78d8", "#3470cc", "#4684e0"], edge: "rgba(14,30,80,0.9)",
+            range: 400, every: 1.2, speed: 90, lead: 1.0, dmg: 3, burstR: 0, burstDmg: 0,
+            ball: "#8ad8ff", rim: "rgba(20,70,140,0.95)", halo: "rgba(138,216,255,0.22)" },
+  yellow: { cap: ["#e8c234", "#dcb428", "#f0cc40"], edge: "rgba(90,64,8,0.9)",
+            range: 400, every: 3.0, speed: 90, lead: 1.0, dmg: 0, burstR: 45, burstDmg: 6,
+            ball: "#ffe24c", rim: "rgba(120,84,8,0.95)", halo: "rgba(255,226,76,0.2)" },
+  purple: { cap: ["#8a4cc8", "#7e42bc", "#9656d4"], edge: "rgba(44,14,70,0.9)",
+            fogR: 90, fogSlow: 0.4 },   // 霧の中の竜は進む距離がこの割合だけ減る（速さ×0.6）
+};
+const MUSH_BURST_IMPACT   = 40;
+const MUSH_BURST_FX_LIFE  = 0.35;
+const MUSH_FOG_FILL       = "rgba(160,92,220,0.13)";
+const MUSH_FOG_EDGE       = "rgba(190,130,240,0.35)";
+const MUSH_COLOR_REACH    = 400;   // 色の家が撃つ距離の最大（群れの重心から見る里の範囲に使う）
 // v3.131.0（DT-551 手直し「動く敵の全てにキノコの傘の飾りを」）: 動く敵の頭にかぶせる笠の大きさ（敵の半径に掛ける・上下限）
 const MUSH_MOVER_CAP_SCALE    = 0.62;
 const MUSH_MOVER_CAP_MIN      = 3.5;
@@ -15974,7 +15997,8 @@ let sporeBalls    = [];     // { x, y, vx, vy, life, dmg, src, v }
 let mushClock     = 0;
 const _mushQueryBuf = [];
 
-function resetMushroom() { mushVillages = null; mushNewborn = []; sporeBalls = []; mushClock = 0; mushBossFx = []; }
+function resetMushroom() { mushVillages = null; mushNewborn = []; sporeBalls = []; mushClock = 0; mushBossFx = []; mushFogHouses = []; }
+let mushFogHouses = [];   // DT-570: 紫のキノコの家（毒霧を出す）
 
 /** キノコの家として描く建物か（役目のある建物・砲台・要塞・首都の本体はそのままの絵） */
 function isMushroomHouse(s) {
@@ -16058,13 +16082,18 @@ function clearRubbleUnder(x, y, r) {
 }
 
 /** 里 v に、親の家 parent を写した家を (x, y) に生やす。生やした建物を返す */
-function spawnMushHouse(v, parent, x, y) {
+function spawnMushHouse(v, parent, x, y, color) {
+  const def = color ? MUSH_COLOR_DEFS[color] : null;
   const s = { ...parent, wx: x, wy: y, hp: parent.maxHp, fallen: false, isEggBearer: false,   // 卵は持たない（経験値だけ）
               _mushGrown: true, _breathParticleTimer: 0,
               attackTimer: random() * (parent.projectileInterval || 1),
-              _sporeCd: MUSH_NEWBORN_TIME + random() * SPORE_EVERY };
+              _sporeCd: MUSH_NEWBORN_TIME + random() * (def && def.every ? def.every : SPORE_EVERY) };
   delete s._attacker;
   delete s._mushGone;
+  delete s._mushColor;
+  if (def) s._mushColor = color;   // DT-570: 菌糸の線の色の家
+  if (color === "purple") mushFogHouses.push(s);
+  if (def) v.colored = true;
   clearRubbleUnder(x, y, s.radius);
   settlements.push(s);
   const idx = settlements.length - 1;
@@ -16096,7 +16125,7 @@ function paintGrownMushHouse(idx) {
 /** 里の生きている家のどれかの隣に1棟生やす */
 function growMushVillage(v) {
   if (v.hamlet) return false;
-  const alive = v.members.filter(s => !s.fallen);
+  const alive = v.members.filter(s => !s.fallen && !s._mushColor);   // DT-570: 色の家からは生えない
   if (alive.length === 0) return false;   // 全部刈られた里はもう広がらない
   for (let k = 0; k < MUSH_GROW_TRIES; k++) {
     const parent = alive[Math.floor(random() * alive.length)];
@@ -16133,13 +16162,16 @@ function updateMushroom(dt) {
   let spread = 0;
   for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i]) spread = Math.max(spread, Math.abs(px[i] - centroid.x) + Math.abs(py[i] - centroid.y));
   const flockReach = SPORE_RANGE + spread;
+  const colorReach = MUSH_COLOR_REACH + spread;   // DT-570: 色の家のある里だけ遠くから見る（ほかの里の撃つ間合いは変えない）
   for (const v of mushVillages.values()) {
-    if (Math.hypot(v.cx - centroid.x, v.cy - centroid.y) > flockReach + v.r) continue;
+    if (Math.hypot(v.cx - centroid.x, v.cy - centroid.y) > (v.colored ? colorReach : flockReach) + v.r) continue;
     for (let list = 0; list < 2; list++) {
       const arr = list === 0 ? v.members : v.shooters;
       for (const s of arr) {
         if (s.fallen) continue;
-        if (s._sporeCd === undefined) s._sporeCd = random() * SPORE_EVERY;
+        const cdef = s._mushColor ? MUSH_COLOR_DEFS[s._mushColor] : null;
+        if (cdef && !cdef.range) continue;   // 紫は撃たない（毒霧は updateMushFog）
+        if (s._sporeCd === undefined) s._sporeCd = random() * (cdef ? cdef.every : SPORE_EVERY);
         s._sporeCd -= dt;
         if (s._sporeCd > 0) continue;
         s._sporeCd = SPORE_RECHECK;
@@ -16147,13 +16179,14 @@ function updateMushroom(dt) {
         const i = findNearestAliveBoid(s.wx, s.wy);
         if (i < 0) continue;
         const d = Math.hypot(px[i] - s.wx, py[i] - s.wy);
-        if (d > SPORE_RANGE) continue;
-        s._sporeCd = SPORE_EVERY;
-        if (list === 0) fireSpore(v, s, i, d, s, 0);
+        if (d > (cdef ? cdef.range : SPORE_RANGE)) continue;
+        s._sporeCd = cdef ? cdef.every : SPORE_EVERY;
+        if (cdef) fireColorSpore(v, s, i, d, cdef);
+        else if (list === 0) fireSpore(v, s, i, d, s, 0);
         else {
-          // 前哨堡：落ちた胞子玉が写す家は、その里の生きている家（無ければ生えない）
+          // 前哨堡：落ちた胞子玉が写す家は、その里の生きている家（無ければ生えない）。DT-570: 色の家は写さない
           let tmpl = null;
-          for (const h of v.members) if (!h.fallen) { tmpl = h; break; }
+          for (const h of v.members) if (!h.fallen && !h._mushColor) { tmpl = h; break; }
           for (let k = 0; k < SPORE_RAMPART_COUNT; k++) {
             const off = (k - (SPORE_RAMPART_COUNT - 1) / 2) * (SPORE_RAMPART_SPREAD / (SPORE_RAMPART_COUNT - 1));
             fireSpore(v, s, i, d, tmpl, off);
@@ -16172,11 +16205,12 @@ function updateMushroom(dt) {
       if (boidDead[i] || boidDowned[i]) continue;
       if (dist2(px[i], py[i], g.x, g.y) > hitR * hitR) continue;
       attackerNow = g.src;
-      hitBoid(i, { shot: g.dmg }, 0, 0);
+      if (g.dmg > 0) hitBoid(i, { shot: g.dmg }, 0, 0);
       hit = true;
     }
     if (!hit && g.life > 0) continue;
     sporeBalls.splice(k, 1);
+    if (g.burstR) mushSporeBurst(g);   // DT-570: 黄の胞子玉は当たっても届いてもはじける
     if (hit) continue;
     const onScreen = g.x > view.x0 && g.x < view.x1 && g.y > view.y0 && g.y < view.y1;
     const parent = g.parent;
@@ -16186,6 +16220,7 @@ function updateMushroom(dt) {
     spawnMushHouse(g.v, parent, g.x, g.y);
     grew = true;
   }
+  updateMushFog(dt, centroid, spread);   // DT-570: 紫の家の毒霧
   if (updateMushBoss(dt, view)) grew = true;   // v3.134.0（案帳 DT-554）: 首都の大笠茸
   if (grew) updateHUDBuildings();
 }
@@ -16203,6 +16238,54 @@ function fireSpore(v, s, i, d, parent, off) {
                     r: small ? SPORE_SMALL_RADIUS : SPORE_RADIUS,
                     hitR: SPORE_HIT_R - (small ? SPORE_RADIUS - SPORE_SMALL_RADIUS : 0) });
 }
+
+/** DT-570: 青・黄のキノコの家が竜 i（距離 d）を狙って撃つ。外れても家は生えない */
+function fireColorSpore(v, s, i, d, def) {
+  const lead = d / def.speed * def.lead;
+  const tx = px[i] + vx[i] * lead, ty = py[i] + vy[i] * lead;
+  const a = Math.atan2(ty - s.wy, tx - s.wx);
+  const travel = Math.max(40, Math.hypot(tx - s.wx, ty - s.wy));
+  const fer = moverFerocity();
+  sporeBalls.push({ x: s.wx, y: s.wy, vx: Math.cos(a) * def.speed, vy: Math.sin(a) * def.speed, life: travel / def.speed,
+                    dmg: def.dmg * fer, src: settlementAttacker(s), v, parent: null, r: SPORE_RADIUS, hitR: SPORE_HIT_R,
+                    color: s._mushColor, burstR: def.burstR, burstDmg: def.burstDmg * fer });
+}
+
+/** DT-570: 黄の胞子玉がはじける。まわりの竜に傷 */
+function mushSporeBurst(g) {
+  const r2 = g.burstR * g.burstR;
+  attackerNow = g.src;
+  for (let j = 0; j < N; j++) {
+    if (boidDead[j] || boidDowned[j]) continue;
+    const dx = px[j] - g.x, dy = py[j] - g.y, d2 = dx * dx + dy * dy;
+    if (d2 > r2) continue;
+    const d = Math.sqrt(d2) || 1;
+    hitBoid(j, { direct: g.burstDmg, impact: MUSH_BURST_IMPACT }, dx / d, dy / d);
+  }
+  mushBossFx.push({ kind: "burst", x: g.x, y: g.y, r: g.burstR, t: 0, life: MUSH_BURST_FX_LIFE });
+}
+
+/** DT-570: 紫の家のまわりの毒霧。霧の中の竜は遅くなる（毒吐き蛇の毒と同じく、進んだ分を少し戻す） */
+function updateMushFog(dt, centroid, spread) {
+  if (mushFogHouses.length === 0) return;
+  if (!boidFogged) boidFogged = new Int32Array(MAX_BOIDS);
+  const def = MUSH_COLOR_DEFS.purple, fr2 = def.fogR * def.fogR;
+  const reach = def.fogR + spread;
+  for (let k = mushFogHouses.length - 1; k >= 0; k--) {
+    const s = mushFogHouses[k];
+    if (s.fallen) { mushFogHouses.splice(k, 1); continue; }
+    if (Math.abs(s.wx - centroid.x) > reach || Math.abs(s.wy - centroid.y) > reach) continue;
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i] || boidFogged[i] === mushFogStamp) continue;
+      if (dist2(px[i], py[i], s.wx, s.wy) > fr2) continue;
+      boidFogged[i] = mushFogStamp;   // 霧が重なっても1回だけ遅くする
+      px[i] -= vx[i] * dt * def.fogSlow; py[i] -= vy[i] * dt * def.fogSlow;
+    }
+  }
+  mushFogStamp = (mushFogStamp + 1) & 0x3fffffff;
+}
+let mushFogStamp = 1;
+let boidFogged = null;   // MAX_BOIDS は後で定義されるので、使うときに作る（boidPoison と同じ）
 
 /** キノコの家を建物レイヤーに描く。上から見た赤い笠に白い点、笠の下に根元と小さな戸口 */
 function drawMushroomHouseOnLayer(c, s) {
@@ -16228,7 +16311,9 @@ function drawMushroomHouseOnLayer(c, s) {
   c.fillStyle = "#4a2c1c";
   c.fillRect(x - r * 0.13, y + r * 0.6, r * 0.26, r * 0.32);
   // 笠
-  c.fillStyle = fort ? MUSH_FORT_CAP_COLORS[seed % MUSH_FORT_CAP_COLORS.length] : MUSH_CAP_COLORS[seed % MUSH_CAP_COLORS.length];
+  const cdef = s._mushColor ? MUSH_COLOR_DEFS[s._mushColor] : null;   // DT-570: 菌糸の線の色の家は笠の色だけで分かるように
+  c.fillStyle = cdef ? cdef.cap[seed % cdef.cap.length]
+              : fort ? MUSH_FORT_CAP_COLORS[seed % MUSH_FORT_CAP_COLORS.length] : MUSH_CAP_COLORS[seed % MUSH_CAP_COLORS.length];
   c.beginPath(); c.arc(x, y, r * 0.9, 0, Math.PI * 2); c.fill();
   if (fort) {
     // 強い町：黒鉄の太い縁に鋲（ほかの地域の要塞化と同じ「明らかに強そう」を笠で出す）
@@ -16239,7 +16324,7 @@ function drawMushroomHouseOnLayer(c, s) {
       c.beginPath(); c.arc(x + Math.cos(a) * r * 0.9, y + Math.sin(a) * r * 0.9, Math.max(0.9, r * 0.08), 0, Math.PI * 2); c.fill();
     }
   } else {
-    c.strokeStyle = "rgba(80,16,12,0.85)"; c.lineWidth = 1.2; c.stroke();
+    c.strokeStyle = cdef ? cdef.edge : "rgba(80,16,12,0.85)"; c.lineWidth = 1.2; c.stroke();
   }
   c.globalAlpha = 0.2; c.fillStyle = "#ffffff";
   c.beginPath(); c.arc(x - r * 0.28, y - r * 0.3, r * 0.4, 0, Math.PI * 2); c.fill();
@@ -16283,15 +16368,36 @@ function drawMushroomFx() {
     ctx.beginPath(); ctx.arc(n.s.wx, n.s.wy, n.s.radius * (0.95 + 0.5 * (1 - pop)) + 2, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.globalAlpha = 1;
+  // DT-570: 紫の家の毒霧。家のまわりに薄い紫の円をゆっくり揺らす
+  {
+    const fogR = MUSH_COLOR_DEFS.purple.fogR;
+    for (const s of mushFogHouses) {
+      if (s.fallen || s.wx < view.x0 - fogR || s.wx > view.x1 + fogR || s.wy < view.y0 - fogR || s.wy > view.y1 + fogR) continue;
+      const wob = Math.sin(mushClock * 0.9 + s.wx * 0.01) * 5;
+      ctx.fillStyle = MUSH_FOG_FILL;
+      ctx.beginPath(); ctx.arc(s.wx, s.wy, fogR + wob, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = MUSH_FOG_FILL;
+      ctx.beginPath(); ctx.arc(s.wx + wob, s.wy - wob * 0.6, fogR * 0.6, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = MUSH_FOG_EDGE; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(s.wx, s.wy, fogR + wob, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
   // 胞子玉：淡い黄緑のふわっとした玉に、毛羽の点の輪（卵の黄色と見分ける）
   for (const g of sporeBalls) {
     if (g.x < view.x0 || g.x > view.x1 || g.y < view.y0 || g.y > view.y1) continue;
     const r = g.r;
-    ctx.fillStyle = SPORE_HALO_COLOR;
+    const cdef = g.color ? MUSH_COLOR_DEFS[g.color] : null;   // DT-570: 青は水色・黄は黄色の玉
+    ctx.fillStyle = cdef ? cdef.halo : SPORE_HALO_COLOR;
     ctx.beginPath(); ctx.arc(g.x, g.y, r + 4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = SPORE_COLOR; ctx.strokeStyle = SPORE_RIM_COLOR; ctx.lineWidth = 1.2;
+    ctx.fillStyle = cdef ? cdef.ball : SPORE_COLOR; ctx.strokeStyle = cdef ? cdef.rim : SPORE_RIM_COLOR; ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.arc(g.x, g.y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = SPORE_RIM_COLOR;
+    if (g.burstR) {
+      // 黄：はじける範囲を点線の輪で見せる（卵の黄色と紛れないように）
+      ctx.setLineDash([3, 4]); ctx.strokeStyle = cdef.ball; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(g.x, g.y, r + 7, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = cdef ? cdef.rim : SPORE_RIM_COLOR;
     const spin = mushClock * 1.5;
     for (let k = 0; k < 6; k++) {
       const a = spin + k * Math.PI / 3;
@@ -16387,24 +16493,24 @@ function mushBossSettlement() {
 /** 大笠茸の家を生やす元（城下の里。無ければ首都にいちばん近い、生きている家のある里） */
 function mushBossVillage(boss) {
   const cap = mushVillages.get("capital");
-  if (cap && cap.members.some(h => !h.fallen)) return cap;
+  if (cap && cap.members.some(h => !h.fallen && !h._mushColor)) return cap;
   let best = null, bestD = Infinity;
   for (const v of mushVillages.values()) {
-    if (v.hamlet || !v.members.some(h => !h.fallen)) continue;
+    if (v.hamlet || !v.members.some(h => !h.fallen && !h._mushColor)) continue;
     const d = dist2(v.cx, v.cy, boss.wx, boss.wy);
     if (d < bestD) { bestD = d; best = v; }
   }
   return best;
 }
 /** (x, y) に大笠茸の里の家を1棟生やす（里の上限・置ける所の内で）。生やせたら true */
-function mushBossGrowAt(v, x, y, view) {
+function mushBossGrowAt(v, x, y, view, color) {
   if (!v) return false;
   const onScreen = x > view.x0 && x < view.x1 && y > view.y0 && y < view.y1;
   if (mushAliveCount(v) >= mushVillageCap(v, onScreen)) return false;
   let parent = null;
-  for (const h of v.members) if (!h.fallen) { parent = h; break; }
+  for (const h of v.members) if (!h.fallen && !h._mushColor) { parent = h; break; }   // DT-570: 写すのは色の無い家
   if (!parent || !mushSpotFree(x, y, parent.radius)) return false;
-  spawnMushHouse(v, parent, x, y);
+  spawnMushHouse(v, parent, x, y, color && color !== "red" ? color : undefined);
   return true;
 }
 
@@ -16494,11 +16600,14 @@ function mushBossAimThreads(boss, B) {
   const base = Math.atan2(c.y - boss.wy, c.x - boss.wx);
   const len = Math.min(MUSH_BOSS_THREAD_MAX, Math.hypot(c.x - boss.wx, c.y - boss.wy) + MUSH_BOSS_THREAD_OVER);
   B.threads = [];
+  // DT-570: 線ごとに色（赤・青・黄・紫から重ならないように）。1本の線の上のキノコは同じ色
+  const colors = MUSH_LINE_COLORS.slice();
+  for (let k = colors.length - 1; k > 0; k--) { const j = Math.floor(random() * (k + 1)); [colors[k], colors[j]] = [colors[j], colors[k]]; }
   for (let k = 0; k < MUSH_BOSS_THREADS; k++) {
     const a = base + (k - (MUSH_BOSS_THREADS - 1) / 2) * (MUSH_BOSS_THREAD_SPREAD / (MUSH_BOSS_THREADS - 1));
     const r0 = boss.radius * MUSH_BOSS_CAP_SCALE;
     B.threads.push({ x0: boss.wx + Math.cos(a) * r0, y0: boss.wy + Math.sin(a) * r0,
-                     x1: boss.wx + Math.cos(a) * len, y1: boss.wy + Math.sin(a) * len });
+                     x1: boss.wx + Math.cos(a) * len, y1: boss.wy + Math.sin(a) * len, color: colors[k % colors.length] });
   }
 }
 
@@ -16526,7 +16635,7 @@ function mushBossThreadBloom(boss, B, view) {
     const len = Math.hypot(th.x1 - th.x0, th.y1 - th.y0);
     for (let d = MUSH_BOSS_THREAD_STEP; d < len; d += MUSH_BOSS_THREAD_STEP) {
       const f = d / len;
-      if (mushBossGrowAt(v, th.x0 + (th.x1 - th.x0) * f, th.y0 + (th.y1 - th.y0) * f, view)) grew = true;
+      if (mushBossGrowAt(v, th.x0 + (th.x1 - th.x0) * f, th.y0 + (th.y1 - th.y0) * f, view, th.color)) grew = true;
     }
   }
   B.threads = [];
@@ -16563,8 +16672,12 @@ function drawMushBossFx() {
     if (B.st === "thread") {
       const k = 1 - Math.max(0, B.t) / MUSH_BOSS_THREAD_WIND;
       for (const th of B.threads) {
-        ctx.strokeStyle = "rgba(240,236,250,0.12)"; ctx.lineWidth = MUSH_BOSS_THREAD_HALF * 2;
+        const tdef = th.color ? MUSH_COLOR_DEFS[th.color] : null;   // DT-570: 帯をその線の色で薄く染める（何が生えるかの予告）
+        ctx.strokeStyle = tdef ? tdef.cap[0] : th.color === "red" ? MUSH_CAP_COLORS[0] : "rgba(240,236,250,0.12)";
+        if (th.color) ctx.globalAlpha = 0.22;
+        ctx.lineWidth = MUSH_BOSS_THREAD_HALF * 2;
         ctx.beginPath(); ctx.moveTo(th.x0, th.y0); ctx.lineTo(th.x1, th.y1); ctx.stroke();
+        ctx.globalAlpha = 1;
         // 細い菌糸が根元から伸びていき、枝分かれの短いひげを生やす
         const ex = th.x0 + (th.x1 - th.x0) * k, ey = th.y0 + (th.y1 - th.y0) * k;
         ctx.strokeStyle = MUSH_BOSS_THREAD_COLOR; ctx.lineWidth = 2;
@@ -16583,6 +16696,12 @@ function drawMushBossFx() {
     if (f.kind === "rain") {
       ctx.fillStyle = `rgba(200,250,150,${0.5 * k})`;
       ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill();
+    } else if (f.kind === "burst") {
+      // DT-570: 黄の胞子玉がはじけた輪
+      ctx.fillStyle = `rgba(255,226,76,${0.35 * k})`;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.6 + 0.4 * (1 - k)), 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(255,240,150,${0.8 * k})`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.stroke();
     } else if (f.kind === "thread") {
       ctx.strokeStyle = `rgba(255,255,255,${0.8 * k})`; ctx.lineWidth = MUSH_BOSS_THREAD_HALF * 1.6 * k + 2;
       ctx.lineCap = "round";
@@ -28556,7 +28675,7 @@ const STRINGS = {
       rule: "敵は近づいて斬るだけ（建物も首都も撃たない）。剣士は走っては間合いを測って寄ってきて、白い弧の予告のあとに斬る。突進の剣士は止まって向きの線を出して溜め、線の上を一気に駆け抜けて斬る（駆け抜けた後はすき）。撃つはずの建物からは、撃つかわりに足軽が1人ずつ出てくる。大太刀は大きな扇を赤く塗ってから広く薙ぐ。鎌付き戦車も走る。首都は大道場の主・剣鬼が区画の中を歩き、届く所を赤く塗ってから一文字（長い帯）か回し斬り（まわりの円）で斬る（塗りが満ちたら斬る。斬った後に踏み込む）。止まると囲まれるので、動き続けて折り返しで刈る" },
     // v3.130.0（案帳 DT-551 1回目）
     { route: "角 → 対角の首都", play: "湿った谷の里。人々は大きなキノコをくり抜いた家に住み、キノコの家は胞子を飛ばして隣に新しい家を生やす。放っておくと里がどんどん広がる。",
-      rule: "家は時間ごとに隣へ1棟ずつ生える（画面の外の里は最初の2倍まで。目の前の里は早く、どこまでも広がる）。群れが近づくと家が遅い黄色の胞子玉を撃ち、外れて落ちた胞子玉はそこにまた家を生やす。避けるほど里が外へ広がるので、早めに刈るか、外側から削る。首都は動かない大キノコ「大笠茸」で、群れのまわりに黄緑の点線の輪を出して胞子の雨を降らせ（輪の中に家が生える）、首都から白い菌糸の線を伸ばして線の上にキノコを生やして刺す。輪と線をよけながら首都を削る" },
+      rule: "家は時間ごとに隣へ1棟ずつ生える（画面の外の里は最初の2倍まで。目の前の里は早く、どこまでも広がる）。群れが近づくと家が遅い黄色の胞子玉を撃ち、外れて落ちた胞子玉はそこにまた家を生やす。避けるほど里が外へ広がるので、早めに刈るか、外側から削る。首都は動かない大キノコ「大笠茸」で、群れのまわりに黄緑の点線の輪を出して胞子の雨を降らせ（輪の中に家が生える）、首都から白い菌糸の線を3本伸ばして線の上にキノコを生やして刺す。線ごとに生えるキノコの色が違い、赤はふつうの家、青は遠くから狙って連射、黄ははじける胞子玉、紫は撃たずにまわりの毒霧で竜を遅くする（色のキノコは増えない）。輪と線をよけながら首都を削る" },
   ],
   startRun: "はじめる",
   autoplayStart: "👀 オートプレイ",                          // v3.120.0（案帳 DT-538）
