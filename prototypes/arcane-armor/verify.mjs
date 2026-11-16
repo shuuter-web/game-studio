@@ -19,7 +19,7 @@ const html = fs.readFileSync(path.join(here, "index.html"), "utf8");
 const start = html.indexOf("// <SIM>"), end = html.indexOf("// </SIM>");
 if (start < 0 || end < 0) throw new Error("<SIM> 区間が見つからない");
 const sim = new Function(`${html.slice(start, end)}
-  return { BALANCE, makeRandomGenerator, createBattle, stepBattle, needsPlayerCommand, issueOrder, chooseAiOrder, battleFingerprint, TEAM_PLAYER, TEAM_ENEMY };`)();
+  return { BALANCE, makeRandomGenerator, createBattle, stepBattle, issueOrder, autoOrder, battleFingerprint, TEAM_PLAYER, TEAM_ENEMY };`)();
 
 const argument = (name, fallback) => {
   const index = process.argv.indexOf(name);
@@ -31,20 +31,13 @@ const tailTicks = 120;
 /** playerPolicy: "ai" | "none" | 指令ログ（リプレイ） */
 function run(seed, playerPolicy) {
   const battle = sim.createBattle(seed);
-  const replay = Array.isArray(playerPolicy) ? new Map(playerPolicy.map((order) => [order.tick, order.skillId])) : null;
+  const replay = new Map();
+  if (Array.isArray(playerPolicy)) for (const order of playerPolicy) replay.set(order.tick, [...(replay.get(order.tick) || []), order.unitId]);
   const autoRandom = sim.makeRandomGenerator(seed ^ 0x5bd1e995);
   let guard = 0;
   while (!battle.over || battle.tick < battle.overTick + tailTicks) {
-    if (replay) {
-      const skillId = replay.get(battle.tick);
-      if (skillId) sim.issueOrder(battle, sim.TEAM_PLAYER, skillId);
-    } else if (sim.needsPlayerCommand(battle)) {
-      if (playerPolicy === "ai") {
-        const choice = sim.chooseAiOrder(battle, sim.TEAM_PLAYER, autoRandom);
-        if (choice) sim.issueOrder(battle, sim.TEAM_PLAYER, choice);
-      }
-      battle.playerCommandTick = battle.tick;
-    }
+    if (Array.isArray(playerPolicy)) for (const unitId of replay.get(battle.tick) || []) sim.issueOrder(battle, sim.TEAM_PLAYER, unitId);
+    else if (playerPolicy === "ai" && !battle.over) sim.autoOrder(battle, sim.TEAM_PLAYER, autoRandom);
     sim.stepBattle(battle);
     battle.events.length = 0;
     if (++guard > 60 * 400) throw new Error(`seed ${seed}: 終わらない`);
