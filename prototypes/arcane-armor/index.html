@@ -50,7 +50,7 @@
   /* ---------- 指令ゲージと手札 ---------- */
   #bottom { position: fixed; left: 0; right: 0; bottom: 0; padding: 0 8px calc(8px + var(--safe-bottom)); pointer-events: none;
     transition: opacity .3s, transform .3s; }
-  #bottomInner { max-width: 860px; margin: 0 auto; }
+  #bottomInner { margin: 0 auto; }
   #gauge { display: flex; align-items: center; gap: 8px; font-size: 10px; letter-spacing: .14em; font-weight: 800; color: #cfd9f5; margin-bottom: 6px;
     text-shadow: 0 1px 3px #000; }
   #gauge .track { flex: 1; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .14); overflow: hidden; }
@@ -67,15 +67,13 @@
   .btn:active { transform: translateY(2px); box-shadow: 0 1px 0 #6d4c12; }
   .btn.ghost { background: rgba(255, 255, 255, .08); color: #dfe8ff; box-shadow: inset 0 0 0 1px var(--line); }
   .btn:disabled { filter: grayscale(1) brightness(.6); }
-  #deck { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-  @media (min-aspect-ratio: 1/1) { #deck { grid-template-columns: repeat(8, 1fr); } }
+  #deck { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  #bottomInner { max-width: 640px; }
   .card { pointer-events: auto; position: relative; overflow: hidden; border-radius: 11px; padding: 6px 4px 5px; text-align: center; cursor: pointer;
     background: linear-gradient(180deg, rgba(38, 52, 84, .92), rgba(13, 19, 34, .95)); border: 1px solid rgba(140, 170, 255, .32);
     transition: transform .12s, filter .2s, box-shadow .2s; filter: saturate(.55) brightness(.72); }
-  .card.commander { background: linear-gradient(180deg, rgba(84, 62, 24, .94), rgba(28, 20, 10, .96)); border-color: rgba(242, 193, 78, .55); }
   .card svg { width: 30px; height: 30px; display: block; margin: 0 auto 2px; stroke: var(--cyan); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
     filter: drop-shadow(0 0 4px rgba(110, 243, 255, .7)); }
-  .card.commander svg { stroke: var(--gold); filter: drop-shadow(0 0 4px rgba(242, 193, 78, .7)); }
   .card .title { font-size: 11px; font-weight: 900; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card .tag { font-size: 8.5px; opacity: .7; letter-spacing: .04em; white-space: nowrap; }
   .card .cool { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: rgba(4, 7, 14, .72); border-top: 1px solid rgba(255, 255, 255, .25); }
@@ -227,7 +225,7 @@
 
 <script>
 "use strict";
-const GAME_VERSION = "v0.1.0";
+const GAME_VERSION = "v0.2.0";
 
 // =================================================================
 // <SIM> ここから </SIM> まではDOMにも描画にも触らない戦闘ロジック。
@@ -255,180 +253,110 @@ function reseedRandom(seedValue) {
 function random() { return nextLogicRandom(); }     // 戦闘結果に効く乱数
 function fxRandom() { return nextFxRandom(); }      // 見た目だけの乱数（リプレイの再現性に影響させない）
 
-// 数値はここに集める（本制作では data/balance/ へ切り出す）
+// 数値はここに集める（本制作では data/balance/ へ切り出す）。距離の単位は「車両1両がおよそ1.4」
 const BALANCE = {
   tickRate: 60,
-  mapWidth: 20, mapDepth: 12, maxLevel: 3,
-  firstCommandSeconds: 3, commandIntervalSeconds: 7, timeLimitSeconds: 180,
-  heightDamagePerLevel: 0.12,   // 高所から撃つと1段ごとに与ダメージ+12%（低所からは−12%）
-  heightRangePerLevel: 0.5,     // 高所から撃つと1段ごとに射程+0.5マス
-  heightFactorMin: 0.7, heightFactorMax: 1.4,
-  waterSpeedFactor: 0.6,
-  holdRangeFactor: 0.92,        // 射程ぎりぎりで止まると相手の1歩で外れるので少し踏み込む
-  damageVariance: 0.1,
-  splashEdgeFactor: 0.5,        // 爆風の縁でのダメージ倍率
-  retargetSeconds: 0.5,
+  fieldWidth: 44, fieldDepth: 27,
+  hitboxFactor: 0.65,           // 当たり判定は見た目より小さめ（かすめた弾は外れ扱いにして撃ち合いを長引かせる）
+  fastTargetPenalty: 5,         // 装甲車以外は、速くて当てにくい装甲車を後回しにする
+  firstCommandSeconds: 5, commandIntervalSeconds: 7, timeLimitSeconds: 150,
+  rearDot: 0.5,                 // 弾の進行方向と車体の向きの内積がこれ以上なら背面命中
+  rearDamageFactor: 2,          // 背面はダメージ2倍（回り込みに意味を持たせる）
+  aimTolerance: 0.07,           // 砲がこの角度以内に向いたら撃つ（ラジアン）
+  retargetSeconds: 0.6,
+  avoidDistance: 4, obstacleMargin: 2.2, edgeMargin: 2.0,
+  obstaclePairs: 6,
   units: {
-    tank:      { hp: 920,  damage: 30, range: 4.6, reload: 1.7,  speed: 1.2, weapon: "cannon", shellSpeed: 15 },
-    heavy:     { hp: 1900, damage: 56, range: 4.2, reload: 2.9,  speed: 0.75, weapon: "cannon", shellSpeed: 13 },
-    artillery: { hp: 520,  damage: 44, range: 8.5, reload: 4.2,  speed: 0.8, weapon: "mortar", splash: 1.3, flightBase: 1.0, flightPerTile: 0.07 },
-    scout:     { hp: 560,  damage: 5,  range: 3.6, reload: 0.24, speed: 2.0, weapon: "gun",    shellSpeed: 28 },
-    oracle:    { hp: 600,  damage: 22, range: 5.2, reload: 2.3,  speed: 1.0, weapon: "bolt",   chain: 2, chainRange: 2.6, chainFactor: 0.6 },
+    // behavior: 車種ごとの行動方式。skirmish=目標の周りを回りながら撃つ / assault=正面装甲を向けて押す /
+    //           siege=遠くに止まって撃ち、寄られたら後退 / raider=高速で後衛を狙い周回 / escort=味方の主力の後ろにつく
+    tank:      { hp: 4, radius: 0.75, maxSpeed: 3.0, reverseSpeed: 1.8, acceleration: 4, braking: 7, turnRate: 1.7, pivot: true, turretRate: 3.0,
+                 behavior: "skirmish", preferredRange: 10, orbitLead: 0.55, orbitThrottle: 0.8, leadSkill: 0.9, weaveRate: 0.03, weaveAngle: 0.65,
+                 weapon: { kind: "shell", damage: 1, speed: 13, range: 13, reload: 4.6, spread: 0.22, radius: 0.18, burst: 1 } },
+    heavy:     { hp: 8, radius: 0.95, maxSpeed: 1.9, reverseSpeed: 1.1, acceleration: 2.2, braking: 6, turnRate: 1.1, pivot: true, turretRate: 1.8,
+                 behavior: "assault", holdRange: 10, frontArmor: 0.5, leadSkill: 0.9,
+                 weapon: { kind: "shell", damage: 2, speed: 11.5, range: 13.5, reload: 6.2, spread: 0.18, radius: 0.24, burst: 1 } },
+    artillery: { hp: 2, radius: 0.75, maxSpeed: 2.2, reverseSpeed: 1.9, acceleration: 3, braking: 6, turnRate: 1.3, pivot: true, turretRate: 1.2, turretLimit: 0.4,
+                 behavior: "siege", fleeRange: 10, leadSkill: 0.6,
+                 weapon: { kind: "mortar", damage: 2, splash: 1.6, range: 21, minRange: 6, reload: 8, flight: 1.8, scatter: 4, maxFireSpeed: 0.6 } },
+    scout:     { hp: 3, radius: 0.6, maxSpeed: 5.2, reverseSpeed: 2.5, acceleration: 7, braking: 9, turnRate: 2.4, pivot: false, turretRate: 5,
+                 behavior: "raider", preferredRange: 6, orbitLead: 1.0, orbitThrottle: 1, leadSkill: 0.85, backlineBias: 14, diveDistance: 5,
+                 weapon: { kind: "shell", damage: 0.5, speed: 16, range: 9.5, reload: 3.2, spread: 0.25, radius: 0.1, burst: 3, burstInterval: 0.11 } },
+    oracle:    { hp: 3, radius: 0.7, maxSpeed: 2.9, reverseSpeed: 1.8, acceleration: 4, braking: 7, turnRate: 1.8, pivot: false, turretRate: 9,
+                 behavior: "escort", followDistance: 4.2, soloRange: 11,
+                 weapon: { kind: "orb", damage: 1, speed: 8.5, range: 13, reload: 5.5, spread: 0, radius: 0.26, burst: 1, homing: 1.0, life: 2.2 } },
   },
-  // 自軍の初期配置 [種別, x, z]。敵軍は点対称に置く
+  // 自軍の初期配置 [種別, x, z]（戦場の中心が原点）。敵軍は点対称に置く
   formation: [
-    ["scout", 3, 1], ["tank", 3, 3], ["heavy", 3, 4], ["tank", 3, 5], ["tank", 3, 6], ["heavy", 3, 7], ["tank", 3, 8], ["scout", 3, 10],
-    ["oracle", 1, 3], ["oracle", 1, 8], ["artillery", 0, 5], ["artillery", 0, 6],
+    ["scout", -13.5, -11.5], ["scout", -13.5, 11.5], ["tank", -14.5, -7.5], ["tank", -14.5, -2.5], ["tank", -14.5, 2.5], ["tank", -14.5, 7.5],
+    ["heavy", -12.5, -5], ["heavy", -12.5, 5], ["oracle", -17, -4], ["oracle", -17, 4], ["artillery", -19.5, -2.2], ["artillery", -19.5, 2.2],
   ],
   skills: {
-    pierce:  { kind: "unit", unitType: "tank",      cooldown: 18, damage: 150, length: 10, width: 0.65, stagger: 0.14 },
-    barrier: { kind: "unit", unitType: "heavy",     cooldown: 24, shield: 340, radius: 3, duration: 8 },
-    barrage: { kind: "unit", unitType: "artillery", cooldown: 22, shells: 6, interval: 0.28, damage: 50, splash: 1.3, spread: 1.7, flight: 1.2, clusterRadius: 2.5 },
-    blitz:   { kind: "unit", unitType: "scout",     cooldown: 16, duration: 7, speedFactor: 1.7, reloadFactor: 0.5, evade: 0.45 },
-    storm:   { kind: "unit", unitType: "oracle",    cooldown: 20, damage: 80, jumps: 5, jumpRange: 3.2, stun: 1.5, stagger: 0.2 },
-    meteor:  { kind: "commander", cooldown: 40, damage: 380, radius: 2.6, delay: 1.6, clusterRadius: 2.5 },
-    repair:  { kind: "commander", cooldown: 36, healFraction: 0.3, duration: 4 },
-    charge:  { kind: "commander", cooldown: 30, duration: 8, damageFactor: 1.35, speedFactor: 1.35 },
+    pierce:  { unitType: "tank",      cooldown: 16, damage: 2, speed: 38, range: 30, radius: 0.32, stagger: 0.16 },
+    barrier: { unitType: "heavy",     cooldown: 22, hits: 2, radius: 6.5, duration: 8 },
+    barrage: { unitType: "artillery", cooldown: 20, shells: 5, interval: 0.26, damage: 2, splash: 2.2, spread: 3.4, flight: 1.5, clusterRadius: 5 },
+    blitz:   { unitType: "scout",     cooldown: 14, duration: 6, speedFactor: 1.5, reloadFactor: 0.45 },
+    storm:   { unitType: "oracle",    cooldown: 18, damage: 1, jumps: 3, range: 18, jumpRange: 7, stun: 2, stagger: 0.2 },
   },
-  skillOrder: ["pierce", "barrier", "barrage", "blitz", "storm", "meteor", "repair", "charge"],
-  ai: { passChance: 0.3, repairBelow: 0.7, engageDistance: 8 },
+  skillOrder: ["pierce", "barrier", "barrage", "blitz", "storm"],
+  ai: { passChance: 0.3, engageDistance: 19 },
 };
 
 const TEAM_PLAYER = 0, TEAM_ENEMY = 1;
 const TICK_SECONDS = 1 / BALANCE.tickRate;
-const KIND_GRASS = 0, KIND_DIRT = 1, KIND_STONE = 2, KIND_WATER = 3, KIND_SAND = 4;
-const PROP_NONE = 0, PROP_ROCK = 1, PROP_CRYSTAL = 2, PROP_RUIN = 3, PROP_TREE = 4;
-const UNREACHABLE = 32767;
-const NEIGHBOR_OFFSETS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+const OBSTACLE_ROCK = 0, OBSTACLE_RUIN = 1, OBSTACLE_CRYSTAL = 2, OBSTACLE_GROVE = 3;
+const FULL_TURN = Math.PI * 2;
 
 function secondsToTicks(seconds) { return Math.round(seconds * BALANCE.tickRate); }
 function clampNumber(value, low, high) { return value < low ? low : (value > high ? high : value); }
+function angleDelta(from, to) {
+  let delta = (to - from) % FULL_TURN;
+  if (delta > Math.PI) delta -= FULL_TURN; else if (delta < -Math.PI) delta += FULL_TURN;
+  return delta;
+}
+function turnToward(current, wanted, maxStep) { return current + clampNumber(angleDelta(current, wanted), -maxStep, maxStep); }
 
-// ---------- 地形 ----------
-function buildMapCandidate(seed, flat) {
-  const width = BALANCE.mapWidth, depth = BALANCE.mapDepth;
-  const mapRandom = makeRandomGenerator((seed ^ 0xA53C91E7) >>> 0);
-  const latticeColumns = 8, latticeRows = 6;
-  const makeLattice = () => Array.from({ length: (latticeColumns + 1) * (latticeRows + 1) }, () => mapRandom());
-  const heightLattice = makeLattice(), wetLattice = makeLattice(), soilLattice = makeLattice();
-  function sample(lattice, x, z) {
-    const fx = x / (width - 1) * latticeColumns, fz = z / (depth - 1) * latticeRows;
-    const ix = Math.min(latticeColumns - 1, Math.floor(fx)), iz = Math.min(latticeRows - 1, Math.floor(fz));
-    let tx = fx - ix, tz = fz - iz;
-    tx = tx * tx * (3 - 2 * tx); tz = tz * tz * (3 - 2 * tz);
-    const at = (cx, cz) => lattice[cz * (latticeColumns + 1) + cx];
-    return (at(ix, iz) * (1 - tx) + at(ix + 1, iz) * tx) * (1 - tz) + (at(ix, iz + 1) * (1 - tx) + at(ix + 1, iz + 1) * tx) * tz;
+// ---------- 戦場（平らな広場と、遮蔽になる障害物） ----------
+function generateField(seed) {
+  const fieldRandom = makeRandomGenerator((seed ^ 0xA53C91E7) >>> 0);
+  const obstacles = [];
+  for (let attempt = 0; attempt < 60 && obstacles.length < BALANCE.obstaclePairs * 2; attempt++) {
+    const x = (fieldRandom() * 2 - 1) * 10.5, z = (fieldRandom() * 2 - 1) * (BALANCE.fieldDepth / 2 - 2.8);
+    const radius = 0.9 + fieldRandom() * 0.8, kind = Math.floor(fieldRandom() * 4);
+    if (Math.hypot(x * 2, z * 2) < radius * 2 + 3) continue;           // 点対称の相方と近すぎる
+    if (obstacles.some((other) => Math.hypot(other.x - x, other.z - z) < other.radius + radius + 3.2 || Math.hypot(other.x + x, other.z + z) < other.radius + radius + 3.2)) continue;
+    obstacles.push({ x, z, radius, kind }, { x: -x, z: -z, radius, kind });   // 両軍の条件を等しくする
   }
-  // 点対称にして両軍の地の利を等しくする
-  const symmetric = (lattice, x, z) => (sample(lattice, x, z) + sample(lattice, width - 1 - x, depth - 1 - z)) / 2;
-  const level = new Int8Array(width * depth), kind = new Uint8Array(width * depth), prop = new Uint8Array(width * depth);
-  const spawnDepth = 4;
-  for (let z = 0; z < depth; z++) for (let x = 0; x < width; x++) {
-    const index = x + z * width;
-    const edge = Math.min(x, width - 1 - x);
-    let value = (symmetric(heightLattice, x, z) - 0.5) * 2.6 + 0.5;
-    if (edge < spawnDepth) value = 0.4 + (value - 0.4) * (edge / spawnDepth);   // 出撃地点はなだらかに
-    const tileLevel = flat ? 1 : clampNumber(Math.floor(value * 4), 0, BALANCE.maxLevel);
-    level[index] = tileLevel;
-    const wet = symmetric(wetLattice, x, z), soil = symmetric(soilLattice, x, z);
-    if (tileLevel === 0) kind[index] = (edge >= spawnDepth && wet > 0.47) ? KIND_WATER : KIND_SAND;
-    else if (tileLevel === 3) kind[index] = KIND_STONE;
-    else kind[index] = soil > 0.56 ? KIND_DIRT : KIND_GRASS;
-  }
-  if (!flat) {
-    for (let z = 0; z < depth; z++) for (let x = spawnDepth; x < width / 2; x++) {
-      const index = x + z * width, mirror = (width - 1 - x) + (depth - 1 - z) * width;
-      const roll = mapRandom();
-      if (kind[index] === KIND_WATER) continue;
-      let placed = PROP_NONE;
-      if (roll < 0.03) placed = PROP_ROCK; else if (roll < 0.05) placed = PROP_CRYSTAL; else if (roll < 0.065) placed = PROP_RUIN; else if (roll < 0.11) placed = PROP_TREE;
-      prop[index] = placed; prop[mirror] = placed;
-    }
-  }
-  return { width, depth, level, kind, prop, seed };
-}
-function canStep(map, fromX, fromZ, toX, toZ) {
-  if (toX < 0 || toZ < 0 || toX >= map.width || toZ >= map.depth) return false;
-  const from = fromX + fromZ * map.width, to = toX + toZ * map.width;
-  if (map.prop[to] !== PROP_NONE || Math.abs(map.level[to] - map.level[from]) > 1) return false;
-  if (fromX !== toX && fromZ !== toZ) {   // 斜めは角の2マスも通れること（崖や岩の角をすり抜けない）
-    const cornerA = toX + fromZ * map.width, cornerB = fromX + toZ * map.width;
-    for (const corner of [cornerA, cornerB]) {
-      if (map.prop[corner] !== PROP_NONE) return false;
-      if (Math.abs(map.level[corner] - map.level[from]) > 1 || Math.abs(map.level[corner] - map.level[to]) > 1) return false;
-    }
-  }
-  return true;
-}
-function computeDistanceField(map, targetIndex) {
-  const field = new Int16Array(map.width * map.depth).fill(UNREACHABLE);
-  const queue = new Int16Array(map.width * map.depth);
-  let head = 0, tail = 0;
-  field[targetIndex] = 0; queue[tail++] = targetIndex;
-  while (head < tail) {
-    const current = queue[head++], x = current % map.width, z = (current - x) / map.width;
-    for (const [dx, dz] of NEIGHBOR_OFFSETS) {
-      const nx = x + dx, nz = z + dz;
-      // 段差の条件は対称なので「隣→ここ」を「ここ→隣」で判定してよい（出発マスの置物だけ別に見る）
-      if (nx < 0 || nz < 0 || nx >= map.width || nz >= map.depth) continue;
-      const next = nx + nz * map.width;
-      if (field[next] !== UNREACHABLE || map.prop[next] !== PROP_NONE) continue;
-      if (!canStep(map, nx, nz, x, z) && current !== targetIndex) continue;
-      if (current === targetIndex && Math.abs(map.level[next] - map.level[current]) > 1) continue;
-      field[next] = field[current] + 1; queue[tail++] = next;
-    }
-  }
-  return field;
-}
-function isMapConnected(map) {
-  const goal = (map.width - 4) + Math.floor(map.depth / 2) * map.width;
-  if (map.prop[goal] !== PROP_NONE) return false;
-  const field = computeDistanceField(map, goal);
-  for (const [, x, z] of BALANCE.formation) {
-    if (field[x + z * map.width] === UNREACHABLE) return false;
-    if (field[(map.width - 1 - x) + (map.depth - 1 - z) * map.width] === UNREACHABLE) return false;
-  }
-  return true;
-}
-function generateMap(seed) {
-  for (let attempt = 0; attempt < 24; attempt++) {
-    const map = buildMapCandidate((seed + attempt * 7919) >>> 0, false);
-    if (isMapConnected(map)) return map;
-  }
-  return buildMapCandidate(seed, true);
+  return { width: BALANCE.fieldWidth, depth: BALANCE.fieldDepth, obstacles, seed };
 }
 
 // ---------- 戦闘の生成 ----------
 function createBattle(seed) {
   reseedRandom(seed);
-  const map = generateMap(currentSeed);
+  const field = generateField(currentSeed);
   const battle = {
-    seed: currentSeed, map, tick: 0, units: [], projectiles: [], scheduled: [], events: [],
-    occupied: new Int16Array(map.width * map.depth).fill(-1),
+    seed: currentSeed, field, tick: 0, units: [], bullets: [], shells: [], scheduled: [], events: [], nextBulletId: 1,
     readyTick: [{}, {}], nextCommandTick: secondsToTicks(BALANCE.firstCommandSeconds), playerCommandTick: -1,
     orderLog: [], over: false, winner: -1, overTick: -1,
     stats: { damage: [0, 0], kills: [0, 0], orders: [0, 0] },
-    fieldCache: new Map(), fieldCacheTick: -1,
   };
   for (const skillId of BALANCE.skillOrder) { battle.readyTick[0][skillId] = 0; battle.readyTick[1][skillId] = 0; }
   // id を交互に振る（偶数=自軍・奇数=敵軍）。更新順で片方だけが先手にならないように
   for (const [type, x, z] of BALANCE.formation) {
     spawnUnit(battle, TEAM_PLAYER, type, x, z);
-    spawnUnit(battle, TEAM_ENEMY, type, map.width - 1 - x, map.depth - 1 - z);
+    spawnUnit(battle, TEAM_ENEMY, type, -x, -z);
   }
   return battle;
 }
 function spawnUnit(battle, team, type, x, z) {
-  const definition = BALANCE.units[type];
+  const definition = BALANCE.units[type], heading = team === TEAM_PLAYER ? Math.PI / 2 : -Math.PI / 2;
   const unit = {
-    id: battle.units.length, team, type, def: definition, hp: definition.hp, maxHp: definition.hp, alive: true,
-    x, z, tileX: x, tileZ: z, tileIndex: x + z * battle.map.width, fromX: x, fromZ: z,
-    moving: false, moveProgress: 0, moveLength: 1, heading: team === TEAM_PLAYER ? Math.PI / 2 : -Math.PI / 2,
-    reloadTimer: definition.reload * BALANCE.tickRate * (0.3 + 0.7 * random()), targetId: -1, retargetTimer: 0,
-    shield: 0, shieldTime: 0, blitzTime: 0, chargeTime: 0, stunTime: 0, regenTime: 0, regenPerTick: 0,
+    id: battle.units.length, team, type, def: definition, hp: definition.hp, maxHp: definition.hp, alive: true, radius: definition.radius,
+    x, z, heading, speed: 0, turret: heading, driveHeading: heading, driveSpeed: 0,
+    reload: definition.weapon.reload * BALANCE.tickRate * (0.7 + 0.6 * random()), burstLeft: 0, burstTimer: 0,
+    targetId: -1, retargetTimer: 0, orbitSign: (battle.units.length >> 1) % 2 === 0 ? 1 : -1,
+    shield: 0, shieldTime: 0, blitzTime: 0, stunTime: 0, leadError: 0.4 + random() * 0.8,
   };
   battle.units.push(unit);
-  battle.occupied[unit.tileIndex] = unit.id;
   return unit;
 }
 
@@ -448,16 +376,11 @@ function stepBattle(battle) {
     const unit = battle.units[forward ? i : count - 1 - i];
     if (unit.alive) updateUnit(battle, unit);
   }
-  updateProjectiles(battle);
+  separateVehicles(battle);
+  updateBullets(battle);
+  updateShells(battle);
   if (!battle.over) checkOutcome(battle);
   battle.tick++;
-}
-function unitLevel(battle, unit) { return battle.map.level[unit.tileIndex]; }
-function effectiveRange(battle, unit, target) {
-  return unit.def.range + BALANCE.heightRangePerLevel * Math.max(0, unitLevel(battle, unit) - unitLevel(battle, target));
-}
-function heightFactor(battle, unit, target) {
-  return clampNumber(1 + BALANCE.heightDamagePerLevel * (unitLevel(battle, unit) - unitLevel(battle, target)), BALANCE.heightFactorMin, BALANCE.heightFactorMax);
 }
 function nearestEnemy(battle, team, x, z, excluded) {
   let best = null, bestDistance = Infinity;
@@ -470,156 +393,279 @@ function nearestEnemy(battle, team, x, z, excluded) {
 }
 function pickTarget(battle, unit) {
   let best = null, bestScore = Infinity;
+  const bias = unit.def.backlineBias || 0;
   for (const other of battle.units) {
     if (!other.alive || other.team === unit.team) continue;
-    const distance = Math.hypot(other.x - unit.x, other.z - unit.z);
-    let score = distance + other.hp / other.maxHp;                 // 近くて弱った相手を優先
-    if (distance <= effectiveRange(battle, unit, other)) score -= 2;
-    if (other.id === unit.targetId) score -= 0.75;                  // 目標をころころ変えない
+    let score = Math.hypot(other.x - unit.x, other.z - unit.z);
+    if (bias > 0 && (other.type === "artillery" || other.type === "oracle")) score -= bias;   // 装甲車は後衛を狙う
+    else if (bias === 0 && other.type === "scout") score += BALANCE.fastTargetPenalty;
+    if (other.id === unit.targetId) score -= 1.5;                                                // 目標をころころ変えない
     if (score < bestScore) { bestScore = score; best = other; }
   }
   unit.targetId = best ? best.id : -1;
 }
-function getDistanceField(battle, targetIndex) {
-  if (battle.fieldCacheTick !== battle.tick) { battle.fieldCache.clear(); battle.fieldCacheTick = battle.tick; }
-  let field = battle.fieldCache.get(targetIndex);
-  if (!field) { field = computeDistanceField(battle.map, targetIndex); battle.fieldCache.set(targetIndex, field); }
-  return field;
+
+// ---------- 操縦（前進・後退・旋回・加減速だけ。横滑りはしない） ----------
+/** 行き先へ向かう操縦入力を決める。近くの車両・障害物・戦場の端を避ける向きを足す */
+function steerTo(battle, unit, goalX, goalZ, cruise, allowReverse) {
+  const field = battle.field, halfWidth = field.width / 2, halfDepth = field.depth / 2;
+  let dirX = goalX - unit.x, dirZ = goalZ - unit.z;
+  const distance = Math.hypot(dirX, dirZ) || 1;
+  dirX /= distance; dirZ /= distance;
+  for (const other of battle.units) {
+    if (!other.alive || other === unit) continue;
+    const gap = Math.hypot(unit.x - other.x, unit.z - other.z), reach = BALANCE.avoidDistance + other.radius;
+    if (gap < reach && gap > 0.001) { const push = (1 - gap / reach) * 1.6 / gap; dirX += (unit.x - other.x) * push; dirZ += (unit.z - other.z) * push; }
+  }
+  for (const obstacle of field.obstacles) {
+    const gap = Math.hypot(unit.x - obstacle.x, unit.z - obstacle.z), reach = obstacle.radius + unit.radius + BALANCE.obstacleMargin;
+    if (gap < reach && gap > 0.001) { const push = (1 - gap / reach) * 2.4 / gap; dirX += (unit.x - obstacle.x) * push; dirZ += (unit.z - obstacle.z) * push; }
+  }
+  const margin = BALANCE.edgeMargin;
+  if (unit.x > halfWidth - margin) dirX -= (unit.x - (halfWidth - margin)) / margin * 2; else if (unit.x < -halfWidth + margin) dirX += (-halfWidth + margin - unit.x) / margin * 2;
+  if (unit.z > halfDepth - margin) dirZ -= (unit.z - (halfDepth - margin)) / margin * 2; else if (unit.z < -halfDepth + margin) dirZ += (-halfDepth + margin - unit.z) / margin * 2;
+  const wanted = Math.atan2(dirX, dirZ), off = Math.abs(angleDelta(unit.heading, wanted));
+  if (allowReverse && off > 2.1 && distance < 6) {        // 真後ろの近い行き先はバックで向かう
+    unit.driveHeading = wanted + Math.PI; unit.driveSpeed = -Math.min(unit.def.reverseSpeed, cruise);
+    return;
+  }
+  unit.driveHeading = wanted;
+  // 履帯は止まって向きを変えてから走る。装輪は走りながら曲がる（曲がるほど減速）
+  unit.driveSpeed = cruise * (unit.def.pivot ? (off > 0.9 ? 0.15 : 1) : Math.max(0.45, 1 - off / 2.6));
+}
+function holdFacing(unit, angle) { unit.driveHeading = angle; unit.driveSpeed = 0; }
+function isInsideField(battle, x, z, margin) {
+  return Math.abs(x) < battle.field.width / 2 - margin && Math.abs(z) < battle.field.depth / 2 - margin;
+}
+function orbitTarget(battle, unit, target) {
+  const definition = unit.def, range = definition.preferredRange;
+  const angle = Math.atan2(unit.x - target.x, unit.z - target.z) + unit.orbitSign * definition.orbitLead;
+  const goalX = target.x + Math.sin(angle) * range, goalZ = target.z + Math.cos(angle) * range;
+  if (!isInsideField(battle, goalX, goalZ, 1)) unit.orbitSign = -unit.orbitSign;   // 端にぶつかる回り方ならやめて逆へ
+  steerTo(battle, unit, goalX, goalZ, definition.maxSpeed * definition.orbitThrottle, false);
+}
+const BEHAVIORS = {
+  skirmish(battle, unit, target, distance) {
+    if (distance > unit.def.preferredRange + 2.5) {
+      // まっすぐ寄ると良い的になるので、左右に切り返しながら詰める
+      const weave = Math.sin(battle.tick * unit.def.weaveRate + unit.id * 1.7) > 0 ? unit.def.weaveAngle : -unit.def.weaveAngle;
+      const toward = Math.atan2(target.x - unit.x, target.z - unit.z) + (distance < unit.def.weapon.range + 7 ? weave : 0);
+      steerTo(battle, unit, unit.x + Math.sin(toward) * 6, unit.z + Math.cos(toward) * 6, unit.def.maxSpeed, false);
+    } else orbitTarget(battle, unit, target);
+  },
+  raider(battle, unit, target, distance) {
+    // 敵の前衛の射線に入らないよう、戦場の端を回り込んでから後衛へ切り込む
+    const edgeZ = (unit.z >= 0 ? 1 : -1) * (battle.field.depth / 2 - 1.6);
+    if (Math.abs(target.x - unit.x) > unit.def.diveDistance) steerTo(battle, unit, target.x, edgeZ, unit.def.maxSpeed, false);
+    else if (distance > unit.def.preferredRange + 2.5) steerTo(battle, unit, target.x, target.z, unit.def.maxSpeed, false);
+    else orbitTarget(battle, unit, target);
+  },
+  assault(battle, unit, target, distance) {
+    const toward = Math.atan2(target.x - unit.x, target.z - unit.z);
+    if (distance > unit.def.holdRange) steerTo(battle, unit, target.x, target.z, unit.def.maxSpeed, false);
+    else if (distance < unit.def.holdRange * 0.5) { unit.driveHeading = toward; unit.driveSpeed = -unit.def.reverseSpeed; }
+    else holdFacing(unit, toward);   // 正面装甲を向けて撃ち合う
+  },
+  siege(battle, unit, target, distance) {
+    const toward = Math.atan2(target.x - unit.x, target.z - unit.z), weapon = unit.def.weapon;
+    const closest = nearestEnemy(battle, unit.team, unit.x, unit.z, null);
+    const threat = closest ? Math.hypot(closest.x - unit.x, closest.z - unit.z) : Infinity;
+    if (threat < unit.def.fleeRange) {
+      const away = Math.atan2(closest.x - unit.x, closest.z - unit.z);
+      if (isInsideField(battle, unit.x - Math.sin(away) * 2.5, unit.z - Math.cos(away) * 2.5, 1)) { unit.driveHeading = away; unit.driveSpeed = -unit.def.reverseSpeed; }
+      else holdFacing(unit, toward);
+    } else if (distance > weapon.range * 0.85) steerTo(battle, unit, target.x, target.z, unit.def.maxSpeed, false);
+    else holdFacing(unit, toward);
+  },
+  escort(battle, unit, target, distance) {
+    let leader = null, leaderDistance = Infinity;
+    for (const ally of battle.units) {
+      if (!ally.alive || ally.team !== unit.team || (ally.type !== "heavy" && ally.type !== "tank")) continue;
+      const gap = Math.hypot(ally.x - unit.x, ally.z - unit.z);
+      if (gap < leaderDistance) { leaderDistance = gap; leader = ally; }
+    }
+    const toward = Math.atan2(target.x - unit.x, target.z - unit.z);
+    if (!leader) {   // 守ってくれる主力がいなければ距離を取って撃つ
+      if (distance > unit.def.soloRange) steerTo(battle, unit, target.x, target.z, unit.def.maxSpeed, false);
+      else if (distance < unit.def.soloRange * 0.6) { unit.driveHeading = toward; unit.driveSpeed = -unit.def.reverseSpeed; }
+      else holdFacing(unit, toward);
+      return;
+    }
+    const front = Math.atan2(target.x - leader.x, target.z - leader.z);
+    const goalX = leader.x - Math.sin(front) * unit.def.followDistance, goalZ = leader.z - Math.cos(front) * unit.def.followDistance;
+    const gap = Math.hypot(goalX - unit.x, goalZ - unit.z);
+    if (gap > 1.4) steerTo(battle, unit, goalX, goalZ, Math.min(unit.def.maxSpeed, 1.2 + gap), true);
+    else holdFacing(unit, unit.heading);
+  },
+};
+function integrateVehicle(battle, unit) {
+  const definition = unit.def, boosted = unit.blitzTime > 0;
+  const grip = definition.pivot ? 1 : clampNumber(Math.abs(unit.speed) / (definition.maxSpeed * 0.3), 0, 1);   // 装輪は走っていないと曲がれない
+  unit.heading = turnToward(unit.heading, unit.driveHeading, definition.turnRate * TICK_SECONDS * grip);
+  const wanted = clampNumber(unit.driveSpeed, -definition.reverseSpeed, definition.maxSpeed) * (boosted ? BALANCE.skills.blitz.speedFactor : 1);
+  const slowing = Math.abs(wanted) < Math.abs(unit.speed) || wanted * unit.speed < 0;
+  const rate = (slowing ? definition.braking : definition.acceleration) * TICK_SECONDS * (boosted ? 1.5 : 1);
+  unit.speed += clampNumber(wanted - unit.speed, -rate, rate);
+  unit.x += Math.sin(unit.heading) * unit.speed * TICK_SECONDS;
+  unit.z += Math.cos(unit.heading) * unit.speed * TICK_SECONDS;
+  for (const obstacle of battle.field.obstacles) {
+    const gap = Math.hypot(unit.x - obstacle.x, unit.z - obstacle.z), reach = obstacle.radius + unit.radius;
+    if (gap < reach && gap > 0.001) {
+      unit.x = obstacle.x + (unit.x - obstacle.x) / gap * reach; unit.z = obstacle.z + (unit.z - obstacle.z) / gap * reach;
+      unit.speed *= 0.9;
+    }
+  }
+  const limitX = battle.field.width / 2 - unit.radius, limitZ = battle.field.depth / 2 - unit.radius;
+  unit.x = clampNumber(unit.x, -limitX, limitX); unit.z = clampNumber(unit.z, -limitZ, limitZ);
+}
+/** 重なった車両を押し離す（避け損ねて接触したときの最後の保険） */
+function separateVehicles(battle) {
+  const units = battle.units;
+  for (let i = 0; i < units.length; i++) {
+    const a = units[i];
+    if (!a.alive) continue;
+    for (let j = i + 1; j < units.length; j++) {
+      const b = units[j];
+      if (!b.alive) continue;
+      const dx = b.x - a.x, dz = b.z - a.z, reach = a.radius + b.radius;
+      if (Math.abs(dx) >= reach || Math.abs(dz) >= reach) continue;
+      const gap = Math.hypot(dx, dz);
+      if (gap >= reach || gap < 0.001) continue;
+      const push = (reach - gap) / 2 / gap;
+      a.x -= dx * push; a.z -= dz * push; b.x += dx * push; b.z += dz * push;
+      a.speed *= 0.96; b.speed *= 0.96;
+    }
+  }
 }
 function updateUnit(battle, unit) {
-  const definition = unit.def;
+  const definition = unit.def, weapon = definition.weapon;
   if (unit.shieldTime > 0 && --unit.shieldTime === 0) unit.shield = 0;
   if (unit.blitzTime > 0) unit.blitzTime--;
-  if (unit.chargeTime > 0) unit.chargeTime--;
-  if (unit.regenTime > 0) { unit.regenTime--; unit.hp = Math.min(unit.maxHp, unit.hp + unit.regenPerTick); }
-  if (unit.reloadTimer > 0) unit.reloadTimer -= unit.blitzTime > 0 ? 1 / BALANCE.skills.blitz.reloadFactor : 1;
-  if (unit.stunTime > 0) { unit.stunTime--; return; }
-
+  if (unit.reload > 0) unit.reload -= unit.blitzTime > 0 ? 1 / BALANCE.skills.blitz.reloadFactor : 1;
+  if (unit.stunTime > 0) {   // 感電中は惰性で止まるだけ
+    unit.stunTime--; unit.driveHeading = unit.heading; unit.driveSpeed = 0; unit.burstLeft = 0;
+    integrateVehicle(battle, unit);
+    return;
+  }
   let target = unit.targetId >= 0 ? battle.units[unit.targetId] : null;
   if (--unit.retargetTimer <= 0 || !target || !target.alive) {
     pickTarget(battle, unit);
     unit.retargetTimer = secondsToTicks(BALANCE.retargetSeconds);
     target = unit.targetId >= 0 ? battle.units[unit.targetId] : null;
   }
-  if (unit.moving) advanceMove(battle, unit);
-  if (!target) return;
+  if (!target) { holdFacing(unit, unit.heading); integrateVehicle(battle, unit); return; }
   const distance = Math.hypot(target.x - unit.x, target.z - unit.z);
-  const range = effectiveRange(battle, unit, target);
-  if (!unit.moving && distance > range * BALANCE.holdRangeFactor) tryMove(battle, unit, target);
-  if (unit.reloadTimer <= 0 && distance <= range) fireWeapon(battle, unit, target, distance);
-}
-function advanceMove(battle, unit) {
-  let speed = unit.def.speed;
-  if (battle.map.kind[unit.tileIndex] === KIND_WATER) speed *= BALANCE.waterSpeedFactor;
-  if (unit.blitzTime > 0) speed *= BALANCE.skills.blitz.speedFactor;
-  if (unit.chargeTime > 0) speed *= BALANCE.skills.charge.speedFactor;
-  unit.moveProgress += speed * TICK_SECONDS / unit.moveLength;
-  if (unit.moveProgress >= 1) { unit.moveProgress = 1; unit.moving = false; unit.x = unit.tileX; unit.z = unit.tileZ; return; }
-  unit.x = unit.fromX + (unit.tileX - unit.fromX) * unit.moveProgress;
-  unit.z = unit.fromZ + (unit.tileZ - unit.fromZ) * unit.moveProgress;
-}
-function tryMove(battle, unit, target) {
-  const map = battle.map, field = getDistanceField(battle, target.tileIndex);
-  const here = field[unit.tileIndex];
-  let bestX = -1, bestZ = -1, bestField = UNREACHABLE, bestDistance = Infinity;
-  for (let i = 0; i < 8; i++) {
-    const [dx, dz] = NEIGHBOR_OFFSETS[(i + unit.id) & 7];   // 探索の始点をずらして全員が同じ向きに寄らないように
-    const nx = unit.tileX + dx, nz = unit.tileZ + dz;
-    if (!canStep(map, unit.tileX, unit.tileZ, nx, nz)) continue;
-    const index = nx + nz * map.width;
-    if (battle.occupied[index] >= 0) continue;
-    const distance = Math.hypot(target.x - nx, target.z - nz);
-    if (field[index] < bestField || (field[index] === bestField && distance < bestDistance)) {
-      bestField = field[index]; bestDistance = distance; bestX = nx; bestZ = nz;
-    }
+  BEHAVIORS[definition.behavior](battle, unit, target, distance);
+  integrateVehicle(battle, unit);
+
+  // 照準: 弾が届くまでに相手が進む分だけ先を狙う（偏差射撃）
+  const flight = weapon.kind === "mortar" ? weapon.flight : distance / weapon.speed;
+  const lead = flight * (definition.leadSkill || 0) * unit.leadError;   // 見越しの読みは1発ごとにぶれる
+  const aimX = target.x + Math.sin(target.heading) * target.speed * lead, aimZ = target.z + Math.cos(target.heading) * target.speed * lead;
+  let wanted = Math.atan2(aimX - unit.x, aimZ - unit.z);
+  const exact = wanted;
+  if (definition.turretLimit !== undefined) wanted = unit.heading + clampNumber(angleDelta(unit.heading, wanted), -definition.turretLimit, definition.turretLimit);
+  unit.turret = turnToward(unit.turret, wanted, definition.turretRate * TICK_SECONDS);
+  if (unit.burstLeft > 0 && --unit.burstTimer <= 0) {
+    fireBullet(battle, unit, target, unit.turret);
+    unit.burstLeft--; unit.burstTimer = secondsToTicks(weapon.burstInterval || 0);
   }
-  if (bestX < 0 || bestField > here) return;
-  if (bestField === here && random() > 0.3) return;        // 前が詰まっているときだけ、たまに横へずれる
-  battle.occupied[unit.tileIndex] = -1;
-  unit.fromX = unit.tileX; unit.fromZ = unit.tileZ;
-  unit.tileX = bestX; unit.tileZ = bestZ; unit.tileIndex = bestX + bestZ * map.width;
-  battle.occupied[unit.tileIndex] = unit.id;
-  unit.moving = true; unit.moveProgress = 0;
-  unit.moveLength = Math.hypot(bestX - unit.fromX, bestZ - unit.fromZ);
-  unit.heading = Math.atan2(bestX - unit.fromX, bestZ - unit.fromZ);
-}
-function rollDamage(battle, unit, target, base) {
-  let amount = base * (1 + (random() * 2 - 1) * BALANCE.damageVariance) * heightFactor(battle, unit, target);
-  if (unit.chargeTime > 0) amount *= BALANCE.skills.charge.damageFactor;
-  return amount;
-}
-function fireWeapon(battle, unit, target, distance) {
-  const definition = unit.def;
-  unit.reloadTimer += definition.reload * BALANCE.tickRate;
-  const damage = rollDamage(battle, unit, target, definition.damage);
-  if (definition.weapon === "bolt") {
-    const visited = new Set([target.id]), chainIds = [target.id];
-    applyDamage(battle, target, damage, unit.team, true);
-    let current = target, chained = damage;
-    for (let jump = 0; jump < definition.chain; jump++) {
-      const next = nearestEnemy(battle, unit.team, current.x, current.z, visited);
-      if (!next || Math.hypot(next.x - current.x, next.z - current.z) > definition.chainRange) break;
-      chained *= definition.chainFactor;
-      visited.add(next.id); chainIds.push(next.id);
-      applyDamage(battle, next, chained, unit.team, true);
-      current = next;
-    }
-    battle.events.push({ type: "bolt", unitId: unit.id, targetIds: chainIds, big: false });
+  if (unit.reload > 0 || unit.burstLeft > 0 || Math.abs(angleDelta(unit.turret, exact)) > BALANCE.aimTolerance) return;
+  if (weapon.kind === "mortar") {
+    const reach = Math.hypot(aimX - unit.x, aimZ - unit.z);
+    if (reach > weapon.range || reach < weapon.minRange || Math.abs(unit.speed) > weapon.maxFireSpeed) return;
+    const angle = random() * FULL_TURN, miss = Math.sqrt(random()) * weapon.scatter;
+    launchShell(battle, unit, aimX + Math.cos(angle) * miss, aimZ + Math.sin(angle) * miss, weapon.flight, weapon.damage, weapon.splash, false);
+    unit.reload += weapon.reload * BALANCE.tickRate;
+    unit.leadError = 0.4 + random() * 0.8;
     return;
   }
-  let duration;
-  if (definition.weapon === "mortar") {
-    duration = definition.flightBase + distance * definition.flightPerTile;
-    battle.projectiles.push({ splash: definition.splash, team: unit.team, targetId: -1, x: target.x, z: target.z, ticks: secondsToTicks(duration), damage, weapon: "mortar" });
-  } else {
-    duration = distance / definition.shellSpeed;
-    battle.projectiles.push({ splash: 0, team: unit.team, targetId: target.id, x: target.x, z: target.z, ticks: Math.max(1, secondsToTicks(duration)), damage, weapon: definition.weapon });
-  }
-  battle.events.push({ type: "fire", unitId: unit.id, weapon: definition.weapon, targetId: target.id, x: target.x, z: target.z, duration, skill: false });
+  if (distance > weapon.range) return;
+  unit.reload += weapon.reload * BALANCE.tickRate;
+  unit.leadError = 0.4 + random() * 0.8;
+  fireBullet(battle, unit, target, unit.turret);
+  unit.burstLeft = weapon.burst - 1; unit.burstTimer = secondsToTicks(weapon.burstInterval || 0);
 }
-function splashDamage(battle, team, x, z, radius, damage) {
-  for (const other of battle.units) {
-    if (!other.alive || other.team === team) continue;
-    const distance = Math.hypot(other.x - x, other.z - z);
-    if (distance > radius) continue;
-    applyDamage(battle, other, damage * (1 - (1 - BALANCE.splashEdgeFactor) * distance / radius), team, false);
-  }
+
+// ---------- 弾（当たり判定を持って飛ぶ） ----------
+function fireBullet(battle, unit, target, aim) {
+  const weapon = unit.def.weapon, angle = aim + (random() * 2 - 1) * weapon.spread;
+  const dirX = Math.sin(angle), dirZ = Math.cos(angle), start = unit.radius + 0.25;
+  const bullet = {
+    id: battle.nextBulletId++, kind: weapon.kind, team: unit.team, x: unit.x + dirX * start, z: unit.z + dirZ * start,
+    vx: dirX * weapon.speed, vz: dirZ * weapon.speed, speed: weapon.speed, radius: weapon.radius, damage: weapon.damage,
+    life: secondsToTicks(weapon.life || weapon.range * 1.2 / weapon.speed), homing: weapon.homing || 0, targetId: target.id, pierced: null, heavy: unit.type === "heavy",
+  };
+  battle.bullets.push(bullet);
+  battle.events.push({ type: "fire", unitId: unit.id, weapon: weapon.kind, angle });
 }
-function updateProjectiles(battle) {
-  const list = battle.projectiles;
+function launchShell(battle, unit, x, z, flight, damage, splash, skill) {
+  x = clampNumber(x, -battle.field.width / 2, battle.field.width / 2); z = clampNumber(z, -battle.field.depth / 2, battle.field.depth / 2);
+  battle.shells.push({ team: unit.team, x, z, ticks: secondsToTicks(flight), damage, splash });
+  battle.events.push({ type: "fire", unitId: unit.id, weapon: "mortar", angle: Math.atan2(x - unit.x, z - unit.z), x, z, duration: flight, skill });
+}
+function updateBullets(battle) {
+  const list = battle.bullets, halfWidth = battle.field.width / 2 + 1, halfDepth = battle.field.depth / 2 + 1;
   for (let i = list.length - 1; i >= 0; i--) {
-    const shot = list[i];
-    if (--shot.ticks > 0) continue;
+    const bullet = list[i];
+    if (bullet.homing > 0) {   // 魔弾は目標へゆるく曲がる（振り切れる程度）
+      const target = battle.units[bullet.targetId];
+      if (target.alive) {
+        const heading = turnToward(Math.atan2(bullet.vx, bullet.vz), Math.atan2(target.x - bullet.x, target.z - bullet.z), bullet.homing * TICK_SECONDS);
+        bullet.vx = Math.sin(heading) * bullet.speed; bullet.vz = Math.cos(heading) * bullet.speed;
+      }
+    }
+    bullet.x += bullet.vx * TICK_SECONDS; bullet.z += bullet.vz * TICK_SECONDS;
+    let spent = --bullet.life <= 0 || Math.abs(bullet.x) > halfWidth || Math.abs(bullet.z) > halfDepth;
+    if (!spent && !bullet.pierced) {
+      for (const obstacle of battle.field.obstacles) {
+        if (Math.hypot(bullet.x - obstacle.x, bullet.z - obstacle.z) < obstacle.radius * 0.9 + bullet.radius) {
+          battle.events.push({ type: "ricochet", x: bullet.x, z: bullet.z, kind: bullet.kind }); spent = true; break;
+        }
+      }
+    }
+    if (!spent) {
+      for (const unit of battle.units) {
+        if (!unit.alive || unit.team === bullet.team || (bullet.pierced && bullet.pierced.has(unit.id))) continue;
+        if (Math.hypot(bullet.x - unit.x, bullet.z - unit.z) >= unit.radius * BALANCE.hitboxFactor + bullet.radius) continue;
+        damageVehicle(battle, unit, bullet.damage, bullet.team, bullet.vx / bullet.speed, bullet.vz / bullet.speed, bullet.x, bullet.z, bullet.kind);
+        if (bullet.pierced) bullet.pierced.add(unit.id); else { spent = true; break; }
+      }
+    }
+    if (spent) { battle.events.push({ type: "bulletEnd", id: bullet.id }); list.splice(i, 1); }
+  }
+}
+function updateShells(battle) {
+  const list = battle.shells;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const shell = list[i];
+    if (--shell.ticks > 0) continue;
     list.splice(i, 1);
-    if (shot.splash > 0) {
-      battle.events.push({ type: "explode", x: shot.x, z: shot.z, radius: shot.splash, weapon: shot.weapon });
-      splashDamage(battle, shot.team, shot.x, shot.z, shot.splash, shot.damage);
-    } else {
-      const target = battle.units[shot.targetId];
-      if (!target.alive) continue;
-      battle.events.push({ type: "impact", targetId: target.id, weapon: shot.weapon });
-      applyDamage(battle, target, shot.damage, shot.team, true);
+    battle.events.push({ type: "explode", x: shell.x, z: shell.z, radius: shell.splash });
+    for (const unit of battle.units) {
+      if (!unit.alive || unit.team === shell.team) continue;
+      const distance = Math.hypot(unit.x - shell.x, unit.z - shell.z);
+      if (distance > shell.splash + unit.radius * 0.5) continue;
+      damageVehicle(battle, unit, distance < shell.splash * 0.5 ? shell.damage : shell.damage / 2, shell.team, 0, 0, unit.x, unit.z, "mortar");
     }
   }
 }
-function applyDamage(battle, target, amount, sourceTeam, evadable) {
+/** dirX/dirZ は弾の進行方向（爆風など向きのない攻撃は 0,0） */
+function damageVehicle(battle, target, amount, sourceTeam, dirX, dirZ, x, z, kind) {
   if (!target.alive) return;
-  if (evadable && target.blitzTime > 0 && random() < BALANCE.skills.blitz.evade) {
-    battle.events.push({ type: "evade", unitId: target.id });
+  if (target.shield > 0) {
+    if (--target.shield === 0) target.shieldTime = 0;
+    battle.events.push({ type: "hit", unitId: target.id, amount: 0, blocked: true, rear: false, armored: false, x, z, kind });
     return;
   }
-  let absorbed = 0;
-  if (target.shield > 0) {
-    absorbed = Math.min(target.shield, amount);
-    target.shield -= absorbed; amount -= absorbed;
-    if (target.shield <= 0) target.shieldTime = 0;
-  }
+  const facing = dirX * Math.sin(target.heading) + dirZ * Math.cos(target.heading);
+  const rear = facing > BALANCE.rearDot, armored = facing < -BALANCE.rearDot && target.def.frontArmor !== undefined;
+  if (rear) amount *= BALANCE.rearDamageFactor; else if (armored) amount *= target.def.frontArmor;
   target.hp -= amount;
   battle.stats.damage[sourceTeam] += amount;
-  battle.events.push({ type: "hit", unitId: target.id, amount, absorbed });
-  if (target.hp <= 0) {
+  battle.events.push({ type: "hit", unitId: target.id, amount, blocked: false, rear, armored, x, z, kind });
+  if (target.hp <= 0.001) {
     target.hp = 0; target.alive = false;
-    if (battle.occupied[target.tileIndex] === target.id) battle.occupied[target.tileIndex] = -1;
     battle.stats.kills[sourceTeam]++;
     battle.events.push({ type: "death", unitId: target.id });
   }
@@ -639,14 +685,14 @@ function checkOutcome(battle) {
   if (winner !== -2) { battle.over = true; battle.winner = winner; battle.overTick = battle.tick; battle.events.push({ type: "over", winner }); }
 }
 
-// ---------- 指令（スキル） ----------
+// ---------- 指令（車種ごとのスキル） ----------
 function aliveOfType(battle, team, type) {
   return battle.units.filter((unit) => unit.alive && unit.team === team && (type === null || unit.type === type));
 }
 function canIssueOrder(battle, team, skillId) {
   const skill = BALANCE.skills[skillId];
   if (!skill || battle.over || battle.readyTick[team][skillId] > battle.tick) return false;
-  return skill.kind === "commander" || aliveOfType(battle, team, skill.unitType).length > 0;
+  return aliveOfType(battle, team, skill.unitType).length > 0;
 }
 function findCluster(battle, enemyTeam, radius) {
   let best = null, bestScore = -1;
@@ -671,27 +717,24 @@ function issueOrder(battle, team, skillId) {
   battle.readyTick[team][skillId] = battle.tick + secondsToTicks(skill.cooldown);
   battle.orderLog.push({ tick: battle.tick, team, skillId });
   battle.stats.orders[team]++;
-  const casters = skill.kind === "unit" ? aliveOfType(battle, team, skill.unitType) : [];
-  const allies = aliveOfType(battle, team, null);
-  const event = { type: "skill", team, skillId, unitIds: (skill.kind === "unit" ? casters : allies).map((unit) => unit.id), x: 0, z: 0 };
-  battle.events.push(event);
+  const casters = aliveOfType(battle, team, skill.unitType);
+  battle.events.push({ type: "skill", team, skillId, unitIds: casters.map((unit) => unit.id) });
   switch (skillId) {
     case "pierce":
-      casters.forEach((unit, index) => schedule(battle, 0.25 + index * skill.stagger, { action: "pierceShot", unitId: unit.id }));
+      casters.forEach((unit, index) => schedule(battle, 0.25 + index * skill.stagger, { action: "lanceShot", unitId: unit.id }));
       break;
     case "barrier":
-      for (const heavy of casters) for (const ally of allies) {
-        if (Math.hypot(ally.x - heavy.x, ally.z - heavy.z) > skill.radius) continue;
-        ally.shield = Math.max(ally.shield, skill.shield); ally.shieldTime = secondsToTicks(skill.duration);
+      for (const heavy of casters) for (const ally of battle.units) {
+        if (!ally.alive || ally.team !== team || Math.hypot(ally.x - heavy.x, ally.z - heavy.z) > skill.radius) continue;
+        ally.shield = Math.max(ally.shield, skill.hits); ally.shieldTime = secondsToTicks(skill.duration);
       }
       break;
     case "barrage": {
       const cluster = findCluster(battle, enemyTeam, skill.clusterRadius);
       if (!cluster) break;
-      event.x = cluster.x; event.z = cluster.z;
       casters.forEach((unit, index) => {
         for (let shell = 0; shell < skill.shells; shell++) {
-          const angle = random() * Math.PI * 2, reach = Math.sqrt(random()) * skill.spread;
+          const angle = random() * FULL_TURN, reach = Math.sqrt(random()) * skill.spread;
           schedule(battle, 0.2 + shell * skill.interval + index * 0.12,
             { action: "barrageFire", unitId: unit.id, x: cluster.x + Math.cos(angle) * reach, z: cluster.z + Math.sin(angle) * reach });
         }
@@ -704,23 +747,6 @@ function issueOrder(battle, team, skillId) {
     case "storm":
       casters.forEach((unit, index) => schedule(battle, 0.3 + index * skill.stagger, { action: "stormCast", unitId: unit.id }));
       break;
-    case "meteor": {
-      const cluster = findCluster(battle, enemyTeam, skill.clusterRadius);
-      if (!cluster) break;
-      event.x = cluster.x; event.z = cluster.z;
-      battle.events.push({ type: "meteorWarn", team, x: cluster.x, z: cluster.z, radius: skill.radius, delay: skill.delay });
-      schedule(battle, skill.delay, { action: "meteorImpact", team, x: cluster.x, z: cluster.z });
-      break;
-    }
-    case "repair":
-      for (const unit of allies) {
-        unit.regenTime = secondsToTicks(skill.duration);
-        unit.regenPerTick = unit.maxHp * skill.healFraction / unit.regenTime;
-      }
-      break;
-    case "charge":
-      for (const unit of allies) unit.chargeTime = secondsToTicks(skill.duration);
-      break;
   }
   return true;
 }
@@ -730,51 +756,40 @@ function runScheduled(battle) {
   if (due.length === 0) return;
   battle.scheduled = battle.scheduled.filter((entry) => entry.tick > battle.tick);
   for (const entry of due) {
-    if (entry.action === "meteorImpact") {
-      const skill = BALANCE.skills.meteor;
-      battle.events.push({ type: "meteorHit", team: entry.team, x: entry.x, z: entry.z, radius: skill.radius });
-      splashDamage(battle, entry.team, entry.x, entry.z, skill.radius, skill.damage);
-      continue;
-    }
     const unit = battle.units[entry.unitId];
     if (!unit.alive) continue;
-    if (entry.action === "pierceShot") {
+    if (entry.action === "lanceShot") {
       const skill = BALANCE.skills.pierce;
       const aimed = (unit.targetId >= 0 && battle.units[unit.targetId].alive) ? battle.units[unit.targetId] : nearestEnemy(battle, unit.team, unit.x, unit.z, null);
       if (!aimed) continue;
-      const length = Math.hypot(aimed.x - unit.x, aimed.z - unit.z) || 1;
-      const dirX = (aimed.x - unit.x) / length, dirZ = (aimed.z - unit.z) / length;
-      battle.events.push({ type: "beam", unitId: unit.id, x0: unit.x, z0: unit.z, x1: unit.x + dirX * skill.length, z1: unit.z + dirZ * skill.length });
-      for (const other of battle.units) {
-        if (!other.alive || other.team === unit.team) continue;
-        const along = (other.x - unit.x) * dirX + (other.z - unit.z) * dirZ;
-        if (along < 0 || along > skill.length) continue;
-        const across = Math.abs((other.x - unit.x) * dirZ - (other.z - unit.z) * dirX);
-        if (across <= skill.width) applyDamage(battle, other, rollDamage(battle, unit, other, skill.damage), unit.team, false);
-      }
+      const lead = Math.hypot(aimed.x - unit.x, aimed.z - unit.z) / skill.speed;
+      const angle = Math.atan2(aimed.x + Math.sin(aimed.heading) * aimed.speed * lead - unit.x, aimed.z + Math.cos(aimed.heading) * aimed.speed * lead - unit.z);
+      unit.turret = angle;
+      const dirX = Math.sin(angle), dirZ = Math.cos(angle);
+      battle.bullets.push({
+        id: battle.nextBulletId++, kind: "lance", team: unit.team, x: unit.x + dirX * (unit.radius + 0.3), z: unit.z + dirZ * (unit.radius + 0.3),
+        vx: dirX * skill.speed, vz: dirZ * skill.speed, speed: skill.speed, radius: skill.radius, damage: skill.damage,
+        life: secondsToTicks(skill.range / skill.speed), homing: 0, targetId: aimed.id, pierced: new Set(), heavy: false,
+      });
+      battle.events.push({ type: "fire", unitId: unit.id, weapon: "lance", angle });
     } else if (entry.action === "barrageFire") {
       const skill = BALANCE.skills.barrage;
-      battle.projectiles.push({ splash: skill.splash, team: unit.team, targetId: -1, x: entry.x, z: entry.z, ticks: secondsToTicks(skill.flight), damage: skill.damage, weapon: "mortar" });
-      battle.events.push({ type: "fire", unitId: unit.id, weapon: "mortar", targetId: -1, x: entry.x, z: entry.z, duration: skill.flight, skill: true });
+      launchShell(battle, unit, entry.x, entry.z, skill.flight, skill.damage, skill.splash, true);
     } else if (entry.action === "stormCast") {
       const skill = BALANCE.skills.storm;
       const visited = new Set(), chainIds = [];
       let current = nearestEnemy(battle, unit.team, unit.x, unit.z, null);
+      if (current && Math.hypot(current.x - unit.x, current.z - unit.z) > skill.range) current = null;
       while (current && chainIds.length <= skill.jumps) {
         visited.add(current.id); chainIds.push(current.id);
-        applyDamage(battle, current, rollDamage(battle, unit, current, skill.damage), unit.team, false);
+        damageVehicle(battle, current, skill.damage, unit.team, 0, 0, current.x, current.z, "storm");
         if (current.alive) current.stunTime = Math.max(current.stunTime, secondsToTicks(skill.stun));
         const next = nearestEnemy(battle, unit.team, current.x, current.z, visited);
         current = (next && Math.hypot(next.x - current.x, next.z - current.z) <= skill.jumpRange) ? next : null;
       }
-      if (chainIds.length > 0) battle.events.push({ type: "bolt", unitId: unit.id, targetIds: chainIds, big: true });
+      battle.events.push({ type: "bolt", unitId: unit.id, targetIds: chainIds });
     }
   }
-}
-function teamHealthShare(battle, team) {
-  let health = 0, full = 0;
-  for (const unit of battle.units) if (unit.team === team) { full += unit.maxHp; health += unit.hp; }
-  return health / full;
 }
 function isEngaged(battle) {
   for (const unit of battle.units) {
@@ -789,17 +804,14 @@ function isEngaged(battle) {
 function chooseAiOrder(battle, team, randomSource) {
   const roll = randomSource(), pick = randomSource();   // 候補の有無にかかわらず同じ数だけ乱数を引く
   if (!isEngaged(battle)) return null;
-  const candidates = BALANCE.skillOrder.filter((skillId) => {
-    if (!canIssueOrder(battle, team, skillId)) return false;
-    return skillId !== "repair" || teamHealthShare(battle, team) < BALANCE.ai.repairBelow;
-  });
+  const candidates = BALANCE.skillOrder.filter((skillId) => canIssueOrder(battle, team, skillId));
   if (candidates.length === 0 || roll < BALANCE.ai.passChance) return null;
   return candidates[Math.floor(pick * candidates.length)];
 }
 function battleFingerprint(battle) {
   let hash = 2166136261 ^ battle.tick;
   for (const unit of battle.units) {
-    for (const value of [unit.alive ? 1 : 0, Math.round(unit.hp * 10), Math.round(unit.x * 100), Math.round(unit.z * 100)]) {
+    for (const value of [unit.alive ? 1 : 0, Math.round(unit.hp * 10), Math.round(unit.x * 100), Math.round(unit.z * 100), Math.round(unit.heading * 100)]) {
       hash = Math.imul(hash ^ value, 16777619) >>> 0;
     }
   }
@@ -824,38 +836,34 @@ const TEXT = {
   ja: {
     armyPlayer: "自軍", armyEnemy: "敵軍", phase: "指令フェーズ", pass: "待機", issue: "発令", nextOrder: "次の指令",
     replayExit: "終了", subtitle: "魔導機甲戦線", start: "出撃", watchReplay: "リプレイを見る", retry: "同じ戦場で再戦", nextBattle: "次の戦場へ",
-    how: "戦闘は自動で進む。数秒ごとに訪れる<b>指令フェーズ</b>で、部隊スキルか指揮官スキルを1つ発令せよ。<br>高所を取った車両は射程と火力が伸びる。",
+    how: "車両は自分の判断で走り、撃ち合う。数秒ごとに訪れる<b>指令フェーズ</b>で、どの部隊のスキルを使うか発令せよ。<br>弾は避けられる。背面に当てればダメージ2倍。",
     victory: "VICTORY", defeat: "DEFEAT", draw: "DRAW", victorySub: "敵部隊を撃破", defeatSub: "自軍壊滅", drawSub: "痛み分け",
-    statTime: "戦闘時間", statKills: "撃破", statLost: "損失", battleStart: "BATTLE START", commander: "指揮官",
+    statTime: "戦闘時間", statKills: "撃破", statLost: "損失", battleStart: "BATTLE START",
     hintName: "指令を選べ", hintDesc: "光っているカードをタップ。もう一度タップするか「発令」で実行。",
     cutinPlayer: "COMMAND", cutinEnemy: "ENEMY COMMAND", miss: "MISS",
     unit_tank: "魔導戦車", unit_heavy: "重戦車", unit_artillery: "自走砲", unit_scout: "装甲車", unit_oracle: "魔導車",
-    skill_pierce: "徹甲魔弾", desc_pierce: "魔導戦車が一斉に貫通弾を放つ。射線上の敵すべてに大ダメージ。",
-    skill_barrier: "魔導障壁", desc_barrier: "重戦車が周囲3マスの味方に障壁を張り、8秒間ダメージを吸収する。",
-    skill_barrage: "流星弾幕", desc_barrage: "自走砲が敵の密集地へ6連射。広い範囲を爆風で薙ぐ。",
-    skill_blitz: "疾風機動", desc_blitz: "装甲車が7秒間、速度と連射が跳ね上がり、被弾を半ば回避する。",
-    skill_storm: "連鎖雷撃", desc_storm: "魔導車の雷が敵から敵へ6体まで連鎖し、感電で動きを止める。",
-    skill_meteor: "隕石召喚", desc_meteor: "敵が最も密集した地点に隕石を落とす。着弾まで少し間がある。",
-    skill_repair: "修復の陣", desc_repair: "全車両の耐久を4秒かけて30%修復する。",
-    skill_charge: "全軍突撃", desc_charge: "8秒間、全車両の火力と速度が35%上がる。",
+    rearHit: "背面命中!", blocked: "障壁", armored: "装甲",
+    skill_pierce: "徹甲魔弾", desc_pierce: "魔導戦車が高速の貫通弾を放つ。射線上の敵をまとめて貫き、障害物も抜ける。",
+    skill_barrier: "魔導障壁", desc_barrier: "重戦車が周囲の味方に障壁を張る。8秒間、被弾を2発まで無効にする。",
+    skill_barrage: "流星弾幕", desc_barrage: "自走砲が敵の密集地へ5連射。動かない相手・固まった相手に刺さる。",
+    skill_blitz: "疾風機動", desc_blitz: "装甲車が6秒間、速度と連射を大きく上げて敵の後衛をかき回す。",
+    skill_storm: "連鎖雷撃", desc_storm: "魔導車の雷が近くの敵から4両まで連鎖。必ず当たり、2秒間動きを止める。",
   },
   en: {
     armyPlayer: "ALLIES", armyEnemy: "ENEMY", phase: "COMMAND PHASE", pass: "HOLD", issue: "ISSUE", nextOrder: "NEXT ORDER",
     replayExit: "EXIT", subtitle: "FRONTLINE OF SPELL & STEEL", start: "DEPLOY", watchReplay: "WATCH REPLAY", retry: "REMATCH", nextBattle: "NEXT FIELD",
-    how: "The battle runs on its own. Every few seconds a <b>Command Phase</b> opens: issue one squad skill or commander skill.<br>Vehicles on high ground gain range and firepower.",
+    how: "Vehicles drive and fight on their own. Every few seconds a <b>Command Phase</b> opens: choose which squad uses its skill.<br>Shots can be dodged. Rear hits deal double damage.",
     victory: "VICTORY", defeat: "DEFEAT", draw: "DRAW", victorySub: "ENEMY FORCE DESTROYED", defeatSub: "YOUR FORCE WAS LOST", drawSub: "STALEMATE",
-    statTime: "TIME", statKills: "KILLS", statLost: "LOSSES", battleStart: "BATTLE START", commander: "Commander",
+    statTime: "TIME", statKills: "KILLS", statLost: "LOSSES", battleStart: "BATTLE START",
     hintName: "Choose an order", hintDesc: "Tap a glowing card. Tap it again or press ISSUE to execute.",
     cutinPlayer: "COMMAND", cutinEnemy: "ENEMY COMMAND", miss: "MISS",
     unit_tank: "Spell Tank", unit_heavy: "Heavy Tank", unit_artillery: "Artillery", unit_scout: "Scout Car", unit_oracle: "Oracle",
-    skill_pierce: "Arcane Lance", desc_pierce: "All spell tanks fire a piercing round. Heavy damage to every enemy on the line.",
-    skill_barrier: "Aegis Field", desc_barrier: "Heavy tanks shield allies within 3 tiles, absorbing damage for 8 seconds.",
-    skill_barrage: "Star Barrage", desc_barrage: "Artillery fires six shells into the densest enemy group.",
-    skill_blitz: "Gale Rush", desc_blitz: "Scout cars gain speed and fire rate for 7 seconds and dodge about half of incoming fire.",
-    skill_storm: "Chain Storm", desc_storm: "Oracle lightning jumps across up to six enemies and stuns them.",
-    skill_meteor: "Meteor Call", desc_meteor: "Drops a meteor on the densest enemy group after a short delay.",
-    skill_repair: "Mending Sigil", desc_repair: "Repairs 30% of every vehicle's hull over 4 seconds.",
-    skill_charge: "All-Out Charge", desc_charge: "For 8 seconds every vehicle gains 35% firepower and speed.",
+    rearHit: "REAR HIT!", blocked: "BLOCK", armored: "ARMOR",
+    skill_pierce: "Arcane Lance", desc_pierce: "Spell tanks fire a fast piercing round that punches through every enemy and obstacle on its line.",
+    skill_barrier: "Aegis Field", desc_barrier: "Heavy tanks shield nearby allies. For 8 seconds each shield cancels up to two hits.",
+    skill_barrage: "Star Barrage", desc_barrage: "Artillery fires five shells into the densest enemy group. Punishes slow or bunched targets.",
+    skill_blitz: "Gale Rush", desc_blitz: "Scout cars gain a big boost to speed and fire rate for 6 seconds to tear into the back line.",
+    skill_storm: "Chain Storm", desc_storm: "Oracle lightning chains across up to four nearby enemies. It never misses and stuns for 2 seconds.",
   },
 };
 let language = query.get("lang") || ((navigator.language || "ja").startsWith("ja") ? "ja" : "en");
@@ -915,8 +923,6 @@ const audio = (() => {
     hit() { noise(3000, 900, 0.05, 0.1, 0, "bandpass"); },
     explode() { noise(1400, 90, 0.5, 0.55); tone("sine", 90, 30, 0.4, 0.5); },
     death() { noise(2200, 60, 0.9, 0.8); tone("sine", 120, 24, 0.7, 0.8); tone("square", 60, 30, 0.3, 0.15, 0.05); },
-    meteorFall() { noise(300, 2600, 1.5, 0.3, 0, "bandpass"); tone("sawtooth", 900, 140, 1.5, 0.12); },
-    meteorHit() { noise(2600, 40, 1.8, 1.0); tone("sine", 80, 20, 1.4, 1.0); tone("sine", 160, 40, 0.5, 0.5); },
     shield() { tone("sine", 520, 1040, 0.35, 0.22); tone("sine", 780, 1560, 0.4, 0.14, 0.06); },
     heal() { [523, 659, 784, 1047].forEach((hz, index) => tone("sine", hz, hz, 0.3, 0.16, index * 0.07)); },
     buff() { tone("sawtooth", 180, 520, 0.4, 0.2); tone("square", 360, 1040, 0.4, 0.08, 0.05); },
@@ -994,26 +1000,8 @@ if (!lowEffects) {
   composer.addPass(new THREE.OutputPass());
 }
 
-// ---------- 座標 ----------
-const STEP_HEIGHT = 0.45, WATER_DEPTH = 0.22, SKIRT_BOTTOM = -1.7;
 let battle = null;
-function worldX(tileX) { return tileX - (BALANCE.mapWidth - 1) / 2; }
-function worldZ(tileZ) { return tileZ - (BALANCE.mapDepth - 1) / 2; }
-function tileTop(map, tileX, tileZ) {
-  const x = clampNumber(Math.round(tileX), 0, map.width - 1), z = clampNumber(Math.round(tileZ), 0, map.depth - 1);
-  const index = x + z * map.width;
-  return map.level[index] * STEP_HEIGHT - (map.kind[index] === KIND_WATER ? WATER_DEPTH : 0);
-}
-/** 半径内でいちばん高いマスの上面。大きな魔法陣を段差に埋もれさせないために使う */
-function highestTopAround(map, tileX, tileZ, radius) {
-  let top = -Infinity;
-  for (let z = Math.floor(tileZ - radius); z <= Math.ceil(tileZ + radius); z++) for (let x = Math.floor(tileX - radius); x <= Math.ceil(tileX + radius); x++) {
-    if (x < 0 || z < 0 || x >= map.width || z >= map.depth || Math.hypot(x - tileX, z - tileZ) > radius + 0.5) continue;
-    top = Math.max(top, map.level[x + z * map.width] * STEP_HEIGHT);
-  }
-  return top === -Infinity ? 0 : top;
-}
-function tileHash(x, z, salt) {
+function tileHash(x, z, salt) {   // 飾りの配置用（シードに依らず毎回同じ）
   let value = Math.imul(x * 374761393 + z * 668265263 + salt * 2147483647, 1274126177);
   value ^= value >>> 13; value = Math.imul(value, 1274126177); value ^= value >>> 16;
   return (value >>> 0) / 4294967296;
@@ -1062,153 +1050,116 @@ function createBuilder() {
   };
 }
 
-// ---------- 地形 ----------
-const TOP_COLORS = { [KIND_GRASS]: 0x86c455, [KIND_DIRT]: 0xba9560, [KIND_STONE]: 0xa6aab8, [KIND_WATER]: 0x6b8f8c, [KIND_SAND]: 0xdecb91 };
-const SIDE_COLORS = { [KIND_GRASS]: 0x94683f, [KIND_DIRT]: 0x94683f, [KIND_STONE]: 0x7c7f8c, [KIND_WATER]: 0x6d6a55, [KIND_SAND]: 0xb39a62 };
-const terrainTexture = makeCanvasTexture(512, (context, size) => {
-  // 左半分＝マスの上面（縁取りでグリッドを見せる）、右半分＝崖の側面（地層）
-  const half = size / 2;
-  context.fillStyle = "#fff"; context.fillRect(0, 0, size, size);
-  for (let i = 0; i < 900; i++) {
-    const shade = fxRandom() < 0.5 ? 0 : 255;
-    context.fillStyle = `rgba(${shade},${shade},${shade},${0.03 + fxRandom() * 0.05})`;
-    context.fillRect(fxRandom() * half, fxRandom() * size, 2 + fxRandom() * 10, 2 + fxRandom() * 10);
+// ---------- 戦場（平らな広場。マス目は描かない） ----------
+const groundTexture = makeCanvasTexture(1024, (context, size) => {
+  context.fillStyle = "#7db94f"; context.fillRect(0, 0, size, size);
+  const patches = ["rgba(160,208,96,.30)", "rgba(92,156,66,.30)", "rgba(188,152,98,.42)", "rgba(206,188,132,.34)", "rgba(120,180,80,.3)"];
+  for (let i = 0; i < 240; i++) {
+    const x = fxRandom() * size, y = fxRandom() * size, radius = 30 + fxRandom() * 110;
+    const gradient = context.createRadialGradient(x, y, 0, x, y, radius);
+    const tone = patches[Math.floor(fxRandom() * patches.length)];
+    gradient.addColorStop(0, tone); gradient.addColorStop(1, tone.replace(/[\d.]+\)$/, "0)"));
+    context.fillStyle = gradient;
+    context.save(); context.translate(x, y); context.scale(1, 0.5 + fxRandom()); context.translate(-x, -y);
+    context.fillRect(x - radius, y - radius, radius * 2, radius * 2); context.restore();
   }
-  context.strokeStyle = "rgba(0,0,0,.34)"; context.lineWidth = 10; context.strokeRect(0, 0, half, size);
-  context.strokeStyle = "rgba(255,255,255,.3)"; context.lineWidth = 5; context.strokeRect(13, 13, half - 26, size - 26);
-  for (let band = 0; band < 7; band++) {
-    context.fillStyle = `rgba(0,0,0,${0.05 + fxRandom() * 0.12})`;
-    context.fillRect(half, band * size / 7 + fxRandom() * 12, half, 6 + fxRandom() * 22);
+  for (let i = 0; i < 5000; i++) {
+    const shade = fxRandom() < 0.5 ? "0,0,0" : "255,255,220";
+    context.fillStyle = `rgba(${shade},${0.03 + fxRandom() * 0.06})`;
+    context.fillRect(fxRandom() * size, fxRandom() * size, 2 + fxRandom() * 4, 2 + fxRandom() * 4);
   }
-  for (let crack = 0; crack < 9; crack++) {
-    context.fillStyle = "rgba(0,0,0,.16)";
-    context.fillRect(half + fxRandom() * half, fxRandom() * size, 4, 30 + fxRandom() * 90);
-  }
-  context.fillStyle = "rgba(255,255,255,.35)"; context.fillRect(half, 0, half, 10);
-  context.fillStyle = "rgba(0,0,0,.25)"; context.fillRect(half, 0, 4, size); context.fillRect(size - 4, 0, 4, size);
 });
-terrainTexture.anisotropy = 4;
-const terrainMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, map: terrainTexture, roughness: 0.95, metalness: 0 });
-const waterMaterial = new THREE.MeshStandardMaterial({ color: 0x4db4ec, transparent: true, opacity: 0.74, roughness: 0.1, metalness: 0.25, emissive: 0x0b3f70, emissiveIntensity: 0.7 });
+groundTexture.anisotropy = 4;
+const groundMaterial = new THREE.MeshStandardMaterial({ map: groundTexture, roughness: 0.95, metalness: 0 });
+const cliffMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0 });
 const propMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85, metalness: 0.02 });
 const glowMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
 let terrainGroup = null;
-const crystalSpots = [], waterSpots = [];
+const crystalSpots = [];
 
-function buildTerrain(map) {
+// 履帯・タイヤの跡。1枚のインスタンスメッシュを使い回し、古い跡から上書きする
+const TRACK_CAPACITY = 900;
+const trackTexture = makeCanvasTexture(64, (context, size) => {
+  context.clearRect(0, 0, size, size);
+  for (const x of [6, size - 20]) for (let y = 0; y < size; y += 8) { context.fillStyle = "rgba(40,28,14,.75)"; context.fillRect(x, y, 14, 5); }
+});
+const trackMarks = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ map: trackTexture, transparent: true, opacity: 0.4, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }), TRACK_CAPACITY);
+trackMarks.frustumCulled = false; trackMarks.count = 0; trackMarks.renderOrder = 1;
+scene.add(trackMarks);
+const trackDummy = new THREE.Object3D();
+let trackCursor = 0;
+function dropTrackMark(x, z, heading, width) {
+  trackDummy.position.set(x, 0.012, z); trackDummy.rotation.set(0, heading, 0); trackDummy.scale.set(width, 1, 0.5); trackDummy.updateMatrix();
+  trackMarks.setMatrixAt(trackCursor % TRACK_CAPACITY, trackDummy.matrix);
+  trackCursor++; trackMarks.count = Math.min(trackCursor, TRACK_CAPACITY);
+  trackMarks.instanceMatrix.needsUpdate = true;
+}
+
+function buildTerrain(field) {
   if (terrainGroup) {
     scene.remove(terrainGroup);
     terrainGroup.traverse((object) => { if (object.geometry) object.geometry.dispose(); });
   }
   terrainGroup = new THREE.Group();
-  crystalSpots.length = 0; waterSpots.length = 0;
-  const positions = [], normals = [], colors = [], uvs = [], waterPositions = [], waterNormals = [];
-  const topColor = new THREE.Color(), bottomColor = new THREE.Color(), soil = new THREE.Color(), deep = new THREE.Color(0x191422), lip = new THREE.Color();
-  // p0=左下 p1=右下 p2=右上 p3=左上（外から見て反時計回り）。下2点と上2点で色を変えられる
-  function quad(points, normal, lower, upper, u0, v0, u1, v1) {
-    const order = [0, 1, 2, 0, 2, 3], uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
-    for (const corner of order) {
-      positions.push(points[corner][0], points[corner][1], points[corner][2]);
-      normals.push(normal[0], normal[1], normal[2]);
-      const color = corner < 2 ? lower : upper;
-      colors.push(color.r, color.g, color.b);
-      uvs.push(uv[corner][0], uv[corner][1]);
-    }
-  }
-  const sides = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  for (let z = 0; z < map.depth; z++) for (let x = 0; x < map.width; x++) {
-    const index = x + z * map.width, kind = map.kind[index], top = tileTop(map, x, z), wx = worldX(x), wz = worldZ(z);
-    const shade = 1 + (tileHash(x, z, 1) - 0.5) * 0.1 + (((x + z) & 1) ? 0.035 : -0.035) + map.level[index] * 0.035;
-    topColor.set(TOP_COLORS[kind]).multiplyScalar(shade);
-    quad([[wx - 0.5, top, wz + 0.5], [wx + 0.5, top, wz + 0.5], [wx + 0.5, top, wz - 0.5], [wx - 0.5, top, wz - 0.5]], [0, 1, 0], topColor, topColor, 0.012, 0.012, 0.488, 0.988);
-    if (kind === KIND_WATER) {
-      const surface = map.level[index] * STEP_HEIGHT - 0.06;
-      waterPositions.push(wx - 0.5, surface, wz + 0.5, wx + 0.5, surface, wz + 0.5, wx + 0.5, surface, wz - 0.5, wx - 0.5, surface, wz + 0.5, wx + 0.5, surface, wz - 0.5, wx - 0.5, surface, wz - 0.5);
-      for (let i = 0; i < 6; i++) waterNormals.push(0, 1, 0);
-      waterSpots.push([wx, surface, wz]);
-    }
-    soil.set(SIDE_COLORS[kind]).multiplyScalar(0.92 + tileHash(x, z, 2) * 0.16);
-    for (const [nx, nz] of sides) {
-      const ax = x + nx, az = z + nz, inside = ax >= 0 && az >= 0 && ax < map.width && az < map.depth;
-      const floor = inside ? tileTop(map, ax, az) : SKIRT_BOTTOM;
-      if (top <= floor + 0.001) continue;
-      const centerX = wx + nx * 0.5, centerZ = wz + nz * 0.5, rightX = nz * 0.5, rightZ = -nx * 0.5;
-      let upperY = top, first = true;
-      while (upperY > floor + 0.001) {
-        const lowerY = Math.max(floor, upperY - STEP_HEIGHT);
-        const shadeAt = (y) => Math.pow(clampNumber((top - y) / 2.3, 0, 1), 0.8);
-        bottomColor.copy(soil).lerp(deep, shadeAt(lowerY));
-        lip.copy(soil).lerp(deep, shadeAt(upperY));
-        if (first) lip.lerp(topColor, 0.45);   // いちばん上の段は上面の色をにじませる（草が崖にかぶる）
-        quad([[centerX - rightX, lowerY, centerZ - rightZ], [centerX + rightX, lowerY, centerZ + rightZ], [centerX + rightX, upperY, centerZ + rightZ], [centerX - rightX, upperY, centerZ - rightZ]],
-          [nx, 0, nz], bottomColor, lip, 0.512, 1 - (upperY - lowerY) / STEP_HEIGHT * 0.976 - 0.012, 0.988, 0.988);
-        upperY = lowerY; first = false;
-      }
-    }
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  const ground = new THREE.Mesh(geometry, terrainMaterial);
-  ground.castShadow = true; ground.receiveShadow = true;
+  crystalSpots.length = 0;
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(field.width, field.depth).rotateX(-Math.PI / 2), groundMaterial);
+  ground.receiveShadow = true;
   terrainGroup.add(ground);
-  if (waterPositions.length > 0) {
-    const waterGeometry = new THREE.BufferGeometry();
-    waterGeometry.setAttribute("position", new THREE.Float32BufferAttribute(waterPositions, 3));
-    waterGeometry.setAttribute("normal", new THREE.Float32BufferAttribute(waterNormals, 3));
-    const water = new THREE.Mesh(waterGeometry, waterMaterial);
-    water.receiveShadow = true;
-    terrainGroup.add(water);
+  // 台座（ジオラマの土台）。下へ行くほど暗くする
+  const cliffDepth = 2.2, cliff = new THREE.BoxGeometry(field.width, cliffDepth, field.depth).toNonIndexed();
+  const cliffPosition = cliff.attributes.position, cliffColors = [], upper = new THREE.Color(0x9a6d42), lower = new THREE.Color(0x1d1626), mixed = new THREE.Color();
+  for (let i = 0; i < cliffPosition.count; i++) {
+    mixed.copy(upper).lerp(lower, cliffPosition.getY(i) > 0 ? 0 : 1);
+    cliffColors.push(mixed.r, mixed.g, mixed.b);
   }
+  cliff.setAttribute("color", new THREE.Float32BufferAttribute(cliffColors, 3));
+  const base = new THREE.Mesh(cliff, cliffMaterial);
+  base.position.y = -cliffDepth / 2 - 0.01;
+  terrainGroup.add(base);
 
-  // 置物（岩・水晶・遺跡・木は通れない）と、通行に関係ない飾り（草むら・小石）
   const solid = createBuilder(), glowing = createBuilder();
-  for (let z = 0; z < map.depth; z++) for (let x = 0; x < map.width; x++) {
-    const index = x + z * map.width, top = tileTop(map, x, z), wx = worldX(x), wz = worldZ(z);
-    const h1 = tileHash(x, z, 3), h2 = tileHash(x, z, 4), h3 = tileHash(x, z, 5), turn = h1 * Math.PI * 2;
-    switch (map.prop[index]) {
-      case PROP_ROCK:
-        solid.rock(0.3, wx - 0.05, top + 0.2, wz, 0x8f93a1, 1, 0.85, 1, turn);
-        solid.rock(0.2, wx + 0.22, top + 0.13, wz + 0.16, 0x767a88, 1, 0.8, 1, turn + 1);
-        solid.rock(0.13, wx - 0.2, top + 0.08, wz - 0.24, 0x9ea2b0, 1, 0.8, 1, turn + 2);
-        break;
-      case PROP_CRYSTAL: {
-        const hue = h2 < 0.5 ? 0x7ff3ff : 0xc9a2ff;
-        solid.rock(0.24, wx, top + 0.1, wz, 0x6f7080, 1.2, 0.6, 1.2, turn);
-        glowing.gem(0.16, wx, top + 0.5, wz, hue, 1, 2.6, 1, 0.08, 0.1);
-        glowing.gem(0.11, wx + 0.2, top + 0.32, wz + 0.08, hue, 1, 2.2, 1, 0.1, -0.5);
-        glowing.gem(0.09, wx - 0.18, top + 0.28, wz - 0.1, hue, 1, 2.2, 1, -0.3, 0.45);
-        crystalSpots.push([wx, top + 0.5, wz, h2 < 0.5 ? 0 : 1]);
-        break;
+  field.obstacles.forEach((obstacle, index) => {
+    const x = obstacle.x, z = obstacle.z, size = obstacle.radius, pairIndex = index >> 1;
+    const h1 = tileHash(pairIndex, 1, 3), h2 = tileHash(pairIndex, 2, 4), turn = h1 * Math.PI * 2;
+    if (obstacle.kind === OBSTACLE_ROCK) {
+      solid.rock(size * 0.8, x - size * 0.1, size * 0.5, z, 0x8f93a1, 1, 0.85, 1, turn);
+      solid.rock(size * 0.5, x + size * 0.55, size * 0.3, z + size * 0.35, 0x767a88, 1, 0.8, 1, turn + 1);
+      solid.rock(size * 0.36, x - size * 0.5, size * 0.2, z - size * 0.6, 0x9ea2b0, 1, 0.8, 1, turn + 2);
+    } else if (obstacle.kind === OBSTACLE_CRYSTAL) {
+      const hue = h2 < 0.5 ? 0x7ff3ff : 0xc9a2ff;
+      solid.rock(size * 0.75, x, size * 0.25, z, 0x6f7080, 1.2, 0.55, 1.2, turn);
+      glowing.gem(size * 0.42, x, size * 1.3, z, hue, 1, 2.6, 1, 0.08, 0.1);
+      glowing.gem(size * 0.3, x + size * 0.55, size * 0.85, z + size * 0.2, hue, 1, 2.2, 1, 0.1, -0.5);
+      glowing.gem(size * 0.25, x - size * 0.5, size * 0.75, z - size * 0.3, hue, 1, 2.2, 1, -0.3, 0.45);
+      crystalSpots.push([x, size * 1.3, z, h2 < 0.5 ? 0 : 1, size]);
+    } else if (obstacle.kind === OBSTACLE_RUIN) {
+      const stone = 0xbdb7a8, height = 1.2 + h2 * 1.2, side = size * 1.45;
+      solid.box(side, 0.16, side, x, 0.08, z, 0xa8a294, 0, turn * 0.15);
+      for (const [px, pz, scale] of [[-0.3, -0.25, 1], [0.32, 0.3, 0.55]]) {
+        solid.cyl(size * 0.2, size * 0.23, height * scale, 8, x + px * size, 0.16 + height * scale / 2, z + pz * size, stone);
+        solid.box(size * 0.56, 0.12, size * 0.56, x + px * size, 0.22, z + pz * size, stone);
       }
-      case PROP_RUIN: {
-        const stone = 0xbdb7a8, height = 0.5 + h2 * 0.5;
-        solid.box(0.84, 0.1, 0.84, wx, top + 0.05, wz, 0xa8a294, 0, turn * 0.1);
-        solid.cyl(0.15, 0.17, height, 8, wx - 0.16, top + 0.1 + height / 2, wz - 0.12, stone);
-        solid.box(0.4, 0.08, 0.4, wx - 0.16, top + 0.14, wz - 0.12, stone);
-        if (h3 < 0.6) solid.box(0.42, 0.09, 0.42, wx - 0.16, top + 0.12 + height, wz - 0.12, 0xcbc5b6, 0, 0.3);
-        solid.cyl(0.14, 0.14, 0.42, 8, wx + 0.2, top + 0.22, wz + 0.2, 0xa9a394, Math.PI / 2, turn);
-        break;
+      solid.box(size * 0.6, 0.14, size * 0.6, x - 0.3 * size, 0.2 + height, z - 0.25 * size, 0xcbc5b6, 0, 0.3);
+      solid.cyl(size * 0.19, size * 0.19, size * 0.9, 8, x + size * 0.1, size * 0.19 + 0.16, z - size * 0.45, 0xa9a394, Math.PI / 2, turn);
+    } else {
+      const leaf = h2 < 0.25 ? [0x2f9c8f, 0x45b8a6, 0x6fd6c0] : [0x3c8f47, 0x52ab59, 0x74c768];
+      for (let tree = 0; tree < 4; tree++) {
+        const angle = turn + tree * 1.7, reach = tree === 0 ? 0 : size * 0.55, grow = (0.9 + tileHash(pairIndex, tree, 7) * 0.5) * 1.5;
+        const tx = x + Math.cos(angle) * reach, tz = z + Math.sin(angle) * reach;
+        solid.cyl(0.07 * grow, 0.1 * grow, 0.4 * grow, 6, tx, 0.2 * grow, tz, 0x6d4a2c);
+        solid.cone(0.36 * grow, 0.55 * grow, 7, tx, 0.6 * grow, tz, leaf[0], 0, angle);
+        solid.cone(0.27 * grow, 0.48 * grow, 7, tx, 0.93 * grow, tz, leaf[1], 0, angle + 0.5);
+        solid.cone(0.18 * grow, 0.4 * grow, 7, tx, 1.24 * grow, tz, leaf[2], 0, angle + 1);
       }
-      case PROP_TREE: {
-        const size = 0.85 + h2 * 0.4, leaf = h3 < 0.18 ? [0x2f9c8f, 0x45b8a6, 0x6fd6c0] : [0x3c8f47, 0x52ab59, 0x74c768];
-        solid.cyl(0.05, 0.08, 0.34, 6, wx, top + 0.17, wz, 0x6d4a2c);
-        solid.cone(0.34 * size, 0.5 * size, 7, wx, top + 0.3 + 0.25 * size, wz, leaf[0], 0, turn);
-        solid.cone(0.26 * size, 0.44 * size, 7, wx, top + 0.3 + 0.55 * size, wz, leaf[1], 0, turn + 0.5);
-        solid.cone(0.17 * size, 0.36 * size, 7, wx, top + 0.3 + 0.84 * size, wz, leaf[2], 0, turn + 1);
-        break;
-      }
-      default:
-        if (map.kind[index] === KIND_GRASS && h1 < 0.3) {
-          for (let blade = 0; blade < 3; blade++) {
-            solid.cone(0.035, 0.13, 4, wx + (tileHash(x, z, 6 + blade) - 0.5) * 0.7, top + 0.06, wz + (tileHash(x, z, 9 + blade) - 0.5) * 0.7, 0xa4dc68);
-          }
-        } else if (map.kind[index] !== KIND_WATER && h1 > 0.86) {
-          solid.rock(0.06 + h2 * 0.04, wx + (h2 - 0.5) * 0.6, top + 0.03, wz + (h3 - 0.5) * 0.6, 0x9a9488, 1, 0.6, 1, turn);
-        }
     }
+  });
+  // 通行に関係ない飾り（草むら・小石）
+  for (let i = 0; i < 260; i++) {
+    const x = (tileHash(i, 11, 1) - 0.5) * (field.width - 1), z = (tileHash(i, 12, 2) - 0.5) * (field.depth - 1);
+    if (field.obstacles.some((obstacle) => Math.hypot(obstacle.x - x, obstacle.z - z) < obstacle.radius + 0.3)) continue;
+    if (i % 5 === 0) solid.rock(0.07 + tileHash(i, 13, 3) * 0.07, x, 0.04, z, 0x9a9488, 1, 0.6, 1, i);
+    else for (let blade = 0; blade < 3; blade++) solid.cone(0.045, 0.17, 4, x + (tileHash(i, blade, 4) - 0.5) * 0.4, 0.08, z + (tileHash(i, blade, 5) - 0.5) * 0.4, blade === 1 ? 0xb4e472 : 0x93d05e);
   }
   const props = new THREE.Mesh(solid.build(), propMaterial);
   props.castShadow = true; props.receiveShadow = true;
@@ -1523,13 +1474,10 @@ const bolts = makePool(() => {
   const mesh = new THREE.Mesh(geometry, additiveMaterial({})); mesh.frustumCulled = false; mesh.renderOrder = 7; scene.add(mesh);
   return { mesh, from: new THREE.Vector3(), to: new THREE.Vector3(), life: 0, maxLife: 1, width: 0.1, jitter: 0.3, flicker: 0 };
 });
-const meteors = makePool(() => {
-  const mesh = new THREE.Group();
-  mesh.add(new THREE.Mesh(new THREE.DodecahedronGeometry(0.55, 0), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.25, 0.08, 0.04) })));
-  mesh.add(new THREE.Mesh(new THREE.IcosahedronGeometry(0.75, 1), additiveMaterial({ color: new THREE.Color(3, 1.1, 0.3), opacity: 0.6 })));
-  scene.add(mesh);
-  return { mesh, start: new THREE.Vector3(), end: new THREE.Vector3(), time: 0, duration: 1, team: 0 };
-});
+// 飛んでいる弾。戦闘ロジックの battle.bullets を毎フレームなぞって位置を合わせる
+const BULLET_HEIGHT = 0.62;
+const bulletVisuals = new Map(), bulletSpares = [];
+let bulletStamp = 0;
 const debris = [];
 const viewDirection = new THREE.Vector3(), cameraRight = new THREE.Vector3(), cameraUp = new THREE.Vector3();
 const scratchA = new THREE.Vector3(), scratchB = new THREE.Vector3(), scratchC = new THREE.Vector3();
@@ -1642,8 +1590,8 @@ const shieldMaterials = TEAM_GLOW.map((color) => new THREE.ShaderMaterial({
 }));
 const barBackMaterial = new THREE.SpriteMaterial({ color: 0x05080f, opacity: 0.75, depthTest: false });
 const barFillMaterials = [0x58e6ff, 0xff5a52, 0xffffff].map((color) => new THREE.SpriteMaterial({ color, depthTest: false }));
-const BAR_WIDTH = 0.72, BAR_HEIGHT = 0.085;
-const UNIT_SCALE = 1.18;   // マスからはみ出すくらい大きく（デフォルメ感と視認性）
+const BAR_WIDTH = 1.1, BAR_HEIGHT = 0.13;
+const UNIT_SCALE = 1.5;   // マスからはみ出すくらい大きく（デフォルメ感と視認性）
 let views = [], showBars = false;
 
 function createUnitView(unit) {
@@ -1662,11 +1610,11 @@ function createUnitView(unit) {
   root.add(tilt, ring, shield);
   root.scale.setScalar(model.scale * UNIT_SCALE);
   const barBack = new THREE.Sprite(barBackMaterial), barFill = new THREE.Sprite(barFillMaterials[unit.team]);
-  barBack.scale.set(BAR_WIDTH + 0.05, BAR_HEIGHT + 0.045, 1); barBack.renderOrder = 20;
+  barBack.scale.set(BAR_WIDTH + 0.08, BAR_HEIGHT + 0.07, 1); barBack.renderOrder = 20;
   barFill.center.set(0, 0.5); barFill.renderOrder = 21;
   scene.add(root, barBack, barFill);
   return { unit, model, material, root, tilt, turretPivot, barrelPivot, glow, ring, shield, barBack, barFill,
-    heading: unit.heading, aim: unit.heading, recoil: 0, flash: 0, phase: fxRandom() * 6.283, dead: false, deadTime: 0, emit: 0, status: 0, gone: false };
+    lastSpeed: 0, lastHeading: unit.heading, pitch: 0, roll: 0, trackDistance: 0, recoil: 0, flash: 0, phase: fxRandom() * 6.283, dead: false, deadTime: 0, emit: 0, status: 0, gone: false };
 }
 function disposeViews() {
   for (const view of views) {
@@ -1681,7 +1629,7 @@ function muzzleWorld(view, out) {
   return out.set(0, 0, view.model.muzzleLength).applyMatrix4(view.barrelPivot.matrixWorld);
 }
 function updateUnitView(view, simDt, time) {
-  const unit = view.unit, map = battle.map, model = view.model, root = view.root;
+  const unit = view.unit, model = view.model, root = view.root;
   if (view.gone) return;
   if (view.dead) {
     view.deadTime += simDt;
@@ -1689,69 +1637,58 @@ function updateUnitView(view, simDt, time) {
     if (view.deadTime < 3.4 && view.emit <= 0) {
       view.emit = 0.09;
       const gray = 0.07 + fxRandom() * 0.08;
-      smoke.spawn(root.position.x + spread(0.15), root.position.y + 0.4, root.position.z + spread(0.15), spread(0.3), 1 + fxRandom() * 0.8, spread(0.3), 1.3, 0.3, 1.0, gray, gray, gray, 0.55, 0.3, 0.8);
-      if (fxRandom() < 0.4) sparks.spawn(root.position.x + spread(0.2), root.position.y + 0.3, root.position.z + spread(0.2), spread(0.5), 1.2, spread(0.5), 0.4, 0.3, 0.05, 3, 1.2, 0.3, 0.8, 1, 1);
+      smoke.spawn(root.position.x + spread(0.2), 0.5, root.position.z + spread(0.2), spread(0.3), 1 + fxRandom() * 0.8, spread(0.3), 1.3, 0.4, 1.3, gray, gray, gray, 0.5, 0.3, 0.8);
+      if (fxRandom() < 0.4) sparks.spawn(root.position.x + spread(0.3), 0.4, root.position.z + spread(0.3), spread(0.5), 1.2, spread(0.5), 0.4, 0.4, 0.05, 3, 1.2, 0.3, 0.8, 1, 1);
     }
-    if (view.deadTime > 3.6) root.position.y -= simDt * 0.3;
-    if (view.deadTime > 5.4) { root.visible = false; view.gone = true; }
+    if (view.deadTime > 6) root.position.y -= simDt * 0.3;
+    if (view.deadTime > 8.5) { root.visible = false; view.gone = true; }
     return;
   }
-  const fromTop = tileTop(map, unit.fromX, unit.fromZ), toTop = tileTop(map, unit.tileX, unit.tileZ);
-  let y = toTop, pitch = 0;
-  if (unit.moving) {
-    const progress = unit.moveProgress, eased = progress * progress * (3 - 2 * progress);
-    y = fromTop + (toTop - fromTop) * eased;
-    if (toTop !== fromTop) {   // 段差は小さく跳ねて乗り越える
-      const hop = Math.sin(Math.PI * progress);
-      y += hop * 0.17; pitch = -(toTop - fromTop) * hop * 0.7;
-    }
+  root.position.set(unit.x, 0, unit.z);
+  root.rotation.y = unit.heading;
+  view.turretPivot.rotation.y = unit.turret - unit.heading;
+  const pace = Math.abs(unit.speed) / unit.def.maxSpeed;
+  if (simDt > 0) {   // 加速で鼻が上がり、減速で沈み、旋回で外へ傾く（車両らしさ）
+    const surge = (unit.speed - view.lastSpeed) / simDt, yawRate = angleDelta(view.lastHeading, unit.heading) / simDt, ease = 1 - Math.exp(-simDt * 8);
+    view.lastSpeed = unit.speed; view.lastHeading = unit.heading;
+    view.pitch += (clampNumber(-surge * 0.02, -0.13, 0.13) - view.pitch) * ease;
+    view.roll += (clampNumber(yawRate * unit.speed * 0.022, -0.14, 0.14) - view.roll) * ease;
   }
-  root.position.set(worldX(unit.x), y, worldZ(unit.z));
-  const turn = 1 - Math.exp(-simDt * 9);
-  view.heading = lerpAngle(view.heading, unit.heading, turn);
-  root.rotation.y = view.heading;
-  const target = unit.targetId >= 0 ? battle.units[unit.targetId] : null;
-  const wanted = (target && target.alive) ? Math.atan2(target.x - unit.x, target.z - unit.z) : unit.heading;
-  view.aim = lerpAngle(view.aim, wanted, 1 - Math.exp(-simDt * 10));
-  view.turretPivot.rotation.y = view.aim - view.heading;
   view.recoil *= Math.exp(-simDt * 8);
-  view.flash *= Math.exp(-simDt * 14);
-  const kick = view.recoil * model.kick;
+  view.flash *= Math.exp(-simDt * 12);
+  const kick = view.recoil * model.kick, relative = unit.turret - unit.heading;
   view.barrelPivot.position.z = model.barrelPosition[2] - kick * 0.14;
-  view.tilt.rotation.x = pitch - kick * 0.09 * Math.cos(view.aim - view.heading);
-  view.tilt.rotation.z = kick * 0.09 * Math.sin(view.aim - view.heading);
-  view.tilt.position.y = Math.sin(time * 15 + view.phase) * 0.006 + (unit.moving ? Math.abs(Math.sin(time * 19 + view.phase)) * 0.014 : 0);
+  view.tilt.rotation.x = view.pitch - kick * 0.09 * Math.cos(relative);
+  view.tilt.rotation.z = view.roll + kick * 0.09 * Math.sin(relative);
+  view.tilt.position.y = Math.sin(time * 15 + view.phase) * 0.006 + pace * Math.abs(Math.sin(time * 19 + view.phase)) * 0.016;
   view.turretPivot.scale.set(1 + kick * 0.07, 1 - kick * 0.09, 1 + kick * 0.07);
-  const stunned = unit.stunTime > 0, charged = unit.chargeTime > 0;
-  view.material.emissive.setRGB(view.flash + (stunned ? 0.08 : 0), view.flash + (stunned ? 0.12 : 0), view.flash + (stunned ? 0.2 : 0));   // 強化中は機体色を変えない（陣営の色が読めなくなる）
+  const stunned = unit.stunTime > 0;
+  view.material.emissive.setRGB(view.flash + (stunned ? 0.08 : 0), view.flash + (stunned ? 0.12 : 0), view.flash + (stunned ? 0.2 : 0));
   if (model.glowSpin) { view.glow.rotation.y = time * 1.6 + view.phase; view.glow.position.y = Math.sin(time * 2.4 + view.phase) * 0.035; }
   view.shield.visible = unit.shield > 0;
   if (view.shield.visible) view.shield.scale.setScalar(1 + Math.sin(time * 5 + view.phase) * 0.03);
 
-  // 走行時の砂ぼこり・水しぶきと、状態を示す粒子
+  // 砂ぼこり・走行跡・状態を示す粒子
   view.emit -= simDt; view.status -= simDt;
-  const px = root.position.x, pz = root.position.z;
-  if (unit.moving && view.emit <= 0) {
-    view.emit = 0.06;
-    const backX = -Math.sin(view.heading) * 0.35, backZ = -Math.cos(view.heading) * 0.35;
-    if (map.kind[unit.tileIndex] === KIND_WATER) {
-      sparks.spawn(px + backX + spread(0.2), y + 0.25, pz + backZ + spread(0.2), spread(0.8), 1.5 + fxRandom() * 1.5, spread(0.8), 0.4, 0.12, 0.04, 0.8, 1.2, 1.5, 0.7, -9, 0.5);
-    } else {
-      smoke.spawn(px + backX + spread(0.2), y + 0.06, pz + backZ + spread(0.2), spread(0.3), 0.25 + fxRandom() * 0.3, spread(0.3), 0.55 + fxRandom() * 0.3, 0.16, 0.5, 0.62, 0.55, 0.42, 0.34, 0.1, 1.5);
-    }
+  const px = unit.x, pz = unit.z, sinH = Math.sin(unit.heading), cosH = Math.cos(unit.heading), travel = unit.speed >= 0 ? 1 : -1;
+  if (pace > 0.12 && view.emit <= 0) {
+    view.emit = 0.035 + 0.09 * (1 - pace);
+    const side = spread(0.4) * unit.radius;
+    smoke.spawn(px - sinH * travel * unit.radius * 0.8 + cosH * side, 0.1, pz - cosH * travel * unit.radius * 0.8 - sinH * side, spread(0.4) - sinH * travel * 0.5, 0.3 + fxRandom() * 0.4, spread(0.4) - cosH * travel * 0.5,
+      0.6 + fxRandom() * 0.4, 0.25, 0.75 + pace * 0.4, 0.66, 0.58, 0.44, 0.3, 0.1, 1.5);
   }
+  view.trackDistance += Math.abs(unit.speed) * simDt;
+  if (view.trackDistance > 0.5) { view.trackDistance = 0; dropTrackMark(px, pz, unit.heading, unit.radius * 1.5); }
   if (view.status <= 0) {
-    view.status = 0.07;
-    if (unit.blitzTime > 0) sparks.spawn(px + spread(0.3), y + 0.2 + fxRandom() * 0.4, pz + spread(0.3), -Math.sin(view.heading) * 3, 0, -Math.cos(view.heading) * 3, 0.3, 0.16, 0.03, 1.2, 2.4, 2.6, 0.9);
-    if (charged) sparks.spawn(px + spread(0.4), y + 0.1, pz + spread(0.4), 0, 1.4 + fxRandom(), 0, 0.5, 0.12, 0.02, 3.2, 1.2, 0.3, 0.9);
-    if (unit.regenTime > 0) sparks.spawn(px + spread(0.4), y + 0.1, pz + spread(0.4), 0, 1.1 + fxRandom() * 0.8, 0, 0.7, 0.15, 0.03, 0.5, 2.8, 1.0, 0.9);
-    if (stunned) sparks.spawn(px + spread(0.4), y + 0.3 + fxRandom() * 0.5, pz + spread(0.4), spread(2), spread(2), spread(2), 0.12, 0.14, 0.03, 2.4, 2.6, 1.0, 1);
+    view.status = 0.06;
+    if (unit.blitzTime > 0) sparks.spawn(px + spread(0.4), 0.3 + fxRandom() * 0.5, pz + spread(0.4), -sinH * 4, 0, -cosH * 4, 0.3, 0.22, 0.03, 1.2, 2.4, 2.6, 0.9);
+    if (stunned) sparks.spawn(px + spread(0.5), 0.4 + fxRandom() * 0.7, pz + spread(0.5), spread(2), spread(2), spread(2), 0.12, 0.2, 0.03, 2.4, 2.6, 1.0, 1);
   }
   // 耐久バー（左端をそろえるため、カメラの右方向へ半幅ずらす）
   const visible = showBars;
   view.barBack.visible = visible; view.barFill.visible = visible; view.ring.visible = visible;
   if (visible) {
-    const top = y + model.barHeight * model.scale * UNIT_SCALE;
+    const top = model.barHeight * model.scale * UNIT_SCALE;
     view.barBack.position.set(px, top, pz);
     view.barFill.position.set(px - cameraRight.x * BAR_WIDTH / 2, top - cameraRight.y * BAR_WIDTH / 2, pz - cameraRight.z * BAR_WIDTH / 2);
     view.barFill.scale.set(Math.max(0.001, BAR_WIDTH * unit.hp / unit.maxHp), BAR_HEIGHT, 1);
@@ -1771,8 +1708,8 @@ function killView(view) {
 }
 
 // ---------- カメラ ----------
-const view = { yaw: -Math.PI / 4, pitch: 0.64, half: 10, target: new THREE.Vector3() };
-const fit = { yaw: -Math.PI / 4, pitch: 0.64, half: 10, center: new THREE.Vector3(), plainHalf: 10, plainCenter: new THREE.Vector3() };
+const view = { yaw: -0.6, pitch: 0.64, half: 10, target: new THREE.Vector3() };
+const fit = { yaw: -0.6, pitch: 0.64, half: 10, center: new THREE.Vector3(), plainHalf: 10, plainCenter: new THREE.Vector3() };
 const user = { pan: new THREE.Vector3(), zoom: 1 };
 let viewportWidth = 1, viewportHeight = 1, pixelsPerUnit = 30;
 function cameraBasis(yaw, pitch) {
@@ -1783,8 +1720,8 @@ function cameraBasis(yaw, pitch) {
 function measureFit(yaw, pitch, insetTop, insetBottom, outCenter) {
   cameraBasis(yaw, pitch);
   let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
-  const halfWidth = BALANCE.mapWidth / 2, halfDepth = BALANCE.mapDepth / 2;
-  for (const x of [-halfWidth, halfWidth]) for (const z of [-halfDepth, halfDepth]) for (const y of [-0.5, BALANCE.maxLevel * STEP_HEIGHT + 1.1]) {
+  const halfWidth = BALANCE.fieldWidth / 2, halfDepth = BALANCE.fieldDepth / 2;
+  for (const x of [-halfWidth, halfWidth]) for (const z of [-halfDepth, halfDepth]) for (const y of [-0.4, 1.8]) {
     scratchA.set(x, y, z);
     const u = scratchA.dot(cameraRight), v = scratchA.dot(cameraUp);
     uMin = Math.min(uMin, u); uMax = Math.max(uMax, u); vMin = Math.min(vMin, v); vMax = Math.max(vMax, v);
@@ -1796,7 +1733,7 @@ function measureFit(yaw, pitch, insetTop, insetBottom, outCenter) {
 }
 function computeFit() {
   const portrait = viewportHeight > viewportWidth;
-  fit.yaw = portrait ? -Math.PI / 2 + 0.34 : -Math.PI / 4;   // 縦画面は戦場の長辺を縦に寝かせる
+  fit.yaw = portrait ? -Math.PI / 2 + 0.3 : -0.6;   // 縦画面は戦場の長辺を縦に寝かせる
   fit.pitch = portrait ? 0.84 : 0.64;
   const bottomPanel = $("bottom").classList.contains("hidden") ? viewportHeight * 0.24 : $("bottom").offsetHeight;
   fit.half = measureFit(fit.yaw, fit.pitch, 62, bottomPanel + 6, fit.center);
@@ -1837,18 +1774,18 @@ function directorCut() {
   const alive = battle.units.filter((unit) => unit.alive);
   if (hot) {
     director.mode = "spot";
-    view.target.set(worldX(director.interest.x), tileTop(battle.map, director.interest.x, director.interest.z) + 0.3, worldZ(director.interest.z));
+    view.target.set(director.interest.x, 0.4, director.interest.z);
     view.half = fit.plainHalf * (0.36 + fxRandom() * 0.12); director.timer = 2.6 + fxRandom() * 1.4; director.interest = null;
   } else if (fxRandom() < 0.28 || alive.length === 0) {
     director.mode = "wide";
     let sumX = 0, sumZ = 0;
     for (const unit of alive) { sumX += unit.x; sumZ += unit.z; }
     const count = Math.max(1, alive.length);
-    view.target.set(alive.length ? worldX(sumX / count) * 0.6 : 0, 0.5, alive.length ? worldZ(sumZ / count) * 0.6 : 0);
+    view.target.set(sumX / count * 0.6, 0.5, sumZ / count * 0.6);
     view.half = fit.plainHalf * 0.7; director.timer = 3.2 + fxRandom();
   } else {
     director.mode = "follow";
-    const busy = alive.filter((unit) => unit.moving || unit.reloadTimer > 0);
+    const busy = alive.filter((unit) => Math.abs(unit.speed) > 0.5);
     const pool = busy.length ? busy : alive;
     const chosen = pool[Math.floor(fxRandom() * pool.length)];
     director.followId = chosen.id;
@@ -1898,30 +1835,49 @@ function announce(text) {
 }
 
 // ---------- 戦闘イベント → 演出 ----------
-const GOLD = [3.2, 2.2, 0.6], GREEN = [0.5, 2.8, 1.0], EMBER = [3.2, 1.2, 0.3], WHITE = [3, 3, 3];
+const GOLD = [3.2, 2.2, 0.6], EMBER = [3.2, 1.2, 0.3], WHITE = [3, 3, 3];
 function handleEvent(event) {
   switch (event.type) {
     case "fire": {
-      const shooter = views[event.unitId], team = shooter.unit.team, heavy = shooter.unit.type === "heavy";
-      shooter.aim = lerpAngle(shooter.aim, Math.atan2(event.x - shooter.unit.x, event.z - shooter.unit.z), 0.75);
-      shooter.turretPivot.rotation.y = shooter.aim - shooter.heading;
+      const shooter = views[event.unitId], team = shooter.unit.team, type = shooter.unit.type;
+      shooter.turretPivot.rotation.y = event.angle - shooter.unit.heading;
       muzzleWorld(shooter, scratchA);
-      shooter.recoil = 1;
-      const dirX = Math.sin(shooter.aim), dirZ = Math.cos(shooter.aim), small = event.weapon === "gun";
-      const flashSize = small ? 0.5 : (heavy ? 1.7 : 1.2);
-      sparks.spawn(scratchA.x + dirX * 0.1, scratchA.y, scratchA.z + dirZ * 0.1, 0, 0, 0, 0.09, flashSize, flashSize * 0.3, 3.4, 2.8, 1.6, 1);
-      if (!small) {
-        for (let i = 0; i < 6; i++) sparks.spawn(scratchA.x, scratchA.y, scratchA.z, dirX * (3 + fxRandom() * 5) + spread(1.4), spread(1.4) + 0.6, dirZ * (3 + fxRandom() * 5) + spread(1.4), 0.18 + fxRandom() * 0.15, 0.2, 0.03, 3.2, 1.8, 0.6, 1, 0, 3);
-        for (let i = 0; i < 3; i++) smoke.spawn(scratchA.x, scratchA.y, scratchA.z, dirX * (0.6 + fxRandom()) + spread(0.3), 0.4 + fxRandom() * 0.4, dirZ * (0.6 + fxRandom()) + spread(0.3), 0.6 + fxRandom() * 0.4, 0.22, 0.7, 0.75, 0.75, 0.78, 0.35, 0.2, 2);
+      const dirX = Math.sin(event.angle), dirZ = Math.cos(event.angle);
+      if (event.weapon === "orb") {
+        const color = TEAM_GLOW[team];
+        shooter.recoil = 1;
+        for (let i = 0; i < 7; i++) sparks.spawn(scratchA.x, scratchA.y, scratchA.z, spread(2.5), spread(2.5), spread(2.5), 0.3, 0.4, 0.05, color[0], color[1], color[2], 1);
+        audio.play("bolt");
+        break;
       }
-      const shot = shots.take();
-      shot.start.copy(scratchA); shot.end.set(worldX(event.x), tileTop(battle.map, event.x, event.z) + (event.weapon === "mortar" ? 0.05 : 0.35), worldZ(event.z));
-      shot.time = 0; shot.duration = Math.max(0.03, event.duration); shot.targetId = event.targetId; shot.weapon = event.weapon; shot.team = team; shot.trail = 0;
-      shot.arc = event.weapon === "mortar" ? 2.4 + shot.start.distanceTo(shot.end) * 0.24 : 0;
-      const tone = small ? [3.2, 2.7, 1.3] : TEAM_SHELL[team];
-      shot.mesh.material.color.setRGB(tone[0], tone[1], tone[2]);
-      if (small) shot.mesh.scale.set(0.028, 0.028, 0.24); else if (event.weapon === "mortar") shot.mesh.scale.set(0.11, 0.11, 0.17); else shot.mesh.scale.set(heavy ? 0.1 : 0.075, heavy ? 0.1 : 0.075, heavy ? 0.28 : 0.22);
-      shot.mesh.position.copy(scratchA);
+      if (event.weapon === "lance") {
+        const color = TEAM_GLOW[team];
+        shooter.recoil = 1.8;
+        sparks.spawn(scratchA.x, scratchA.y, scratchA.z, 0, 0, 0, 0.16, 3.6, 0.8, 3, 3, 3, 1);
+        for (let i = 0; i < 16; i++) sparks.spawn(scratchA.x, scratchA.y, scratchA.z, dirX * (4 + fxRandom() * 9) + spread(2), spread(2), dirZ * (4 + fxRandom() * 9) + spread(2), 0.25 + fxRandom() * 0.3, 0.3, 0.03, color[0], color[1], color[2], 1, 0, 2);
+        spawnRing(scratchA.x, 0.08, scratchA.z, 0.3, 2.2, 0.4, color);
+        pulseLight(scratchA.x, 1.2, scratchA.z, color, 5, 0.3);
+        addShake(0.08); audio.play("beam");
+        break;
+      }
+      const small = type === "scout", heavy = type === "heavy" || event.weapon === "mortar";
+      shooter.recoil = 1;
+      const flashSize = small ? 0.8 : (heavy ? 2.6 : 1.9);
+      sparks.spawn(scratchA.x + dirX * 0.15, scratchA.y, scratchA.z + dirZ * 0.15, 0, 0, 0, 0.09, flashSize, flashSize * 0.3, 3.4, 2.8, 1.6, 1);
+      if (!small) {
+        for (let i = 0; i < 7; i++) sparks.spawn(scratchA.x, scratchA.y, scratchA.z, dirX * (3 + fxRandom() * 6) + spread(1.6), spread(1.6) + 0.6, dirZ * (3 + fxRandom() * 6) + spread(1.6), 0.18 + fxRandom() * 0.15, 0.28, 0.04, 3.2, 1.8, 0.6, 1, 0, 3);
+        for (let i = 0; i < 3; i++) smoke.spawn(scratchA.x, scratchA.y, scratchA.z, dirX * (0.8 + fxRandom()) + spread(0.3), 0.4 + fxRandom() * 0.4, dirZ * (0.8 + fxRandom()) + spread(0.3), 0.6 + fxRandom() * 0.4, 0.3, 0.95, 0.75, 0.75, 0.78, 0.32, 0.2, 2);
+      }
+      if (event.weapon === "mortar") {   // 山なりの砲弾は着弾点が決まっているので、演出側で放物線を描く
+        const shot = shots.take(), tone = TEAM_SHELL[team];
+        shot.start.copy(scratchA); shot.end.set(event.x, 0.05, event.z);
+        shot.time = 0; shot.duration = Math.max(0.03, event.duration); shot.team = team; shot.trail = 0;
+        shot.arc = 3.2 + shot.start.distanceTo(shot.end) * 0.22;
+        shot.mesh.material.color.setRGB(tone[0], tone[1], tone[2]);
+        shot.mesh.scale.set(0.16, 0.16, 0.26); shot.mesh.position.copy(scratchA);
+        const mark = spawnRune(event.x, 0.06, event.z, BALANCE.units.artillery.weapon.splash * 2, event.duration, team === TEAM_PLAYER ? [0.5, 1.4, 2.4] : [2.6, 0.7, 0.4]);
+        mark.strength = 0.55;
+      }
       audio.play(small ? "gun" : (event.weapon === "mortar" ? "mortar" : (heavy ? "heavy" : "cannon")));
       break;
     }
@@ -1930,100 +1886,71 @@ function handleEvent(event) {
       caster.recoil = 1;
       muzzleWorld(caster, scratchA);
       let from = scratchA.clone();
-      for (let i = 0; i < 8; i++) sparks.spawn(from.x, from.y, from.z, spread(3), spread(3), spread(3), 0.25, 0.3, 0.04, color[0], color[1], color[2], 1);
+      for (let i = 0; i < 10; i++) sparks.spawn(from.x, from.y, from.z, spread(3), spread(3), spread(3), 0.25, 0.4, 0.04, color[0], color[1], color[2], 1);
       for (const targetId of event.targetIds) {
-        const to = views[targetId].root.position.clone(); to.y += 0.4;
-        spawnBolt(from, to, color, event.big ? 0.17 : 0.085, event.big ? 0.55 : 0.32, event.big ? 0.5 : 0.24);
-        if (event.big) spawnBolt(from, to, WHITE, 0.04, 0.4, 0.4);
-        hitSparks(to.x, to.y, to.z, color, event.big ? 10 : 5);
-        sparks.spawn(to.x, to.y, to.z, 0, 0, 0, 0.12, event.big ? 1.2 : 0.9, 0.3, color[0], color[1], color[2], 1);
-        if (event.big) spawnRing(to.x, to.y - 0.3, to.z, 0.2, 1.3, 0.4, color);
+        const to = views[targetId].root.position.clone(); to.y += 0.6;
+        spawnBolt(from, to, color, 0.24, 0.8, 0.5);
+        spawnBolt(from, to, WHITE, 0.06, 0.6, 0.4);
+        hitSparks(to.x, to.y, to.z, color, 10);
+        sparks.spawn(to.x, to.y, to.z, 0, 0, 0, 0.12, 1.8, 0.4, color[0], color[1], color[2], 1);
+        spawnRing(to.x, 0.08, to.z, 0.3, 1.9, 0.4, color);
         from = to;
       }
-      if (event.big) { addShake(0.07); pulseLight(from.x, from.y + 0.8, from.z, color, 4, 0.3); noteInterest(views[event.targetIds[0]].unit.x, views[event.targetIds[0]].unit.z, 2); }
-      audio.play(event.big ? "storm" : "bolt");
-      break;
-    }
-    case "beam": {
-      const shooter = views[event.unitId], color = TEAM_GLOW[shooter.unit.team];
-      shooter.aim = Math.atan2(event.x1 - event.x0, event.z1 - event.z0);
-      shooter.turretPivot.rotation.y = shooter.aim - shooter.heading;
-      muzzleWorld(shooter, scratchA);
-      shooter.recoil = 1.8;
-      const from = scratchA.clone(), to = new THREE.Vector3(worldX(event.x1), from.y, worldZ(event.z1));
-      spawnBolt(from, to, color, 0.26, 0, 0.5);
-      spawnBolt(from, to, WHITE, 0.07, 0, 0.42);
-      for (let i = 0; i < 26; i++) {
-        const along = fxRandom();
-        sparks.spawn(from.x + (to.x - from.x) * along, from.y + spread(0.1), from.z + (to.z - from.z) * along, spread(1.5), spread(1.5), spread(1.5), 0.3 + fxRandom() * 0.4, 0.2, 0.02, color[0], color[1], color[2], 1, 0, 2);
+      if (event.targetIds.length > 0) {
+        addShake(0.07); pulseLight(from.x, from.y + 0.8, from.z, color, 4, 0.3);
+        noteInterest(views[event.targetIds[0]].unit.x, views[event.targetIds[0]].unit.z, 2);
+        audio.play("storm");
       }
-      sparks.spawn(from.x, from.y, from.z, 0, 0, 0, 0.16, 2.6, 0.6, 3, 3, 3, 1);
-      spawnRing(from.x, from.y - 0.25, from.z, 0.2, 1.5, 0.35, color);
-      pulseLight(from.x, from.y + 0.6, from.z, color, 5, 0.3);
-      addShake(0.09); audio.play("beam");
       break;
     }
     case "hit": {
       const struck = views[event.unitId], position = struck.root.position;
-      struck.flash = Math.max(struck.flash, Math.min(0.9, 0.12 + event.amount / 70));
-      if (event.absorbed > 0) spawnRing(position.x, position.y + 0.3, position.z, 0.5, 0.95, 0.25, TEAM_GLOW[struck.unit.team], 0.8);
-      if (event.amount >= 12) showNumber(position, String(Math.round(event.amount)), `${struck.unit.team === TEAM_PLAYER ? "ally" : ""} ${event.amount >= 100 ? "big" : ""}`);
+      if (event.blocked) {
+        spawnRing(position.x, 0.5, position.z, 0.8, 1.5, 0.3, TEAM_GLOW[struck.unit.team], 1);
+        hitSparks(event.x, BULLET_HEIGHT, event.z, TEAM_GLOW[struck.unit.team], 6);
+        showNumber(position, translate("blocked"), "miss"); audio.play("shield");
+        break;
+      }
+      struck.flash = Math.max(struck.flash, Math.min(1, 0.35 + event.amount * 0.3));
+      if (event.rear) showNumber(position, translate("rearHit"), "big");
+      else if (event.armored) showNumber(position, translate("armored"), "miss");
+      if (event.kind === "shell") {
+        if (event.amount < 1 && !event.rear) { hitSparks(event.x, BULLET_HEIGHT, event.z, [3.2, 2.6, 1.2], 5); audio.play("hit"); }
+        else { explosion(event.x, 0.3, event.z, event.amount >= 2 ? 0.85 : 0.6); audio.play("explode"); }
+      } else if (event.kind === "orb" || event.kind === "lance") {
+        const color = TEAM_GLOW[1 - struck.unit.team];
+        sparks.spawn(event.x, BULLET_HEIGHT, event.z, 0, 0, 0, 0.16, 2.6, 0.5, color[0], color[1], color[2], 1);
+        hitSparks(event.x, BULLET_HEIGHT, event.z, color, 12);
+        spawnRing(event.x, 0.08, event.z, 0.3, 1.8, 0.35, color);
+        audio.play("explode");
+      }
       break;
     }
-    case "impact": {
-      const position = views[event.targetId].root.position;
-      if (event.weapon === "gun") { hitSparks(position.x + spread(0.2), position.y + 0.35, position.z + spread(0.2), [3.2, 2.6, 1.2], 3); audio.play("hit"); }
-      else { explosion(position.x + spread(0.15), position.y + 0.15, position.z + spread(0.15), 0.5); audio.play("explode"); }
+    case "ricochet":
+      hitSparks(event.x, BULLET_HEIGHT, event.z, [3.0, 2.4, 1.4], 6);
+      smoke.spawn(event.x, BULLET_HEIGHT, event.z, spread(0.4), 0.6, spread(0.4), 0.5, 0.25, 0.7, 0.6, 0.6, 0.6, 0.3);
+      audio.play("hit");
       break;
-    }
     case "explode":
-      explosion(worldX(event.x), tileTop(battle.map, event.x, event.z), worldZ(event.z), event.radius * 0.85);
+      explosion(event.x, 0, event.z, event.radius * 0.8);
       audio.play("explode");
       break;
     case "death":
       killView(views[event.unitId]);
       noteInterest(views[event.unitId].unit.x, views[event.unitId].unit.z, 1);
       break;
-    case "evade":
-      showNumber(views[event.unitId].root.position, translate("miss"), "miss");
-      break;
     case "skill": {
       showCutin(event.team, event.skillId);
-      const color = event.skillId === "repair" ? GREEN : (event.skillId === "charge" ? EMBER : TEAM_GLOW[event.team]);
+      const color = TEAM_GLOW[event.team];
       for (const unitId of event.unitIds) {
         const caster = views[unitId], position = caster.root.position;
-        spawnRune(position.x, position.y + 0.05, position.z, 1.7, 1.3, color, caster);
-        spawnRing(position.x, position.y + 0.06, position.z, 0.3, 1.2, 0.5, color);
-        for (let i = 0; i < 6; i++) sparks.spawn(position.x + spread(0.4), position.y + 0.1, position.z + spread(0.4), 0, 1.5 + fxRandom() * 2, 0, 0.5 + fxRandom() * 0.4, 0.16, 0.02, color[0], color[1], color[2], 1);
+        spawnRune(position.x, 0.05, position.z, event.skillId === "barrier" ? BALANCE.skills.barrier.radius * 2 : 2.8, 1.3, color, caster);
+        spawnRing(position.x, 0.06, position.z, 0.4, 1.9, 0.5, color);
+        for (let i = 0; i < 6; i++) sparks.spawn(position.x + spread(0.6), 0.1, position.z + spread(0.6), 0, 1.5 + fxRandom() * 2, 0, 0.5 + fxRandom() * 0.4, 0.22, 0.02, color[0], color[1], color[2], 1);
       }
-      audio.play({ barrier: "shield", repair: "heal", charge: "buff", blitz: "blitz" }[event.skillId] || "confirm");
+      audio.play({ barrier: "shield", blitz: "blitz" }[event.skillId] || "confirm");
       if (event.unitIds.length > 0) { const lead = views[event.unitIds[0]].unit; noteInterest(lead.x, lead.z, 2); }
       if (state === "replay") slowMotion(0.5, 0.5);
-      break;
-    }
-    case "meteorWarn": {
-      const x = worldX(event.x), z = worldZ(event.z), y = tileTop(battle.map, event.x, event.z);
-      spawnRune(x, highestTopAround(battle.map, event.x, event.z, event.radius) + 0.08, z, event.radius * 2.3, event.delay + 0.15, EMBER);
-      const meteor = meteors.take();
-      meteor.end.set(x, y, z); meteor.start.set(x + 7, y + 17, z - 7); meteor.time = 0; meteor.duration = event.delay; meteor.mesh.position.copy(meteor.start);
-      noteInterest(event.x, event.z, 3);
-      audio.play("meteorFall");
-      break;
-    }
-    case "meteorHit": {
-      const x = worldX(event.x), z = worldZ(event.z), y = tileTop(battle.map, event.x, event.z);
-      explosion(x, y, z, 3.1);
-      for (let i = 0; i < 46; i++) {
-        const angle = fxRandom() * 6.283, speed = 3 + fxRandom() * 9;
-        sparks.spawn(x, y + 0.3, z, Math.cos(angle) * speed, 3 + fxRandom() * 9, Math.sin(angle) * speed, 0.6 + fxRandom() * 0.7, 0.2, 0.03, 3.4, 1.7, 0.5, 1, -12, 0.4);
-      }
-      spawnRing(x, y + 0.08, z, 0.5, event.radius * 2.1, 0.7, EMBER, 1.6);
-      spawnRing(x, y + 0.1, z, 0.3, event.radius * 1.3, 0.45, WHITE, 1.2);
-      spawnScorch(x, y, z, event.radius * 2.4);
-      pulseLight(x, y + 1.5, z, EMBER, 40, 0.7);
-      addShake(0.45); flashAmount = 0.75;
-      audio.play("meteorHit");
-      slowMotion(0.3, 0.8);
       break;
     }
     case "over":
@@ -2031,7 +1958,41 @@ function handleEvent(event) {
       break;
   }
 }
-
+function syncBullets(simDt) {
+  bulletStamp++;
+  for (const bullet of battle.bullets) {
+    let visual = bulletVisuals.get(bullet.id);
+    if (!visual) {
+      visual = bulletSpares.pop();
+      if (!visual) { visual = { mesh: new THREE.Mesh(shotGeometry, new THREE.MeshBasicMaterial({ color: 0xffffff })), stamp: 0 }; scene.add(visual.mesh); }
+      const magic = bullet.kind !== "shell", tone = magic ? TEAM_GLOW[bullet.team] : (bullet.damage < 1 ? [3.2, 2.7, 1.3] : TEAM_SHELL[bullet.team]);
+      visual.mesh.material.color.setRGB(tone[0], tone[1], tone[2]);
+      if (bullet.kind === "orb") visual.mesh.scale.setScalar(0.3);
+      else if (bullet.kind === "lance") visual.mesh.scale.set(0.2, 0.2, 1.5);
+      else if (bullet.damage < 1) visual.mesh.scale.set(0.06, 0.06, 0.34);
+      else visual.mesh.scale.set(bullet.heavy ? 0.17 : 0.12, bullet.heavy ? 0.17 : 0.12, bullet.heavy ? 0.5 : 0.4);
+      visual.mesh.visible = true;
+      bulletVisuals.set(bullet.id, visual);
+    }
+    visual.stamp = bulletStamp;
+    visual.mesh.position.set(bullet.x, BULLET_HEIGHT, bullet.z);
+    visual.mesh.rotation.y = Math.atan2(bullet.vx, bullet.vz);
+    if (simDt <= 0) continue;
+    const tone = bullet.kind === "shell" ? TEAM_SHELL[bullet.team] : TEAM_GLOW[bullet.team];
+    if (bullet.kind === "lance") {
+      for (let i = 0; i < 4; i++) sparks.spawn(bullet.x - bullet.vx * simDt * fxRandom() + spread(0.1), BULLET_HEIGHT + spread(0.1), bullet.z - bullet.vz * simDt * fxRandom() + spread(0.1), spread(0.6), spread(0.6), spread(0.6), 0.45, 0.55, 0.03, tone[0], tone[1], tone[2], 1);
+    } else if (bullet.kind === "orb") {
+      sparks.spawn(bullet.x + spread(0.12), BULLET_HEIGHT + spread(0.12), bullet.z + spread(0.12), spread(0.5), spread(0.5), spread(0.5), 0.4, 0.42, 0.03, tone[0], tone[1], tone[2], 0.9);
+      visual.mesh.scale.setScalar(0.28 + Math.sin(bulletStamp * 0.6) * 0.05);
+    } else if (bullet.damage >= 1) {
+      sparks.spawn(bullet.x, BULLET_HEIGHT, bullet.z, 0, 0, 0, 0.16, 0.3, 0.02, tone[0], tone[1], tone[2], 0.8);
+    }
+  }
+  for (const [id, visual] of bulletVisuals) {
+    if (visual.stamp === bulletStamp) continue;
+    visual.mesh.visible = false; bulletSpares.push(visual); bulletVisuals.delete(id);
+  }
+}
 function updateEffects(simDt, effectDt, realDt, time) {
   sparks.update(effectDt); smoke.update(effectDt);
   for (let i = rings.active.length - 1; i >= 0; i--) {
@@ -2065,35 +2026,22 @@ function updateEffects(simDt, effectDt, realDt, time) {
     if (bolt.jitter === 0 || bolt.flicker <= 0) { layoutBolt(bolt); bolt.flicker = 0.045; }
     bolt.mesh.material.opacity = Math.min(1, bolt.life / bolt.maxLife * 1.6);
   }
+  syncBullets(simDt);
   for (let i = shots.active.length - 1; i >= 0; i--) {
     const shot = shots.active[i];
     shot.time += simDt;
     const progress = shot.time / shot.duration;
     if (progress >= 1) { shots.release(i); continue; }
-    if (shot.targetId >= 0 && shot.weapon !== "mortar" && !views[shot.targetId].dead) { shot.end.copy(views[shot.targetId].root.position); shot.end.y += 0.35; }
     scratchA.lerpVectors(shot.start, shot.end, progress);
     scratchA.y += Math.sin(Math.PI * progress) * shot.arc;
     if (scratchA.distanceToSquared(shot.mesh.position) > 1e-8) shot.mesh.lookAt(scratchA);
     shot.mesh.position.copy(scratchA);
     shot.trail -= simDt;
-    if (shot.trail <= 0 && shot.weapon !== "gun") {
+    if (shot.trail <= 0) {
       shot.trail = 0.022;
       const tone = TEAM_SHELL[shot.team];
-      sparks.spawn(scratchA.x, scratchA.y, scratchA.z, 0, 0, 0, 0.2, shot.weapon === "mortar" ? 0.3 : 0.2, 0.02, tone[0], tone[1], tone[2], 0.8);
-      if (shot.weapon === "mortar") smoke.spawn(scratchA.x, scratchA.y, scratchA.z, spread(0.1), 0.1, spread(0.1), 0.6, 0.14, 0.36, 0.7, 0.7, 0.72, 0.28);
-    }
-  }
-  for (let i = meteors.active.length - 1; i >= 0; i--) {
-    const meteor = meteors.active[i];
-    meteor.time += simDt;
-    const progress = meteor.time / meteor.duration;
-    if (progress >= 1) { meteors.release(i); continue; }
-    meteor.mesh.position.lerpVectors(meteor.start, meteor.end, progress * progress);   // 加速しながら落ちる
-    meteor.mesh.rotation.x += simDt * 5; meteor.mesh.rotation.z += simDt * 3;
-    if (simDt > 0) for (let j = 0; j < 4; j++) {
-      const p = meteor.mesh.position;
-      sparks.spawn(p.x + spread(0.3), p.y + spread(0.3), p.z + spread(0.3), spread(0.8), 1 + fxRandom() * 2, spread(0.8), 0.5 + fxRandom() * 0.4, 0.9, 0.1, 3.4, 1.5, 0.4, 0.9, 0, 0, 1.2, 0.2, 0.05);
-      if (j === 0) smoke.spawn(p.x, p.y, p.z, spread(0.4), 0.5, spread(0.4), 1.2, 0.5, 1.4, 0.16, 0.13, 0.12, 0.5);
+      sparks.spawn(scratchA.x, scratchA.y, scratchA.z, 0, 0, 0, 0.2, 0.42, 0.02, tone[0], tone[1], tone[2], 0.8);
+      smoke.spawn(scratchA.x, scratchA.y, scratchA.z, spread(0.1), 0.1, spread(0.1), 0.6, 0.2, 0.5, 0.7, 0.7, 0.72, 0.26);
     }
   }
   for (let i = debris.length - 1; i >= 0; i--) {
@@ -2118,11 +2066,7 @@ function updateEffects(simDt, effectDt, realDt, time) {
     for (const spot of crystalSpots) {
       if (fxRandom() > effectDt * 5) continue;
       const tone = spot[3] === 0 ? [0.6, 2.2, 2.6] : [1.6, 0.9, 2.8];
-      sparks.spawn(spot[0] + spread(0.35), spot[1] - 0.2 + spread(0.3), spot[2] + spread(0.35), spread(0.1), 0.3 + fxRandom() * 0.4, spread(0.1), 1.4 + fxRandom(), 0.09, 0.01, tone[0], tone[1], tone[2], 0.9);
-    }
-    for (const spot of waterSpots) {
-      if (fxRandom() > effectDt * 0.5) continue;
-      sparks.spawn(spot[0] + spread(0.45), spot[1] + 0.02, spot[2] + spread(0.45), 0, 0, 0, 0.5, 0.02, 0.14, 1.6, 2.2, 2.6, 0.7);
+      sparks.spawn(spot[0] + spread(spot[4]), spot[1] - 0.3 + spread(spot[4]), spot[2] + spread(spot[4]), spread(0.1), 0.3 + fxRandom() * 0.4, spread(0.1), 1.4 + fxRandom(), 0.16, 0.01, tone[0], tone[1], tone[2], 0.9);
     }
   }
   shake *= Math.exp(-realDt * 7);
@@ -2133,7 +2077,9 @@ function updateEffects(simDt, effectDt, realDt, time) {
 }
 function clearEffects() {
   sparks.clear(); smoke.clear();
-  for (const pool of [rings, runes, scorches, bolts, shots, meteors]) pool.clear();
+  for (const pool of [rings, runes, scorches, bolts, shots]) pool.clear();
+  for (const visual of bulletVisuals.values()) { visual.mesh.visible = false; bulletSpares.push(visual); }
+  bulletVisuals.clear(); trackCursor = 0; trackMarks.count = 0;
   for (const piece of debris) scene.remove(piece.object);
   debris.length = 0; shake = 0; flashAmount = 0; previewRunes.length = 0;
   for (const light of pulseLights) { light.userData.life = 0; light.intensity = 0; }
@@ -2146,9 +2092,6 @@ const ICONS = {
   barrage: '<path d="M5 3l4 6M12 2l4 7M18 5l3 5"/><circle cx="7" cy="18" r="2.5"/><circle cx="15" cy="17" r="3"/>',
   blitz: '<path d="M3 6l6 6-6 6M10 6l6 6-6 6M17 6l5 6-5 6"/>',
   storm: '<path d="M13 2L4 14h7l-2 8 10-13h-7z"/>',
-  meteor: '<circle cx="9" cy="15" r="5"/><path d="M13 11l8-8M16 14l5-4M10 8l4-5"/>',
-  repair: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/>',
-  charge: '<path d="M12 2l7 8h-4v5H9v-5H5z"/><path d="M8 18h8M9 22h6"/>',
 };
 let state = "title", speed = 1, replaySpeed = 1, accumulator = 0, endTimer = 0, selected = null, record = null, replayOrders = null, autoRandom = null;
 const autoPlay = query.get("auto") === "1";
@@ -2160,7 +2103,7 @@ function buildDeck() {
   $("deck").innerHTML = "";
   for (const skillId of BALANCE.skillOrder) {
     const skill = BALANCE.skills[skillId], element = document.createElement("div");
-    element.className = `card ${skill.kind === "commander" ? "commander" : ""}`;
+    element.className = "card";
     element.innerHTML = `<svg viewBox="0 0 24 24">${ICONS[skillId]}</svg><div class="title">${translate("skill_" + skillId)}</div><div class="tag"></div><div class="cool"></div><div class="secs"></div>`;
     element.addEventListener("click", () => selectCard(skillId));
     $("deck").appendChild(element);
@@ -2187,15 +2130,13 @@ function clearPreview() {
 function previewSkill(skillId) {   // 発令前に「誰が動くか・どこに落ちるか」を戦場に示す
   clearPreview();
   const skill = BALANCE.skills[skillId];
-  const actors = skill.kind === "unit" ? aliveOfType(battle, TEAM_PLAYER, skill.unitType) : (skillId === "meteor" ? [] : aliveOfType(battle, TEAM_PLAYER, null));
-  for (const unit of actors) {
-    const actor = views[unit.id], position = actor.root.position;
-    previewRunes.push(spawnRune(position.x, position.y + 0.05, position.z, skillId === "barrier" ? skill.radius * 2 : 1.6, 99, GOLD, actor, true));
+  for (const unit of aliveOfType(battle, TEAM_PLAYER, skill.unitType)) {
+    const actor = views[unit.id];
+    previewRunes.push(spawnRune(unit.x, 0.05, unit.z, skillId === "barrier" ? skill.radius * 2 : 2.8, 99, GOLD, actor, true));
   }
-  if (skillId === "meteor" || skillId === "barrage") {
+  if (skillId === "barrage") {
     const cluster = findCluster(battle, TEAM_ENEMY, skill.clusterRadius);
-    const reach = skillId === "meteor" ? skill.radius : skill.spread + skill.splash;
-    if (cluster) previewRunes.push(spawnRune(worldX(cluster.x), highestTopAround(battle.map, cluster.x, cluster.z, reach) + 0.08, worldZ(cluster.z), reach * 2.1, 99, EMBER, null, true));
+    if (cluster) previewRunes.push(spawnRune(cluster.x, 0.08, cluster.z, (skill.spread + skill.splash) * 2, 99, EMBER, null, true));
   }
 }
 function selectCard(skillId) {
@@ -2238,7 +2179,7 @@ function setupBattle(seed) {
   clearEffects(); disposeViews();
   battle = createBattle(seed);
   autoRandom = makeRandomGenerator((battle.seed ^ 0x5bd1e995) >>> 0);
-  buildTerrain(battle.map);
+  buildTerrain(battle.field);
   views = battle.units.map(createUnitView);
   accumulator = 0; endTimer = 0; director.slowTimer = 0; director.interest = null; user.pan.set(0, 0, 0); user.zoom = 1;
   $("clockSeed").textContent = `SEED ${battle.seed}`;
@@ -2311,12 +2252,12 @@ function updateHud() {
   setStyle("gaugeFill", "width", `${(clampNumber(1 - (battle.nextCommandTick - battle.tick) / interval, 0, 1) * 100).toFixed(1)}%`);
   for (const skillId of BALANCE.skillOrder) {
     const skill = BALANCE.skills[skillId], card = cards[skillId];
-    const count = skill.kind === "unit" ? (perType[skill.unitType] || 0) : -1;
+    const count = perType[skill.unitType] || 0;
     const remaining = Math.max(0, (battle.readyTick[TEAM_PLAYER][skillId] - battle.tick) / BALANCE.tickRate);
     const shown = `${count}|${Math.ceil(remaining)}|${Math.round(remaining / skill.cooldown * 50)}`;
     if (card.shown === shown) continue;
     card.shown = shown;
-    card.tag.textContent = count < 0 ? translate("commander") : `${translate("unit_" + skill.unitType)} ×${count}`;
+    card.tag.textContent = `${translate("unit_" + skill.unitType)} ×${count}`;
     card.element.classList.toggle("lost", count === 0);
     card.element.classList.toggle("ready", remaining <= 0 && count !== 0);
     card.cool.style.height = `${remaining / skill.cooldown * 100}%`;
@@ -2337,7 +2278,7 @@ canvas.addEventListener("pointermove", (event) => {
     user.pan.addScaledVector(cameraRight, -dx);
     scratchA.set(cameraUp.x, 0, cameraUp.z).normalize();          // 画面の上方向を地面に落としたもの
     user.pan.addScaledVector(scratchA, dy / Math.sin(view.pitch));
-    user.pan.x = clampNumber(user.pan.x, -BALANCE.mapWidth / 2, BALANCE.mapWidth / 2); user.pan.z = clampNumber(user.pan.z, -BALANCE.mapDepth / 2, BALANCE.mapDepth / 2);
+    user.pan.x = clampNumber(user.pan.x, -BALANCE.fieldWidth / 2, BALANCE.fieldWidth / 2); user.pan.z = clampNumber(user.pan.z, -BALANCE.fieldDepth / 2, BALANCE.fieldDepth / 2);
   }
   previous[0] = event.clientX; previous[1] = event.clientY;
   if (pointers.size === 2) {
