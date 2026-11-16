@@ -125,6 +125,13 @@ node tools/check.mjs prototypes/dragon-tide/index.html
 （撃ってこない・倒れたら10秒で建て直す）、群れ20匹で決まった線（輪・薙ぎ・真ん中で離す）を60秒引いて、竜1匹・特殊個体1体の1秒の傷を表にする。
 オートプレイでの計測は群れの増え方や狙いの癖で竜種ごとに大きくずれるので、強さの比較はこちらで行う。数値を変える案は `--file` に書き換えた写しを渡して先に測る。
 
+**Dragon Tide の新しい仕掛けの確かめ**（DT-333〜）: `node tools/dt-probe.mjs --stage 0,16 --ticks 1500 --probe "bombBalls.length" --shot out.png`
+は、決まった時代・地域（番号は `STAGE_SHAPES` の順）でオートプレイを回し、式の値と画面の絵を取る（`--setup`・`--each` で群れを置き直せる）。
+指紋を比べる `dt-headless.mjs` と違い、新しい地域・敵が動いているか・どう見えるかを見るための道具。
+
+**クラウド（定時チェック）からの画像生成**（DT-579〜）: `python3 tools/gen_sprite_cloud.py <out.png> "<描写>" [長辺px]`
+（生成→緑抜き→余白詰め→縮小。`pip` が要るときは `python3 -m pip install numpy pillow`）。`tools/gen_*_sprite.sh` は手元の Windows 用でクラウドでは動かない。
+
 **乱数は決定性を壊さないこと**（Dragon Tide v0.38.0〜）:
 ゲーム状態に影響する乱数は `random()`、見た目だけの乱数は `fxRandom()` を使う。
 `Math.random()` の直接呼び出しは禁止（どうしても必要な行には `// allow-math-random`）。
