@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.145.0";
+const GAME_VERSION = "v3.146.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1579,6 +1579,7 @@ const DEBUG_ENEMY_LABELS = {
   serpent_crawl: "🐍這い大蛇",   // v3.102.0（案帳 DT-180）
   serpent_spitter: "🐍毒吐き蛇",   // v3.103.0
   sword_runner: "🗡剣士", sword_charger: "🗡突進の剣士",   // v3.122.0（案帳 DT-535）
+  bomb_batter: "💣打ち返す兵", bomb_roller: "💣玉転がしの兵",   // v3.146.0（案帳 DT-333）
   sword_militia: "🗡足軽", sword_brute: "🗡大太刀", sword_beast: "🐗剣の巨獣",   // v3.126.0（DT-535 手直し）
 };
 
@@ -1606,6 +1607,7 @@ const DEBUG_ENEMY_ORDER = [
   "serpent_crawl", "serpent_spitter",
   // v3.122.0: 剣の道の国の敵（どの地域でも走って斬れる）
   "sword_runner", "sword_charger", "sword_militia", "sword_brute", "sword_beast",
+  "bomb_batter", "bomb_roller",
   // v3.22.0: 大都会の敵（道路が無い地域では走れない）
   "metro_car", "metro_truck", "metro_police", "metro_tank", "metro_heli",
 ];
@@ -2214,6 +2216,9 @@ const STAGE_SHAPES = [
   // v3.130.0: 増えるキノコの里（正方形・案帳 DT-551）… 暗い紫の土の湿った谷。家はキノコで、時間ごと・胞子玉の落ちた所に隣へ生える。
   // 地図は大陸と同じ作り（スタートは左下の角、首都は右上寄り）
   { id: "mushroom",  w: 8400, h: 8400,  icon: "🍄" },
+  // v3.146.0: 爆弾玉の国（正方形・案帳 DT-333）… 火薬で煤けた土。臼砲が導火線のついた鉄の玉を撃ち出し、竜が体で触れると弾ける。
+  // 爆発は誰の味方でもないので、玉を町や城壁のほうへ弾き返す。地図は大陸と同じ作り（スタートは左下の角、首都＝火薬庫の城は右上寄り）
+  { id: "bombland",  w: 8400, h: 8400,  icon: "💣" },
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
@@ -2229,6 +2234,7 @@ const SHAPE_HEROLAND  = 10;
 const SHAPE_WASTELAND = 11;   // v3.77.0（案帳 DT-509）
 const SHAPE_SKYLAND   = STAGE_SHAPES.findIndex(sh => sh.id === "skyland");
 const SHAPE_SERPENT   = STAGE_SHAPES.findIndex(sh => sh.id === "serpent");
+const SHAPE_BOMB      = STAGE_SHAPES.findIndex(sh => sh.id === "bombland");   // v3.146.0（案帳 DT-333）
 const SHAPE_MUSHROOM  = STAGE_SHAPES.findIndex(sh => sh.id === "mushroom");   // v3.130.0（案帳 DT-551）
 const SHAPE_SWORD     = STAGE_SHAPES.findIndex(sh => sh.id === "swordway");   // v3.122.0（案帳 DT-535）   // v3.102.0（案帳 DT-180）   // v3.78.0: 番号は直書きしない（地域の追加と衝突しない）
 let worldShape = SHAPE_CONTINENT;   // 今のワールドの形（ランの間は固定）
@@ -5094,7 +5100,7 @@ function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
   if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST ||
       shape === SHAPE_METRO || shape === SHAPE_PLATEAU || shape === SHAPE_HEROLAND || shape === SHAPE_WASTELAND || shape === SHAPE_SKYLAND ||
-      shape === SHAPE_SERPENT || shape === SHAPE_SWORD || shape === SHAPE_MUSHROOM) {
+      shape === SHAPE_SERPENT || shape === SHAPE_SWORD || shape === SHAPE_MUSHROOM || shape === SHAPE_BOMB) {
     return { x: 320, y: h - 320 };   // 左下の角（首都は中心か、v3.116.0 から右上寄り＝CAPITAL_FAR_SHAPES）
   }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
@@ -6909,6 +6915,7 @@ function generateStageLayout(stageIndex) {
   asteroidRocks     = [];
   resetSkyland();   // v3.78.0: 前のワールドの浮島・雲の影を捨てる
   resetMushroom();   // v3.130.0（案帳 DT-551）: 前のワールドの里・胞子玉を捨てる
+  resetBombland();   // v3.146.0（案帳 DT-333）: 前のワールドの爆弾玉・臼砲を捨てる
   swordPath = []; swordBamboo = []; swordFx.length = 0;   // v3.122.0（案帳 DT-535）: 剣の道・竹林・斬りの跡
   railLines         = [];
   railBossLine      = -1;   // v2.4.0: 御召線（ボス専用線）
@@ -7397,7 +7404,9 @@ function generateStageLayout(stageIndex) {
 
   // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
   // v3.22.0: 大都会は城壁を立てない（碁盤の目の街に輪の壁は合わない。首都は高層ビル）
-  const wallSegments = worldShape === SHAPE_METRO ? [] : generateWallRing(boss, stageIndex);   // v0.56: 城壁の量は文明（時代）で決まる
+  const wallSegments = worldShape === SHAPE_METRO ? []
+    : worldShape === SHAPE_BOMB ? generateBombFort(boss, stageIndex, result)   // v3.146.0（案帳 DT-333）: 火薬庫の城は四角い城壁（どの時代にも）と火薬庫
+    : generateWallRing(boss, stageIndex);   // v0.56: 城壁の量は文明（時代）で決まる
   for (const w of wallSegments) result.push(w);
 
   // --- (5b) v0.29: 一部の町にも部分的な城壁（STAGE3以降。rect町は長方形の壁）---
@@ -9036,6 +9045,7 @@ let movingBuildingGridTick = 0;
 function stageBgColor(config) {
   if (worldShape === SHAPE_WASTELAND) return WASTELAND_GROUND_BG;   // v3.77.0: 時代によらず赤茶けた乾いた地（案帳 DT-509）
   if (worldShape === SHAPE_SKYLAND) return SKY_CLOUD_BG;   // v3.78.0: 雲海
+  if (worldShape === SHAPE_BOMB) return BOMB_GROUND_BG;   // v3.146.0（案帳 DT-333）: 火薬で煤けた土
   if (worldShape === SHAPE_MUSHROOM) return MUSHROOM_GROUND_BG;   // v3.130.0（案帳 DT-551）: 暗い紫がかった土
   if (worldShape === SHAPE_SWORD) return SWORD_GROUND_BG;       // v3.122.0（案帳 DT-535）: 竹林の暗い緑
   if (worldShape === SHAPE_SERPENT) return SERPENT_GROUND_BG;   // v3.102.0: 時代によらず暗い緑の密林（案帳 DT-180）
@@ -9187,7 +9197,7 @@ function isStrongTownPlainHouse(b) {
 
 // v3.116.0（案帳 DT-534）: 首都をスタートの対角寄りに置く地域（スタートは左下の角）。
 // 縁からの余白は、大樹海の大樹の根（820）・荒地の首都の環状列石（600）・浮き城の空の首都の島が地図に収まる幅
-const CAPITAL_FAR_SHAPES  = new Set([SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND, SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD, SHAPE_MUSHROOM]);
+const CAPITAL_FAR_SHAPES  = new Set([SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND, SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD, SHAPE_MUSHROOM, SHAPE_BOMB]);
 const CAPITAL_FAR_MARGIN  = 950;
 const CAPITAL_FAR_SPREAD  = 700;   // 右上の角からばらす幅（縦横それぞれ）
 // 大都会の首都を置く交差点（道路の番号。真ん中の 10,10 と同じく 4 で割って 2 余る＝街境で大通りでない）
@@ -9525,6 +9535,7 @@ function makeWallSegment(wx, wy, hp, tangentAngle) {
 function generateWallRing(boss, stageIndex) {
   const config = WALL_STAGE_CONFIG[stageIndex];
   if (!config) return [];
+  if (worldShape === SHAPE_BOMB) return [];   // v3.146.0（案帳 DT-333）: 爆弾玉の国の首都は四角い城壁（generateBombFort）。輪の城壁は張らない
   boss = capitalAnchor(boss);   // v2.4.0: 軌道の首都は動く。城壁は生成時の中心に張る
 
   const result = [];
@@ -9689,6 +9700,12 @@ const MOVER_DEFS = {
     name: "scythe_convoy", scythe: true, convoyCount: 3, hp: 460, speed: 135, xp: 260, eggDrop: 3, radius: 18, turnRate: 1.6, showHpBar: true,
     color: "#5e6676", glowColor: "#ffb8a8", moveType: "patrol", codexSprite: "scythe_chariot_body",
   },
+  // v3.146.0（案帳 DT-333）: 爆弾玉の国だけの兵。打ち返す兵は3人の小隊で、転がってきた玉を群れのほうへ棍棒で打ち返す（updateBombBatter）。
+  // 自分では竜を傷つけない。爆発に弱い（3倍）。玉転がしの兵は2人組で大玉を押してくる（updateBombRoller）。倒すと大玉がその場に残る
+  bomb_batter: { name: "bomb_batter", bombBatter: true, hp: 60, speed: 150, xp: 24, eggDrop: 0, eggChance: 0.25, radius: 9,
+    color: "#b05a2c", glowColor: "#ffd0a0", moveType: "patrol", damageResist: { blast: 3 } },
+  bomb_roller: { name: "bomb_roller", bombRoller: true, hp: 220, speed: 55, xp: 90, eggDrop: 1, radius: 14,
+    color: "#6a6258", glowColor: "#ffd0a0", moveType: "patrol", showHpBar: true, damageResist: { blast: 3 } },
   // v3.60.0（案帳 DT-257）: 英雄の仲間。英雄が戻ってくるたびに1人ずつ増える（2回目 盾投げの騎士・3回目 大魔法使い・4回目〜 弓手）
   hero_shield: { name: "hero_shield", heroMate: "shield", hp: 520, speed: 0, xp: 380, eggDrop: 2, radius: 9,
     color: "#b8c4d8", glowColor: "#ffe8a0", moveType: "patrol", showHpBar: true },
@@ -12112,6 +12129,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
     result.push(t);
   }
 
+  if (worldShape === SHAPE_BOMB) generateBombMovers(stageIndex, result, randPoint);   // v3.146.0（案帳 DT-333）: 打ち返す兵・玉転がしの兵
   // v2.0.0: 軌道の地域は、時代に関係なく鉄路の敵が走っている（遺された無人の機械）
   if (worldShape === SHAPE_RAILWAY) generateRailMovers(stageIndex, result, tierForCount);
   // v3.17.0: 大樹海の地域は、時代に関係なく森の敵が居る
@@ -15925,6 +15943,658 @@ function drawPoison() {
 }
 
 // -----------------------------------------------------------------
+// -----------------------------------------------------------------
+// v3.146.0（案帳 DT-333）: 爆弾玉の国
+// 火薬づくりで栄えた国。兵は剣や弓の代わりに、導火線のついた鉄の玉を撃ち出して竜を追い払う。
+// 主役は爆弾玉（bombBalls）。時間が来るまで何を当てても壊れず、竜が体で触れると、その竜が進んでいた向きへ転がる。
+// 爆発は誰の味方でもない（竜・建物・城壁・敵の兵に同じように効く）。玉の向こう側から、壊したいもののほうへ線を引く。
+//   大きさ3つ：小玉（たくさん・1匹で遠くまで飛ぶ）・中玉・大玉（重い。群れがまとまって当たるとよく転がる）
+//   導火線の残りは**点滅の速さ**で見せる（11/17 Shooter「ゲージではなく点滅の速さで」）。残り1秒で赤く速く点滅し、届く範囲が地面に出る
+//   臼砲（町・前哨堡・城壁の上の短い砲）：群れのほうへ玉を山なりに撃ち出す（落ちる場所に影）。砲ごとに玉の大きさが決まっている
+//   打ち返す兵：近くに転がってきた玉を、群れのほうへ棍棒で打ち返す（振りかぶる予告あり）。爆発に弱い
+//   玉転がしの兵：大玉を押して群れへ向かってくる2人組。倒すと大玉がその場に残る（導火線はそのとき点く）
+//   楕円玉：跳ねるたび・転がるうちに向きが左右にぶれる。全体の1割。打ち返す兵の狙いも外れる
+// 首都は火薬庫の城。四角い城壁は竜の攻撃をほぼ通さない（1/100。11/17 Shooter）が、玉の爆発は3倍効く。
+// 城の中の火薬庫（赤い屋根）に爆発が届くと誘爆して、まわりの建物と城をまとめて壊す。
+// -----------------------------------------------------------------
+const BOMB_GROUND_BG       = "#2c2a26";   // 火薬で煤けた乾いた土
+const BOMB_SIZES = [
+  // r＝玉の半径、blast＝爆発の半径、fuse＝導火線（秒）、mass＝重さ（弾きにくさ）、world＝建物・敵への傷、core＝竜がダウンする芯の割合
+  { key: "small", r: 8,  blast: 60,  fuse: 4, mass: 0.5, world: 90,  shake: 0.8 },
+  { key: "mid",   r: 14, blast: 110, fuse: 6, mass: 3,   world: 240, shake: 1.4 },
+  { key: "big",   r: 24, blast: 180, fuse: 8, mass: 20,  world: 600, shake: 2.4 },
+];
+const BOMB_SMALL = 0, BOMB_MID = 1, BOMB_BIG = 2;
+const BOMB_WORLD_DMG_STAGE = 0.6;    // ステージ1つ進むごとの建物・敵への傷の上げ幅（爆ぜ岩と同じ）
+const BOMB_CORE_SHARE      = 0.4;    // 爆発の半径のこの割合より内側の竜はダウンする（小玉＝1〜2匹、大玉＝真ん中の3分の1）
+const BOMB_CORE_DMG        = 1.3;    // 芯の竜への傷（最大体力に対する割合）
+const BOMB_RIM_DMG_NEAR    = 0.45;   // 芯のすぐ外
+const BOMB_RIM_DMG_FAR     = 0.12;   // 爆発の縁
+const BOMB_DRAGON_IMPACT   = 220;
+const BOMB_BALL_FLING      = 260;    // 爆発がほかの玉を押し飛ばす速さ（縁で0。重さで割る）
+const BOMB_MAX_BALLS       = 90;     // 重くならないための上限（これを超える分は臼砲が撃たない）
+const BOMB_TOUCH           = 7;      // 玉の縁からこれだけ近い竜が「触れた」
+const BOMB_PUSH_RATE       = 18;     // 触れている竜1匹が1秒に渡す速さの割合（重さで割る）
+const BOMB_SPEED_CAP       = 1.3;    // 玉の速さの上限（触れた竜の速さに対する倍率）
+const BOMB_SPEED_MAX       = 520;
+const BOMB_DRAG            = 0.7;    // 転がりの収まり（1/秒）
+const BOMB_BOUNCE          = 0.6;    // 建物・城壁・地形で跳ね返るときに残る速さ
+const BOMB_BALL_BOUNCE     = 0.85;   // 玉どうし
+const BOMB_OVAL_SHARE      = 0.1;    // 楕円玉の割合
+const BOMB_OVAL_SWERVE     = 0.7;    // 楕円玉が跳ねたとき・ぶれるときに曲がる最大の角（rad）
+const BOMB_OVAL_EVERY      = 0.45;   // 転がっている楕円玉がぶれる間隔（秒）
+const BOMB_OVAL_MIN_SPEED  = 40;     // これより遅いとぶれない
+const BOMB_BLINK_SLOW      = 1.2;    // 点いたばかりの点滅（回/秒）
+const BOMB_BLINK_FAST      = 9;      // 残り1秒の点滅
+const BOMB_WARN_TIME       = 1.0;    // 残りこの秒数から赤く点滅して、届く範囲を地面に出す
+const BOMB_EDGE            = 40;     // 地図の縁
+// 臼砲
+const BMORTAR_RANGE         = 520;
+const BMORTAR_EVERY         = [4.5, 6.5, 10];   // 玉の大きさごとの撃つ間隔（秒）
+const BMORTAR_STAGE_FASTER  = 0.04;   // ステージ1つ進むごとに間隔がこの割合ずつ縮む
+const BMORTAR_FLIGHT        = 1.3;    // 山なりに飛んでいる秒数（この間は落ちる場所に影）
+const BMORTAR_SCATTER       = 36;     // 狙いのばらつき（px）
+const BMORTAR_LEAD          = 0.6;
+const BMORTAR_ROLL          = 80;     // 落ちてから群れのほうへ転がる速さ
+const BMORTAR_CAL_WEIGHTS   = [0.6, 0.3, 0.1];   // 小・中・大の砲の割合
+const BMORTAR_PER_TOWN      = 2;      // 町ごとの臼砲の数（前哨堡は別に全部が臼砲）
+const BMORTAR_WALL_EVERY    = 6;      // 火薬庫の城の城壁は、この数ごとに1つ臼砲が載る
+// 打ち返す兵
+const BATTER_SQUADS        = 6;      // ステージ1の小隊の数（ステージごとに +BATTER_SQUADS_STAGE）
+const BATTER_SQUADS_STAGE  = 1;
+const BATTER_SQUAD_SIZE    = 3;
+const BATTER_SEEK_R        = 300;    // この距離までの玉を打ちに行く
+const BATTER_REACH         = 12;     // 玉の縁からこの距離で振りかぶる
+const BATTER_WINDUP        = 0.45;   // 振りかぶり（予告）
+const BATTER_COOL          = 1.2;
+const BATTER_HIT_SPEED     = [380, 320, 210];   // 打ち返した玉の速さ（大きさごと）
+const BATTER_MIN_FUSE      = 0.9;    // 残りがこれより短い玉は打ちに行かない
+const BATTER_OVAL_ERROR    = 0.6;    // 楕円玉を打ったときの狙いのずれ（rad）
+const BATTER_HOLD_R        = 190;    // 玉が無いとき、群れからこの距離で構えて待つ
+const BATTER_NOTICE_R      = 760;    // 群れがこの距離に来たら寄ってくる
+// 玉転がしの兵
+const ROLLER_COUNT         = 4;      // ステージ1の組の数（ステージ2つごとに +1）
+const ROLLER_NOTICE_R      = 2000;
+const ROLLER_RELEASE_R     = 150;    // いちばん近い竜がこの距離に入ったら大玉を押し出す
+const ROLLER_PUSH_SPEED    = 150;    // 押し出した大玉の速さ
+const ROLLER_RELOAD        = 12;     // 次の大玉を持ってくるまで（秒）
+const ROLLER_BALL_AHEAD    = 30;     // 体の前に押している大玉までの距離
+// 火薬庫の城
+const BOMB_FORT_HALF       = WALL_RING_RADIUS;   // 四角い城壁の半分の辺
+const BOMB_WALL_HP         = 300;    // 城壁1枚の体力（時代ごとに ×(1+BOMB_WALL_HP_STAGE)）
+const BOMB_WALL_HP_STAGE   = 0.6;
+const BOMB_WALL_DRAGON_MULT = 0.01;  // 竜の攻撃が城壁に通る割合（11/17 Shooter「竜の攻撃1/100でいい」）
+const BOMB_WALL_BLAST_MULT = 3;      // 玉の爆発が城壁に効く倍率
+const BOMB_WALL_COLOR      = "#3a3c44";
+const POWDER_COUNT         = 3;      // 火薬庫の数
+const POWDER_RING          = 150;    // 首都の縁から火薬庫までの距離
+const POWDER_BLAST_R       = 260;    // 誘爆の半径
+const POWDER_DELAY         = 0.35;   // 爆発が届いてから誘爆するまで
+const POWDER_BOSS_SHARE    = 0.22;   // 誘爆1つで首都が失う体力の割合
+const POWDER_WORLD_DMG     = 4000;   // 誘爆がまわりの建物・城壁・敵に与える傷
+const BOMB_TARGETS         = { building: TARGET_AIM, wall: TARGET_AIM, mover: TARGET_AIM };
+const BOMB_ATTACKER        = { name: "bomb_ball", tone: "blast" };
+
+let bombBalls    = [];     // { x, y, vx, vy, size, r, fuse, fuseMax, lit, oval, spin, blink, swerve, air }
+let bombMortars  = null;   // [{ s, cal, cd, aim }]（null＝まだ数えていない）
+let bombRollers  = [];     // 玉転がしの兵（倒れたときに大玉を残すため、参照で覚える）
+let bombPowders  = [];     // 火薬庫（initBombMortars で数える）
+let bombPowderDue = [];    // { s, t } 誘爆待ちの火薬庫
+let bombFx       = [];     // { kind, x, y, r, t, life }（見た目だけ）
+let bombClock    = 0;
+let bombBlastNow = false;  // 玉の爆発で傷を入れている最中（城壁が3倍効く）
+const _bombQueryBuf = [];
+
+function bombInRegion() { return worldShape === SHAPE_BOMB; }
+function resetBombland() { bombPowders = []; bombBalls = []; bombMortars = null; bombRollers = []; bombPowderDue = []; bombFx = []; bombClock = 0; bombBlastNow = false; }
+
+/** 火薬庫の城の城壁（四角）と火薬庫。generateSettlements から（result＝これまでに置いた建物） */
+function generateBombFort(boss, stageIndex, result) {
+  const out = [];
+  if (!boss) return out;
+  const anchor = capitalAnchor(boss);
+  const H = BOMB_FORT_HALF;
+  const hp = Math.round(BOMB_WALL_HP * (1 + BOMB_WALL_HP_STAGE * stageIndex));
+  const n = Math.round(H * 2 / WALL_SEG_SPACING);
+  const step = H * 2 / n;
+  let k = 0;
+  for (let side = 0; side < 4; side++) {
+    for (let j = 0; j < n; j++) {
+      const u = -H + (j + 0.5) * step;
+      const x = side === 0 ? u : side === 1 ? H : side === 2 ? -u : -H;
+      const y = side === 0 ? -H : side === 1 ? u : side === 2 ? H : -u;
+      const w = makeWallSegment(anchor.wx + x, anchor.wy + y, hp, side % 2 === 0 ? 0 : Math.PI / 2);
+      w._bombWall = true; w.color = BOMB_WALL_COLOR;
+      if (k % BMORTAR_WALL_EVERY === Math.floor(BMORTAR_WALL_EVERY / 2)) w._bombMortarWall = true;
+      k++;
+      out.push(w);
+    }
+  }
+  // 火薬庫：ふつうの建物を写して、首都のまわりに置く（体力・当たり方はふつうの建物のまま）
+  let tmpl = null;
+  for (const b of result) {
+    if (!b || b.isBoss || b._isWall || b._townRole || b._landmark || b._emplacement || b._isCapital) continue;
+    if (!tmpl || b.radius > tmpl.radius) tmpl = b;
+  }
+  if (tmpl) {
+    const base = random() * Math.PI * 2;
+    for (let p = 0; p < POWDER_COUNT; p++) {
+      const a = base + p * Math.PI * 2 / POWDER_COUNT;
+      const d = Math.min(H - 70, boss.radius + POWDER_RING);
+      const s = { ...tmpl, wx: anchor.wx + Math.cos(a) * d, wy: anchor.wy + Math.sin(a) * d, hp: tmpl.maxHp, fallen: false, isEggBearer: false,
+                  _powder: true, _breathParticleTimer: 0, attackTimer: Infinity, attackRadius: 0, projectileInterval: Infinity, projectileCount: 0 };
+      delete s._townIndex; delete s._townMeta; delete s._attacker;
+      out.push(s);
+    }
+  }
+  // 城壁・火薬庫に重なる城下の建物は退ける（壁の中に家が埋まらないように）
+  for (let i = result.length - 1; i >= 0; i--) {
+    const b = result[i];
+    if (!b || b.isBoss || b._isWall) continue;
+    for (const w of out) {
+      if (Math.hypot(b.wx - w.wx, b.wy - w.wy) < b.radius + (w._powder ? w.radius + 6 : 14)) { result.splice(i, 1); break; }
+    }
+  }
+  return out;
+}
+
+/** 臼砲を数える：前哨堡の全部・町ごとに大きい建物から BMORTAR_PER_TOWN 棟・城の城壁の一部 */
+function initBombMortars() {
+  bombMortars = [];
+  bombPowders = settlements.filter(s => s && s._powder);
+  for (const s of bombPowders) if (s.fallen) s._powderLit = true;   // 続きから始めたとき、もう壊れている火薬庫は誘爆しない
+  const towns = new Map();
+  const pickCal = () => { const u = random(); return u < BMORTAR_CAL_WEIGHTS[0] ? BOMB_SMALL : u < BMORTAR_CAL_WEIGHTS[0] + BMORTAR_CAL_WEIGHTS[1] ? BOMB_MID : BOMB_BIG; };
+  const add = (s, cal) => { s._mortarCal = cal; bombMortars.push({ s, cal, cd: 1.5 + random() * BMORTAR_EVERY[cal], aim: random() * Math.PI * 2 }); };
+  for (const s of settlements) {
+    if (!s || s.fallen || s.isBoss || s._powder || isMovingBuilding(s)) continue;
+    if (s._bombMortarWall) { add(s, pickCal()); continue; }
+    if (s._isWall) continue;
+    if (s._townRole === "rampart") { add(s, pickCal()); continue; }
+    if (s._townRole || s._landmark || s._emplacement) continue;
+    const key = s._townIndex !== undefined && s._townIndex !== null ? s._townIndex : s._isCapitalSmall ? "capital" : null;
+    if (key === null) continue;
+    let list = towns.get(key);
+    if (!list) { list = []; towns.set(key, list); }
+    list.push(s);
+  }
+  for (const list of towns.values()) {
+    list.sort((a, b) => b.radius - a.radius || a.wx - b.wx || a.wy - b.wy);
+    for (let k = 0; k < Math.min(BMORTAR_PER_TOWN, list.length); k++) add(list[k], pickCal());
+  }
+}
+
+function spawnBombBall(x, y, size, vx, vy, lit) {
+  const S = BOMB_SIZES[size];
+  const b = { x, y, vx, vy, size, r: S.r, fuse: S.fuse, fuseMax: S.fuse, lit, oval: false, spin: 0, blink: 0, swerve: BOMB_OVAL_EVERY, air: null };
+  bombBalls.push(b);
+  return b;
+}
+
+function updateBombland(dt) {
+  if (!bombInRegion()) { if (bombBalls.length) resetBombland(); return; }
+  if (gameState !== "playing") return;
+  if (!bombMortars) initBombMortars();
+  bombClock += dt;
+  for (let k = bombFx.length - 1; k >= 0; k--) { bombFx[k].t += dt; if (bombFx[k].t >= bombFx[k].life) bombFx.splice(k, 1); }
+  const centroid = calcFriendlyCentroid();
+  let spread = 0, alive = 0;
+  for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i]) { alive++; spread = Math.max(spread, Math.abs(px[i] - centroid.x) + Math.abs(py[i] - centroid.y)); }
+  updateBombMortars(dt, centroid, spread, alive);
+  updateBombRollersFallen();
+  updateBombBalls(dt, centroid, spread);
+  // 火薬庫は、玉の爆発でなく竜が直接壊しても誘爆する（赤い屋根を壊せば爆ぜる、と覚えやすいように）
+  for (const s of bombPowders) if (s.fallen && !s._powderLit) { s._powderLit = true; bombPowderDue.push({ s, t: POWDER_DELAY }); }
+  for (let k = bombPowderDue.length - 1; k >= 0; k--) {
+    bombPowderDue[k].t -= dt;
+    if (bombPowderDue[k].t <= 0) powderExplode(bombPowderDue.splice(k, 1)[0].s);
+  }
+}
+
+function updateBombMortars(dt, centroid, spread, alive) {
+  if (alive === 0) return;
+  const reach = BMORTAR_RANGE + spread;
+  const faster = Math.max(0.5, 1 - BMORTAR_STAGE_FASTER * runStageIndex);
+  for (let k = bombMortars.length - 1; k >= 0; k--) {
+    const M = bombMortars[k], s = M.s;
+    if (s.fallen) { bombMortars.splice(k, 1); continue; }
+    if (Math.abs(s.wx - centroid.x) > reach || Math.abs(s.wy - centroid.y) > reach) continue;
+    M.cd -= dt;
+    if (M.cd > 0) continue;
+    M.cd = 0.4;
+    if (bombBalls.length >= BOMB_MAX_BALLS) continue;
+    const i = findNearestAliveBoid(s.wx, s.wy);
+    if (i < 0) continue;
+    const d = Math.hypot(px[i] - s.wx, py[i] - s.wy);
+    if (d > BMORTAR_RANGE) continue;
+    M.cd = BMORTAR_EVERY[M.cal] * faster;
+    const tx = px[i] + vx[i] * BMORTAR_FLIGHT * BMORTAR_LEAD + (random() - 0.5) * 2 * BMORTAR_SCATTER;
+    const ty = py[i] + vy[i] * BMORTAR_FLIGHT * BMORTAR_LEAD + (random() - 0.5) * 2 * BMORTAR_SCATTER;
+    M.aim = Math.atan2(ty - s.wy, tx - s.wx);
+    const b = spawnBombBall(s.wx, s.wy, M.cal, Math.cos(M.aim) * BMORTAR_ROLL, Math.sin(M.aim) * BMORTAR_ROLL, false);
+    b.oval = random() < BOMB_OVAL_SHARE;
+    b.air = { t: 0, dur: BMORTAR_FLIGHT, x0: s.wx, y0: s.wy, tx: Math.max(BOMB_EDGE, Math.min(WORLD_W - BOMB_EDGE, tx)), ty: Math.max(BOMB_EDGE, Math.min(WORLD_H - BOMB_EDGE, ty)) };
+    bombFx.push({ kind: "muzzle", x: s.wx + Math.cos(M.aim) * 10, y: s.wy + Math.sin(M.aim) * 10, r: 8 + M.cal * 4, t: 0, life: 0.25 });
+  }
+}
+
+/** 楕円玉：進む向きを左右へぶらす */
+function bombSwerve(b) {
+  const a = Math.atan2(b.vy, b.vx) + (random() - 0.5) * 2 * BOMB_OVAL_SWERVE;
+  const sp = Math.hypot(b.vx, b.vy);
+  b.vx = Math.cos(a) * sp; b.vy = Math.sin(a) * sp;
+}
+
+function updateBombBalls(dt, centroid, spread) {
+  const drag = Math.exp(-BOMB_DRAG * dt);
+  const touchReach = spread + 80;
+  for (let k = bombBalls.length - 1; k >= 0; k--) {
+    const b = bombBalls[k];
+    if (b.air) {   // 山なりに飛んでいる間：当たりは無い。落ちたら導火線が点く
+      b.air.t += dt;
+      const u = Math.min(1, b.air.t / b.air.dur);
+      b.x = b.air.x0 + (b.air.tx - b.air.x0) * u; b.y = b.air.y0 + (b.air.ty - b.air.y0) * u;
+      if (u >= 1) { b.air = null; b.lit = true; bombFx.push({ kind: "land", x: b.x, y: b.y, r: b.r + 6, t: 0, life: 0.3 }); }
+      continue;
+    }
+    if (b.held) continue;   // 玉転がしの兵が押している間は兵が動かす
+    if (b.lit) {
+      b.fuse -= dt;
+      const u = 1 - Math.max(0, b.fuse) / b.fuseMax;
+      b.blink += dt * (b.fuse <= BOMB_WARN_TIME ? BOMB_BLINK_FAST : BOMB_BLINK_SLOW + (BOMB_BLINK_FAST * 0.6 - BOMB_BLINK_SLOW) * u * u);
+      if (b.fuse <= 0) { bombBalls.splice(k, 1); bombExplode(b); continue; }
+    }
+    // 竜が体で触れると、その竜が進んでいた向きへ転がる
+    const S = BOMB_SIZES[b.size];
+    if (Math.abs(b.x - centroid.x) < touchReach + b.r && Math.abs(b.y - centroid.y) < touchReach + b.r) {
+      const reach = b.r + BOMB_TOUCH, reach2 = reach * reach;
+      let cap = 0;
+      for (let i = 0; i < N; i++) {
+        if (boidDead[i] || boidDowned[i]) continue;
+        if (dist2(px[i], py[i], b.x, b.y) > reach2) continue;
+        const gain = Math.min(1, BOMB_PUSH_RATE * dt / S.mass);
+        b.vx += vx[i] * gain; b.vy += vy[i] * gain;
+        cap = Math.max(cap, Math.hypot(vx[i], vy[i]) * BOMB_SPEED_CAP);
+      }
+      if (cap > 0) {
+        const sp = Math.hypot(b.vx, b.vy);
+        const lim = Math.max(cap, b.kick || 0);
+        if (sp > lim) { b.vx *= lim / sp; b.vy *= lim / sp; }
+      }
+    }
+    b.kick = Math.max(0, (b.kick || 0) * drag - 1);   // 打ち返された・爆風で飛ばされた速さは、竜が触れても削らない
+    let sp = Math.hypot(b.vx, b.vy);
+    if (sp > BOMB_SPEED_MAX) { b.vx *= BOMB_SPEED_MAX / sp; b.vy *= BOMB_SPEED_MAX / sp; sp = BOMB_SPEED_MAX; }
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    b.vx *= drag; b.vy *= drag;
+    b.spin += sp * dt / b.r;
+    if (b.oval && sp > BOMB_OVAL_MIN_SPEED) {
+      b.swerve -= dt;
+      if (b.swerve <= 0) { b.swerve = BOMB_OVAL_EVERY; bombSwerve(b); }
+    }
+    // 地図の縁
+    if (b.x < BOMB_EDGE) { b.x = BOMB_EDGE; b.vx = Math.abs(b.vx) * BOMB_BOUNCE; }
+    if (b.x > WORLD_W - BOMB_EDGE) { b.x = WORLD_W - BOMB_EDGE; b.vx = -Math.abs(b.vx) * BOMB_BOUNCE; }
+    if (b.y < BOMB_EDGE) { b.y = BOMB_EDGE; b.vy = Math.abs(b.vy) * BOMB_BOUNCE; }
+    if (b.y > WORLD_H - BOMB_EDGE) { b.y = WORLD_H - BOMB_EDGE; b.vy = -Math.abs(b.vy) * BOMB_BOUNCE; }
+    // 建物・城壁・地形に当たると跳ね返る
+    let bounced = false;
+    buildingGridQueryRadius(b.x, b.y, 1, _bombQueryBuf);
+    for (const idx of _bombQueryBuf) {
+      const s = settlements[idx];
+      if (!s || s.fallen) continue;
+      if (bombBounceOff(b, s.wx, s.wy, s._isWall ? 16 : s.radius * 0.85)) bounced = true;
+    }
+    for (const ob of terrainObstacles) if (bombBounceOff(b, ob.wx, ob.wy, ob.radius)) bounced = true;
+    if (bounced && b.oval) bombSwerve(b);
+  }
+  // 玉どうしは弾き合う
+  for (let a = 0; a < bombBalls.length; a++) {
+    const A = bombBalls[a];
+    if (A.air) continue;
+    for (let c = a + 1; c < bombBalls.length; c++) {
+      const B = bombBalls[c];
+      if (B.air) continue;
+      const dx = B.x - A.x, dy = B.y - A.y, rr = A.r + B.r;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= rr * rr || d2 === 0) continue;
+      const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
+      const mA = A.held ? 1e6 : BOMB_SIZES[A.size].mass, mB = B.held ? 1e6 : BOMB_SIZES[B.size].mass;
+      const over = rr - d;
+      A.x -= nx * over * mB / (mA + mB); A.y -= ny * over * mB / (mA + mB);
+      B.x += nx * over * mA / (mA + mB); B.y += ny * over * mA / (mA + mB);
+      const rel = (B.vx - A.vx) * nx + (B.vy - A.vy) * ny;
+      if (rel >= 0) continue;
+      const j = -(1 + BOMB_BALL_BOUNCE) * rel / (1 / mA + 1 / mB);
+      if (!A.held) { A.vx -= j / mA * nx; A.vy -= j / mA * ny; }
+      if (!B.held) { B.vx += j / mB * nx; B.vy += j / mB * ny; }
+      if (A.oval && !A.held) bombSwerve(A);
+      if (B.oval && !B.held) bombSwerve(B);
+    }
+  }
+}
+
+/** 玉 b を、中心 (cx, cy)・半径 r の丸い物から押し出して跳ね返す。当たったら true */
+function bombBounceOff(b, cx, cy, r) {
+  const dx = b.x - cx, dy = b.y - cy, rr = r + b.r;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= rr * rr) return false;
+  const d = Math.sqrt(d2) || 1, nx = dx / d, ny = dy / d;
+  b.x = cx + nx * rr; b.y = cy + ny * rr;
+  const vn = b.vx * nx + b.vy * ny;
+  if (vn < 0) { b.vx -= (1 + BOMB_BOUNCE) * vn * nx; b.vy -= (1 + BOMB_BOUNCE) * vn * ny; }
+  return true;
+}
+
+/** 爆発：誰の味方でもない。竜・建物・城壁・敵の兵に同じように効き、近くの玉を押し飛ばす */
+function bombExplode(b) {
+  const S = BOMB_SIZES[b.size], R = S.blast, R2 = R * R, core = R * BOMB_CORE_SHARE;
+  const prevAttacker = attackerNow;
+  attackerNow = BOMB_ATTACKER;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - b.x, dy = py[i] - b.y, d2 = dx * dx + dy * dy;
+    if (d2 > R2) continue;
+    const d = Math.sqrt(d2) || 1;
+    const share = d <= core ? BOMB_CORE_DMG : BOMB_RIM_DMG_NEAR + (BOMB_RIM_DMG_FAR - BOMB_RIM_DMG_NEAR) * (d - core) / (R - core);
+    hitBoid(i, { direct: effBoidMaxHpFor(i) * share, impact: BOMB_DRAGON_IMPACT }, dx / d, dy / d);
+  }
+  attackerNow = prevAttacker;
+  const wasBlast = bombBlastNow;
+  bombBlastNow = true;
+  bombIgnitePowder(b.x, b.y, R);   // 先に火を入れる（下の傷で火薬庫が壊れても誘爆する）
+  hitInRadius(b.x, b.y, R, { blast: S.world * (1 + BOMB_WORLD_DMG_STAGE * runStageIndex) }, BOMB_TARGETS);
+  bombBlastNow = wasBlast;
+  for (const o of bombBalls) {
+    if (o.air || o.held) continue;
+    const dx = o.x - b.x, dy = o.y - b.y, d = Math.hypot(dx, dy);
+    if (d > R || d === 0) continue;
+    const v = BOMB_BALL_FLING * (1 - d / R) / Math.sqrt(BOMB_SIZES[o.size].mass);
+    o.vx += dx / d * v; o.vy += dy / d * v; o.kick = Math.max(o.kick || 0, Math.hypot(o.vx, o.vy));
+  }
+  spawnExplosionFx(b.x, b.y, R, { fire: 1 });
+  bombFx.push({ kind: "ring", x: b.x, y: b.y, r: R, t: 0, life: 0.45 });
+  triggerShake(S.shake, 0.08);
+}
+
+/** 爆発が届いた火薬庫に火が入る（少し遅れて誘爆） */
+function bombIgnitePowder(x, y, R) {
+  if (bossSettlementIdx < 0) return;
+  for (const s of settlements) {
+    if (!s || !s._powder || s._powderLit) continue;
+    if (Math.hypot(s.wx - x, s.wy - y) > R + s.radius) continue;
+    s._powderLit = true;
+    bombPowderDue.push({ s, t: POWDER_DELAY });
+  }
+}
+function powderExplode(s) {
+  const x = s.wx, y = s.wy, R = POWDER_BLAST_R;
+  const prevAttacker = attackerNow;
+  attackerNow = BOMB_ATTACKER;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - x, dy = py[i] - y, d = Math.hypot(dx, dy) || 1;
+    if (d > R) continue;
+    hitBoid(i, { direct: effBoidMaxHpFor(i) * BOMB_RIM_DMG_NEAR, impact: BOMB_DRAGON_IMPACT }, dx / d, dy / d);
+  }
+  attackerNow = prevAttacker;
+  const wasBlast = bombBlastNow;
+  bombBlastNow = true;
+  bombIgnitePowder(x, y, R);   // 隣の火薬庫にも届けば続けて誘爆
+  const idx = settlements.indexOf(s);
+  if (idx >= 0 && !s.fallen) damageBuilding(idx, s.maxHp * 10);
+  hitInRadius(x, y, R, { blast: POWDER_WORLD_DMG }, BOMB_TARGETS);
+  const boss = settlements[bossSettlementIdx];
+  if (boss && !boss.fallen) {
+    damageBuilding(bossSettlementIdx, boss.maxHp * POWDER_BOSS_SHARE);
+    pushWorldText(boss.wx, boss.wy - boss.radius - 20, STRINGS.bombPowderBlast, "#ffb060", true);
+  }
+  bombBlastNow = wasBlast;
+  spawnExplosionFx(x, y, R, { fire: 1 });
+  bombFx.push({ kind: "ring", x, y, r: R, t: 0, life: 0.6 });
+  triggerShake(3.2, 0.14); triggerFlash("rgba(255,200,120,0.3)", 0.16);
+}
+
+// ---- 打ち返す兵・玉転がしの兵 ----
+function generateBombMovers(stageIndex, result, randPoint) {
+  // 警戒度が上がって部隊を湧かし直すとき：前の玉転がしの兵が押していた大玉は一緒に片づける（押す人のいない大玉が残らないように）
+  for (const old of bombRollers) { const b = old._roll && old._roll.ball; const k = b ? bombBalls.indexOf(b) : -1; if (k >= 0) bombBalls.splice(k, 1); }
+  bombRollers = [];
+  const squads = BATTER_SQUADS + BATTER_SQUADS_STAGE * stageIndex;
+  for (let q = 0; q < squads; q++) {
+    const p = randPoint();
+    for (let k = 0; k < BATTER_SQUAD_SIZE; k++) {
+      const m = makeMover(MOVER_DEFS.bomb_batter, () => p);
+      m.wx = p.x + randRange(-30, 30); m.wy = p.y + randRange(-30, 30);
+      m.maxHp = m.hp = MOVER_DEFS.bomb_batter.hp; m.xpValue = MOVER_DEFS.bomb_batter.xp;
+      m._bat = { st: "idle", t: 0, cool: random() * BATTER_COOL, ball: null, homeX: m.wx, homeY: m.wy, side: k - 1 };
+      result.push(m);
+    }
+  }
+  const rollers = ROLLER_COUNT + Math.floor(stageIndex / 2);
+  for (let q = 0; q < rollers; q++) {
+    const m = makeMover(MOVER_DEFS.bomb_roller, randPoint);
+    m.maxHp = m.hp = MOVER_DEFS.bomb_roller.hp; m.xpValue = MOVER_DEFS.bomb_roller.xp;
+    m._roll = { ball: null, reload: 0, homeX: m.wx, homeY: m.wy };
+    bombRollers.push(m);
+    result.push(m);
+  }
+}
+function bombMoverWalk(m, tx, ty, speed, dt) {
+  const dx = tx - m.wx, dy = ty - m.wy, d = Math.hypot(dx, dy);
+  if (d < 2) return d;
+  const mv = Math.min(d, speed * dt);
+  m.wx += dx / d * mv; m.wy += dy / d * mv;
+  m.headingX = dx / d; m.headingY = dy / d;
+  return d;
+}
+/** 打ち返す兵：近くに転がってきた玉へ寄り、振りかぶって（予告）群れのほうへ打ち返す */
+function updateBombBatter(m, dt, centroid) {
+  const B = m._bat || (m._bat = { st: "idle", t: 0, cool: 0, ball: null, homeX: m.wx, homeY: m.wy, side: 0 });
+  const speed = m.def.speed * moverFerocity();
+  B.cool -= dt;
+  if (B.st === "windup") {
+    B.t -= dt;
+    const b = B.ball;
+    if (!b || bombBalls.indexOf(b) < 0) { B.st = "idle"; B.ball = null; return; }   // 振りかぶっている間に爆ぜた
+    m.headingX = (b.x - m.wx) / (Math.hypot(b.x - m.wx, b.y - m.wy) || 1); m.headingY = (b.y - m.wy) / (Math.hypot(b.x - m.wx, b.y - m.wy) || 1);
+    if (B.t > 0) return;
+    B.st = "idle"; B.cool = BATTER_COOL; B.ball = null;
+    if (Math.hypot(b.x - m.wx, b.y - m.wy) > b.r + m.def.radius + BATTER_REACH + 14) return;   // 弾かれて届かなくなった＝空振り
+    let a = Math.atan2(centroid.y - b.y, centroid.x - b.x);
+    if (b.oval) a += (random() - 0.5) * 2 * BATTER_OVAL_ERROR;
+    const v = BATTER_HIT_SPEED[b.size];
+    b.vx = Math.cos(a) * v; b.vy = Math.sin(a) * v; b.kick = v;
+    bombFx.push({ kind: "bat", x: b.x, y: b.y, r: b.r + 10, t: 0, life: 0.2 });
+    return;
+  }
+  // 打ちに行く玉を探す（点いていて、まだ間に合う玉）
+  let best = null, bestD = BATTER_SEEK_R;
+  if (B.cool <= 0) for (const b of bombBalls) {
+    if (b.air || b.held || !b.lit || b.fuse < BATTER_MIN_FUSE) continue;
+    const d = Math.hypot(b.x - m.wx, b.y - m.wy);
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  if (best) {
+    // 玉をはさんで群れの反対側へ回り込む（そこから打つと群れのほうへ飛ぶ）
+    const ax = best.x - centroid.x, ay = best.y - centroid.y, al = Math.hypot(ax, ay) || 1;
+    const stand = best.r + m.def.radius + 2;
+    bombMoverWalk(m, best.x + ax / al * stand, best.y + ay / al * stand, speed, dt);
+    if (Math.hypot(best.x - m.wx, best.y - m.wy) <= best.r + m.def.radius + BATTER_REACH) { B.st = "windup"; B.t = BATTER_WINDUP; B.ball = best; }
+    return;
+  }
+  // 玉が無いとき：群れが近ければ少し離れて構え、遠ければ持ち場へ戻る
+  const dc = Math.hypot(centroid.x - m.wx, centroid.y - m.wy);
+  if (dc < BATTER_NOTICE_R && countAliveBoids() > 0) {
+    const hx = B.homeX - centroid.x, hy = B.homeY - centroid.y, hl = Math.hypot(hx, hy) || 1;
+    const sx = -hy / hl * B.side * 26, sy = hx / hl * B.side * 26;
+    bombMoverWalk(m, centroid.x + hx / hl * BATTER_HOLD_R + sx, centroid.y + hy / hl * BATTER_HOLD_R + sy, speed, dt);
+  } else bombMoverWalk(m, B.homeX, B.homeY, speed * 0.6, dt);
+}
+/** 玉転がしの兵：大玉を押して群れへ向かう。近づいたら押し出して、次の大玉を取りに戻る */
+function updateBombRoller(m, dt, centroid) {
+  const R = m._roll || (m._roll = { ball: null, reload: 0, homeX: m.wx, homeY: m.wy });
+  if (bombRollers.indexOf(m) < 0) bombRollers.push(m);
+  const speed = m.def.speed * moverFerocity();
+  if (R.reload > 0) {
+    R.reload -= dt;
+    bombMoverWalk(m, R.homeX, R.homeY, speed * 1.6, dt);
+    return;
+  }
+  if (!R.ball) {
+    R.ball = spawnBombBall(m.wx + m.headingX * ROLLER_BALL_AHEAD, m.wy + m.headingY * ROLLER_BALL_AHEAD, BOMB_BIG, 0, 0, false);
+    R.ball.held = true;
+  }
+  const dc = Math.hypot(centroid.x - m.wx, centroid.y - m.wy);
+  if (dc < ROLLER_NOTICE_R && countAliveBoids() > 0) bombMoverWalk(m, centroid.x, centroid.y, speed, dt);
+  const b = R.ball;
+  b.x = m.wx + m.headingX * ROLLER_BALL_AHEAD; b.y = m.wy + m.headingY * ROLLER_BALL_AHEAD;
+  b.spin += speed * dt / b.r * (dc < ROLLER_NOTICE_R ? 1 : 0);
+  const i = findNearestAliveBoid(b.x, b.y);
+  if (i >= 0 && dist2(px[i], py[i], b.x, b.y) < ROLLER_RELEASE_R * ROLLER_RELEASE_R) {
+    b.held = false; b.lit = true;
+    b.vx = m.headingX * ROLLER_PUSH_SPEED; b.vy = m.headingY * ROLLER_PUSH_SPEED; b.kick = ROLLER_PUSH_SPEED;
+    R.ball = null; R.reload = ROLLER_RELOAD;
+  }
+}
+/** 倒れた玉転がしの兵の大玉は、その場に残って導火線が点く（こちらが使える大玉の出どころ） */
+function updateBombRollersFallen() {
+  for (let k = bombRollers.length - 1; k >= 0; k--) {
+    const m = bombRollers[k];
+    if (m.alive) continue;
+    bombRollers.splice(k, 1);
+    const b = m._roll && m._roll.ball;
+    if (b && bombBalls.indexOf(b) >= 0) { b.held = false; b.lit = true; m._roll.ball = null; }
+  }
+}
+
+// ---- 描画 ----
+/** 爆弾玉1つ（世界座標）。導火線の残りは点滅の速さ */
+function drawBombBall(b, lift) {
+  const S = BOMB_SIZES[b.size], r = b.r * (1 + lift * 0.5);
+  const y = b.y - lift * 46;
+  ctx.save();
+  ctx.translate(b.x, y);
+  if (b.oval) { ctx.rotate(b.spin * 0.6); ctx.scale(1.3, 0.78); }
+  ctx.fillStyle = "#1a1a1e"; ctx.strokeStyle = "#5a5a64"; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  // 鉄の帯（転がりが分かるように玉と一緒に回す）
+  if (!b.oval) ctx.rotate(b.spin);
+  ctx.strokeStyle = "#3c3c46"; ctx.lineWidth = Math.max(1, r * 0.16);
+  ctx.beginPath(); ctx.moveTo(-r * 0.92, 0); ctx.lineTo(r * 0.92, 0); ctx.stroke();
+  ctx.fillStyle = "#8a8a96";
+  ctx.beginPath(); ctx.arc(-r * 0.5, 0, Math.max(0.8, r * 0.09), 0, Math.PI * 2); ctx.arc(r * 0.5, 0, Math.max(0.8, r * 0.09), 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  // 照り
+  ctx.fillStyle = "rgba(255,255,255,0.28)";
+  ctx.beginPath(); ctx.arc(b.x - r * 0.35, y - r * 0.38, r * 0.26, 0, Math.PI * 2); ctx.fill();
+  // 点滅（点いている玉だけ）。残り1秒は赤、それまでは橙
+  if (b.lit && !b.held) {
+    const on = (b.blink % 1) < 0.5;
+    const warn = b.fuse <= BOMB_WARN_TIME;
+    if (on) {
+      ctx.fillStyle = warn ? "rgba(255,48,32,0.78)" : "rgba(255,170,60,0.55)";
+      ctx.beginPath(); ctx.arc(b.x, y, r * (b.oval ? 1.12 : 1), 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#fff4c0";
+      ctx.beginPath(); ctx.arc(b.x, y - r * 0.9, Math.max(1.6, r * 0.2), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.strokeStyle = on ? (warn ? "#ff5040" : "#ffb050") : "rgba(120,120,130,0.8)"; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(b.x, y, r + 1.5, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+function drawBombFx() {
+  if (!bombInRegion()) return;
+  const view = viewWorldRect(200);
+  ctx.save();
+  // 火薬庫（赤い屋根に火の印）と臼砲（建物・城壁の上の短い砲。口の太さ＝玉の大きさ）
+  for (const s of settlements) {
+    if (!s || !s._powder || s.fallen) continue;
+    if (s.wx < view.x0 || s.wx > view.x1 || s.wy < view.y0 || s.wy > view.y1) continue;
+    const r = s.radius * 0.95, lit = !!s._powderLit && Math.sin(bombClock * 50) > 0;
+    ctx.fillStyle = lit ? "#fff0c0" : "#c8281c"; ctx.strokeStyle = "#5a0c08"; ctx.lineWidth = 2;
+    ctx.fillRect(s.wx - r, s.wy - r, r * 2, r * 2); ctx.strokeRect(s.wx - r, s.wy - r, r * 2, r * 2);
+    ctx.strokeStyle = "rgba(90,12,8,0.7)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(s.wx - r, s.wy); ctx.lineTo(s.wx + r, s.wy); ctx.stroke();
+    ctx.fillStyle = "#ffd040";
+    ctx.beginPath(); ctx.moveTo(s.wx, s.wy - r * 0.6); ctx.quadraticCurveTo(s.wx + r * 0.55, s.wy, s.wx, s.wy + r * 0.55); ctx.quadraticCurveTo(s.wx - r * 0.55, s.wy, s.wx, s.wy - r * 0.6); ctx.fill();
+  }
+  if (bombMortars) for (const M of bombMortars) {
+    const s = M.s;
+    if (s.fallen || s.wx < view.x0 || s.wx > view.x1 || s.wy < view.y0 || s.wy > view.y1) continue;
+    const mouth = BOMB_SIZES[M.cal].r * 0.75 + 1.5, base = mouth + 4;
+    ctx.fillStyle = "#4a4640"; ctx.strokeStyle = "#1c1a18"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(s.wx, s.wy, base, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    const mx = s.wx + Math.cos(M.aim) * 3, my = s.wy + Math.sin(M.aim) * 3;
+    ctx.fillStyle = "#77736c"; ctx.beginPath(); ctx.arc(mx, my, mouth + 1.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#0c0c0e"; ctx.beginPath(); ctx.arc(mx, my, mouth, 0, Math.PI * 2); ctx.fill();
+  }
+  // 残り1秒の玉は、届く範囲を地面に出す。山なりの玉は落ちる場所に影
+  for (const b of bombBalls) {
+    if (b.x < view.x0 || b.x > view.x1 || b.y < view.y0 || b.y > view.y1) continue;
+    if (b.air) {
+      const u = b.air.t / b.air.dur;
+      ctx.fillStyle = "rgba(0,0,0,0.3)";
+      ctx.beginPath(); ctx.arc(b.air.tx, b.air.ty, b.r * (0.5 + 0.5 * u), 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(255,210,120,0.6)"; ctx.lineWidth = 1.2; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.arc(b.air.tx, b.air.ty, b.r + 4, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    } else if (b.lit && b.fuse <= BOMB_WARN_TIME) {
+      const R = BOMB_SIZES[b.size].blast, on = (b.blink % 1) < 0.5;
+      ctx.fillStyle = on ? "rgba(255,60,40,0.16)" : "rgba(255,60,40,0.08)";
+      ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(255,90,60,0.75)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = "rgba(255,90,60,0.4)"; ctx.setLineDash([3, 5]);
+      ctx.beginPath(); ctx.arc(b.x, b.y, R * BOMB_CORE_SHARE, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  for (const b of bombBalls) {
+    if (b.x < view.x0 || b.x > view.x1 || b.y < view.y0 || b.y > view.y1) continue;
+    const sp = Math.hypot(b.vx, b.vy);
+    if (!b.air && !b.held && sp > 60) {   // 弾いた玉の短い尾（どちらへ転がっているか）
+      ctx.strokeStyle = "rgba(230,230,240,0.35)"; ctx.lineWidth = Math.max(2, b.r * 0.5); ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - b.vx / sp * Math.min(40, sp * 0.14), b.y - b.vy / sp * Math.min(40, sp * 0.14)); ctx.stroke();
+    }
+    drawBombBall(b, b.air ? Math.sin(Math.PI * Math.min(1, b.air.t / b.air.dur)) : 0);
+  }
+  for (const f of bombFx) {
+    const u = f.t / f.life;
+    ctx.globalAlpha = 1 - u;
+    if (f.kind === "ring") { ctx.strokeStyle = "#ff8040"; ctx.lineWidth = 5 * (1 - u) + 1; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.5 + 0.5 * u), 0, Math.PI * 2); ctx.stroke(); }
+    else if (f.kind === "muzzle") { ctx.fillStyle = "#ffe0a0"; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.6 + u), 0, Math.PI * 2); ctx.fill(); }
+    else { ctx.strokeStyle = f.kind === "bat" ? "#ffffff" : "rgba(200,190,170,0.9)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.7 + 0.6 * u), 0, Math.PI * 2); ctx.stroke(); }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+/** 打ち返す兵（drawMovers から。回転済みで前＝+x）：人の体＋棍棒。振りかぶると棍棒が後ろへ回り、白い弧の予告が出る */
+function drawBombBatter(m) {
+  const B = m._bat, wind = B && B.st === "windup" ? 1 - Math.max(0, B.t) / BATTER_WINDUP : 0;
+  const HB = HUMAN_BODY;
+  if (wind > 0) {
+    ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 1.6; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.arc(0, 0, m.def.radius + 12, -0.9, 0.9); ctx.stroke(); ctx.setLineDash([]);
+  }
+  const a = B && B.st === "windup" ? 2.4 - wind * 0.5 : 0.5;   // 棍棒の向き（体の右から）
+  ctx.strokeStyle = "#8a5a2c"; ctx.lineWidth = 2.6; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(HB.handFwd, HB.handSide); ctx.lineTo(HB.handFwd + Math.cos(a) * 12, HB.handSide + Math.sin(a) * 12); ctx.stroke();
+  ctx.lineCap = "butt";
+  drawHumanBody(1.1, BOMB_BATTER_LOOK);
+  drawHumanHand(1.1);
+}
+const BOMB_BATTER_LOOK = { cloth: "#b05a2c", clothRim: "#5a2c12", head: "#3a3a40", headRim: "#1a1a1e" };
+const BOMB_ROLLER_LOOK = { cloth: "#6a6258", clothRim: "#34302a", head: "#3a3a40", headRim: "#1a1a1e" };
+/** 玉転がしの兵（回転済みで前＝+x）：2人が並んで大玉を押している。大玉は bombBalls の玉として描く */
+function drawBombRoller(m) {
+  for (const side of [-1, 1]) {
+    ctx.save(); ctx.translate(0, side * 9);
+    drawHumanBody(1.15, BOMB_ROLLER_LOOK);
+    ctx.fillStyle = HUMAN_SKIN;
+    ctx.beginPath(); ctx.arc(5, -3, 1.2, 0, Math.PI * 2); ctx.arc(5, 3, 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// -----------------------------------------------------------------
 // v3.130.0（案帳 DT-551）: 増えるキノコの里
 // 湿った谷の里。人はくり抜いたキノコの家に住み、家は胞子で隣に新しい家を生やす（生えた家にもすぐ人が移り住む）。
 // ゲーム上の家はふつうの家のまま（体力・経験値・当たり方・崩れ方）。見た目と「増える」「胞子玉を撃つ」だけが違う。
@@ -16860,6 +17530,8 @@ function updateMovers(dt) {
     if (m.para) { m.para.t -= dt; if (m.para.t > 0) continue; m.para = null; }   // v3.63.0: 落下傘で降りている間は動かない
     if (def.airship && updateTroopAirship(m, dt)) continue;              // v3.63.0: 落下兵の飛行船（群れの横をかすめて往復）
     if (def.heroMate) { updateHeroMate(m, dt); continue; }               // v3.60.0: 英雄の仲間
+    if (def.bombBatter) { updateBombBatter(m, dt, centroid); continue; }  // v3.146.0（案帳 DT-333）: 打ち返す兵
+    if (def.bombRoller) { updateBombRoller(m, dt, centroid); continue; }  // 玉転がしの兵
     if (def.scythe) {                                                     // v3.60.0: 鎌付き戦車（群れが遠いときはふつうに巡回）
       if (m.convoyLeader && updateScytheFollower(m, dt)) continue;        // 案帳 DT-239 手直し: 車列の後ろの車は先頭の跡をなぞる
       if (m.convoy) recordScytheConvoyPath(m);
@@ -23222,6 +23894,10 @@ function drawMovers() {
       }
     } else if (def.heroMate) {
       drawHeroMateBody(m);
+    } else if (def.bombBatter) {
+      drawBombBatter(m);   // v3.146.0（案帳 DT-333）: 画像なしのベクター専用
+    } else if (def.bombRoller) {
+      drawBombRoller(m);
     } else if (def.name === "longbowmen") {
       // v3.63.0 遠矢の弓隊: 青灰の兵と長い弓
       ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(0, 0, 6.5, 0, Math.PI * 2); ctx.fill();
@@ -28726,7 +29402,7 @@ const STRINGS = {
     "人間はまたいつか、卵に手を伸ばすだろう。そのときは{dragon}もまた、何度でも戻ってくる。",
   // 名前の無い建物（役割も時代兵器も持たないもの）の呼び名
   attackerHouse: "民家", attackerTownBuilding: "町の建物", attackerLargeBuilding: "大型の建物",
-  attackerCapital: "首都", attackerRailBoss: "司令列車", attackerSwordBoss: "剣鬼", attackerMushBoss: "大笠茸", mushBossRain: "胞子の雨", mushBossThread: "菌糸の線", attackerBossNova: "反発衝撃波",
+  attackerCapital: "首都", attackerRailBoss: "司令列車", attackerSwordBoss: "剣鬼", attackerMushBoss: "大笠茸", bombPowderBlast: "💥 誘爆！", mushBossRain: "胞子の雨", mushBossThread: "菌糸の線", attackerBossNova: "反発衝撃波",
   // v3.16.0: 警戒度ラッシュ（{egg} は storyEgg で竜卵／星卵に置き換える）
   trNames: {
     haste: "猛進", siege: "大型包囲", horde: "小型の大軍", wind: "強風", meteor: "流星",
@@ -28807,8 +29483,8 @@ const STRINGS = {
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
                "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会", "光線の塔が立つ高原", "英雄が守る王国", "巨岩を拝む荒地",
-               "雲海に浮かぶ浮き城の空", "蛇神を祀る密林の国", "剣の道の国", "増えるキノコの里"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国", "荒地", "浮島", "蛇神", "剣の道", "キノコ"],
+               "雲海に浮かぶ浮き城の空", "蛇神を祀る密林の国", "剣の道の国", "増えるキノコの里", "爆弾玉の国"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国", "荒地", "浮島", "蛇神", "剣の道", "キノコ", "爆弾玉"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
   regionHint: "地域ごとに土地の形と遊び方が変わる。時代（建物・敵・兵器）はどの地域でも同じ。",
@@ -28853,6 +29529,8 @@ const STRINGS = {
     // v3.130.0（案帳 DT-551 1回目）
     { route: "角 → 対角の首都", play: "湿った谷の里。人々は大きなキノコをくり抜いた家に住み、キノコの家は胞子を飛ばして隣に新しい家を生やす。放っておくと里がどんどん広がる。",
       rule: "家は時間ごとに隣へ1棟ずつ生える（画面の外の里は最初の2倍まで。目の前の里は早く、どこまでも広がる）。群れが近づくと家が遅い黄色の胞子玉を撃ち、外れて落ちた胞子玉はそこにまた家を生やす。避けるほど里が外へ広がるので、早めに刈るか、外側から削る。首都は動かない大キノコ「大笠茸」で、群れのまわりに黄緑の点線の輪を出して胞子の雨を降らせ（輪の中に家が生える）、首都から白い菌糸の線を3本伸ばして線の上にキノコを生やして刺す。線ごとに生えるキノコの色が違い、赤はふつうの家、青は遠くから狙って連射、黄ははじける胞子玉、紫は撃たずにまわりの毒霧で竜を遅くする（色のキノコは増えない）。輪と線をよけながら首都を削る" },
+    { route: "角 → 対角の火薬庫の城", play: "火薬づくりで栄えた国。兵は導火線のついた鉄の玉を撃ち出してくる。玉は時間が来るまで何を当てても壊れないが、竜が体で触れると、その竜が進んでいた向きへ転がる。玉の向こう側から、壊したいもののほうへ線を引く。",
+      rule: "爆発は誰の味方でもない（竜・建物・城壁・敵の兵に同じように効く）。玉は大中小の3つで、小玉は1匹で遠くまで飛び、大玉は群れがまとまって当たるとよく転がる。導火線の残りは点滅の速さで分かり、残り1秒で赤く速く点滅して届く範囲が地面に出る。臼砲（町・前哨堡・城壁の上の短い砲）が玉を山なりに撃ち出し、打ち返す兵が棍棒で打ち返してくる。玉転がしの兵を倒すと大玉がその場に残る。楕円玉は転がる向きがぶれる。首都の火薬庫の城の城壁は竜の攻撃をほぼ通さない（1/100）が、玉の爆発は3倍効く。城の中の火薬庫（赤い屋根）に爆発が届くと誘爆して、城をまとめて壊す" },
   ],
   startRun: "はじめる",
   autoplayStart: "👀 オートプレイ",                          // v3.120.0（案帳 DT-538）
@@ -31390,6 +32068,7 @@ function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
+  if (settlement._bombWall) damage *= bombBlastNow ? BOMB_WALL_BLAST_MULT : BOMB_WALL_DRAGON_MULT;   // v3.146.0（案帳 DT-333）: 火薬庫の城の城壁は竜の攻撃をほぼ通さず、玉の爆発が3倍効く
   if (settlement.isBoss && heroGuarding()) damage *= HERO_GUARD_DMG;   // v3.35.0: 英雄が立っている間の王城
   if (settlement.isBoss && serpentGodGuarding()) damage *= GOD_GUARD_DMG;
   // v3.103.0（案帳 DT-180）: 蛇神が巻いている間の神殿
@@ -36564,6 +37243,7 @@ const CODEX_ENEMY_NAMES = {
   railcar: "装甲軌道車", railram: "衝角機関車",
   forest_ambusher: "森の伏兵", forest_giant: "森番の巨人", prism_bearer: "プリズム運び", wind_rider: "風乗りの兵", sky_carrier: "浮き砦", sky_mine: "浮き機雷", serpent_coil: "町を巻く大蛇", serpent_crawl: "這い大蛇", serpent_god: "蛇神", serpent_spitter: "毒吐き蛇",
   sword_runner: "剣士", sword_charger: "突進の剣士",   // v3.122.0（案帳 DT-535）
+  bomb_batter: "打ち返す兵", bomb_roller: "玉転がしの兵", bomb_ball: "爆弾玉",   // v3.146.0（案帳 DT-333）
   sword_militia: "足軽", sword_brute: "大太刀", sword_beast: "剣の巨獣",   // v3.126.0（DT-535 手直し）
   metro_car: "渋滞の車", metro_truck: "渋滞の箱バン", metro_police: "パトカー", metro_tank: "戦車", metro_heli: "攻撃ヘリ",
   raider: "レイダー", treasure: "財宝馬車", eggconvoy: "竜卵の輸送隊",
@@ -36599,6 +37279,8 @@ const CODEX_SPECIAL_ERA = {
   serpent_coil:   "蛇神の国（全文明） — 格上の街をぐるりと巻いて回る。胴は越えられず攻撃も効かない。頭を倒すとほどけて逃げる",   // v3.102.0（案帳 DT-180）
   serpent_crawl:  "蛇神の国（全文明） — 町から這い出して群れを追う。止まっている群れを胴の輪で締める",
   serpent_god:    "蛇神の国（全文明） — 首都の神殿を三重に巻く。外の輪から順に頭が噛みつきに来る。三重がほどけるまで神殿は焼けない",   // v3.103.0
+  bomb_batter:    "爆弾玉の国（全文明） — 3人の小隊。近くに転がってきた玉へ寄り、振りかぶって群れのほうへ打ち返す。自分では竜を傷つけない。爆発に弱い",   // v3.146.0（案帳 DT-333）
+  bomb_roller:    "爆弾玉の国（全文明） — 2人組で大玉を押して群れへ向かってくる。近づくと押し出す。倒すと大玉がその場に残って導火線が点く",
   sword_runner:   "剣の道の国（全文明） — 4人の隊で走っては間合いを測って寄ってくる。目の前で白い弧の予告から斬る。道場からも出てくる",   // v3.122.0（案帳 DT-535）
   sword_charger:  "剣の道の国（全文明） — 止まって向きの線を出して溜め、線の上を一気に駆け抜けて斬る。駆け抜けた後はしばらく動けない",
   sword_militia:  "剣の道の国（全文明） — 撃つかわりに、町の建物から1人ずつ出てくる弱い兵。数で寄ってきて短く斬る",   // v3.126.0（DT-535 手直し）
@@ -36679,6 +37361,8 @@ function codexAttackLabel(def) {
     // def.attack を持たず専用の処理で攻撃する敵が「攻撃しない」になっていた。数値は処理の定数から引く
     if (def.part === "rider")
       return `矢 威力${WAR_RIDER_DAMAGE}・射程${WAR_RIDER_RANGE}・${WAR_RIDER_INTERVAL}秒ごと（象の背から近い竜を撃つ。4人が残っている間は象が固い）`;
+    if (def.bombBatter) return `撃たない — 転がってきた玉を群れのほうへ打ち返す（振りかぶり${BATTER_WINDUP}秒の予告。楕円玉は狙いが外れる）`;   // v3.146.0（案帳 DT-333）
+    if (def.bombRoller) return `撃たない — 大玉（爆発の半径${BOMB_SIZES[BOMB_BIG].blast}・${BOMB_SIZES[BOMB_BIG].fuse}秒）を押してきて、竜が${ROLLER_RELEASE_R}pxに入ると押し出す`;
     if (def.blastRock)
       return `体当たりで爆ぜる 威力${BLASTROCK_DRAGON_DMG}＋ステージごとに${BLASTROCK_DRAGON_DMG_STAGE}・半径${BLASTROCK_BLAST_R}（倒しても${BLASTROCK_FUSE}秒後に爆ぜ、建物・敵・ほかの爆ぜ岩を巻き込む。` +
              `転がり出してから${BLASTROCK_SELF_FUSE}〜${BLASTROCK_SELF_FUSE + BLASTROCK_SELF_FUSE_SPREAD}秒で導火線が尽きて自爆。残りは岩の上のゲージ）`;
@@ -38817,6 +39501,14 @@ function codexRegionCanvas(shape) {
     }
     dot(26, 30, 1.6, "#b8f07c");
     diamond(44, 8, 3.4); dot(4, 48, 2.2, CODEX_RG.start);
+  } else if (shape === SHAPE_BOMB) {
+    // v3.146.0（案帳 DT-333）: 煤けた土。町（点）のあいだに大中小の黒い玉、右上に四角い城壁の火薬庫の城
+    c.fillStyle = "rgba(50,44,36,0.6)"; c.fillRect(0, 0, S, S);
+    for (const [x, y] of [[12, 14], [14, 38], [36, 42]]) dot(x, y, 2.4, CODEX_RG.town);
+    for (const [x, y, r] of [[22, 24, 3.6], [30, 30, 2.2], [20, 34, 1.4], [28, 18, 1.4], [34, 22, 2.2]]) { dot(x, y, r, "#16161a"); dot(x - r * 0.3, y - r * 0.3, r * 0.3, "#9a9aa4"); }
+    dot(22, 24, 4.6, "rgba(255,80,50,0.35)");
+    c.strokeStyle = "#8a8c96"; c.lineWidth = 1.6; c.strokeRect(37, 3, 12, 12);
+    diamond(43, 9, 3); dot(4, 48, 2.2, CODEX_RG.start);
   } else if (shape === SHAPE_SWORD) {
     // v3.122.0（案帳 DT-535）: 竹林の濃い帯と、左下から右上の首都へ蛇行する白っぽい参道。町は参道の両脇
     c.fillStyle = "rgba(10,40,16,0.6)";
@@ -38984,7 +39676,7 @@ const REGION_CHOICE_COUNT = 3;
 // v3.7.0: 列車（軌道）以外は最初から全部（Shooter指示）。列車だけは初めてステージ5に着いたときに解放する
 const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL, SHAPE_FRONTLINE, SHAPE_SANCTUARY, SHAPE_ASTEROIDS,
                              SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND,
-                             SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD, SHAPE_MUSHROOM];   // v3.130.0: 増えるキノコの里も最初から（案帳 DT-551）   // v3.122.0: 剣の道の国も最初から（案帳 DT-535）   // v3.102.0: 蛇神の国も最初から（案帳 DT-180）   // v3.78.0: 浮き城の空も最初から（案帳 DT-124）   // v3.77.0: 巨岩信仰の荒地も最初から（案帳 DT-509）／v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
+                             SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD, SHAPE_MUSHROOM, SHAPE_BOMB];   // v3.146.0: 爆弾玉の国も最初から（案帳 DT-333）   // v3.130.0: 増えるキノコの里も最初から（案帳 DT-551）   // v3.122.0: 剣の道の国も最初から（案帳 DT-535）   // v3.102.0: 蛇神の国も最初から（案帳 DT-180）   // v3.78.0: 浮き城の空も最初から（案帳 DT-124）   // v3.77.0: 巨岩信仰の荒地も最初から（案帳 DT-509）／v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
 // 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
 const WIPE_GRACE_SECONDS  = 2;
 
@@ -40491,7 +41183,7 @@ function rebuildWallsForTier() {
   const kept = [];
   for (let i = 0; i < settlements.length; i++) {
     // v1.4.0: 防衛線の長城は張り直さない（開けた突破口が段階のたびに塞がると、突破が積み上がらない）
-    if (!settlements[i]._isWall || settlements[i]._lineWall) kept.push(settlements[i]);
+    if (!settlements[i]._isWall || settlements[i]._lineWall || settlements[i]._bombWall) kept.push(settlements[i]);   // v3.146.0: 火薬庫の城の城壁も張り直さない（爆発で開けた穴が塞がらない）
   }
   const boss = kept.find(s => s.isBoss);
   if (!boss) { settlements = kept; return; }
@@ -46077,6 +46769,7 @@ function render(now) {
   drawSwordFx();             // v3.122.0（案帳 DT-535）: 剣鬼の技の予告・斬りの跡（敵の下）
   drawPoison();              // v3.103.0: 毒の弾と毒の竜の輪
   drawMushroomFx();          // v3.130.0（案帳 DT-551）: 胞子玉・生えたての家の光る縁・里の人
+  drawBombFx();              // v3.146.0（案帳 DT-333）: 爆弾玉・臼砲・火薬庫・届く範囲
   if (worldShape === SHAPE_MUSHROOM) drawMushBossFx();   // v3.134.0（案帳 DT-554）: 大笠茸の予告の輪・菌糸の線・粉
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
@@ -49817,6 +50510,7 @@ function tick() {
     serpentPushBoids();           // v3.102.0（案帳 DT-180）: 大蛇の胴は越えられない
     updatePoison(wdt);            // v3.103.0: 毒の弾と、毒の竜の遅さ
     updateMushroom(wdt);          // v3.130.0（案帳 DT-551）: キノコの家が生える・胞子玉
+    updateBombland(wdt);          // v3.146.0（案帳 DT-333）: 爆弾玉・臼砲・誘爆
     updateCamera(wdt);
     // v3.16.0: 猛進のあいだは敵側（建物の射撃・弾・動く敵）だけ時間を速める
     rebuildMoverGrid();           // v3.23.0: 竜の攻撃が近くの敵だけを見るための格子（敵が多い地域だけ）
