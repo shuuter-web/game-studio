@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.143.0";
+const GAME_VERSION = "v3.144.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -44238,7 +44238,41 @@ const HERO_STREAK_TIME      = 0.7;    // 撃退されて王城へ飛ぶ光の筋
 const HERO_COLORS = { body: "#e8ecf4", rim: "#ffd060", cape: "#c8283a", sword: "#ffffff", warn: "rgba(255,255,255,0.75)",
                       slash: "rgba(255,255,255,0.95)", glow: "rgba(255,220,120,0.35)", stun: "#ffe060" };
 
-const HERO_DRAW = { glow: 1.45, ring: 1.25, cape: 1.6, sword: 1.75 };   // v3.41.0: 体の半径に対する輪・マント・剣の大きさ（v3.35.0 は 2.1／1.7／2.2／2.4）
+const HERO_LOOK = { cloth: HERO_COLORS.body, clothRim: HERO_COLORS.rim, head: "#6b4a2a", headRim: "#3a2814", pad: "#f4f6fa" };   // v3.144.0（DT-579）
+const HERO_DRAW = { glow: 1.45, ring: 1, cape: 1.6, sword: 2 };   // 体の半径（当たり）に対する光・輪・マント・剣の大きさ。v3.144.0: 輪は当たりの半径そのもの（1.25→1）、剣は手から伸びるので 1.75→2
+// v3.144.0（案帳 DT-579・Shooter「コアの人間部分のサイズは統一しつつ」「人間も多少はサイズ差を。1.3倍までくらい」）:
+// 人型の敵の体は、真上から見た「肩＋頭」の1つの絵（前＝+x、右手＝+y）。当たりの半径（def.radius）は体の絵に使わず、足元の輪で見せる。
+// 体の大きさの差は HUMAN_BODY_SCALE の 1.0〜1.3 倍だけ（鎧の重い相手ほど大きい）。それ以上の強さの差は輪の色・持ち物・光で出す
+const HUMAN_BODY = { shoulderHalf: 8, shoulderDepth: 4, head: 3.6, headFwd: 0.8, padHalf: 3, padDepth: 3.4, padAt: 6.6, handR: 1.5, handFwd: 4, handSide: 7.6 };
+const HUMAN_BODY_SCALE_MIN = 1, HUMAN_BODY_SCALE_MAX = 1.3;
+const HUMAN_BODY_SCALE = { hero: 1.25, hero_shield: 1.3, hero_mage: 1, hero_archer: 1.05 };   // 板金の鎧＝大きい、布の服＝小さい
+const HUMAN_SKIN = "#e8c8a0";
+const HUMAN_RING = { mate: "rgba(255,255,255,0.6)", mateWidth: 1 };   // お供の足元の輪（英雄は HERO_COLORS.rim の金）
+const HERO_MATE_LOOK = {
+  shield: { cloth: null, clothRim: "#6a7488", head: "#8a96a8", headRim: "#4a5262", pad: "#98a4b8" },   // cloth: null＝def.color
+  mage:   { cloth: null, clothRim: "#4a2a88", head: "#5a3a98", headRim: "#2c1a58" },
+  archer: { cloth: null, clothRim: "#4a6040", head: "#5a7a4a", headRim: "#34482c" },
+};
+function humanBodyScale(name) {
+  return Math.max(HUMAN_BODY_SCALE_MIN, Math.min(HUMAN_BODY_SCALE_MAX, HUMAN_BODY_SCALE[name] ?? 1));
+}
+/** 人の体（肩＋肩当て＋頭）。回転済みで前＝+x。look = { cloth, clothRim, head, headRim, pad? }、s は体の倍率 */
+function drawHumanBody(s, look) {
+  const B = HUMAN_BODY;
+  ctx.fillStyle = look.cloth; ctx.strokeStyle = look.clothRim; ctx.lineWidth = 0.9 * s;
+  ctx.beginPath(); ctx.ellipse(0, 0, B.shoulderDepth * s, B.shoulderHalf * s, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  if (look.pad) {   // 肩当て（鎧の相手だけ）
+    ctx.fillStyle = look.pad; ctx.lineWidth = 0.7 * s;
+    for (const side of [-1, 1]) { ctx.beginPath(); ctx.ellipse(0, side * B.padAt * s, B.padDepth * s, B.padHalf * s, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+  }
+  ctx.fillStyle = look.head; ctx.strokeStyle = look.headRim; ctx.lineWidth = 0.7 * s;
+  ctx.beginPath(); ctx.arc(B.headFwd * s, 0, B.head * s, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+}
+/** 右手（持ち物の付け根）。回転済みで前＝+x */
+function drawHumanHand(s) {
+  ctx.fillStyle = HUMAN_SKIN;
+  ctx.beginPath(); ctx.arc(HUMAN_BODY.handFwd * s, HUMAN_BODY.handSide * s, HUMAN_BODY.handR * s, 0, Math.PI * 2); ctx.fill();
+}
 // v3.41.0: 吹き出しのセリフ（STRINGS.heroLines）。見た目だけなので選ぶ乱数は fxRandom
 const HERO_SAY_TIME      = 2.4;    // 吹き出しが出ている秒数
 const HERO_SAY_GAP       = 5;      // 小さな場面（構え・気絶）のセリフは、前のセリフからこの秒数あける
@@ -44496,26 +44530,43 @@ function drawHeroMateFx() {
   }
   ctx.restore();
 }
-/** 仲間の体（drawMovers のベクター描画から。回転済みで前＝+x） */
+/** 仲間の体（drawMovers のベクター描画から。回転済みで前＝+x）。v3.144.0（DT-579）: 丸をやめて、同じ人の体＋足元の白い輪＋持ち物 */
 function drawHeroMateBody(mm) {
   const kind = mm.mate ? mm.mate.kind : mm.def.heroMate, r = mm.def.radius;
-  ctx.fillStyle = mm.def.color; ctx.strokeStyle = "#ffd060"; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  const s = humanBodyScale(mm.def.name), B = HUMAN_BODY, busy = !!(mm.mate && mm.mate.busy);
+  const look = { ...HERO_MATE_LOOK[kind], cloth: mm.def.color };
+  // 足元の輪＝当たりの半径（どこまで薙げば当たるか）
+  ctx.strokeStyle = HUMAN_RING.mate; ctx.lineWidth = HUMAN_RING.mateWidth;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
   if (kind === "shield") {
-    if (!(mm.mate && mm.mate.busy)) {   // 盾を持っているときだけ手元に描く
+    drawHumanBody(s, look);
+    if (!busy) {   // 盾を持っているときだけ左腕の前に描く（頭に重ならない位置）
       ctx.fillStyle = "#e4eaf2"; ctx.strokeStyle = "#8a96a8"; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(r * 0.9, 0, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      ctx.strokeStyle = "#c8283a"; ctx.beginPath(); ctx.arc(r * 0.9, 0, 3.5, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(B.handFwd * s + 4, -B.handSide * s * 0.55, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "#c8283a"; ctx.beginPath(); ctx.arc(B.handFwd * s + 4, -B.handSide * s * 0.55, 3.5, 0, Math.PI * 2); ctx.stroke();
     }
   } else if (kind === "mage") {
+    // 杖（右手から前へ。唱えている間は先の玉が白く脈打つ）
+    const hx = B.handFwd * s, hy = B.handSide * s;
     ctx.strokeStyle = "#c8a070"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(-2, r * 0.9); ctx.lineTo(r * 1.4, r * 0.9); ctx.stroke();
-    ctx.fillStyle = mm.mate && mm.mate.busy ? "#ffffff" : "#e0c8ff";
-    ctx.beginPath(); ctx.arc(r * 1.5, r * 0.9, 3.5 + (mm.mate && mm.mate.busy ? Math.abs(Math.sin(breathTime * 12)) * 2 : 0), 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#5a3a98"; ctx.beginPath(); ctx.moveTo(r * 0.7, 0); ctx.lineTo(-r * 0.4, -r * 0.6); ctx.lineTo(-r * 0.4, r * 0.6); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(hx - 6, hy); ctx.lineTo(hx + 10, hy); ctx.stroke();
+    ctx.fillStyle = busy ? "#ffffff" : "#e0c8ff";
+    ctx.beginPath(); ctx.arc(hx + 11, hy, 3.5 + (busy ? Math.abs(Math.sin(breathTime * 12)) * 2 : 0), 0, Math.PI * 2); ctx.fill();
+    drawHumanBody(s, look);
+    drawHumanHand(s);
+    // とんがり帽子を真上から：広いつば・山・後ろへ折れた先
+    ctx.fillStyle = look.head; ctx.strokeStyle = look.headRim; ctx.lineWidth = 0.7;
+    ctx.beginPath(); ctx.arc(B.headFwd * s, 0, B.head * s * 1.35, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#7a56c0";
+    ctx.beginPath(); ctx.moveTo(B.headFwd * s + 2.4, 0); ctx.lineTo(B.headFwd * s - 1, -2.6); ctx.lineTo(B.headFwd * s - 6.5, 1.2); ctx.lineTo(B.headFwd * s - 1, 2.6); ctx.closePath(); ctx.fill();
   } else {
+    // 矢筒（背中）→ 体 → 弓（前）
+    ctx.fillStyle = "#6a4a2a"; ctx.fillRect(-B.shoulderDepth * s - 2.5, 0.5, 4, 5.5);
+    drawHumanBody(s, look);
     ctx.strokeStyle = "#e8dcb8"; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.arc(r * 0.3, 0, r * 1.1, -1.1, 1.1); ctx.stroke();
+    ctx.strokeStyle = "rgba(240,240,250,0.6)"; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(r * 0.3 + Math.cos(1.1) * r * 1.1, -Math.sin(1.1) * r * 1.1); ctx.lineTo(r * 0.3 + Math.cos(1.1) * r * 1.1, Math.sin(1.1) * r * 1.1); ctx.stroke();
   }
 }
 
@@ -44738,7 +44789,8 @@ function drawHero(m) {
     ctx.setLineDash([]); ctx.globalAlpha = 1;
   }
   ctx.translate(m.wx, m.wy);
-  // 金の輪（英雄の印）。v3.41.0: 輪・マント・剣を体に寄せて、全体をほかの人型の動く敵と同じくらいの大きさにした（Shooter指示）
+  // 金の光と金の輪（英雄の印）。v3.144.0（DT-579）: 輪は当たりの半径そのもの。体は丸をやめて、ほかの人型と同じ「肩＋頭」の絵
+  const bs = humanBodyScale(m.def.name), B = HUMAN_BODY;
   ctx.fillStyle = HERO_COLORS.glow;
   ctx.beginPath(); ctx.arc(0, 0, r * HERO_DRAW.glow, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = HERO_COLORS.rim; ctx.lineWidth = 1.2;
@@ -44747,14 +44799,15 @@ function drawHero(m) {
   // 赤いマント（後ろへなびく）
   const sway = Math.sin(breathTime * 9) * r * 0.2;
   ctx.fillStyle = HERO_COLORS.cape;
-  ctx.beginPath(); ctx.moveTo(-r * 0.3, -r * 0.75); ctx.lineTo(-r * HERO_DRAW.cape, -r * 0.8 + sway); ctx.lineTo(-r * (HERO_DRAW.cape - 0.15), r * 0.8 + sway); ctx.lineTo(-r * 0.3, r * 0.75); ctx.closePath(); ctx.fill();
-  // 体（白銀の丸に金の縁）
-  ctx.fillStyle = HERO_COLORS.body; ctx.strokeStyle = HERO_COLORS.rim; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  // 剣（構え中は光る）
+  const capeHalf = B.shoulderHalf * bs * 0.85;
+  ctx.beginPath(); ctx.moveTo(0, -capeHalf); ctx.lineTo(-r * HERO_DRAW.cape, -capeHalf * 1.15 + sway); ctx.lineTo(-r * (HERO_DRAW.cape - 0.15), capeHalf * 1.15 + sway); ctx.lineTo(0, capeHalf); ctx.closePath(); ctx.fill();
+  // 体（白銀の鎧に金の縁・肩当て・茶の髪）
+  drawHumanBody(bs, HERO_LOOK);
+  drawHumanHand(bs);
+  // 剣（右手から前へ。構え中は光る）
   ctx.strokeStyle = HERO_COLORS.sword; ctx.lineWidth = h.state === "windup" ? 3 : 2;
   if (h.state === "windup") { ctx.shadowColor = HERO_COLORS.rim; ctx.shadowBlur = 10; }
-  ctx.beginPath(); ctx.moveTo(r * 0.5, r * 0.55); ctx.lineTo(r * HERO_DRAW.sword, r * 0.55); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(B.handFwd * bs, B.handSide * bs); ctx.lineTo(r * HERO_DRAW.sword, B.handSide * bs); ctx.stroke();
   ctx.restore();
   // 体力の帯（頭の上）
   const bw = r * 3.6, bh = 3, bx = m.wx - bw / 2, by = m.wy - r * 2.1;
