@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.140.0";
+const GAME_VERSION = "v3.141.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -12123,7 +12123,7 @@ function generateMovers(stageIndex, boss, tierForCount = 0) {
   if (worldShape === SHAPE_METRO) generateMetroMovers(stageIndex, result, boss);
   // v3.77.0（案帳 DT-509）: 巨岩信仰の荒地には岩の巨人が住んでいる。町の一覧ができてから置く（placeRockGiants）。
   // 警戒度が上がって部隊を湧かし直すときは、居る巨人を倒した分だけ減ったまま引き継ぐ（全快で復活させない）
-  if (tierForCount === 0) { wastelandIdols = []; rockGiantCracks.length = 0; }   // v3.81.0: 石像と地面の割れはステージごとに作り直す
+  if (tierForCount === 0) { wastelandIdols = []; rockGiantCracks.length = 0; giantRocks.length = 0; }   // v3.81.0: 石像と地面の割れはステージごとに作り直す
   if (worldShape === SHAPE_WASTELAND) {
     if (tierForCount > 0) { for (const g of movers) if (g.alive && g.def.rockGiant) result.push(g); }
     else rockGiantPlacePending = true;
@@ -16788,6 +16788,7 @@ function updateMovers(dt) {
   updateEnemyGroups(dt);   // v2.3.0: 複数パーツのグループ敵（編成など）
   updateMoverDeaths(dt);   // v2.6.0: 大きい敵の最期（崩れ→倒れ込み→残骸）
   updateFlungMovers(dt);   // v3.44.1: 鉄球で吹き飛ばした敵
+  updateGiantRocks(dt);    // v3.141.0（案帳 DT-315）: 岩の巨人が投げた岩（飛ぶ・落ちる・道をふさぐ）
 
   // 衝撃波FXの寿命更新
   for (let i = shockwaveFxList.length - 1; i >= 0; i--) {
@@ -18173,6 +18174,30 @@ const ROCKGIANT_CRACK_LIFE     = 1.8;     // 拳の下の地面の割れが残�
 const ROCKGIANT_WAKE_TIME      = 1.3;     // 石像が動き出すまで（灰の石から色が戻る）
 const ROCKGIANT_ARM_PIVOT      = 0.9;     // 腕の絵の付け根（下から）の割合
 const ROCKGIANT_ARM_SWING      = 0.16;    // 歩くときの腕の振り（rad）
+// v3.141.0（案帳 DT-315 岩投げの巨人・Shooter「巨石信仰の荒地の巨人が時々投げるようにできますか」）: 岩の巨人はときどき岩を投げる。
+// 追っている群れが、叩きつけには遠く・投げるには近い距離にいるとき、立ち止まって両腕を振り上げ（溜め）、群れの線の先へ岩を放る。
+// 落ちる所には先に黄の点線の輪と影が出る。落ちた岩は当たった竜を傷つけ、その場に ROCKGIANT_ROCK_LIFE 秒残って群れの通り道をふさぐ
+// （竜は岩の上を通れず、縁をすべって回り込む。建物・敵・弾には何もしない）。首都の大巨人は投げない
+const ROCKGIANT_THROW_EVERY    = 12;      // 1体が次に投げるまで（秒）。追っている間だけ進む
+const ROCKGIANT_THROW_JITTER   = 6;      // 上の間隔に足すばらつき（秒）
+const ROCKGIANT_THROW_MIN_R    = 300;     // これより近い群れには投げない（叩きつけの距離。大きさで伸ばす）
+const ROCKGIANT_THROW_MAX_R    = 760;     // これより遠い群れには投げない
+const ROCKGIANT_THROW_WIND     = 0.9;     // 振り上げてから放るまで
+const ROCKGIANT_THROW_FLIGHT   = 1.3;     // 放ってから落ちるまで（この間、落ちる所に予告の輪）
+const ROCKGIANT_THROW_LEAD     = 150;     // 狙う点を、群れの重心から操縦点（線の先）の方へずらす最大の距離
+const ROCKGIANT_ROCK_R         = 34;      // 岩の半径（投げた巨人の大きさで少し変わる）
+const ROCKGIANT_ROCK_SCALE_K   = 0.35;    // 岩の半径に巨人の大きさを効かせる割合
+const ROCKGIANT_ROCK_DMG       = 12;      // 落ちた岩の傷（時代ごとに +2。竜の体力は30）
+const ROCKGIANT_ROCK_DMG_STAGE = 2;
+const ROCKGIANT_ROCK_PUSH      = 120;
+const ROCKGIANT_ROCK_HIT_PAD   = 14;      // 岩の縁からこれだけ外までの竜に当たる
+const ROCKGIANT_ROCK_LIFE      = 20;      // 落ちた岩が残る秒数
+const ROCKGIANT_ROCK_FADE      = 1.5;     // 消える前に薄くなっていく秒数
+const ROCKGIANT_ROCK_MAX       = 8;       // 同時にある岩（飛んでいるものを含む）の上限。これ以上は投げない
+const ROCKGIANT_ROCK_ARC       = 0.9;     // 飛んでいる岩を大きく描く割合（高さの見た目）
+const ROCKGIANT_ROCK_SHAKE     = 2.2;
+const ROCKGIANT_ROCK_VERTS     = 9;       // 岩の輪郭の角の数
+const giantRocks = [];   // {x, y, r, fromX, fromY, t, flying, life, verts, rot}
 let rockGiantPlacePending = false;   // 町の一覧ができてから置く（kitePlacePending と同じ段取り）
 
 /** 1体ごとの大きさ（v3.79.0）。衝撃波・扇・止まる距離もこれで伸ばす */
@@ -18438,6 +18463,7 @@ function initRockGiant(m, post, scaleMin, fixedScale, keepDef) {
     mode: "guard", feet, nextFoot: 0, stepTimer: random() * ROCKGIANT_STEP_EVERY,
     stepsSince: Math.floor(random() * ROCKGIANT_SLAM_EVERY), slam: null, armKick: 0, armLift: 0,
     pace: null, paceWait: random() * ROCKGIANT_PACE_PAUSE, goal: null, active: false, scale,
+    throwing: null, throwCd: ROCKGIANT_THROW_EVERY * random() + ROCKGIANT_THROW_JITTER,   // v3.141.0（DT-315）: 岩投げ
     wake: 0,   // v3.81.0: 石像から動き出すまでの残り秒（首都の増援）
   };
   for (let k = 0; k < 2; k++) {
@@ -18546,15 +18572,138 @@ function updateRockGiant(m, dt, centroid) {
   rockGiantDecide(m, G, centroid, dt);
   G.active = Math.hypot(centroid.x - m.wx, centroid.y - m.wy) < ROCKGIANT_ACTIVE_R;
   G.armKick = Math.max(0, G.armKick - ROCKGIANT_ARM_KICK_DECAY * dt);
-  if (G.slam) rockGiantSlam(m, G, dt);
+  if (G.mode === "chase" && G.active && G.throwCd > 0) G.throwCd -= dt;   // v3.141.0（DT-315）
+  if (G.throwing) rockGiantThrow(m, G, dt);
+  else if (G.slam) rockGiantSlam(m, G, dt);
   else {
     G.armLift = 0;
     const lifting = G.feet.some(f => f.lift >= 0);
     if (G.active && !lifting && G.stepsSince >= ROCKGIANT_SLAM_EVERY && m.laserLock <= 0) rockGiantTrySlam(m, G);
+    if (!G.slam && G.active && !lifting && G.throwCd <= 0 && m.laserLock <= 0) rockGiantTryThrow(m, G, centroid);
   }
-  if (G.slam) { m.speedMult = 0; G.goal = null; }
+  if (G.slam || G.throwing) { m.speedMult = 0; G.goal = null; }
   rockGiantFeet(m, G, dt);
   m._rgGoal = G.goal;
+}
+
+/** v3.141.0（DT-315）: 群れが投げる距離にいれば、立ち止まって岩投げの溜めに入る。狙うのは群れの線の先（重心から操縦点の方へずらした点） */
+function rockGiantTryThrow(m, G, centroid) {
+  if (G.mode !== "chase" || giantRocks.length >= ROCKGIANT_ROCK_MAX) return;
+  const d = Math.hypot(centroid.x - m.wx, centroid.y - m.wy);
+  if (d < ROCKGIANT_THROW_MIN_R * rgScale(m) || d > ROCKGIANT_THROW_MAX_R) return;
+  let lx = leader.x - centroid.x, ly = leader.y - centroid.y;
+  const ld = Math.hypot(lx, ly);
+  if (ld > ROCKGIANT_THROW_LEAD) { lx *= ROCKGIANT_THROW_LEAD / ld; ly *= ROCKGIANT_THROW_LEAD / ld; }
+  const tx = centroid.x + lx, ty = centroid.y + ly;
+  const ang = Math.atan2(ty - m.wy, tx - m.wx);
+  G.throwing = { t: 0, tx, ty };
+  G.throwCd = ROCKGIANT_THROW_EVERY + random() * ROCKGIANT_THROW_JITTER;
+  m.headingX = Math.cos(ang); m.headingY = Math.sin(ang);
+  m.laserLock = ROCKGIANT_THROW_WIND + 0.4;   // 溜めと放った直後は向きと足を止める（叩きつけと同じ作法）
+}
+
+/** 岩投げの溜め：両腕を振り上げ、時間が来たら放る（岩は giantRocks が運ぶ） */
+function rockGiantThrow(m, G, dt) {
+  const T = G.throwing;
+  T.t += dt;
+  G.armLift = Math.min(1, T.t / ROCKGIANT_THROW_WIND);
+  if (T.t < ROCKGIANT_THROW_WIND) return;
+  G.throwing = null; G.armLift = 0; G.armKick = 1; G.stepsSince = 0;
+  const r = ROCKGIANT_ROCK_R * (1 + ROCKGIANT_ROCK_SCALE_K * (rgScale(m) - 1));
+  const verts = [];
+  for (let k = 0; k < ROCKGIANT_ROCK_VERTS; k++) verts.push(0.82 + fxRandom() * 0.3);   // 輪郭のでこぼこ（見た目だけ）
+  giantRocks.push({ x: T.tx, y: T.ty, r, fromX: m.wx + m.headingX * m.def.radius, fromY: m.wy + m.headingY * m.def.radius,
+                    t: 0, flying: true, life: ROCKGIANT_ROCK_LIFE, verts, rot: fxRandom() * Math.PI * 2, by: moverAttacker(m) });
+}
+
+/** 岩の1歩：飛んでいる岩を落とし、落ちている岩は時間で消す。落ちている岩の上の竜は縁へ押し出す（updateMovers から毎歩1回） */
+function updateGiantRocks(dt) {
+  for (let n = giantRocks.length - 1; n >= 0; n--) {
+    const g = giantRocks[n];
+    if (g.flying) {
+      g.t += dt;
+      if (g.t < ROCKGIANT_THROW_FLIGHT) continue;
+      g.flying = false;
+      attackerNow = g.by;
+      const hit = shockwaveHit((ROCKGIANT_ROCK_DMG + ROCKGIANT_ROCK_DMG_STAGE * runStageIndex) * moverFerocity(), ROCKGIANT_ROCK_PUSH);
+      const reach = g.r + ROCKGIANT_ROCK_HIT_PAD;
+      for (let i = 0; i < N; i++) {
+        if (boidDead[i] || boidDowned[i]) continue;
+        const dx = px[i] - g.x, dy = py[i] - g.y, d = Math.hypot(dx, dy);
+        if (d <= reach) hitBoid(i, hit, dx / (d || 1), dy / (d || 1));
+      }
+      spawnExplosionFx(g.x, g.y, g.r * 1.2, { dust: true, fire: 0 });
+      triggerShake(ROCKGIANT_ROCK_SHAKE, 0.15);
+      continue;
+    }
+    g.life -= dt;
+    if (g.life <= 0) { giantRocks.splice(n, 1); continue; }
+    // 岩の上は通れない：中に入った竜を縁へ出し、岩へ向かう速さの分だけ消す（縁をすべって回り込む）
+    for (let i = 0; i < N; i++) {
+      if (boidDead[i] || boidDowned[i]) continue;
+      const dx = px[i] - g.x, dy = py[i] - g.y, d2 = dx * dx + dy * dy;
+      if (d2 >= g.r * g.r) continue;
+      const d = Math.sqrt(d2);
+      const nx = d > 0.01 ? dx / d : 1, ny = d > 0.01 ? dy / d : 0;
+      px[i] = g.x + nx * g.r; py[i] = g.y + ny * g.r;
+      const vn = vx[i] * nx + vy[i] * ny;
+      if (vn < 0) { vx[i] -= vn * nx; vy[i] -= vn * ny; }
+    }
+  }
+}
+
+function giantRockPath(g, r) {
+  ctx.beginPath();
+  for (let k = 0; k < g.verts.length; k++) {
+    const a = g.rot + k / g.verts.length * Math.PI * 2, rr = r * g.verts[k];
+    if (k === 0) ctx.moveTo(g.x + Math.cos(a) * rr, g.y + Math.sin(a) * rr); else ctx.lineTo(g.x + Math.cos(a) * rr, g.y + Math.sin(a) * rr);
+  }
+  ctx.closePath();
+}
+/** 岩の絵（灰色の大きな岩。上から光が当たった面と、右下の影の面） */
+function drawGiantRockBody(g, cx, cy, r, alpha) {
+  const at = { x: cx, y: cy, verts: g.verts, rot: g.rot };
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "#8d8a82"; giantRockPath(at, r); ctx.fill();
+  ctx.save(); giantRockPath(at, r); ctx.clip();
+  ctx.fillStyle = "#5f5c56"; ctx.beginPath(); ctx.arc(cx + r * 0.35, cy + r * 0.4, r * 0.95, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#a9a69c"; ctx.beginPath(); ctx.arc(cx - r * 0.3, cy - r * 0.35, r * 0.6, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = "#3e3c38"; ctx.lineWidth = 2; giantRockPath(at, r); ctx.stroke();
+}
+/** 落ちた岩と、落ちる所の予告（影と黄の点線の輪）。地面の層（drawRockGiantUnder から） */
+function drawGiantRocksGround(vb) {
+  if (!giantRocks.length) return;
+  ctx.save();
+  for (const g of giantRocks) {
+    if (g.x < vb.minX || g.x > vb.maxX || g.y < vb.minY || g.y > vb.maxY) continue;
+    if (g.flying) {
+      const t = Math.min(1, g.t / ROCKGIANT_THROW_FLIGHT);
+      ctx.globalAlpha = 0.14 + 0.3 * t; ctx.fillStyle = "#000000";
+      ctx.beginPath(); ctx.arc(g.x, g.y, g.r * (0.4 + 0.6 * t), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.9; ctx.strokeStyle = "#ffd060"; ctx.lineWidth = 2.5; ctx.setLineDash([9, 7]);
+      ctx.beginPath(); ctx.arc(g.x, g.y, g.r + ROCKGIANT_ROCK_HIT_PAD, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      continue;
+    }
+    ctx.globalAlpha = 0.3 * Math.min(1, g.life / ROCKGIANT_ROCK_FADE); ctx.fillStyle = "#000000";
+    ctx.beginPath(); ctx.ellipse(g.x + 5, g.y + 7, g.r * 1.05, g.r * 0.95, 0, 0, Math.PI * 2); ctx.fill();
+    drawGiantRockBody(g, g.x, g.y, g.r, Math.min(1, g.life / ROCKGIANT_ROCK_FADE));
+  }
+  ctx.restore();
+}
+/** 飛んでいる岩（竜より上の層）。高く上がるほど大きく描く */
+function drawGiantRocksAir() {
+  if (!giantRocks.length) return;
+  ctx.save();
+  for (const g of giantRocks) {
+    if (!g.flying) continue;
+    const t = Math.min(1, g.t / ROCKGIANT_THROW_FLIGHT);
+    const h = Math.sin(t * Math.PI);   // 放物線の高さ（0→1→0）
+    const cx = g.fromX + (g.x - g.fromX) * t, cy = g.fromY + (g.y - g.fromY) * t - h * g.r * 1.6;
+    drawGiantRockBody(g, cx, cy, g.r * (1 + ROCKGIANT_ROCK_ARC * h), 1);
+  }
+  ctx.restore();
 }
 
 /** 近くの竜が正面に居れば叩きつけに入る（向きを固定して止まる） */
@@ -18642,6 +18791,7 @@ const rockGiantCracks = [];   // v3.81.0: 叩きつけた拳の下の地面の�
 function drawRockGiantUnder() {
   const vb = getViewBoundsWorld(300);
   drawRockGiantCracks(vb);
+  drawGiantRocksGround(vb);   // v3.141.0（DT-315）: 落ちた岩と、落ちる所の予告
   drawWastelandIdols(vb);   // v3.81.0: 首都のまわりの石像（動き出す前の巨人）
   for (const m of movers) {
     if (!m.alive || !m.def.rockGiant || !m._rg) continue;
@@ -18792,6 +18942,10 @@ function statueSpriteFor(key, img) {
  */
 function rockGiantArmPose(G) {
   const S = G && G.slam;
+  if (G && G.throwing) {   // v3.141.0（DT-315）: 岩投げの溜めも両腕を振り上げる
+    const t = Math.min(1, G.throwing.t / ROCKGIANT_THROW_WIND);
+    return { raise: t * t * (3 - 2 * t), plant: 0 };
+  }
   if (!S) return { raise: 0, plant: 0 };
   if (S.phase === "wind") {
     const t = Math.min(1, S.t / ROCKGIANT_SLAM_WIND);
@@ -36335,7 +36489,7 @@ const CODEX_SPECIAL_ERA = {
   moving_fortress: "警戒度ラッシュ「動く砦」",                                              // 案帳 DT-487 手直し
   fortress_turret: "警戒度ラッシュ「動く砦」の四隅",
   stone_titan:     "警戒度ラッシュ「巨人の行軍」",   // v3.74.0（案帳 DT-484）
-  rock_giant:      "巨岩信仰の荒地（全文明） — 町ごとに住みついて守る。倒すまで残る",   // v3.77.0（案帳 DT-509）
+  rock_giant:      "巨岩信仰の荒地（全文明） — 町ごとに住みついて守る。倒すまで残る。離れた群れには岩を投げる",   // v3.77.0（案帳 DT-509）
   behemoth_core:  "VI 電気 / VIII 最終",
   behemoth_arm:   "VI 電気 / VIII 最終（コアの脇）",
   walker_hull:    "VII 大戦 / VIII 最終",
@@ -36667,7 +36821,8 @@ function codexEnemySpecialFireRates(def) {
     case "harpoon_knight":  return [note(`傷は無し — ${TR_HARPOON_INTERVAL}秒ごとに銛で竜を1体引きずって奪う`)];
     case "stone_titan":     return [every(TITAN_STEP_EVERY, TITAN_STOMP_DMG, "踏みつけ（1本ずつ・時代ごとに+1）")];
     case "rock_giant":      return [every(ROCKGIANT_STEP_EVERY, ROCKGIANT_STOMP_DMG, "踏みつけ（時代ごとに+1）"),
-                                    every(ROCKGIANT_STEP_EVERY * ROCKGIANT_SLAM_EVERY + ROCKGIANT_SLAM_WIND, ROCKGIANT_SLAM_DMG, `叩きつけ（${ROCKGIANT_SLAM_EVERY}歩ごと）`)];
+                                    every(ROCKGIANT_STEP_EVERY * ROCKGIANT_SLAM_EVERY + ROCKGIANT_SLAM_WIND, ROCKGIANT_SLAM_DMG, `叩きつけ（${ROCKGIANT_SLAM_EVERY}歩ごと）`),
+                                    every(ROCKGIANT_THROW_EVERY + ROCKGIANT_THROW_JITTER / 2, ROCKGIANT_ROCK_DMG, `岩投げ（離れた群れへ。時代ごとに+${ROCKGIANT_ROCK_DMG_STAGE}。岩は${ROCKGIANT_ROCK_LIFE}秒残って道をふさぐ）`)];
     case "hero_shield":     return [every(HM_SHIELD_INTERVAL + HM_SHIELD_FLIGHT * 2, HM_SHIELD_DAMAGE, "盾投げ（往復＋待ち）")];
     case "hero_mage":       return [every(HM_MAGE_INTERVAL, HM_MAGE_DAMAGE, "魔法陣（陣の中の竜それぞれに）")];
     case "hero_archer":     return [every(HM_ARCHER_INTERVAL, HM_ARCHER_DAMAGE, "矢")];
@@ -45795,6 +45950,7 @@ function render(now) {
   drawMagnetShards(); // v3.31.0: 磁竜の破片
   drawRollBall();     // v3.29.0: 塊竜の玉（竜はこの上に貼り付いて描かれる）
   drawBoids();
+  drawGiantRocksAir();     // v3.141.0（DT-315）: 岩の巨人が投げて飛んでいる岩（竜の上）
   drawRollBallHpGauge();   // v3.35.0: 塊竜の群れ全体のHPゲージ（玉の下）
   drawHeroFx();            // v3.35.0: 英雄の斬撃・割れた竜・光の筋（竜の上）
   drawDrumRings();         // v3.31.0: 軍鼓の拍の輪
