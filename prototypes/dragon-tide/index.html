@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.147.1";
+const GAME_VERSION = "v3.148.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7314,7 +7314,7 @@ function generateStageLayout(stageIndex) {
   // 首都建物を含めたいので、capitalBuildings を result に入れた後で回す。
   {
     const metaMap2 = buildTownMetaMap(result);
-    let spinPlaced = 0;
+    let spinPlaced = 0, heavyPlaced = 0;
     const pickInto = (pool, count, key = "concussionBattery") => {
       // 既に時代兵器が付いている建物は避ける（1棟に2種は付けない）
       // v3.60.0: 回転砲塔は役割を持つ建物（前哨堡など）にも重ねない（役割の撃ち方が先に動いて、渦を撃たなくなる）
@@ -7334,8 +7334,10 @@ function generateStageLayout(stageIndex) {
         .filter(b => !b._townRole);
       const def = EMPLACEMENT_DEFS[key];
       if (key === "spinTurret") count = Math.min(count, SPIN_TURRET_MAX - spinPlaced);
+      if (key === "heavyCannon") count = Math.min(count, HEAVY_CANNON_MAX - heavyPlaced);
       for (let k = 0; k < count && k < free.length; k++) {
         if (key === "spinTurret") spinPlaced++;
+        if (key === "heavyCannon") heavyPlaced++;
         free[k]._emplacement = key;
         free[k].attackRadius = Math.max(free[k].attackRadius, def.range);
       }
@@ -7363,6 +7365,10 @@ function generateStageLayout(stageIndex) {
       // v3.60.0: 回転砲塔（DT-206）も強い街に。町の数が少ないうちに偏らないよう、要塞都市は必ず・格上の街は半分
       if (isFortress) pickInto(buildings, SPIN_TURRET_PER_FORTRESS_TOWN, "spinTurret");
       else if (isAdvanced && random() < SPIN_TURRET_ADVANCED_CHANCE) pickInto(buildings, 1, "spinTurret");
+      // v3.148.0（DT-112）: 巨弾砲塔も同じ枠。回転砲塔より少なく「たまに」混ざる
+      if (random() < (isFortress ? HEAVY_CANNON_FORTRESS_CHANCE : isAdvanced ? HEAVY_CANNON_ADVANCED_CHANCE : 0)) {
+        pickInto(buildings, 1, "heavyCannon");
+      }
     }
     // ボス周辺（首都区画）。城下の民家は _noAttack なので対象から外す
     pickInto(result.filter(b => b._isCapital && !b._noAttack), CONCUSSION_IN_CAPITAL);
@@ -10527,6 +10533,26 @@ const SHOCKWAVE_PUSH_DIST = 26;
 
 let movers = [];
 
+/** v3.148.0（DT-112）: 巨弾砲塔の巨弾（kind=6）を1発。遅く・大きく・重い。竜1体に当たって消える */
+function spawnHeavyCannonShot(fromWx, fromWy, angle) {
+  const slot = takeProjectileSlot();
+  if (slot < 0) return;
+  projActive[slot]    = 1;
+  projWx[slot]        = fromWx;   projWy[slot]      = fromWy;
+  projTailX[slot]     = fromWx;   projTailY[slot]   = fromWy;
+  projStartWx[slot]   = fromWx;   projStartWy[slot] = fromWy;
+  projVx[slot]        = Math.cos(angle) * HEAVY_CANNON_SPEED;
+  projVy[slot]        = Math.sin(angle) * HEAVY_CANNON_SPEED;
+  projDmg[slot]       = HEAVY_CANNON_DAMAGE;
+  projAoe[slot]       = 0;
+  projTracking[slot]  = 0;
+  projTargetIdx[slot] = -1;
+  projColor[slot]     = HEAVY_CANNON_COLOR;
+  projKind[slot]      = 6;
+  projRange[slot]     = HEAVY_CANNON_REACH;
+  projKnockR[slot]    = 0;
+}
+
 /**
  * v0.48: ロケット弾を1発、指定の角度へ撃つ（誘導なし・遅い・着弾でAoE）。
  * spawnFanProjectileRaw と同じく「角度で撃つ」形にして、斉射の扇を作れるようにする。
@@ -10706,6 +10732,10 @@ const EMPLACEMENT_DEFS = {
   // 4方向の砲身がゆっくり回りながら弾を撒き続ける＝渦巻きの弾幕。隙間を読んで近づいて壊す。
   // 衝撃砲台と同じく時代の表とは別枠で、格上の街・要塞都市に置く（どの文明でも出る）
   spinTurret: { label: "回転砲塔", ring: "#a8bccf", interval: 0.2, range: 430, spin: true },
+  // v3.148.0（案帳 DT-112・Shooter「長射程で単発高ダメージで弾が大きい、速度は遅め。回転砲塔と同じカテゴリでたまに配備」）:
+  // 巨弾砲塔。遠くから群れを狙って、大きくて遅い鉄の弾を1発だけ撃つ。当たれば竜1体がほぼ落ちる重さ。
+  // 遅いので見てから線をずらせば避けられ、遠くから撃たれ続ける＝「先に潰す」動機になる
+  heavyCannon: { label: "巨弾砲塔", ring: "#c9a27a", interval: 5.0, range: 640, heavy: true },
 };
 const SPIN_TURRET_BARRELS = 4;        // 砲身の数（等間隔）
 const SPIN_TURRET_STEP    = 0.17;     // 1発ごとに回る角度（rad）。0.2秒ごと＝秒間約0.85rad＝ゆっくり
@@ -10718,6 +10748,18 @@ const SPIN_TURRET_PER_FORTRESS_TOWN = 1;
 const SPIN_TURRET_ADVANCED_CHANCE   = 0.5;   // 格上の街に置く確率
 const SPIN_TURRET_MAX = 6;                   // 1つの大陸に置く上限（弾幕だらけにしない）
 const SPIN_TURRET_XP_MULT = 4;        // 倒すと経験値多め
+// v3.148.0（DT-112）: 巨弾砲塔。弾は kind=6（巨弾）。速さは通常弾の減速を通さずここで決める
+const HEAVY_CANNON_SPEED   = 120;     // 弾速（px/s）。遅い＝飛んでくるのを見てから避けられる
+const HEAVY_CANNON_DAMAGE  = 7.5;     // 撃った側の倍率（基準値 PROJECTILE_HIT_DAMAGE に掛ける）＝ふつうの竜はほぼ一撃
+const HEAVY_CANNON_REACH   = 780;     // 弾の届く距離（射程より少し先まで飛ぶ）
+const HEAVY_CANNON_HIT_R   = 15;      // 当たり判定の半径（通常弾は8。大きい弾は大きく当たる）
+const HEAVY_CANNON_DRAW_R  = 10;      // 弾の絵の半径
+const HEAVY_CANNON_PUSH    = 70;      // 当たった竜を押し戻す距離（px）
+const HEAVY_CANNON_COLOR   = "#ffb070";
+const HEAVY_CANNON_FORTRESS_CHANCE = 0.4;    // 要塞都市に置く確率（必ずではない＝「たまに」）
+const HEAVY_CANNON_ADVANCED_CHANCE = 0.2;    // 格上の街に置く確率
+const HEAVY_CANNON_MAX = 2;                  // 1つの大陸に置く上限
+const HEAVY_CANNON_XP_MULT = 3;              // 倒すと経験値多め
 
 // 衝撃砲台のパラメータ。弾自体は敵の「衝撃砲」と同じ仕組み
 // （kind=1 のカタパルト弾＋着弾点の小さな衝撃波 projKnockR）。
@@ -11966,6 +12008,19 @@ function drawEmplacements() {
       ctx.stroke();
       ctx.fillStyle = "#3a4858";
       ctx.beginPath(); ctx.arc(s.wx, s.wy, s.radius * 0.55, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = def.ring; ctx.lineWidth = 2; ctx.stroke();
+      ctx.lineCap = "butt";
+    }
+    // v3.148.0（DT-112）: 巨弾砲塔は太く長い砲身1本を、最後に撃った向きで描く＝どこを狙っているかが見える
+    if (def.heavy) {
+      const ang = s._gunAim ?? 0, len = s.radius + 16;
+      ctx.globalAlpha = 0.95;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "#2a2522"; ctx.lineWidth = 11;
+      ctx.beginPath(); ctx.moveTo(s.wx, s.wy); ctx.lineTo(s.wx + Math.cos(ang) * len, s.wy + Math.sin(ang) * len); ctx.stroke();
+      ctx.strokeStyle = def.ring; ctx.lineWidth = 6; ctx.stroke();
+      ctx.fillStyle = "#3a332e";
+      ctx.beginPath(); ctx.arc(s.wx, s.wy, s.radius * 0.62, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = def.ring; ctx.lineWidth = 2; ctx.stroke();
       ctx.lineCap = "butt";
     }
@@ -27606,7 +27661,7 @@ const projStartWy   = new Float32Array(MAX_PROJECTILES);
 // 変更5: 投射物種別 SoA（0=arrow 通常矢弾、1=catapult カタパルト弾）
 // Uint8Array: 0 or 1 で表現。初期化漏れなし（new Uint8Array はゼロ初期化される）
 const projSrc       = new Array(MAX_PROJECTILES).fill(null); // v3.13.0: 撃ち手（全滅の一文用）
-const projKind      = new Uint8Array(MAX_PROJECTILES); // 0=arrow, 1=catapult, 2=ボス重弾, 3=ロケット, 4=着弾弾
+const projKind      = new Uint8Array(MAX_PROJECTILES); // 0=arrow, 1=catapult, 2=ボス重弾, 3=ロケット, 4=着弾弾, 6=巨弾（巨弾砲塔）
 // v0.57: 着弾弾（kind=4）の落下点。飛行中は竜に当たらず、**この点まで飛んでから炸裂**する。
 // 「線に当たるか」ではなく「円から退けるか」を問う弾で、予告円とセットで使う。
 const projTgtX      = new Float32Array(MAX_PROJECTILES);
@@ -28071,7 +28126,11 @@ function fireEmplacement(s, targetIdx) {
   const tx = px[targetIdx], ty = py[targetIdx];
   const base = Math.atan2(ty - s.wy, tx - s.wx);
 
-  if (key === "spinTurret") {
+  if (key === "heavyCannon") {
+    // v3.148.0（DT-112）: 最寄りの竜の今の位置へ巨弾を1発。先読みはしない（遅い弾を見てから避けさせる）
+    s._gunAim = base; s._gunAimAt = breathTime;
+    spawnHeavyCannonShot(s.wx, s.wy, base);
+  } else if (key === "spinTurret") {
     // 群れを狙わず、回りながら4方向へ撒く（狙われないので、渦の隙間に入れば当たらない）
     if (s._spinAngle === undefined) { s._spinAngle = random() * Math.PI * 2; s._spinDir = random() < 0.5 ? -1 : 1; }
     s._spinAngle += SPIN_TURRET_STEP * s._spinDir;
@@ -28417,6 +28476,7 @@ function shotHitDamage(kind, mult) {
 function shotKnockImpulse(kind) {
   // v0.7: ボス弾は「位置ごと押し戻す」距離で調整してあるので距離から換算する
   if (kind === 2) return kickSpeedForDistance(BOSS_SHOT_KNOCKBACK_DIST);
+  if (kind === 6) return kickSpeedForDistance(HEAVY_CANNON_PUSH);   // v3.148.0（DT-112）: 巨弾は大きく押し戻す
   // 変更5: カタパルト弾は強く（体感できる吹き飛び）、矢は弱く（ちょっと押される程度）
   return kind === 1 ? CATAPULT_KNOCKBACK_SPEED : ARROW_KNOCKBACK_SPEED;
 }
@@ -28426,7 +28486,7 @@ function fanShotKind(kind) { return kind === 1 ? 1 : 0; }
 const AOE_SPLASH_FACTOR = 0.6;
 
 function checkProjectileHitBoids(projIdx) {
-  const HIT_R  = 8;
+  const HIT_R  = projKind[projIdx] === 6 ? HEAVY_CANNON_HIT_R : 8;   // v3.148.0（DT-112）: 巨弾は大きく当たる
   const HIT_R2 = HIT_R * HIT_R;
 
   // トンネリング対策: 弾速が高いと1フレームで HIT_R を超える距離を移動しうる。
@@ -31845,7 +31905,8 @@ function xpValueOf(settlement) {
     case "large":  base = 20; break;
     default:       base = 2; break; // small / 城下small
   }
-  if (settlement._emplacement === "spinTurret") base *= SPIN_TURRET_XP_MULT;   // v3.60.0: 回転砲塔は経験値多め
+  if (settlement._emplacement === "spinTurret") base *= SPIN_TURRET_XP_MULT;
+  if (settlement._emplacement === "heavyCannon") base *= HEAVY_CANNON_XP_MULT;   // v3.148.0（DT-112）   // v3.60.0: 回転砲塔は経験値多め
   // v0.7: 要塞都市はリスクに見合う報酬（v3.5.2: ×2 → ×6、v3.5.3: ×10）
   return settlement._fortified ? base * FORTIFIED_XP_MULT : base;
 }
@@ -38275,6 +38336,8 @@ const CODEX_EMPLACEMENT_POWERS = {
       impact: shotKnockImpulse(fanShotKind(1)) },
     { label: "着弾の衝撃波", impact: impactFromPushDist(KNOCK_SHOT_PUSH), note: `半径${CONCUSSION_BATTERY_KNOCK_R}` },
   ],
+  heavyCannon: () => [{ label: "巨弾（1発）", shot: shotHitDamage(6, HEAVY_CANNON_DAMAGE), impact: shotKnockImpulse(6),
+                        note: `秒速${HEAVY_CANNON_SPEED}px` }],
 };
 
 /** 建物の通常弾の威力の幅（全文明・指定した大きさ）。[最小, 最大] に mult を掛けて返す。 */
@@ -38371,6 +38434,8 @@ const CODEX_EMPLACEMENT_DESC = {
   flak:      "小さい炸裂を群れの周囲へ広く撒いて逃げ場を削る",
   prism:     "首都の極太レーザーの小型版。細いぶん予兆から外れやすい",
   concussionBattery: "ノックバック弾の斉射。着弾点の周りごと押す",
+  spinTurret: "4本の砲身が回りながら弾を撒き続ける渦巻きの弾幕。狙ってこないので隙間に入れば当たらない",
+  heavyCannon: "遠くの竜を狙って大きくて遅い鉄の弾を1発。当たれば重いが、見てからずらせば避けられる",
 };
 
 /** 時代兵器がどの文明に何基置かれるか（STAGE_FEATURES から自動で引く）。 */
@@ -38378,6 +38443,8 @@ function codexEmplacementEras(key) {
   if (key === "concussionBattery") {
     return `全文明 — 首都${CONCUSSION_IN_CAPITAL}・要塞都市に${CONCUSSION_PER_FORTRESS_TOWN}・格上の街の一部`;
   }
+  if (key === "spinTurret") return `全文明 — 要塞都市に${SPIN_TURRET_PER_FORTRESS_TOWN}・格上の街の一部（1大陸に${SPIN_TURRET_MAX}まで）`;
+  if (key === "heavyCannon") return `全文明 — 要塞都市・格上の街にたまに（1大陸に${HEAVY_CANNON_MAX}まで）`;
   const parts = [];
   for (let era = 0; era < STAGE_FEATURES.length; era++) {
     const hit = (STAGE_FEATURES[era].emplacements ?? []).find(e => e[0] === key);
@@ -48248,6 +48315,7 @@ function drawOneShotShotRings() {
     const ux = projVx[i] / sp, uy = projVy[i] / sp;
     let off, r;
     if (kind === 3)      { off = 9; r = 4.6; }     // ロケット：弾頭だけ
+    else if (kind === 6) { off = 0; r = HEAVY_CANNON_DRAW_R + 2.5; }   // 巨弾：弾体のすぐ外
     else if (kind === 2) { off = 0; r = 6.5; }     // ボス重弾：光る芯
     else {
       const style = SHOT_STYLES[projStyle[i]] ?? SHOT_STYLES[2];
@@ -48428,6 +48496,35 @@ function drawProjectiles() {
       ctx.fillRect(-8, -5.2, 3, 10.4);
       ctx.restore();
       ctx.globalAlpha = 1;
+      continue;
+    }
+
+    // v3.148.0（DT-112）: 巨弾（kind=6）— 黒鉄の大きな玉＋熱い縁＋後ろへ伸びる尾。遅いので形が読める
+    if (projKind[i] === 6) {
+      const r = HEAVY_CANNON_DRAW_R;
+      const sp = Math.sqrt(projVx[i] * projVx[i] + projVy[i] * projVy[i]) || 1;
+      const ux = projVx[i] / sp, uy = projVy[i] / sp;
+      ctx.save();
+      for (let k = 1; k <= 3; k++) {
+        ctx.globalAlpha = 0.22 - k * 0.05;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(projWx[i] - ux * k * r * 0.9, projWy[i] - uy * k * r * 0.9, r * (1 - k * 0.18), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#2a2522";
+      ctx.beginPath();
+      ctx.arc(projWx[i], projWy[i], r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.4;
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,230,200,0.55)";
+      ctx.beginPath();
+      ctx.arc(projWx[i] - r * 0.35, projWy[i] - r * 0.35, r * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
       continue;
     }
 
