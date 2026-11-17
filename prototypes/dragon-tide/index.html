@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.148.0";
+const GAME_VERSION = "v3.149.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -6883,6 +6883,7 @@ function placeWallArcAlong(points, hp, out, centerX, centerY, centerAngle) {
 // v0.29: STAGE3以降、一部の町にも部分的な城壁を付ける（rect町は長方形の壁）。
 function generateTownWalls(townMetas, stageIndex) {
   if (stageIndex < 2 || townMetas.length === 0) return [];   // STAGE3(index2)以降
+  if (worldShape === SHAPE_BOMB) return [];   // v3.149.0（DT-333）: 爆弾玉の国の町の壁は generateBombTownWalls（警戒度で張り直さない）
   const wcfg = WALL_STAGE_CONFIG[stageIndex] ?? WALL_STAGE_CONFIG[WALL_STAGE_CONFIG.length - 1];
   const hp = Math.round((wcfg && wcfg.hp ? wcfg.hp : 52) * 0.7);   // 町壁はボス城壁より弱め
   const result = [];
@@ -7424,8 +7425,10 @@ function generateStageLayout(stageIndex) {
 
   // --- (5b) v0.29: 一部の町にも部分的な城壁（STAGE3以降。rect町は長方形の壁）---
   const townWalls = worldShape === SHAPE_METRO || worldShape === SHAPE_WASTELAND ? []   // v3.77.0: 荒地の町を囲むのは壁ではなく環状列石
+    : worldShape === SHAPE_BOMB ? generateBombTownWalls(townMetas.filter(m => !m._rock), boss, stageIndex, result)   // v3.149.0（DT-333 手直し）: 町を守る固い壁（どの時代にも）
     : generateTownWalls(townMetas.filter(m => !m._rock), stageIndex);   // v1.5.0: 動く町に壁は付けない
   for (const w of townWalls) result.push(w);
+  if (worldShape === SHAPE_BOMB) for (const w of generateBombPinWalls(boss, stageIndex, result)) result.push(w);   // v3.149.0: 野原のピンボールの壁
 
   // v2.0.0: 線路の上に乗ってしまった建物をまとめて退ける。
   // keepLoose は散らした家にしか効かないので、**町の建物・城壁もここで**落とす。
@@ -16509,7 +16512,7 @@ const BOMB_SIZES = [
   // r＝玉の半径、blast＝爆発の半径、fuse＝導火線（秒）、mass＝重さ（弾きにくさ）、world＝建物・敵への傷、core＝竜がダウンする芯の割合
   { key: "small", r: 8,  blast: 60,  fuse: 4, mass: 0.5, world: 90,  shake: 0.8 },
   { key: "mid",   r: 14, blast: 110, fuse: 6, mass: 3,   world: 240, shake: 1.4 },
-  { key: "big",   r: 24, blast: 180, fuse: 8, mass: 20,  world: 600, shake: 2.4 },
+  { key: "big",   r: 24, blast: 180, fuse: 12, mass: 20, world: 600, shake: 2.4 },   // v3.149.0: 導火線 8→12秒（11/17 Shooter「大きい爆弾の爆発までの時間はもう少し長く」）
 ];
 const BOMB_SMALL = 0, BOMB_MID = 1, BOMB_BIG = 2;
 const BOMB_WORLD_DMG_STAGE = 0.6;    // ステージ1つ進むごとの建物・敵への傷の上げ幅（爆ぜ岩と同じ）
@@ -16573,6 +16576,21 @@ const BOMB_WALL_HP_STAGE   = 0.6;
 const BOMB_WALL_DRAGON_MULT = 0.01;  // 竜の攻撃が城壁に通る割合（11/17 Shooter「竜の攻撃1/100でいい」）
 const BOMB_WALL_BLAST_MULT = 3;      // 玉の爆発が城壁に効く倍率
 const BOMB_WALL_COLOR      = "#3a3c44";
+// v3.149.0（DT-333 手直し・11/17 Shooter「壁がいい感じなのでもっといろんなところに。ピンボール的に。まちをまもるかたちでも」）:
+// 火薬庫の城と同じ固い壁（竜の攻撃1/100・玉の爆発3倍）を、町のまわりと野原にも立てる。
+// 町の壁は向かい合う2つの弧（間の2か所は開けておく＝群れが入れる・玉を転がし込める口）。
+// 野原の壁は玉を跳ね返して向きを変える「ピンボールの壁」：一直線の棒・くの字・2本並べた通り道。玉の跳ね返りはふつうの建物より強い
+const BOMB_TOWN_WALL_SHARE = 0.75;   // 壁で守る町の割合
+const BOMB_TOWN_WALL_ARC   = 0.3;    // 弧1つが町のまわりを覆う割合（2つで6割・口が2か所）
+const BOMB_TOWN_WALL_GAP   = 34;     // 町の建物の外側から壁までの距離
+const BOMB_PIN_COUNT       = 60;     // 野原の壁の数（地図の広さで増減）
+const BOMB_PIN_CLEAR       = 70;     // 建物からこれだけ離して立てる
+const BOMB_PIN_SPREAD      = 330;    // 野原の壁どうしの間隔
+const BOMB_PIN_START_CLEAR = 700;    // 出発地点のまわりには立てない
+const BOMB_PIN_FORT_CLEAR  = 200;    // 火薬庫の城の城壁の外にこれだけ空ける
+const BOMB_PIN_KINDS       = [0.45, 0.35, 0.2];   // 棒・くの字・通り道の割合
+const BOMB_WALL_HIT_R      = 24;     // 玉が固い壁に当たる半径（すき間を小玉がすり抜けないように）
+const BOMB_WALL_BOUNCE     = 0.9;    // 固い壁で跳ね返るときに残る速さ（ピンボールのように強く返す）
 const POWDER_COUNT         = 3;      // 火薬庫の数
 const POWDER_RING          = 150;    // 首都の縁から火薬庫までの距離
 const POWDER_BLAST_R       = 260;    // 誘爆の半径
@@ -16610,8 +16628,7 @@ function generateBombFort(boss, stageIndex, result) {
       const u = -H + (j + 0.5) * step;
       const x = side === 0 ? u : side === 1 ? H : side === 2 ? -u : -H;
       const y = side === 0 ? -H : side === 1 ? u : side === 2 ? H : -u;
-      const w = makeWallSegment(anchor.wx + x, anchor.wy + y, hp, side % 2 === 0 ? 0 : Math.PI / 2);
-      w._bombWall = true; w.color = BOMB_WALL_COLOR;
+      const w = makeBombWall(anchor.wx + x, anchor.wy + y, hp, side % 2 === 0 ? 0 : Math.PI / 2);
       if (k % BMORTAR_WALL_EVERY === Math.floor(BMORTAR_WALL_EVERY / 2)) w._bombMortarWall = true;
       k++;
       out.push(w);
@@ -16641,6 +16658,91 @@ function generateBombFort(boss, stageIndex, result) {
     for (const w of out) {
       if (Math.hypot(b.wx - w.wx, b.wy - w.wy) < b.radius + (w._powder ? w.radius + 6 : 14)) { result.splice(i, 1); break; }
     }
+  }
+  return out;
+}
+
+function makeBombWall(x, y, hp, angle) {
+  const w = makeWallSegment(x, y, hp, angle);
+  w._bombWall = true; w.color = BOMB_WALL_COLOR;
+  return w;
+}
+/** 壁に重なる建物を退ける（壁の中に家が埋まらないように） */
+function bombClearUnderWalls(result, walls) {
+  for (let i = result.length - 1; i >= 0; i--) {
+    const b = result[i];
+    if (!b || b.isBoss || b._isWall || b._townMeta) continue;   // 町の下地がぶら下がる棟は消さない
+    for (const w of walls) {
+      if (Math.hypot(b.wx - w.wx, b.wy - w.wy) < b.radius + 14) { result.splice(i, 1); break; }
+    }
+  }
+}
+/** v3.149.0: 町を守る固い壁。向かい合う2つの弧で、表（frontAngle）と裏に立てる */
+function generateBombTownWalls(townMetas, boss, stageIndex, result) {
+  const out = [];
+  const hp = Math.round(BOMB_WALL_HP * (1 + BOMB_WALL_HP_STAGE * stageIndex));
+  const anchor = capitalAnchor(boss);
+  for (const meta of townMetas) {
+    if (random() >= BOMB_TOWN_WALL_SHARE) continue;
+    const R = (meta.maxExtent ?? meta.townR ?? 120) + BOMB_TOWN_WALL_GAP;
+    const front = meta.frontAngle !== undefined ? meta.frontAngle : random() * Math.PI * 2;
+    const turn = random() < 0.5 ? 0 : Math.PI / 2;   // 表と裏を守る町と、横の2方を守る町がある
+    const n = Math.max(3, Math.round(Math.PI * 2 * R * BOMB_TOWN_WALL_ARC / WALL_SEG_SPACING));
+    const span = Math.PI * 2 * BOMB_TOWN_WALL_ARC;
+    for (let arc = 0; arc < 2; arc++) {
+      const mid = front + turn + arc * Math.PI;
+      for (let j = 0; j < n; j++) {
+        const a = mid - span / 2 + (j + 0.5) * span / n;
+        const x = meta.cx + Math.cos(a) * R, y = meta.cy + Math.sin(a) * R;
+        if (x < BOMB_EDGE || x > WORLD_W - BOMB_EDGE || y < BOMB_EDGE || y > WORLD_H - BOMB_EDGE) continue;
+        if (Math.abs(x - anchor.wx) < BOMB_FORT_HALF + 60 && Math.abs(y - anchor.wy) < BOMB_FORT_HALF + 60) continue;   // 城の城壁と重ねない
+        out.push(makeBombWall(x, y, hp, a + Math.PI / 2));
+      }
+    }
+  }
+  bombClearUnderWalls(result, out);
+  return out;
+}
+/** v3.149.0: 野原のピンボールの壁。建物・城・出発地点から離れた空き地に、棒・くの字・通り道を散らす */
+function generateBombPinWalls(boss, stageIndex, result) {
+  const out = [];
+  const hp = Math.round(BOMB_WALL_HP * (1 + BOMB_WALL_HP_STAGE * stageIndex));
+  const anchor = capitalAnchor(boss);
+  const want = scaledForWorld(BOMB_PIN_COUNT);
+  const centers = [];
+  const freeAt = (x, y) => {
+    if (x < 160 || x > WORLD_W - 160 || y < 160 || y > WORLD_H - 160) return false;
+    if (Math.hypot(x - START_X, y - START_Y) < BOMB_PIN_START_CLEAR) return false;
+    if (Math.abs(x - anchor.wx) < BOMB_FORT_HALF + BOMB_PIN_FORT_CLEAR && Math.abs(y - anchor.wy) < BOMB_FORT_HALF + BOMB_PIN_FORT_CLEAR) return false;
+    for (const b of result) { const m = (b.radius || 0) + BOMB_PIN_CLEAR; if (Math.abs(b.wx - x) < m && Math.abs(b.wy - y) < m && dist2(b.wx, b.wy, x, y) < m * m) return false; }
+    return true;
+  };
+  // 1本の棒：(x,y) から向き a へ k 枚
+  const bar = (x, y, a, k) => { const pts = []; for (let j = 0; j < k; j++) { const d = (j - (k - 1) / 2) * WALL_SEG_SPACING; pts.push({ x: x + Math.cos(a) * d, y: y + Math.sin(a) * d, a }); } return pts; };
+  let attempts = 0;
+  while (centers.length < want && attempts < want * 25) {
+    attempts++;
+    const cx = 160 + random() * (WORLD_W - 320), cy = 160 + random() * (WORLD_H - 320);
+    const a = random() * Math.PI * 2, u = random();
+    let pts;
+    if (u < BOMB_PIN_KINDS[0]) pts = bar(cx, cy, a, 4 + Math.floor(random() * 3));   // 一直線の棒（4〜6枚）
+    else if (u < BOMB_PIN_KINDS[0] + BOMB_PIN_KINDS[1]) {   // くの字：角を (cx,cy) に、2本の腕が開く
+      const open = 0.55 + random() * 0.35, k = 3;
+      pts = [];
+      for (const side of [-1, 1]) {
+        const arm = a + side * open;
+        for (let j = 0; j < k; j++) { const d = (j + 0.5) * WALL_SEG_SPACING; pts.push({ x: cx + Math.cos(arm) * d, y: cy + Math.sin(arm) * d, a: arm }); }
+      }
+    } else {   // 通り道：平行な2本（玉をまっすぐ通す・群れも抜けられる幅）
+      const gap = 85 + random() * 30, nx = -Math.sin(a), ny = Math.cos(a);
+      pts = bar(cx + nx * gap, cy + ny * gap, a, 4).concat(bar(cx - nx * gap, cy - ny * gap, a, 4));
+    }
+    let ok = true;
+    for (const c of centers) if (dist2(c.x, c.y, cx, cy) < BOMB_PIN_SPREAD * BOMB_PIN_SPREAD) { ok = false; break; }
+    if (ok) for (const q of pts) if (!freeAt(q.x, q.y)) { ok = false; break; }
+    if (!ok) continue;
+    centers.push({ x: cx, y: cy });
+    for (const q of pts) { const w = makeBombWall(q.x, q.y, hp, q.a); w._bombPin = true; out.push(w); }
   }
   return out;
 }
@@ -16790,7 +16892,8 @@ function updateBombBalls(dt, centroid, spread) {
     for (const idx of _bombQueryBuf) {
       const s = settlements[idx];
       if (!s || s.fallen) continue;
-      if (bombBounceOff(b, s.wx, s.wy, s._isWall ? 16 : s.radius * 0.85)) bounced = true;
+      if (s._bombWall ? bombBounceOff(b, s.wx, s.wy, BOMB_WALL_HIT_R, BOMB_WALL_BOUNCE)   // v3.149.0: 固い壁は強く跳ね返す
+                      : bombBounceOff(b, s.wx, s.wy, s._isWall ? 16 : s.radius * 0.85)) bounced = true;
     }
     for (const ob of terrainObstacles) if (bombBounceOff(b, ob.wx, ob.wy, ob.radius)) bounced = true;
     if (bounced && b.oval) bombSwerve(b);
@@ -16822,14 +16925,14 @@ function updateBombBalls(dt, centroid, spread) {
 }
 
 /** 玉 b を、中心 (cx, cy)・半径 r の丸い物から押し出して跳ね返す。当たったら true */
-function bombBounceOff(b, cx, cy, r) {
+function bombBounceOff(b, cx, cy, r, bounce = BOMB_BOUNCE) {
   const dx = b.x - cx, dy = b.y - cy, rr = r + b.r;
   const d2 = dx * dx + dy * dy;
   if (d2 >= rr * rr) return false;
   const d = Math.sqrt(d2) || 1, nx = dx / d, ny = dy / d;
   b.x = cx + nx * rr; b.y = cy + ny * rr;
   const vn = b.vx * nx + b.vy * ny;
-  if (vn < 0) { b.vx -= (1 + BOMB_BOUNCE) * vn * nx; b.vy -= (1 + BOMB_BOUNCE) * vn * ny; }
+  if (vn < 0) { b.vx -= (1 + bounce) * vn * nx; b.vy -= (1 + bounce) * vn * ny; }
   return true;
 }
 
@@ -17016,37 +17119,63 @@ function updateBombRollersFallen() {
 }
 
 // ---- 描画 ----
-/** 爆弾玉1つ（世界座標）。導火線の残りは点滅の速さ */
+/** 爆弾玉1つ（世界座標）。導火線の残りは点滅の速さ。
+ * v3.149.0（DT-333 手直し・11/17 Shooter「もうちょっと立体的に。今あまり目立たないので」）:
+ * 地面の影・左上から光の当たる球の陰影・右下の照り返し・口金と導火線で、黒い土の上でも玉が浮いて見えるようにした */
+const BOMB_LOOK_SCALE = 1.12;   // 当たりの半径より少し大きく描く（小玉が群れに埋もれないように）
 function drawBombBall(b, lift) {
-  const S = BOMB_SIZES[b.size], r = b.r * (1 + lift * 0.5);
+  const r = b.r * BOMB_LOOK_SCALE * (1 + lift * 0.5);
   const y = b.y - lift * 46;
+  // 地面の影（右下に落ちる。山なりのときは別に落ちる場所の影がある）
+  if (!b.air) {
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.beginPath(); ctx.ellipse(b.x + r * 0.3, b.y + r * 0.55, r * (b.oval ? 1.25 : 1.05), r * 0.55, 0, 0, Math.PI * 2); ctx.fill();
+  }
   ctx.save();
   ctx.translate(b.x, y);
   if (b.oval) { ctx.rotate(b.spin * 0.6); ctx.scale(1.3, 0.78); }
-  ctx.fillStyle = "#1a1a1e"; ctx.strokeStyle = "#5a5a64"; ctx.lineWidth = 1.2;
-  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  // 鉄の帯（転がりが分かるように玉と一緒に回す）
+  // 球の陰影：左上の光から右下の暗がりへ
+  const g = ctx.createRadialGradient(-r * 0.38, -r * 0.42, r * 0.06, 0, 0, r * 1.02);
+  g.addColorStop(0, "#d4d8e4"); g.addColorStop(0.22, "#787c8c"); g.addColorStop(0.62, "#2a2a34"); g.addColorStop(1, "#0a0a0e");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  // 鉄の帯（転がりが分かるように玉と一緒に回す。球に沿って見えるよう、球の内側で切る）
+  ctx.save();
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.clip();
   if (!b.oval) ctx.rotate(b.spin);
-  ctx.strokeStyle = "#3c3c46"; ctx.lineWidth = Math.max(1, r * 0.16);
-  ctx.beginPath(); ctx.moveTo(-r * 0.92, 0); ctx.lineTo(r * 0.92, 0); ctx.stroke();
-  ctx.fillStyle = "#8a8a96";
+  ctx.strokeStyle = "rgba(10,10,14,0.75)"; ctx.lineWidth = Math.max(1, r * 0.18);
+  ctx.beginPath(); ctx.moveTo(-r, 0); ctx.lineTo(r, 0); ctx.stroke();
+  ctx.fillStyle = "#a8acb8";
   ctx.beginPath(); ctx.arc(-r * 0.5, 0, Math.max(0.8, r * 0.09), 0, Math.PI * 2); ctx.arc(r * 0.5, 0, Math.max(0.8, r * 0.09), 0, Math.PI * 2); ctx.fill();
   ctx.restore();
-  // 照り
-  ctx.fillStyle = "rgba(255,255,255,0.28)";
-  ctx.beginPath(); ctx.arc(b.x - r * 0.35, y - r * 0.38, r * 0.26, 0, Math.PI * 2); ctx.fill();
-  // 点滅（点いている玉だけ）。残り1秒は赤、それまでは橙
+  // 右下の照り返し（地面の明かり）と、縁の細い光で黒い土から切り離す
+  ctx.strokeStyle = "rgba(150,170,210,0.55)"; ctx.lineWidth = Math.max(1, r * 0.12);
+  ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0.15 * Math.PI, 0.7 * Math.PI); ctx.stroke();
+  ctx.strokeStyle = "rgba(225,228,238,0.6)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+  // 照り（光の当たる点）
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.beginPath(); ctx.arc(b.x - r * 0.4, y - r * 0.44, Math.max(1, r * 0.13), 0, Math.PI * 2); ctx.fill();
+  // 口金と導火線（てっぺん）
+  const nx = b.x + r * 0.15, ny = y - r * 0.92;
+  ctx.fillStyle = "#9a8a62"; ctx.strokeStyle = "#3a3020"; ctx.lineWidth = 0.8;
+  ctx.fillRect(nx - r * 0.2, ny - r * 0.12, r * 0.4, r * 0.24); ctx.strokeRect(nx - r * 0.2, ny - r * 0.12, r * 0.4, r * 0.24);
+  const tipX = nx + r * 0.32, tipY = ny - r * 0.42;
+  ctx.strokeStyle = "#c8b080"; ctx.lineWidth = Math.max(1, r * 0.09);
+  ctx.beginPath(); ctx.moveTo(nx, ny - r * 0.1); ctx.quadraticCurveTo(nx + r * 0.05, tipY, tipX, tipY); ctx.stroke();
+  // 点滅（点いている玉だけ）。残り1秒は赤、それまでは橙。陰影が消えないよう、球に薄く色を重ねて縁を光らせる
   if (b.lit && !b.held) {
     const on = (b.blink % 1) < 0.5;
     const warn = b.fuse <= BOMB_WARN_TIME;
     if (on) {
-      ctx.fillStyle = warn ? "rgba(255,48,32,0.78)" : "rgba(255,170,60,0.55)";
+      ctx.fillStyle = warn ? "rgba(255,48,32,0.5)" : "rgba(255,170,60,0.3)";
       ctx.beginPath(); ctx.arc(b.x, y, r * (b.oval ? 1.12 : 1), 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#fff4c0";
-      ctx.beginPath(); ctx.arc(b.x, y - r * 0.9, Math.max(1.6, r * 0.2), 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(tipX, tipY, Math.max(1.8, r * 0.24), 0, Math.PI * 2); ctx.fill();
     }
-    ctx.strokeStyle = on ? (warn ? "#ff5040" : "#ffb050") : "rgba(120,120,130,0.8)"; ctx.lineWidth = 1.4;
-    ctx.beginPath(); ctx.arc(b.x, y, r + 1.5, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = on ? (warn ? "#ff5040" : "#ffb050") : "rgba(120,120,130,0.8)"; ctx.lineWidth = on ? 2 : 1.4;
+    ctx.beginPath(); ctx.arc(b.x, y, r * (b.oval ? 1.3 : 1) + 2, 0, Math.PI * 2); ctx.stroke();
   }
 }
 function drawBombFx() {
