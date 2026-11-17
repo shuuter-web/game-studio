@@ -1321,7 +1321,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.150.0";
+const GAME_VERSION = "v3.151.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -30415,7 +30415,7 @@ const STRINGS = {
     sp_dice:           { name: "賽振り",     desc: "町が陥落するたびに町の上で大きなサイコロを振る特殊個体が加わる。1＝竜晶少し・2＝卵・3＝群れが全快・4＝焼け残りが一斉に崩れる・5＝20秒攻撃1.5倍・6＝大当たり。自分の攻撃は弱い" },
     sp_barrier:        { name: "結界線",     desc: "指を離すと、描いた線が5秒のあいだ光る壁になる特殊個体が加わる。動く敵と敵の弾は越えられず、竜は通れる。壁が消えたらすぐ張り直せる" },
     sp_skybow:         { name: "虹弓",       desc: "5秒ごとに、画面の中のいちばん遠い砲台など（民家は除く）を1つ、虹の矢で射抜く特殊個体が加わる。近くの相手は狙わない" },
-    sp_broadside:      { name: "右舷砲",     desc: "自分の右側にだけ、強いブレスを扇に撃つ特殊個体が加わる。前や左には撃たない。町を右手に見ながら横をすれ違うと撃ち続ける" },
+    sp_broadside:      { name: "右舷砲",     desc: "自分の右側にだけ、扇の中の相手みんなへ砲弾を撃つ特殊個体が加わる。前や左には撃たない。町を右手に見ながら横をすれ違うと撃ち続ける" },
     sp_scatter:        { name: "広げ陣",     desc: "群れの広がりを1.8倍に広げる特殊個体が加わる。町を一度に広く薙げるが、撃たれる面も大きくなる" },
     sp_link:           { name: "結び竜",     desc: "群れの特殊個体どうしを雷の糸で結び、糸に触れた建物と敵を焼く特殊個体が加わる" },
     charge_unlock: { name: "一斉突撃", desc: "群れが揃って最高速で飛ぶと突進状態に入る" },
@@ -30830,8 +30830,8 @@ const EVO_SPECIAL_EFFECT_TEXT = {
   sp_barrier_rate:  (n) => `張り直しの待ち -${Math.round((1 - Math.pow(BARRIER_RATE_PER_UP, n)) * 100)}%（基本は壁が消えたらすぐ）`,
   sp_skybow_dmg:    (n) => `虹の矢の威力 +${Math.round(SKYBOW_DMG_PER_UP * 100 * n)}%（基本 ${SKYBOW_DAMAGE}）`,
   sp_skybow_rate:   (n) => `虹の矢の間隔 -${Math.round((1 - Math.pow(SKYBOW_RATE_PER_UP, n)) * 100)}%（基本 ${SKYBOW_INTERVAL}秒）`,
-  sp_broadside_dmg:   (n) => `右舷のブレスの威力 +${Math.round(BROADSIDE_DMG_PER_UP * 100 * n)}%（基本 ${BROADSIDE_DAMAGE}）`,
-  sp_broadside_range: (n) => `右舷のブレスの届く距離 +${Math.round(BROADSIDE_RANGE_PER_UP * 100 * n)}%（基本 ${BROADSIDE_RANGE}px）`,
+  sp_broadside_dmg:   (n) => `右舷の砲弾の威力 +${Math.round(BROADSIDE_DMG_PER_UP * 100 * n)}%（基本 ${BROADSIDE_DAMAGE}）`,
+  sp_broadside_range: (n) => `右舷の砲弾の届く距離 +${Math.round(BROADSIDE_RANGE_PER_UP * 100 * n)}%（基本 ${BROADSIDE_RANGE}px）`,
   sp_scatter_wide:  (n) => `群れの広がり さらに +${Math.round(WIDEN_SPREAD_PER_UP * 100 * n)}%（基本 ×${WIDEN_SPREAD}）`,
   sp_scatter_dodge: (n) => `広がった群れが受ける傷 -${Math.round(WIDEN_GUARD_PER_UP * 100 * n)}%（撃たれやすさを和らげる）`,
   sp_link_len:      (n) => `（v3.46.2 で外した特殊個体）`,
@@ -34315,9 +34315,20 @@ const BROADSIDE_DMG_PER_UP   = 0.25;   // 重い砲：1つにつき +25%
 const BROADSIDE_RANGE        = 180;
 const BROADSIDE_RANGE_PER_UP = 0.15;   // 長い砲身：1つにつき +15%
 const BROADSIDE_HALF_ARC     = 0.6;    // 扇の半角（rad。約34度＝全体で約69度）
-const BROADSIDE_FX_LIFE      = 0.28;
-const BROADSIDE_FX_MAX       = 48;
-const broadsideFx = [];   // {x, y, ang, r, t}（見た目だけ）
+// v3.151.0（DT-351 手直し・Shooter「光が出るだけで球が当たってる実感が湧かない。普通に弾が飛ぶ見た目に。効果は同じで範囲内の敵全員に飛ぶように。見た目上の上限は設けていい」）:
+//   撃った瞬間の「扇が光る」を、扇の中の相手それぞれへ砲弾が飛んで当たる絵に替えた。傷はこれまでどおり撃った瞬間に入れる
+//   （弾の飛ぶ時間で当たりを遅らせると、届く前に相手が倒れた・動いた等で効果が変わるため。弾は見た目だけ）。
+//   1回に描く弾は BROADSIDE_SHELLS_PER_VOLLEY まで（近い順）、画面全体で BROADSIDE_SHELL_MAX まで。
+const BROADSIDE_SHELL_SPEED  = 760;    // 砲弾の見た目の速さ（px/秒）。届く距離180pxを約0.24秒で飛ぶ
+const BROADSIDE_SHELL_MIN_LIFE = 0.10; // ごく近い相手でも弾が見える長さ
+const BROADSIDE_SHELLS_PER_VOLLEY = 8;
+const BROADSIDE_SHELL_MAX    = 64;
+const BROADSIDE_BURST_LIFE   = 0.22;   // 当たったところの小さな破裂
+const BROADSIDE_MUZZLE_LIFE  = 0.12;   // 竜の右手の砲煙
+const BROADSIDE_SHELL_RADIUS = 5.5;    // 砲弾の大きさ（引いた画面でも玉に見える大きさ）
+const broadsideFx = [];   // 砲弾 {x0, y0, x1, y1, t, life}（見た目だけ。t>=life で破裂に移る）
+const broadsideMuzzle = [];   // {x, y, ang, t}（見た目だけ）
+const _broadsideTargets = [];   // 1回の撃ちで当てた相手の位置と距離（見た目の弾を近い順に選ぶため）
 function broadsideDamage() { return BROADSIDE_DAMAGE * (1 + BROADSIDE_DMG_PER_UP * upCount("sp_broadside_dmg")) * permaBuff.specialDmg; }
 function broadsideRange() { return BROADSIDE_RANGE * (1 + BROADSIDE_RANGE_PER_UP * upCount("sp_broadside_range")); }
 /** 右舷の向き（進む向きから時計回りに90度。画面は y が下なので +90度が右手） */
@@ -34335,6 +34346,7 @@ function updateBroadsideDragon(i, dt) {
     const dx = st.wx - px[i], dy = st.wy - py[i];
     if (dx * dx + dy * dy > r2 || Math.abs(wrapAngle(Math.atan2(dy, dx) - side)) > BROADSIDE_HALF_ARC) continue;
     hitBuilding(sIdx, hit, px[i], py[i]);
+    _broadsideTargets.push({ x: st.wx, y: st.wy, d2: dx * dx + dy * dy });
     any = true;
   }
   for (const m of moversNear(px[i], py[i], range)) {
@@ -34342,16 +34354,33 @@ function updateBroadsideDragon(i, dt) {
     const dx = m.wx - px[i], dy = m.wy - py[i];
     if (dx * dx + dy * dy > r2 || Math.abs(wrapAngle(Math.atan2(dy, dx) - side)) > BROADSIDE_HALF_ARC) continue;
     hitMover(m, hit, px[i], py[i]);
+    _broadsideTargets.push({ x: m.wx, y: m.wy, d2: dx * dx + dy * dy });
     any = true;
   }
-  if (!any) return;   // 右手に相手がいない：溜めたまま待つ
+  if (!any) { _broadsideTargets.length = 0; return; }   // 右手に相手がいない：溜めたまま待つ
   boidSpecialTimer[i] = 0;
-  if (broadsideFx.length < BROADSIDE_FX_MAX) broadsideFx.push({ x: px[i], y: py[i], ang: side, r: range, t: 0 });
+  spawnBroadsideShells(px[i], py[i], side);
+}
+/** 見た目だけ：当てた相手それぞれへ砲弾を出す（近い順に上限まで）。ゲームの状態は変えない */
+function spawnBroadsideShells(x, y, side) {
+  _broadsideTargets.sort((a, b) => a.d2 - b.d2);
+  const count = Math.min(_broadsideTargets.length, BROADSIDE_SHELLS_PER_VOLLEY);
+  for (let k = 0; k < count && broadsideFx.length < BROADSIDE_SHELL_MAX; k++) {
+    const tg = _broadsideTargets[k];
+    const life = Math.max(BROADSIDE_SHELL_MIN_LIFE, Math.sqrt(tg.d2) / BROADSIDE_SHELL_SPEED);
+    broadsideFx.push({ x0: x, y0: y, x1: tg.x, y1: tg.y, t: 0, life });
+  }
+  _broadsideTargets.length = 0;
+  if (broadsideMuzzle.length < BROADSIDE_SHELL_MAX) broadsideMuzzle.push({ x, y, ang: side, t: 0 });
 }
 function updateBroadsideFx(dt) {
-  for (let k = broadsideFx.length - 1; k >= 0; k--) { broadsideFx[k].t += dt; if (broadsideFx[k].t >= BROADSIDE_FX_LIFE) broadsideFx.splice(k, 1); }
+  for (let k = broadsideFx.length - 1; k >= 0; k--) {
+    const f = broadsideFx[k]; f.t += dt;
+    if (f.t >= f.life + BROADSIDE_BURST_LIFE) broadsideFx.splice(k, 1);
+  }
+  for (let k = broadsideMuzzle.length - 1; k >= 0; k--) { broadsideMuzzle[k].t += dt; if (broadsideMuzzle[k].t >= BROADSIDE_MUZZLE_LIFE) broadsideMuzzle.splice(k, 1); }
 }
-/** 右舷の扇（撃てる範囲を薄く。溜まっていると少し濃い）と、撃った瞬間のブレス（扇が外へ走る） */
+/** 右舷の扇（撃てる範囲を薄く。溜まっていると少し濃い）と、撃った砲弾（相手へ飛んで当たったところで小さく破裂） */
 function drawBroadside() {
   const col = SPECIAL_DEFS[SPECIAL_BROADSIDE].color;
   ctx.save();
@@ -34365,13 +34394,31 @@ function drawBroadside() {
     ctx.beginPath(); ctx.arc(px[i], py[i], range, side - BROADSIDE_HALF_ARC, side + BROADSIDE_HALF_ARC); ctx.stroke();
     ctx.setLineDash([]);
   }
+  // 砲煙：竜の右手に白い煙の玉が一瞬ふくらむ
+  for (const mz of broadsideMuzzle) {
+    const u = mz.t / BROADSIDE_MUZZLE_LIFE;
+    ctx.globalAlpha = 0.7 * (1 - u); ctx.fillStyle = "#e8f2ff";
+    ctx.beginPath(); ctx.arc(mz.x + Math.cos(mz.ang) * 9, mz.y + Math.sin(mz.ang) * 9, 4 + u * 6, 0, Math.PI * 2); ctx.fill();
+  }
   for (const f of broadsideFx) {
-    const u = f.t / BROADSIDE_FX_LIFE;
-    const inner = f.r * Math.max(0, u - 0.35), outer = f.r * Math.min(1, 0.25 + u * 1.1);
-    const g = ctx.createRadialGradient(f.x, f.y, inner, f.x, f.y, outer);
-    g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(0.55, "rgba(190,225,255,0.85)"); g.addColorStop(1, "rgba(111,176,232,0)");
-    ctx.globalAlpha = 1 - u * u; ctx.fillStyle = g;
-    ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.arc(f.x, f.y, outer, f.ang - BROADSIDE_HALF_ARC, f.ang + BROADSIDE_HALF_ARC); ctx.closePath(); ctx.fill();
+    if (f.t < f.life) {
+      // 飛んでいる砲弾：濃い鉄色の玉に白い縁と短い尾
+      const u = f.t / f.life;
+      const bx = f.x0 + (f.x1 - f.x0) * u, by = f.y0 + (f.y1 - f.y0) * u;
+      const tu = Math.max(0, u - 0.3);
+      const tx = f.x0 + (f.x1 - f.x0) * tu, ty = f.y0 + (f.y1 - f.y0) * tu;
+      ctx.globalAlpha = 0.55; ctx.strokeStyle = "#cfe4ff"; ctx.lineWidth = BROADSIDE_SHELL_RADIUS * 1.1;
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.fillStyle = "#2a3442"; ctx.strokeStyle = "#f4f8ff"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(bx, by, BROADSIDE_SHELL_RADIUS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    } else {
+      // 当たったところ：橙の小さな破裂
+      const u = (f.t - f.life) / BROADSIDE_BURST_LIFE;
+      ctx.globalAlpha = 0.85 * (1 - u); ctx.fillStyle = "#ffc060";
+      ctx.beginPath(); ctx.arc(f.x1, f.y1, 5 + u * 12, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.9 * (1 - u); ctx.strokeStyle = "#fff3d0"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(f.x1, f.y1, 6 + u * 16, 0, Math.PI * 2); ctx.stroke();
+    }
   }
   ctx.restore();
 }
@@ -39590,7 +39637,7 @@ const CODEX_SPECIAL_TAG = {
   [SPECIAL_DICE]:    "★賽振り／町が陥落するたびにサイコロ。陥落ごとに何が出るかの山ができる",
   [SPECIAL_BARRIER]: "★結界線／描いた線が壁になる。追ってくる敵・撃ってくる町との間に線を引いて守る",
   [SPECIAL_SKYBOW]:  "★虹弓／画面の中の砲台を虹の矢で先に射抜く。町に入る前に砲台を減らす",
-  [SPECIAL_BROADSIDE]: "★右舷砲／自分の右側にだけ強いブレス。町を右手に見ながら横をすれ違う",
+  [SPECIAL_BROADSIDE]: "★右舷砲／自分の右側にだけ砲弾を撃つ。町を右手に見ながら横をすれ違う",
   [SPECIAL_SCATTER]: "★広げ陣／群れを大きな面に広げる。町の上をなでるだけで広く焼ける",
 };
 const CODEX_SPECIAL_DESC = {
@@ -42356,6 +42403,7 @@ function clearStageCards(keepCards = false) {
   hushMarks.length = 0; debuffPops.length = 0; shellOn = false; shellReleasedFor = 0; shellAnim = 0;   // v3.92.0
   flockSpreadNow = 1; bundleAlive = false; scatterAlive = false;   // v3.94.0
   broadsideFx.length = 0;   // v3.142.0
+  broadsideMuzzle.length = 0;   // v3.151.0
   skybowFx.length = 0;   // v3.95.0
   skybowMarks.length = 0; skybowAims.length = 0;   // v3.99.0
   barrierWalls.length = 0; barrierPops.length = 0;   // v3.96.0
