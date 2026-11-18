@@ -51337,8 +51337,27 @@ function buildReportText() {
   return ["【Dragon Tide 報告】", `種類: ${STRINGS.reportKinds[reportKind]}`, `ひとこと: ${note}`, ...buildReportStatusLines()].join("\n");
 }
 
-// 盤面の絵を縮めて PNG にする。DOM の HUD は入らない（canvas だけ）が、盤面の様子が分かれば足りる
-function captureReportShot() {
+// 盤面の絵を縮めて PNG にする。
+// v3.152.0（DT-585・Shooter「スクショにUIがない。UIについての報告もあり得るので全部表示して」）:
+// HUD・レベルアップの窓などの DOM も入れるため、html2canvas（MIT・assets/vendor に同梱）で画面ごと絵にする。
+// 重いので最初の📝で読み込む。読めない・時間がかかりすぎたときは、これまでどおり盤面（canvas）だけの絵にする
+const REPORT_UI_LIB_SRC = "assets/vendor/html2canvas.min.js";
+const REPORT_UI_SHOT_TIMEOUT_MS = 6000;   // これを過ぎたら盤面だけの絵に切り替える（クリップボードへ渡す絵を待たせすぎない）
+let reportUiLibPromise = null;
+function loadReportUiLib() {
+  if (window.html2canvas) return Promise.resolve(window.html2canvas);
+  if (!reportUiLibPromise) {
+    reportUiLibPromise = new Promise((resolve, reject) => {
+      const tag = document.createElement("script");
+      tag.src = REPORT_UI_LIB_SRC;
+      tag.onload = () => window.html2canvas ? resolve(window.html2canvas) : reject(new Error("html2canvas missing"));
+      tag.onerror = () => { reportUiLibPromise = null; reject(new Error("html2canvas load failed")); };
+      document.head.appendChild(tag);
+    });
+  }
+  return reportUiLibPromise;
+}
+function captureBoardOnlyShot() {
   return new Promise((resolve) => {
     try {
       const scale = Math.min(1, REPORT_SHOT_MAX_SIDE / Math.max(canvas.width, canvas.height));
@@ -51351,6 +51370,25 @@ function captureReportShot() {
       resolve(null);   // 絵が取れなくても文だけで報告できるようにする
     }
   });
+}
+/** 画面に見えているもの全部（盤面＋HUD＋開いている窓）。報告の窓と📝のボタンそのものは入れない */
+function captureUiShot() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const scale = Math.min(window.devicePixelRatio || 1, REPORT_SHOT_MAX_SIDE / Math.max(w, h));
+  return loadReportUiLib()
+    .then((html2canvas) => html2canvas(document.body, {
+      backgroundColor: "#000000", logging: false, useCORS: true, scale,
+      x: window.scrollX, y: window.scrollY, width: w, height: h, windowWidth: w, windowHeight: h,
+      ignoreElements: (el) => el.id === "report-panel" || el.id === "report-btn",
+    }))
+    .then((shot) => new Promise((resolve) => shot.toBlob((blob) => resolve(blob), "image/png")));
+}
+function captureReportShot() {
+  const board = captureBoardOnlyShot();   // 先に盤面だけの絵も取っておく（UI 込みが失敗したときの代わり）
+  let timer = 0;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(null), REPORT_UI_SHOT_TIMEOUT_MS); });
+  return Promise.race([captureUiShot().catch(() => null), timeout])
+    .then((blob) => { clearTimeout(timer); return blob || board; });
 }
 
 function renderReportKinds() {
