@@ -16592,16 +16592,26 @@ const BOMB_WALL_COLOR      = "#3a3c44";
 // 火薬庫の城と同じ固い壁（竜の攻撃1/100・玉の爆発3倍）を、町のまわりと野原にも立てる。
 // 町の壁は向かい合う2つの弧（間の2か所は開けておく＝群れが入れる・玉を転がし込める口）。
 // 野原の壁は玉を跳ね返して向きを変える「ピンボールの壁」：一直線の棒・くの字・2本並べた通り道。玉の跳ね返りはふつうの建物より強い
-const BOMB_TOWN_WALL_SHARE = 0.75;   // 壁で守る町の割合
+// 11/18 Shooter「壁が多すぎ・均等すぎ。町の壁は0〜2個のランダム。野原の壁は長く・数を大きく減らす。野原の壁は玉も竜も跳ね返す（ピンボールのバンパー）」
+const BOMB_TOWN_WALL_MAX   = 2;      // 町ごとの壁（弧）の数は 0〜この数 からランダム（等確率）
 const BOMB_TOWN_WALL_ARC   = 0.3;    // 弧1つが町のまわりを覆う割合（2つで6割・口が2か所）
 const BOMB_TOWN_WALL_GAP   = 34;     // 町の建物の外側から壁までの距離
-const BOMB_PIN_COUNT       = 60;     // 野原の壁の数（地図の広さで増減）
+const BOMB_PIN_COUNT       = 10;     // 野原のバンパーの数（地図の広さで増減。以前は60）
 const BOMB_PIN_CLEAR       = 70;     // 建物からこれだけ離して立てる
-const BOMB_PIN_SPREAD      = 330;    // 野原の壁どうしの間隔
+const BOMB_PIN_SPREAD      = 700;    // 野原のバンパーどうしの間隔（長くした分、離す）
+const BOMB_PIN_BAR_MIN     = 8;      // 棒の枚数（8〜11枚＝約380〜530px。以前は4〜6）
+const BOMB_PIN_BAR_EXTRA   = 4;
+const BOMB_PIN_BEND_ARM    = 6;      // くの字の腕の枚数（片側）
+const BOMB_PIN_LANE_LEN    = 8;      // 通り道の1本の枚数
 const BOMB_PIN_START_CLEAR = 700;    // 出発地点のまわりには立てない
 const BOMB_PIN_FORT_CLEAR  = 200;    // 火薬庫の城の城壁の外にこれだけ空ける
 const BOMB_PIN_KINDS       = [0.45, 0.35, 0.2];   // 棒・くの字・通り道の割合
 const BOMB_WALL_HIT_R      = 24;     // 玉が固い壁に当たる半径（すき間を小玉がすり抜けないように）
+const BOMB_BUMPER_DRAGON_BOUNCE = 0.9;   // バンパーに当たった竜が跳ね返る強さ（内向きの速さの何割が外向きに返るか）
+const BOMB_BUMPER_MIN_KICK = 260;    // バンパーから弾かれる竜の外向きの最低速度(px/s)＝ぺたっと張り付かず必ずはじかれる
+const BOMB_BUMPER_FLASH_GAP = 0.15;  // バンパーの光る間隔（秒。群れが一度に当たっても点滅し続けない）
+const BOMB_WALL_SLIDE_SPEED = 130;   // ふつうの壁に押し付けられた竜が、壁沿いに滑り出す最低の速さ(px/s)＝張り付きの防止
+const BOMB_BUMPER_COLOR    = "#162a5c";
 const BOMB_WALL_BOUNCE     = 0.9;    // 固い壁で跳ね返るときに残る速さ（ピンボールのように強く返す）
 const POWDER_COUNT         = 3;      // 火薬庫の数
 const POWDER_RING          = 150;    // 首都の縁から火薬庫までの距離
@@ -16689,19 +16699,20 @@ function bombClearUnderWalls(result, walls) {
     }
   }
 }
-/** v3.149.0: 町を守る固い壁。向かい合う2つの弧で、表（frontAngle）と裏に立てる */
+/** v3.149.0: 町を守る固い壁。町ごとに 0〜2 つの弧（2つなら向かい合わせ。表（frontAngle）と裏に立てる） */
 function generateBombTownWalls(townMetas, boss, stageIndex, result) {
   const out = [];
   const hp = Math.round(BOMB_WALL_HP * (1 + BOMB_WALL_HP_STAGE * stageIndex));
   const anchor = capitalAnchor(boss);
   for (const meta of townMetas) {
-    if (random() >= BOMB_TOWN_WALL_SHARE) continue;
+    const arcCount = Math.floor(random() * (BOMB_TOWN_WALL_MAX + 1));   // 0・1・2のどれか（壁のない町もある）
+    if (arcCount === 0) continue;
     const R = (meta.maxExtent ?? meta.townR ?? 120) + BOMB_TOWN_WALL_GAP;
     const front = meta.frontAngle !== undefined ? meta.frontAngle : random() * Math.PI * 2;
     const turn = random() < 0.5 ? 0 : Math.PI / 2;   // 表と裏を守る町と、横の2方を守る町がある
     const n = Math.max(3, Math.round(Math.PI * 2 * R * BOMB_TOWN_WALL_ARC / WALL_SEG_SPACING));
     const span = Math.PI * 2 * BOMB_TOWN_WALL_ARC;
-    for (let arc = 0; arc < 2; arc++) {
+    for (let arc = 0; arc < arcCount; arc++) {
       const mid = front + turn + arc * Math.PI;
       for (let j = 0; j < n; j++) {
         const a = mid - span / 2 + (j + 0.5) * span / n;
@@ -16737,9 +16748,9 @@ function generateBombPinWalls(boss, stageIndex, result) {
     const cx = 160 + random() * (WORLD_W - 320), cy = 160 + random() * (WORLD_H - 320);
     const a = random() * Math.PI * 2, u = random();
     let pts;
-    if (u < BOMB_PIN_KINDS[0]) pts = bar(cx, cy, a, 4 + Math.floor(random() * 3));   // 一直線の棒（4〜6枚）
+    if (u < BOMB_PIN_KINDS[0]) pts = bar(cx, cy, a, BOMB_PIN_BAR_MIN + Math.floor(random() * (BOMB_PIN_BAR_EXTRA + 1)));   // 一直線の長い棒
     else if (u < BOMB_PIN_KINDS[0] + BOMB_PIN_KINDS[1]) {   // くの字：角を (cx,cy) に、2本の腕が開く
-      const open = 0.55 + random() * 0.35, k = 3;
+      const open = 0.55 + random() * 0.35, k = BOMB_PIN_BEND_ARM;
       pts = [];
       for (const side of [-1, 1]) {
         const arm = a + side * open;
@@ -16747,14 +16758,14 @@ function generateBombPinWalls(boss, stageIndex, result) {
       }
     } else {   // 通り道：平行な2本（玉をまっすぐ通す・群れも抜けられる幅）
       const gap = 85 + random() * 30, nx = -Math.sin(a), ny = Math.cos(a);
-      pts = bar(cx + nx * gap, cy + ny * gap, a, 4).concat(bar(cx - nx * gap, cy - ny * gap, a, 4));
+      pts = bar(cx + nx * gap, cy + ny * gap, a, BOMB_PIN_LANE_LEN).concat(bar(cx - nx * gap, cy - ny * gap, a, BOMB_PIN_LANE_LEN));
     }
     let ok = true;
     for (const c of centers) if (dist2(c.x, c.y, cx, cy) < BOMB_PIN_SPREAD * BOMB_PIN_SPREAD) { ok = false; break; }
     if (ok) for (const q of pts) if (!freeAt(q.x, q.y)) { ok = false; break; }
     if (!ok) continue;
     centers.push({ x: cx, y: cy });
-    for (const q of pts) { const w = makeBombWall(q.x, q.y, hp, q.a); w._bombPin = true; out.push(w); }
+    for (const q of pts) { const w = makeBombWall(q.x, q.y, hp, q.a); w._bombPin = true; w.color = BOMB_BUMPER_COLOR; out.push(w); }
   }
   return out;
 }
@@ -16905,7 +16916,10 @@ function updateBombBalls(dt, centroid, spread) {
       const s = settlements[idx];
       if (!s || s.fallen) continue;
       if (s._bombWall ? bombBounceOff(b, s.wx, s.wy, BOMB_WALL_HIT_R, BOMB_WALL_BOUNCE)   // v3.149.0: 固い壁は強く跳ね返す
-                      : bombBounceOff(b, s.wx, s.wy, s._isWall ? 16 : s.radius * 0.85)) bounced = true;
+                      : bombBounceOff(b, s.wx, s.wy, s._isWall ? 16 : s.radius * 0.85)) {
+        bounced = true;
+        if (s._bombPin) bombBumperFlash(s);
+      }
     }
     for (const ob of terrainObstacles) if (bombBounceOff(b, ob.wx, ob.wy, ob.radius)) bounced = true;
     if (bounced && b.oval) bombSwerve(b);
@@ -16937,6 +16951,12 @@ function updateBombBalls(dt, centroid, spread) {
 }
 
 /** 玉 b を、中心 (cx, cy)・半径 r の丸い物から押し出して跳ね返す。当たったら true */
+/** バンパーが当たった瞬間に光る（見た目だけ。同じ1枚は BOMB_BUMPER_FLASH_GAP 秒あけて） */
+function bombBumperFlash(w) {
+  if (w._bumpAt !== undefined && bombClock - w._bumpAt < BOMB_BUMPER_FLASH_GAP) return;
+  w._bumpAt = bombClock;
+  bombFx.push({ kind: "bump", x: w.wx, y: w.wy, r: WALL_SEG_SPACING * 0.5 + 6, a: w._wallAngle, t: 0, life: 0.28 });
+}
 function bombBounceOff(b, cx, cy, r, bounce = BOMB_BOUNCE) {
   const dx = b.x - cx, dy = b.y - cy, rr = r + b.r;
   const d2 = dx * dx + dy * dy;
@@ -17248,6 +17268,12 @@ function drawBombFx() {
     const u = f.t / f.life;
     ctx.globalAlpha = 1 - u;
     if (f.kind === "ring") { ctx.strokeStyle = "#ff8040"; ctx.lineWidth = 5 * (1 - u) + 1; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.5 + 0.5 * u), 0, Math.PI * 2); ctx.stroke(); }
+    else if (f.kind === "bump") {
+      ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.a);
+      ctx.shadowColor = "#ffe94a"; ctx.shadowBlur = 18 * (1 - u);
+      ctx.fillStyle = "#fff6b0"; ctx.fillRect(-f.r, -7 - 3 * u, f.r * 2, 14 + 6 * u);
+      ctx.restore();
+    }
     else if (f.kind === "muzzle") { ctx.fillStyle = "#ffe0a0"; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.6 + u), 0, Math.PI * 2); ctx.fill(); }
     else { ctx.strokeStyle = f.kind === "bat" ? "#ffffff" : "rgba(200,190,170,0.9)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.7 + 0.6 * u), 0, Math.PI * 2); ctx.stroke(); }
   }
@@ -27500,7 +27526,27 @@ function drawSettlementOnLayer(bctx, settlement) {
  * リング接線方向（_wallAngle）に回転した石ブロック＋胸壁の刻みで「城壁」に見せる。
  * fallen 時は呼び出し元の alpha=0.22/color="#333" でそのまま瓦礫化する。
  */
+/** 爆弾玉の国の野原のバンパー: 石の壁ではなく、光る青いレールと桃色の芯、両端に丸い鋲（見た目は焼き付け。当たると bombFx の "bump" が上から光る） */
+function drawBumperOnCtx(c, settlement) {
+  const halfL = WALL_SEG_SPACING * 0.5 + 3, halfW = 8;
+  c.save();
+  c.translate(settlement.wx, settlement.wy);
+  c.rotate(settlement._wallAngle);
+  c.shadowColor = "#3fe0ff"; c.shadowBlur = 12;
+  c.fillStyle = BOMB_BUMPER_COLOR;
+  c.fillRect(-halfL, -halfW, halfL * 2, halfW * 2);
+  c.shadowBlur = 0;
+  c.strokeStyle = "#4fe3ff"; c.lineWidth = 2.5;
+  c.strokeRect(-halfL, -halfW, halfL * 2, halfW * 2);
+  c.fillStyle = "#ff5fd0";
+  c.fillRect(-halfL + 4, -2, halfL * 2 - 8, 4);
+  c.fillStyle = "#fff6b0";
+  c.beginPath(); c.arc(0, 0, 3.2, 0, Math.PI * 2); c.fill();
+  c.restore();
+}
+
 function drawWallSegmentOnCtx(c, settlement, color) {
+  if (settlement._bombPin) { drawBumperOnCtx(c, settlement); return; }
   const halfL = WALL_SEG_SPACING * 0.5 + 3; // 隣セグメントと視覚的につながる長さ
   const halfW = 9;                          // 壁の厚み（見た目）
   c.save();
@@ -32806,6 +32852,7 @@ function updateHUDWeapon() {
 function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
+  if (settlement._bombPin) return;   // 野原のバンパーは壊れない（玉と竜をはじく仕掛け。壊せると地図の形が崩れる）
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   if (settlement._queenFlower) damage *= queenCoreDamageMult();   // v3.147.0（案帳 DT-339）: 女王花の芯は、花びらが残っているほど傷が通らない
   if (settlement._bombWall) damage *= bombBlastNow ? BOMB_WALL_BLAST_MULT : BOMB_WALL_DRAGON_MULT;   // v3.146.0（案帳 DT-333）: 火薬庫の城の城壁は竜の攻撃をほぼ通さず、玉の爆発が3倍効く
@@ -32927,7 +32974,7 @@ function collectAimTargets(wx, wy, maxDist, targets, boidIdx, halfArc, maxCount,
     buildingGridQueryRadius(wx, wy, Math.max(1, Math.ceil(maxDist / BUILDING_GRID_CELL)), _aimGridBuf);
     for (const sIdx of _aimGridBuf) {
       const st = settlements[sIdx];
-      if (!st || st.fallen) continue;
+      if (!st || st.fallen || st._bombPin) continue;   // バンパーは壊れないので狙わない
       if (!(st._isWall ? aimWall : aimBuilding)) continue;
       const dx = st.wx - wx, dy = st.wy - wy;
       const d2 = dx * dx + dy * dy;
@@ -47284,11 +47331,40 @@ function applyObstaclePushout() {
     for (const sIdx of _obstacleQueryBuf) {
       const s = settlements[sIdx];
       if (!s || s.fallen || !s._isWall) continue;
+      if (s._bombPin) { bumpBoidOffBumper(i, s); continue; }   // 爆弾玉の国の野原のバンパー: 竜もはじく
       pushBoidOutOfCircle(i, s.wx, s.wy, s.radius + OBSTACLE_PUSH_GAP);
+      if (s._bombWall) slideBoidAlongWall(i, s);
     }
   }
 }
 
+/** 爆弾玉の国の壁（城壁・町の壁）に押し付けられて止まった竜を、壁沿いに滑らせる。
+ *  真正面から押し付けると法線の速度を消した後に接線の速度が残らず、リーダーが壁の向こうにいる限り張り付いたままになっていた。
+ *  向きは今の滑る向きを優先し、止まっているときだけリーダーへ近い側に決める */
+function slideBoidAlongWall(i, w) {
+  const dx = px[i] - w.wx, dy = py[i] - w.wy, d = Math.hypot(dx, dy);
+  if (d === 0 || d > w.radius + OBSTACLE_PUSH_GAP + 2) return;
+  const nx = dx / d, ny = dy / d, tx = -ny, ty = nx;
+  const vt = vx[i] * tx + vy[i] * ty;
+  if (Math.abs(vt) >= BOMB_WALL_SLIDE_SPEED) return;
+  let sign = Math.abs(vt) > 8 ? Math.sign(vt) : Math.sign((leader.x - px[i]) * tx + (leader.y - py[i]) * ty);
+  if (sign === 0) sign = (i & 1) ? 1 : -1;
+  vx[i] += (sign * BOMB_WALL_SLIDE_SPEED - vt) * tx;
+  vy[i] += (sign * BOMB_WALL_SLIDE_SPEED - vt) * ty;
+}
+/** 野原のバンパーに触れた竜をはじく（円の外へ出し、内向きの速度を反射し、最低でも BOMB_BUMPER_MIN_KICK で外へ飛ばす） */
+function bumpBoidOffBumper(i, w) {
+  const minDist = w.radius + OBSTACLE_PUSH_GAP;
+  const dx = px[i] - w.wx, dy = py[i] - w.wy, d2 = dx * dx + dy * dy;
+  if (d2 >= minDist * minDist || d2 === 0) return;
+  const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
+  px[i] = w.wx + nx * minDist; py[i] = w.wy + ny * minDist;
+  const vn = vx[i] * nx + vy[i] * ny;
+  if (vn < 0) { vx[i] -= (1 + BOMB_BUMPER_DRAGON_BOUNCE) * vn * nx; vy[i] -= (1 + BOMB_BUMPER_DRAGON_BOUNCE) * vn * ny; }
+  const out = vx[i] * nx + vy[i] * ny;
+  if (out < BOMB_BUMPER_MIN_KICK) { vx[i] += (BOMB_BUMPER_MIN_KICK - out) * nx; vy[i] += (BOMB_BUMPER_MIN_KICK - out) * ny; }
+  bombBumperFlash(w);
+}
 /** 個体 i を円 (cx,cy,minDist) の外側へ押し出し、内向き速度成分を殺してスライドさせる。 */
 function pushBoidOutOfCircle(i, cx, cy, minDist) {
   const dx = px[i] - cx;
