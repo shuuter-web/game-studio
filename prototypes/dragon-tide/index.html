@@ -36725,11 +36725,16 @@ function drawCannon() {
 // ---- v3.150.0（案帳 DT-581）: 光線竜 ----
 // 狙いをつけず、竜が向いている前（速度の向き）へ RAY_INTERVAL ごとに細長い光線弾を撃つ。相手がいなくても撃ち続ける。
 // 光線弾は敵を貫いて RAY_TRAVEL まで飛ぶ。同じ相手には1回だけ当たる（弾ごとに当てた相手を覚える）
-const RAY_INTERVAL = 0.5;     // 撃つ間隔（秒）
+// v3.152.0（DT-581 手直し・Shooter「もうちょい長いレーザー弾で、発射頻度を抑えて」）: 間隔 0.5→0.9 秒、絵の長さ 30→72px。
+// 1発の威力は 4.2→7.0（間隔を延ばしたぶん。強さの計測で飛竜と同じくらいを保つ）
+const RAY_INTERVAL = 0.9;     // 撃つ間隔（秒）
 const RAY_SPEED    = 640;     // 弾速（px/s）
 const RAY_TRAVEL   = 340;     // 飛ぶ距離（px）
-const RAY_DAMAGE   = 4.2;     // 1発（1つの相手に）の威力。貫くぶん1発は軽め
-const RAY_LEN      = 30;      // 弾の絵の長さ（px）。当たりは弾の先の点で見る
+const RAY_DAMAGE   = 7.0;     // 1発（1つの相手に）の威力。貫くぶん1発は軽め
+const RAY_LEN      = 72;      // 弾の絵の長さ（px）。当たりは弾の先の点で見る
+// v3.152.0（DT-581 手直し・Shooter「極太レーザーの時みたいな、発射点の丸い部分も欲しい」）: 撃った竜の口元に光の玉を短く出す（見た目だけ）
+const RAY_MUZZLE_TIME = 0.18; // 発射点の光の玉が出ている時間（秒）
+const RAY_MUZZLE_R    = 7;    // 発射点の光の玉の半径（px）
 const RAY_HIT_PAD  = 3;       // 相手の半径に足す当たりの幅
 const RAY_MAX      = 400;     // 同時に飛ぶ光線弾の上限
 const RAY_COLOR    = "#7af7ff";
@@ -36748,7 +36753,7 @@ function updateRayAttacks(dt) {
     boidFireTimer[i] = inter;
     const a = Math.atan2(vy[i], vx[i]);
     rayBolts.push({ x: px[i], y: py[i], vx: Math.cos(a) * RAY_SPEED, vy: Math.sin(a) * RAY_SPEED,
-                    travel: 0, maxTravel: reach, dmg, hitB: [], hitM: [] });
+                    travel: 0, maxTravel: reach, dmg, hitB: [], hitM: [], src: i, age: 0 });
   }
 }
 /** 飛んでいる光線弾。触れた相手に当てて、そのまま貫いて飛ぶ */
@@ -36759,7 +36764,7 @@ function updateRayBolts(dt) {
   let w = 0;
   for (let n = 0; n < rayBolts.length; n++) {
     const b = rayBolts[n];
-    b.x += b.vx * dt; b.y += b.vy * dt; b.travel += RAY_SPEED * dt;
+    b.x += b.vx * dt; b.y += b.vy * dt; b.travel += RAY_SPEED * dt; b.age += dt;
     if (b.travel > b.maxTravel || b.x < -50 || b.x > WORLD_W + 50 || b.y < -50 || b.y > WORLD_H + 50) continue;
     rayBolts[w++] = b;
     buildingGridQuery(b.x, b.y, _buildingNeighbourBuf);
@@ -36800,6 +36805,20 @@ function drawRayBolts() {
       ctx.lineTo(b.x, b.y);
     }
     ctx.stroke();
+  }
+  // 発射点の丸い光（天穿の極太光線の根元のような玉）。撃った竜の今の位置に付いて、すぐ消える
+  ctx.globalCompositeOperation = "lighter";
+  for (const b of rayBolts) {
+    if (b.age >= RAY_MUZZLE_TIME) continue;
+    const i = b.src;
+    if (i == null || boidDead[i] || boidDowned[i]) continue;
+    const f = 1 - b.age / RAY_MUZZLE_TIME;
+    const dir = Math.atan2(b.vy, b.vx);
+    const mx = px[i] + Math.cos(dir) * 6, my = py[i] + Math.sin(dir) * 6;
+    ctx.globalAlpha = 0.45 * f; ctx.fillStyle = RAY_COLOR;
+    ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * (1.1 + 0.5 * (1 - f)), 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.95 * f; ctx.fillStyle = "#f4ffff";
+    ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * 0.55, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
 }
