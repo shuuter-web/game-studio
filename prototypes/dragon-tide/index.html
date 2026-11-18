@@ -239,6 +239,8 @@
   .fo-card .fo-stageonly { position: absolute; bottom: 4px; right: 8px; font-size: 9px; font-weight: 700; color: #ffb070; letter-spacing: 0.05em; }
   .fo-card.special { border-color: #c890ff; background: linear-gradient(160deg, rgba(44,30,62,0.96), rgba(20,14,30,0.96)); }
   .fo-card .fo-icon { font-size: 26px; line-height: 1; }
+  /* v3.152.0（DT-584）: 特殊個体のカードは絵文字の代わりにその特殊個体の絵 */
+  .fo-card .fo-icon .fo-sp-thumb { width: 48px; height: 48px; display: block; }
   .fo-card .fo-name { font-size: 13px; font-weight: 700; color: #ffe8c0; }
   .fo-card.special .fo-name { color: #ead8ff; }
   .fo-card .fo-desc { font-size: 11px; color: rgba(240,225,200,0.85); line-height: 1.35; }
@@ -1321,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.151.0";
+const GAME_VERSION = "v3.152.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16590,16 +16592,26 @@ const BOMB_WALL_COLOR      = "#3a3c44";
 // 火薬庫の城と同じ固い壁（竜の攻撃1/100・玉の爆発3倍）を、町のまわりと野原にも立てる。
 // 町の壁は向かい合う2つの弧（間の2か所は開けておく＝群れが入れる・玉を転がし込める口）。
 // 野原の壁は玉を跳ね返して向きを変える「ピンボールの壁」：一直線の棒・くの字・2本並べた通り道。玉の跳ね返りはふつうの建物より強い
-const BOMB_TOWN_WALL_SHARE = 0.75;   // 壁で守る町の割合
+// 11/18 Shooter「壁が多すぎ・均等すぎ。町の壁は0〜2個のランダム。野原の壁は長く・数を大きく減らす。野原の壁は玉も竜も跳ね返す（ピンボールのバンパー）」
+const BOMB_TOWN_WALL_MAX   = 2;      // 町ごとの壁（弧）の数は 0〜この数 からランダム（等確率）
 const BOMB_TOWN_WALL_ARC   = 0.3;    // 弧1つが町のまわりを覆う割合（2つで6割・口が2か所）
 const BOMB_TOWN_WALL_GAP   = 34;     // 町の建物の外側から壁までの距離
-const BOMB_PIN_COUNT       = 60;     // 野原の壁の数（地図の広さで増減）
+const BOMB_PIN_COUNT       = 10;     // 野原のバンパーの数（地図の広さで増減。以前は60）
 const BOMB_PIN_CLEAR       = 70;     // 建物からこれだけ離して立てる
-const BOMB_PIN_SPREAD      = 330;    // 野原の壁どうしの間隔
+const BOMB_PIN_SPREAD      = 700;    // 野原のバンパーどうしの間隔（長くした分、離す）
+const BOMB_PIN_BAR_MIN     = 8;      // 棒の枚数（8〜11枚＝約380〜530px。以前は4〜6）
+const BOMB_PIN_BAR_EXTRA   = 4;
+const BOMB_PIN_BEND_ARM    = 6;      // くの字の腕の枚数（片側）
+const BOMB_PIN_LANE_LEN    = 8;      // 通り道の1本の枚数
 const BOMB_PIN_START_CLEAR = 700;    // 出発地点のまわりには立てない
 const BOMB_PIN_FORT_CLEAR  = 200;    // 火薬庫の城の城壁の外にこれだけ空ける
 const BOMB_PIN_KINDS       = [0.45, 0.35, 0.2];   // 棒・くの字・通り道の割合
 const BOMB_WALL_HIT_R      = 24;     // 玉が固い壁に当たる半径（すき間を小玉がすり抜けないように）
+const BOMB_BUMPER_DRAGON_BOUNCE = 0.9;   // バンパーに当たった竜が跳ね返る強さ（内向きの速さの何割が外向きに返るか）
+const BOMB_BUMPER_MIN_KICK = 260;    // バンパーから弾かれる竜の外向きの最低速度(px/s)＝ぺたっと張り付かず必ずはじかれる
+const BOMB_BUMPER_FLASH_GAP = 0.15;  // バンパーの光る間隔（秒。群れが一度に当たっても点滅し続けない）
+const BOMB_WALL_SLIDE_SPEED = 130;   // ふつうの壁に押し付けられた竜が、壁沿いに滑り出す最低の速さ(px/s)＝張り付きの防止
+const BOMB_BUMPER_COLOR    = "#162a5c";
 const BOMB_WALL_BOUNCE     = 0.9;    // 固い壁で跳ね返るときに残る速さ（ピンボールのように強く返す）
 const POWDER_COUNT         = 3;      // 火薬庫の数
 const POWDER_RING          = 150;    // 首都の縁から火薬庫までの距離
@@ -16687,19 +16699,20 @@ function bombClearUnderWalls(result, walls) {
     }
   }
 }
-/** v3.149.0: 町を守る固い壁。向かい合う2つの弧で、表（frontAngle）と裏に立てる */
+/** v3.149.0: 町を守る固い壁。町ごとに 0〜2 つの弧（2つなら向かい合わせ。表（frontAngle）と裏に立てる） */
 function generateBombTownWalls(townMetas, boss, stageIndex, result) {
   const out = [];
   const hp = Math.round(BOMB_WALL_HP * (1 + BOMB_WALL_HP_STAGE * stageIndex));
   const anchor = capitalAnchor(boss);
   for (const meta of townMetas) {
-    if (random() >= BOMB_TOWN_WALL_SHARE) continue;
+    const arcCount = Math.floor(random() * (BOMB_TOWN_WALL_MAX + 1));   // 0・1・2のどれか（壁のない町もある）
+    if (arcCount === 0) continue;
     const R = (meta.maxExtent ?? meta.townR ?? 120) + BOMB_TOWN_WALL_GAP;
     const front = meta.frontAngle !== undefined ? meta.frontAngle : random() * Math.PI * 2;
     const turn = random() < 0.5 ? 0 : Math.PI / 2;   // 表と裏を守る町と、横の2方を守る町がある
     const n = Math.max(3, Math.round(Math.PI * 2 * R * BOMB_TOWN_WALL_ARC / WALL_SEG_SPACING));
     const span = Math.PI * 2 * BOMB_TOWN_WALL_ARC;
-    for (let arc = 0; arc < 2; arc++) {
+    for (let arc = 0; arc < arcCount; arc++) {
       const mid = front + turn + arc * Math.PI;
       for (let j = 0; j < n; j++) {
         const a = mid - span / 2 + (j + 0.5) * span / n;
@@ -16735,9 +16748,9 @@ function generateBombPinWalls(boss, stageIndex, result) {
     const cx = 160 + random() * (WORLD_W - 320), cy = 160 + random() * (WORLD_H - 320);
     const a = random() * Math.PI * 2, u = random();
     let pts;
-    if (u < BOMB_PIN_KINDS[0]) pts = bar(cx, cy, a, 4 + Math.floor(random() * 3));   // 一直線の棒（4〜6枚）
+    if (u < BOMB_PIN_KINDS[0]) pts = bar(cx, cy, a, BOMB_PIN_BAR_MIN + Math.floor(random() * (BOMB_PIN_BAR_EXTRA + 1)));   // 一直線の長い棒
     else if (u < BOMB_PIN_KINDS[0] + BOMB_PIN_KINDS[1]) {   // くの字：角を (cx,cy) に、2本の腕が開く
-      const open = 0.55 + random() * 0.35, k = 3;
+      const open = 0.55 + random() * 0.35, k = BOMB_PIN_BEND_ARM;
       pts = [];
       for (const side of [-1, 1]) {
         const arm = a + side * open;
@@ -16745,14 +16758,14 @@ function generateBombPinWalls(boss, stageIndex, result) {
       }
     } else {   // 通り道：平行な2本（玉をまっすぐ通す・群れも抜けられる幅）
       const gap = 85 + random() * 30, nx = -Math.sin(a), ny = Math.cos(a);
-      pts = bar(cx + nx * gap, cy + ny * gap, a, 4).concat(bar(cx - nx * gap, cy - ny * gap, a, 4));
+      pts = bar(cx + nx * gap, cy + ny * gap, a, BOMB_PIN_LANE_LEN).concat(bar(cx - nx * gap, cy - ny * gap, a, BOMB_PIN_LANE_LEN));
     }
     let ok = true;
     for (const c of centers) if (dist2(c.x, c.y, cx, cy) < BOMB_PIN_SPREAD * BOMB_PIN_SPREAD) { ok = false; break; }
     if (ok) for (const q of pts) if (!freeAt(q.x, q.y)) { ok = false; break; }
     if (!ok) continue;
     centers.push({ x: cx, y: cy });
-    for (const q of pts) { const w = makeBombWall(q.x, q.y, hp, q.a); w._bombPin = true; out.push(w); }
+    for (const q of pts) { const w = makeBombWall(q.x, q.y, hp, q.a); w._bombPin = true; w.color = BOMB_BUMPER_COLOR; out.push(w); }
   }
   return out;
 }
@@ -16903,7 +16916,10 @@ function updateBombBalls(dt, centroid, spread) {
       const s = settlements[idx];
       if (!s || s.fallen) continue;
       if (s._bombWall ? bombBounceOff(b, s.wx, s.wy, BOMB_WALL_HIT_R, BOMB_WALL_BOUNCE)   // v3.149.0: 固い壁は強く跳ね返す
-                      : bombBounceOff(b, s.wx, s.wy, s._isWall ? 16 : s.radius * 0.85)) bounced = true;
+                      : bombBounceOff(b, s.wx, s.wy, s._isWall ? 16 : s.radius * 0.85)) {
+        bounced = true;
+        if (s._bombPin) bombBumperFlash(s);
+      }
     }
     for (const ob of terrainObstacles) if (bombBounceOff(b, ob.wx, ob.wy, ob.radius)) bounced = true;
     if (bounced && b.oval) bombSwerve(b);
@@ -16935,6 +16951,12 @@ function updateBombBalls(dt, centroid, spread) {
 }
 
 /** 玉 b を、中心 (cx, cy)・半径 r の丸い物から押し出して跳ね返す。当たったら true */
+/** バンパーが当たった瞬間に光る（見た目だけ。同じ1枚は BOMB_BUMPER_FLASH_GAP 秒あけて） */
+function bombBumperFlash(w) {
+  if (w._bumpAt !== undefined && bombClock - w._bumpAt < BOMB_BUMPER_FLASH_GAP) return;
+  w._bumpAt = bombClock;
+  bombFx.push({ kind: "bump", x: w.wx, y: w.wy, r: WALL_SEG_SPACING * 0.5 + 6, a: w._wallAngle, t: 0, life: 0.28 });
+}
 function bombBounceOff(b, cx, cy, r, bounce = BOMB_BOUNCE) {
   const dx = b.x - cx, dy = b.y - cy, rr = r + b.r;
   const d2 = dx * dx + dy * dy;
@@ -17246,6 +17268,12 @@ function drawBombFx() {
     const u = f.t / f.life;
     ctx.globalAlpha = 1 - u;
     if (f.kind === "ring") { ctx.strokeStyle = "#ff8040"; ctx.lineWidth = 5 * (1 - u) + 1; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.5 + 0.5 * u), 0, Math.PI * 2); ctx.stroke(); }
+    else if (f.kind === "bump") {
+      ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.a);
+      ctx.shadowColor = "#ffe94a"; ctx.shadowBlur = 18 * (1 - u);
+      ctx.fillStyle = "#fff6b0"; ctx.fillRect(-f.r, -7 - 3 * u, f.r * 2, 14 + 6 * u);
+      ctx.restore();
+    }
     else if (f.kind === "muzzle") { ctx.fillStyle = "#ffe0a0"; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.6 + u), 0, Math.PI * 2); ctx.fill(); }
     else { ctx.strokeStyle = f.kind === "bat" ? "#ffffff" : "rgba(200,190,170,0.9)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.7 + 0.6 * u), 0, Math.PI * 2); ctx.stroke(); }
   }
@@ -27498,7 +27526,27 @@ function drawSettlementOnLayer(bctx, settlement) {
  * リング接線方向（_wallAngle）に回転した石ブロック＋胸壁の刻みで「城壁」に見せる。
  * fallen 時は呼び出し元の alpha=0.22/color="#333" でそのまま瓦礫化する。
  */
+/** 爆弾玉の国の野原のバンパー: 石の壁ではなく、光る青いレールと桃色の芯、両端に丸い鋲（見た目は焼き付け。当たると bombFx の "bump" が上から光る） */
+function drawBumperOnCtx(c, settlement) {
+  const halfL = WALL_SEG_SPACING * 0.5 + 3, halfW = 8;
+  c.save();
+  c.translate(settlement.wx, settlement.wy);
+  c.rotate(settlement._wallAngle);
+  c.shadowColor = "#3fe0ff"; c.shadowBlur = 12;
+  c.fillStyle = BOMB_BUMPER_COLOR;
+  c.fillRect(-halfL, -halfW, halfL * 2, halfW * 2);
+  c.shadowBlur = 0;
+  c.strokeStyle = "#4fe3ff"; c.lineWidth = 2.5;
+  c.strokeRect(-halfL, -halfW, halfL * 2, halfW * 2);
+  c.fillStyle = "#ff5fd0";
+  c.fillRect(-halfL + 4, -2, halfL * 2 - 8, 4);
+  c.fillStyle = "#fff6b0";
+  c.beginPath(); c.arc(0, 0, 3.2, 0, Math.PI * 2); c.fill();
+  c.restore();
+}
+
 function drawWallSegmentOnCtx(c, settlement, color) {
+  if (settlement._bombPin) { drawBumperOnCtx(c, settlement); return; }
   const halfL = WALL_SEG_SPACING * 0.5 + 3; // 隣セグメントと視覚的につながる長さ
   const halfW = 9;                          // 壁の厚み（見た目）
   c.save();
@@ -29241,7 +29289,6 @@ const BROOD_DRAGONS            = 50;     // 大繁殖1枚で足す竜（前は5�
 const OVERFLOW_POWER_PER_BLOCK = 0.5;    // 上限超えの竜 OVERFLOW_POWER_BLOCK 体ごとに攻撃・HP +50%（1000体で約×3.8）
 const OVERFLOW_POWER_BLOCK     = 150;
 const OVERFLOW_DRAW_MAX        = 350;    // 見た目だけの竜を描く最大数（描画の重さの上限）
-const OVERFLOW_DRAW_REACH      = 26;     // 本物の竜から何pxまでの所に描くか（群れの隙間を埋める距離）
 let flockOverflow = 0;
 let N = 0;
 let px, py, vx, vy;
@@ -32273,6 +32320,25 @@ function specialThumbUrl(kind) {
     return cv;
   });
 }
+// v3.152.0（DT-584）: 特殊個体のカードの絵。追加＝その特殊個体、分岐＝分岐の色を乗せた絵、合成・突然変異＝なった先の特殊個体
+const PERK_SP_THUMB_PX = 96;   // カードに置く canvas の画素（CSS で 48px に縮める）
+const PERK_SP_THUMB_CROP = 0.2;   // 絵の四辺から落とす余白の割合
+function perkCardSpecialThumb(def) {
+  if (def.fuse) return specialThumbUrl(SPECIAL_KIND_BY_KEY[def.fuse.to]);
+  if (def.becomesSpecial) return specialThumbUrl(SPECIAL_KIND_BY_KEY[def.becomesSpecial]);
+  const kind = def.specialJoin !== undefined ? def.specialJoin : def.special;
+  if (kind === undefined || !SPECIAL_DEFS[kind]) return null;
+  const key = SPECIAL_DEFS[kind].key;
+  const tint = def.tag === "branch" && def.opt && SPECIAL_EVO_SPEC[key] ? SPECIAL_EVO_SPEC[key][def.opt].tint : null;
+  if (!tint) return specialThumbUrl(kind);
+  return treeThumb("s:" + kind + "|" + tint, () => {
+    const frames = tintedSprites("base:sp:" + key + ":thumb", getSpecialSprites(kind), tint);
+    const cv = document.createElement("canvas"); cv.width = cv.height = 104;
+    const c = cv.getContext("2d"); c.translate(52, 52); c.rotate(-Math.PI / 2);
+    if (frames && frames.length) c.drawImage(frames[0], -44, -44, 88, 88);
+    return cv;
+  });
+}
 let lvChoiceSelected = null;
 function renderLevelUpChoice(opts) {
   lvChoiceSelected = null;
@@ -32786,6 +32852,7 @@ function updateHUDWeapon() {
 function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
+  if (settlement._bombPin) return;   // 野原のバンパーは壊れない（玉と竜をはじく仕掛け。壊せると地図の形が崩れる）
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   if (settlement._queenFlower) damage *= queenCoreDamageMult();   // v3.147.0（案帳 DT-339）: 女王花の芯は、花びらが残っているほど傷が通らない
   if (settlement._bombWall) damage *= bombBlastNow ? BOMB_WALL_BLAST_MULT : BOMB_WALL_DRAGON_MULT;   // v3.146.0（案帳 DT-333）: 火薬庫の城の城壁は竜の攻撃をほぼ通さず、玉の爆発が3倍効く
@@ -32907,7 +32974,7 @@ function collectAimTargets(wx, wy, maxDist, targets, boidIdx, halfArc, maxCount,
     buildingGridQueryRadius(wx, wy, Math.max(1, Math.ceil(maxDist / BUILDING_GRID_CELL)), _aimGridBuf);
     for (const sIdx of _aimGridBuf) {
       const st = settlements[sIdx];
-      if (!st || st.fallen) continue;
+      if (!st || st.fallen || st._bombPin) continue;   // バンパーは壊れないので狙わない
       if (!(st._isWall ? aimWall : aimBuilding)) continue;
       const dx = st.wx - wx, dy = st.wy - wy;
       const d2 = dx * dx + dy * dy;
@@ -36725,11 +36792,16 @@ function drawCannon() {
 // ---- v3.150.0（案帳 DT-581）: 光線竜 ----
 // 狙いをつけず、竜が向いている前（速度の向き）へ RAY_INTERVAL ごとに細長い光線弾を撃つ。相手がいなくても撃ち続ける。
 // 光線弾は敵を貫いて RAY_TRAVEL まで飛ぶ。同じ相手には1回だけ当たる（弾ごとに当てた相手を覚える）
-const RAY_INTERVAL = 0.5;     // 撃つ間隔（秒）
+// v3.152.0（DT-581 手直し・Shooter「もうちょい長いレーザー弾で、発射頻度を抑えて」）: 間隔 0.5→0.9 秒、絵の長さ 30→72px。
+// 1発の威力は 4.2→7.0（間隔を延ばしたぶん。強さの計測で飛竜と同じくらいを保つ）
+const RAY_INTERVAL = 0.9;     // 撃つ間隔（秒）
 const RAY_SPEED    = 640;     // 弾速（px/s）
 const RAY_TRAVEL   = 340;     // 飛ぶ距離（px）
-const RAY_DAMAGE   = 4.2;     // 1発（1つの相手に）の威力。貫くぶん1発は軽め
-const RAY_LEN      = 30;      // 弾の絵の長さ（px）。当たりは弾の先の点で見る
+const RAY_DAMAGE   = 7.0;     // 1発（1つの相手に）の威力。貫くぶん1発は軽め
+const RAY_LEN      = 72;      // 弾の絵の長さ（px）。当たりは弾の先の点で見る
+// v3.152.0（DT-581 手直し・Shooter「極太レーザーの時みたいな、発射点の丸い部分も欲しい」）: 撃った竜の口元に光の玉を短く出す（見た目だけ）
+const RAY_MUZZLE_TIME = 0.18; // 発射点の光の玉が出ている時間（秒）
+const RAY_MUZZLE_R    = 7;    // 発射点の光の玉の半径（px）
 const RAY_HIT_PAD  = 3;       // 相手の半径に足す当たりの幅
 const RAY_MAX      = 400;     // 同時に飛ぶ光線弾の上限
 const RAY_COLOR    = "#7af7ff";
@@ -36748,7 +36820,7 @@ function updateRayAttacks(dt) {
     boidFireTimer[i] = inter;
     const a = Math.atan2(vy[i], vx[i]);
     rayBolts.push({ x: px[i], y: py[i], vx: Math.cos(a) * RAY_SPEED, vy: Math.sin(a) * RAY_SPEED,
-                    travel: 0, maxTravel: reach, dmg, hitB: [], hitM: [] });
+                    travel: 0, maxTravel: reach, dmg, hitB: [], hitM: [], src: i, age: 0 });
   }
 }
 /** 飛んでいる光線弾。触れた相手に当てて、そのまま貫いて飛ぶ */
@@ -36759,7 +36831,7 @@ function updateRayBolts(dt) {
   let w = 0;
   for (let n = 0; n < rayBolts.length; n++) {
     const b = rayBolts[n];
-    b.x += b.vx * dt; b.y += b.vy * dt; b.travel += RAY_SPEED * dt;
+    b.x += b.vx * dt; b.y += b.vy * dt; b.travel += RAY_SPEED * dt; b.age += dt;
     if (b.travel > b.maxTravel || b.x < -50 || b.x > WORLD_W + 50 || b.y < -50 || b.y > WORLD_H + 50) continue;
     rayBolts[w++] = b;
     buildingGridQuery(b.x, b.y, _buildingNeighbourBuf);
@@ -36800,6 +36872,20 @@ function drawRayBolts() {
       ctx.lineTo(b.x, b.y);
     }
     ctx.stroke();
+  }
+  // 発射点の丸い光（天穿の極太光線の根元のような玉）。撃った竜の今の位置に付いて、すぐ消える
+  ctx.globalCompositeOperation = "lighter";
+  for (const b of rayBolts) {
+    if (b.age >= RAY_MUZZLE_TIME) continue;
+    const i = b.src;
+    if (i == null || boidDead[i] || boidDowned[i]) continue;
+    const f = 1 - b.age / RAY_MUZZLE_TIME;
+    const dir = Math.atan2(b.vy, b.vx);
+    const mx = px[i] + Math.cos(dir) * 6, my = py[i] + Math.sin(dir) * 6;
+    ctx.globalAlpha = 0.45 * f; ctx.fillStyle = RAY_COLOR;
+    ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * (1.1 + 0.5 * (1 - f)), 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.95 * f; ctx.fillStyle = "#f4ffff";
+    ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * 0.55, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
 }
@@ -42840,6 +42926,17 @@ function openNextPerkOffer() {
       (def.max > 1 && def.max !== Infinity ? `<span class="fo-stack">${have + 1}/${def.max}</span>` : "");
     btn.querySelector(".fo-name").textContent = text.name;
     btn.querySelector(".fo-desc").textContent = text.desc;
+    // v3.152.0（DT-584・Shooter「進化のアイコンはアイコンではなくその竜の絵に」）: 特殊個体の追加・進化・合成・突然変異のカードは、絵文字の代わりにその特殊個体の絵
+    if (spDef) {
+      const thumb = perkCardSpecialThumb(def);
+      if (thumb) {
+        const cv = document.createElement("canvas"); cv.width = cv.height = PERK_SP_THUMB_PX; cv.className = "fo-sp-thumb";
+        // 絵のまわりの余白を落として大きく見せる（ツリーの箱の絵は余白込みの 104px）
+        const m = thumb.width * PERK_SP_THUMB_CROP;
+        cv.getContext("2d").drawImage(thumb, m, m, thumb.width - 2 * m, thumb.height - 2 * m, 0, 0, PERK_SP_THUMB_PX, PERK_SP_THUMB_PX);
+        btn.querySelector(".fo-icon").replaceChildren(cv);
+      }
+    }
     // v3.47.0（案帳 DT-128・Shooter指摘「止めた直後に選択画面なので誤タップが頻発」）:
     // 押した瞬間ではなく、カードの上で押して離したときに選ぶ。押し始めがカードの上でないもの
     // （線を描いていた指が、出てきたカードの上で離れた）は選ばない
@@ -47234,11 +47331,40 @@ function applyObstaclePushout() {
     for (const sIdx of _obstacleQueryBuf) {
       const s = settlements[sIdx];
       if (!s || s.fallen || !s._isWall) continue;
+      if (s._bombPin) { bumpBoidOffBumper(i, s); continue; }   // 爆弾玉の国の野原のバンパー: 竜もはじく
       pushBoidOutOfCircle(i, s.wx, s.wy, s.radius + OBSTACLE_PUSH_GAP);
+      if (s._bombWall) slideBoidAlongWall(i, s);
     }
   }
 }
 
+/** 爆弾玉の国の壁（城壁・町の壁）に押し付けられて止まった竜を、壁沿いに滑らせる。
+ *  真正面から押し付けると法線の速度を消した後に接線の速度が残らず、リーダーが壁の向こうにいる限り張り付いたままになっていた。
+ *  向きは今の滑る向きを優先し、止まっているときだけリーダーへ近い側に決める */
+function slideBoidAlongWall(i, w) {
+  const dx = px[i] - w.wx, dy = py[i] - w.wy, d = Math.hypot(dx, dy);
+  if (d === 0 || d > w.radius + OBSTACLE_PUSH_GAP + 2) return;
+  const nx = dx / d, ny = dy / d, tx = -ny, ty = nx;
+  const vt = vx[i] * tx + vy[i] * ty;
+  if (Math.abs(vt) >= BOMB_WALL_SLIDE_SPEED) return;
+  let sign = Math.abs(vt) > 8 ? Math.sign(vt) : Math.sign((leader.x - px[i]) * tx + (leader.y - py[i]) * ty);
+  if (sign === 0) sign = (i & 1) ? 1 : -1;
+  vx[i] += (sign * BOMB_WALL_SLIDE_SPEED - vt) * tx;
+  vy[i] += (sign * BOMB_WALL_SLIDE_SPEED - vt) * ty;
+}
+/** 野原のバンパーに触れた竜をはじく（円の外へ出し、内向きの速度を反射し、最低でも BOMB_BUMPER_MIN_KICK で外へ飛ばす） */
+function bumpBoidOffBumper(i, w) {
+  const minDist = w.radius + OBSTACLE_PUSH_GAP;
+  const dx = px[i] - w.wx, dy = py[i] - w.wy, d2 = dx * dx + dy * dy;
+  if (d2 >= minDist * minDist || d2 === 0) return;
+  const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
+  px[i] = w.wx + nx * minDist; py[i] = w.wy + ny * minDist;
+  const vn = vx[i] * nx + vy[i] * ny;
+  if (vn < 0) { vx[i] -= (1 + BOMB_BUMPER_DRAGON_BOUNCE) * vn * nx; vy[i] -= (1 + BOMB_BUMPER_DRAGON_BOUNCE) * vn * ny; }
+  const out = vx[i] * nx + vy[i] * ny;
+  if (out < BOMB_BUMPER_MIN_KICK) { vx[i] += (BOMB_BUMPER_MIN_KICK - out) * nx; vy[i] += (BOMB_BUMPER_MIN_KICK - out) * ny; }
+  bombBumperFlash(w);
+}
 /** 個体 i を円 (cx,cy,minDist) の外側へ押し出し、内向き速度成分を殺してスライドさせる。 */
 function pushBoidOutOfCircle(i, cx, cy, minDist) {
   const dx = px[i] - cx;
@@ -48273,38 +48399,89 @@ function drawBreathAttacks(now) {
 // v3.10.0: 極光（旧母竜・虹竜）専用の体格成長・「最初の1体」探しは撤去した（他の特殊個体と同じ扱い）。
 
 /**
- * v3.67.0（DT-497・Shooter指示「適当な2匹の間に表示だけする、どちらかが死んだら非表示に」）:
- * 上限超えの竜を、本物の竜2体のあいだ（片方から OVERFLOW_DRAW_REACH px まで）に描く。
- * 当たり判定も動きの計算も持たない。組み合わせは番号から決まる（乱数を使わない）ので毎フレーム同じ組で、
- * 本物2体に付いて動くように見える。尻尾は描かない（数が多いので胴体だけ）。
+ * v3.67.0（DT-497）: 上限超えの竜は当たり判定も動きの計算も持たない、絵だけの竜。
+ * v3.152.0（DT-583 案A・Shooter「ダンゴ状になってしまってあまり嬉しくない」）: 動く竜と同じ大きさ・濃さで隙間に詰めると
+ * ダンゴに見えたので、「下の層を飛ぶ小さく暗く薄い竜」にして、群れの進む向きの後ろへ流す。
+ * 数が増えるほど群れは「濃く」ではなく「長く」なる。伸ばす長さは動く竜の広がりの1倍まで（それより先は当たらない竜が目立つ）。
+ * 付いていく竜（a）と後ろへの量は番号から決める（乱数を使わない）。向きと流れの強さは描画だけの値で、指紋は変わらない。
  */
+const OVERFLOW_SIZES       = [0.5, 0.62, 0.75];   // 動く竜に対する大きさ（3段階）
+const OVERFLOW_ALPHA       = 0.45;                // 濃さ（動く竜は 0.85）
+const OVERFLOW_SHADE       = 0.5;                 // 絵に重ねる暗さ（黒を乗せる割合）
+const OVERFLOW_TAIL_MULT   = 1.0;                 // 後ろへ伸ばす長さ＝動く竜の広がり（重心からの平均距離）×これ
+const OVERFLOW_TAIL_FULL   = 250;                 // 上限超えの竜がこの数で、伸ばす長さがいっぱいになる
+const OVERFLOW_SIDE_MULT   = 0.35;                // 横への散らばり＝広がり×これ（後ろへ行くほど細る）
+const OVERFLOW_FLOW_EASE   = 3;                   // 向き・流れの強さを追う速さ（/秒。止まったとき尾が群れへ巻き取られる）
+const overflowShadeCache = new WeakMap();
+let overflowHeadX = 1, overflowHeadY = 0, overflowFlow = 0, overflowLastT = 0;
+function overflowShadedSprites(sprites) {
+  let out = overflowShadeCache.get(sprites);
+  if (out) return out;
+  out = sprites.map(src => {
+    const c = document.createElement("canvas");
+    c.width = src.width; c.height = src.height;
+    const g = c.getContext("2d");
+    g.drawImage(src, 0, 0);
+    g.globalCompositeOperation = "source-atop";
+    g.globalAlpha = OVERFLOW_SHADE;
+    g.fillStyle = "#06080c";
+    g.fillRect(0, 0, c.width, c.height);
+    return c;
+  });
+  overflowShadeCache.set(sprites, out);
+  return out;
+}
 function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical) {
   if (N < 2) return;
   const count = Math.min(flockOverflow, OVERFLOW_DRAW_MAX);
+  // 群れの重心・広がり・進む向き（平均の速度）と、向きのそろい具合（0＝ばらばら・回っている／1＝一方向）
+  let cx = 0, cy = 0, mvx = 0, mvy = 0, sumSpeed = 0, alive = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    cx += px[i]; cy += py[i]; mvx += vx[i]; mvy += vy[i]; sumSpeed += Math.hypot(vx[i], vy[i]); alive++;
+  }
+  if (alive < 1) return;
+  cx /= alive; cy /= alive;
+  let spread = 0;
+  for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i]) spread += Math.hypot(px[i] - cx, py[i] - cy);
+  spread = Math.max(20, spread / alive);
+  const meanSpeed = Math.hypot(mvx, mvy);
+  const coherence = sumSpeed > 0 ? meanSpeed / sumSpeed : 0;
+  const dtVis = Math.min(0.1, Math.max(0, breathTime - overflowLastT));
+  overflowLastT = breathTime;
+  const ease = 1 - Math.exp(-OVERFLOW_FLOW_EASE * dtVis);
+  if (meanSpeed > 1e-3) {
+    overflowHeadX += (mvx / meanSpeed - overflowHeadX) * ease;
+    overflowHeadY += (mvy / meanSpeed - overflowHeadY) * ease;
+    const hl = Math.hypot(overflowHeadX, overflowHeadY) || 1;
+    overflowHeadX /= hl; overflowHeadY /= hl;
+  }
+  overflowFlow += (coherence - overflowFlow) * ease;
+  const tail = spread * OVERFLOW_TAIL_MULT * Math.min(1, count / OVERFLOW_TAIL_FULL) * overflowFlow;
+  const sideW = spread * OVERFLOW_SIDE_MULT;
+  const hx = overflowHeadX, hy = overflowHeadY;
+  const shaded = overflowShadedSprites(sprites);
+  ctx.save();
+  ctx.globalAlpha = OVERFLOW_ALPHA;
   for (let k = 0; k < count; k++) {
     const a = (k * 7919 + 13) % N;
-    const b = (a + 1 + (k % 7)) % N;
-    if (a === b) continue;
-    if (boidDead[a] || boidDowned[a] || boidDead[b] || boidDowned[b]) continue;   // どちらかが倒れたら描かない
-    const dx = px[b] - px[a], dy = py[b] - py[a];
-    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-    const t = ((k * 0.6180339) % 1) * 0.8 + 0.1;              // 2体のあいだのどこか（組ごとに固定）
-    const along = Math.min(dist * t, OVERFLOW_DRAW_REACH);
-    const side = (((k * 0.4142136) % 1) - 0.5) * 16;           // 線の左右に少し散らす
-    const ux = dx / dist, uy = dy / dist;
-    const wx = px[a] + ux * along - uy * side;
-    const wy = py[a] + uy * along + ux * side;
-    const angle = Math.atan2(vy[a] + vy[b], vx[a] + vx[b]);
+    if (boidDead[a] || boidDowned[a]) continue;   // 付いていく竜が倒れたら描かない
+    const back = Math.pow((k * 0.6180339) % 1, 0.8);         // 0＝付いていく竜のそば／1＝尾の先（組ごとに固定）
+    const side = (((k * 0.4142136) % 1) - 0.5) * 2 * sideW * (1 - 0.5 * back);
+    const wx = px[a] - hx * tail * back - hy * side;
+    const wy = py[a] - hy * tail * back + hx * side;
+    const angle = Math.atan2(vy[a], vx[a]);
     const phase = breathTime * DRAGON_FLAP_SPEED + ((k * 0.7548777) % 1) * Math.PI * 2;
     const frameIdx = Math.floor((Math.sin(phase) * 0.5 + 0.5) * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
+    const sc = evoScale * OVERFLOW_SIZES[k % OVERFLOW_SIZES.length];
     ctx.save();
-    ctx.globalAlpha = 0.8;
     ctx.translate(wx, wy);
     ctx.rotate(angle);
-    if (evoScale !== 1) ctx.scale(evoScale, evoScale);
-    ctx.drawImage(sprites[frameIdx], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+    ctx.scale(sc, sc);
+    ctx.drawImage(shaded[frameIdx], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
     ctx.restore();
   }
+  ctx.restore();
 }
 
 function drawBoids() {
@@ -51286,8 +51463,27 @@ function buildReportText() {
   return ["【Dragon Tide 報告】", `種類: ${STRINGS.reportKinds[reportKind]}`, `ひとこと: ${note}`, ...buildReportStatusLines()].join("\n");
 }
 
-// 盤面の絵を縮めて PNG にする。DOM の HUD は入らない（canvas だけ）が、盤面の様子が分かれば足りる
-function captureReportShot() {
+// 盤面の絵を縮めて PNG にする。
+// v3.152.0（DT-585・Shooter「スクショにUIがない。UIについての報告もあり得るので全部表示して」）:
+// HUD・レベルアップの窓などの DOM も入れるため、html2canvas（MIT・assets/vendor に同梱）で画面ごと絵にする。
+// 重いので最初の📝で読み込む。読めない・時間がかかりすぎたときは、これまでどおり盤面（canvas）だけの絵にする
+const REPORT_UI_LIB_SRC = "assets/vendor/html2canvas.min.js";
+const REPORT_UI_SHOT_TIMEOUT_MS = 6000;   // これを過ぎたら盤面だけの絵に切り替える（クリップボードへ渡す絵を待たせすぎない）
+let reportUiLibPromise = null;
+function loadReportUiLib() {
+  if (window.html2canvas) return Promise.resolve(window.html2canvas);
+  if (!reportUiLibPromise) {
+    reportUiLibPromise = new Promise((resolve, reject) => {
+      const tag = document.createElement("script");
+      tag.src = REPORT_UI_LIB_SRC;
+      tag.onload = () => window.html2canvas ? resolve(window.html2canvas) : reject(new Error("html2canvas missing"));
+      tag.onerror = () => { reportUiLibPromise = null; reject(new Error("html2canvas load failed")); };
+      document.head.appendChild(tag);
+    });
+  }
+  return reportUiLibPromise;
+}
+function captureBoardOnlyShot() {
   return new Promise((resolve) => {
     try {
       const scale = Math.min(1, REPORT_SHOT_MAX_SIDE / Math.max(canvas.width, canvas.height));
@@ -51300,6 +51496,25 @@ function captureReportShot() {
       resolve(null);   // 絵が取れなくても文だけで報告できるようにする
     }
   });
+}
+/** 画面に見えているもの全部（盤面＋HUD＋開いている窓）。報告の窓と📝のボタンそのものは入れない */
+function captureUiShot() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const scale = Math.min(window.devicePixelRatio || 1, REPORT_SHOT_MAX_SIDE / Math.max(w, h));
+  return loadReportUiLib()
+    .then((html2canvas) => html2canvas(document.body, {
+      backgroundColor: "#000000", logging: false, useCORS: true, scale,
+      x: window.scrollX, y: window.scrollY, width: w, height: h, windowWidth: w, windowHeight: h,
+      ignoreElements: (el) => el.id === "report-panel" || el.id === "report-btn",
+    }))
+    .then((shot) => new Promise((resolve) => shot.toBlob((blob) => resolve(blob), "image/png")));
+}
+function captureReportShot() {
+  const board = captureBoardOnlyShot();   // 先に盤面だけの絵も取っておく（UI 込みが失敗したときの代わり）
+  let timer = 0;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(null), REPORT_UI_SHOT_TIMEOUT_MS); });
+  return Promise.race([captureUiShot().catch(() => null), timeout])
+    .then((blob) => { clearTimeout(timer); return blob || board; });
 }
 
 function renderReportKinds() {
