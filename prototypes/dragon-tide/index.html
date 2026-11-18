@@ -239,6 +239,8 @@
   .fo-card .fo-stageonly { position: absolute; bottom: 4px; right: 8px; font-size: 9px; font-weight: 700; color: #ffb070; letter-spacing: 0.05em; }
   .fo-card.special { border-color: #c890ff; background: linear-gradient(160deg, rgba(44,30,62,0.96), rgba(20,14,30,0.96)); }
   .fo-card .fo-icon { font-size: 26px; line-height: 1; }
+  /* v3.152.0（DT-584）: 特殊個体のカードは絵文字の代わりにその特殊個体の絵 */
+  .fo-card .fo-icon .fo-sp-thumb { width: 48px; height: 48px; display: block; }
   .fo-card .fo-name { font-size: 13px; font-weight: 700; color: #ffe8c0; }
   .fo-card.special .fo-name { color: #ead8ff; }
   .fo-card .fo-desc { font-size: 11px; color: rgba(240,225,200,0.85); line-height: 1.35; }
@@ -32273,6 +32275,25 @@ function specialThumbUrl(kind) {
     return cv;
   });
 }
+// v3.152.0（DT-584）: 特殊個体のカードの絵。追加＝その特殊個体、分岐＝分岐の色を乗せた絵、合成・突然変異＝なった先の特殊個体
+const PERK_SP_THUMB_PX = 96;   // カードに置く canvas の画素（CSS で 48px に縮める）
+const PERK_SP_THUMB_CROP = 0.2;   // 絵の四辺から落とす余白の割合
+function perkCardSpecialThumb(def) {
+  if (def.fuse) return specialThumbUrl(SPECIAL_KIND_BY_KEY[def.fuse.to]);
+  if (def.becomesSpecial) return specialThumbUrl(SPECIAL_KIND_BY_KEY[def.becomesSpecial]);
+  const kind = def.specialJoin !== undefined ? def.specialJoin : def.special;
+  if (kind === undefined || !SPECIAL_DEFS[kind]) return null;
+  const key = SPECIAL_DEFS[kind].key;
+  const tint = def.tag === "branch" && def.opt && SPECIAL_EVO_SPEC[key] ? SPECIAL_EVO_SPEC[key][def.opt].tint : null;
+  if (!tint) return specialThumbUrl(kind);
+  return treeThumb("s:" + kind + "|" + tint, () => {
+    const frames = tintedSprites("base:sp:" + key + ":thumb", getSpecialSprites(kind), tint);
+    const cv = document.createElement("canvas"); cv.width = cv.height = 104;
+    const c = cv.getContext("2d"); c.translate(52, 52); c.rotate(-Math.PI / 2);
+    if (frames && frames.length) c.drawImage(frames[0], -44, -44, 88, 88);
+    return cv;
+  });
+}
 let lvChoiceSelected = null;
 function renderLevelUpChoice(opts) {
   lvChoiceSelected = null;
@@ -42859,6 +42880,17 @@ function openNextPerkOffer() {
       (def.max > 1 && def.max !== Infinity ? `<span class="fo-stack">${have + 1}/${def.max}</span>` : "");
     btn.querySelector(".fo-name").textContent = text.name;
     btn.querySelector(".fo-desc").textContent = text.desc;
+    // v3.152.0（DT-584・Shooter「進化のアイコンはアイコンではなくその竜の絵に」）: 特殊個体の追加・進化・合成・突然変異のカードは、絵文字の代わりにその特殊個体の絵
+    if (spDef) {
+      const thumb = perkCardSpecialThumb(def);
+      if (thumb) {
+        const cv = document.createElement("canvas"); cv.width = cv.height = PERK_SP_THUMB_PX; cv.className = "fo-sp-thumb";
+        // 絵のまわりの余白を落として大きく見せる（ツリーの箱の絵は余白込みの 104px）
+        const m = thumb.width * PERK_SP_THUMB_CROP;
+        cv.getContext("2d").drawImage(thumb, m, m, thumb.width - 2 * m, thumb.height - 2 * m, 0, 0, PERK_SP_THUMB_PX, PERK_SP_THUMB_PX);
+        btn.querySelector(".fo-icon").replaceChildren(cv);
+      }
+    }
     // v3.47.0（案帳 DT-128・Shooter指摘「止めた直後に選択画面なので誤タップが頻発」）:
     // 押した瞬間ではなく、カードの上で押して離したときに選ぶ。押し始めがカードの上でないもの
     // （線を描いていた指が、出てきたカードの上で離れた）は選ばない
