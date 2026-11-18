@@ -29243,7 +29243,6 @@ const BROOD_DRAGONS            = 50;     // 大繁殖1枚で足す竜（前は5�
 const OVERFLOW_POWER_PER_BLOCK = 0.5;    // 上限超えの竜 OVERFLOW_POWER_BLOCK 体ごとに攻撃・HP +50%（1000体で約×3.8）
 const OVERFLOW_POWER_BLOCK     = 150;
 const OVERFLOW_DRAW_MAX        = 350;    // 見た目だけの竜を描く最大数（描画の重さの上限）
-const OVERFLOW_DRAW_REACH      = 26;     // 本物の竜から何pxまでの所に描くか（群れの隙間を埋める距離）
 let flockOverflow = 0;
 let N = 0;
 let px, py, vx, vy;
@@ -48324,38 +48323,89 @@ function drawBreathAttacks(now) {
 // v3.10.0: 極光（旧母竜・虹竜）専用の体格成長・「最初の1体」探しは撤去した（他の特殊個体と同じ扱い）。
 
 /**
- * v3.67.0（DT-497・Shooter指示「適当な2匹の間に表示だけする、どちらかが死んだら非表示に」）:
- * 上限超えの竜を、本物の竜2体のあいだ（片方から OVERFLOW_DRAW_REACH px まで）に描く。
- * 当たり判定も動きの計算も持たない。組み合わせは番号から決まる（乱数を使わない）ので毎フレーム同じ組で、
- * 本物2体に付いて動くように見える。尻尾は描かない（数が多いので胴体だけ）。
+ * v3.67.0（DT-497）: 上限超えの竜は当たり判定も動きの計算も持たない、絵だけの竜。
+ * v3.152.0（DT-583 案A・Shooter「ダンゴ状になってしまってあまり嬉しくない」）: 動く竜と同じ大きさ・濃さで隙間に詰めると
+ * ダンゴに見えたので、「下の層を飛ぶ小さく暗く薄い竜」にして、群れの進む向きの後ろへ流す。
+ * 数が増えるほど群れは「濃く」ではなく「長く」なる。伸ばす長さは動く竜の広がりの1倍まで（それより先は当たらない竜が目立つ）。
+ * 付いていく竜（a）と後ろへの量は番号から決める（乱数を使わない）。向きと流れの強さは描画だけの値で、指紋は変わらない。
  */
+const OVERFLOW_SIZES       = [0.5, 0.62, 0.75];   // 動く竜に対する大きさ（3段階）
+const OVERFLOW_ALPHA       = 0.45;                // 濃さ（動く竜は 0.85）
+const OVERFLOW_SHADE       = 0.5;                 // 絵に重ねる暗さ（黒を乗せる割合）
+const OVERFLOW_TAIL_MULT   = 1.0;                 // 後ろへ伸ばす長さ＝動く竜の広がり（重心からの平均距離）×これ
+const OVERFLOW_TAIL_FULL   = 250;                 // 上限超えの竜がこの数で、伸ばす長さがいっぱいになる
+const OVERFLOW_SIDE_MULT   = 0.35;                // 横への散らばり＝広がり×これ（後ろへ行くほど細る）
+const OVERFLOW_FLOW_EASE   = 3;                   // 向き・流れの強さを追う速さ（/秒。止まったとき尾が群れへ巻き取られる）
+const overflowShadeCache = new WeakMap();
+let overflowHeadX = 1, overflowHeadY = 0, overflowFlow = 0, overflowLastT = 0;
+function overflowShadedSprites(sprites) {
+  let out = overflowShadeCache.get(sprites);
+  if (out) return out;
+  out = sprites.map(src => {
+    const c = document.createElement("canvas");
+    c.width = src.width; c.height = src.height;
+    const g = c.getContext("2d");
+    g.drawImage(src, 0, 0);
+    g.globalCompositeOperation = "source-atop";
+    g.globalAlpha = OVERFLOW_SHADE;
+    g.fillStyle = "#06080c";
+    g.fillRect(0, 0, c.width, c.height);
+    return c;
+  });
+  overflowShadeCache.set(sprites, out);
+  return out;
+}
 function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical) {
   if (N < 2) return;
   const count = Math.min(flockOverflow, OVERFLOW_DRAW_MAX);
+  // 群れの重心・広がり・進む向き（平均の速度）と、向きのそろい具合（0＝ばらばら・回っている／1＝一方向）
+  let cx = 0, cy = 0, mvx = 0, mvy = 0, sumSpeed = 0, alive = 0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    cx += px[i]; cy += py[i]; mvx += vx[i]; mvy += vy[i]; sumSpeed += Math.hypot(vx[i], vy[i]); alive++;
+  }
+  if (alive < 1) return;
+  cx /= alive; cy /= alive;
+  let spread = 0;
+  for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i]) spread += Math.hypot(px[i] - cx, py[i] - cy);
+  spread = Math.max(20, spread / alive);
+  const meanSpeed = Math.hypot(mvx, mvy);
+  const coherence = sumSpeed > 0 ? meanSpeed / sumSpeed : 0;
+  const dtVis = Math.min(0.1, Math.max(0, breathTime - overflowLastT));
+  overflowLastT = breathTime;
+  const ease = 1 - Math.exp(-OVERFLOW_FLOW_EASE * dtVis);
+  if (meanSpeed > 1e-3) {
+    overflowHeadX += (mvx / meanSpeed - overflowHeadX) * ease;
+    overflowHeadY += (mvy / meanSpeed - overflowHeadY) * ease;
+    const hl = Math.hypot(overflowHeadX, overflowHeadY) || 1;
+    overflowHeadX /= hl; overflowHeadY /= hl;
+  }
+  overflowFlow += (coherence - overflowFlow) * ease;
+  const tail = spread * OVERFLOW_TAIL_MULT * Math.min(1, count / OVERFLOW_TAIL_FULL) * overflowFlow;
+  const sideW = spread * OVERFLOW_SIDE_MULT;
+  const hx = overflowHeadX, hy = overflowHeadY;
+  const shaded = overflowShadedSprites(sprites);
+  ctx.save();
+  ctx.globalAlpha = OVERFLOW_ALPHA;
   for (let k = 0; k < count; k++) {
     const a = (k * 7919 + 13) % N;
-    const b = (a + 1 + (k % 7)) % N;
-    if (a === b) continue;
-    if (boidDead[a] || boidDowned[a] || boidDead[b] || boidDowned[b]) continue;   // どちらかが倒れたら描かない
-    const dx = px[b] - px[a], dy = py[b] - py[a];
-    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-    const t = ((k * 0.6180339) % 1) * 0.8 + 0.1;              // 2体のあいだのどこか（組ごとに固定）
-    const along = Math.min(dist * t, OVERFLOW_DRAW_REACH);
-    const side = (((k * 0.4142136) % 1) - 0.5) * 16;           // 線の左右に少し散らす
-    const ux = dx / dist, uy = dy / dist;
-    const wx = px[a] + ux * along - uy * side;
-    const wy = py[a] + uy * along + ux * side;
-    const angle = Math.atan2(vy[a] + vy[b], vx[a] + vx[b]);
+    if (boidDead[a] || boidDowned[a]) continue;   // 付いていく竜が倒れたら描かない
+    const back = Math.pow((k * 0.6180339) % 1, 0.8);         // 0＝付いていく竜のそば／1＝尾の先（組ごとに固定）
+    const side = (((k * 0.4142136) % 1) - 0.5) * 2 * sideW * (1 - 0.5 * back);
+    const wx = px[a] - hx * tail * back - hy * side;
+    const wy = py[a] - hy * tail * back + hx * side;
+    const angle = Math.atan2(vy[a], vx[a]);
     const phase = breathTime * DRAGON_FLAP_SPEED + ((k * 0.7548777) % 1) * Math.PI * 2;
     const frameIdx = Math.floor((Math.sin(phase) * 0.5 + 0.5) * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
+    const sc = evoScale * OVERFLOW_SIZES[k % OVERFLOW_SIZES.length];
     ctx.save();
-    ctx.globalAlpha = 0.8;
     ctx.translate(wx, wy);
     ctx.rotate(angle);
-    if (evoScale !== 1) ctx.scale(evoScale, evoScale);
-    ctx.drawImage(sprites[frameIdx], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+    ctx.scale(sc, sc);
+    ctx.drawImage(shaded[frameIdx], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
     ctx.restore();
   }
+  ctx.restore();
 }
 
 function drawBoids() {
