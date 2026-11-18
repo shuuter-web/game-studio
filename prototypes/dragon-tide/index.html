@@ -1323,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.155.0";
+const GAME_VERSION = "v3.156.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16933,7 +16933,7 @@ function drawFlowerMoverCaps() {
 //   玉転がしの兵：大玉を押して群れへ向かってくる2人組。倒すと大玉がその場に残る（導火線はそのとき点く）
 //   楕円玉：跳ねるたび・転がるうちに向きが左右にぶれる。全体の1割。打ち返す兵の狙いも外れる
 // 首都は火薬庫の城。四角い城壁は竜の攻撃をほぼ通さない（1/100。11/17 Shooter）が、玉の爆発は3倍効く。
-// 城の中の火薬庫（赤い屋根）に爆発が届くと誘爆して、まわりの建物と城をまとめて壊す。
+// 城の中の火薬庫（赤い屋根）に爆発が届くと誘爆して、まわりの建物と城壁をまとめて壊す（v3.156.0〜首都そのものは巻き込まない）。
 // -----------------------------------------------------------------
 const BOMB_GROUND_BG       = "#2c2a26";   // 火薬で煤けた乾いた土
 const BOMB_SIZES = [
@@ -17031,13 +17031,11 @@ const BOMB_WALL_SLIDE_SPEED = 130;   // 壁に押し付けられた竜が、壁�
 // 当たりを1枚ぶんの長さの棒（カプセル）にしてくぼみを無くし、滑る向きは「壁の切れ目に近い側」を一度決めたら BOMB_WALL_SLIDE_HOLD 秒は変えない
 const BOMB_WALL_SLIDE_HOLD = 1.5;    // 決めた滑る向きを保つ秒数
 const BOMB_WALL_CHAIN_MAX  = 30;     // 切れ目を探してたどる壁の枚数の上限（閉じた城壁で回り続けないように）
-const BOMB_BUMPER_COLOR    = "#162a5c";
 const BOMB_WALL_BOUNCE     = 0.9;    // 固い壁で跳ね返るときに残る速さ（ピンボールのように強く返す）
 const POWDER_COUNT         = 3;      // 火薬庫の数
 const POWDER_RING          = 150;    // 首都の縁から火薬庫までの距離
 const POWDER_BLAST_R       = 260;    // 誘爆の半径
 const POWDER_DELAY         = 0.35;   // 爆発が届いてから誘爆するまで
-const POWDER_BOSS_SHARE    = 0.22;   // 誘爆1つで首都が失う体力の割合
 const POWDER_WORLD_DMG     = 4000;   // 誘爆がまわりの建物・城壁・敵に与える傷
 const BOMB_TARGETS         = { building: TARGET_AIM, wall: TARGET_AIM, mover: TARGET_AIM };
 const BOMB_ATTACKER        = { name: "bomb_ball", tone: "blast" };
@@ -17104,6 +17102,9 @@ function generateBombFort(boss, stageIndex, result) {
   return out;
 }
 
+// v3.156.0（DT-333 手直し・11/19 Shooter「見た目が同じなのに機能が違うのはまずい」「ボスの壁も含めて3種類の壁ができている。統一」
+// 「バンパーの見た目と丸い角はやめ、全て壊れる壁に。強く跳ね返すのと竜の攻撃1/100は残す」）:
+// 火薬庫の城の城壁・町の壁・野原の壁は、どれもこの1種類（石の壁の見た目・壊れる・竜の攻撃1/100・玉の爆発3倍・玉も竜も強くはじく）
 function makeBombWall(x, y, hp, angle) {
   const w = makeWallSegment(x, y, hp, angle);
   w._bombWall = true; w.color = BOMB_WALL_COLOR;
@@ -17139,11 +17140,7 @@ function generateBombTownWalls(townMetas, boss, stageIndex, result) {
         const x = meta.cx + Math.cos(a) * R, y = meta.cy + Math.sin(a) * R;
         if (x < BOMB_EDGE || x > WORLD_W - BOMB_EDGE || y < BOMB_EDGE || y > WORLD_H - BOMB_EDGE) continue;
         if (Math.abs(x - anchor.wx) < BOMB_FORT_HALF + 60 && Math.abs(y - anchor.wy) < BOMB_FORT_HALF + 60) continue;   // 城の城壁と重ねない
-        // v3.154.0（DT-333 手直し・Shooter「街の壁もこの壁で」）: 町の壁も野原と同じバンパー（玉と竜をはじく・同じ見た目）。
-        // 野原のバンパーと違い、玉の爆発では壊れる（町を守る壁を崩す遊びを残す）
-        const w = makeBombWall(x, y, hp, a + Math.PI / 2);
-        w._bombBumper = true; w.color = BOMB_BUMPER_COLOR;
-        out.push(w);
+        out.push(makeBombWall(x, y, hp, a + Math.PI / 2));
       }
     }
   }
@@ -17189,7 +17186,7 @@ function generateBombPinWalls(boss, stageIndex, result) {
     if (ok) for (const q of pts) if (!freeAt(q.x, q.y)) { ok = false; break; }
     if (!ok) continue;
     centers.push({ x: cx, y: cy });
-    for (const q of pts) { const w = makeBombWall(q.x, q.y, hp, q.a); w._bombPin = true; w._bombBumper = true; w.color = BOMB_BUMPER_COLOR; out.push(w); }
+    for (const q of pts) out.push(makeBombWall(q.x, q.y, hp, q.a));
   }
   return out;
 }
@@ -17442,12 +17439,10 @@ function powderExplode(s) {
   bombIgnitePowder(x, y, R);   // 隣の火薬庫にも届けば続けて誘爆
   const idx = settlements.indexOf(s);
   if (idx >= 0 && !s.fallen) damageBuilding(idx, s.maxHp * 10);
-  hitInRadius(x, y, R, { blast: POWDER_WORLD_DMG }, BOMB_TARGETS);
-  const boss = settlements[bossSettlementIdx];
-  if (boss && !boss.fallen) {
-    damageBuilding(bossSettlementIdx, boss.maxHp * POWDER_BOSS_SHARE);
-    pushWorldText(boss.wx, boss.wy - boss.radius - 20, STRINGS.bombPowderBlast, "#ffb060", true);
-  }
+  // v3.156.0（DT-333 手直し・11/19 Shooter「火薬庫に巻き込まれたボスがすぐ死んでしまい面白くない。ボス本体は巻き込まれないように」）:
+  // 誘爆は首都（ボス本体）には傷を入れない（以前は1つで最大体力の22%＋まわりへの傷）。城壁・城下の建物・敵はこれまでどおり壊れる
+  hitInRadius(x, y, R, { blast: POWDER_WORLD_DMG }, BOMB_TARGETS, bossSettlementIdx);
+  pushWorldText(x, y - s.radius - 20, STRINGS.bombPowderBlast, "#ffb060", true);
   bombBlastNow = wasBlast;
   spawnExplosionFx(x, y, R, { fire: 1 });
   bombFx.push({ kind: "ring", x, y, r: R, t: 0, life: 0.6 });
@@ -27944,29 +27939,7 @@ function drawSettlementOnLayer(bctx, settlement) {
  * リング接線方向（_wallAngle）に回転した石ブロック＋胸壁の刻みで「城壁」に見せる。
  * fallen 時は呼び出し元の alpha=0.22/color="#333" でそのまま瓦礫化する。
  */
-/** 爆弾玉の国のバンパー（野原・町の壁）: 石の壁ではなく、青いレールと桃色の芯、真ん中に鋲（見た目は焼き付け）。
- *  v3.154.0（DT-333 手直し・Shooter「光るのは無しで。四角でなく角を丸く」）: まわりの光と当たったときの光をやめ、角の丸い形にした */
-function drawBumperOnCtx(c, settlement) {
-  const halfL = WALL_SEG_SPACING * 0.5 + 3, halfW = 8;
-  const rounded = (x, y, w, h, r) => { c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h); };
-  c.save();
-  c.translate(settlement.wx, settlement.wy);
-  c.rotate(settlement._wallAngle);
-  c.fillStyle = BOMB_BUMPER_COLOR;
-  rounded(-halfL, -halfW, halfL * 2, halfW * 2, halfW);
-  c.fill();
-  c.strokeStyle = "#4fa8d0"; c.lineWidth = 2.5;
-  c.stroke();
-  c.fillStyle = "#e060b8";
-  rounded(-halfL + 5, -2, halfL * 2 - 10, 4, 2);
-  c.fill();
-  c.fillStyle = "#fff6b0";
-  c.beginPath(); c.arc(0, 0, 3.2, 0, Math.PI * 2); c.fill();
-  c.restore();
-}
-
 function drawWallSegmentOnCtx(c, settlement, color) {
-  if (settlement._bombBumper) { drawBumperOnCtx(c, settlement); return; }
   const halfL = WALL_SEG_SPACING * 0.5 + 3; // 隣セグメントと視覚的につながる長さ
   const halfW = 9;                          // 壁の厚み（見た目）
   c.save();
@@ -30698,7 +30671,7 @@ const STRINGS = {
     { route: "角 → 対角の首都", play: "湿った谷の里。人々は大きなキノコをくり抜いた家に住み、キノコの家は胞子を飛ばして隣に新しい家を生やす。放っておくと里がどんどん広がる。",
       rule: "家は時間ごとに隣へ1棟ずつ生える（画面の外の里は最初の2倍まで。目の前の里は早く、どこまでも広がる）。群れが近づくと家が遅い黄色の胞子玉を撃ち、外れて落ちた胞子玉はそこにまた家を生やす。避けるほど里が外へ広がるので、早めに刈るか、外側から削る。首都は動かない大キノコ「大笠茸」で、群れのまわりに黄緑の点線の輪を出して胞子の雨を降らせ（輪の中に家が生える）、首都から白い菌糸の線を3本伸ばして線の上にキノコを生やして刺す。線ごとに生えるキノコの色が違い、赤はふつうの家、青は遠くから狙って連射、黄ははじける胞子玉、紫は撃たずにまわりの毒霧で竜を遅くする（色のキノコは増えない）。輪と線をよけながら首都を削る" },
     { route: "角 → 対角の火薬庫の城", play: "火薬づくりで栄えた国。兵は導火線のついた鉄の玉を撃ち出してくる。玉は時間が来るまで何を当てても壊れないが、竜が体で触れると、その竜が進んでいた向きへ転がる。玉の向こう側から、壊したいもののほうへ線を引く。",
-      rule: "爆発は誰の味方でもない（竜・建物・城壁・敵の兵に同じように効く）。玉は大中小の3つで、小玉は1匹で遠くまで飛び、大玉は群れがまとまって当たるとよく転がる。導火線の残りは点滅の速さで分かり、残り1秒で赤く速く点滅して届く範囲が地面に出る。臼砲（町・前哨堡・城壁の上の短い砲）が玉を山なりに撃ち出し、打ち返す兵が棍棒で打ち返してくる。玉転がしの兵を倒すと大玉がその場に残る。楕円玉は転がる向きがぶれる。首都の火薬庫の城の城壁は竜の攻撃をほぼ通さない（1/100）が、玉の爆発は3倍効く。城の中の火薬庫（赤い屋根）に爆発が届くと誘爆して、城をまとめて壊す" },
+      rule: "爆発は誰の味方でもない（竜・建物・城壁・敵の兵に同じように効く）。玉は大中小の3つで、小玉は1匹で遠くまで飛び、大玉は群れがまとまって当たるとよく転がる。導火線の残りは点滅の速さで分かり、残り1秒で赤く速く点滅して届く範囲が地面に出る。臼砲（町・前哨堡・城壁の上の短い砲）が玉を山なりに撃ち出し、打ち返す兵が棍棒で打ち返してくる。玉転がしの兵を倒すと大玉がその場に残る。楕円玉は転がる向きがぶれる。石の壁（火薬庫の城の城壁・町の壁・野原の壁。どれも同じ）は玉も竜も強く跳ね返し、竜の攻撃をほぼ通さない（1/100）が、玉の爆発は3倍効いて壊れる。城の中の火薬庫（赤い屋根）に爆発が届くと誘爆して、城壁と城下の建物をまとめて壊す（首都そのものは巻き込まれない）" },
     { route: "角 → 対角の女王花", play: "見わたす限りの花畑に、家より大きい花が咲いている。村の人は花に守られて安らかに暮らしているが、花は竜を食べる。花の間を縫って線を引き、つぼみの震えを見てよけるか、口が開いたところを薙ぐ。",
       rule: "竜食い花は口を閉じている間はほぼ攻撃が通らない（傷1/100）。つぼみが震えて（予告1秒。食べる範囲が地面に出る）口が開くと攻撃が通り（傷2倍）、口が閉じる瞬間に範囲にいた竜は飲み込まれる（普通のダウン。時間で戻る）。開いている間に叩いて、閉じる前に範囲を出る。口を閉じたまま蔦を伸ばしてくることもある（帯の予告のあと打つ）。茨の蔓は近い花どうしを結ぶ帯で、上を通ると傷を受けて遅くなる。蔓は壊せず、両端のどちらかの花を倒すと枯れる。町の中にも咲く。紫の花は種を山なりに撃ち、落ちた種は8秒で小さな竜食い花になる（芽のうちに倒す）。黄の花は花粉の雲を吐き、中の竜は半分の速さになる。橙の花は花蜂8匹の巣で、群れが近づくと蜂が追って刺す（巣を倒すと散る）。首都の女王花は花びら12枚が盾で、口が閉じている間はほぼ攻撃が通らない。16秒ごとに花びら全体が震えて地面に渦が出て、口を開いて4秒かけて群れを芯へ吸い寄せる（その間は攻撃が通る）。吸い込みが終わって口が閉じる瞬間に、芯の口にいた竜は飲み込まれる。動く敵はその時代のいつもの敵（花飾り付き）" },
   ],
@@ -33274,7 +33247,6 @@ function updateHUDWeapon() {
 function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
-  if (settlement._bombPin) return;   // 野原のバンパーは壊れない（玉と竜をはじく仕掛け。壊せると地図の形が崩れる）
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   if (settlement._queenFlower) damage *= queenCoreDamageMult();   // v3.147.0（案帳 DT-339）: 女王花の芯は、花びらが残っているほど傷が通らない
   if (settlement._bombWall) damage *= bombBlastNow ? BOMB_WALL_BLAST_MULT : BOMB_WALL_DRAGON_MULT;   // v3.146.0（案帳 DT-333）: 火薬庫の城の城壁は竜の攻撃をほぼ通さず、玉の爆発が3倍効く
@@ -33396,7 +33368,7 @@ function collectAimTargets(wx, wy, maxDist, targets, boidIdx, halfArc, maxCount,
     buildingGridQueryRadius(wx, wy, Math.max(1, Math.ceil(maxDist / BUILDING_GRID_CELL)), _aimGridBuf);
     for (const sIdx of _aimGridBuf) {
       const st = settlements[sIdx];
-      if (!st || st.fallen || st._bombPin) continue;   // バンパーは壊れないので狙わない
+      if (!st || st.fallen) continue;
       if (!(st._isWall ? aimWall : aimBuilding)) continue;
       const dx = st.wx - wx, dy = st.wy - wy;
       const d2 = dx * dx + dy * dy;
@@ -36311,7 +36283,7 @@ function drawSpecialBolts() {
  * v2.10.0: 以前は下見のたびに 0 ダメージを実際に入れていたので、
  * 鏡の盾兵や潜行中の敵が下見だけで「弾いた火花」を出していた。
  */
-function hitInRadius(wx, wy, radius, hit, targets = TARGETS_ALL_AIM) {
+function hitInRadius(wx, wy, radius, hit, targets = TARGETS_ALL_AIM, skipIdx = -1) {   // skipIdx: 巻き込まない建物（火薬庫の誘爆の首都など）
   let hits = 0;
   if (hit && hit.blast > 0) canopyApplyBlast(wx, wy, radius);   // v3.21.0: 爆発カテゴリは樹冠を抉る
   const cellRadius = Math.max(1, Math.ceil(radius / BUILDING_GRID_CELL));
@@ -36319,7 +36291,7 @@ function hitInRadius(wx, wy, radius, hit, targets = TARGETS_ALL_AIM) {
   const r2 = radius * radius;
   for (const sIdx of _buildingNeighbourBuf) {
     const st = settlements[sIdx];
-    if (!st || st.fallen) continue;
+    if (!st || st.fallen || sIdx === skipIdx) continue;
     if (!targetHittable(targets, settlementTargetClass(st))) continue;   // v2.13.0
     const dx = st.wx - wx, dy = st.wy - wy;
     if (dx * dx + dy * dy > r2) continue;
@@ -47790,34 +47762,14 @@ function applyObstaclePushout() {
     for (const sIdx of _obstacleQueryBuf) {
       const s = settlements[sIdx];
       if (!s || s.fallen || !s._isWall) continue;
-      if (s._bombBumper) { bumpBoidOffBumper(i, s); continue; }   // 爆弾玉の国のバンパー（野原・町の壁）: 竜もはじく
-      if (s._bombWall) { if (pushBoidOutOfBombWall(i, s)) slideBoidAlongWall(i, s); continue; }   // 火薬庫の城の城壁
+      if (s._bombWall) { bumpBoidOffBumper(i, s); continue; }   // 爆弾玉の国の壁（城壁・町・野原とも同じ）: 竜もはじく
       pushBoidOutOfCircle(i, s.wx, s.wy, s.radius + OBSTACLE_PUSH_GAP);
     }
   }
 }
 
-/**
- * 爆弾玉の国の壁1枚の当たり：壁の向き（_wallAngle）に WALL_SEG_SPACING の長さを持つ棒（カプセル）。
- * 丸い当たりを並べると継ぎ目にくぼみができて竜がはまるので、隣と重なる棒にしてなめらかな面にする（DT-333 手直し）。
- * 竜を面の外へ出し、内向きの速さを消す。面に触れていたら外向きの向き（_wallNx/_wallNy）を残して true
- */
-const _wallHit = { nx: 0, ny: 0 };
-function pushBoidOutOfBombWall(i, w) {
-  const ax = Math.cos(w._wallAngle), ay = Math.sin(w._wallAngle), half = WALL_SEG_SPACING * 0.5;
-  const minDist = w.radius + OBSTACLE_PUSH_GAP;
-  const t = Math.max(-half, Math.min(half, (px[i] - w.wx) * ax + (py[i] - w.wy) * ay));
-  const qx = w.wx + ax * t, qy = w.wy + ay * t;
-  const dx = px[i] - qx, dy = py[i] - qy, d2 = dx * dx + dy * dy;
-  if (d2 > (minDist + 2) * (minDist + 2)) return false;
-  if (d2 === 0) return false;
-  const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
-  if (d < minDist) { px[i] = qx + nx * minDist; py[i] = qy + ny * minDist; }
-  const vn = vx[i] * nx + vy[i] * ny;
-  if (vn < 0) { vx[i] -= vn * nx; vy[i] -= vn * ny; }
-  _wallHit.nx = nx; _wallHit.ny = ny;
-  return true;
-}
+/** 爆弾玉の国の壁1枚の当たりは、壁の向き（_wallAngle）に WALL_SEG_SPACING の長さを持つ棒（カプセル。bumpBoidOffBumper）。
+ *  丸い当たりを並べると継ぎ目にくぼみができて竜がはまるので、隣と重なる棒にしてなめらかな面にする（DT-333 手直し） */
 /** 壁 w から向き (dx,dy) へ、つながった爆弾玉の国の壁を何枚たどれるか（切れ目までの近さ）。弧でもたどれるよう1枚ごとに向きを直す */
 function bombWallChainLength(w, dx, dy) {
   let cur = w, n = 0;
@@ -47862,7 +47814,7 @@ function slideBoidAlongWall(i, w) {
   vx[i] += (sign * BOMB_WALL_SLIDE_SPEED - vt) * tx;
   vy[i] += (sign * BOMB_WALL_SLIDE_SPEED - vt) * ty;
 }
-/** バンパー（野原・町の壁）に触れた竜をはじく（棒の当たりの外へ出し、内向きの速度を反射し、最低でも BOMB_BUMPER_MIN_KICK で外へ飛ばす）。
+/** 爆弾玉の国の壁（城壁・町・野原）に触れた竜をはじく（棒の当たりの外へ出し、内向きの速度を反射し、最低でも BOMB_BUMPER_MIN_KICK で外へ飛ばす）。
  *  はじくだけだと、リーダーが壁の向こうにいる竜は同じ所で跳ね続けるので、壁の切れ目へ向けて滑らせもする（DT-333 手直し） */
 function bumpBoidOffBumper(i, w) {
   const ax = Math.cos(w._wallAngle), ay = Math.sin(w._wallAngle), half = WALL_SEG_SPACING * 0.5;
