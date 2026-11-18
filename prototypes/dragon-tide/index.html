@@ -1323,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.154.0";
+const GAME_VERSION = "v3.155.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -48922,19 +48922,20 @@ function drawBreathAttacks(now) {
 const OVERFLOW_SIZES       = [0.5, 0.62, 0.75];   // 動く竜に対する大きさ（3段階）
 // v3.154.0（DT-583 手直し・Shooter「追加の竜が影に見える。位置関係が一様で動きが完全同期していて見た目も影っぽい」「処理負荷の少ない方法で」）:
 // 暗く薄い絵は影に見えたので、濃さを上げ暗さを下げ、少し空の色（OVERFLOW_HAZE）に寄せて「遠くを飛ぶ竜」にする。
-// 動きは竜ごとに、付いていく竜のまわりをゆっくり漂う（OVERFLOW_WOBBLE_*）・向きが揺れる（OVERFLOW_TURN_*）・羽ばたきの速さが違う（OVERFLOW_FLAP_*）。
-// どれも番号から決めた位相・速さに sin を掛けるだけ（1体あたり三角関数が数回。乱数なし・描画だけ）
+// v3.155.0（DT-583 手直し2・Shooter「わちゃわちゃしすぎ」「前のやつの、羽ばたきの速さを変えるだけで良かったのでは」「尻尾がない」）:
+// 漂い・向きの揺れはやめて v3.152.0 の並び方（付いていく竜の向きのまま）に戻し、羽ばたきの速さだけ竜ごとに変える（OVERFLOW_FLAP_*）。
+// 尻尾は v3.67.0 から描いていなかったので、付いていく竜の尻尾の曲がり（boidAngleHistory）を借りた短い尾を足す。
+// 尾は大きさ3段階ごとに1本の道にまとめて3回だけ塗る（350体でも stroke は3回。乱数なし・描画だけ）
 const OVERFLOW_ALPHA       = 0.72;                // 濃さ（動く竜は 0.85。v3.152.0 は 0.45）
 const OVERFLOW_SHADE       = 0.22;                // 絵に重ねる暗さ（黒を乗せる割合。v3.152.0 は 0.5）
 const OVERFLOW_HAZE        = 0.18;                // 絵に重ねる空の色の割合（遠くにいる感じ。影の黒と見分ける）
-const OVERFLOW_HAZE_COLOR  = "#b8c8d8";
-const OVERFLOW_WOBBLE_MIN  = 6;                   // 漂う幅（px）の下限・上限（竜ごとに違う）
-const OVERFLOW_WOBBLE_MAX  = 18;
-const OVERFLOW_WOBBLE_HZ_MIN = 0.25;              // 漂う速さ（往復/秒）の下限・上限
-const OVERFLOW_WOBBLE_HZ_MAX = 0.7;
-const OVERFLOW_TURN_MAX    = 0.35;                // 向きの揺れ（ラジアン）
+const OVERFLOW_HAZE_COLOR  = "#b8c8d8";   // overflowTailColor の haze と同じ色
 const OVERFLOW_FLAP_MIN    = 0.75;                // 羽ばたきの速さ（動く竜に対する倍率）の下限・上限
 const OVERFLOW_FLAP_MAX    = 1.35;
+const OVERFLOW_TAIL_SEGS   = 3;                   // 上限超えの竜の尻尾の節の数（動く竜は TAIL_SEGS=5。小さいので短く）
+const OVERFLOW_TAIL_ROOT   = 10;                  // 尻尾の根元＝胴の重心から後ろへこれ×大きさ（動く竜の TAIL_ROOT_OFFSET と同じ実測値）
+const OVERFLOW_TAIL_CURL   = 0.6;                 // 付いていく竜の尻尾の曲がりをどれだけ借りるか
+const OVERFLOW_TAIL_WIDTH  = 0.65;                // 尻尾の太さ＝動く竜の根元の太さ×大きさ×これ（先細りの代わりの平均）
 const OVERFLOW_TAIL_MULT   = 1.0;                 // 後ろへ伸ばす長さ＝動く竜の広がり（重心からの平均距離）×これ
 const OVERFLOW_TAIL_FULL   = 250;                 // 上限超えの竜がこの数で、伸ばす長さがいっぱいになる
 const OVERFLOW_SIDE_MULT   = 0.35;                // 横への散らばり＝広がり×これ（後ろへ行くほど細る）
@@ -48961,7 +48962,7 @@ function overflowShadedSprites(sprites) {
   overflowShadeCache.set(sprites, out);
   return out;
 }
-function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical) {
+function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, tailBody) {
   if (N < 2) return;
   const count = Math.min(flockOverflow, OVERFLOW_DRAW_MAX);
   // 群れの重心・広がり・進む向き（平均の速度）と、向きのそろい具合（0＝ばらばら・回っている／1＝一方向）
@@ -48991,6 +48992,7 @@ function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical) {
   const sideW = spread * OVERFLOW_SIDE_MULT;
   const hx = overflowHeadX, hy = overflowHeadY;
   const shaded = overflowShadedSprites(sprites);
+  const tailPaths = tailBody ? OVERFLOW_SIZES.map(() => new Path2D()) : null;   // 尻尾の無い竜種（円盤）は null
   ctx.save();
   ctx.globalAlpha = OVERFLOW_ALPHA;
   for (let k = 0; k < count; k++) {
@@ -48998,18 +49000,30 @@ function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical) {
     if (boidDead[a] || boidDowned[a]) continue;   // 付いていく竜が倒れたら描かない
     const back = Math.pow((k * 0.6180339) % 1, 0.8);         // 0＝付いていく竜のそば／1＝尾の先（組ごとに固定）
     const side = (((k * 0.4142136) % 1) - 0.5) * 2 * sideW * (1 - 0.5 * back);
-    // 竜ごとの漂い：番号から幅・速さ・位相を決め、楕円を描くように付いていく竜のまわりを動く（同期して見えないように）
-    const u1 = (k * 0.3819660) % 1, u2 = (k * 0.5698403) % 1, u3 = (k * 0.8191725) % 1;
-    const amp = OVERFLOW_WOBBLE_MIN + (OVERFLOW_WOBBLE_MAX - OVERFLOW_WOBBLE_MIN) * u1;
-    const wobT = breathTime * (OVERFLOW_WOBBLE_HZ_MIN + (OVERFLOW_WOBBLE_HZ_MAX - OVERFLOW_WOBBLE_HZ_MIN) * u2) * Math.PI * 2 + u3 * Math.PI * 2;
-    const wobS = Math.sin(wobT), wobC = Math.cos(wobT * 0.83 + u1 * 4);
-    const wx = px[a] - hx * tail * back - hy * side + wobC * amp;
-    const wy = py[a] - hy * tail * back + hx * side + wobS * amp;
-    const angle = Math.atan2(vy[a], vx[a]) + OVERFLOW_TURN_MAX * Math.sin(wobT * 0.7 + u2 * 5);
+    const u3 = (k * 0.8191725) % 1;
+    const wx = px[a] - hx * tail * back - hy * side;
+    const wy = py[a] - hy * tail * back + hx * side;
+    const angle = Math.atan2(vy[a], vx[a]);
     const flapMul = OVERFLOW_FLAP_MIN + (OVERFLOW_FLAP_MAX - OVERFLOW_FLAP_MIN) * u3;
     const phase = breathTime * DRAGON_FLAP_SPEED * flapMul + ((k * 0.7548777) % 1) * Math.PI * 2;
     const frameIdx = Math.floor((Math.sin(phase) * 0.5 + 0.5) * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
-    const sc = evoScale * OVERFLOW_SIZES[k % OVERFLOW_SIZES.length];
+    const sizeIdx = k % OVERFLOW_SIZES.length;
+    const sc = evoScale * OVERFLOW_SIZES[sizeIdx];
+    if (tailPaths) {
+      // 付いていく竜の尻尾の曲がりを借りる（向きが同じなので曲がり方もそろうが、羽ばたきがずれるので同期して見えにくい）
+      const path = tailPaths[sizeIdx];
+      const base = a * TAIL_SEGS;
+      let sx = wx - Math.cos(angle) * OVERFLOW_TAIL_ROOT * sc, sy = wy - Math.sin(angle) * OVERFLOW_TAIL_ROOT * sc;
+      path.moveTo(sx, sy);
+      for (let seg = 0; seg < OVERFLOW_TAIL_SEGS; seg++) {
+        let diff = boidAngleHistory[base + Math.min(seg, TAIL_SEGS - 1)] - angle;
+        if (diff > Math.PI) diff -= Math.PI * 2; else if (diff < -Math.PI) diff += Math.PI * 2;
+        const segAngle = angle + Math.PI + diff * OVERFLOW_TAIL_CURL;
+        sx += Math.cos(segAngle) * TAIL_SEG_LEN * sc;
+        sy += Math.sin(segAngle) * TAIL_SEG_LEN * sc;
+        path.lineTo(sx, sy);
+      }
+    }
     ctx.save();
     ctx.translate(wx, wy);
     ctx.rotate(angle);
@@ -49017,7 +49031,31 @@ function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical) {
     ctx.drawImage(shaded[frameIdx], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
     ctx.restore();
   }
+  if (tailPaths) {
+    // 尾は胴体の後に塗っても、胴体の絵の後ろ端から外へ伸びるだけなので重なりは目立たない
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.strokeStyle = overflowTailColor(tailBody);
+    for (let t = 0; t < tailPaths.length; t++) {
+      ctx.lineWidth = Math.max(0.4, TAIL_WIDTH0 * OVERFLOW_TAIL_WIDTH * evoScale * OVERFLOW_SIZES[t]);
+      ctx.stroke(tailPaths[t]);
+    }
+  }
   ctx.restore();
+}
+// 尾の色：胴体の絵に重ねたのと同じ暗さ・空の色を、竜種の胴の色（palette.body）に重ねる
+const overflowTailColorCache = new Map();
+function overflowTailColor(body) {
+  let out = overflowTailColorCache.get(body);
+  if (out) return out;
+  const m = body.match(/\d+(\.\d+)?/g) || ["255", "140", "40"];
+  const haze = [0xb8, 0xc8, 0xd8], dark = [6, 8, 12];
+  const ch = [0, 1, 2].map(c => {
+    const shaded = Number(m[c]) * (1 - OVERFLOW_SHADE) + dark[c] * OVERFLOW_SHADE;
+    return Math.round(shaded * (1 - OVERFLOW_HAZE) + haze[c] * OVERFLOW_HAZE);
+  });
+  out = `rgb(${ch[0]}, ${ch[1]}, ${ch[2]})`;
+  overflowTailColorCache.set(body, out);
+  return out;
 }
 
 function drawBoids() {
@@ -49068,7 +49106,7 @@ function drawBoids() {
     }
   }
 
-  if (flockOverflow > 0 && !onBall) drawOverflowDragons(sprites, evoScale, spritePx, halfLogical);   // v3.67.0: 本物の下に描く
+  if (flockOverflow > 0 && !onBall) drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, speciesNoTail ? null : paletteFlock.body);   // v3.67.0: 本物の下に描く
 
   for (let i = 0; i < N; i++) {
     // dead かつフェード完了 → スキップ（従来通り）
