@@ -1323,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.153.0";
+const GAME_VERSION = "v3.154.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1585,7 +1585,14 @@ const DEBUG_ENEMY_LABELS = {
   seed_flower: "🟣種を飛ばす花", pollen_flower: "🟡花粉の花", hive_flower: "🟠巣の花", flower_bee: "🐝花蜂", flower_sprout: "🌱花の芽",   // 2回目
   bomb_batter: "💣打ち返す兵", bomb_roller: "💣玉転がしの兵",   // v3.146.0（案帳 DT-333）
   sword_militia: "🗡足軽", sword_brute: "🗡大太刀", sword_beast: "🐗剣の巨獣",   // v3.126.0（DT-535 手直し）
+  caravan: "🐫行商の隊", caravan_guard: "🐫行商の隊の護衛",   // DT-586
 };
+
+// 名前の引き方：デバッグ用の表に無い敵は図鑑の名前（CODEX_ENEMY_NAMES）に落とす。
+// 表に足し忘れた敵が報告の「敵:」に内部名（caravan_guard など）で出ないようにするため（DT-586）
+function enemyLabel(key) {
+  return DEBUG_ENEMY_LABELS[key] ?? CODEX_ENEMY_NAMES[key] ?? key;
+}
 
 // 図鑑に並べる順（見たい順＝新しい敵を上に）。treasure まで含めて全部出せるようにする。
 const DEBUG_ENEMY_ORDER = [
@@ -2087,7 +2094,7 @@ function renderDebugPanel() {
       b.className = "dbg-btn";
       // HPは現場の名札に出るので、ここは名前だけにして高さを詰める（スクロール回避）
       const packNote = def.packCount ? `×${def.packCount}` : "";
-      b.textContent = `${DEBUG_ENEMY_LABELS[key] ?? key}${packNote}`;
+      b.textContent = `${enemyLabel(key)}${packNote}`;
       dbgTap(b, (e) => {
         e.stopPropagation(); e.preventDefault();
         debugSpawnEnemy(key);
@@ -11434,7 +11441,7 @@ function drawEnemyDebugLabels() {
   ctx.textAlign = "center";
   for (const m of movers) {
     if (!m.alive) continue;
-    const name = DEBUG_ENEMY_LABELS[m.def.name] ?? m.def.name;
+    const name = enemyLabel(m.def.name);
     const state = m.submerged ? " [潜航中/無敵]" : "";
     const text = `${name} ${Math.max(0, Math.ceil(m.hp))}/${m.maxHp}${state}`;
     const y = m.wy - m.def.radius - 12;
@@ -17018,8 +17025,12 @@ const BOMB_PIN_KINDS       = [0.45, 0.35, 0.2];   // 棒・くの字・通り道
 const BOMB_WALL_HIT_R      = 24;     // 玉が固い壁に当たる半径（すき間を小玉がすり抜けないように）
 const BOMB_BUMPER_DRAGON_BOUNCE = 0.9;   // バンパーに当たった竜が跳ね返る強さ（内向きの速さの何割が外向きに返るか）
 const BOMB_BUMPER_MIN_KICK = 260;    // バンパーから弾かれる竜の外向きの最低速度(px/s)＝ぺたっと張り付かず必ずはじかれる
-const BOMB_BUMPER_FLASH_GAP = 0.15;  // バンパーの光る間隔（秒。群れが一度に当たっても点滅し続けない）
-const BOMB_WALL_SLIDE_SPEED = 130;   // ふつうの壁に押し付けられた竜が、壁沿いに滑り出す最低の速さ(px/s)＝張り付きの防止
+const BOMB_WALL_SLIDE_SPEED = 130;   // 壁に押し付けられた竜が、壁沿いに滑り出す最低の速さ(px/s)＝張り付きの防止
+// v3.154.0（DT-333 手直し・11/18 Shooter「壁に引っ掛かるのが治っていません」）: 町の壁が町を囲む弧なので、リーダー（町の中）へ近い側へ滑らせると
+// 弧のどの1枚でも「その1枚の真ん中」へ戻され、壁の外で止まっていた。また丸い当たりを並べた継ぎ目のくぼみに竜がはまっていた。
+// 当たりを1枚ぶんの長さの棒（カプセル）にしてくぼみを無くし、滑る向きは「壁の切れ目に近い側」を一度決めたら BOMB_WALL_SLIDE_HOLD 秒は変えない
+const BOMB_WALL_SLIDE_HOLD = 1.5;    // 決めた滑る向きを保つ秒数
+const BOMB_WALL_CHAIN_MAX  = 30;     // 切れ目を探してたどる壁の枚数の上限（閉じた城壁で回り続けないように）
 const BOMB_BUMPER_COLOR    = "#162a5c";
 const BOMB_WALL_BOUNCE     = 0.9;    // 固い壁で跳ね返るときに残る速さ（ピンボールのように強く返す）
 const POWDER_COUNT         = 3;      // 火薬庫の数
@@ -17128,7 +17139,11 @@ function generateBombTownWalls(townMetas, boss, stageIndex, result) {
         const x = meta.cx + Math.cos(a) * R, y = meta.cy + Math.sin(a) * R;
         if (x < BOMB_EDGE || x > WORLD_W - BOMB_EDGE || y < BOMB_EDGE || y > WORLD_H - BOMB_EDGE) continue;
         if (Math.abs(x - anchor.wx) < BOMB_FORT_HALF + 60 && Math.abs(y - anchor.wy) < BOMB_FORT_HALF + 60) continue;   // 城の城壁と重ねない
-        out.push(makeBombWall(x, y, hp, a + Math.PI / 2));
+        // v3.154.0（DT-333 手直し・Shooter「街の壁もこの壁で」）: 町の壁も野原と同じバンパー（玉と竜をはじく・同じ見た目）。
+        // 野原のバンパーと違い、玉の爆発では壊れる（町を守る壁を崩す遊びを残す）
+        const w = makeBombWall(x, y, hp, a + Math.PI / 2);
+        w._bombBumper = true; w.color = BOMB_BUMPER_COLOR;
+        out.push(w);
       }
     }
   }
@@ -17174,7 +17189,7 @@ function generateBombPinWalls(boss, stageIndex, result) {
     if (ok) for (const q of pts) if (!freeAt(q.x, q.y)) { ok = false; break; }
     if (!ok) continue;
     centers.push({ x: cx, y: cy });
-    for (const q of pts) { const w = makeBombWall(q.x, q.y, hp, q.a); w._bombPin = true; w.color = BOMB_BUMPER_COLOR; out.push(w); }
+    for (const q of pts) { const w = makeBombWall(q.x, q.y, hp, q.a); w._bombPin = true; w._bombBumper = true; w.color = BOMB_BUMPER_COLOR; out.push(w); }
   }
   return out;
 }
@@ -17327,7 +17342,6 @@ function updateBombBalls(dt, centroid, spread) {
       if (s._bombWall ? bombBounceOff(b, s.wx, s.wy, BOMB_WALL_HIT_R, BOMB_WALL_BOUNCE)   // v3.149.0: 固い壁は強く跳ね返す
                       : bombBounceOff(b, s.wx, s.wy, s._isWall ? 16 : s.radius * 0.85)) {
         bounced = true;
-        if (s._bombPin) bombBumperFlash(s);
       }
     }
     for (const ob of terrainObstacles) if (bombBounceOff(b, ob.wx, ob.wy, ob.radius)) bounced = true;
@@ -17360,12 +17374,6 @@ function updateBombBalls(dt, centroid, spread) {
 }
 
 /** 玉 b を、中心 (cx, cy)・半径 r の丸い物から押し出して跳ね返す。当たったら true */
-/** バンパーが当たった瞬間に光る（見た目だけ。同じ1枚は BOMB_BUMPER_FLASH_GAP 秒あけて） */
-function bombBumperFlash(w) {
-  if (w._bumpAt !== undefined && bombClock - w._bumpAt < BOMB_BUMPER_FLASH_GAP) return;
-  w._bumpAt = bombClock;
-  bombFx.push({ kind: "bump", x: w.wx, y: w.wy, r: WALL_SEG_SPACING * 0.5 + 6, a: w._wallAngle, t: 0, life: 0.28 });
-}
 function bombBounceOff(b, cx, cy, r, bounce = BOMB_BOUNCE) {
   const dx = b.x - cx, dy = b.y - cy, rr = r + b.r;
   const d2 = dx * dx + dy * dy;
@@ -17677,12 +17685,6 @@ function drawBombFx() {
     const u = f.t / f.life;
     ctx.globalAlpha = 1 - u;
     if (f.kind === "ring") { ctx.strokeStyle = "#ff8040"; ctx.lineWidth = 5 * (1 - u) + 1; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.5 + 0.5 * u), 0, Math.PI * 2); ctx.stroke(); }
-    else if (f.kind === "bump") {
-      ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.a);
-      ctx.shadowColor = "#ffe94a"; ctx.shadowBlur = 18 * (1 - u);
-      ctx.fillStyle = "#fff6b0"; ctx.fillRect(-f.r, -7 - 3 * u, f.r * 2, 14 + 6 * u);
-      ctx.restore();
-    }
     else if (f.kind === "muzzle") { ctx.fillStyle = "#ffe0a0"; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.6 + u), 0, Math.PI * 2); ctx.fill(); }
     else { ctx.strokeStyle = f.kind === "bat" ? "#ffffff" : "rgba(200,190,170,0.9)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.7 + 0.6 * u), 0, Math.PI * 2); ctx.stroke(); }
   }
@@ -27942,27 +27944,29 @@ function drawSettlementOnLayer(bctx, settlement) {
  * リング接線方向（_wallAngle）に回転した石ブロック＋胸壁の刻みで「城壁」に見せる。
  * fallen 時は呼び出し元の alpha=0.22/color="#333" でそのまま瓦礫化する。
  */
-/** 爆弾玉の国の野原のバンパー: 石の壁ではなく、光る青いレールと桃色の芯、両端に丸い鋲（見た目は焼き付け。当たると bombFx の "bump" が上から光る） */
+/** 爆弾玉の国のバンパー（野原・町の壁）: 石の壁ではなく、青いレールと桃色の芯、真ん中に鋲（見た目は焼き付け）。
+ *  v3.154.0（DT-333 手直し・Shooter「光るのは無しで。四角でなく角を丸く」）: まわりの光と当たったときの光をやめ、角の丸い形にした */
 function drawBumperOnCtx(c, settlement) {
   const halfL = WALL_SEG_SPACING * 0.5 + 3, halfW = 8;
+  const rounded = (x, y, w, h, r) => { c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h); };
   c.save();
   c.translate(settlement.wx, settlement.wy);
   c.rotate(settlement._wallAngle);
-  c.shadowColor = "#3fe0ff"; c.shadowBlur = 12;
   c.fillStyle = BOMB_BUMPER_COLOR;
-  c.fillRect(-halfL, -halfW, halfL * 2, halfW * 2);
-  c.shadowBlur = 0;
-  c.strokeStyle = "#4fe3ff"; c.lineWidth = 2.5;
-  c.strokeRect(-halfL, -halfW, halfL * 2, halfW * 2);
-  c.fillStyle = "#ff5fd0";
-  c.fillRect(-halfL + 4, -2, halfL * 2 - 8, 4);
+  rounded(-halfL, -halfW, halfL * 2, halfW * 2, halfW);
+  c.fill();
+  c.strokeStyle = "#4fa8d0"; c.lineWidth = 2.5;
+  c.stroke();
+  c.fillStyle = "#e060b8";
+  rounded(-halfL + 5, -2, halfL * 2 - 10, 4, 2);
+  c.fill();
   c.fillStyle = "#fff6b0";
   c.beginPath(); c.arc(0, 0, 3.2, 0, Math.PI * 2); c.fill();
   c.restore();
 }
 
 function drawWallSegmentOnCtx(c, settlement, color) {
-  if (settlement._bombPin) { drawBumperOnCtx(c, settlement); return; }
+  if (settlement._bombBumper) { drawBumperOnCtx(c, settlement); return; }
   const halfL = WALL_SEG_SPACING * 0.5 + 3; // 隣セグメントと視覚的につながる長さ
   const halfW = 9;                          // 壁の厚み（見た目）
   c.save();
@@ -31476,13 +31480,15 @@ SPECIES_EVO_SPEC.cannon = {
               ["長砲", { range: 0.20 }, "砲撃が5秒続く。ふだんの砲弾も遠くへ届く"]] },
 };
 // v3.150.0（案帳 DT-581）: 光線竜。A＝重い光（一発が重い）、B＝連なる光（撃つ間隔が短い）
+// v3.154.0（DT-581 手直し・Shooter「威力の方はより攻撃頻度を下げて高威力で長くて太いレーザーに、もう一方は連射ではなくて3方向レーザーに。角度は狭く」）:
+// A＝撃つ間隔を延ばして一発を重く、光線弾を長く太く。B＝撃つ間隔は元のまま、狭い角度の3方向に撃つ。形ごとの撃ち方は RAY_FORMS
 SPECIES_EVO_SPEC.ray = {
   L: [["強い光", { dmg: 0.15 }], ["速い連射", { rate: 0.18 }], ["長い光", { range: 0.15 }], ["強い光・二", { dmg: 0.15 }]],
-  A: { name: "貫光竜", tint: "#c0f8ff", scale: 1.1, eff: { dmg: 0.25 },
-       next: [["極光線", { dmg: 0.25 }, "光線弾の一発がさらに重くなる"],
+  A: { name: "貫光竜", tint: "#c0f8ff", scale: 1.1, eff: { dmg: 0.25 }, note: "撃つ間隔が長いかわりに、一発が重く、長く太い光線弾",
+       next: [["極光線", { dmg: 0.25 }, "光線弾がさらに長く太く、一発がさらに重くなる"],
               ["遠光", { range: 0.25 }, "光線弾がさらに遠くまで飛ぶ"]] },
-  B: { name: "連光竜", tint: "#40a8ff", scale: 1.0, eff: { rate: 0.20 },
-       next: [["速射光", { rate: 0.20 }, "光線弾を撃つ間隔がさらに短くなる"],
+  B: { name: "連光竜", tint: "#40a8ff", scale: 1.0, eff: { dmg: 0.15 }, note: "光線弾を狭い角度の3方向に撃つ",
+       next: [["五筋の光", { dmg: 0.10 }, "光線弾を狭い角度の5方向に撃つ"],
               ["光の鱗", { hp: 0.30 }, "体が硬くなる"]] },
 };
 SPECIES_EVO_SPEC.wisp = {
@@ -37221,12 +37227,30 @@ const RAY_MUZZLE_R    = 7;    // 発射点の光の玉の半径（px）
 const RAY_HIT_PAD  = 3;       // 相手の半径に足す当たりの幅
 const RAY_MAX      = 400;     // 同時に飛ぶ光線弾の上限
 const RAY_COLOR    = "#7af7ff";
-const rayBolts = [];          // { x, y, vx, vy, travel, maxTravel, dmg, hitB: [], hitM: [] }
+// 進化の形ごとの撃ち方（DT-581 手直し）。interval・dmg は基本の倍率、len・width は絵の長さ・太さの倍率、
+// ways は1回に撃つ本数、spread は隣の弾との角度（ラジアン。狭く）。
+// A は間隔と一発の重さを同じ倍率で上げる（形を変えただけで強さが跳ねないように）。B は1本あたりを軽くして本数で補う
+const RAY_FORMS = {
+  base: { interval: 1,   dmg: 1,    len: 1,   width: 1,   ways: 1, spread: 0 },
+  A:    { interval: 1.8, dmg: 1.8,  len: 1.9, width: 2.0, ways: 1, spread: 0 },
+  A1:   { interval: 2.3, dmg: 2.4,  len: 2.5, width: 2.8, ways: 1, spread: 0 },
+  A2:   { interval: 1.8, dmg: 1.8,  len: 1.9, width: 2.0, ways: 1, spread: 0 },
+  B:    { interval: 1,   dmg: 0.45, len: 1,   width: 1,   ways: 3, spread: 0.14 },
+  B1:   { interval: 1,   dmg: 0.30, len: 1,   width: 1,   ways: 5, spread: 0.11 },
+  B2:   { interval: 1,   dmg: 0.45, len: 1,   width: 1,   ways: 3, spread: 0.14 },
+};
+function rayForm() {
+  const br = (runSpeciesBranch && runSpeciesBranch.ray) || {};
+  return RAY_FORMS[br.t20] || RAY_FORMS[br.t10] || RAY_FORMS.base;
+}
+const rayBolts = [];          // { x, y, vx, vy, travel, maxTravel, dmg, len, width, hitB: [], hitM: [] }
 function clearRayBolts() { rayBolts.length = 0; }
 function updateRayAttacks(dt) {
-  const inter = RAY_INTERVAL * effFireIntervalMult("ray");
-  const dmg   = RAY_DAMAGE * effWeaponDmgMult("ray");
+  const form  = rayForm();
+  const inter = RAY_INTERVAL * form.interval * effFireIntervalMult("ray");
+  const dmg   = RAY_DAMAGE * form.dmg * effWeaponDmgMult("ray");
   const reach = RAY_TRAVEL * effWeaponRangeMult("ray");
+  const len   = RAY_LEN * form.len, width = form.width;
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;
     if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // 巌竜は遠隔攻撃を持たない
@@ -37234,9 +37258,12 @@ function updateRayAttacks(dt) {
     if (boidFireTimer[i] > 0) continue;
     if (rayBolts.length >= RAY_MAX) continue;
     boidFireTimer[i] = inter;
-    const a = Math.atan2(vy[i], vx[i]);
-    rayBolts.push({ x: px[i], y: py[i], vx: Math.cos(a) * RAY_SPEED, vy: Math.sin(a) * RAY_SPEED,
-                    travel: 0, maxTravel: reach, dmg, hitB: [], hitM: [], src: i, age: 0 });
+    const a0 = Math.atan2(vy[i], vx[i]);
+    for (let w = 0; w < form.ways; w++) {
+      const a = a0 + (w - (form.ways - 1) / 2) * form.spread;
+      rayBolts.push({ x: px[i], y: py[i], vx: Math.cos(a) * RAY_SPEED, vy: Math.sin(a) * RAY_SPEED,
+                      travel: 0, maxTravel: reach, dmg, len, width, hitB: [], hitM: [], src: i, age: 0, muzzle: w === 0 });
+    }
   }
 }
 /** 飛んでいる光線弾。触れた相手に当てて、そのまま貫いて飛ぶ */
@@ -37255,7 +37282,7 @@ function updateRayBolts(dt) {
       const st = settlements[sIdx];
       if (!st || st.fallen || b.hitB.includes(sIdx)) continue;
       if (!targetHittable(targets, settlementTargetClass(st))) continue;
-      const rr = st.radius + RAY_HIT_PAD;
+      const rr = st.radius + RAY_HIT_PAD * b.width;
       if ((st.wx - b.x) * (st.wx - b.x) + (st.wy - b.y) * (st.wy - b.y) > rr * rr) continue;
       b.hitB.push(sIdx);
       hitBuilding(sIdx, { shot: b.dmg }, b.x, b.y);
@@ -37263,7 +37290,7 @@ function updateRayBolts(dt) {
     }
     if (hitMovers) for (const m of moversNear(b.x, b.y, 0)) {
       if (!m.alive || b.hitM.includes(m)) continue;
-      const rr = moverRadiusOf(m) + RAY_HIT_PAD;
+      const rr = moverRadiusOf(m) + RAY_HIT_PAD * b.width;
       if ((m.wx - b.x) * (m.wx - b.x) + (m.wy - b.y) * (m.wy - b.y) > rr * rr) continue;
       b.hitM.push(m);
       hitMover(m, { shot: b.dmg }, b.x, b.y);
@@ -37277,13 +37304,18 @@ function drawRayBolts() {
   if (rayBolts.length === 0) return;
   ctx.save();
   ctx.lineCap = "round";
-  for (let pass = 0; pass < 2; pass++) {
+  // 太さは形ごとに1種類なので、太さでまとめて描く（ふだんは1回で済む）
+  let w0 = rayBolts[0].width, mixed = false;
+  for (const b of rayBolts) if (b.width !== w0) { mixed = true; break; }
+  const widths = mixed ? [...new Set(rayBolts.map(b => b.width))] : [w0];
+  for (const wd of widths) for (let pass = 0; pass < 2; pass++) {
     ctx.globalAlpha = pass === 0 ? 0.35 : 1;
     ctx.strokeStyle = pass === 0 ? RAY_COLOR : "#f4ffff";
-    ctx.lineWidth = pass === 0 ? 6 : 2.2;
+    ctx.lineWidth = (pass === 0 ? 6 : 2.2) * wd;
     ctx.beginPath();
     for (const b of rayBolts) {
-      const k = Math.min(RAY_LEN, b.travel) / RAY_SPEED;
+      if (b.width !== wd) continue;
+      const k = Math.min(b.len, b.travel) / RAY_SPEED;
       ctx.moveTo(b.x - b.vx * k, b.y - b.vy * k);
       ctx.lineTo(b.x, b.y);
     }
@@ -37292,16 +37324,16 @@ function drawRayBolts() {
   // 発射点の丸い光（天穿の極太光線の根元のような玉）。撃った竜の今の位置に付いて、すぐ消える
   ctx.globalCompositeOperation = "lighter";
   for (const b of rayBolts) {
-    if (b.age >= RAY_MUZZLE_TIME) continue;
+    if (b.age >= RAY_MUZZLE_TIME || !b.muzzle) continue;
     const i = b.src;
     if (i == null || boidDead[i] || boidDowned[i]) continue;
     const f = 1 - b.age / RAY_MUZZLE_TIME;
     const dir = Math.atan2(b.vy, b.vx);
     const mx = px[i] + Math.cos(dir) * 6, my = py[i] + Math.sin(dir) * 6;
     ctx.globalAlpha = 0.45 * f; ctx.fillStyle = RAY_COLOR;
-    ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * (1.1 + 0.5 * (1 - f)), 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * b.width * (1.1 + 0.5 * (1 - f)), 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.95 * f; ctx.fillStyle = "#f4ffff";
-    ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * 0.55, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * b.width * 0.55, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
 }
@@ -47758,39 +47790,94 @@ function applyObstaclePushout() {
     for (const sIdx of _obstacleQueryBuf) {
       const s = settlements[sIdx];
       if (!s || s.fallen || !s._isWall) continue;
-      if (s._bombPin) { bumpBoidOffBumper(i, s); continue; }   // 爆弾玉の国の野原のバンパー: 竜もはじく
+      if (s._bombBumper) { bumpBoidOffBumper(i, s); continue; }   // 爆弾玉の国のバンパー（野原・町の壁）: 竜もはじく
+      if (s._bombWall) { if (pushBoidOutOfBombWall(i, s)) slideBoidAlongWall(i, s); continue; }   // 火薬庫の城の城壁
       pushBoidOutOfCircle(i, s.wx, s.wy, s.radius + OBSTACLE_PUSH_GAP);
-      if (s._bombWall) slideBoidAlongWall(i, s);
     }
   }
 }
 
-/** 爆弾玉の国の壁（城壁・町の壁）に押し付けられて止まった竜を、壁沿いに滑らせる。
- *  真正面から押し付けると法線の速度を消した後に接線の速度が残らず、リーダーが壁の向こうにいる限り張り付いたままになっていた。
- *  向きは今の滑る向きを優先し、止まっているときだけリーダーへ近い側に決める */
+/**
+ * 爆弾玉の国の壁1枚の当たり：壁の向き（_wallAngle）に WALL_SEG_SPACING の長さを持つ棒（カプセル）。
+ * 丸い当たりを並べると継ぎ目にくぼみができて竜がはまるので、隣と重なる棒にしてなめらかな面にする（DT-333 手直し）。
+ * 竜を面の外へ出し、内向きの速さを消す。面に触れていたら外向きの向き（_wallNx/_wallNy）を残して true
+ */
+const _wallHit = { nx: 0, ny: 0 };
+function pushBoidOutOfBombWall(i, w) {
+  const ax = Math.cos(w._wallAngle), ay = Math.sin(w._wallAngle), half = WALL_SEG_SPACING * 0.5;
+  const minDist = w.radius + OBSTACLE_PUSH_GAP;
+  const t = Math.max(-half, Math.min(half, (px[i] - w.wx) * ax + (py[i] - w.wy) * ay));
+  const qx = w.wx + ax * t, qy = w.wy + ay * t;
+  const dx = px[i] - qx, dy = py[i] - qy, d2 = dx * dx + dy * dy;
+  if (d2 > (minDist + 2) * (minDist + 2)) return false;
+  if (d2 === 0) return false;
+  const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
+  if (d < minDist) { px[i] = qx + nx * minDist; py[i] = qy + ny * minDist; }
+  const vn = vx[i] * nx + vy[i] * ny;
+  if (vn < 0) { vx[i] -= vn * nx; vy[i] -= vn * ny; }
+  _wallHit.nx = nx; _wallHit.ny = ny;
+  return true;
+}
+/** 壁 w から向き (dx,dy) へ、つながった爆弾玉の国の壁を何枚たどれるか（切れ目までの近さ）。弧でもたどれるよう1枚ごとに向きを直す */
+function bombWallChainLength(w, dx, dy) {
+  let cur = w, n = 0;
+  while (n < BOMB_WALL_CHAIN_MAX) {
+    const tx = cur.wx + dx * WALL_SEG_SPACING, ty = cur.wy + dy * WALL_SEG_SPACING;
+    buildingGridQuery(tx, ty, _bombChainBuf);
+    let next = null, best = (WALL_SEG_SPACING * 0.6) ** 2;
+    for (const k of _bombChainBuf) {
+      const s = settlements[k];
+      if (!s || s.fallen || !s._bombWall || s === cur) continue;
+      const e = (s.wx - tx) ** 2 + (s.wy - ty) ** 2;
+      if (e < best) { best = e; next = s; }
+    }
+    if (!next) break;
+    const ex = next.wx - cur.wx, ey = next.wy - cur.wy, el = Math.hypot(ex, ey) || 1;
+    dx = ex / el; dy = ey / el; cur = next; n++;
+  }
+  return n;
+}
+const _bombChainBuf = [];
+let _wallSlideDirX = null, _wallSlideDirY = null, _wallSlideUntil = null;
+/** 爆弾玉の国の壁に押し付けられた竜を、壁沿いに滑らせる。
+ *  向きは「壁の切れ目に近い側」を一度決めたら、触れ続けている間と離れてから BOMB_WALL_SLIDE_HOLD 秒は変えない（行ったり来たりで止まらないように）。
+ *  決めるのは描画でなくゲームの動きなので、乱数を使わず番号と壁の並びだけで決める */
 function slideBoidAlongWall(i, w) {
-  const dx = px[i] - w.wx, dy = py[i] - w.wy, d = Math.hypot(dx, dy);
-  if (d === 0 || d > w.radius + OBSTACLE_PUSH_GAP + 2) return;
-  const nx = dx / d, ny = dy / d, tx = -ny, ty = nx;
+  if (!_wallSlideUntil || _wallSlideUntil.length < MAX_BOIDS) {
+    _wallSlideDirX = new Float32Array(MAX_BOIDS); _wallSlideDirY = new Float32Array(MAX_BOIDS); _wallSlideUntil = new Float32Array(MAX_BOIDS);
+  }
+  const tx = Math.cos(w._wallAngle), ty = Math.sin(w._wallAngle);
   const vt = vx[i] * tx + vy[i] * ty;
-  if (Math.abs(vt) >= BOMB_WALL_SLIDE_SPEED) return;
-  let sign = Math.abs(vt) > 8 ? Math.sign(vt) : Math.sign((leader.x - px[i]) * tx + (leader.y - py[i]) * ty);
-  if (sign === 0) sign = (i & 1) ? 1 : -1;
+  // 覚えるのは向きの符号ではなく地図の上の向き。城壁の角を曲がっても同じ回り方を続けられる
+  let sign;
+  if (bombClock <= _wallSlideUntil[i] && (_wallSlideDirX[i] !== 0 || _wallSlideDirY[i] !== 0)) {
+    const dot = _wallSlideDirX[i] * tx + _wallSlideDirY[i] * ty;
+    sign = dot >= 0 ? 1 : -1;
+  } else {
+    const ahead = bombWallChainLength(w, tx, ty), behind = bombWallChainLength(w, -tx, -ty);
+    sign = ahead < behind ? 1 : behind < ahead ? -1 : (Math.abs(vt) > 8 ? Math.sign(vt) : ((i & 1) ? 1 : -1));
+  }
+  _wallSlideDirX[i] = sign * tx; _wallSlideDirY[i] = sign * ty; _wallSlideUntil[i] = bombClock + BOMB_WALL_SLIDE_HOLD;
+  if (sign * vt >= BOMB_WALL_SLIDE_SPEED) return;
   vx[i] += (sign * BOMB_WALL_SLIDE_SPEED - vt) * tx;
   vy[i] += (sign * BOMB_WALL_SLIDE_SPEED - vt) * ty;
 }
-/** 野原のバンパーに触れた竜をはじく（円の外へ出し、内向きの速度を反射し、最低でも BOMB_BUMPER_MIN_KICK で外へ飛ばす） */
+/** バンパー（野原・町の壁）に触れた竜をはじく（棒の当たりの外へ出し、内向きの速度を反射し、最低でも BOMB_BUMPER_MIN_KICK で外へ飛ばす）。
+ *  はじくだけだと、リーダーが壁の向こうにいる竜は同じ所で跳ね続けるので、壁の切れ目へ向けて滑らせもする（DT-333 手直し） */
 function bumpBoidOffBumper(i, w) {
+  const ax = Math.cos(w._wallAngle), ay = Math.sin(w._wallAngle), half = WALL_SEG_SPACING * 0.5;
   const minDist = w.radius + OBSTACLE_PUSH_GAP;
-  const dx = px[i] - w.wx, dy = py[i] - w.wy, d2 = dx * dx + dy * dy;
+  const t = Math.max(-half, Math.min(half, (px[i] - w.wx) * ax + (py[i] - w.wy) * ay));
+  const qx = w.wx + ax * t, qy = w.wy + ay * t;
+  const dx = px[i] - qx, dy = py[i] - qy, d2 = dx * dx + dy * dy;
   if (d2 >= minDist * minDist || d2 === 0) return;
   const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
-  px[i] = w.wx + nx * minDist; py[i] = w.wy + ny * minDist;
+  px[i] = qx + nx * minDist; py[i] = qy + ny * minDist;
   const vn = vx[i] * nx + vy[i] * ny;
   if (vn < 0) { vx[i] -= (1 + BOMB_BUMPER_DRAGON_BOUNCE) * vn * nx; vy[i] -= (1 + BOMB_BUMPER_DRAGON_BOUNCE) * vn * ny; }
   const out = vx[i] * nx + vy[i] * ny;
   if (out < BOMB_BUMPER_MIN_KICK) { vx[i] += (BOMB_BUMPER_MIN_KICK - out) * nx; vy[i] += (BOMB_BUMPER_MIN_KICK - out) * ny; }
-  bombBumperFlash(w);
+  slideBoidAlongWall(i, w);
 }
 /** 個体 i を円 (cx,cy,minDist) の外側へ押し出し、内向き速度成分を殺してスライドさせる。 */
 function pushBoidOutOfCircle(i, cx, cy, minDist) {
@@ -48833,8 +48920,21 @@ function drawBreathAttacks(now) {
  * 付いていく竜（a）と後ろへの量は番号から決める（乱数を使わない）。向きと流れの強さは描画だけの値で、指紋は変わらない。
  */
 const OVERFLOW_SIZES       = [0.5, 0.62, 0.75];   // 動く竜に対する大きさ（3段階）
-const OVERFLOW_ALPHA       = 0.45;                // 濃さ（動く竜は 0.85）
-const OVERFLOW_SHADE       = 0.5;                 // 絵に重ねる暗さ（黒を乗せる割合）
+// v3.154.0（DT-583 手直し・Shooter「追加の竜が影に見える。位置関係が一様で動きが完全同期していて見た目も影っぽい」「処理負荷の少ない方法で」）:
+// 暗く薄い絵は影に見えたので、濃さを上げ暗さを下げ、少し空の色（OVERFLOW_HAZE）に寄せて「遠くを飛ぶ竜」にする。
+// 動きは竜ごとに、付いていく竜のまわりをゆっくり漂う（OVERFLOW_WOBBLE_*）・向きが揺れる（OVERFLOW_TURN_*）・羽ばたきの速さが違う（OVERFLOW_FLAP_*）。
+// どれも番号から決めた位相・速さに sin を掛けるだけ（1体あたり三角関数が数回。乱数なし・描画だけ）
+const OVERFLOW_ALPHA       = 0.72;                // 濃さ（動く竜は 0.85。v3.152.0 は 0.45）
+const OVERFLOW_SHADE       = 0.22;                // 絵に重ねる暗さ（黒を乗せる割合。v3.152.0 は 0.5）
+const OVERFLOW_HAZE        = 0.18;                // 絵に重ねる空の色の割合（遠くにいる感じ。影の黒と見分ける）
+const OVERFLOW_HAZE_COLOR  = "#b8c8d8";
+const OVERFLOW_WOBBLE_MIN  = 6;                   // 漂う幅（px）の下限・上限（竜ごとに違う）
+const OVERFLOW_WOBBLE_MAX  = 18;
+const OVERFLOW_WOBBLE_HZ_MIN = 0.25;              // 漂う速さ（往復/秒）の下限・上限
+const OVERFLOW_WOBBLE_HZ_MAX = 0.7;
+const OVERFLOW_TURN_MAX    = 0.35;                // 向きの揺れ（ラジアン）
+const OVERFLOW_FLAP_MIN    = 0.75;                // 羽ばたきの速さ（動く竜に対する倍率）の下限・上限
+const OVERFLOW_FLAP_MAX    = 1.35;
 const OVERFLOW_TAIL_MULT   = 1.0;                 // 後ろへ伸ばす長さ＝動く竜の広がり（重心からの平均距離）×これ
 const OVERFLOW_TAIL_FULL   = 250;                 // 上限超えの竜がこの数で、伸ばす長さがいっぱいになる
 const OVERFLOW_SIDE_MULT   = 0.35;                // 横への散らばり＝広がり×これ（後ろへ行くほど細る）
@@ -48852,6 +48952,9 @@ function overflowShadedSprites(sprites) {
     g.globalCompositeOperation = "source-atop";
     g.globalAlpha = OVERFLOW_SHADE;
     g.fillStyle = "#06080c";
+    g.fillRect(0, 0, c.width, c.height);
+    g.globalAlpha = OVERFLOW_HAZE;
+    g.fillStyle = OVERFLOW_HAZE_COLOR;
     g.fillRect(0, 0, c.width, c.height);
     return c;
   });
@@ -48895,10 +48998,16 @@ function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical) {
     if (boidDead[a] || boidDowned[a]) continue;   // 付いていく竜が倒れたら描かない
     const back = Math.pow((k * 0.6180339) % 1, 0.8);         // 0＝付いていく竜のそば／1＝尾の先（組ごとに固定）
     const side = (((k * 0.4142136) % 1) - 0.5) * 2 * sideW * (1 - 0.5 * back);
-    const wx = px[a] - hx * tail * back - hy * side;
-    const wy = py[a] - hy * tail * back + hx * side;
-    const angle = Math.atan2(vy[a], vx[a]);
-    const phase = breathTime * DRAGON_FLAP_SPEED + ((k * 0.7548777) % 1) * Math.PI * 2;
+    // 竜ごとの漂い：番号から幅・速さ・位相を決め、楕円を描くように付いていく竜のまわりを動く（同期して見えないように）
+    const u1 = (k * 0.3819660) % 1, u2 = (k * 0.5698403) % 1, u3 = (k * 0.8191725) % 1;
+    const amp = OVERFLOW_WOBBLE_MIN + (OVERFLOW_WOBBLE_MAX - OVERFLOW_WOBBLE_MIN) * u1;
+    const wobT = breathTime * (OVERFLOW_WOBBLE_HZ_MIN + (OVERFLOW_WOBBLE_HZ_MAX - OVERFLOW_WOBBLE_HZ_MIN) * u2) * Math.PI * 2 + u3 * Math.PI * 2;
+    const wobS = Math.sin(wobT), wobC = Math.cos(wobT * 0.83 + u1 * 4);
+    const wx = px[a] - hx * tail * back - hy * side + wobC * amp;
+    const wy = py[a] - hy * tail * back + hx * side + wobS * amp;
+    const angle = Math.atan2(vy[a], vx[a]) + OVERFLOW_TURN_MAX * Math.sin(wobT * 0.7 + u2 * 5);
+    const flapMul = OVERFLOW_FLAP_MIN + (OVERFLOW_FLAP_MAX - OVERFLOW_FLAP_MIN) * u3;
+    const phase = breathTime * DRAGON_FLAP_SPEED * flapMul + ((k * 0.7548777) % 1) * Math.PI * 2;
     const frameIdx = Math.floor((Math.sin(phase) * 0.5 + 0.5) * DRAGON_FLAP_FRAMES) % DRAGON_FLAP_FRAMES;
     const sc = evoScale * OVERFLOW_SIZES[k % OVERFLOW_SIZES.length];
     ctx.save();
@@ -51872,7 +51981,7 @@ function buildReportStatusLines() {
     const enemyCounts = new Map();
     for (const m of movers) {
       if (!m.alive) continue;
-      const name = DEBUG_ENEMY_LABELS[m.def.name] ?? m.def.name;
+      const name = enemyLabel(m.def.name);
       enemyCounts.set(name, (enemyCounts.get(name) || 0) + 1);
     }
     const enemyList = [...enemyCounts.entries()].sort((a, b) => b[1] - a[1]);

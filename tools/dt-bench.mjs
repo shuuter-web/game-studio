@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------
 // Dragon Tide の攻撃の強さを、決まった条件で測る（案帳 DT-550）
 //
-//   node tools/dt-bench.mjs --species fire [--special aim] [--pattern loop|sweep|dart] [--seed 4242] [--flock 20] [--seconds 60]
+//   node tools/dt-bench.mjs --species fire [--special aim] [--branch A1] [--pattern loop|sweep|dart] [--seed 4242] [--flock 20] [--seconds 60]
 //   node tools/dt-bench.mjs --all-species   # 全竜種 × 2つの動き × 2シードを表にする
 //   node tools/dt-bench.mjs --all-specials  # 火竜の群れに主な特殊個体を1体ずつ入れて表にする
 //
@@ -39,6 +39,8 @@ const WARMUP_S = Number(argValue("warmup", "4"));
 const PARALLEL = Number(argValue("parallel", "3"));
 // --raw で、HP無限の建物に入った傷そのままを比べる（既定は本来のHPで余りを捨てた分）
 const RAW = hasFlag("raw");
+// --branch A1 で、竜種の進化の形（Lv10 の分岐 A/B と Lv20 の型 A1 など）を付けて測る（DT-581〜）
+const BRANCH = argValue("branch", "");
 // 固定歩幅。ゲーム側の BASE_CFG.fixedStepMs と同じ 16ms で刻む
 const STEP_MS = 16;
 // 輪の半径＝街の広がり＋この余白。輪は描き直さないと群れが線を食べ終えて止まるので一定間隔で引き直す
@@ -60,7 +62,7 @@ const TOWN_MAX_BUILDINGS = 90;
 async function measureOnce({ seed, species, special, pattern, dir = 0 }) {
   const { browser, page, errors } = await openGame({ file, seed });
   try {
-    const setup = await page.evaluate(({ species, special, dir, FLOCK, TOWN_MIN_BUILDINGS, TOWN_MAX_BUILDINGS }) => {
+    const setup = await page.evaluate(({ species, special, dir, FLOCK, TOWN_MIN_BUILDINGS, TOWN_MAX_BUILDINGS, BRANCH }) => {
       debugUnlockAllContinents();
       // 強化カードで強さが変わらないように、経験値とレベルアップを止める
       window.addXp = () => {};
@@ -69,6 +71,7 @@ async function measureOnce({ seed, species, special, pattern, dir = 0 }) {
       window.render = () => {};
       window.drawMinimap = () => {};
       beginRun(species);
+      if (BRANCH) { runSpeciesBranch[species] = { t10: BRANCH[0], t20: BRANCH.length > 1 ? BRANCH : undefined }; invalidateEvo(); }
       debugStartStage(0, 0);
       dismissStageIntro();
       // 街を1つ選ぶ（ふつうの大きさの街のうち地図の中心に近いもの）
@@ -131,7 +134,7 @@ async function measureOnce({ seed, species, special, pattern, dir = 0 }) {
       cam.x = best.cx; cam.y = best.cy;
       pathClear();
       return { town: best.key, buildings: keep.size, spread: Math.round(spread), alive: countAliveBoids() };
-    }, { species, special, dir, FLOCK, TOWN_MIN_BUILDINGS, TOWN_MAX_BUILDINGS });
+    }, { species, special, dir, FLOCK, TOWN_MIN_BUILDINGS, TOWN_MAX_BUILDINGS, BRANCH });
 
     const run = (seconds, measuring) => page.evaluate(({ seconds, measuring, pattern, STEP_MS, LOOP_MARGIN_PX, LOOP_REDRAW_S, SWEEP_OVERSHOOT_PX, SWEEP_EVERY_S, DART_EVERY_S, STROKE_STEP_PX, REBUILD_S }) => {
       const B = window.__bench;
