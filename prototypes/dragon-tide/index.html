@@ -1323,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.158.0";
+const GAME_VERSION = "v3.159.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -12947,11 +12947,26 @@ const SKY_CARRIER_COLORS = {
   hull: "#6e5236", hullDark: "#4a3624", deck: "#b48c5c", plank: "rgba(80,56,32,0.35)", stripe: "rgba(255,248,230,0.75)",
   rim: "#3a2a1c", gun: "#2c2f36", tower: "#8a929c", towerDark: "#5c636c", flag: "#d04a3a", prop: "rgba(230,236,244,0.55)",
   keepWall: "#9aa0a6", keepWallDark: "#5e646c", keepRoof: "#a8452e", keepRoofDark: "#6e2a1c", keepCrack: "rgba(30,24,20,0.75)",
+  gate: "#ffd890",
 };
 // v3.127.0（DT-124 手直し）: 砦の建物（甲板の真ん中の石の櫓）。当たりはここだけ（MOVER_DEFS.sky_carrier.radius）。
 // 絵の外壁の半分の幅＝当たりの半径 × この割合（角まで含めて当たりの円にほぼ収まる大きさ）
 const SKY_KEEP_DRAW_FRAC   = 0.86;
 const SKY_KEEP_CRACK_BELOW = 0.5;   // 体力がこれを下回ったら建物にひびを描く（削れているのが見えるように）
+// v3.159.0（DT-588・Shooter「乗っている敵がいなくなったら砦から補充」「砦自体にも兵装を」）:
+// 甲板の敵が最初に載せた数より少ないあいだ、砦の建物の門（船首側の壁）から1体ずつ出てくる。
+// 判定で「建物の体力が半分を切っても止めなくてよい」と決まったので、補充は砦が落ちるまで続く
+const SKY_DECK_REFILL_EVERY = 8;      // 補充の間隔（秒）
+const SKY_GATE_FX_TIME      = 0.8;    // 門が開いて光って見える秒数（見た目だけ）
+// 建物の四隅の砲塔。遠くは舷側の砲（着弾弾）、近くは砲塔（直進の弾）と役割を分ける。判定で「個別に壊せなくてよい」＝建物の一部
+const SKY_TURRET_RANGE    = 450;      // 群れ（いちばん近い竜）がこれより近いときだけ撃つ
+const SKY_TURRET_INTERVAL = 2.5;      // 1基が撃つ間隔（秒）。4基はずらして撃つ
+const SKY_TURRET_DAMAGE   = 2.0;
+const SKY_TURRET_SPEED    = 160;
+const SKY_TURRET_SHOT_RANGE = 620;    // 弾が飛ぶ距離（撃ち始める距離より少し先まで届く）
+const SKY_TURRET_COLOR    = "#ffe040";
+const SKY_TURRET_TURN     = 2.4;      // 砲身が回る速さ（rad/s。見た目と狙いの両方）
+const SKY_TURRET_BARREL   = 26;       // 砲身の長さ（絵・弾の出る位置）
 let skyCarriers = [];        // 今のワールドの浮き砦（落ちる演出の検出に使う）
 let skyCarrierFalls = [];    // 雲海へ沈んでいく砦（見た目だけ）{ x, y, angle, t }
 
@@ -12974,16 +12989,64 @@ function attachSkyDeckUnits(carrier, stageIndex) {
   for (let k = 0; k < n; k++) {
     const def = MOVER_DEFS[kinds[Math.floor(random() * kinds.length)]];
     const lx = -SKY_DECK_HALF_LEN + (k + 0.5) / n * SKY_DECK_HALF_LEN * 2, ly = randRange(-SKY_DECK_HALF_W, SKY_DECK_HALF_W) * 0.7;
-    const u = makeMover(def, () => ({ x: carrier.wx, y: carrier.wy }));
-    u.maxHp = u.hp = def.hp; u.xpValue = def.xp;   // v3.121.1: 甲板の敵の体力は元どおり（5倍は砦そのものの話だった）
-    u._deck = { carrier, lx, ly, wander: random() * SKY_DECK_WANDER_EVERY };
-    skyDeckAvoidKeep(carrier, u._deck, def.radius || 8);
-    u.waypoints = [{ x: carrier.wx, y: carrier.wy }]; u.wpIdx = 0;
-    skyDeckPlace(u);
-    units.push(u);
+    units.push(makeSkyDeckUnit(carrier, def, lx, ly));
   }
   carrier._deckUnits = units;
+  carrier._deckKinds = kinds;      // v3.159.0（DT-588）: 補充も最初に載せたのと同じ種類から
+  carrier._deckFull = n;           // 補充はこの数まで
+  carrier._refillTimer = SKY_DECK_REFILL_EVERY;
   return units;
+}
+
+/** 甲板の敵1体（甲板の上の座標 lx, ly に置く） */
+function makeSkyDeckUnit(carrier, def, lx, ly) {
+  const u = makeMover(def, () => ({ x: carrier.wx, y: carrier.wy }));
+  u.maxHp = u.hp = def.hp; u.xpValue = def.xp;   // v3.121.1: 甲板の敵の体力は元どおり（5倍は砦そのものの話だった）
+  u._deck = { carrier, lx, ly, wander: random() * SKY_DECK_WANDER_EVERY };
+  skyDeckAvoidKeep(carrier, u._deck, def.radius || 8);
+  u.waypoints = [{ x: carrier.wx, y: carrier.wy }]; u.wpIdx = 0;
+  skyDeckPlace(u);
+  return u;
+}
+
+/** v3.159.0（DT-588）: 甲板の兵が減っていたら、建物の門（船首側の壁の外）から1体出す */
+function updateSkyDeckRefill(c, dt) {
+  c._deckUnits = c._deckUnits.filter(u => u.alive);
+  if (c._deckUnits.length >= c._deckFull) { c._refillTimer = SKY_DECK_REFILL_EVERY; return; }
+  c._refillTimer -= dt;
+  if (c._refillTimer > 0) return;
+  c._refillTimer = SKY_DECK_REFILL_EVERY;
+  const def = MOVER_DEFS[c._deckKinds[Math.floor(random() * c._deckKinds.length)]];
+  const u = makeSkyDeckUnit(c, def, c.def.radius + (def.radius || 8) + 4, 0);
+  c._deckUnits.push(u);
+  movers.push(u);
+  c._gateAt = breathTime;
+}
+
+/** v3.159.0（DT-588）: 建物の四隅の砲塔。いちばん近い竜へ砲身を回し、近いときだけ直進の弾を撃つ */
+function updateSkyTurrets(c, dt) {
+  if (!c._turrets) {
+    c._turrets = [];
+    for (let k = 0; k < 4; k++) c._turrets.push({ aim: Math.atan2(c.headingY, c.headingX), cd: SKY_TURRET_INTERVAL * (k + 1) / 4 });
+  }
+  const H = c.def.radius * SKY_KEEP_DRAW_FRAC;
+  const corners = [[H, -H], [H, H], [-H, H], [-H, -H]];
+  const range2 = SKY_TURRET_RANGE * SKY_TURRET_RANGE;
+  for (let k = 0; k < 4; k++) {
+    const t = c._turrets[k], p = skyDeckToWorld(c, corners[k][0], corners[k][1]);
+    t.cd -= dt;
+    const i = findNearestAliveBoid(p.x, p.y);
+    if (i < 0 || dist2(px[i], py[i], p.x, p.y) > range2) continue;
+    const want = Math.atan2(py[i] - p.y, px[i] - p.x);
+    let d = want - t.aim;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    const step = SKY_TURRET_TURN * dt;
+    t.aim += Math.max(-step, Math.min(step, d));
+    if (t.cd > 0) continue;
+    t.cd = SKY_TURRET_INTERVAL;
+    spawnFanProjectileRaw(p.x + Math.cos(t.aim) * SKY_TURRET_BARREL, p.y + Math.sin(t.aim) * SKY_TURRET_BARREL, t.aim,
+      SKY_TURRET_SPEED, SKY_TURRET_DAMAGE * moverFerocity(), SKY_TURRET_COLOR, 0, SKY_TURRET_SHOT_RANGE, 0);
+  }
 }
 
 /** v3.127.0: 甲板の敵は砦の建物の上には立たない（建物の前後へ押し出す） */
@@ -13088,7 +13151,8 @@ function updateSkyCarriers(dt) {
   }
   if (skyCarriers.length === 0) return;
   for (const c of skyCarriers) {
-    if (c.alive || c._fell) continue;
+    if (c.alive) { updateSkyDeckRefill(c, dt); updateSkyTurrets(c, dt); continue; }
+    if (c._fell) continue;
     c._fell = true;
     skyCarrierFalls.push({ x: c.wx, y: c.wy, angle: Math.atan2(c.headingY, c.headingX), t: 0 });
     for (let p = 0; p < 4; p++) spawnCollisionParticles(c.wx + randRange(-80, 80), c.wy + randRange(-40, 40));
@@ -13181,10 +13245,21 @@ function drawSkyKeep(m, angle, alpha) {
     ctx.fillRect(t - mw / 2, -H - 7, mw, 9); ctx.fillRect(t - mw / 2, H - 2, mw, 9);
     ctx.fillRect(-H - 7, t - mw / 2, 9, mw); ctx.fillRect(H - 2, t - mw / 2, 9, mw);
   }
-  // 四隅の小さな塔
-  for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+  // v3.159.0（DT-588）: 船首側の壁の門。兵が出てきた直後は開いて明るく光る
+  const gateK = m._gateAt !== undefined ? Math.max(0, 1 - (breathTime - m._gateAt) / SKY_GATE_FX_TIME) : 0;
+  ctx.fillStyle = C.rim; ctx.fillRect(H - 8, -14, 14, 28);
+  if (gateK > 0) { ctx.globalAlpha = alpha * gateK; ctx.fillStyle = C.gate; ctx.fillRect(H - 6, -11, 12, 22); ctx.globalAlpha = alpha; }
+  // 四隅の砲塔（v3.159.0 DT-588: 回る砲身つき。順番は updateSkyTurrets の corners と同じ）
+  const corners = [[1, -1], [1, 1], [-1, 1], [-1, -1]];
+  for (let k = 0; k < 4; k++) {
+    const sx = corners[k][0], sy = corners[k][1];
     ctx.fillStyle = C.keepWallDark; ctx.beginPath(); ctx.arc(sx * H, sy * H, 15, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = C.keepRoof; ctx.beginPath(); ctx.arc(sx * H, sy * H, 10, 0, Math.PI * 2); ctx.fill();
+    const aim = (m._turrets ? m._turrets[k].aim : angle) - angle;
+    ctx.strokeStyle = C.gun; ctx.lineWidth = 7; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(sx * H, sy * H); ctx.lineTo(sx * H + Math.cos(aim) * SKY_TURRET_BARREL, sy * H + Math.sin(aim) * SKY_TURRET_BARREL); ctx.stroke();
+    ctx.lineCap = "butt";
+    ctx.fillStyle = C.towerDark; ctx.beginPath(); ctx.arc(sx * H, sy * H, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = C.rim; ctx.lineWidth = 2; ctx.stroke();
   }
   // 真ん中の櫓（上から見た四角錐の屋根：明るい面と暗い面）
   const R = H * 0.6;
@@ -38661,7 +38736,7 @@ const CODEX_SPECIAL_ERA = {
   forest_giant:   "大樹海（全文明） — 森を歩く大物",
   prism_bearer:   "光線の高原（全文明） — 自分では撃たない。当たった光線を三角プリズムで3本に割る",
   wind_rider:     "浮き城の空（全文明） — 12秒ごとに飛んでくる。群れの横をまっすぐ通り過ぎながら槍を投げる",   // v3.78.0（案帳 DT-124）
-  sky_carrier:    "浮き城の空（全文明） — 天空城のまわりを2隻が回り、1隻が雲海を漂う。甲板にその時代の地上の敵を載せている",   // v3.87.0（案帳 DT-124・2回目）
+  sky_carrier:    "浮き城の空（全文明） — 天空城のまわりを2隻が回り、1隻が雲海を漂う。甲板にその時代の地上の敵を載せている。甲板の敵が減ると砦の門から8秒ごとに補充し、四隅の砲塔が近づいた群れを撃つ",   // v3.87.0（案帳 DT-124・2回目）／v3.159.0（DT-588）
   sky_mine:       "浮き城の空（全文明） — 町の島の外の雲海に、数個ずつ固まって漂う",
   serpent_coil:   "蛇神の国（全文明） — 格上の街をぐるりと巻いて回る。胴は越えられず攻撃も効かない。頭を倒すとほどけて逃げる",   // v3.102.0（案帳 DT-180）
   serpent_crawl:  "蛇神の国（全文明） — 町から這い出して群れを追う。止まっている群れを胴の輪で締める",
