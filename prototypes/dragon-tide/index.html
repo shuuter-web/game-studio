@@ -1323,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.157.0";
+const GAME_VERSION = "v3.158.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -9829,7 +9829,12 @@ const MOVER_DEFS = {
     // 体当たり・ブレス・弾はどれも敵の中心と半径で当たりを見るので、半径を絞れば建物以外（船体・甲板）は素通りになる。
     // 船体の絵・甲板の広さ・地図の縁の内側への収め方は SKY_CARRIER_SCALE と SKY_HULL_* で決めていて、この半径は使わない
     // （建物の絵の大きさだけがこの半径から決まる＝drawSkyKeep。絵と当たりがずれないように）
-    name: "sky_carrier", skyCarrier: true, hp: 16000, speed: 30, xp: 1800, eggDrop: 8, radius: 80, turnRate: 0.3,
+    // v3.158.0（DT-587「群れに船首を向けようと回転してくるのが変。この大きさのものがそんなに高速に回転するもんじゃない」）:
+    // 船体は半分の長さ 414px（138×3）あり、旋回 0.3 rad/s だと舳先が毎秒124px（進む速さ30の4倍）振れて、船ではなく独楽のように見えた。
+    // 船体の向き（turnRate）は 0.3→0.06 にし、舳先の振れを毎秒25px（進む速さより遅い）・半周に約52秒へ。
+    // ただし進む向きまで 0.06 にすると旋回半径が500pxになり、地図の縁で折れる天空城の輪を回り切れずに島へ切れ込んだ（実測）。
+    // そこで進む向きは driftTurnRate（従来の 0.3）で変え、船体は遅れてついてくる＝雲海を横へ滑るように漂う（updateMovers）
+    name: "sky_carrier", skyCarrier: true, hp: 16000, speed: 30, xp: 1800, eggDrop: 8, radius: 80, turnRate: 0.06, driftTurnRate: 0.3,
     color: "#8a6a44", glowColor: "#ffd890", moveType: "patrol", showHpBar: true,
     attack: { type: "shell", interval: 3.2, range: 760, count: 3, damage: 2.5, aoe: 48, speed: 150, scatter: 90, color: "#ffcf80" },
   },
@@ -18812,11 +18817,24 @@ function updateMovers(dt) {
       // 脚が無いのに車体が向きを変えるのは何で踏ん張っているのか分からない
       // （Shooter判定）。持たない敵は従来どおり 1。
       const maxTurn = def.turnRate * (m.turnScale ?? 1) * dt;
-      const next = cur + Math.max(-maxTurn, Math.min(maxTurn, diff));
-      m.headingX = Math.cos(next);
-      m.headingY = Math.sin(next);
-      moveX = m.headingX;
-      moveY = m.headingY;
+      if (def.driftTurnRate) {
+        // v3.158.0（DT-587）: 漂う大きな船（浮き砦）。進む向き m._driftAngle は driftTurnRate で目標へ回し、
+        // 船体の向きは turnRate でその進む向きへゆっくり追う（向きと進む向きがずれる間は横滑りに見える）
+        if (m._driftAngle === undefined) m._driftAngle = cur;
+        const maxDrift = def.driftTurnRate * dt;
+        m._driftAngle = wrapAngle(m._driftAngle + Math.max(-maxDrift, Math.min(maxDrift, wrapAngle(Math.atan2(dirY, dirX) - m._driftAngle))));
+        const next = cur + Math.max(-maxTurn, Math.min(maxTurn, wrapAngle(m._driftAngle - cur)));
+        m.headingX = Math.cos(next);
+        m.headingY = Math.sin(next);
+        moveX = Math.cos(m._driftAngle);
+        moveY = Math.sin(m._driftAngle);
+      } else {
+        const next = cur + Math.max(-maxTurn, Math.min(maxTurn, diff));
+        m.headingX = Math.cos(next);
+        m.headingY = Math.sin(next);
+        moveX = m.headingX;
+        moveY = m.headingY;
+      }
     } else {
       m.headingX = dirX;
       m.headingY = dirY;
