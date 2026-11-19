@@ -1323,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.156.0";
+const GAME_VERSION = "v3.157.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -37196,20 +37196,25 @@ const RAY_LEN      = 72;      // 弾の絵の長さ（px）。当たりは弾の
 // v3.152.0（DT-581 手直し・Shooter「極太レーザーの時みたいな、発射点の丸い部分も欲しい」）: 撃った竜の口元に光の玉を短く出す（見た目だけ）
 const RAY_MUZZLE_TIME = 0.18; // 発射点の光の玉が出ている時間（秒）
 const RAY_MUZZLE_R    = 7;    // 発射点の光の玉の半径（px）
+// v3.157.0（DT-581 手直し・Shooter「発射点の丸い光は口の前に出て欲しい」）: 玉と光線弾は体の中心でなく口の前から出す。
+// 鼻先は体の中心から約12.5px前（火竜のブレスの MOUTH_OFFSET の求め方と同じ）。玉はその鼻先に縁が触れる位置に置く
+const RAY_MOUTH_OFFSET = 13;  // 体の中心から鼻先まで（px・体格倍率1のとき）
 const RAY_HIT_PAD  = 3;       // 相手の半径に足す当たりの幅
 const RAY_MAX      = 400;     // 同時に飛ぶ光線弾の上限
 const RAY_COLOR    = "#7af7ff";
 // 進化の形ごとの撃ち方（DT-581 手直し）。interval・dmg は基本の倍率、len・width は絵の長さ・太さの倍率、
-// ways は1回に撃つ本数、spread は隣の弾との角度（ラジアン。狭く）。
+// ways は1回に撃つ本数、spread は隣の弾との角度（ラジアン。狭く）。reach は飛ぶ距離（射程）の倍率。
+// v3.157.0（DT-581 手直し・Shooter「進化後の貫く方のラインはもっと射程も太さも長さも大きく。特に後半は引きの絵になるので射程の短さが目立つ」）:
+// 貫光竜（A）の射程・長さ・太さを大きくした。強さが跳ねないよう一発の倍率は少し下げた
 // A は間隔と一発の重さを同じ倍率で上げる（形を変えただけで強さが跳ねないように）。B は1本あたりを軽くして本数で補う
 const RAY_FORMS = {
-  base: { interval: 1,   dmg: 1,    len: 1,   width: 1,   ways: 1, spread: 0 },
-  A:    { interval: 1.8, dmg: 1.8,  len: 1.9, width: 2.0, ways: 1, spread: 0 },
-  A1:   { interval: 2.3, dmg: 2.4,  len: 2.5, width: 2.8, ways: 1, spread: 0 },
-  A2:   { interval: 1.8, dmg: 1.8,  len: 1.9, width: 2.0, ways: 1, spread: 0 },
-  B:    { interval: 1,   dmg: 0.45, len: 1,   width: 1,   ways: 3, spread: 0.14 },
-  B1:   { interval: 1,   dmg: 0.30, len: 1,   width: 1,   ways: 5, spread: 0.11 },
-  B2:   { interval: 1,   dmg: 0.45, len: 1,   width: 1,   ways: 3, spread: 0.14 },
+  base: { interval: 1,   dmg: 1,    len: 1,   width: 1,   ways: 1, spread: 0,    reach: 1 },
+  A:    { interval: 1.8, dmg: 1.8,  len: 3.0, width: 3.0, ways: 1, spread: 0,    reach: 1.7 },
+  A1:   { interval: 2.3, dmg: 2.4,  len: 4.2, width: 4.2, ways: 1, spread: 0,    reach: 2.3 },
+  A2:   { interval: 1.8, dmg: 1.8,  len: 3.0, width: 3.0, ways: 1, spread: 0,    reach: 1.7 },
+  B:    { interval: 1,   dmg: 0.45, len: 1,   width: 1,   ways: 3, spread: 0.14, reach: 1 },
+  B1:   { interval: 1,   dmg: 0.30, len: 1,   width: 1,   ways: 5, spread: 0.11, reach: 1 },
+  B2:   { interval: 1,   dmg: 0.45, len: 1,   width: 1,   ways: 3, spread: 0.14, reach: 1 },
 };
 function rayForm() {
   const br = (runSpeciesBranch && runSpeciesBranch.ray) || {};
@@ -37221,7 +37226,7 @@ function updateRayAttacks(dt) {
   const form  = rayForm();
   const inter = RAY_INTERVAL * form.interval * effFireIntervalMult("ray");
   const dmg   = RAY_DAMAGE * form.dmg * effWeaponDmgMult("ray");
-  const reach = RAY_TRAVEL * effWeaponRangeMult("ray");
+  const reach = RAY_TRAVEL * form.reach * effWeaponRangeMult("ray");
   const len   = RAY_LEN * form.len, width = form.width;
   for (let i = 0; i < N; i++) {
     if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;
@@ -37231,9 +37236,11 @@ function updateRayAttacks(dt) {
     if (rayBolts.length >= RAY_MAX) continue;
     boidFireTimer[i] = inter;
     const a0 = Math.atan2(vy[i], vx[i]);
+    const mouth = RAY_MOUTH_OFFSET * boidBodyScale(i);
+    const ox = px[i] + Math.cos(a0) * mouth, oy = py[i] + Math.sin(a0) * mouth;
     for (let w = 0; w < form.ways; w++) {
       const a = a0 + (w - (form.ways - 1) / 2) * form.spread;
-      rayBolts.push({ x: px[i], y: py[i], vx: Math.cos(a) * RAY_SPEED, vy: Math.sin(a) * RAY_SPEED,
+      rayBolts.push({ x: ox, y: oy, vx: Math.cos(a) * RAY_SPEED, vy: Math.sin(a) * RAY_SPEED,
                       travel: 0, maxTravel: reach, dmg, len, width, hitB: [], hitM: [], src: i, age: 0, muzzle: w === 0 });
     }
   }
@@ -37301,7 +37308,9 @@ function drawRayBolts() {
     if (i == null || boidDead[i] || boidDowned[i]) continue;
     const f = 1 - b.age / RAY_MUZZLE_TIME;
     const dir = Math.atan2(b.vy, b.vx);
-    const mx = px[i] + Math.cos(dir) * 6, my = py[i] + Math.sin(dir) * 6;
+    // 口の前：鼻先から玉の芯の半径ぶん前へ（玉が顔に重ならないように）
+    const fwd = RAY_MOUTH_OFFSET * boidBodyScale(i) + RAY_MUZZLE_R * b.width * 0.55;
+    const mx = px[i] + Math.cos(dir) * fwd, my = py[i] + Math.sin(dir) * fwd;
     ctx.globalAlpha = 0.45 * f; ctx.fillStyle = RAY_COLOR;
     ctx.beginPath(); ctx.arc(mx, my, RAY_MUZZLE_R * b.width * (1.1 + 0.5 * (1 - f)), 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.95 * f; ctx.fillStyle = "#f4ffff";
