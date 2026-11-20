@@ -38,7 +38,7 @@
 </head>
 <body>
 <main>
-  <h1>竜の見た目サンプル：宝石（ルース）2回目</h1>
+  <h1>竜の見た目サンプル：宝石（ルース）3回目</h1>
   <p class="lead">竜は竜のまま、色・質感・光り方だけをルース（裸石）から借りる案（DT-597）。
     照り返しは<strong>竜の向き（と地図上の位置）だけ</strong>で決まる。光源は見せない・動かさない・地面には何も出さない。
     同じ位置・同じ向きなら同じ照り返しになるので、群れが曲がると先頭から順にきらっと光が走る（イワシの群れのつもり）。</p>
@@ -136,6 +136,7 @@ const SPECIES = [
       wingAnchor: { x: 319, y: 66.9 },
     },
     // 普通の石は不透明でほぼ光らない：照り返しは薄く、翼も透けない。差は明るさのむらで出す
+    // DT-597 3回目（Shooter「全然光って見えないのは絵のせい？元の絵をもっと暗く」）: 石の絵を半分ほどの明るさにして、鈍い照り返しが見えるように
     gloss: 0.18, glintColor: "#f2ede4", hueJitter: 5, lightJitter: 0.1, wingAlpha: [1, 1],
   },
 ];
@@ -262,15 +263,13 @@ function drawDragon(c, spec, parts, flapFactor, opts) {
 // 光源は見せない・動かさない。「この向きを向いた竜はきらっとする」という向きを地図に1つ決めておくだけ。
 // 時間は使わないので、同じ位置・同じ向きの竜はいつでも同じ照り返しになる。
 // 群れが曲がると、先頭から順にその向きを通るので、光が群れの中を走って見える（イワシの群れのつもり）。
-const GLINT_HEADING = 0.35;  // きらっとする向き（右やや下へ飛ぶ向きと、その逆。8の字の長い斜めでは光らず、曲がるときに光が群れを走るように選んだ）
+const GLINT_HEADING = 0.35;  // きらっとする向きの基準（ここから60°おきに6つ）
 const GLINT_FULL = 8 * Math.PI / 180; // この角度までは照り返しが最大
 const GLINT_EDGE = 28 * Math.PI / 180; // ここまでで段々に消える
-// 向きの窓は2つ：きらっとする向きへ飛ぶ（肩を横切る照り返し）と、その逆へ飛ぶ（背筋の照り返し）。
-// 窓どうしが離れているので、照り返しの絵が切り替わるのは必ず照り返しが0のとき（いきなり切り替わらない）
-const GLINT_WINDOWS = [
-  { center: 0, image: 3 },
-  { center: Math.PI, image: 0 },
-];
+// 向きの窓は6つ（DT-597 3回目・Shooter「光る角度ポイントを3倍くらいに。角度幅ではなく箇所の数」）：60°おき。
+// 1つの窓の幅（±28°）は前のまま。窓どうしの間に 4° ずつ照り返しが0の向きが残るので、
+// 照り返しの絵が切り替わるのは必ず照り返しが0のとき（いきなり切り替わらない）
+const GLINT_WINDOWS = [0, 1, 2, 3, 4, 5].map((k) => ({ center: k * Math.PI / 3, image: [3, 1, 0, 3, 2, 0][k] }));
 // 「角度＋位置」のとき：地図に固定した斜めの縞の上にいる竜だけが照り返す（縞は描かない）
 const STRIPE_ANGLE = 0.6;
 const STRIPE_SPACING = 150;
@@ -335,7 +334,7 @@ function setupCanvas(canvas, cssW, cssH) {
   return { ctx, dpr, w: cssW, h: cssH };
 }
 
-// ---- 1. 群れ：プレイヤーの引いた線（8の字）をなぞって飛ぶ ----
+// ---- 1. 群れ：プレイヤーの引いた線（毎回ちがう形）をなぞって飛ぶ ----
 const state = { filter: "all", usePosition: false, showPath: true, glintOn: true, paused: false };
 const FLOCK_SPEED = 75;          // 群れの速さ（論理px/秒）
 const FLOCK_ALONG = 85;          // 群れの前後の広がり（半分）
@@ -343,19 +342,38 @@ const FLOCK_ACROSS = 34;         // 群れの左右の広がり（半分）
 const DRAGONS_PER_SPECIES = 40;
 const DRAGONS_PER_SPECIES_MIXED = 12;
 const TRAY_HEIGHT = 440;
-const PATH_SAMPLES = 720;
+const PATH_SAMPLES = 2400;
+// なぞる線は毎回ちがう形（DT-597 3回目・Shooter「サンプルの軌道はもっとランダムに」）。
+// 閉じた曲線にするため、ゆらぎの波（1〜PATH_HARMONICS 番目）を重ねて作り、枠に収める
+const PATH_HARMONICS = 7;
+let pathSeed = 1 + Math.floor(Date.now() % 100000);   // ページを開くたびに変わる（「軌道を変える」でも変わる）
 let trayView = null;
 let dragons = [];
 let path = null;
 
 function buildPath(width, height) {
-  const cx = width / 2, cy = height / 2;
-  const ax = width * 0.36, ay = height * 0.33;
+  const waves = [];
+  for (let k = 1; k <= PATH_HARMONICS; k++) {
+    // 高い波ほど小さく（大きくうねりつつ、ときどき小さく曲がる）
+    const amp = 1 / Math.pow(k, 1.1);
+    waves.push({ k, ax: amp * (hash01(pathSeed, k * 4) - 0.5), px: hash01(pathSeed, k * 4 + 1) * Math.PI * 2,
+                 ay: amp * (hash01(pathSeed, k * 4 + 2) - 0.5), py: hash01(pathSeed, k * 4 + 3) * Math.PI * 2 });
+  }
+  const raw = [];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i <= PATH_SAMPLES; i++) {
+    const u = (i / PATH_SAMPLES) * Math.PI * 2;
+    let x = 0, y = 0;
+    for (const w of waves) { x += w.ax * Math.sin(w.k * u + w.px); y += w.ay * Math.sin(w.k * u + w.py); }
+    raw.push({ x, y });
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const margin = FLOCK_ALONG * 0.6;
+  const sx = (width - margin * 2) / Math.max(1e-6, maxX - minX), sy = (height - margin * 2) / Math.max(1e-6, maxY - minY);
   const points = [];
   let length = 0;
   for (let i = 0; i <= PATH_SAMPLES; i++) {
-    const u = (i / PATH_SAMPLES) * Math.PI * 2;
-    const p = { x: cx + ax * Math.sin(u), y: cy + ay * Math.sin(u * 2), s: 0 };
+    const p = { x: margin + (raw[i].x - minX) * sx, y: margin + (raw[i].y - minY) * sy, s: 0 };
     if (i > 0) {
       const q = points[i - 1];
       length += Math.hypot(p.x - q.x, p.y - q.y);
@@ -522,7 +540,7 @@ function drawCompare(time) {
 
 // ---- ボタン ----
 const MODE_NOTES = {
-  angle: "角度だけ：決まった向き（±8°で最大、±28°までで段々に消える）を向いた竜だけが照り返す。群れが曲がると先頭から順に光が走る。",
+  angle: "角度だけ：決まった向き（60°おきに6か所。それぞれ±8°で最大、±28°までで段々に消える）を向いた竜だけが照り返す。群れが曲がると先頭から順に光が走る。",
   position: "角度＋位置：上の条件に加えて、地図に固定した斜めの縞（見えない）の上にいるときだけ照り返す。同じ場所を同じ向きで通れば毎回同じところで光る。",
 };
 
@@ -565,6 +583,7 @@ function buildChips() {
     { prop: "showPath", label: "なぞる線" },
     { prop: "paused", label: "止める" },
   ];
+  makeChip(optionChips, "軌道を変える", false, () => { pathSeed++; setupTray(); });
   for (const t of toggles) {
     makeChip(optionChips, t.label, state[t.prop], (b) => {
       state[t.prop] = !state[t.prop];
