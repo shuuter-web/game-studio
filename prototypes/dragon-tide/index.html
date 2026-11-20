@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.170.0";
+const GAME_VERSION = "v3.171.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3993,6 +3993,14 @@ const TINY_HAMLET_START_RING_INNER = 600;
 // v3.137.0（案帳 DT-571・Shooter「小集落ゾーンは1500まで」「小集落は実入が少なく、建物や卵がたくさんある普通の街を経ずに強い街にあたるのが問題」）:
 // 2050 → 1500。小集落だけの範囲を詰め、早く町の帯へ入るようにする（荒地の WASTELAND_HAMLET_RING_OUTER と同じ値）
 const TINY_HAMLET_START_RING_OUTER = 1500;
+// DT-590 手直し2（v3.171.0・Shooter「スタート地点近くの小集落の違和感が目立つ。いまはまばらさが均一な感じで違和感」）:
+// 帯の中で一様に撒くのをやめ、いくつかの「寄り合い」（村の固まり）のまわりに小集落を寄せる。
+// 寄り合いのまわりは小集落が詰まり、寄り合いの間は畑と野道だけの空き地になる。一部は寄り合いに入れず、ぽつんと離れた小集落にする
+const TINY_HAMLET_START_GROUPS       = [4, 6];   // 寄り合いの数
+const TINY_HAMLET_START_GROUP_SPREAD = 200;      // 寄り合いの中心からの散らばり（正規分布の標準偏差）
+const TINY_HAMLET_START_GROUP_GAP    = 650;      // 寄り合いの中心どうしの最小間隔
+const TINY_HAMLET_START_LONE         = 0.2;      // 寄り合いに入れない（離れた）小集落の割合
+const TINY_HAMLET_START_GROUP_EDGE_GAP = 12;     // 寄り合いの中の小集落どうしの外周の隙間（TINY_HAMLET_EDGE_GAP より詰める）
 // クラスタ中心同士の最小間隔（他クラスタとの分離）
 // v0.74: 「重ならなければ良いくらい」（Shooter指示）まで詰める。
 // v3.68.0: 集落ごとに広がりが違うので、互いの広がりの和＋この余白＝集落の外周同士が触れない最小値（旧 MIN_SPACING=150 は固定値だった）
@@ -6023,6 +6031,35 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
 
   // 確定したクラスタ中心リスト（他クラスタとの分離チェック用）
   const hamletCenters = [];
+  // DT-590 手直し2: 開始地点の帯の寄り合い（小集落を寄せる中心）。重み＝寄り合いごとの大きさのばらつき
+  const startRingOuter = worldShape === SHAPE_WASTELAND ? WASTELAND_HAMLET_RING_OUTER : TINY_HAMLET_START_RING_OUTER;
+  const startGroups = [];
+  {
+    // 開始地点が地図の端・角にあると帯の半分〜3/4は地図の外。寄り合いを地図の中の広さに合わせて減らさないと、
+    // 寄り合いどうしが重なって帯じゅうが埋まり、まばらさが均一なまま（空き地ができない）
+    let inside = 0;
+    for (let k = 0; k < 64; k++) {
+      const a = (k / 64) * Math.PI * 2, rr = (TINY_HAMLET_START_RING_INNER + startRingOuter) / 2;
+      const x = START_X + Math.cos(a) * rr, y = START_Y + Math.sin(a) * rr;
+      if (x > TINY_MARGIN && x < WORLD_W - TINY_MARGIN && y > TINY_MARGIN && y < WORLD_H - TINY_MARGIN) inside++;
+    }
+    const want = Math.max(2, Math.round(randInt(TINY_HAMLET_START_GROUPS[0], TINY_HAMLET_START_GROUPS[1]) * inside / 64));
+    for (let tries = 0; tries < want * 30 && startGroups.length < want; tries++) {
+      const a = random() * Math.PI * 2;
+      const rr = randRange(TINY_HAMLET_START_RING_INNER + 100, startRingOuter - 100);
+      const gx = START_X + Math.cos(a) * rr, gy = START_Y + Math.sin(a) * rr;
+      if (gx < TINY_MARGIN + 150 || gx > WORLD_W - TINY_MARGIN - 150 || gy < TINY_MARGIN + 150 || gy > WORLD_H - TINY_MARGIN - 150) continue;
+      if (startGroups.some(g => dist2(gx, gy, g.x, g.y) < TINY_HAMLET_START_GROUP_GAP ** 2)) continue;
+      startGroups.push({ x: gx, y: gy, w: randRange(0.5, 1.5) });
+    }
+  }
+  const pickStartGroup = () => {
+    let sum = 0;
+    for (const g of startGroups) sum += g.w;
+    let r = random() * sum;
+    for (const g of startGroups) { r -= g.w; if (r < 0) return g; }
+    return startGroups[startGroups.length - 1];
+  };
 
   for (let h = 0; h < TINY_HAMLET_COUNT; h++) {
     // --- クラスタ中心の配置 ---
@@ -6035,9 +6072,22 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
     // v0.74: 先頭 TINY_HAMLET_NEAR_START 個はスタート地点まわりのリングから抽選する。
     // 半径は √補正して面積に対して一様にする（そのままだと中心付近に固まりすぎる）。
     const nearStart = h < TINY_HAMLET_NEAR_START;
+    // DT-590 手直し2: 帯の小集落は寄り合いのまわりに寄せる（寄り合いが埋まっていれば、試すたびに別の寄り合いへ）
+    const grouped = nearStart && startGroups.length > 0 && random() >= TINY_HAMLET_START_LONE;
     for (let attempt = 0; attempt < TINY_HAMLET_MAX_ATTEMPTS && !hamletPlaced; attempt++) {
       let cx, cy;
-      if (nearStart) {
+      if (grouped && attempt < TINY_HAMLET_MAX_ATTEMPTS * 0.75) {
+        const g = pickStartGroup();
+        // 正規分布（Box-Muller）で中心ほど詰まる
+        const rr = TINY_HAMLET_START_GROUP_SPREAD * Math.sqrt(-2 * Math.log(1 - random() * 0.999));
+        const a  = random() * Math.PI * 2;
+        cx = g.x + Math.cos(a) * rr;
+        cy = g.y + Math.sin(a) * rr;
+        const ds = Math.hypot(cx - START_X, cy - START_Y);
+        if (ds < TINY_HAMLET_START_RING_INNER || ds > startRingOuter + 150) continue;
+        if (cx < TINY_MARGIN || cx > WORLD_W - TINY_MARGIN ||
+            cy < TINY_MARGIN || cy > WORLD_H - TINY_MARGIN) continue;
+      } else if (nearStart) {
         const a  = random() * Math.PI * 2;
         const t  = random();
         const rr = Math.sqrt(
@@ -6065,8 +6115,9 @@ function generateTinySettlements(existingBuildings, bossWx, bossWy, config) {
 
       // 他クラスタ中心との最小間隔チェック（v3.68.0: 互いの広がりの和＋余白。小さい集落どうしは詰められる）
       let tooCloseToHamlet = false;
+      const edgeGap = grouped ? TINY_HAMLET_START_GROUP_EDGE_GAP : TINY_HAMLET_EDGE_GAP;   // DT-590 手直し2: 寄り合いの中は詰める
       for (const hc of hamletCenters) {
-        if (dist2(cx, cy, hc.x, hc.y) < (hamletR + hc.r + TINY_HAMLET_EDGE_GAP) ** 2) {
+        if (dist2(cx, cy, hc.x, hc.y) < (hamletR + hc.r + edgeGap) ** 2) {
           tooCloseToHamlet = true;
           break;
         }
@@ -6175,8 +6226,17 @@ const COUNTRY_LANE_LINK      = 900;    // 野道の端から、これより近�
 const COUNTRY_LANE_MAX_WIND   = Math.PI * 1.1;   // 歩き始めの向きからこれ以上（約200°）回り込んだら、そこで止める
 const COUNTRY_LANE_SELF_GAP   = 70;     // 自分の通った跡にこれより近づいたら止める（輪・すれ違いに見える）
 const COUNTRY_LANE_SELF_ARC   = 240;    // 道なりにこれより手前の点だけを「通った跡」として見る（すぐ後ろの点は除く）
-const COUNTRY_START_CLEAR    = 280;    // 開始地点のすぐまわりは畑を敷かない（群れが生まれる場所）
-const COUNTRY_START_FADE     = 540;    // ここまでは畑をまばらにして、開始地点から少しずつ田園に入る
+// DT-590 手直し2（v3.171.0・Shooter「スタート地点周囲も…今は完全に空白」）: 280 → 160・540 → 460。
+// 開始地点のまわりにも農家（埋め草）を建てたので、畑も群れが生まれる真ん中のすぐ外から敷く
+const COUNTRY_START_CLEAR    = 160;    // 開始地点のすぐまわりは畑を敷かない（群れが生まれる場所）
+const COUNTRY_START_FADE     = 460;    // ここまでは畑をまばらにして、開始地点から少しずつ田園に入る
+// DT-590 手直し2（Shooter「スタート地点近くの小集落…まばらさが均一な感じで違和感」）: 野道沿いに並ぶ家（撃たない埋め草）。
+// 野道に沿ってゆっくり変わる濃さ（makeSmoothNoise1D）が高い区間だけに並べ、家が並ぶ区間と畑だけの区間を作る
+const COUNTRY_LANE_HOUSE_WAVE  = [200, 420];   // 濃さの節の間隔
+const COUNTRY_LANE_HOUSE_FROM  = 0.6;          // 濃さがこれを超える区間だけに家を置く
+const COUNTRY_LANE_HOUSE_STEP  = [18, 30];     // 家と家の間隔（濃いほど詰まる）
+const COUNTRY_LANE_HOUSE_KEEP  = 0.8;          // 区間の中で1か所に家を置く確率（歯抜けにする）
+const COUNTRY_LANE_HOUSE_SPACE = 15;           // 野道沿いの家どうしの最小間隔
 const COUNTRY_EDGE_FADE      = 260;    // 田園の外縁はこの幅で畑をまばらにして、くっきりした境目を作らない
 const COUNTRY_FARM_CELL      = 520;    // 畑のまとまり（1軒の農家の区画）の大きさの目安
 const COUNTRY_FARM_MEADOW    = 0.12;   // まとまりごと草地・林にする割合
@@ -6331,7 +6391,7 @@ function pickCountryCrop() {
  * 開始地点まわりの田園：小集落の前哨堡（小）、集落の間を縫う野道、空き地を埋める畑・草地・林。
  * 家・町の建物・城壁を全部置いたあとに呼ぶ（野道も畑も家をよけて敷くため）
  */
-function generateStartCountryside(tinyBuildings, buildings) {
+function generateStartCountryside(tinyBuildings, buildings, config, keepLoose) {
   const hamletSyms = tinyBuildings.filter(b => b._landmark === "hamlet" && dist2(b.wx, b.wy, START_X, START_Y) < COUNTRY_REACH ** 2);
   if (hamletSyms.length < 3) return;
   const discs = countryTownDiscs(buildings);
@@ -6539,6 +6599,7 @@ function generateStartCountryside(tinyBuildings, buildings) {
   };
 
   // --- 野道：田園を横切る長い道（1本目は開始地点の近くを通す）→ 枝道 ---
+  const laneStartIndex = countryLanes.length;   // DT-590 手直し2: ここから先が田園の野道（前にあるのは埋め草の郊外の通り・隠れ里の野道）
   let laneId = 0;
   const mainCount = randInt(COUNTRY_LANE_MAIN[0], COUNTRY_LANE_MAIN[1]);
   for (let i = 0; i < mainCount; i++) {
@@ -6576,6 +6637,56 @@ function generateStartCountryside(tinyBuildings, buildings) {
     // DT-600: 合流の最後の一歩で急に折れて回り込みすぎることがあるので、枝道も同じく削る（根元から切れたら捨てる）
     const branch = trimWinding(untangleLane(w.pts));
     if (branch[0] === w.pts[0] && laneLen(branch) >= COUNTRY_LANE_MIN_LEN * 0.8) addLane(branch, id);
+  }
+
+  // --- DT-590 手直し2: 野道沿いに並ぶ家（撃たない埋め草）。野道の濃い区間だけに並べる ---
+  {
+    const bSmall = config.buildings.small;
+    const tinyR = BUILDING_SIZE_PARAMS.tiny.radiusBase;
+    const off = laneHalf + tinyR + 3;
+    const placed = [];
+    const freeHere = (x, y) => {
+      if (x < TINY_MARGIN || x > WORLD_W - TINY_MARGIN || y < TINY_MARGIN || y > WORLD_H - TINY_MARGIN) return false;
+      if (dist2(x, y, START_X, START_Y) < FILLER.startClear ** 2 || inTown(x, y)) return false;
+      if (houseGrid.some(x - houseGrid.maxR - tinyR, y - houseGrid.maxR - tinyR, x + houseGrid.maxR + tinyR, y + houseGrid.maxR + tinyR,
+        p => dist2(x, y, p.x, p.y) < (p.r + tinyR) ** 2)) return false;
+      // 道（自分の野道・ほかの野道・街道）の上に乗らない
+      if (roadGrid.some(x - 40, y - 40, x + 40, y + 40, p => dist2(x, y, p.x, p.y) < (p.r + tinyR + 1) ** 2)) return false;
+      if (onStartStream(x, y, tinyR + 3)) return false;
+      if (placed.some(b => dist2(x, y, b.wx, b.wy) < COUNTRY_LANE_HOUSE_SPACE ** 2)) return false;
+      return keepLoose({ wx: x, wy: y, radius: tinyR });
+    };
+    for (const pts of countryLanes.slice(laneStartIndex)) {
+      let total = 0;
+      for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      const dens = makeSmoothNoise1D(total, randRange(COUNTRY_LANE_HOUSE_WAVE[0], COUNTRY_LANE_HOUSE_WAVE[1]));
+      let d = 0, nextAt = 0;
+      sampleCountryPolyline(pts, 6, (x, y, ang) => {
+        d += 6;
+        if (d < nextAt) return;
+        const n = dens(d);
+        if (n < COUNTRY_LANE_HOUSE_FROM) { nextAt = d + COUNTRY_LANE_HOUSE_STEP[0]; return; }
+        const t = (n - COUNTRY_LANE_HOUSE_FROM) / (1 - COUNTRY_LANE_HOUSE_FROM);
+        nextAt = d + COUNTRY_LANE_HOUSE_STEP[1] + (COUNTRY_LANE_HOUSE_STEP[0] - COUNTRY_LANE_HOUSE_STEP[1]) * t;
+        for (const side of [-1, 1]) {
+          if (random() > COUNTRY_LANE_HOUSE_KEEP) continue;
+          const o = off + randRange(0, 4);
+          const hx = x - Math.sin(ang) * o * side, hy = y + Math.cos(ang) * o * side;
+          if (!freeHere(hx, hy)) continue;
+          const hp = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
+          const bld = makeBuilding(hx, hy, "tiny", randChoice(bSmall.colors), bSmall, hp);
+          bld._tinySettlement = true;
+          bld._filler = true;
+          bld._noAttack = true;
+          bld.attackRadius = 0;
+          bld.radius = tinyR;
+          bld._faceAngle = Math.atan2(y - hy, x - hx) + Math.PI / 2 + randRange(-0.12, 0.12);   // 正面を野道へ
+          placed.push(bld);
+        }
+      });
+    }
+    // 畑は家の足元の土広場（半径の約2.4倍）をよけて敷く
+    for (const b of placed) { buildings.push(b); houseGrid.add(b.wx, b.wy, b.radius * 2.4 + 3); }
   }
 
   // --- 畑を敷けない所（点＋半径）：家・街道・野道・川・小川 ---
@@ -6962,10 +7073,8 @@ function makeBossBuilding(wx, wy, stageIndex, bossTheme) {
 //   3. 空き地の密集地 → 隠れ里：真ん中に集落のシンボル（撃たない）、まわりに家、外側を林で囲み、
 //      いちばん近い街道・町へ野道を1本通す（林は野道の向きだけ開ける）
 const FILLER = {
-  roadStep: 22,            // 街道沿い：家と家の間隔（道に沿って）
   roadOffsetMin: 24,       // 街道沿い：道の中心からの距離（街道の幅26の外側すぐ）
   roadOffsetMax: 30,
-  roadKeep: 0.65,          // 街道沿い：1か所に家を置く確率の元（首都への近さで上下する）
   lanesPerTown: [3, 5],    // 郊外の通り：1町あたりの本数
   laneStart: 0.9,          // 郊外の通り：町の広がり（maxExtent）の何倍から引き始めるか
   laneLength: [0.8, 1.3],  // 郊外の通り：長さ（町の広がりの何倍）
@@ -6981,12 +7090,47 @@ const FILLER = {
   clusterWoods: [9, 14],   // 隠れ里：まわりの林の数
   clusterWoodR: [34, 56],  // 隠れ里：林1つの半径
   clusterLaneReach: 1400,  // 隠れ里：これより近い街道・町へ野道を通す（遠ければ通さず、林で閉じた里のまま）
+  clusterStartClear: 300,  // 隠れ里：開始地点からこれ＋広さより内には置かない（林に囲まれた大きな里は出発地点のそばには大きすぎる）
   gradientMin: 0.6,        // 開始地点での濃さ
   gradientMax: 1.4,        // 首都のそばでの濃さ
   clearance: 5,            // 家どうし・ほかの建物との隙間
-  startClear: 300,         // 群れの出発地点そのものは空けておく
+  // DT-590 手直し2（v3.171.0・Shooter「スタート地点周囲も撃ってこない建物は立っていて良い。今は完全に空白」）:
+  // 300 → 150。群れが生まれて最初の線を引ける広さだけ空ける（埋め草は撃たないので、最初の数十秒は撃たれないまま）
+  startClear: 150,
   gridCell: 64,
+  // --- DT-590 手直し2（v3.171.0・Shooter「道沿いの家は全部一列だと整然としすぎなので、所々厚みや間隔を変えてほしい」）---
+  // 街道沿いの家並みの濃さを、道に沿ってゆっくり変わる値（0〜1。roadNoiseWave ごとの節を滑らかにつないだもの）で決める。
+  // 濃い所は家が詰まって2〜3列（道から奥へもう1〜2軒）、薄い所は間が空き、いちばん薄い所は途切れる
+  roadNoiseWave: [180, 420],  // 濃さの節の間隔（道に沿って）。短いほど変わり目が多い
+  roadNoiseShared: 0.65,      // 道の両脇で濃さをそろえる割合（集落は道をはさんで両側に固まる。残りは片側だけのむら）
+  roadGapBelow: 0.3,          // 濃さがこれより低い所は家を置かない（途切れる）
+  roadStepDense: 15,          // 濃い所の家と家の間隔（道に沿って）
+  roadStepSparse: 40,         // 薄い所の家と家の間隔
+  roadRow2At: 0.55,           // 濃さがこれを超えると2列目（道から奥へもう1軒）
+  roadRow3At: 0.78,           // これを超えると3列目
+  roadRowGap: [17, 23],       // 列と列の間（道から離れる向き）
+  roadBackKeep: 0.7,          // 2列目・3列目に家を置く確率（奥の列は歯抜けにして、帯に見せない）
+  roadClear: 1,               // 街道・野道の縁から家の縁までの最小の隙間（奥の列がよその道に乗らないように）
+  // --- DT-590 手直し2（Shooter「スタート地点周囲も撃ってこない建物は立っていて良い」）: 開始地点のまわりの農家 ---
+  startFarmGroups: [4, 6],    // 数軒が寄った農家の組の数
+  startFarmHouses: [4, 8],    // 1組の家の数
+  startFarmRadius: 42,        // 1組の家を置く広さ
+  startLoneHouses: [4, 7],    // 畑の中の一軒家の数
+  startFarmReach: [170, 560], // 開始地点からの距離（この外は小集落の帯）
 };
+/**
+ * DT-590 手直し2: 道のり d（0〜total）に沿ってゆっくり変わる 0〜1 の値。wave ごとの節に乱数を置き、間を滑らかにつなぐ。
+ * 規則的に「並ぶ・途切れる」を交互にすると機械的に見えるので、濃さのむらで家並みの厚み・間隔を決めるために使う
+ */
+function makeSmoothNoise1D(total, wave) {
+  const knots = [];
+  for (let i = 0; i <= Math.ceil(total / wave) + 1; i++) knots.push(random());
+  return (d) => {
+    const u = Math.max(0, d) / wave, i = Math.floor(u), t = u - i;
+    const s = t * t * (3 - 2 * t);
+    return knots[Math.min(i, knots.length - 1)] * (1 - s) + knots[Math.min(i + 1, knots.length - 1)] * s;
+  };
+}
 function generateFillerBuildings(existing, roadEdges, townMetas, boss, config, keepLoose) {
   const result = [];
   if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO) return result;   // 宇宙に地面は無い／大都会は区画の建物だけ
@@ -7072,8 +7216,55 @@ function generateFillerBuildings(existing, roadEdges, townMetas, boss, config, k
 
   // 1. 街道沿いの家並み（描いている街道と同じ曲線の上で）
   const highways = highwayPolylines();
-  for (const pts of highways) lineHouses(pts, FILLER.roadStep, FILLER.roadOffsetMin, FILLER.roadOffsetMax,
-    (_, x, y) => FILLER.roadKeep * density(x, y) * 1.3, 40);
+  // DT-590 手直し2: 奥の列がよその街道に乗らないよう、街道の中心線を点の格子にしておく
+  const roadPts = makeCountryGrid(80);
+  for (const pl of highways) sampleCountryPolyline(pl, 12, (x, y) => roadPts.add(x, y, 13));
+  const offRoads = (x, y) => !roadPts.some(x - 40, y - 40, x + 40, y + 40,
+    p => dist2(x, y, p.x, p.y) < (p.r + tinyR + FILLER.roadClear) ** 2);
+  /**
+   * DT-590 手直し2（Shooter「道沿いの家は全部一列だと整然としすぎ。所々厚みや間隔を変えて」）:
+   * 道に沿ってゆっくり変わる濃さで、家の間隔（詰まる・空く）・途切れ・列の数（1〜3列）を決める
+   */
+  const roadHouses = (pts) => {
+    const segLen = [];
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) { const l = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); segLen.push(l); total += l; }
+    const skipEnds = 40;
+    if (total <= skipEnds * 2) return;
+    const shared = makeSmoothNoise1D(total, randRange(FILLER.roadNoiseWave[0], FILLER.roadNoiseWave[1]));
+    for (const side of [-1, 1]) {
+      const own = makeSmoothNoise1D(total, randRange(FILLER.roadNoiseWave[0], FILLER.roadNoiseWave[1]));
+      let seg = 0, segStart = 0;
+      for (let d = skipEnds; d < total - skipEnds;) {
+        while (seg < segLen.length - 1 && segStart + segLen[seg] < d) { segStart += segLen[seg]; seg++; }
+        const a = pts[seg], b = pts[seg + 1], l = segLen[seg] || 1;
+        const t = Math.min(1, (d - segStart) / l);
+        const x0 = a.x + (b.x - a.x) * t, y0 = a.y + (b.y - a.y) * t;
+        // 濃さ＝両脇共通のむら＋片側だけのむら。首都へ近づくほど上げる（案4）
+        const raw = shared(d) * FILLER.roadNoiseShared + own(d) * (1 - FILLER.roadNoiseShared);
+        const n = Math.min(1, raw * (0.75 + 0.25 * density(x0, y0)));
+        const step = FILLER.roadStepSparse + (FILLER.roadStepDense - FILLER.roadStepSparse) * Math.min(1, Math.max(0, (n - FILLER.roadGapBelow) / (1 - FILLER.roadGapBelow)));
+        d += step * randRange(0.8, 1.2);
+        if (n < FILLER.roadGapBelow) continue;
+        const ux = (b.x - a.x) / l, uy = (b.y - a.y) / l;
+        const rows = n > FILLER.roadRow3At ? 3 : n > FILLER.roadRow2At ? 2 : 1;
+        let off = randRange(FILLER.roadOffsetMin, FILLER.roadOffsetMax);
+        for (let row = 0; row < rows; row++) {
+          if (row > 0) {
+            off += randRange(FILLER.roadRowGap[0], FILLER.roadRowGap[1]);
+            if (random() > FILLER.roadBackKeep) continue;
+          }
+          // 奥の列は道に沿って少しずらす（升目にそろって見えないように）
+          const along = row > 0 ? randRange(-0.4, 0.4) * step : 0;
+          const hx = x0 + ux * along - uy * off * side, hy = y0 + uy * along + ux * off * side;
+          if (row > 0 && !offRoads(hx, hy)) continue;
+          // 家の正面を道に向ける（向き A を向く絵は _faceAngle＝A＋π/2。RAMPART_SPRITE_OFFSET と同じ決まり）
+          tryPlace(hx, hy, Math.atan2(y0 + uy * along - hy, x0 + ux * along - hx) + Math.PI / 2);
+        }
+      }
+    }
+  };
+  for (const pts of highways) roadHouses(pts);
 
   // 2. 郊外の通り：町から外へ伸びる野道の両脇に家（町のそばほど詰まる）
   const laneHalf = COUNTRY_LANE_W / 2 + tinyR + 3;
@@ -7123,7 +7314,7 @@ function generateFillerBuildings(existing, roadEdges, townMetas, boss, config, k
     const cx = randRange(TINY_MARGIN + 200, WORLD_W - TINY_MARGIN - 200);
     const cy = randRange(TINY_MARGIN + 200, WORLD_H - TINY_MARGIN - 200);
     if (dist2(cx, cy, boss.wx, boss.wy) < bossClear2 * 1.5) continue;
-    if (dist2(cx, cy, START_X, START_Y) < (FILLER.startClear + FILLER.clusterRadius) ** 2) continue;
+    if (dist2(cx, cy, START_X, START_Y) < (FILLER.clusterStartClear + FILLER.clusterRadius) ** 2) continue;
     if (!groundOk(cx, cy, FILLER.clusterRadius)) continue;
     if (!freeAt(cx, cy, FILLER.clusterRadius, FILLER.clusterGap - FILLER.clusterRadius)) continue;
     // 野道：いちばん近い街道・町へ
@@ -7187,6 +7378,35 @@ function generateFillerBuildings(existing, roadEdges, townMetas, boss, config, k
       addOcc(wx, wy, wr * 0.8);
     }
     made++;
+  }
+
+  // 4. DT-590 手直し2（Shooter「スタート地点周囲も、撃ってこない建物は立っていて良い。今は完全に空白」）:
+  // 開始地点のすぐまわり（小集落の帯より内）に、数軒が寄った農家の組と、畑の中の一軒家を置く。
+  // 群れが生まれる真ん中（startClear）だけは空ける。どれも撃たないので、最初の数十秒は撃たれないまま
+  const farmSpots = [];
+  const groups = randInt(FILLER.startFarmGroups[0], FILLER.startFarmGroups[1]);
+  for (let tries = 0; tries < groups * 60 && farmSpots.length < groups; tries++) {   // 開始地点は地図の端・角に寄っていることが多い（半分以上が地図の外）ので多めに試す
+    const a = random() * Math.PI * 2, r = randRange(FILLER.startFarmReach[0] + FILLER.startFarmRadius, FILLER.startFarmReach[1]);
+    const gx = START_X + Math.cos(a) * r, gy = START_Y + Math.sin(a) * r;
+    if (gx < TINY_MARGIN + 60 || gx > WORLD_W - TINY_MARGIN - 60 || gy < TINY_MARGIN + 60 || gy > WORLD_H - TINY_MARGIN - 60) continue;
+    if (!groundOk(gx, gy, FILLER.startFarmRadius)) continue;
+    if (farmSpots.some(f => dist2(gx, gy, f.x, f.y) < (FILLER.startFarmRadius * 4) ** 2)) continue;   // 組どうしは離す（固まる所と空く所）
+    farmSpots.push({ x: gx, y: gy });
+    const n = randInt(FILLER.startFarmHouses[0], FILLER.startFarmHouses[1]);
+    for (let k = 0, put = 0; k < n * 6 && put < n; k++) {
+      const ha = random() * Math.PI * 2, hr = FILLER.startFarmRadius * Math.sqrt(random());
+      const hx = gx + Math.cos(ha) * hr, hy = gy + Math.sin(ha) * hr;
+      if (!groundOk(hx, hy, tinyR)) continue;
+      if (tryPlace(hx, hy, ha + Math.PI + Math.PI / 2)) put++;   // 正面を組の真ん中（庭）へ向ける
+    }
+  }
+  const lone = randInt(FILLER.startLoneHouses[0], FILLER.startLoneHouses[1]);
+  for (let tries = 0, put = 0; tries < lone * 60 && put < lone; tries++) {
+    const a = random() * Math.PI * 2, r = randRange(FILLER.startFarmReach[0], FILLER.startFarmReach[1]);
+    const hx = START_X + Math.cos(a) * r, hy = START_Y + Math.sin(a) * r;
+    if (!groundOk(hx, hy, tinyR)) continue;
+    if (farmSpots.some(f => dist2(hx, hy, f.x, f.y) < (FILLER.startFarmRadius * 2) ** 2)) continue;   // 組から離れた一軒家
+    if (tryPlace(hx, hy, randRange(-Math.PI, Math.PI))) put++;
   }
   return result;
 }
@@ -7842,7 +8062,7 @@ function generateStageLayout(stageIndex) {
 
   // v3.68.0（案帳 DT-490）: 道のある地図では、開始地点まわりを田園にする（集落の間を縫う野道・空き地を埋める畑・林）。
   // 家・町・城壁・線路の退けが全部済んでから敷く（野道も畑も家をよけるため）。岩山・湖・森はこのあと畑をよけて置く
-  if (townRoadEdges.length > 0) generateStartCountryside(tinyBuildings, result);
+  if (townRoadEdges.length > 0) generateStartCountryside(tinyBuildings, result, config, keepLoose);
   // v3.81.0（案帳 DT-509 手直し・Shooter「荒地らしくないので、序盤のたくさんの畑はこの地域ではカットしましょう」）:
   // 荒地では田園の畑と林を敷かない（野道と小集落はそのまま）。乱数の引き方を変えないよう、作ったあとで捨てる
   if (worldShape === SHAPE_WASTELAND) {
