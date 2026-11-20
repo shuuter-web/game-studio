@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.171.0";
+const GAME_VERSION = "v3.172.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2591,6 +2591,7 @@ const ATTACK_DEFS = {
   // v3.31.0: 磁竜。壊した建物の破片を周りに回して削り、急旋回で投げる（直接）
   magnetshards:   { ja: "破片の輪",   en: "Shard Orbit",       kind: "magnet",    recoilDist: 0,  fireStun: 0    },
   ironflail:      { ja: "鉄球",       en: "Iron Flail",        kind: "flail",     recoilDist: 0,  fireStun: 0 },   // v3.40.0
+  gravemist:      { ja: "屍の霧",     en: "Grave Mist",        kind: "mist",      recoilDist: 0,  fireStun: 0 },   // v3.172.0（DT-290）屍竜
   raybolt:        { ja: "光線弾",     en: "Laser Bolt",        kind: "ray",       recoilDist: 0,  fireStun: 0 },   // v3.150.0（DT-581）光線竜
   cannonshell:    { ja: "砲弾",       en: "Shell",             kind: "shell",     recoilDist: 4,  fireStun: 0 },   // v3.104.0（DT-174）砲撃竜
   wyvernfire:     { ja: "火炎弾",     en: "Fireball",          kind: "fireball",  recoilDist: 6,  fireStun: 0,   attribute: ATTRIBUTE_FIRE },   // v3.98.0（DT-530）
@@ -2887,6 +2888,16 @@ const SPECIES_DEFS = {
     ja: "光線竜", en: "Laser Dragon", icon: "\u{1F4A0}", color: "#7af7ff", element: "ray",
     attack: "raybolt", spriteTint: "#40c8e0",
     desc: "狙わずに、向いている前へ細長い光線弾を撃ち続ける。光線弾は敵を貫く。標準の動き",
+    move: {},
+  },
+  // ---- v3.172.0: 案帳 DT-290（特殊個体の案「屍竜」を竜種にした。Shooter「特殊個体ではなく竜種に。紫色の濃い霧のブレスで」）----
+  // 屍竜: 紫の濃い霧を前の相手へ吐く。霧はしばらくその場に残り、中の建物・動く敵を蝕み続ける（MIST_*）。
+  // 竜種の個性：この群れが落とした建物の瓦礫から骨の兵が起き上がり、いちばん近い別の町へ歩いて叩く（SOLDIER_*）。
+  // 骨の兵は群れについて来ないので、群れが先へ進んでも後ろで町を削り続ける
+  bone: {
+    ja: "屍竜", en: "Bone Dragon", icon: "\u{1F480}", color: "#d8c8ff", element: "bone",
+    attack: "gravemist", breathArcDeg: 120,
+    desc: "紫の濃い霧を吐く。霧はしばらく残り、中の建物を蝕む。落とした建物の瓦礫から骨の兵が起き上がり、いちばん近い別の町へ歩いて叩く。標準の動き",
     move: {},
   },
 };
@@ -30178,10 +30189,14 @@ function fireEmplacement(s, targetIdx) {
   }
 }
 
+// v3.172.0（案帳 DT-290）: updateSettlementAttacks を回すたびに1つ進む。竜が射程に入った建物にこの値を残し、
+// 同じフレームに骨の兵へも撃つ（タイマーを二度減らす）ことを防ぐ
+let settlementAttackFrame = 0;
 function updateSettlementAttacks(dt) {
   // v3.122.0（案帳 DT-535）: 剣の道の国は弾を撃つ物が1つも無い（建物・首都・時代兵器も撃たない）。
   // v3.126.0（DT-535 手直し）: 撃つかわりに、撃つはずの建物から足軽が出てくる
   if (worldShape === SHAPE_SWORD) { updateSwordMilitia(dt); return; }
+  settlementAttackFrame++;   // v3.172.0（DT-290）
   // (A) 逆引き方式: ドラゴン側から「近くの建物」を空間ハッシュで収集する。
   // 群れ全体でO(N × (2*cellRadius+1)^2) ≈ O(N × 49)。
   // 群れから遠い大多数の建物は Set に入らないため全ドラゴン走査から除外される。
@@ -30210,6 +30225,7 @@ function updateSettlementAttacks(dt) {
       if (dx * dx + dy * dy < atkR2) { inRange = true; break; }
     }
     if (!inRange) continue;
+    settlement._dragonNearFrame = settlementAttackFrame;   // v3.172.0（DT-290）: このフレームは竜を撃つ番（骨の兵へは撃たない）
 
     // v3.48.0（案帳 DT-238）: 竜玉の鐘楼の町は、鐘が鳴った瞬間だけ町中の砲台が一斉に撃つ（鳴っていない間は撃たない）
     const orbKind = settlement._orbFacility === undefined ? orbFacilityKindAlive(settlement._townIndex) : null;
@@ -30519,6 +30535,7 @@ function checkProjectileHitBoids(projIdx) {
       return;
     }
   }
+  if (boneSoldiers.length && hitBoneSoldierByProjectile(projIdx, midX, midY)) projActive[projIdx] = 0;   // v3.172.0（DT-290）: 骨の兵も敵の弾で崩れる
 }
 
 function applyProjectileKnockback(boidIdx, projIdx) {
@@ -30929,6 +30946,7 @@ function settlementFall(settlementIndex) {
   }
 
   rollBallOnBuildingFall(settlement);   // v3.29.0: 塊竜の玉が巻き込むと大きくなる
+  boneOnBuildingFall(settlement);       // v3.172.0（DT-290）: 屍竜の群れが落とした建物の瓦礫から骨の兵が起き上がる
   magnetOnBuildingFall(settlement);
   wispOnBuildingFall(settlement);       // v3.36.0: 取り憑かれた建物が壊れたら隣へ燃え移る     // v3.31.0: 磁竜は近くで壊れた建物の破片を纏う
   // v0.6: XPジェムを撒く＋撃破数を記録（仕様 §5.1）
@@ -31931,6 +31949,7 @@ const STRINGS = {
     wyvern:   "飛竜が翼を広げて火を吐く",
     cannon:   "砲撃竜が砲口を町へ向ける",
     ray:      "光線竜が前だけを見て光を放つ",
+    bone:     "屍竜が紫の灯をともし、瓦礫の骨を呼び起こす",
   },
   storySpeciesFallback: "竜たちが怒りを向ける",
   // ステージクリア＝竜の怒りを買った文明の滅亡（時代ごと）
@@ -32901,6 +32920,16 @@ SPECIES_EVO_SPEC.ray = {
        next: [["五筋の光", { dmg: 0.10 }, "光線弾を狭い角度の5方向に撃つ"],
               ["光の鱗", { hp: 0.30 }, "体が硬くなる"]] },
 };
+// v3.172.0（案帳 DT-290）: 屍竜。A＝霧系（霧が長く残る）、B＝骨の兵系（骨の兵が強い）。形ごとの違いは BONE_FORMS
+SPECIES_EVO_SPEC.bone = {
+  L: [["濃い霧", { dmg: 0.15 }], ["速い息", { rate: 0.18 }], ["広がる霧", { range: 0.15 }], ["濃い霧・二", { dmg: 0.15 }]],
+  A: { name: "冥霧竜", tint: "#9a60e0", scale: 1.1, eff: { dmg: 0.20 }, note: "霧系（霧が残る時間 ×1.4）",
+       next: [["死の帳", { dmg: 0.25 }, "霧の威力がさらに上がる"],
+              ["墓所の霧", { range: 0.25 }, "霧がさらに遠くまで届き、広がる"]] },
+  B: { name: "骸王竜", tint: "#f4f0e0", scale: 1.0, eff: { hp: 0.20 }, note: "骨の兵系（骨の兵の叩く威力 ×1.5・1発多く耐える）",
+       next: [["骨の軍勢", { dmg: 0.10 }, "瓦礫から起き上がる骨の兵が1体ずつ多い"],
+              ["鉄の骨", { hp: 0.30 }, "骨の兵がさらに硬くなり（さらに1発多く耐える）、群れの体も硬くなる"]] },
+};
 SPECIES_EVO_SPEC.wisp = {
   L: [["強い火", { dmg: 0.15 }], ["広い灯", { range: 0.15 }], ["早い明滅", { rate: 0.18 }], ["強い火・二", { dmg: 0.15 }]],
   A: { name: "狐火", tint: "#c0e8ff", scale: 1.0, eff: { rate: 0.20, range: 0.10 },
@@ -32948,7 +32977,8 @@ const CROSS_EVOLUTIONS = [
   { to: "flail",    needs: { heavy: 1, drum: 1 },    from: "any" },   // v3.40.0: 止まらぬ鉄塊（重さ）＋軍鼓（拍で振る）
   { to: "whale",    needs: { deflect: 1, frost: 1 }, from: "any" },   // v3.57.0: 暴食（呑む）＋凍て霧（まとう）＝吸い込む巨体
   { to: "cannon",   needs: { drum: 1, aim: 1 },      from: "any" },
-  { to: "ray",      needs: { beacon: 1, mecha: 1 },  from: "any" },   // v3.150.0（DT-581）: 光剣（光の刃）＋ロケットマン（前へ撃ち出す）＝前へ光を撃ち続ける   // v3.104.0（DT-174）: 軍鼓（群れへの合図）＋狙い火（指した所へ撃つ）＝たたいた所へ一斉砲撃
+  { to: "ray",      needs: { beacon: 1, mecha: 1 },  from: "any" },
+  { to: "bone",     needs: { heal: 1, frost: 1 },    from: "any" },   // v3.172.0（DT-290）: 癒し手（命を戻す）＋凍て霧（冷たい霧）＝霧の中で瓦礫の骨を起こす   // v3.150.0（DT-581）: 光剣（光の刃）＋ロケットマン（前へ撃ち出す）＝前へ光を撃ち続ける   // v3.104.0（DT-174）: 軍鼓（群れへの合図）＋狙い火（指した所へ撃つ）＝たたいた所へ一斉砲撃
 ];
 // v3.6.0: 種またぎは同じレベルのまま行き来するので、専用の「進化形」は持たない（EVOLVED_FORMS は撤去）
 
@@ -33088,6 +33118,7 @@ const SPECIES_CATEGORY = {
   wyvern: "shot",                   // v3.98.0（DT-530）
   cannon: "blast",                  // v3.104.0（DT-174）
   ray: "shot",                      // v3.150.0（DT-581）
+  bone: "shot",                     // v3.172.0（DT-290）: 霧＝ブレス
 };
 const CATEGORY_NAMES = { direct: "直接", shot: "ブレス", blast: "爆発" };
 function flockCategory() { return SPECIES_CATEGORY[flockSpecies] || "shot"; }
@@ -33898,6 +33929,7 @@ function resetProgression() {
   clearFireballs();  // v3.98.0
   clearCannon();     // v3.104.0
   clearRayBolts();   // v3.150.0
+  clearBoneMist();   // v3.172.0（DT-290）: 屍竜の霧と骨の兵
   clearDamageNumbers();   // v0.99: 前の場面の数字を残さない
   // 表示中のカードとスローを畳む
   dismissLevelUpCards();
@@ -34602,6 +34634,7 @@ const SPECIES_FLASH_COLOR = {
   wyvern:  "rgba(120,200,96,0.6)",   // v3.98.0 / v3.108.0: 緑
   cannon:  "rgba(232,192,80,0.6)",   // v3.104.0
   ray:     "rgba(122,247,255,0.6)",  // v3.150.0
+  bone:    "rgba(170,110,240,0.6)",  // v3.172.0（DT-290）: 紫の灯
 };
 
 // ---- BULLET（氷竜・直進弾丸）基礎性能（仕様 §6.2）----
@@ -34674,6 +34707,7 @@ function currentFireInterval() {
   if (flockWeapon === "fireball") return fireballInterval();   // v3.98.0
   if (flockWeapon === "shell")    return CANNON_SHOT_INTERVAL * effFireIntervalMult("shell");   // v3.104.0
   if (flockWeapon === "ray")      return RAY_INTERVAL * effFireIntervalMult("ray");             // v3.150.0
+  if (flockWeapon === "mist")     return MIST_INTERVAL * effFireIntervalMult("mist");           // v3.172.0（DT-290）
   if (flockWeapon === "chain")    return THUNDER_INTERVAL * effFireIntervalMult("chain");
   return 1.0;   // beam / melee / satellite は発射タイマーを使わない
 }
@@ -38765,6 +38799,386 @@ function drawRayBolts() {
   ctx.restore();
 }
 
+// ---- v3.172.0（案帳 DT-290）: 屍竜 ----
+// Shooter「特殊個体ではなく竜種にしましょう。紫色の濃い霧のブレスで」。
+// 霧：竜ごとに MIST_INTERVAL ごと、前の相手（狙える角度の中のいちばん近い相手）へ紫の霧の塊を吐く。
+//   霧は MIST_FLY_TIME かけて相手の所まで流れてふくらみ、そこに MIST_LIFE 秒残って、MIST_TICK ごとに中の建物・動く敵を蝕む。
+//   霧は重なった分だけ重ねて効く（群れで同じ町を包むほど濃く、強い）。吐くのは火炎弾と同じく相手がいるときだけ（空振りしない）。
+// 骨の兵：この竜種の群れが建物を落とすと、瓦礫から骨の兵が起き上がる（建物の大きさで1〜4体）。
+//   骨の兵は群れについて来ず、いちばん近い別の町の建物へまっすぐ歩き、着いた建物を叩き続ける（落ちたら近くの次の建物へ）。
+//   SOLDIER_LIFE 秒たつか、敵の弾に SOLDIER_HITS 発当たると崩れる。骨の兵が落とした建物からも卵・経験値は出るが、
+//   そこからさらに骨の兵は起き上がらない（増えすぎを防ぐ）。群れ全体で SOLDIER_MAX 体まで（性能を守る）
+const MIST_INTERVAL     = 1.2;    // 霧を吐く間隔（秒）
+const MIST_RANGE        = 170;    // 霧を吐く相手までの距離（px）
+const MIST_RADIUS       = 34;     // 霧1つの半径（px）
+const MIST_FLY_TIME     = 0.35;   // 口から相手の所まで霧が流れる時間（秒。この間は蝕まない）
+const MIST_LIFE         = 3.5;    // 着いてから霧が残る時間（秒）
+const MIST_TICK         = 0.5;    // 霧が中の相手を蝕む間隔（秒）
+const MIST_TICK_DAMAGE  = 1.6;    // 霧1つが1回に入れる傷（ブレス＝shot）。強さの計測（dt-bench）で竜種の真ん中あたりに合わせた
+const MIST_MAX          = 260;    // 同時に残る霧の上限（超えたら吐かずに待つ）
+const MIST_MOUTH_OFFSET = 13;     // 体の中心から口まで（px・体格倍率1のとき。光線竜と同じ）
+const MIST_FADE_OUT     = 0.9;    // 消える前に薄れていく時間（秒・見た目だけ）
+// 進化の形ごとの違い。mistLife＝霧が残る時間の倍率、soldierDmg＝骨の兵の叩く威力の倍率、
+// soldierHits＝骨の兵が余分に耐える弾の数、soldierExtra＝瓦礫1つから余分に起き上がる骨の兵の数
+const BONE_FORMS = {
+  base: { mistLife: 1,   soldierDmg: 1,   soldierHits: 0, soldierExtra: 0 },
+  A:    { mistLife: 1.4, soldierDmg: 1,   soldierHits: 0, soldierExtra: 0 },
+  A1:   { mistLife: 1.4, soldierDmg: 1,   soldierHits: 0, soldierExtra: 0 },
+  A2:   { mistLife: 1.4, soldierDmg: 1,   soldierHits: 0, soldierExtra: 0 },
+  B:    { mistLife: 1,   soldierDmg: 1.5, soldierHits: 1, soldierExtra: 0 },
+  B1:   { mistLife: 1,   soldierDmg: 1.5, soldierHits: 1, soldierExtra: 1 },
+  B2:   { mistLife: 1,   soldierDmg: 1.5, soldierHits: 2, soldierExtra: 0 },
+};
+function boneForm() {
+  const br = (runSpeciesBranch && runSpeciesBranch.bone) || {};
+  return BONE_FORMS[br.t20] || BONE_FORMS[br.t10] || BONE_FORMS.base;
+}
+
+// 骨の兵
+const SOLDIER_COUNT_BY_SIZE = { tiny: 1, small: 2, medium: 3, large: 4 };   // 建物の大きさ → 起き上がる数（首都区画の建物は large と同じ）
+const SOLDIER_MAX          = 48;     // 群れ全体で同時にいられる骨の兵の上限
+const SOLDIER_SPEED        = 42;     // 歩く速さ（px/秒。竜の約1/4＝遅い）
+const SOLDIER_LIFE         = 30;     // 寿命（秒）
+const SOLDIER_HITS         = 2;      // 敵の弾をこれだけ受けると崩れる
+const SOLDIER_HIT_INTERVAL = 1.0;    // 建物を叩く間隔（秒）
+const SOLDIER_HIT_DAMAGE   = 4;      // 1回叩く威力（直接）
+const SOLDIER_REACH        = 5;      // 建物の縁からこれだけ手前で止まって叩く（px）
+const SOLDIER_RISE_TIME    = 0.6;    // 瓦礫から起き上がるまで（秒。この間は歩かない・撃たれない）
+const SOLDIER_SPREAD       = 12;     // 起き上がる場所の散らばり（瓦礫の中心からの距離・px）
+const SOLDIER_BODY_R       = 6;      // 敵の弾が当たる半径（px）
+const SOLDIER_RETARGET_CELLS = 3;    // 叩いていた建物が落ちたら、まずこのセル数の近くから次を探す
+const SOLDIER_DEFENSE_CELLS  = 3;    // 骨の兵を撃つか調べる建物の範囲（セル数）
+const SOLDIER_CRUMBLE_TIME = 0.7;    // 崩れる演出の時間（秒・見た目だけ）
+const SOLDIER_COLOR        = "#f4f0e2";
+const SOLDIER_INK          = "rgba(40,28,56,0.85)";
+const SOLDIER_EYE_COLOR    = "#c070ff";   // 屍竜の灯と同じ紫
+
+const mistClouds = [];        // { x, y, sx, sy, tx, ty, age, life, tick, dmg, r, seed }
+const boneSoldiers = [];      // { x, y, home, target, targetObj, age, life, hits, hitT, dmg, walk, swing, seed }
+const boneSoldierFx = [];     // 崩れた骨の兵 { x, y, t, seed }
+let boneSoldierHitActive = false;   // 骨の兵が叩いている間だけ立てる（その一撃で落ちた建物からは骨の兵を起こさない）
+let boneGeneration = 0;             // 片付けるたびに進める（叩いた一撃でステージが変わったら、その場で手を止めるため）
+const _soldierDefenseSet = new Set();
+const _soldierBuf = [];
+
+function clearBoneMist() {
+  mistClouds.length = 0;
+  boneSoldiers.length = 0;
+  boneSoldierFx.length = 0;
+  boneGeneration++;
+}
+
+/** 霧を吐く（竜種が屍竜のときだけ） */
+function updateMistAttacks(dt) {
+  const targets = attackTargets();
+  const form    = boneForm();
+  const rangeK  = effWeaponRangeMult("mist");
+  const range   = MIST_RANGE * rangeK;
+  const radius  = MIST_RADIUS * (1 + (rangeK - 1) * 0.5);   // 射程が伸びると霧も少し広がる（半分の割合）
+  const dmg     = MIST_TICK_DAMAGE * effWeaponDmgMult("mist");
+  const inter   = MIST_INTERVAL * effFireIntervalMult("mist");
+  const life    = MIST_LIFE * form.mistLife;
+  const arcHalf = breathArcHalf();
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i] || boidKnockStun[i] > 0) continue;
+    if (boidSpecial[i] === SPECIAL_HEAVY) continue;   // 巌竜は遠隔攻撃を持たない
+    boidFireTimer[i] -= dt;
+    if (boidFireTimer[i] > 0) continue;
+    if (mistClouds.length >= MIST_MAX) continue;
+    const tg = findNearestAimTarget(px[i], py[i], range, targets, i, arcHalf);
+    if (!tg) continue;   // 空振りしない
+    boidFireTimer[i] = inter;
+    const t = aimTargetPos(tg);
+    const a = Math.atan2(t.wy - py[i], t.wx - px[i]);
+    const mouth = MIST_MOUTH_OFFSET * boidBodyScale(i);
+    const sx = px[i] + Math.cos(a) * mouth, sy = py[i] + Math.sin(a) * mouth;
+    mistClouds.push({ x: sx, y: sy, sx, sy, tx: t.wx, ty: t.wy, age: 0, life, tick: 0, dmg, r: radius, seed: fxRandom() });
+  }
+}
+
+/** 残っている霧。着いた霧は MIST_TICK ごとに中の相手を蝕む */
+function updateMistClouds(dt) {
+  if (mistClouds.length === 0) return;
+  const targets = attackTargets(ATTACK_DEFS.gravemist);
+  const gen = boneGeneration;
+  let w = 0;
+  for (let n = 0; n < mistClouds.length; n++) {
+    const c = mistClouds[n];
+    c.age += dt;
+    if (c.age >= MIST_FLY_TIME + c.life) continue;
+    mistClouds[w++] = c;
+    if (c.age < MIST_FLY_TIME) {
+      const k = c.age / MIST_FLY_TIME;
+      c.x = c.sx + (c.tx - c.sx) * k; c.y = c.sy + (c.ty - c.sy) * k;
+      continue;
+    }
+    c.x = c.tx; c.y = c.ty;
+    c.tick -= dt;
+    if (c.tick > 0) continue;
+    c.tick += MIST_TICK;
+    hitInRadius(c.x, c.y, c.r, { shot: c.dmg }, targets);
+    if (gen !== boneGeneration) return;   // この一撃で首都が落ちてステージが片付いた
+  }
+  mistClouds.length = w;
+}
+
+/** 骨の兵が向かう建物：いちばん近い別の町の、落ちていない建物（陥落していない町を先に。城壁は狙わない）。無ければ -1 */
+function findSoldierTarget(x, y, home) {
+  let best = -1, bestD = Infinity, any = -1, anyD = Infinity;
+  for (let k = 0; k < settlements.length; k++) {
+    const b = settlements[k];
+    if (!b || b.fallen || b._isWall) continue;
+    if (home !== undefined && b._townIndex === home) continue;
+    const d = (b.wx - x) * (b.wx - x) + (b.wy - y) * (b.wy - y);
+    if (isTownSurrendered(b._townIndex)) { if (d < anyD) { anyD = d; any = k; } }
+    else if (d < bestD) { bestD = d; best = k; }
+  }
+  return best >= 0 ? best : any;
+}
+
+/** 叩いていた建物が落ちたら次：まず近くの落ちていない建物（今いる町の続き）、無ければ別の町へ */
+function retargetSoldier(s) {
+  buildingGridQueryRadius(s.x, s.y, SOLDIER_RETARGET_CELLS, _soldierBuf);
+  let best = -1, bestD = Infinity;
+  for (const k of _soldierBuf) {
+    const b = settlements[k];
+    if (!b || b.fallen || b._isWall) continue;
+    if (s.home !== undefined && b._townIndex === s.home) continue;
+    const d = (b.wx - s.x) * (b.wx - s.x) + (b.wy - s.y) * (b.wy - s.y);
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  return best >= 0 ? best : findSoldierTarget(s.x, s.y, s.home);
+}
+
+/** settlementFall から。屍竜の群れが落とした建物の瓦礫から骨の兵を起こす */
+function boneOnBuildingFall(st) {
+  if (flockSpecies !== "bone" || boneSoldierHitActive || gameState !== "playing") return;
+  if (st._isWall || st.isBoss) return;
+  const form = boneForm();
+  const base = st._isCapital ? SOLDIER_COUNT_BY_SIZE.large : (SOLDIER_COUNT_BY_SIZE[st.size] || 1);
+  const n = Math.min(base + form.soldierExtra, SOLDIER_MAX - boneSoldiers.length);
+  if (n <= 0) return;
+  const target = findSoldierTarget(st.wx, st.wy, st._townIndex);
+  if (target < 0) return;   // 向かう町が無ければ起き上がらない
+  const dmg = SOLDIER_HIT_DAMAGE * form.soldierDmg;
+  for (let k = 0; k < n; k++) {
+    const a = random() * Math.PI * 2, r = random() * SOLDIER_SPREAD;
+    boneSoldiers.push({ x: st.wx + Math.cos(a) * r, y: st.wy + Math.sin(a) * r, home: st._townIndex,
+                        target, targetObj: settlements[target], age: 0, life: SOLDIER_LIFE,
+                        hits: SOLDIER_HITS + form.soldierHits, hitT: SOLDIER_HIT_INTERVAL * 0.5, dmg,
+                        walk: 0, swing: 0, seed: fxRandom() });
+  }
+}
+
+/** 骨の兵：歩く・叩く・崩れる。最後に、骨の兵のそばの建物が骨の兵を撃つ */
+function updateBoneSoldiers(dt) {
+  if (boneSoldierFx.length) {
+    let f = 0;
+    for (const fx of boneSoldierFx) { fx.t += dt; if (fx.t < SOLDIER_CRUMBLE_TIME) boneSoldierFx[f++] = fx; }
+    boneSoldierFx.length = f;
+  }
+  if (boneSoldiers.length === 0) return;
+  const gen = boneGeneration;
+  let w = 0;
+  for (let n = 0; n < boneSoldiers.length; n++) {
+    const s = boneSoldiers[n];
+    s.age += dt;
+    s.swing = Math.max(0, s.swing - dt);
+    if (s.age >= s.life || s.hits <= 0) { boneSoldierFx.push({ x: s.x, y: s.y, t: 0, seed: s.seed }); continue; }
+    boneSoldiers[w++] = s;
+    if (s.age < SOLDIER_RISE_TIME) continue;
+    let st = settlements[s.target];
+    // 建物の索引は張り直されることがある（城壁の張り直しなど）。同じ建物でなくなっていたら選び直す
+    if (!st || st.fallen || st !== s.targetObj) {
+      s.target = retargetSoldier(s);
+      st = settlements[s.target];
+      s.targetObj = st;
+      if (!st) { s.age = s.life; continue; }   // 向かう建物が無い：次のフレームで崩れる
+    }
+    const dx = st.wx - s.x, dy = st.wy - s.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const reach = (st.radius || 8) + SOLDIER_REACH;
+    if (d > reach) {
+      const step = Math.min(d - reach + 0.5, SOLDIER_SPEED * dt);
+      s.x += dx / d * step; s.y += dy / d * step; s.walk += step;
+      continue;
+    }
+    s.hitT -= dt;
+    if (s.hitT > 0) continue;
+    s.hitT += SOLDIER_HIT_INTERVAL;
+    s.swing = 0.25;
+    boneSoldierHitActive = true;
+    hitBuilding(s.target, { direct: s.dmg }, s.x, s.y);
+    boneSoldierHitActive = false;
+    if (gen !== boneGeneration) return;   // この一撃でステージが片付いた
+  }
+  boneSoldiers.length = w;
+  updateBoneSoldierDefense(dt);
+}
+
+/**
+ * 骨の兵のそばの建物は骨の兵を撃つ（竜が射程にいる建物は竜を撃つ番なので撃たない＝守りが骨の兵に向いている間は竜が楽になる）。
+ * 撃つ間隔は竜を撃つときと同じタイマーを使う
+ */
+function updateBoneSoldierDefense(dt) {
+  if (worldShape === SHAPE_SWORD) return;   // 剣の道の国は弾を撃つ物が無い
+  _soldierDefenseSet.clear();
+  for (const s of boneSoldiers) {
+    if (s.age < SOLDIER_RISE_TIME) continue;
+    buildingGridQueryRadius(s.x, s.y, SOLDIER_DEFENSE_CELLS, _soldierBuf);
+    for (const k of _soldierBuf) _soldierDefenseSet.add(k);
+  }
+  for (const k of _soldierDefenseSet) {
+    const st = settlements[k];
+    if (!st || st.fallen || st._isWall || st._noAttack || st._queenFlower || st._mushBoss || st._emplacement) continue;
+    if (beachHidden(st) || isTownSurrendered(st._townIndex) || st._hushUntil > breathTime) continue;
+    if (st._dragonNearFrame === settlementAttackFrame) continue;
+    if (!(st.attackRadius > 0)) continue;
+    const r2 = st.attackRadius * st.attackRadius;
+    let near = null, nearD = r2;
+    for (const s of boneSoldiers) {
+      if (s.age < SOLDIER_RISE_TIME) continue;
+      const d = (s.x - st.wx) * (s.x - st.wx) + (s.y - st.wy) * (s.y - st.wy);
+      if (d < nearD) { nearD = d; near = s; }
+    }
+    if (!near) continue;
+    st.attackTimer -= dt;
+    if (st.attackTimer > 0) continue;
+    st.attackTimer = st.isBoss ? st.projectileInterval : st.projectileInterval * 4.0;
+    attackerNow = settlementAttacker(st);
+    const kind = (st._isCapital || st.size === "large") ? 1 : 0;
+    spawnFanProjectileRaw(st.wx, st.wy, Math.atan2(near.y - st.wy, near.x - st.wx),
+                          st.projectileSpeed, st.projectileDamage, st.projectileColor, kind);
+  }
+  attackerNow = null;
+}
+
+/** 敵の弾が骨の兵に当たったか（checkProjectileHitBoids の最後。竜に当たらなかった弾だけ） */
+function hitBoneSoldierByProjectile(projIdx, midX, midY) {
+  const r2 = SOLDIER_BODY_R * SOLDIER_BODY_R;
+  const x = projWx[projIdx], y = projWy[projIdx];
+  for (const s of boneSoldiers) {
+    if (s.age < SOLDIER_RISE_TIME || s.hits <= 0) continue;
+    if ((s.x - x) * (s.x - x) + (s.y - y) * (s.y - y) >= r2 &&
+        (s.x - midX) * (s.x - midX) + (s.y - midY) * (s.y - midY) >= r2) continue;
+    s.hits--;
+    spawnHitParticles(x, y);
+    return true;
+  }
+  return false;
+}
+
+// 霧の絵：紫のぼかした円を1枚作っておき、霧1つにつき MIST_PUFFS 枚ずらして重ねる（毎フレームのグラデーション生成を避ける）。
+// 塊ごとに逆向きにゆっくり回すので、濃い霧がもくもく渦を巻いて見える
+const MIST_PUFFS = 4;
+let _mistBlobCanvas = null;
+function mistBlobCanvas() {
+  if (_mistBlobCanvas) return _mistBlobCanvas;
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0,    "rgba(96, 30, 150, 0.95)");
+  gr.addColorStop(0.35, "rgba(118, 48, 184, 0.7)");
+  gr.addColorStop(0.7,  "rgba(150, 90, 220, 0.25)");
+  gr.addColorStop(1,    "rgba(160, 100, 230, 0)");
+  g.fillStyle = gr;
+  g.fillRect(0, 0, 64, 64);
+  _mistBlobCanvas = c;
+  return c;
+}
+/** 屍竜の紫の濃い霧（建物の上・竜の下） */
+function drawMistClouds() {
+  if (mistClouds.length === 0) return;
+  const blob = mistBlobCanvas();
+  ctx.save();
+  for (const c of mistClouds) {
+    let alpha, scale;
+    if (c.age < MIST_FLY_TIME) {   // 流れている間は小さく薄い塊からふくらむ
+      const k = c.age / MIST_FLY_TIME;
+      alpha = 0.35 + 0.4 * k; scale = 0.35 + 0.65 * k;
+    } else {
+      const left = MIST_FLY_TIME + c.life - c.age;
+      alpha = Math.min(0.75, 0.75 * left / MIST_FADE_OUT); scale = 1 + 0.12 * Math.min(1, (c.age - MIST_FLY_TIME) / c.life);
+    }
+    if (alpha <= 0.01) continue;
+    const r = c.r * scale;
+    ctx.globalAlpha = alpha * 0.6;
+    for (let k = 0; k < MIST_PUFFS; k++) {
+      const h1 = (c.seed * 7.3 + k * 0.37) % 1, h2 = (c.seed * 13.1 + k * 0.53) % 1;
+      const a = c.seed * Math.PI * 2 + k * (Math.PI * 2 / MIST_PUFFS) + breathTime * (k % 2 ? 0.45 : -0.35);
+      const dist = r * (0.22 + 0.3 * h1);
+      const rr = r * (0.62 + 0.2 * h2);
+      ctx.drawImage(blob, c.x + Math.cos(a) * dist - rr, c.y + Math.sin(a) * dist - rr, rr * 2, rr * 2);
+    }
+  }
+  ctx.restore();
+}
+
+/** 骨の兵：白い小さな人形（頭に屍竜と同じ紫の灯）。起き上がる途中は地面からせり上がり、叩くときは腕を振り上げる */
+const SOLDIER_DRAW_SCALE = 1.3;   // 人形の大きさ（1＝高さ約11px。竜の胴27pxに対して小さく見える程度）
+function drawBoneSoldiers() {
+  if (boneSoldiers.length === 0 && boneSoldierFx.length === 0) return;
+  const z = SOLDIER_DRAW_SCALE;
+  ctx.save();
+  ctx.lineCap = "round";
+  // 体（手足）：縁取り → 白
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.strokeStyle = pass === 0 ? SOLDIER_INK : SOLDIER_COLOR;
+    ctx.lineWidth = (pass === 0 ? 3.2 : 1.6) * z;
+    ctx.beginPath();
+    for (const s of boneSoldiers) {
+      const p = Math.min(1, s.age / SOLDIER_RISE_TIME) * z;
+      const x = s.x, y = s.y + (z - p) * 4;   // 地面からせり上がる
+      const leg = Math.sin(s.walk * 0.45) * 2.4 * z;
+      const arm = (s.swing > 0 ? -4.5 : -Math.sin(s.walk * 0.45) * 1.6) * z;
+      ctx.moveTo(x, y - 6 * p); ctx.lineTo(x, y - 1.5 * p);                       // 背骨
+      ctx.moveTo(x, y - 1.5 * p); ctx.lineTo(x - 2 * z + leg * 0.5, y + 3 * p);    // 脚
+      ctx.moveTo(x, y - 1.5 * p); ctx.lineTo(x + 2 * z - leg * 0.5, y + 3 * p);
+      ctx.moveTo(x - 3 * z, y - 4.6 * p + arm * 0.4); ctx.lineTo(x + 3 * z, y - 4.6 * p - arm * 0.4);   // 腕
+      if (s.swing > 0) { ctx.moveTo(x + 3 * z, y - 4.6 * p); ctx.lineTo(x + 3.5 * z, y - 8.5 * p); }  // 振り上げた腕
+    }
+    ctx.stroke();
+  }
+  // 頭
+  ctx.fillStyle = SOLDIER_COLOR; ctx.strokeStyle = SOLDIER_INK; ctx.lineWidth = z;
+  ctx.beginPath();
+  for (const s of boneSoldiers) {
+    const p = Math.min(1, s.age / SOLDIER_RISE_TIME) * z;
+    const hy = s.y + (z - p) * 4 - 8.2 * p;
+    ctx.moveTo(s.x + 2.4 * z, hy); ctx.arc(s.x, hy, 2.4 * z, 0, Math.PI * 2);
+  }
+  ctx.fill(); ctx.stroke();
+  // 紫の灯（淡い光の輪 → 目の点）
+  ctx.fillStyle = SOLDIER_EYE_COLOR;
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.globalAlpha = pass === 0 ? 0.35 : 1;
+    ctx.beginPath();
+    for (const s of boneSoldiers) {
+      const p = Math.min(1, s.age / SOLDIER_RISE_TIME) * z;
+      const hy = s.y + (z - p) * 4 - 8.2 * p;
+      const rr = pass === 0 ? 3.8 * p : 1.0 * z;
+      ctx.moveTo(s.x + rr, hy); ctx.arc(s.x, hy, rr, 0, Math.PI * 2);
+    }
+    ctx.fill();
+  }
+  // 崩れた骨の兵：骨のかけらが散って薄れる
+  ctx.strokeStyle = SOLDIER_COLOR; ctx.lineWidth = 1.4 * z;
+  for (const fx of boneSoldierFx) {
+    const k = fx.t / SOLDIER_CRUMBLE_TIME;
+    ctx.globalAlpha = 1 - k;
+    ctx.beginPath();
+    for (let j = 0; j < 4; j++) {
+      const a = fx.seed * 6.28 + j * 1.57;
+      const d = (2 + 7 * k) * z;
+      const bx = fx.x + Math.cos(a) * d, by = fx.y - 3 * z + Math.sin(a) * d * 0.6 + 4 * k * z;
+      ctx.moveTo(bx - 1.5 * z, by); ctx.lineTo(bx + 1.5 * z, by + 0.6 * z);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 // ---- v3.8.0: 連なる雷（雷雲竜）: 最寄りの相手に落ち、そこから次の相手へ飛び移る（ブレス）----
 // 1発目は自分の前（攻撃できる向きの内側）の最寄り。2発目からは**直前に当たった相手**から近いものへ。
 // 同じ相手には1回の雷で二度当たらない。飛び移るたびに少しずつ弱まる。
@@ -38867,6 +39281,8 @@ function updateWeaponAttacks(dt) {
     updateCannonAttacks(dt);     // v3.104.0: 砲撃竜
   } else if (flockWeapon === "ray") {
     updateRayAttacks(dt);        // v3.150.0: 光線竜
+  } else if (flockWeapon === "mist") {
+    updateMistAttacks(dt);       // v3.172.0（DT-290）: 屍竜
   } else if (flockWeapon === "chain") {
     updateThunderAttacks(dt);
   } else if (flockWeapon === "roll") {
@@ -38894,6 +39310,8 @@ function updateWeaponAttacks(dt) {
   updateFireballs(dt);      // v3.98.0: 飛竜の火炎弾（竜種が変わっても飛びきる）
   updateCannonShells(dt);   // v3.104.0: 砲撃竜の砲弾（竜種が変わっても落ちきる）
   updateRayBolts(dt);       // v3.150.0: 光線竜の光線弾（竜種が変わっても飛びきる）
+  updateMistClouds(dt);     // v3.172.0（DT-290）: 屍竜の霧（竜種が変わっても消えるまで残る）
+  updateBoneSoldiers(dt);   // v3.172.0（DT-290）: 骨の兵（群れについて来ない。竜種が変わっても寿命まで歩く）
 }
 
 // -----------------------------------------------------------------
@@ -41455,6 +41873,11 @@ function codexDragonMainAttackRaw(def) {
       return { power: { label: label + "（ふだんの1発）", blast: CANNON_SHOT_DAMAGE },
                stat: `ふだん：射程 ${CANNON_SHOT_RANGE} ／ ${CANNON_SHOT_INTERVAL}秒ごと ／ 半径${CANNON_SHOT_BLAST_R}pxで爆ぜる ／ ` +
                      `たたくと旗：${CANNON_BARRAGE_TIME}秒の間、射程${CANNON_BARRAGE_RANGE}の竜が全員で旗へ山なりの砲弾（1発 威力${CANNON_BARRAGE_DAMAGE}・半径${CANNON_BARRAGE_BLAST_R}px・${CANNON_BARRAGE_INTERVAL}秒ごと） ／ 次の旗まで${CANNON_FLAG_COOLDOWN}秒` };
+    case "mist":       // v3.172.0（DT-290）
+      return { power: { label: label + "（霧1つ・刻み1回）", shot: MIST_TICK_DAMAGE },
+               stat: `射程 ${MIST_RANGE} ／ ${MIST_INTERVAL}秒ごとに半径${MIST_RADIUS}pxの霧を吐く ／ 霧は${MIST_LIFE}秒残り、${MIST_TICK}秒ごとに中の相手を蝕む（重なると重なった分だけ） ／ ` +
+                     `落とした建物の瓦礫から骨の兵（${SOLDIER_COUNT_BY_SIZE.tiny}〜${SOLDIER_COUNT_BY_SIZE.large}体・群れ全体で最大${SOLDIER_MAX}体）が起き上がり、` +
+                     `いちばん近い別の町へ秒速${SOLDIER_SPEED}pxで歩いて${SOLDIER_HIT_INTERVAL}秒ごとに威力${SOLDIER_HIT_DAMAGE}で叩く（${SOLDIER_LIFE}秒・敵の弾${SOLDIER_HITS}発で崩れる。骨の兵が落とした建物からは起き上がらない）${arc}` };
     case "ray":        // v3.150.0（DT-581）
       return { power: { label: label + "（1発）", shot: RAY_DAMAGE },
                stat: `狙わずに向いている前へ ／ ${RAY_INTERVAL}秒ごと ／ ${RAY_TRAVEL}px 飛ぶ ／ 敵を貫く（同じ相手には1回）` };
@@ -41514,6 +41937,7 @@ function codexDragonFireRates(def) {
                               every(CANNON_BARRAGE_INTERVAL, CANNON_BARRAGE_DAMAGE, "砲撃中")];
     case "fireball":  return [every(FIREBALL_INTERVAL, FIREBALL_DAMAGE)];
     case "ray":       return [every(RAY_INTERVAL, RAY_DAMAGE)];
+    case "mist":      return [every(MIST_INTERVAL, MIST_TICK_DAMAGE * Math.round(MIST_LIFE / MIST_TICK), "霧1つが消えるまで")];
     case "boulder":   return [every(BOULDER_INTERVAL, BOULDER_DAMAGE)];
     case "chain":     return [every(THUNDER_INTERVAL, THUNDER_DAMAGE, "1発目")];
     case "roll":      return [always(ROLL_CRUSH_DPS_BASE, "群れの玉")];
@@ -42635,6 +43059,7 @@ const SPECIES_CHOICES = [
   { species: "wyvern" }, // v3.98.0: 案帳 DT-530（最初から選べる）
   { species: "cannon" }, // v3.104.0: 案帳 DT-174（種またぎ：軍鼓＋狙い火）
   { species: "ray" },    // v3.150.0: 案帳 DT-581（種またぎ：光剣＋ロケットマン）
+  { species: "bone" },   // v3.172.0: 案帳 DT-290（種またぎ：癒し手＋凍て霧）
 ];
 let speciesSelecting = false;
 
@@ -45204,6 +45629,7 @@ function loadStageWorld(stageIdx) {
   clearFireballs();  // v3.98.0
   clearCannon();     // v3.104.0
   clearRayBolts();   // v3.150.0
+  clearBoneMist();   // v3.172.0（DT-290）: 屍竜の霧と骨の兵
   clearDamageNumbers();   // v0.99: 前の場面の数字を残さない
   resetFires();                 // v0.10: 前ステージの炎を消す
 
@@ -49930,6 +50356,7 @@ function render(now) {
   drawBombFx();              // v3.146.0（案帳 DT-333）: 爆弾玉・臼砲・火薬庫・届く範囲
   if (worldShape === SHAPE_MUSHROOM) drawMushBossFx();   // v3.134.0（案帳 DT-554）: 大笠茸の予告の輪・菌糸の線・粉
   drawMovers();              // v0.6-p4: 移動敵（竜より下のレイヤー）
+  drawBoneSoldiers();        // v3.172.0（DT-290）: 骨の兵（地上を歩く。竜より下）
   drawWalkerTurrets();       // v1.8.0: 砲塔（胴の絵の上。胴とは別に旋回する）
   drawRailWrecks();          // v2.2.0: 潰れた車両（連結されたまま引きずられる）
   drawRailTurrets();         // v2.1.0: 砲車の旋回砲塔（車体の絵の上）
@@ -49952,6 +50379,7 @@ function render(now) {
   drawFireballs();           // v3.98.0: 飛竜の火炎弾
   drawCannon();              // v3.104.0: 砲撃竜の旗と砲弾
   drawRayBolts();            // v3.150.0: 光線竜の光線弾
+  drawMistClouds();          // v3.172.0（DT-290）: 屍竜の紫の霧（建物・地上の敵の上、竜の下）
   drawHazards();             // v0.42: 持続する範囲攻撃（地面に敷く＝竜より下）
   drawLaserStrikes();        // v0.48: 極太レーザー（予兆＋照射）
   drawTierRushWorld();       // v3.16.0: 流星・一斉射撃の予告線・火の輪
@@ -52322,6 +52750,7 @@ const DRAGON_ELEMENT_COLORS = {
   flail:    { body: "rgba(184, 188, 196, 1.0)", wing: "rgba(154, 160, 168, 1.0)", rim: "rgba(90, 94, 100, 0.0)" },
   wyvern:   { body: "rgba(92, 174, 74, 1.0)",   wing: "rgba(60, 130, 52, 1.0)",   rim: "rgba(30, 70, 26, 0.0)" },   // v3.98.0 / v3.108.0: 緑
   cannon:   { body: "rgba(216, 180, 80, 1.0)",  wing: "rgba(150, 120, 50, 1.0)",  rim: "rgba(90, 70, 30, 0.0)" },   // v3.104.0
+  bone:     { body: "rgba(206, 198, 182, 1.0)", wing: "rgba(110, 70, 160, 1.0)",  rim: "rgba(60, 40, 90, 0.0)" },   // v3.172.0（DT-290）: 白い骨・紫の膜
   ray:      { body: "rgba(96, 210, 235, 1.0)",  wing: "rgba(60, 160, 200, 1.0)",  rim: "rgba(30, 80, 110, 0.0)" },   // v3.150.0
   whale:    { body: "rgba(95, 143, 184, 1.0)",  wing: "rgba(70, 110, 150, 1.0)",  rim: "rgba(40, 60, 90, 0.0)" },   // v3.57.0
   chain:    { body: "rgba(184, 188, 196, 1.0)", wing: "rgba(154, 160, 168, 1.0)", rim: "rgba(90, 94, 100, 0.0)" },
@@ -52819,6 +53248,16 @@ const DRAGON_PART_SPRITES = {
     bodyPivot:  { cx: 64.4, cy: 169.1, w: 130, h: 320 },
     shoulder:   { left: { x: 17.0, y: 152 }, right: { x: 112.0, y: 152 } },
     wingAnchor: { x: 317, y: 64.7 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  // v3.172.0（案帳 DT-290）: 屍竜。白い骨の竜・紫の灯（tools/gen_sprite_cloud.py で生成。寸法は tools/sprite_meta.py の実測。翼の幅はほかと同じ25）
+  bone: {
+    body: "assets/dragon_bone_body.png",
+    wing: "assets/dragon_bone_wing.png",
+    bodyPivot:  { cx: 48.6, cy: 137.7, w: 98, h: 320 },
+    shoulder:   { left: { x: 8.6, y: 103 }, right: { x: 88.4, y: 103 } },
+    wingAnchor: { x: 319, y: 32.0 },
     bodyDrawH: 27,
     wingDrawW: 25,
   },
