@@ -125,6 +125,9 @@ node tools/check.mjs prototypes/dragon-tide/index.html
 （撃ってこない・倒れたら10秒で建て直す）、群れ20匹で決まった線（輪・薙ぎ・真ん中で離す）を60秒引いて、竜1匹・特殊個体1体の1秒の傷を表にする。
 オートプレイでの計測は群れの増え方や狙いの癖で竜種ごとに大きくずれるので、強さの比較はこちらで行う。数値を変える案は `--file` に書き換えた写しを渡して先に測る。
 
+**Dragon Tide の首都の硬さの計測**（DT-594〜）: `node tools/dt-capital-bench.mjs --era 0 --flock 150 --overflow 150 [--setup "stageCards.cat_shot=3"]`
+は、首都だけを残して（撃たない・HP無限）群れで輪を引き続け、1秒の傷と「首都の最大HP÷1秒の傷」（落とすまでの秒数）を出す。首都の強さを変えるときはこれで測る。
+
 **Dragon Tide の新しい仕掛けの確かめ**（DT-333〜）: `node tools/dt-probe.mjs --stage 0,16 --ticks 1500 --probe "bombBalls.length" --shot out.png`
 は、決まった時代・地域（番号は `STAGE_SHAPES` の順）でオートプレイを回し、式の値と画面の絵を取る（`--setup`・`--each` で群れを置き直せる）。
 指紋を比べる `dt-headless.mjs` と違い、新しい地域・敵が動いているか・どう見えるかを見るための道具。

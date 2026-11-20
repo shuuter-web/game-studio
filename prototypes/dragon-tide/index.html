@@ -1323,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.160.0";
+const GAME_VERSION = "v3.161.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -3629,7 +3629,7 @@ function stageAttackMult() {
   if (upCount("f_egg_power") > 0) m *= 1 + Math.min(EGG_POWER_MAX, EGG_POWER_PER_EGG * totalEggCount);   // v3.49.0
   if (fallRoarTimer > 0) m *= 1 + FALL_ROAR_ATTACK * upCount("f_fall_roar");                            // v3.49.0
   if (diceAttackTimer > 0) m *= DICE_ATTACK_MULT;                                                      // v3.113.0（DT-172）: 賽振りの5の目
-  if (flockOverflow > 0) m *= overflowPowerMult();                                                     // v3.67.0: 上限超えの竜
+  if (flockOverflow > 0) m *= overflowAttackMult();                                                    // v3.67.0: 上限超えの竜（DT-594: 攻撃の分）
   return m;
 }
 // v3.43.0: 特殊個体の攻撃だけに重ねる倍率（強化カード「特殊個体の牙・喉・膂力」）。
@@ -4626,7 +4626,10 @@ const TIERS_PER_RUN = 4;
 // 町の陥落そのものでは進まない（竜玉の町だけ落として、警戒度を上げずに強くなる抜け道を塞ぐ）。
 // v3.49.0（案帳 DT-238）: カードは「竜玉の町5つ＋かけら3つで1枚」になり、1ステージの枚数が町の数で変わる。
 // 今までの 2・4・6 枚／10枚 と同じ割合で、そのステージで取れる枚数から必要数を決める
-const TIER_ADVANCE_CARD_RATIO = [0, 0.2, 0.4, 0.6];
+// DT-592（v3.161.0・Shooter「卵を集めて町をどんどん壊す体験をしてから警戒度アップ」「動員以外も遅くする方向で」）:
+// 0.2／0.4／0.6 → 0.3／0.55／0.8。大陸（見込み13回）で 3・5・8 回 → 4・7・10 回。
+// 大陸・時代I・オートプレイ（seed 4242）のレベルアップは 0:40・2:18・2:20・4:20・5:20 だったので、動員は約2分20秒 → 約4分20秒になる
+const TIER_ADVANCE_CARD_RATIO = [0, 0.3, 0.55, 0.8];
 let stageCardTotal = 10;   // そのステージで取れるカードの枚数の見込み（竜玉の町＋かけらで揃う数）
 function tierCardQuota(tier) {
   if (tier <= 0) return 0;
@@ -4637,7 +4640,10 @@ function tierCardQuota(tier) {
 // ので、やはりもとのもうちょっと緩い感じに戻しましょう」）。
 // v0.99.7 で再建を廃止したが、それは**大陸を1棟残らず掃除する作業**を生んだ。
 // 警戒度が上がるたびに廃墟のこの割合が建て直る（街ごと・丸ごと）。
-const TIER_REBUILD_RATIO = 0.3;
+// DT-591（v3.161.0）: 0 にした＝警戒度が上がっても廃墟は建ち直らない。壊した跡は残る。
+// 「掃除する作業」は建て直しではなく、撃ってこない埋め草（DT-590）で壊す物を増やして避ける方針に変えた。
+// 仕組みは残し、割合を戻せばまた建ち直る（増えるキノコの里で家が生えるのは地域の仕掛けで別物）
+const TIER_REBUILD_RATIO = 0;
 
 // 警戒度ごとの強さ倍率。**時代とは独立した純粋な強さの軸**。
 // 建物の見た目（建築・色の系統）はこの段階では変わらない。
@@ -4708,6 +4714,14 @@ const TOWN_TIER_ADVANCED   = 1;     // 一部の街は1段階先
 const TOWN_ADVANCED_RATIO  = 0.25;
 // 首都は最大段階のさらに上。ランの「壁」として動かない。
 const CAPITAL_POWER_MULT   = 2.6;
+// DT-594（v3.161.0・Shooter「首都は最初から、想定どおりに強化された群れ（300体前後）で当たって適切な強さに」「目標60〜90秒」）:
+// 首都のHPにだけ掛ける倍率（撃つ強さは変えない）。想定の群れ＝火竜 動く竜150＋上限超えの竜150、
+// 攻撃の強化カード3枚・竜の進化の分岐1つ。tools/dt-capital-bench.mjs で、この群れは時代Iの首都（このHPの前は1.44万）に
+// 1秒あたり約710の傷を入れる（強化なしの300体で約480）。目標の75秒で落ちるように 710×75÷1.44万 ≒ 3.7 倍にした。
+// 後のステージの首都はいまの伸び方（時代ごとの首都のHP）のまま、同じ倍率を掛ける（群れもそのぶん育っている想定）
+const CAPITAL_ASSUMED_SWARM_HP_MULT = 3.7;
+const CAPITAL_TARGET_SECONDS = 75;          // 想定の群れで首都を落とすまでの目標（60〜90秒の真ん中）
+const CAPITAL_ASSUMED_SWARM = { dragons: 300, moving: 150, overflow: 150, attackCards: 3, evo: "分岐1つ", dps: 710 };   // 図鑑の意図の表（DT-595）に出す
 
 /** 警戒度を範囲に収める。 */
 function clampTier(tier) {
@@ -6831,6 +6845,144 @@ function makeBossBuilding(wx, wy, stageIndex, bossTheme) {
 }
 
 // v0.29: スタート地点周辺の「まばらな家」。街（密集）は置かず単独の家を散らして緩衝地帯にする。
+// -----------------------------------------------------------------
+// DT-590（v3.161.0・Shooter「壊す建物の総数を増やしたい。撃ってこない建物でよい。まんべんなく撒くのではなく気持ちよくなる配置で」）:
+// 撃ってこない埋め草。町と町の間がほぼ地面だけだったので、線で薙ぐとまとめて崩れる並びを足す。
+//   1. 街道沿いの家並み：町どうしを結ぶ街道の両脇に家を並べる（途切れ途切れ）
+//   2. 町の外縁のにじみ：町の外へ向かってまばらになる郊外
+//   3. 空き地の密集地：町の間の空き地に、撃ってこない大きな家の塊（寄り道の目的地）
+//   4. 首都へ近づくほど濃く：開始地点から首都への道のりで、置く確率を上げる
+// 町を置かない開始地点の帯にも置く（Shooter「むしろ置いてほしい」）。卵は持たせない。経験値は家（tiny）と同じ 1。
+// 地域の骨格に沿わせる（案5）は、地域ごとの退け（keepLoose）に任せる：浮島の上だけ・宇宙と大都会には置かない など
+// -----------------------------------------------------------------
+const FILLER = {
+  roadStep: 24,            // 街道沿い：家と家の間隔（道に沿って）
+  roadOffsetMin: 26,       // 街道沿い：道の中心からの距離
+  roadOffsetMax: 40,
+  roadKeep: 0.65,          // 街道沿い：1か所に家を置く確率の元（首都への近さで上下する）
+  fringeTries: 40,         // 町の外縁：1町あたりに試す数
+  fringeInner: 1.0,        // 町の外縁：町の広がり（maxExtent）の何倍から
+  fringeOuter: 1.7,        //           何倍まで（外ほどまばら）
+  clusterCount: 12,        // 空き地の密集地：1つの地図に置く数の元（地図の広さで増減）
+  clusterHouses: [18, 34], // 空き地の密集地：1か所の家の数
+  clusterRadius: 85,
+  clusterGap: 260,         // 空き地の密集地：ほかの建物からこれだけ離れた空き地に置く
+  gradientMin: 0.6,        // 開始地点での濃さ
+  gradientMax: 1.4,        // 首都のそばでの濃さ
+  clearance: 5,            // 家どうし・ほかの建物との隙間
+  startClear: 300,         // 群れの出発地点そのものは空けておく
+  gridCell: 64,
+};
+function generateFillerBuildings(existing, roadEdges, townMetas, boss, config) {
+  const result = [];
+  if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO) return result;   // 宇宙に地面は無い／大都会は区画の建物だけ
+  const bSmall = config.buildings.small;
+  const tinyR  = BUILDING_SIZE_PARAMS.tiny.radiusBase;
+  // ほかの建物との重なりは格子で引く（建物は数千あるので総当たりにしない）
+  const grid = new Map();
+  const key = (cx, cy) => cx * 100000 + cy;
+  const addOcc = (x, y, r) => {
+    const cx = Math.floor(x / FILLER.gridCell), cy = Math.floor(y / FILLER.gridCell);
+    const k = key(cx, cy);
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k).push({ x, y, r });
+  };
+  const freeAt = (x, y, r, gap) => {
+    const reach = r + gap + 40;   // 40＝町の大きな建物の半径の目安
+    const c0x = Math.floor((x - reach) / FILLER.gridCell), c1x = Math.floor((x + reach) / FILLER.gridCell);
+    const c0y = Math.floor((y - reach) / FILLER.gridCell), c1y = Math.floor((y + reach) / FILLER.gridCell);
+    for (let cx = c0x; cx <= c1x; cx++) for (let cy = c0y; cy <= c1y; cy++) {
+      const list = grid.get(key(cx, cy));
+      if (!list) continue;
+      for (const o of list) { const m = o.r + r + gap; if (dist2(x, y, o.x, o.y) < m * m) return false; }
+    }
+    return true;
+  };
+  for (const b of existing) addOcc(b.wx, b.wy, b.radius || tinyR);
+  // 町の畑の上には建てない
+  for (const b of existing) {
+    if (!b._townMeta) continue;
+    for (const f of b._townMeta.fields ?? []) addOcc(f.x, f.y, Math.hypot(f.w, f.h) * 0.5);
+  }
+  const bossClear2 = (WALL_OUTER_RING_RADIUS + 80) ** 2;
+  const total = Math.hypot(boss.wx - START_X, boss.wy - START_Y) || 1;
+  // 開始地点から首都への道のりのどこか（0＝開始地点・1＝首都のそば）で濃さを決める
+  const density = (x, y) => {
+    const a = Math.hypot(x - START_X, y - START_Y), b = Math.hypot(x - boss.wx, y - boss.wy);
+    const t = Math.max(0, Math.min(1, a / (a + b || 1)));
+    return FILLER.gradientMin + (FILLER.gradientMax - FILLER.gradientMin) * t;
+  };
+  const tryPlace = (x, y, faceAngle) => {
+    if (x < TINY_MARGIN || x > WORLD_W - TINY_MARGIN || y < TINY_MARGIN || y > WORLD_H - TINY_MARGIN) return false;
+    if (dist2(x, y, boss.wx, boss.wy) < bossClear2) return false;
+    if (dist2(x, y, START_X, START_Y) < FILLER.startClear * FILLER.startClear) return false;
+    if (!freeAt(x, y, tinyR, FILLER.clearance)) return false;
+    const hp = randInt(BUILDING_SIZE_PARAMS.tiny.hpMin, BUILDING_SIZE_PARAMS.tiny.hpMax);
+    const bld = makeBuilding(x, y, "tiny", randChoice(bSmall.colors), bSmall, hp);
+    bld._tinySettlement = true;   // 足元の土広場・ミニマップの描き方は小集落と同じ
+    bld._filler = true;
+    bld._noAttack = true;         // 撃ってこない
+    bld.attackRadius = 0;
+    bld.radius = tinyR;
+    if (faceAngle != null) bld._faceAngle = faceAngle + randRange(-0.15, 0.15);
+    result.push(bld);
+    addOcc(x, y, tinyR);
+    return true;
+  };
+
+  // 1. 街道沿いの家並み
+  for (const [a, b] of roadEdges) {
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len, face = Math.atan2(dy, dx) + Math.PI / 2;
+    // 道の両脇それぞれで、並ぶ区間と途切れる区間を交互に作る（ずっと続く壁にしない）
+    for (const side of [-1, 1]) {
+      let on = random() < 0.5;
+      let runLeft = randInt(3, 9);
+      for (let d = 40; d < len - 40; d += FILLER.roadStep) {
+        if (--runLeft <= 0) { on = !on; runLeft = on ? randInt(4, 12) : randInt(2, 7); }
+        if (!on) continue;
+        const x0 = a.x + ux * d, y0 = a.y + uy * d;
+        if (random() > FILLER.roadKeep * density(x0, y0) * 1.3) continue;
+        const off = side * randRange(FILLER.roadOffsetMin, FILLER.roadOffsetMax);
+        tryPlace(x0 - uy * off + randRange(-4, 4), y0 + ux * off + randRange(-4, 4), face);
+      }
+    }
+  }
+
+  // 2. 町の外縁のにじみ（外ほどまばら）
+  for (const meta of townMetas) {
+    if (!meta || meta._rock) continue;
+    const ext = meta.maxExtent || meta.townR || 120;
+    const tries = Math.round(FILLER.fringeTries * density(meta.cx, meta.cy));
+    for (let k = 0; k < tries; k++) {
+      const u = random();
+      const r = ext * (FILLER.fringeInner + (FILLER.fringeOuter - FILLER.fringeInner) * u * u);   // u² で内側に寄せる
+      if (random() < u * 0.5) continue;   // 外ほど抜ける
+      const ang = random() * Math.PI * 2;
+      tryPlace(meta.cx + Math.cos(ang) * r, meta.cy + Math.sin(ang) * r, null);
+    }
+  }
+
+  // 3. 空き地の密集地（撃ってこない大きな家の塊）。開始地点の帯にも置く
+  const areaScale = (WORLD_W * WORLD_H) / (6000 * 6000);
+  const wanted = Math.max(2, Math.round(FILLER.clusterCount * areaScale));
+  let made = 0;
+  for (let attempt = 0; attempt < wanted * 30 && made < wanted; attempt++) {
+    const cx = randRange(TINY_MARGIN + 120, WORLD_W - TINY_MARGIN - 120);
+    const cy = randRange(TINY_MARGIN + 120, WORLD_H - TINY_MARGIN - 120);
+    if (dist2(cx, cy, boss.wx, boss.wy) < bossClear2 * 1.5) continue;
+    if (!freeAt(cx, cy, FILLER.clusterRadius, FILLER.clusterGap - FILLER.clusterRadius)) continue;
+    const n = Math.round(randInt(FILLER.clusterHouses[0], FILLER.clusterHouses[1]) * density(cx, cy));
+    let put = 0;
+    for (let k = 0; k < n * 3 && put < n; k++) {
+      const ang = random() * Math.PI * 2, r = Math.sqrt(random()) * FILLER.clusterRadius;
+      if (tryPlace(cx + Math.cos(ang) * r, cy + Math.sin(ang) * r, null)) put++;
+    }
+    if (put > 0) made++;
+  }
+  return result;
+}
+
 function generateStartAreaHouses(existing, config) {
   const result = [];
   const bSmall = config.buildings.small;
@@ -6960,7 +7112,7 @@ function generateStageLayout(stageIndex) {
   boss._fixedTier = maxPowerTier();
   {
     const tb = FIXED_TIER_BOOST;   // v3.0.1: 警戒度の表とは切り離した「壁」の強さ
-    boss.maxHp = Math.round(boss.maxHp * tb.hp * CAPITAL_POWER_MULT);
+    boss.maxHp = Math.round(boss.maxHp * tb.hp * CAPITAL_POWER_MULT * CAPITAL_ASSUMED_SWARM_HP_MULT);   // DT-594
     boss.hp    = boss.maxHp;
     boss.projectileDamage *= tb.dmg;
   }
@@ -7441,6 +7593,10 @@ function generateStageLayout(stageIndex) {
   // --- (4c) v0.29: スタート地点周辺の「まばらな家」（街は置かず単独の家を散らす）---
   const startHouses = generateStartAreaHouses(result, config).filter(keepLoose);
   for (const b of startHouses) result.push(b);
+
+  // --- (4d) DT-590: 撃ってこない埋め草（街道沿いの家並み・町の外縁のにじみ・空き地の密集地。首都へ近づくほど濃い）---
+  const fillers = generateFillerBuildings(result, townRoadEdges, townMetas, boss, config).filter(keepLoose);
+  for (const b of fillers) result.push(b);
 
   // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
   // v3.22.0: 大都会は城壁を立てない（碁盤の目の街に輪の壁は合わない。首都は高層ビル）
@@ -10594,6 +10750,7 @@ function spawnHeavyCannonShot(fromWx, fromWy, angle) {
   projTargetIdx[slot] = -1;
   projColor[slot]     = HEAVY_CANNON_COLOR;
   projKind[slot]      = 6;
+  projStyle[slot]     = eraShotStyle();   // DT-112 手直し: 回転砲塔と同じく時代ごとの弾の絵（大きく描く）
   projRange[slot]     = HEAVY_CANNON_REACH;
   projKnockR[slot]    = 0;
 }
@@ -10798,7 +10955,10 @@ const HEAVY_CANNON_SPEED   = 120;     // 弾速（px/s）。遅い＝飛んで�
 const HEAVY_CANNON_DAMAGE  = 7.5;     // 撃った側の倍率（基準値 PROJECTILE_HIT_DAMAGE に掛ける）＝ふつうの竜はほぼ一撃
 const HEAVY_CANNON_REACH   = 780;     // 弾の届く距離（射程より少し先まで飛ぶ）
 const HEAVY_CANNON_HIT_R   = 15;      // 当たり判定の半径（通常弾は8。大きい弾は大きく当たる）
-const HEAVY_CANNON_DRAW_R  = 10;      // 弾の絵の半径
+const HEAVY_CANNON_DRAW_R  = 10;      // 弾の絵の半径（赤丸・尾の大きさの目安）
+// DT-112 手直し（v3.161.0）: 巨弾も時代ごとの弾の絵で描く（石器なら石つぶて、最終ならプラズマ球）。
+// 回転砲塔の弾（kind=1 で 1.55 倍）よりさらに大きく描き、「重い1発」だと形で読ませる
+const HEAVY_CANNON_SHOT_SCALE = 2.6;
 const HEAVY_CANNON_PUSH    = 70;      // 当たった竜を押し戻す距離（px）
 const HEAVY_CANNON_COLOR   = "#ffb070";
 const HEAVY_CANNON_FORTRESS_CHANCE = 0.4;    // 要塞都市に置く確率（必ずではない＝「たまに」）
@@ -25749,7 +25909,8 @@ function buildWorldTree(result, boss, config) {
     if (d - (b.radius || 0) < WORLD_TREE_R) result.splice(k, 1);
   }
   const bConf = config.buildings.large;
-  const nodeHp = Math.max(60, Math.round(boss.maxHp * WORLD_TREE_NODE_HP_MULT));
+  // DT-594: 首都のHPだけを想定の群れに合わせて上げたので、その分は外す（樹の節の硬さは変えない）
+  const nodeHp = Math.max(60, Math.round(boss.maxHp / CAPITAL_ASSUMED_SWARM_HP_MULT * WORLD_TREE_NODE_HP_MULT));
   const a0 = random() * Math.PI * 2;
   for (let k = 0; k < WORLD_TREE_NODE_COUNT; k++) {
     const a = a0 + (k / WORLD_TREE_NODE_COUNT) * Math.PI * 2 + randRange(-0.25, 0.25);
@@ -29772,7 +29933,10 @@ const FLOCK_TOTAL_CAP          = 1000;
 // v3.68.0（案帳 DT-497・Shooter指示「大繁殖で上限を増やす効果は不要。ステージでのみ有効なカードにして、竜の追加数を増やす」）:
 // 大繁殖は上限を開かない。取ったその場で竜を BROOD_DRAGONS 体足すだけ（群れはステージをまたがないので、効くのはそのステージだけ）
 const BROOD_DRAGONS            = 50;     // 大繁殖1枚で足す竜（前は5→15。案帳 DT-511 で50）
-const OVERFLOW_POWER_PER_BLOCK = 0.5;    // 上限超えの竜 OVERFLOW_POWER_BLOCK 体ごとに攻撃・HP +50%（1000体で約×3.8）
+// DT-594（v3.161.0・Shooter「群れが150を超えたときの強化が強すぎる」「両方だけど、攻撃：HP＝1:4くらい」）:
+// 攻撃とHPを別の上げ幅にした（前は両方 +50%）。攻撃は大きく下げ、HPはほぼそのまま。300体で 攻撃×1.12・HP×1.48、1000体で 攻撃×1.68・HP×3.7
+const OVERFLOW_ATTACK_PER_BLOCK = 0.12;  // 上限超えの竜 OVERFLOW_POWER_BLOCK 体ごとの攻撃の上げ幅
+const OVERFLOW_HP_PER_BLOCK     = 0.48;  // 同じくHPの上げ幅（攻撃の4倍）
 const OVERFLOW_POWER_BLOCK     = 150;
 const OVERFLOW_DRAW_MAX        = 350;    // 見た目だけの竜を描く最大数（描画の重さの上限）
 let flockOverflow = 0;
@@ -30415,7 +30579,7 @@ function spawnBoidAtEgg(wx, wy) {
   py[idx]                   = wy;
   vx[idx]                   = finalVx;
   vy[idx]                   = finalVy;
-  boidHp[idx]               = BOID_MAX_HP * overflowPowerMult() * starBoostMult();   // v3.68.0: ★の強化倍率   // v3.67.0: 上限超えの竜の HP 倍率ぶん（満タンで生まれる）
+  boidHp[idx]               = BOID_MAX_HP * overflowHpMult() * starBoostMult();   // v3.68.0: ★の強化倍率   // v3.67.0: 上限超えの竜の HP 倍率ぶん（満タンで生まれる）
   boidDead[idx]             = 0;
   boidFadeTimer[idx]        = 0;
   boidHitStopTimer[idx]     = 0;
@@ -32338,16 +32502,18 @@ function effFlockTotalCap() {
 }
 /** 動く竜（配列）の上限。ここを超えた分は flockOverflow に数える。 */
 function effFlockCap()      { return Math.min(MAX_BOIDS, effFlockTotalCap()); }
-/** v3.67.0: 上限超えの竜が群れ全体の攻撃・HP に掛ける倍率。 */
-function overflowPowerMult() { return 1 + OVERFLOW_POWER_PER_BLOCK * flockOverflow / OVERFLOW_POWER_BLOCK; }
+/** v3.67.0: 上限超えの竜が群れ全体の攻撃に掛ける倍率（DT-594 で HP と分けた）。 */
+function overflowAttackMult() { return 1 + OVERFLOW_ATTACK_PER_BLOCK * flockOverflow / OVERFLOW_POWER_BLOCK; }
+/** DT-594: 上限超えの竜が群れ全体のHPに掛ける倍率（攻撃とは別の上げ幅） */
+function overflowHpMult() { return 1 + OVERFLOW_HP_PER_BLOCK * flockOverflow / OVERFLOW_POWER_BLOCK; }
 /**
  * v3.67.0: 上限超えの竜の数を変える唯一の入口。最大HPが倍率ぶん動くので、今のHPも同じ比で動かす
  * （そうしないと、増えるたびに全員が「削れた」HPバーを出す）。
  */
 function setFlockOverflow(count) {
-  const before = overflowPowerMult();
+  const before = overflowHpMult();
   flockOverflow = Math.max(0, count | 0);
-  const ratio = overflowPowerMult() / before;
+  const ratio = overflowHpMult() / before;
   if (ratio === 1) return;
   for (let i = 0; i < N; i++) if (!boidDead[i] && !boidDowned[i]) boidHp[i] *= ratio;
 }
@@ -32360,7 +32526,7 @@ function effBeamTargets()   { return 1 + upCount("multibeam"); }
 function effBulletPierce()  { return 1 + upCount("pierce"); }
 function effMissileAoeMult(){ return 1 + 0.30 * upCount("blast"); }
 // v0.6-p2: 緋竜（MELEE）は個体HP +50%（仕様 §6.4）
-function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1) * (sp().hpMult || 1) * (upCount("f_gamble") > 0 ? GAMBLE_HP_MULT : 1) * overflowPowerMult() * starBoostMult(); }   // v3.68.0: ★の強化倍率   // v3.67.0: 上限超えの竜   // v3.8.0: 亀竜は素で硬い
+function effBoidMaxHp()     { return BOID_MAX_HP * effHpMult() * (flockWeapon === "melee" ? MELEE_HP_MULT : 1) * (sp().hpMult || 1) * (upCount("f_gamble") > 0 ? GAMBLE_HP_MULT : 1) * overflowHpMult() * starBoostMult(); }   // v3.68.0: ★の強化倍率   // v3.67.0: 上限超えの竜   // v3.8.0: 亀竜は素で硬い
 // v0.85: 特殊個体は役割ごとのHP倍率を持つ（巌竜は轢進む前提なので 3 倍）。
 // v3.10.0: 極光（旧母竜）だけに掛かっていた専用の倍率 motherHp は撤去（他の特殊個体と同じ扱い）
 function effBoidMaxHpFor(i) {
@@ -33158,7 +33324,7 @@ function chooseCard(def) {
   pendingCards--;
   // v3.65.0（DT-497）: 竜が進化したら、次の進化まで間を空ける。警戒度に数える
   if (levelUpCats.shift() === "evo" || def.tier || def.becomes) levelUpsSinceEvo = 0;
-  stageLevelUps++;
+  countStageLevelUp();   // DT-593
   updateHUDLevel();
   hapticPulse(30);
 
@@ -39508,6 +39674,7 @@ function renderCodex() {
   const tabs = [["enemy", "敵"], ["building", "建物"], ["region", "地域"], ["shot", "弾"],
                 ["dragon", "竜"], ["special", "特殊個体"], ["card", "カード"], ["misc", "その他"], ["lore", "用語"],
                 ["evo", "進化"], ["map", "踏破"]];   // v3.4.0
+  if (DEBUG_FEATURES_ENABLED) tabs.push(["intent", "意図"]);   // DT-595: バランスの意図の数字はデバッグのときだけ
   let html =
     `<div class="tree-head">` +
       `<div class="tree-title">図鑑</div>` +
@@ -39528,6 +39695,7 @@ function renderCodex() {
   else if (codexTab === "map") html += codexMapHtml();         // v3.4.0
   else if (codexTab === "special") html += codexSpecialHtml();
   else if (codexTab === "card") html += codexCardHtml();
+  else if (codexTab === "intent" && DEBUG_FEATURES_ENABLED) html += codexIntentHtml();   // DT-595
   else html += codexEnemyHtml();
 
   codexOverlayEl.innerHTML = html;
@@ -39811,6 +39979,84 @@ function codexShotHtml() {
 // TIER_ADVANCE_TOWN_RATIO）。調整しても図鑑を書き直さなくてよい。
 // 項目を足すときは codexMiscHtml に節を1つ足す。
 
+// -----------------------------------------------------------------
+// DT-595（v3.161.0）: 図鑑「意図」タブ。レベルデザインの意図（想定・目標）の数字をまとめて見せる。デバッグのときだけ出す。
+// 数字は直書きせず、ゲームが使っている定数・関数から引く（定数を変えると表も変わる）
+// -----------------------------------------------------------------
+function codexIntentHtml() {
+  const table = (head, rows) =>
+    `<table class="cx-table"><thead><tr>${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + `</tbody></table>`;
+  const fmt = (v) => v >= 10000 ? (v / 10000).toFixed(1) + "万" : String(Math.round(v));
+  const box = (title, note, body) =>
+    `<div class="cx-box"><div class="cx-name">${title}</div>${note ? `<div class="cx-atk">${note}</div>` : ""}${body}</div>`;
+  let html = `<div class="cx-era">バランスの意図（デバッグのときだけ表示）</div>`;
+
+  // 首都と想定の群れ（DT-594）
+  const a = CAPITAL_ASSUMED_SWARM;
+  const capRows = [];
+  for (let i = 0; i < TOTAL_STAGES; i++) {
+    const hp = calcBossHp(i) * FIXED_TIER_BOOST.hp * CAPITAL_POWER_MULT * CAPITAL_ASSUMED_SWARM_HP_MULT;
+    capRows.push([`${i + 1}`, fmt(hp), `${Math.round(hp / a.dps)}秒`]);
+  }
+  html += box("首都と想定の群れ（DT-594）",
+    `想定の群れ：${a.dragons}体（動く竜${a.moving}＋上限超えの竜${a.overflow}）・攻撃の強化カード${a.attackCards}枚・竜の進化${a.evo}。` +
+    `この群れが時代Iの首都に入れる傷は1秒あたり約${a.dps}（tools/dt-capital-bench.mjs で測った値）。` +
+    `首都のHPは時代ごとの値 × 別格の硬さ×${FIXED_TIER_BOOST.hp} × 首都×${CAPITAL_POWER_MULT} × 想定の群れ合わせ×${CAPITAL_ASSUMED_SWARM_HP_MULT}。` +
+    `目標は想定の群れで約${CAPITAL_TARGET_SECONDS}秒。後の時代は群れもそのぶん育っている想定（下の秒数は時代Iの群れのままで当たった場合）`,
+    table(["時代", "首都のHP", "時代Iの想定の群れで"], capRows));
+
+  // 警戒度とアーティファクト（DT-592・DT-593）
+  const total = TREASURE_TOWN_COUNT + STAGE_CARD_EXPECTED;
+  const marks = ARTIFACT_MILESTONE_TIERS.map(t => Math.max(1, Math.round((codexTierQuotaExample(t - 1) + codexTierQuotaExample(t)) / 2)));   // artifactMilestones と同じ式
+  const tierRows = [];
+  for (let t = 1; t < TIER_ADVANCE_CARD_RATIO.length; t++) {
+    const mi = ARTIFACT_MILESTONE_TIERS.indexOf(t);
+    tierRows.push([`${TIER_NAMES[t - 1]}→${TIER_NAMES[t]}`, `${Math.round(TIER_ADVANCE_CARD_RATIO[t] * 100)}%`, `${codexTierQuotaExample(t)}回`, mi >= 0 ? `${marks[mi]}回目` : "—"]);
+  }
+  html += box("警戒度とアーティファクト（DT-592・DT-593）",
+    `警戒度はこのステージで取ったレベルアップの回数で上がる。必要数＝そのステージで取れる見込み（竜玉の町${TREASURE_TOWN_COUNT}＋経験値で${STAGE_CARD_EXPECTED}＝${total}回。大陸の例）× 割合。` +
+    `アーティファクトは前後の警戒度の必要数のちょうど中間で出る（警戒度の回数には数えない）。目安：大陸・時代I・オートプレイで動員まで約4分`,
+    table(["段", "割合", "必要な回数", "アーティファクト"], tierRows));
+
+  // 上限超えの竜（DT-594）
+  const ovRows = [150, 300, 500, 1000].filter(n => n <= FLOCK_TOTAL_CAP).map(n => {
+    const ov = Math.max(0, n - MAX_BOIDS);
+    return [`${n}体`, `×${(1 + OVERFLOW_ATTACK_PER_BLOCK * ov / OVERFLOW_POWER_BLOCK).toFixed(2)}`, `×${(1 + OVERFLOW_HP_PER_BLOCK * ov / OVERFLOW_POWER_BLOCK).toFixed(2)}`];
+  });
+  html += box("上限超えの竜の換算（DT-594）",
+    `動く竜は${MAX_BOIDS}体まで。その先は${OVERFLOW_POWER_BLOCK}体ごとに攻撃+${Math.round(OVERFLOW_ATTACK_PER_BLOCK * 100)}%・HP+${Math.round(OVERFLOW_HP_PER_BLOCK * 100)}%（攻撃：HP＝1:4）`,
+    table(["群れ", "攻撃", "HP"], ovRows));
+
+  // レベルアップに要る経験値（ステージ1）
+  const xpRows = [];
+  let sum = 0;
+  for (let k = 0; k < 12; k++) {
+    const early = STAGE_CARD_EARLY_MULT + (1 - STAGE_CARD_EARLY_MULT) * Math.min(k, STAGE_CARD_EARLY_CARDS) / STAGE_CARD_EARLY_CARDS;
+    const need = STAGE_CARD_XP_BASE * Math.pow(STAGE_CARD_XP_GROWTH, k) * early;
+    sum += need;
+    xpRows.push([`${k + 1}回目`, fmt(need), fmt(sum)]);
+  }
+  html += box("レベルアップに要る経験値（ステージ1）",
+    `元 ${STAGE_CARD_XP_BASE} × ${STAGE_CARD_XP_GROWTH}^回数。最初の${STAGE_CARD_EARLY_CARDS}回は軽くする（1回目は×${STAGE_CARD_EARLY_MULT}）。ステージが1つ進むごとに×(1+${STAGE_CARD_XP_STAGE}×ステージ)`,
+    table(["", "その回に要る量", "累計"], xpRows));
+
+  // 地域の建物数（いまのステージ）
+  if (settlements.length > 0) {
+    let town = 0, other = 0, filler = 0, alive = 0;
+    for (const b of settlements) {
+      if (!b || b.isBoss || b._isWall) continue;
+      if (b._filler) filler++;
+      else if (b._townIndex !== undefined && b._townIndex !== null) town++; else other++;
+      if (!b.fallen) alive++;
+    }
+    html += box("いまの地域の建物数",
+      `首都・城壁を除く。町の建物＝町に属する建物、町の外＝小集落・道沿いの集落・ばらけた家、埋め草＝撃ってこない埋め草（DT-590）`,
+      table(["町の建物", "町の外", "埋め草", "合計", "残っている"], [[town, other, filler, town + other + filler, alive]]));
+  }
+  return html;
+}
+
 /** 警戒度の段階ごとの表（行＝項目、列＝段階）。 */
 function codexTierTableHtml() {
   const n = POWER_TIER_BOOST.length;
@@ -39861,7 +40107,9 @@ function codexMiscHtml() {
     `<div class="cx-box">` +
       `<div class="cx-name">段階が上がった瞬間に起きること</div>` +
       `<ul class="cx-bullets">` +
-        `<li>廃墟の${Math.round(TIER_REBUILD_RATIO * 100)}%が町ごと建ち直る（大都会は建ち直らない）</li>` +
+        (TIER_REBUILD_RATIO > 0
+          ? `<li>廃墟の${Math.round(TIER_REBUILD_RATIO * 100)}%が町ごと建ち直る（大都会は建ち直らない）</li>`
+          : `<li>壊した跡は建ち直らない（廃墟は廃墟のまま）</li>`) +
         `<li>残っている建物が新しい段階の強さで建て直される（HPは全快。色が一段暗くなる）</li>` +
         `<li>城壁が張り直される</li>` +
         `<li>動く敵の部隊が新しい段階の数で湧き直す</li>` +
@@ -39877,7 +40125,7 @@ function codexMiscHtml() {
         `<li><b>強い町のふつうの民家</b>：格上の街・要塞都市でも、普通の町の民家と同じ強さ。` +
           `上の強さが乗るのは撃つ建物（前哨堡・衝撃砲台など）と役割の建物だけ。` +
           `強い町は前哨堡が多く（${RAMPART_PER_TOWN}→${RAMPART_PER_ADVANCED_TOWN}→${RAMPART_PER_FORTRESS_TOWN}基）、町の縁が赤い（格上＝破線・要塞＝実線）</li>` +
-        `<li><b>首都</b>：別格のさらに ×${CAPITAL_POWER_MULT} の硬さ。ラン中ずっと変わらない</li>` +
+        `<li><b>首都</b>：別格のさらに ×${CAPITAL_POWER_MULT} の硬さ。HPはさらに ×${CAPITAL_ASSUMED_SWARM_HP_MULT}（${CAPITAL_ASSUMED_SWARM.dragons}体ほどに育った群れで約${CAPITAL_TARGET_SECONDS}秒かかる硬さ）。ラン中ずっと変わらない</li>` +
       `</ul>` +
     `</div>` +
     codexRushHtml() +
@@ -40175,8 +40423,8 @@ function codexFlockCountHtml() {
         `<li><b>ステージの始まり</b>：${FLOCK_START_BASE}体から（一番最初のランだけ${FLOCK_START_FIRST_RUN}体。恒常強化で増える）。` +
           `ステージが変わると竜の数だけ戻り、レベル・カード・特殊個体は持ち越す</li>` +
         `<li><b>群れの上限</b>：画面を飛ぶ竜は${MAX_BOIDS}体まで。それを超えた分は「上限超えの竜」として${FLOCK_TOTAL_CAP}体まで数え、` +
-          `${OVERFLOW_POWER_BLOCK}体ごとに群れ全体の攻撃とHPが+${Math.round(OVERFLOW_POWER_PER_BLOCK * 100)}%` +
-          `（${FLOCK_TOTAL_CAP}体で約×${codexNum(1 + OVERFLOW_POWER_PER_BLOCK * (FLOCK_TOTAL_CAP - MAX_BOIDS) / OVERFLOW_POWER_BLOCK)}）` +
+          `${OVERFLOW_POWER_BLOCK}体ごとに群れ全体の攻撃が+${Math.round(OVERFLOW_ATTACK_PER_BLOCK * 100)}%・HPが+${Math.round(OVERFLOW_HP_PER_BLOCK * 100)}%` +
+          `（${FLOCK_TOTAL_CAP}体で攻撃 約×${codexNum(1 + OVERFLOW_ATTACK_PER_BLOCK * (FLOCK_TOTAL_CAP - MAX_BOIDS) / OVERFLOW_POWER_BLOCK)}・HP 約×${codexNum(1 + OVERFLOW_HP_PER_BLOCK * (FLOCK_TOTAL_CAP - MAX_BOIDS) / OVERFLOW_POWER_BLOCK)}）` +
           (whale ? `。${whale.icon} ${whale.ja}だけは上限${whaleCap}体で、上限超えの竜は無い` : "") + `</li>` +
         `<li><b>画面の引き</b>：${BOIDS_INITIAL}体で×${CAM_SCALE_MIN_COUNT}（寄り）、上限（${MAX_BOIDS}体）で×${CAM_SCALE_MAX_COUNT}（引き）。そのあいだは竜の数に合わせてなだらかに引く</li>` +
         `<li><b>線をなぞるときの列の数</b>（線の形のまま飛ぶ竜種）：√(竜の数÷3) 列（${PATH_TRACE_COLS_MIN}〜${PATH_TRACE_COLS_MAX}列）。少ないうちは細く、増えると横に広がる` +
@@ -40698,7 +40946,7 @@ function codexCardHtml() {
     { name: "通常", hint: "強化カードのレベルアップで出る。", pick: (d) => !d.artifact && !d.stageOnly },
     // 案帳 DT-511
     { name: "ステージ限定", hint: "竜玉施設を落としたときの三択で出る。取ったステージのあいだだけ効き、ステージが変わると外れる。", pick: (d) => d.stageOnly && !d.artifact },
-    { name: STRINGS.perkCardArtifact, hint: `強すぎるカード。強化カードのレベルアップの${Math.round(ARTIFACT_CHANCE * 100)}%で、時間が止まってアーティファクトだけの三択になる。`, pick: (d) => d.artifact },
+    { name: STRINGS.perkCardArtifact, hint: `強すぎるカード。1ステージに${ARTIFACT_MILESTONE_TIERS.length}回、警戒度が上がる前のちょうど中間（${ARTIFACT_MILESTONE_TIERS.map(t => TIER_NAMES[t - 1] + "と" + TIER_NAMES[t]).join("・")}のあいだ）で、時間が止まってアーティファクトだけの三択になる（レベルアップのおまけで、警戒度の回数には数えない）。`, pick: (d) => d.artifact },
   ];
   for (const g of groups) {
     const list = PERK_CARD_DEFS.filter((d) => !d.stageJoin && g.pick(d));
@@ -42361,6 +42609,7 @@ function snapshotRunSave() {
     stageCards:    Object.assign({}, stageCards),   // v3.43.0: 強化カード（ステージ限定）
     stageShards, stageCardXp, stageCardLevel, stageXpAtStart,   // v3.56.0: 経験値の強化カードの進み
     stageLevelUps, levelUpCats: levelUpCats.slice(), levelUpsSinceEvo,   // v3.65.0
+    stageArtifactsGiven,   // DT-593
     treasureTowns: [...treasureTowns],              // v3.44.0: まだ取り戻していない竜の宝の町
     orbFacilityKinds: Object.fromEntries([...orbFacilities].map(([t, f]) => [t, f.kind])),   // v3.48.0
   });
@@ -42466,6 +42715,8 @@ function resumeRun() {
   stageShards = save.stageShards | 0;   // v3.49.0
   stageCardXp = +save.stageCardXp || 0; stageCardLevel = save.stageCardLevel | 0; stageXpAtStart = +save.stageXpAtStart || runTotalXp;   // v3.56.0
   stageLevelUps = save.stageLevelUps | 0;   // v3.65.0
+  // DT-593: 古いセーブには無い。無ければ、もう過ぎた回数の分は出したことにする（再開した直後にまとめて出さない）
+  stageArtifactsGiven = save.stageArtifactsGiven != null ? save.stageArtifactsGiven | 0 : artifactMilestones().filter(m => stageLevelUps >= m).length;
   levelUpCats = Array.isArray(save.levelUpCats) ? save.levelUpCats.filter(c => c === "evo" || c === "special") : [];
   levelUpsSinceEvo = save.levelUpsSinceEvo | 0;
   renderStageCardIcons();
@@ -42661,6 +42912,8 @@ function reinforceSettlementForTier(settlement, baseTier) {
  * @returns {{count:number, towns:number}} 再建した棟数と、完全復活させた街の数
  */
 function rebuildRuinsForTier(baseTier) {
+  // DT-591: 割合が 0 なら何もしない（乱数も引かない）
+  if (TIER_REBUILD_RATIO <= 0) { _tierRevivedCenters = []; return { count: 0, towns: 0 }; }
   // v3.23.0: 大都会は壊した区画を建て直さない（案帳 DT-022 の判定）
   if (worldShape === SHAPE_METRO) return { count: 0, towns: 0 };
   const ruins = [];
@@ -43063,6 +43316,7 @@ function clearStageCards(keepCards = false) {
   if (!keepCards) for (const k of Object.keys(stageCards)) delete stageCards[k];
   else for (const k of STAGE_ONLY_CARD_IDS) delete stageCards[k];   // 案帳 DT-511: ステージ限定のカードだけは外す
   stageLevelUps = 0;
+  stageArtifactsGiven = 0;   // DT-593
   treasureTowns.clear();
   orbFacilities.clear();
   stageShards = 0;          // v3.49.0
@@ -43299,13 +43553,32 @@ function updateStageCardTotal() {
 // v3.66.0（案帳 DT-497・Shooter指示「強すぎる強化カードは激レアにして出る頻度を大きく下げる。出るときは激レアの中から三択」）
 // v3.124.0（案帳 DT-539・Shooter「竜玉施設で出るのはカットで、アーティファクトは当面、レベルアップ時に低確率で出るだけ」）:
 // 激レアをアーティファクトと呼び替え、竜玉施設（rare）の三択からは出さない
-const ARTIFACT_CHANCE = 0.05;   // 経験値のレベルアップで強化カードが出るとき、アーティファクトの三択になる確率
+// DT-593（v3.161.0・Shooter「アーティファクトは前後の警戒度アップの中間で。強くなって暴れる時間 → 警戒度アップ、の順」）:
+// 運の5%（ARTIFACT_CHANCE）をやめ、1ステージに決まった回数だけ出す。出す時は、このステージで取ったレベルアップの回数が
+// 前後の警戒度の必要数のちょうど中間に届いたとき。ARTIFACT_MILESTONE_TIERS の t は「警戒度 t-1 と t の中間」
+//（1＝平時と動員の中間、2＝動員と総力戦の中間）。アーティファクトはレベルアップのおまけで、警戒度の回数には数えない
+const ARTIFACT_MILESTONE_TIERS = [1, 2];
+let stageArtifactsGiven = 0;   // このステージで、決まった時のアーティファクトを何回出したか
+/** このステージでアーティファクトを出すレベルアップの回数（ARTIFACT_MILESTONE_TIERS の順） */
+function artifactMilestones() {
+  return ARTIFACT_MILESTONE_TIERS.map(t => Math.max(1, Math.round((tierCardQuota(t - 1) + tierCardQuota(t)) / 2)));
+}
+/** レベルアップを1回数える（警戒度の回数）。アーティファクトを出す回数に届いたら、アーティファクトの三択を順番待ちに足す */
+function countStageLevelUp() {
+  stageLevelUps++;
+  const marks = artifactMilestones();
+  while (stageArtifactsGiven < marks.length && stageLevelUps >= marks[stageArtifactsGiven]) {
+    stageArtifactsGiven++;
+    if (!artifactAvailable()) continue;
+    perkOfferQueue.push({ townIndex: -1, rare: false, artifact: true, kind: null });
+    if (!perkOfferVisible) openNextPerkOffer();
+  }
+}
 const ARTIFACT_OFFER_MAX = 3;   // アーティファクトの三択の枚数（残りが少なければその数だけ）
 function artifactAvailable() { return pickPerkCards(false, true).length > 0; }
 function queuePerkOffer(townIndex, rare = false, kind = null) {
   if (townIndex === undefined) return;
-  const artifact = !kind && !rare && random() < ARTIFACT_CHANCE && artifactAvailable();
-  perkOfferQueue.push({ townIndex, rare, artifact, kind });
+  perkOfferQueue.push({ townIndex, rare, artifact: false, kind });   // DT-593: アーティファクトは countStageLevelUp が決まった時に足す
   if (!perkOfferVisible) openNextPerkOffer();
 }
 
@@ -43563,7 +43836,9 @@ function openNextPerkOffer() {
 function takePerkCard(def, townIndex) {
   if (!perkOfferVisible || !perkOfferEl.classList.contains("armed")) return;
   applyPerkCard(def);
-  stageLevelUps++;   // v3.65.0: 警戒度はこのステージで取った数で上がる
+  // v3.65.0: 警戒度はこのステージで取った数で上がる。
+  // DT-593: 決まった時に出るアーティファクトはレベルアップのおまけなので数えない（数えると警戒度が早まる）
+  if (!perkOfferArtifact) countStageLevelUp();
   renderStageCardIcons();
   closePerkOffer();
   maybeAdvanceTier(true);
@@ -43616,7 +43891,7 @@ function takeSpecialLevel(def) {
   upgradeCounts[def.id] = takenCount(def.id) + 1;
   invalidateEvo();
   if (def.evo) applyEvoNode(def, oldMaxHp); else applyCardImmediate(def.id);
-  stageLevelUps++;
+  countStageLevelUp();   // DT-593
   closePerkOffer();
   maybeAdvanceTier(true);
 }
@@ -49468,12 +49743,12 @@ function drawOneShotShotRings() {
     const ux = projVx[i] / sp, uy = projVy[i] / sp;
     let off, r;
     if (kind === 3)      { off = 9; r = 4.6; }     // ロケット：弾頭だけ
-    else if (kind === 6) { off = 0; r = HEAVY_CANNON_DRAW_R + 2.5; }   // 巨弾：弾体のすぐ外
     else if (kind === 2) { off = 0; r = 6.5; }     // ボス重弾：光る芯
     else {
+      // DT-112 手直し: 巨弾（kind=6）も時代の弾の絵なので、同じ表で大きさだけ巨弾の倍率にする
       const style = SHOT_STYLES[projStyle[i]] ?? SHOT_STYLES[2];
       const g = ONE_SHOT_SHOT_RING[style.key] || { off: 0, r: 4.5 };
-      const sc = style.size * (kind === 1 ? 1.55 : 1.0);
+      const sc = style.size * (kind === 6 ? HEAVY_CANNON_SHOT_SCALE : kind === 1 ? 1.55 : 1.0);
       off = g.off * sc; r = g.r * sc;
     }
     const cx = projWx[i] + ux * off, cy = projWy[i] + uy * off;
@@ -49652,32 +49927,26 @@ function drawProjectiles() {
       continue;
     }
 
-    // v3.148.0（DT-112）: 巨弾（kind=6）— 黒鉄の大きな玉＋熱い縁＋後ろへ伸びる尾。遅いので形が読める
+    // v3.148.0（DT-112）: 巨弾（kind=6）。DT-112 手直し（v3.161.0）で、回転砲塔と同じ時代ごとの弾の絵を大きく描く形にした。
+    // 下に薄い尾だけ残す＝遅い重い弾が「迫ってくる」向きが読める
     if (projKind[i] === 6) {
       const r = HEAVY_CANNON_DRAW_R;
       const sp = Math.sqrt(projVx[i] * projVx[i] + projVy[i] * projVy[i]) || 1;
       const ux = projVx[i] / sp, uy = projVy[i] / sp;
       ctx.save();
       for (let k = 1; k <= 3; k++) {
-        ctx.globalAlpha = 0.22 - k * 0.05;
+        ctx.globalAlpha = 0.18 - k * 0.04;
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(projWx[i] - ux * k * r * 0.9, projWy[i] - uy * k * r * 0.9, r * (1 - k * 0.18), 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = "#2a2522";
-      ctx.beginPath();
-      ctx.arc(projWx[i], projWy[i], r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2.4;
-      ctx.stroke();
-      ctx.fillStyle = "rgba(255,230,200,0.55)";
-      ctx.beginPath();
-      ctx.arc(projWx[i] - r * 0.35, projWy[i] - r * 0.35, r * 0.3, 0, Math.PI * 2);
-      ctx.fill();
       ctx.restore();
+      ctx.globalAlpha = 1;
+      const style = SHOT_STYLES[projStyle[i]] ?? SHOT_STYLES[2];
+      const sdx = projWx[i] - projStartWx[i], sdy = projWy[i] - projStartWy[i];
+      const lifeFrac = Math.sqrt(sdx * sdx + sdy * sdy) / (projMaxRange(i) || 1);
+      drawEraShot(ctx, style.key, projWx[i], projWy[i], angle, color, style.size * HEAVY_CANNON_SHOT_SCALE, i, lifeFrac);
       continue;
     }
 
