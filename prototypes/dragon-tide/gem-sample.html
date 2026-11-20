@@ -82,7 +82,7 @@ const SPECIES = [
       wingAnchor: { x: 319, y: 63.4 },
     },
     // gloss = 照り返しの最大の濃さ。wingAlpha = 翼膜の透け（最小〜最大）
-    gloss: 0.7, glintColor: "#ffe6ea", hueJitter: 7, lightJitter: 0.07, wingAlpha: [0.80, 0.94],
+    gloss: 0.7, glintColor: "#ffe6ea", belly: 0.70, hueJitter: 7, lightJitter: 0.07, wingAlpha: [0.80, 0.94],
   },
   {
     key: "ice",
@@ -99,7 +99,7 @@ const SPECIES = [
       shoulder: { left: { x: 23.9, y: 151 }, right: { x: 140.2, y: 151 } },
       wingAnchor: { x: 319, y: 69.6 },
     },
-    gloss: 0.75, glintColor: "#f2fbff", hueJitter: 9, lightJitter: 0.06, wingAlpha: [0.72, 0.9],
+    gloss: 0.75, glintColor: "#f2fbff", belly: 0.72, hueJitter: 9, lightJitter: 0.06, wingAlpha: [0.72, 0.9],
   },
   {
     key: "rainbow",
@@ -118,7 +118,7 @@ const SPECIES = [
       wingAnchor: { x: 316, y: 58.4 },
     },
     // 遊色のような虹色なので、1匹ずつの色相のぶれを大きめにする
-    gloss: 0.65, glintColor: "#ffffff", hueJitter: 18, lightJitter: 0.05, wingAlpha: [0.78, 0.92],
+    gloss: 0.65, glintColor: "#ffffff", belly: 0.72, hueJitter: 18, lightJitter: 0.05, wingAlpha: [0.78, 0.92],
   },
   {
     key: "gargoyle",
@@ -137,7 +137,8 @@ const SPECIES = [
     },
     // 普通の石は不透明でほぼ光らない：照り返しは薄く、翼も透けない。差は明るさのむらで出す
     // DT-597 3回目（Shooter「全然光って見えないのは絵のせい？元の絵をもっと暗く」）: 石の絵を半分ほどの明るさにして、鈍い照り返しが見えるように
-    gloss: 0.18, glintColor: "#f2ede4", hueJitter: 5, lightJitter: 0.1, wingAlpha: [1, 1],
+    // DT-597 手直し（Shooter「ガーゴイルの鈍い光は全然見えないので、もう少し明るく」）: 0.18→0.4。手足が太いので照り返しの形を強めに縮める
+    gloss: 0.4, glintColor: "#f2ede4", belly: 0.60, maskCut: 3.0, maskRegrow: 1.5, hueJitter: 5, lightJitter: 0.1, wingAlpha: [1, 1],
   },
 ];
 const BODY_DRAW_H = 27;   // ゲームと同じ（論理px）
@@ -201,9 +202,48 @@ function tintedCopy(img, hueDegrees, brightness) {
   return canvas;
 }
 
-// 照り返しの絵を竜種ごとに胴体の形で切り抜いておく（読み込み時に1回だけ）。
-// こうしておけば描画時は drawImage 1回で済み、竜の外に光がはみ出さない。
-function maskedGlint(glintImg, bodyImg, color) {
+// DT-597 手直し（Shooter「照り返しが竜をはみ出している」「足側がはみ出てるのが気になる。腹までに収めて」）:
+// ゲーム（index.html の gemGlintBodyMask）と同じ。胴体の形を CUT だけ縮めて脚・腕を消し、REGROW だけ戻し、
+// belly（胴体の絵の高さの割合）より後ろ（後脚・尾）を消した形で切り抜く。単位は竜の論理px
+const GLINT_MASK_CUT = 2.0, GLINT_MASK_REGROW = 1.0, GLINT_MASK_FEATHER = 0.5, GLINT_MASK_DIRS = 16, GLINT_BELLY_FADE = 0.06;
+function glintBodyMask(bodyImg, sp) {
+  const w = bodyImg.naturalWidth, h = bodyImg.naturalHeight, pxPerLogical = h / BODY_DRAW_H;
+  const ring = (r) => {
+    const out = [];
+    for (const rr of [r * 0.5, r]) for (let k = 0; k < GLINT_MASK_DIRS; k++) {
+      const a = k * Math.PI * 2 / GLINT_MASK_DIRS;
+      out.push([Math.cos(a) * rr, Math.sin(a) * rr]);
+    }
+    return out;
+  };
+  const eroded = makeCanvas(w, h), ec = eroded.getContext("2d");
+  ec.drawImage(bodyImg, 0, 0, w, h);
+  ec.globalCompositeOperation = "destination-in";
+  for (const [dx, dy] of ring((sp.maskCut ?? GLINT_MASK_CUT) * pxPerLogical)) ec.drawImage(bodyImg, dx, dy, w, h);
+  const grown = makeCanvas(w, h), gc = grown.getContext("2d");
+  gc.drawImage(eroded, 0, 0);
+  for (const [dx, dy] of ring((sp.maskRegrow ?? GLINT_MASK_REGROW) * pxPerLogical)) gc.drawImage(eroded, dx, dy);
+  const soft = makeCanvas(w, h), sc = soft.getContext("2d");
+  const f = GLINT_MASK_FEATHER * pxPerLogical * 0.5;
+  sc.globalCompositeOperation = "lighter";
+  sc.globalAlpha = 1 / 9;
+  for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) sc.drawImage(grown, ox * f, oy * f);
+  sc.globalAlpha = 1;
+  sc.globalCompositeOperation = "destination-in";
+  sc.drawImage(bodyImg, 0, 0, w, h);
+  if (sp.belly !== undefined) {
+    const g = sc.createLinearGradient(0, h * (sp.belly - GLINT_BELLY_FADE), 0, h * sp.belly);
+    g.addColorStop(0, "rgba(0,0,0,1)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    sc.fillStyle = g;
+    sc.fillRect(0, 0, w, h);
+  }
+  return soft;
+}
+
+// 照り返しの絵を竜種ごとに胴体の内側の形で切り抜いておく（読み込み時に1回だけ）。
+// こうしておけば描画時は drawImage 1回で済み、竜の外・脚に光がはみ出さない。
+function maskedGlint(glintImg, bodyImg, color, bodyMask) {
   const w = bodyImg.naturalWidth, h = bodyImg.naturalHeight;
   const canvas = makeCanvas(w, h);
   const ctx = canvas.getContext("2d");
@@ -212,7 +252,7 @@ function maskedGlint(glintImg, bodyImg, color) {
   ctx.fillStyle = color;
   ctx.fillRect(0, 0, w, h);
   ctx.globalCompositeOperation = "destination-in";
-  ctx.drawImage(bodyImg, 0, 0, w, h);
+  ctx.drawImage(bodyMask, 0, 0, w, h);
   return canvas;
 }
 
@@ -311,7 +351,8 @@ async function loadAll() {
       loadImage(sp.current.body), loadImage(sp.current.wing), loadImage(sp.gem.body), loadImage(sp.gem.wing)]);
     sp.currentParts = { body: cb, wing: cw };
     sp.gemParts = { body: gb, wing: gw };
-    sp.glints = glints.map((g) => maskedGlint(g, gb, sp.glintColor));
+    const bodyMask = glintBodyMask(gb, sp);
+    sp.glints = glints.map((g) => maskedGlint(g, gb, sp.glintColor, bodyMask));
     // 色むらの3色：色相を -j/0/+j、明るさを少しずらす
     sp.variants = [];
     for (let v = 0; v < TINT_VARIANTS; v++) {
