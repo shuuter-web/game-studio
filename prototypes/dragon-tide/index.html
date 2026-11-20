@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.167.0";
+const GAME_VERSION = "v3.168.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -49650,7 +49650,7 @@ function overflowShadedSprites(sprites) {
   overflowShadeCache.set(sprites, out);
   return out;
 }
-function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, tailBody) {
+function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, tailBody, glintSet, gloss) {
   if (N < 2) return;
   const count = Math.min(flockOverflow, OVERFLOW_DRAW_MAX);
   // 群れの重心・広がり・進む向き（平均の速度）と、向きのそろい具合（0＝ばらばら・回っている／1＝一方向）
@@ -49717,6 +49717,16 @@ function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, tailBody)
     ctx.rotate(angle);
     ctx.scale(sc, sc);
     ctx.drawImage(shaded[frameIdx], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+    // v3.168.0（DT-597）: 宝石の照り返し。付いていく竜と向きは同じだが、組の番号 k で向きのずれ・強さを変えるので一斉には光らない。
+    // 絵に重ねた暗さのぶん照り返しも弱める（遠くの竜が本物より明るく光らないように）
+    if (glintSet) {
+      const glintAlpha = OVERFLOW_ALPHA * (1 - OVERFLOW_SHADE) * gloss * gemGlintStrength(angle, k, 1);
+      if (glintAlpha > GEM_GLINT_MIN_ALPHA) {
+        ctx.globalAlpha = glintAlpha;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.drawImage(glintSet[gemGlintImageIndex], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+      }
+    }
     ctx.restore();
   }
   if (tailPaths) {
@@ -49768,6 +49778,9 @@ function drawBoids() {
                       : evoVis ? tintedSprites(flockSpecies + ":air", getSpeciesSprites(flockSpecies, "air"), evoVis.tint)
                       : getSpeciesSprites(flockSpecies, "air");
   const paletteFlock  = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
+  // v3.168.0（DT-597）: 宝石の照り返し（DRAGON_GEM_GLINT にある竜種だけ）
+  const glintFlock    = DRAGON_GEM_GLINT[element] ? getGemGlintFrames(element) : null;
+  const glossFlock    = glintFlock ? DRAGON_GEM_GLINT[element].gloss : 0;
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
   if (!sprites || sprites.length === 0) return;
@@ -49794,7 +49807,7 @@ function drawBoids() {
     }
   }
 
-  if (flockOverflow > 0 && !onBall) drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, speciesNoTail ? null : paletteFlock.body);   // v3.67.0: 本物の下に描く
+  if (flockOverflow > 0 && !onBall) drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, speciesNoTail ? null : paletteFlock.body, glintFlock, glossFlock);   // v3.67.0: 本物の下に描く
 
   for (let i = 0; i < N; i++) {
     // dead かつフェード完了 → スキップ（従来通り）
@@ -49945,6 +49958,20 @@ function drawBoids() {
       -halfLogical, -halfLogical,             // デスト位置（論理px）
       DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL, // デストサイズ（論理px）
     );
+    // ---- v3.168.0（DT-597）: 宝石の照り返し。向きだけで決まる。0の竜は重ねない（1匹あたり drawImage +1 まで） ----
+    // 特殊個体は自分の絵で描くので、照り返しも特殊個体の key で引く（極光だけが照り返す）
+    const spGlintKey = spSprites ? SPECIAL_DEFS[spKind].key : null;
+    const glintSet   = spSprites ? (DRAGON_GEM_GLINT[spGlintKey] ? getGemGlintFrames(spGlintKey) : null) : glintFlock;
+    if (glintSet) {
+      const gloss = spSprites ? DRAGON_GEM_GLINT[spGlintKey].gloss : glossFlock;
+      const glintAlpha = alpha * gloss * gemGlintStrength(angle, i, 0);
+      if (glintAlpha > GEM_GLINT_MIN_ALPHA) {
+        ctx.globalAlpha = glintAlpha;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.drawImage(glintSet[gemGlintImageIndex], 0, 0, spritePx, spritePx,
+          -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+      }
+    }
     ctx.globalAlpha = 1.0;
     ctx.restore();
 
@@ -51802,7 +51829,20 @@ const DRAGON_PART_SPRITES = {
   // wingDrawW は 30 → 25。作り直した翼は付け根が画像の右端にあり「付け根から先端まで＝画像幅」
   // なので、30 のままだと両翼スパンが47〜58論理pxまで伸びて旧アセット（目標40前後）より
   // 2割以上大きくなった。25 で 40〜51 に収まる。
+  // v3.168.0（DT-597）: 火竜・氷竜・ガーゴイルは「宝石（ルース）」の絵（gem-sample.html の見本と同じ絵・同じ寸法）。
+  // bodyPivot・wingAnchor は tools/sprite_meta.py の実測、shoulder はいまの絵の手詰め値を画像幅の比で写したもの
+  // （形は同じなので。実測の肩は棘の幅を拾って大きくずれることがある）。
+  // いまの絵を借りている仮の竜種（鞠竜・亀竜など）は見た目を変えないよう *_classic の行へ付け替えた
   fire: {
+    body: "assets/dragon_fire_gem_body.png",
+    wing: "assets/dragon_fire_gem_wing.png",
+    bodyPivot:  { cx: 62.7, cy: 169.4, w: 126, h: 320 },
+    shoulder:   { left: { x: 16.5, y: 152 }, right: { x: 108.6, y: 152 } },
+    wingAnchor: { x: 319, y: 63.4 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  fire_classic: {
     body: "assets/dragon_fire_body.png",
     wing: "assets/dragon_fire_wing.png",
     bodyPivot:  { cx: 64.4, cy: 169.1, w: 130, h: 320 },
@@ -51822,6 +51862,15 @@ const DRAGON_PART_SPRITES = {
     wingDrawW: 25,
   },
   ice: {
+    body: "assets/dragon_ice_gem_body.png",
+    wing: "assets/dragon_ice_gem_wing.png",
+    bodyPivot:  { cx: 81.8, cy: 175.5, w: 165, h: 320 },
+    shoulder:   { left: { x: 23.9, y: 151 }, right: { x: 140.2, y: 151 } },
+    wingAnchor: { x: 319, y: 69.6 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  ice_classic: {
     body: "assets/dragon_ice_body.png",
     wing: "assets/dragon_ice_wing.png",
     bodyPivot:  { cx: 83.5, cy: 175.0, w: 168, h: 320 },
@@ -51875,7 +51924,17 @@ const DRAGON_PART_SPRITES = {
     bodyDrawH: 27,
     wingDrawW: 25,
   },
+  // ガーゴイルは光が鈍い系：普通の灰色の石（暗め）。照り返しはごく弱い（DRAGON_GEM_GLINT）
   gargoyle: {
+    body: "assets/dragon_gargoyle_stone_body.png",
+    wing: "assets/dragon_gargoyle_stone_wing.png",
+    bodyPivot:  { cx: 114.0, cy: 173.9, w: 229, h: 320 },
+    shoulder:   { left: { x: 20.7, y: 110 }, right: { x: 207.3, y: 110 } },
+    wingAnchor: { x: 319, y: 66.9 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  gargoyle_classic: {
     body: "assets/dragon_gargoyle_body.png",
     wing: "assets/dragon_gargoyle_wing.png",
     bodyPivot:  { cx: 115.0, cy: 173.2, w: 231, h: 320 },
@@ -52014,21 +52073,22 @@ const DRAGON_PART_SPRITES = {
 // 新竜種の絵が用意できるまで既存の絵で仮に出したいときに使える。
 // v3.8.0: 新しい竜種・特殊個体の仮の絵（専用スプライトができたら行ごと消す）。色は spriteTint で寄せる
 const DRAGON_PARTS_ALIAS = {
-  shark: "swallow", tortoise: "gargoyle", thunder: "shadow",
+  // v3.168.0（DT-597）: 火竜・氷竜・ガーゴイルの絵を宝石の絵にしたので、それらを借りていた行は *_classic（いまの絵）へ
+  shark: "swallow", tortoise: "gargoyle_classic", thunder: "shadow",
   heal: "rainbow", frost: "deflect", laser: "beacon",
-  ball: "fire", mole: "crimson",   // v3.29.0
+  ball: "fire_classic", mole: "crimson",   // v3.29.0
   magnet: "shadow", twin: "swallow", chain: "heavy", drum: "rainbow",   // v3.31.0
   aim: "mecha",   // v3.64.0
   recall: "wedge",   // v3.72.0: 呼び戻し竜は専用の絵ができるまで穿つ楔の絵を水色に
   hush: "shadow", shell: "heavy",   // v3.92.0: 専用の絵ができるまで既存の絵を灰に
   bundle: "heavy", scatter: "swallow",   // v3.94.0
-  barrier: "ice",   // v3.96.0: 専用の絵ができるまで氷の絵を水色に
-  dice: "gargoyle",  // v3.113.0: 専用の絵ができるまで石像の絵を金に
+  barrier: "ice_classic",   // v3.96.0: 専用の絵ができるまで氷の絵を水色に
+  dice: "gargoyle_classic",  // v3.113.0: 専用の絵ができるまで石像の絵を金に
   skybow: "rainbow",   // v3.95.0: 極光の絵を薄紫に: 専用の絵ができるまで既存の絵を色替え
   broadside: "mecha",   // v3.142.0: 専用の絵ができるまでロケットマンの絵を青に
-  wisp: "ice",   // v3.36.0（ゲーム中は竜の絵を描かず灯で描く。図鑑などの見本用）
+  wisp: "ice_classic",   // v3.36.0（ゲーム中は竜の絵を描かず灯で描く。図鑑などの見本用）
   flail: "heavy",   // v3.40.0
-  whale: "gargoyle",   // v3.57.0
+  whale: "gargoyle_classic",   // v3.57.0
   cannon: "heavy",  // v3.104.0（DT-174）: 専用の絵ができるまで重い体つきの絵を金に
   ray: "swallow",   // v3.150.0（DT-581）: 専用の絵ができるまで細身の燕竜の絵を水色に
   link: "swallow",  // v3.46.0
@@ -52037,6 +52097,117 @@ const DRAGON_PARTS_ALIAS = {
 function dragonPartsKey(element) {
   const key = DRAGON_PARTS_ALIAS[element] ?? element;
   return DRAGON_PART_SPRITES[key] ? key : null;
+}
+
+// -----------------------------------------------------------------
+// v3.168.0（DT-597）: 宝石（ルース）の照り返し。
+// 光源は見せない・動かさない。「この向きを向いた竜はきらっとする」向きを決めておき、竜の向きだけで照り返しを決める
+// （Shooter「座標と角度が一定の範囲のときに照り返す、段階的に。もしくは角度だけでも」。見本の既定の「角度だけ」を採った）。
+// 時間・乱数は使わないので、同じ向きの竜はいつでも同じ照り返し。群れが曲がると先頭から順にその向きを通り、光が群れを走る。
+// 描くのは前もって作った照り返しの絵（胴体の形で切り抜き済み）を1枚、薄く「lighter」で重ねるだけ（1匹あたり drawImage +1。0の竜は重ねない）。
+// -----------------------------------------------------------------
+// 照り返す竜種（群れの竜種の element・特殊個体の key）。gloss＝照り返しの最大の濃さ、color＝照り返しの色。
+// ここに無い竜種・特殊個体は照り返さない（いまの絵のまま）。値は gem-sample.html の見本と同じ
+const DRAGON_GEM_GLINT = {
+  fire:     { gloss: 0.7,  color: "#ffe6ea" },   // 火竜＝ガーネット
+  ice:      { gloss: 0.75, color: "#f2fbff" },   // 氷竜＝アクアマリン
+  rainbow:  { gloss: 0.65, color: "#ffffff" },   // 極光（特殊個体）＝いまの絵のまま、照り返しだけ
+  gargoyle: { gloss: 0.18, color: "#f2ede4" },   // ガーゴイル＝普通の灰色の石。光が鈍い系なのでごく弱く
+};
+const GEM_GLINT_SOURCES = [0, 1, 2, 3].map((i) => `assets/dragon_gem_glint_${i}.png`);
+const GEM_GLINT_HEADING = 0.35;                  // きらっとする向きの基準（ラジアン・画面の右やや下へ飛ぶ向き）。ここから120°おきに3つ
+// DT-597 見本4回目（Shooter「多すぎる。それぞれの光る幅は広すぎるので半分に。箇所も3箇所に」）:
+// 6か所（60°おき）・±8°で最大・±28°で消える → 3か所（120°おき）・±4°で最大・±14°で消える
+const GEM_GLINT_FULL = 4 * Math.PI / 180;        // この角度のずれまでは照り返しが最大
+const GEM_GLINT_EDGE = 14 * Math.PI / 180;       // ここまでで段々に消える
+// 窓どうしの間に照り返しが0の向きが 92° ずつあるので、照り返しの絵が切り替わるのは必ず照り返しが0のとき（いきなり切り替わらない）
+const GEM_GLINT_WINDOWS = [
+  { center: 0,                image: 3 },
+  { center: Math.PI * 2 / 3,  image: 1 },
+  { center: -Math.PI * 2 / 3, image: 0 },
+];
+// 1匹ずつの照り返す向きのずれ（±この角度）と強さの個体差（この割合〜1）。竜の番号から決まる値で、乱数は使わない
+// （向きのずれがあるので、同じ向きに飛ぶ群れでも一度に全部は光らず、何匹かずつ順にきらっとする）
+const GEM_GLINT_HEADING_SPREAD = 7 * Math.PI / 180;
+const GEM_GLINT_STRENGTH_MIN   = 0.7;
+const GEM_GLINT_MIN_ALPHA      = 0.01;           // これより薄い照り返しは重ねない（描く回数を増やさない）
+const gemGlintImages = [];                       // 読み込んだ照り返しの絵（GEM_GLINT_SOURCES の順）
+const gemGlintFrames = new Map();                // 竜種の key → 照り返しの絵（スプライトと同じ座標・胴体で切り抜き済み）の配列
+let gemGlintImageIndex = 0;                      // gemGlintStrength が選んだ絵（毎匹オブジェクトを作らないための戻り値）
+
+/** 竜の番号 n から 0〜1 の決まった値（salt で系列を分ける）。ゲーム状態の乱数列には触らない */
+function gemGlintHash(n, salt) {
+  let h = (n * 374761393 + salt * 668265263) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/**
+ * 向き heading（ラジアン）の竜 n の照り返しの強さ（0〜1）。選んだ絵の番号は gemGlintImageIndex に入る。
+ * salt は本物の竜（0）と上限超えの見た目だけの竜（1）で番号の系列を分けるため。
+ */
+function gemGlintStrength(heading, n, salt) {
+  const h = heading - GEM_GLINT_HEADING + (gemGlintHash(n, salt * 2 + 3) * 2 - 1) * GEM_GLINT_HEADING_SPREAD;
+  for (let w = 0; w < GEM_GLINT_WINDOWS.length; w++) {
+    let off = h - GEM_GLINT_WINDOWS[w].center;
+    off -= Math.round(off / (Math.PI * 2)) * Math.PI * 2;
+    off = Math.abs(off);
+    if (off >= GEM_GLINT_EDGE) continue;
+    gemGlintImageIndex = GEM_GLINT_WINDOWS[w].image;
+    const t = Math.max(0, Math.min(1, (off - GEM_GLINT_FULL) / (GEM_GLINT_EDGE - GEM_GLINT_FULL)));
+    const byAngle = 1 - t * t * (3 - 2 * t);
+    return byAngle * (GEM_GLINT_STRENGTH_MIN + (1 - GEM_GLINT_STRENGTH_MIN) * gemGlintHash(n, salt * 2 + 4));
+  }
+  return 0;
+}
+
+/**
+ * 竜種 key（DRAGON_GEM_GLINT のキー）の照り返しの絵を返す（無ければ null）。
+ * 1竜種につき1度だけ作って持っておく（毎フレーム canvas を作らない。getImageData も使わない）。
+ * 絵はスプライト（renderDragonFrame）と同じ大きさ・同じ向き・同じ原点なので、竜と同じ変換で重ねるだけでよい。
+ */
+function getGemGlintFrames(key) {
+  if (gemGlintFrames.has(key)) return gemGlintFrames.get(key);
+  const def = DRAGON_GEM_GLINT[key];
+  const partsKey = def ? dragonPartsKey(key) : null;
+  const bodyImg = partsKey ? dragonPartImages[partsKey] && dragonPartImages[partsKey].body : null;
+  if (!def || !bodyImg || !GEM_GLINT_SOURCES.every((src, i) => gemGlintImages[i])) {
+    // 絵がまだ（または読めなかった）なら照り返し無し。読み込み前に呼ばれたときは覚えずに次の機会に作る
+    if (!def || dragonImagesLoaded) gemGlintFrames.set(key, null);
+    return null;
+  }
+  const spec = DRAGON_PART_SPRITES[partsKey];
+  const spriteDpr = Math.min(window.devicePixelRatio || 1, 2);
+  const spritePx  = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
+  const bodyW = bodyImg.naturalWidth, bodyH = bodyImg.naturalHeight;
+  const bodyDrawH = spec.bodyDrawH;
+  const bodyDrawW = bodyDrawH * (bodyW / bodyH);
+  const pivotX = spec.bodyPivot.cx * (bodyDrawW / spec.bodyPivot.w);
+  const pivotY = spec.bodyPivot.cy * (bodyDrawH / spec.bodyPivot.h);
+  const frames = gemGlintImages.map((glintImg) => {
+    // 照り返しの絵を照り返しの色に塗り、胴体の形で切り抜く（竜の外に光がはみ出さない）
+    const masked = document.createElement("canvas");
+    masked.width = bodyW; masked.height = bodyH;
+    const mc = masked.getContext("2d");
+    mc.drawImage(glintImg, 0, 0, bodyW, bodyH);
+    mc.globalCompositeOperation = "source-in";
+    mc.fillStyle = def.color;
+    mc.fillRect(0, 0, bodyW, bodyH);
+    mc.globalCompositeOperation = "destination-in";
+    mc.drawImage(bodyImg, 0, 0, bodyW, bodyH);
+    // スプライトと同じ置き方（renderDragonFrame・drawPartSeparatedDragon の胴体と同じ変換）
+    const oc = document.createElement("canvas");
+    oc.width = spritePx; oc.height = spritePx;
+    const c = oc.getContext("2d");
+    c.translate(spritePx / 2, spritePx / 2);
+    c.scale(spritePx / DRAGON_SPRITE_LOGICAL, spritePx / DRAGON_SPRITE_LOGICAL);
+    c.rotate(Math.PI / 2);
+    c.drawImage(masked, -pivotX, -pivotY, bodyDrawW, bodyDrawH);
+    return oc;
+  });
+  gemGlintFrames.set(key, frames);
+  return frames;
 }
 
 // 胴体・翼の描画サイズの決め方（火竜で実測した基準値。他の竜種も概ねこの範囲に収める）:
@@ -52100,7 +52271,11 @@ function preloadDragonImages() {
   const terrainTasks = Object.keys(TERRAIN_IMAGE_SOURCES).map((name) =>
     loadOne(TERRAIN_IMAGE_SOURCES[name], (img) => { terrainImages[name] = img; }));
 
-  return Promise.all([...tasks, ...enemyTasks, ...buildingTasks, groundTask, ...terrainTasks, ...shotTasks]).then(() => {
+  // v3.168.0（DT-597）: 宝石の照り返しの絵（読めなければ照り返し無しで描く）
+  const glintTasks = GEM_GLINT_SOURCES.map((src, i) =>
+    loadOne(src, (img) => { gemGlintImages[i] = img; }));
+
+  return Promise.all([...tasks, ...enemyTasks, ...buildingTasks, groundTask, ...terrainTasks, ...shotTasks, ...glintTasks]).then(() => {
     // dragonImagesLoaded は竜画像のみで判定（敵画像の失敗と切り離す）
     // v0.35.2: 竜画像が「1枚も欠けていない」かの目安。実際の描画方式は
     // renderDragonFrame が属性ごとに判定するので、ここが false でも
@@ -52113,6 +52288,8 @@ function preloadDragonImages() {
     if (!dragonImagesLoaded) {
       console.error("[DragonTide] 一部の竜画像が読み込めなかったため、ベクター描画にフォールバックします。");
     }
+    // 照り返しの絵は読み込み時にここで1度だけ作る（描画のたびには作らない）
+    for (const key of Object.keys(DRAGON_GEM_GLINT)) getGemGlintFrames(key);
   });
 }
 
