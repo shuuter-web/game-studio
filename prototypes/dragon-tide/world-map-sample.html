@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dragon Tide 世界地図サンプル</title>
+<!--
+  DT-574（全体サイクル案B）の「世界地図」の部分だけを試すサンプル。
+  ステージは遊ばず、選んだ地域は即クリア扱い。決めてほしいこと①〜④はすべて案のおすすめで入れている:
+   ① 地図の形は固定（8区画）・中身（どの区画にどの地域・何の時代）はランのシードで引く。
+      最初の数ラン用の「はじまりの世界」（中身も固定）も切り替えで試せる。
+   ② 選べるのは焼け跡に接する区画だけ（接する区画が2つ未満なら全区画から）。1手番目は卵を奪った文明（時代I）だけ。
+   ③ 最初の区画は8つ。
+   ④ 特殊な地域に変わる表は案のとおり（SPECIAL_RULES）。
+  乱数は決定性を守るため makeRandomGenerator（mulberry32）だけを使う。ブラウザ任せの乱数は使わない。
+-->
+<style>
+:root {
+  --sea: #10283f;
+  --coast: #2f5a80;
+  --border: #18202a;
+  --ink: #f3efe6;
+  --ink-dim: #a9b3bf;
+  --panel: #182b40;
+  --panel-edge: #2a4560;
+  --accent: #ffd36b;
+  --burn: #2a1f1a;
+  --ember: #e0682a;
+  --capital: #e02424;
+  --button: #c0392b;
+  --button-ink: #fff;
+  --page: #0b1a2a;
+}
+:root[data-theme="light"] { color-scheme: dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; } }
+:root[data-theme="dark"] { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+.app { max-width: 520px; margin: 0 auto; padding: 8px 12px 32px; }
+.top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.top input {
+  width: 70px; height: 40px; padding: 0 8px; border-radius: 8px;
+  border: 1px solid var(--panel-edge); background: var(--panel); color: var(--ink); font-size: 16px;
+}
+.top input:disabled { opacity: 0.5; }
+.btn-small {
+  height: 40px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--panel-edge);
+  background: var(--panel); color: var(--ink); font-size: 13px; cursor: pointer;
+}
+.btn-small[aria-pressed="true"] { background: #2d5578; border-color: #6c9cc6; }
+.stats { display: flex; gap: 14px; margin: 8px 2px 4px; font-size: 15px; color: var(--ink-dim); }
+.stats b { color: var(--ink); font-size: 18px; }
+.map-wrap { position: relative; border-radius: 12px; overflow: hidden; background: var(--sea); }
+svg#map { display: block; width: 100%; height: auto; touch-action: manipulation; user-select: none; }
+.cell { cursor: pointer; }
+@keyframes flash { 0% { filter: brightness(2.4); } 100% { filter: brightness(1); } }
+.flash { animation: flash 1.4s ease-out 1; }
+@keyframes pop { 0% { opacity: 0; transform: translateY(6px); } 20% { opacity: 1; transform: translateY(0); } 100% { opacity: 1; } }
+.tag { animation: pop 1.6s ease-out 1; }
+@keyframes dash { to { stroke-dashoffset: -18; } }
+.choosable { animation: dash 1.2s linear infinite; }
+.card {
+  margin-top: 10px; padding: 12px 14px; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--panel-edge); min-height: 128px;
+}
+.card .hint { color: var(--ink-dim); font-size: 15px; line-height: 1.6; }
+.card h2 { margin: 0 0 4px; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+.card .swatch { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+.card .meta { font-size: 15px; color: var(--ink-dim); }
+.card .meta b { color: var(--ink); }
+.card .story { font-size: 14px; margin: 6px 0 10px; line-height: 1.5; }
+.attack {
+  width: 100%; height: 52px; border: none; border-radius: 10px; font-size: 18px; font-weight: bold;
+  background: var(--button); color: var(--button-ink); cursor: pointer;
+}
+.attack:disabled { background: #3a4654; color: #9aa6b2; cursor: default; font-size: 15px; font-weight: normal; }
+.log h3, .summary h3 { font-size: 14px; color: var(--ink-dim); margin: 14px 2px 6px; font-weight: normal; }
+.log ol { list-style: none; margin: 0; padding: 0; }
+.log li { font-size: 14px; line-height: 1.5; padding: 4px 2px; border-bottom: 1px solid #1e3247; }
+.log li.turn { color: var(--accent); }
+.done-title { font-size: 22px; font-weight: bold; color: var(--accent); margin: 0 0 6px; }
+.summary-row { font-size: 14px; line-height: 1.7; }
+.summary-row .era { color: var(--ink-dim); }
+.row { display: flex; gap: 8px; margin-top: 10px; }
+.row .attack { flex: 1; font-size: 16px; }
+.attack.secondary { background: #2d5578; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <input id="seedInput" inputmode="numeric" aria-label="シード">
+    <button class="btn-small" id="newWorldButton">新しい世界</button>
+    <button class="btn-small" id="retryButton">やり直す</button>
+    <button class="btn-small" id="starterButton" aria-pressed="false">はじまりの世界</button>
+  </div>
+  <div class="stats">
+    <span>手番 <b id="turnText">1</b></span>
+    <span>残り <b id="remainText">8</b> 区画</span>
+  </div>
+  <div class="map-wrap"><svg id="map" viewBox="0 0 360 290" aria-label="世界地図"></svg></div>
+  <div class="card" id="card"></div>
+  <div class="log"><h3>世界の出来事</h3><ol id="log"></ol></div>
+</div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------
+// 表示文字（prototypes の単一HTMLはインライン辞書可。本制作では locales/ へ抽出）
+// 地域名は index.html の STRINGS.shapeNames / shapeShortNames と同じ正式名称
+// ---------------------------------------------------------------
+const STRINGS = {
+  regionNames: {
+    continent: "大陸", riverline: "大河の線状都市", citadel: "同心円の城塞都市", frontline: "長城の防衛線",
+    forest: "森に覆われた大樹海", badlands: "巨岩を拝む荒地", serpent: "蛇神を祀る密林の国",
+    mushroom: "増えるキノコの里", flower: "竜食い花の園",
+    metro: "車列の流れる大都会", railway: "無人列車の走る軌道", bomb: "爆弾玉の国", asteroids: "漂う岩塊の小惑星帯",
+  },
+  regionShortNames: {
+    continent: "大陸", riverline: "大河", citadel: "城塞", frontline: "防衛線", forest: "樹海", badlands: "荒地",
+    serpent: "蛇神", mushroom: "キノコ", flower: "花園", metro: "大都会", railway: "軌道", bomb: "爆弾玉", asteroids: "岩塊",
+  },
+  eraNumerals: ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII"],
+  hintStart: "白い点線の地域を選んでください。1手番目は卵を奪った文明だけ。",
+  hintPick: "白い点線の地域をタップ。焼け跡に接する地域だけ攻められます。",
+  eraLabel: (era) => `時代 ${STRINGS.eraNumerals[era]}`,
+  cellsLabel: (n) => (n > 1 ? `・${n}区画（竜晶×${n}）` : ""),
+  attack: "この地域を攻める",
+  notChoosable: "焼け跡に接していないので、まだ攻められない",
+  burnedCard: "滅ぼした地域（焼け跡）",
+  eggCiv: "卵を奪った文明",
+  storyOrigin: (name, era) => `はじまりは${name}（時代 ${STRINGS.eraNumerals[era]}）`,
+  storyGrewSpecial: (turn, name) => `手番${turn}の後に育って${name}に`,
+  storyMergedSpecial: (turn, name) => `手番${turn}の後、併合して${name}に`,
+  storyAbsorbed: (turn, name) => `手番${turn}の後に${name}を併合`,
+  storyNoChange: "まだ姿は変わっていない",
+  logDestroyed: (turn, name, era) => `手番${turn}：${name}（時代 ${STRINGS.eraNumerals[era]}）を滅ぼした`,
+  logGrowth: "残った地域が育った（時代+1）",
+  logGrewInto: (turn, from, era, to) => `手番${turn}：${from}が時代 ${STRINGS.eraNumerals[era]} に育ち、${to}になった`,
+  logMerge: (turn, big, small) => `手番${turn}：${big}が${small}を併合した`,
+  logMergedInto: (turn, from, to) => `手番${turn}：${from}は併合で広がり、${to}になった`,
+  logReachedTop: (turn, from, to) => `手番${turn}：${from}は時代 VIII に達し、宇宙へ出て${to}になった`,
+  logStart: (mode) => `${mode}が始まった（8区画）`,
+  modeRandom: (seed) => `シード ${seed} の世界`,
+  modeStarter: "はじまりの世界",
+  tagMerge: "併合",
+  tagNew: (shortName) => `新：${shortName}`,
+  doneTitle: (turns) => `ラン完了：${turns}手番`,
+  doneSub: (merges, specials) => `併合 ${merges}回・特殊な地域 ${specials}つ`,
+  doneOrder: "滅ぼした順",
+  again: "同じ世界でもう一度",
+  newWorld: "新しい世界",
+  seedFixed: "固定",
+};
+
+// ---------------------------------------------------------------
+// 地図の形（固定の1枚）。区画どうしが辺をぴったり共有するよう、頂点を番号で持つ
+// ---------------------------------------------------------------
+const MAP_VERTICES = [
+  [30, 70], [120, 40], [215, 48], [330, 62],        // 0-3 北の海岸
+  [42, 138], [128, 122], [222, 132], [338, 128],    // 4-7 北と中の境
+  [55, 200], [138, 192], [230, 205], [325, 196],    // 8-11 中と南の境
+  [80, 240], [178, 248], [318, 234],                // 12-14 南の海岸
+];
+// 北3・中3・南2 の8区画（③ 最初の区画は8つ）
+const MAP_CELLS = [
+  [0, 1, 5, 4],        // 0 北西
+  [1, 2, 6, 5],        // 1 北
+  [2, 3, 7, 6],        // 2 北東
+  [4, 5, 9, 8],        // 3 西
+  [5, 6, 10, 9],       // 4 中央
+  [6, 7, 11, 10],      // 5 東
+  [8, 9, 13, 12],      // 6 南西
+  [9, 10, 11, 14, 13], // 7 南東
+];
+const COAST_OUTLINE = [0, 1, 2, 3, 7, 11, 14, 13, 12, 8, 4];
+
+const REGION_COLORS = {
+  continent: "#4f7fb8", riverline: "#3f9fb0", citadel: "#8a8f9c", frontline: "#a0806a", forest: "#2f6b3f",
+  badlands: "#b89a48", serpent: "#6aa04a", mushroom: "#c26a8a", flower: "#8d5fae",
+  metro: "#cfd4dd", railway: "#c4743c", bomb: "#c98a2a", asteroids: "#4a3f7a",
+};
+// 最初の地図に置く「土台の地域」
+const BASE_REGIONS = ["continent", "riverline", "citadel", "frontline", "forest", "badlands", "serpent", "mushroom", "flower"];
+
+// 成長・併合の数字（案の仮の値）
+const WORLD_RULES = {
+  maxEra: 8,
+  startEraMax: 2,           // 最初の地図は時代 I〜II
+  mergeChance: 0.3,         // 1手番に0〜1回
+  mergeChanceTopEra: 0.6,   // 時代 VIII の区画が隣を呑む確率
+  eraAheadOfTurn: 1,        // 時代は「手番の数 +1」を超えない
+  minChoices: 2,            // 選べる区画がこれ未満なら全区画から
+};
+
+// ④ 特殊な地域に変わる表（案のとおり）。candidates は前から順に、そのランでまだ出ていないものを使う
+const SPECIAL_RULES = {
+  grow:  [{ from: ["continent", "riverline"], atEra: 4, candidates: ["metro"] }],
+  merge: [
+    { from: ["metro"], minEra: 1, candidates: ["railway"] },
+    { from: ["frontline", "citadel"], minEra: 4, candidates: ["bomb"] },
+  ],
+  topEra: { candidates: ["asteroids"] },
+};
+
+// はじまりの世界（中身も固定）。区画の順＝MAP_CELLS の順。egg は1手番目の卵を奪った文明
+const STARTER_WORLD = {
+  clockSeed: 20261120,
+  cells: [
+    { region: "flower", era: 1, egg: true }, { region: "riverline", era: 2 }, { region: "frontline", era: 2 },
+    { region: "forest", era: 1 }, { region: "continent", era: 2 }, { region: "citadel", era: 1 },
+    { region: "badlands", era: 1 }, { region: "serpent", era: 2 },
+  ],
+};
+
+// ---------------------------------------------------------------
+// 決まった擬似乱数（mulberry32）。同じシード・同じ選び方なら同じ世界になる
+// ---------------------------------------------------------------
+function makeRandomGenerator(seedValue) {
+  let state = seedValue >>> 0;
+  return function next() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function mixSeed(a, b) {
+  let h = (a ^ Math.imul(b + 0x9E3779B9, 0x85EBCA6B)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x7FEB352D) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 0x846CA68B) >>> 0;
+  return (h ^ (h >>> 16)) >>> 0;
+}
+function pickIndex(random, length) { return Math.floor(random() * length); }
+
+// ---------------------------------------------------------------
+// 地図の形から辺と隣り合いを作る（形は固定なので最初に1回）
+// ---------------------------------------------------------------
+const EDGES = (() => {
+  const byKey = new Map();
+  MAP_CELLS.forEach((cell, cellIndex) => {
+    cell.forEach((vertex, i) => {
+      const other = cell[(i + 1) % cell.length];
+      const key = vertex < other ? `${vertex}-${other}` : `${other}-${vertex}`;
+      if (!byKey.has(key)) byKey.set(key, { a: vertex, b: other, cells: [] });
+      byKey.get(key).cells.push(cellIndex);
+    });
+  });
+  return [...byKey.values()];
+})();
+const CELL_NEIGHBORS = MAP_CELLS.map((_, cellIndex) => {
+  const set = new Set();
+  EDGES.forEach((edge) => {
+    if (edge.cells.length === 2 && edge.cells.includes(cellIndex)) set.add(edge.cells.find((c) => c !== cellIndex));
+  });
+  return set;
+});
+const CELL_CENTERS = MAP_CELLS.map((cell) => {
+  const sum = cell.reduce((acc, v) => [acc[0] + MAP_VERTICES[v][0], acc[1] + MAP_VERTICES[v][1]], [0, 0]);
+  return [sum[0] / cell.length, sum[1] / cell.length];
+});
+
+// ---------------------------------------------------------------
+// 世界の状態
+//   regions: 生きている地域（cells が複数＝併合で広がった）
+//   cellOwner[c]: その区画を持つ地域の id、焼け跡なら null
+// ---------------------------------------------------------------
+let world = null;
+let selectedRegionId = null;
+
+function regionName(region) { return STRINGS.regionNames[region]; }
+
+function createWorld(seed, starter) {
+  const state = {
+    seed, starter, clockSeed: starter ? STARTER_WORLD.clockSeed : seed,
+    turn: 1, regions: [], cellOwner: [], burned: new Set(), usedRegions: new Set(),
+    log: [], history: [], merges: 0, specials: 0, done: false, flashIds: new Set(), tags: [], eggRegionId: null,
+  };
+  let layout;
+  if (starter) {
+    layout = STARTER_WORLD.cells.map((c) => ({ ...c }));
+  } else {
+    // ① 地図の形は固定、中身はシードで引く。土台の9地域から8つ・時代 I〜II
+    const random = makeRandomGenerator(mixSeed(seed, 0xA11CE));
+    const pool = BASE_REGIONS.slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = pickIndex(random, i + 1);
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    layout = MAP_CELLS.map((_, i) => ({ region: pool[i], era: 1 + pickIndex(random, WORLD_RULES.startEraMax) }));
+    const eggCell = pickIndex(random, MAP_CELLS.length);
+    layout[eggCell].egg = true;
+    layout[eggCell].era = 1;   // 卵を奪った文明は時代 I
+  }
+  layout.forEach((entry, cellIndex) => {
+    const region = {
+      id: cellIndex, region: entry.region, era: entry.era, cells: [cellIndex], capitalCell: cellIndex,
+      story: [STRINGS.storyOrigin(regionName(entry.region), entry.era)],
+    };
+    state.regions.push(region);
+    state.cellOwner[cellIndex] = region.id;
+    state.usedRegions.add(entry.region);
+    if (entry.egg) state.eggRegionId = region.id;
+  });
+  state.log.push({ text: STRINGS.logStart(starter ? STRINGS.modeStarter : STRINGS.modeRandom(seed)), turn: false });
+  return state;
+}
+
+function regionById(id) { return world.regions.find((r) => r.id === id) || null; }
+
+function neighborRegionIds(region) {
+  const ids = new Set();
+  region.cells.forEach((c) => CELL_NEIGHBORS[c].forEach((n) => {
+    const owner = world.cellOwner[n];
+    if (owner !== null && owner !== region.id) ids.add(owner);
+  }));
+  return ids;
+}
+
+// ② 選べるのは焼け跡に接する地域だけ。2つ未満なら全部から。1手番目は卵を奪った文明だけ
+function choosableIds() {
+  if (world.done) return new Set();
+  if (world.turn === 1 && world.eggRegionId !== null) return new Set([world.eggRegionId]);
+  const touching = world.regions.filter((r) => r.cells.some((c) => [...CELL_NEIGHBORS[c]].some((n) => world.burned.has(n))));
+  if (touching.length < WORLD_RULES.minChoices) return new Set(world.regions.map((r) => r.id));
+  return new Set(touching.map((r) => r.id));
+}
+
+function nextUnused(candidates) {
+  return candidates.find((c) => !world.usedRegions.has(c)) || null;
+}
+
+function changeRegion(region, toRegion) {
+  region.region = toRegion;
+  world.usedRegions.add(toRegion);
+  world.specials += 1;
+  world.flashIds.add(region.id);
+  world.tags.push({ regionId: region.id, text: STRINGS.tagNew(STRINGS.regionShortNames[toRegion]) });
+}
+
+function addLog(text) { world.log.push({ text, turn: false }); }
+
+// 選んだ地域は即クリア → 焼け跡にして、世界の時計を1つ進める
+function destroyRegion(regionId) {
+  const region = regionById(regionId);
+  if (!region || !choosableIds().has(regionId)) return;
+  const playedTurn = world.turn;
+  world.flashIds = new Set();
+  world.tags = [];
+  region.cells.forEach((c) => { world.cellOwner[c] = null; world.burned.add(c); });
+  world.regions = world.regions.filter((r) => r.id !== regionId);
+  world.history.push({ turn: playedTurn, region: region.region, era: region.era, cells: region.cells.length });
+  world.log.push({ text: STRINGS.logDestroyed(playedTurn, regionName(region.region), region.era), turn: true });
+  selectedRegionId = null;
+  if (world.regions.length === 0) {
+    world.done = true;
+    return;
+  }
+  advanceWorldClock(playedTurn);
+  world.turn = playedTurn + 1;
+}
+
+function advanceWorldClock(playedTurn) {
+  // 成長と併合の引き方は専用の乱数（ランのシード＋手番の番号）
+  const random = makeRandomGenerator(mixSeed(world.clockSeed, playedTurn));
+  const eraCap = Math.min(WORLD_RULES.maxEra, playedTurn + 1 + WORLD_RULES.eraAheadOfTurn);
+  const nextTurnLabel = playedTurn;
+
+  // 併合での変化は「手番の初めからその地域だった」ときだけ（育って変わった直後に、続けて変わらないように）
+  const regionAtStart = new Map(world.regions.map((r) => [r.id, r.region]));
+
+  // 成長：残った区画は全部 時代 +1（上限 VIII・手番+1）
+  const reachedTop = [];
+  world.regions.forEach((r) => {
+    const before = r.era;
+    r.era = Math.min(eraCap, r.era + 1);
+    if (before < WORLD_RULES.maxEra && r.era === WORLD_RULES.maxEra) reachedTop.push(r);
+  });
+  addLog(STRINGS.logGrowth);
+
+  // 育って特殊な地域に（大陸／大河 が時代 IV → 大都会）
+  world.regions.forEach((r) => {
+    SPECIAL_RULES.grow.forEach((rule) => {
+      if (!rule.from.includes(r.region) || r.era < rule.atEra) return;
+      const to = nextUnused(rule.candidates);
+      if (!to) return;
+      const from = regionName(r.region);
+      changeRegion(r, to);
+      r.story.push(STRINGS.storyGrewSpecial(nextTurnLabel, regionName(to)));
+      addLog(STRINGS.logGrewInto(nextTurnLabel, from, r.era, regionName(to)));
+    });
+  });
+
+  // 時代 VIII に育った区画のうち1つ → 小惑星帯
+  if (reachedTop.length > 0) {
+    const to = nextUnused(SPECIAL_RULES.topEra.candidates);
+    if (to) {
+      const r = reachedTop[pickIndex(random, reachedTop.length)];
+      const from = regionName(r.region);
+      changeRegion(r, to);
+      r.story.push(STRINGS.storyGrewSpecial(nextTurnLabel, regionName(to)));
+      addLog(STRINGS.logReachedTop(nextTurnLabel, from, regionName(to)));
+    }
+  }
+
+  // 併合：0〜1回。時代 VIII が隣にいれば6割、それ以外は3割。時代の高い方が低い方を呑む
+  const pairs = [];
+  world.regions.forEach((r) => neighborRegionIds(r).forEach((otherId) => {
+    if (r.id < otherId) pairs.push([r, regionById(otherId)]);
+  }));
+  // この手番に生まれたばかりの特殊な地域は、地図に一度も出ないまま消えないよう併合に加えない
+  const freshPairs = pairs.filter(([a, b]) => !world.flashIds.has(a.id) && !world.flashIds.has(b.id));
+  pairs.length = 0;
+  pairs.push(...freshPairs);
+  if (pairs.length === 0) return;
+  const topPairs = pairs.filter(([a, b]) => a.era === WORLD_RULES.maxEra || b.era === WORLD_RULES.maxEra);
+  const usePairs = topPairs.length > 0 ? topPairs : pairs;
+  const chance = topPairs.length > 0 ? WORLD_RULES.mergeChanceTopEra : WORLD_RULES.mergeChance;
+  const roll = random();
+  const pair = usePairs[pickIndex(random, usePairs.length)];
+  if (roll >= chance) return;
+  let [big, small] = pair;
+  if (small.era > big.era || (small.era === big.era && random() < 0.5)) [big, small] = [small, big];
+  const bigEraBeforeMerge = big.era;
+  small.cells.forEach((c) => { world.cellOwner[c] = big.id; });
+  big.cells = big.cells.concat(small.cells);
+  big.era = Math.min(eraCap, big.era + 1);   // 呑んだ側はさらに +1（上限は手番+1）
+  world.regions = world.regions.filter((r) => r.id !== small.id);
+  world.merges += 1;
+  world.flashIds.add(big.id);
+  world.tags.push({ regionId: big.id, text: STRINGS.tagMerge, cell: small.capitalCell });
+  big.story.push(STRINGS.storyAbsorbed(nextTurnLabel, regionName(small.region)));
+  addLog(STRINGS.logMerge(nextTurnLabel, regionName(big.region), regionName(small.region)));
+  if (world.eggRegionId === small.id) world.eggRegionId = null;
+
+  // 併合して特殊な地域に（大都会が併合 → 軌道、防衛線／城塞が時代 IV 以上で併合 → 爆弾玉）
+  const rule = regionAtStart.get(big.id) === big.region
+    && SPECIAL_RULES.merge.find((m) => m.from.includes(big.region) && bigEraBeforeMerge >= m.minEra);
+  if (rule) {
+    const to = nextUnused(rule.candidates);
+    if (to) {
+      const from = regionName(big.region);
+      changeRegion(big, to);
+      big.story.push(STRINGS.storyMergedSpecial(nextTurnLabel, regionName(to)));
+      addLog(STRINGS.logMergedInto(nextTurnLabel, from, regionName(to)));
+    }
+  }
+}
+
+// ---------------------------------------------------------------
+// 描画（SVG）
+// ---------------------------------------------------------------
+const mapElement = document.getElementById("map");
+const cardElement = document.getElementById("card");
+const logElement = document.getElementById("log");
+
+function pointsOf(vertexIndices) { return vertexIndices.map((v) => MAP_VERTICES[v].join(",")).join(" "); }
+function regionCenter(region) {
+  const sum = region.cells.reduce((acc, c) => [acc[0] + CELL_CENTERS[c][0], acc[1] + CELL_CENTERS[c][1]], [0, 0]);
+  return [sum[0] / region.cells.length, sum[1] / region.cells.length];
+}
+function shade(hex, factor) {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => Math.max(0, Math.min(255, Math.round(v * factor))));
+  return `rgb(${ch.join(",")})`;
+}
+
+// 焼け跡の火の粉と、地域ごとの小さな飾り（見た目だけ。区画番号から決める）
+function emberMarks(cellIndex) {
+  const random = makeRandomGenerator(mixSeed(cellIndex + 1, 0xE3BE));
+  const [cx, cy] = CELL_CENTERS[cellIndex];
+  let out = "";
+  for (let i = 0; i < 6; i++) {
+    const x = cx + (random() - 0.5) * 56, y = cy + (random() - 0.5) * 38;
+    out += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.2" fill="#e0682a" opacity="0.8"/>`;
+    out += `<circle cx="${(x + 5).toFixed(1)}" cy="${(y + 4).toFixed(1)}" r="1.3" fill="#7a3a1c"/>`;
+  }
+  return out;
+}
+function regionMarks(region, cellIndex) {
+  const [cx, cy] = CELL_CENTERS[cellIndex];
+  const random = makeRandomGenerator(mixSeed(cellIndex + 7, 0xDECA));
+  let out = "";
+  if (region.region === "metro") {
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) out += `<rect x="${cx - 30 + i * 9}" y="${cy + 8 + j * 9}" width="6" height="6" fill="#7d8594" opacity="0.8"/>`;
+  } else if (region.region === "railway") {
+    out += `<circle cx="${cx - 18}" cy="${cy + 12}" r="11" fill="none" stroke="#5a2e14" stroke-width="2" stroke-dasharray="3 2"/>`;
+  } else if (region.region === "bomb") {
+    for (let i = 0; i < 3; i++) out += `<circle cx="${cx - 26 + i * 10}" cy="${cy + 14}" r="3.5" fill="#2a2a2a"/>`;
+  } else if (region.region === "asteroids") {
+    for (let i = 0; i < 7; i++) out += `<circle cx="${(cx + (random() - 0.5) * 60).toFixed(1)}" cy="${(cy + (random() - 0.5) * 40).toFixed(1)}" r="${(1 + random() * 2.5).toFixed(1)}" fill="#a99bd8"/>`;
+  } else {
+    // 時代が上がるほど家が増える（育ったのが色以外でも分かるように）
+    const houses = Math.min(6, region.era);
+    for (let i = 0; i < houses; i++) out += `<rect x="${(cx - 30 + (i % 3) * 8).toFixed(1)}" y="${(cy + 8 + Math.floor(i / 3) * 8).toFixed(1)}" width="5" height="5" fill="#000" opacity="0.22"/>`;
+  }
+  return out;
+}
+
+let animateChanges = false;
+function renderMap() {
+  const choosable = choosableIds();
+  let svg = `<rect width="360" height="290" fill="var(--sea)"/>`;
+  svg += `<polygon points="${pointsOf(COAST_OUTLINE)}" fill="none" stroke="var(--coast)" stroke-width="7" stroke-linejoin="round"/>`;
+
+  // 区画の塗り（焼け跡は暗く焼けた色）
+  MAP_CELLS.forEach((cell, cellIndex) => {
+    const owner = world.cellOwner[cellIndex];
+    const region = owner === null ? null : regionById(owner);
+    const fill = region ? REGION_COLORS[region.region] : "var(--burn)";
+    // 光らせるのは手番が進んだ直後の1回だけ（地域をタップして描き直すたびに光らないように）
+    const flash = animateChanges && region && world.flashIds.has(region.id) ? " flash" : "";
+    svg += `<g class="cell${flash}" data-cell="${cellIndex}"><polygon points="${pointsOf(cell)}" fill="${fill}"/>`;
+    svg += region ? regionMarks(region, cellIndex) : emberMarks(cellIndex);
+    svg += `</g>`;
+  });
+
+  // 境目：別の地域どうしは濃い線、併合でつながった区画の間は細い点線
+  EDGES.forEach((edge) => {
+    const [p, q] = [MAP_VERTICES[edge.a], MAP_VERTICES[edge.b]];
+    const owners = edge.cells.map((c) => world.cellOwner[c]);
+    const sameRegion = edge.cells.length === 2 && owners[0] !== null && owners[0] === owners[1];
+    if (sameRegion) {
+      const color = shade(REGION_COLORS[regionById(owners[0]).region], 0.7);
+      svg += `<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${color}" stroke-width="1" stroke-dasharray="3 3" pointer-events="none"/>`;
+    } else {
+      const burnedEdge = owners.every((o) => o === null);
+      svg += `<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${burnedEdge ? "#3a2a22" : "var(--border)"}" stroke-width="1.6" stroke-linecap="round" pointer-events="none"/>`;
+    }
+  });
+
+  // 選べる地域の外周を白い点線で
+  world.regions.forEach((region) => {
+    if (!choosable.has(region.id)) return;
+    EDGES.forEach((edge) => {
+      const inside = edge.cells.filter((c) => world.cellOwner[c] === region.id).length;
+      if (inside !== 1) return;
+      const [p, q] = [MAP_VERTICES[edge.a], MAP_VERTICES[edge.b]];
+      svg += `<line class="choosable" x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="#fff" stroke-width="2.2" stroke-dasharray="5 4" stroke-linecap="round" pointer-events="none"/>`;
+    });
+  });
+
+  // 選んでいる地域は黄色で縁取り
+  const selected = selectedRegionId !== null ? regionById(selectedRegionId) : null;
+  if (selected) {
+    selected.cells.forEach((c) => {
+      svg += `<polygon points="${pointsOf(MAP_CELLS[c])}" fill="#fff" fill-opacity="0.12" pointer-events="none"/>`;
+    });
+    EDGES.forEach((edge) => {
+      if (edge.cells.filter((c) => world.cellOwner[c] === selected.id).length !== 1) return;
+      const [p, q] = [MAP_VERTICES[edge.a], MAP_VERTICES[edge.b]];
+      svg += `<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="var(--accent)" stroke-width="3.5" stroke-linecap="round" pointer-events="none"/>`;
+    });
+  }
+
+  // 首都（赤い二重丸）と時代の数字
+  world.regions.forEach((region) => {
+    const [cx, cy] = CELL_CENTERS[region.capitalCell];
+    const big = region.cells.length > 1;
+    svg += `<g pointer-events="none">`;
+    svg += `<circle cx="${cx}" cy="${cy}" r="${big ? 8 : 6}" fill="none" stroke="var(--capital)" stroke-width="${big ? 2.4 : 1.8}"/>`;
+    svg += `<circle cx="${cx}" cy="${cy}" r="${big ? 3.4 : 2.6}" fill="var(--capital)"/>`;
+    const numeralColor = region.region === "metro" || region.region === "bomb" ? "#1a1a1a" : "#f3efe6";
+    svg += `<text x="${cx}" y="${cy - 11}" text-anchor="middle" font-size="11" font-weight="bold" fill="${numeralColor}">${STRINGS.eraNumerals[region.era]}</text>`;
+    if (region.id === world.eggRegionId && world.turn === 1) {
+      svg += `<text x="${cx}" y="${cy + 20}" text-anchor="middle" font-size="9" fill="#fff">${STRINGS.eggCiv}</text>`;
+    }
+    svg += `</g>`;
+  });
+
+  // 何が起きたかの短い印（併合・新しい地域）
+  world.tags.forEach((tag, i) => {
+    const region = regionById(tag.regionId);
+    if (!region) return;
+    const [cx, cy] = tag.cell !== undefined ? CELL_CENTERS[tag.cell] : CELL_CENTERS[region.capitalCell];
+    const y = cy + (tag.cell !== undefined ? 4 : 26) + (i > 1 ? 10 : 0);
+    const width = tag.text.length * 9 + 10;
+    svg += `<g class="${animateChanges ? "tag" : ""}" pointer-events="none"><rect x="${cx - width / 2}" y="${y - 10}" width="${width}" height="14" rx="4" fill="#000" fill-opacity="0.65"/>`;
+    svg += `<text x="${cx}" y="${y + 1}" text-anchor="middle" font-size="9.5" fill="#fff">${tag.text}</text></g>`;
+  });
+
+  // 凡例
+  svg += `<g font-size="9" fill="#e8e4da" pointer-events="none">
+    <circle cx="16" cy="274" r="5" fill="none" stroke="#e02424" stroke-width="1.6"/><circle cx="16" cy="274" r="2" fill="#e02424"/><text x="25" y="277">首都</text>
+    <rect x="62" y="268" width="12" height="12" fill="#2a1f1a" stroke="#e0682a" stroke-width="1"/><text x="78" y="277">焼け跡</text>
+    <rect x="122" y="268" width="12" height="12" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 2"/><text x="138" y="277">次に選べる</text>
+    <text x="200" y="277">数字＝時代</text></g>`;
+
+  mapElement.innerHTML = svg;
+}
+
+function renderCard() {
+  if (world.done) {
+    const rows = world.history.map((h) =>
+      `<div class="summary-row">${h.turn}. ${regionName(h.region)} <span class="era">時代 ${STRINGS.eraNumerals[h.era]}${h.cells > 1 ? `・${h.cells}区画` : ""}</span></div>`).join("");
+    cardElement.innerHTML = `<div class="done-title">${STRINGS.doneTitle(world.history.length)}</div>
+      <div class="meta">${STRINGS.doneSub(world.merges, world.specials)}</div>
+      <div class="summary"><h3>${STRINGS.doneOrder}</h3>${rows}</div>
+      <div class="row"><button class="attack secondary" id="againButton">${STRINGS.again}</button><button class="attack" id="doneNewButton">${STRINGS.newWorld}</button></div>`;
+    document.getElementById("againButton").onclick = () => startWorld(world.seed, world.starter);
+    document.getElementById("doneNewButton").onclick = newWorld;
+    return;
+  }
+  const region = selectedRegionId !== null ? regionById(selectedRegionId) : null;
+  if (!region) {
+    cardElement.innerHTML = `<div class="hint">${world.turn === 1 ? STRINGS.hintStart : STRINGS.hintPick}</div>`;
+    return;
+  }
+  const canAttack = choosableIds().has(region.id);
+  const story = region.story.length > 1 ? region.story.join(" → ") : `${region.story[0]}。${STRINGS.storyNoChange}`;
+  cardElement.innerHTML = `<h2><span class="swatch" style="background:${REGION_COLORS[region.region]}"></span>${regionName(region.region)}</h2>
+    <div class="meta"><b>${STRINGS.eraLabel(region.era)}</b>${STRINGS.cellsLabel(region.cells.length)}${region.id === world.eggRegionId && world.turn === 1 ? `・${STRINGS.eggCiv}` : ""}</div>
+    <div class="story">${story}</div>
+    <button class="attack" id="attackButton" ${canAttack ? "" : "disabled"}>${canAttack ? STRINGS.attack : STRINGS.notChoosable}</button>`;
+  if (canAttack) document.getElementById("attackButton").onclick = () => { destroyRegion(region.id); animateChanges = true; render(); animateChanges = false; };
+}
+
+function renderLog() {
+  logElement.innerHTML = world.log.slice().reverse()
+    .map((entry) => `<li class="${entry.turn ? "turn" : ""}">${entry.text}</li>`).join("");
+}
+
+function render() {
+  document.getElementById("turnText").textContent = world.done ? world.history.length : world.turn;
+  document.getElementById("remainText").textContent = MAP_CELLS.length - world.burned.size;
+  renderMap();
+  renderCard();
+  renderLog();
+}
+
+// 区画をタップ → その地域のカード。焼け跡をタップしたら選択を外す
+mapElement.addEventListener("click", (event) => {
+  const group = event.target.closest(".cell");
+  if (!group || world.done) return;
+  const owner = world.cellOwner[Number(group.dataset.cell)];
+  selectedRegionId = owner === null ? null : owner;
+  render();
+});
+
+// ---------------------------------------------------------------
+// シード・モード
+// ---------------------------------------------------------------
+const seedInput = document.getElementById("seedInput");
+const starterButton = document.getElementById("starterButton");
+
+function startWorld(seed, starter) {
+  world = createWorld(seed >>> 0, starter);
+  selectedRegionId = null;
+  seedInput.value = starter ? STRINGS.seedFixed : String(world.seed);
+  seedInput.disabled = starter;
+  starterButton.setAttribute("aria-pressed", starter ? "true" : "false");
+  render();
+}
+function newWorld() {
+  // 新しいシードは時刻から作る（作ったシードは欄に出るので、同じ世界を再現できる）
+  const seed = mixSeed(Date.now() >>> 0, world ? world.seed : 1) % 100000;
+  startWorld(seed, false);
+}
+document.getElementById("newWorldButton").onclick = newWorld;
+document.getElementById("retryButton").onclick = () => {
+  if (world.starter) { startWorld(0, true); return; }
+  const typed = parseInt(seedInput.value, 10);
+  startWorld(Number.isFinite(typed) ? typed : world.seed, false);
+};
+seedInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  const typed = parseInt(seedInput.value, 10);
+  if (Number.isFinite(typed)) startWorld(typed, false);
+});
+starterButton.onclick = () => {
+  if (world.starter) startWorld(world.seed || 4242, false);
+  else startWorld(world.seed, true);
+};
+
+const urlSeed = parseInt(new URLSearchParams(location.search).get("seed"), 10);
+startWorld(Number.isFinite(urlSeed) ? urlSeed : 4242, new URLSearchParams(location.search).has("starter"));
+</script>
+</body>
+</html>
