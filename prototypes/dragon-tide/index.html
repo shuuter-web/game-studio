@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.169.0";
+const GAME_VERSION = "v3.170.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -20960,6 +20960,7 @@ function drawStoneTitanUnder() {
       if (img) {
         const h = r.w * img.naturalHeight / img.naturalWidth, alpha = ctx.globalAlpha;
         ctx.translate(rx, ry); ctx.rotate(r.rot);
+        if (r.flip) ctx.scale(-1, 1);
         ctx.drawImage(img, -r.w / 2, -h / 2, r.w, h);
         ctx.globalAlpha = alpha * 0.55;   // 崩れて暗く沈む（ctx.filter は使わない。焼いた暗い絵を重ねる）
         ctx.drawImage(wreckDarkSpriteFor(r.key, img), -r.w / 2, -h / 2, r.w, h);
@@ -21144,6 +21145,7 @@ const ROCKGIANT_SLAM_TREMBLE   = 2.2;     // 振り上げきった腕の震え�
 const ROCKGIANT_CRACK_LIFE     = 1.8;     // 拳の下の地面の割れが残る秒数
 const ROCKGIANT_WAKE_TIME      = 1.3;     // 石像が動き出すまで（灰の石から色が戻る）
 const ROCKGIANT_ARM_PIVOT      = 0.9;     // 腕の絵の付け根（下から）の割合
+const ROCKGIANT_ARM_MIRROR_SIDE = -1;    // v3.170.0（DT-603）: 腕の絵は右腕なので、この側（左＝-1）の腕だけ左右反転して描く
 const ROCKGIANT_ARM_SWING      = 0.16;    // 歩くときの腕の振り（rad）
 // v3.141.0（案帳 DT-315 岩投げの巨人・Shooter「巨石信仰の荒地の巨人が時々投げるようにできますか」）: 岩の巨人はときどき岩を投げる。
 // 追っている群れが、叩きつけには遠く・投げるには近い距離にいるとき、立ち止まって両腕を振り上げ（溜め）、群れの線の先へ岩を放る。
@@ -21736,15 +21738,16 @@ function crumbleRockGiant(m, keys = ROCKGIANT_KEYS) {
   const R = m.def.radius, hx = m.headingX, hy = m.headingY, G = m._rg;
   const ang = Math.atan2(hy, hx);
   const at = (fwd, lat) => ({ x: m.wx + hx * fwd - hy * lat, y: m.wy + hy * fwd + hx * lat });
-  const piece = (key, p, w, rot) => titanRubble.push({ kind: "sprite", key, x: p.x, y: p.y, w, rot, fromX: m.wx, fromY: m.wy,
+  const piece = (key, p, w, rot, flip = false) => titanRubble.push({ kind: "sprite", key, x: p.x, y: p.y, w, rot, flip, fromX: m.wx, fromY: m.wy,
     slide: ROCKGIANT_FALL_TIME, r: 1, shade: 0.5, life: ROCKGIANT_RUBBLE_LIFE });
   const fall = R * ROCKGIANT_FALL_FWD;
   piece(keys.torso, at(fall, 0), R * ROCKGIANT_TORSO_W * 0.95, ang + Math.PI / 2 + (fxRandom() - 0.5) * 0.4);
   piece(keys.head, at(fall + R * 1.25, (fxRandom() - 0.5) * R * 0.4), R * (keys === ROCKGIANT_BOSS_KEYS ? ROCKGIANT_BOSS_HEAD_W : ROCKGIANT_HEAD_W), ang + Math.PI / 2 + (fxRandom() - 0.5) * 1.2);   // v3.81.0: 頭は前へ転がる
   for (const side of [-1, 1]) {
-    piece(keys.arm, at(R * 1.2, side * R * 0.95), R * ROCKGIANT_ARM_W, ang + Math.PI / 2 + side * (0.5 + fxRandom() * 0.5));
+    // v3.170.0（DT-603）: 崩れた破片も生きているときと同じ向きに（左腕・右足の絵を反転）
+    piece(keys.arm, at(R * 1.2, side * R * 0.95), R * ROCKGIANT_ARM_W, ang + Math.PI / 2 + side * (0.5 + fxRandom() * 0.5), side === ROCKGIANT_ARM_MIRROR_SIDE);
     const f = G ? G.feet[side < 0 ? 0 : 1] : null;
-    piece(keys.foot, f ? { x: f.x, y: f.y } : at(-R * 0.4, side * R * 0.3), R * ROCKGIANT_FOOT_W, ang + Math.PI / 2 + (fxRandom() - 0.5) * 0.8);
+    piece(keys.foot, f ? { x: f.x, y: f.y } : at(-R * 0.4, side * R * 0.3), R * ROCKGIANT_FOOT_W, ang + Math.PI / 2 + (fxRandom() - 0.5) * 0.8, side > 0);
   }
   // 頭・腕・足の岩（前方ほど頭の岩）
   const rocks = [[1.35, 0, 20, 3], [1.1, 0.5, 13, 3], [1.1, -0.5, 13, 3], [0.6, 0.9, 12, 3], [0.6, -0.9, 12, 3], [0.2, 0.3, 12, 2], [0.2, -0.3, 12, 2], [-0.3, 0.8, 10, 2], [-0.3, -0.8, 10, 2]];
@@ -21986,6 +21989,9 @@ function drawRockGiantBody(R, G, keys, statueK) {
     ctx.save();
     ctx.translate(p.x + tremble, p.y + tremble * 0.6);
     ctx.rotate(p.a + Math.PI / 2);
+    // v3.170.0（案帳 DT-603・Shooter「ゴーレムの腕が両方左腕です」）: 腕の絵は1枚で、拳を上から見た右腕（親指が絵の左＝体の内側）。
+    // v3.79.0 で足は左右反転したが、v3.81.0 で足した腕は反転を入れずに両側同じ絵を描いていたので、左腕だけ左右反転する
+    if (side === ROCKGIANT_ARM_MIRROR_SIDE) ctx.scale(-1, 1);
     const aw = R * ROCKGIANT_ARM_W * p.k, ah = aw * armAspect;
     rockGiantPart(keys.arm, armImg, -aw / 2, -ah * ROCKGIANT_ARM_PIVOT, aw, ah, keys, statueK);
     ctx.restore();
@@ -50535,7 +50541,14 @@ function drawBoids() {
 
   if (flockOverflow > 0 && !onBall) drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, speciesNoTail ? null : paletteFlock.body, glintFlock, glossFlock);   // v3.67.0: 本物の下に描く
 
+  // v3.170.0（案帳 DT-604・Shooter「特殊個体は通常竜種より優先表示」）: 群れが密になると特殊個体が通常の竜の下に埋もれて
+  // 見えなくなるので、1周目で通常の竜、2周目で特殊個体を描く（特殊個体が必ず上）。竜は数百〜1000体いるので
+  // 毎フレーム並べ替えはせず、同じ配列を2回なめるだけ。特殊個体がいなければ2周目はしない
+  let hasSpecialToDraw = false;
+  for (let pass = 0; pass < 2; pass++) {
+  if (pass === 1 && !hasSpecialToDraw) break;
   for (let i = 0; i < N; i++) {
+    if ((boidSpecial[i] !== SPECIAL_NONE) !== (pass === 1)) { if (pass === 0) hasSpecialToDraw = true; continue; }
     // dead かつフェード完了 → スキップ（従来通り）
     if (boidDead[i] && boidFadeTimer[i] <= 0) continue;
     // 変更2: ダウン中でフェードアウト完了（boidFadeTimer=0）かつ復帰フェードイン未開始 → 非表示
@@ -50711,6 +50724,7 @@ function drawBoids() {
       ctx.fillStyle = hpRatio > 0.5 ? "#4adf80" : "#f0604a";
       ctx.fillRect(wx - barW / 2, wy - 18, barW * hpRatio, 3);
     }
+  }
   }
 }
 
@@ -52835,12 +52849,17 @@ function dragonPartsKey(element) {
 // -----------------------------------------------------------------
 // 照り返す竜種（群れの竜種の element・特殊個体の key）。gloss＝照り返しの最大の濃さ、color＝照り返しの色。
 // ここに無い竜種・特殊個体は照り返さない（いまの絵のまま）。値は gem-sample.html の見本と同じ
+// v3.170.0（DT-597 手直し）: belly＝照り返しを入れる下の端（胴体の絵の高さに対する割合・頭が0）。ここより後ろ（後脚・尾）には光を入れない
+// （Shooter「側面が光るのは良いが、足側がはみ出てるのが気になる。腹までに収めて」）。後脚の付け根の少し前に置いている。
+// maskCut / maskRegrow は GEM_GLINT_MASK_CUT / REGROW をその竜種だけ変える（ガーゴイルは手足が太いので強めに縮める）
 const DRAGON_GEM_GLINT = {
-  fire:     { gloss: 0.7,  color: "#ffe6ea" },   // 火竜＝ガーネット
-  ice:      { gloss: 0.75, color: "#f2fbff" },   // 氷竜＝アクアマリン
-  rainbow:  { gloss: 0.65, color: "#ffffff" },   // 極光（特殊個体）＝いまの絵のまま、照り返しだけ
-  gargoyle: { gloss: 0.18, color: "#f2ede4" },   // ガーゴイル＝普通の灰色の石。光が鈍い系なのでごく弱く
+  fire:     { gloss: 0.7,  color: "#ffe6ea", belly: 0.70 },   // 火竜＝ガーネット
+  ice:      { gloss: 0.75, color: "#f2fbff", belly: 0.72 },   // 氷竜＝アクアマリン
+  rainbow:  { gloss: 0.65, color: "#ffffff", belly: 0.72 },   // 極光（特殊個体）＝いまの絵のまま、照り返しだけ
+  // ガーゴイル＝普通の灰色の石。光が鈍い系なので弱め。v3.170.0（DT-597 手直し・Shooter「鈍い光は全然見えないので、もう少し明るく」）: 0.18→0.4（0.3・0.35・0.4 で撮り比べ、照り返しを胴の内側に縮めたぶんも見えるよう0.4。ほかの0.65〜0.75よりは弱く、鈍い光の性格は残す）
+  gargoyle: { gloss: 0.4, color: "#f2ede4", belly: 0.60, maskCut: 3.0, maskRegrow: 1.5 },
 };
+const GEM_GLINT_BELLY_FADE = 0.06;               // belly の手前この割合で段々に消す（切り口を見せない）
 const GEM_GLINT_SOURCES = [0, 1, 2, 3].map((i) => `assets/dragon_gem_glint_${i}.png`);
 const GEM_GLINT_HEADING = 0.35;                  // きらっとする向きの基準（ラジアン・画面の右やや下へ飛ぶ向き）。ここから120°おきに3つ
 // DT-597 見本4回目（Shooter「多すぎる。それぞれの光る幅は広すぎるので半分に。箇所も3箇所に」）:
@@ -52858,6 +52877,14 @@ const GEM_GLINT_WINDOWS = [
 const GEM_GLINT_HEADING_SPREAD = 7 * Math.PI / 180;
 const GEM_GLINT_STRENGTH_MIN   = 0.7;
 const GEM_GLINT_MIN_ALPHA      = 0.01;           // これより薄い照り返しは重ねない（描く回数を増やさない）
+// v3.170.0（DT-597 手直し・Shooter「照り返しが竜をはみ出している」「足側がはみ出てるのが気になる。腹までに収めて」）:
+// 胴体の形そのままで切り抜くと、脚・腕の先や輪郭のきわまで光って「何の端でもない所」に光が出る。
+// 胴体の形を CUT だけ縮めて（細い脚・腕・爪はここで消える）、REGROW だけ戻す（胴の丸みは戻るが脚は戻らない）。
+// 差の CUT−REGROW が縁から内側へ収める幅。FEATHER は切り口をぼかす幅。単位は竜の論理px（胴体の高さ bodyDrawH=27 の中の px）
+const GEM_GLINT_MASK_CUT     = 2.0;
+const GEM_GLINT_MASK_REGROW  = 1.0;
+const GEM_GLINT_MASK_FEATHER = 0.5;
+const GEM_GLINT_MASK_DIRS    = 16;               // 縮める・戻すときにずらす向きの数（多いほど丸く縮む。作るのは1竜種1回だけ）
 const gemGlintImages = [];                       // 読み込んだ照り返しの絵（GEM_GLINT_SOURCES の順）
 const gemGlintFrames = new Map();                // 竜種の key → 照り返しの絵（スプライトと同じ座標・胴体で切り抜き済み）の配列
 let gemGlintImageIndex = 0;                      // gemGlintStrength が選んだ絵（毎匹オブジェクトを作らないための戻り値）
@@ -52890,6 +52917,50 @@ function gemGlintStrength(heading, n, salt) {
 }
 
 /**
+ * v3.170.0（DT-597 手直し）: 照り返しを切り抜く形（胴体の絵の大きさの canvas。アルファだけ使う）。
+ * 胴体のアルファを縮めて（ずらした写しとの共通部分＝侵食）細い脚・腕を消し、少し戻して（ずらした写しの和＝膨張）胴の丸みを戻す。
+ * 最後に胴体の形とも重ねて、どこでも元の輪郭より内側に収める。getImageData・ctx.filter は使わない（iOS で使えない版がある）。
+ * pxPerLogical は胴体の絵の px が竜の論理px いくつ分か。def.maskCut / maskRegrow があればその竜種だけ幅を変える。
+ */
+function gemGlintBodyMask(bodyImg, w, h, pxPerLogical, def) {
+  const make = () => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
+  const ring = (r) => {
+    const out = [];
+    for (const rr of [r * 0.5, r]) for (let k = 0; k < GEM_GLINT_MASK_DIRS; k++) {
+      const a = k * Math.PI * 2 / GEM_GLINT_MASK_DIRS;
+      out.push([Math.cos(a) * rr, Math.sin(a) * rr]);
+    }
+    return out;
+  };
+  const cut = (def.maskCut ?? GEM_GLINT_MASK_CUT) * pxPerLogical;
+  const regrow = (def.maskRegrow ?? GEM_GLINT_MASK_REGROW) * pxPerLogical;
+  const feather = GEM_GLINT_MASK_FEATHER * pxPerLogical;
+  const eroded = make(), ec = eroded.getContext("2d");
+  ec.drawImage(bodyImg, 0, 0, w, h);
+  ec.globalCompositeOperation = "destination-in";
+  for (const [dx, dy] of ring(cut)) ec.drawImage(bodyImg, dx, dy, w, h);
+  const grown = make(), gc = grown.getContext("2d");
+  gc.drawImage(eroded, 0, 0);
+  for (const [dx, dy] of ring(regrow)) gc.drawImage(eroded, dx, dy);
+  // 切り口をぼかす：少しずつずらした写しの平均（9枚）
+  const soft = make(), sc = soft.getContext("2d");
+  sc.globalCompositeOperation = "lighter";
+  sc.globalAlpha = 1 / 9;
+  for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) sc.drawImage(grown, ox * feather * 0.5, oy * feather * 0.5);
+  sc.globalAlpha = 1;
+  sc.globalCompositeOperation = "destination-in";
+  sc.drawImage(bodyImg, 0, 0, w, h);
+  if (def.belly !== undefined) {   // 腹より後ろ（後脚・尾）を消す。絵は頭が上
+    const g = sc.createLinearGradient(0, h * (def.belly - GEM_GLINT_BELLY_FADE), 0, h * def.belly);
+    g.addColorStop(0, "rgba(0,0,0,1)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    sc.fillStyle = g;
+    sc.fillRect(0, 0, w, h);
+  }
+  return soft;
+}
+
+/**
  * 竜種 key（DRAGON_GEM_GLINT のキー）の照り返しの絵を返す（無ければ null）。
  * 1竜種につき1度だけ作って持っておく（毎フレーム canvas を作らない。getImageData も使わない）。
  * 絵はスプライト（renderDragonFrame）と同じ大きさ・同じ向き・同じ原点なので、竜と同じ変換で重ねるだけでよい。
@@ -52912,8 +52983,10 @@ function getGemGlintFrames(key) {
   const bodyDrawW = bodyDrawH * (bodyW / bodyH);
   const pivotX = spec.bodyPivot.cx * (bodyDrawW / spec.bodyPivot.w);
   const pivotY = spec.bodyPivot.cy * (bodyDrawH / spec.bodyPivot.h);
+  // v3.170.0（DT-597 手直し）: 胴体の形を内側へ縮め、脚・腕を落とした形で切り抜く（gemGlintBodyMask）
+  const bodyMask = gemGlintBodyMask(bodyImg, bodyW, bodyH, bodyH / bodyDrawH, def);
   const frames = gemGlintImages.map((glintImg) => {
-    // 照り返しの絵を照り返しの色に塗り、胴体の形で切り抜く（竜の外に光がはみ出さない）
+    // 照り返しの絵を照り返しの色に塗り、胴体の内側の形で切り抜く（竜の外・脚には光がはみ出さない）
     const masked = document.createElement("canvas");
     masked.width = bodyW; masked.height = bodyH;
     const mc = masked.getContext("2d");
@@ -52922,7 +52995,7 @@ function getGemGlintFrames(key) {
     mc.fillStyle = def.color;
     mc.fillRect(0, 0, bodyW, bodyH);
     mc.globalCompositeOperation = "destination-in";
-    mc.drawImage(bodyImg, 0, 0, bodyW, bodyH);
+    mc.drawImage(bodyMask, 0, 0, bodyW, bodyH);
     // スプライトと同じ置き方（renderDragonFrame・drawPartSeparatedDragon の胴体と同じ変換）
     const oc = document.createElement("canvas");
     oc.width = spritePx; oc.height = spritePx;
