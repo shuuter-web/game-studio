@@ -828,6 +828,7 @@
   #autoplay-pause button { font-family: monospace; font-size: 15px; color: #fff; min-width: 220px; padding: 12px 18px;
     border-radius: 14px; cursor: pointer; background: rgba(20,60,90,0.9); border: 1px solid rgba(140,216,255,0.7); }
   #autoplay-pause button.ap-stop { background: rgba(120,30,30,0.85); border-color: rgba(255,160,160,0.7); }
+  #autoplay-pause button.ap-report { background: rgba(30,60,90,0.9); border-color: rgba(140,216,255,0.6); }   /* v3.164.0（DT-599） */
   #autoplay-pause button.ap-ui { background: rgba(40,40,60,0.9); border-color: rgba(200,200,240,0.6); }
 
   /* v3.33.0: つづきからの下の一言（何が起きるか） */
@@ -1296,7 +1297,7 @@
 <div id="options-overlay"></div>
 
 <!-- v3.120.0（案帳 DT-538）: オートプレイ中の帯 -->
-<div id="autoplay-pause"><div class="ap-title"></div><div class="ap-name"></div><div class="ap-note"></div><button type="button" class="ap-resume"></button><button type="button" class="ap-ui"></button><button type="button" class="ap-stop"></button></div>
+<div id="autoplay-pause"><div class="ap-title"></div><div class="ap-name"></div><div class="ap-note"></div><button type="button" class="ap-resume"></button><button type="button" class="ap-ui"></button><button type="button" class="ap-report"></button><button type="button" class="ap-stop"></button></div>
 
 <!-- v3.132.0（案帳 DT-553 2回目）: ゲームから案帳の報告ポストへ報告する -->
 <button type="button" id="report-btn">📝</button>
@@ -1323,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.163.0";
+const GAME_VERSION = "v3.164.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -31062,6 +31063,7 @@ const STRINGS = {
   reportOpenFailed: "案帳を開けませんでした（ポップアップを許可してください）",
   reportNone: "なし",
   autoplayResume: "▶ オートプレイに戻る",
+  autoplayReport: "📝 報告する",                              // v3.164.0（案帳 DT-599）: UIを隠したオートプレイでも報告の窓を開く入口
   autoplayStop: "■ タイトルへ戻る",
   autoplayUi: (on) => `UI表示：${on ? "あり" : "なし"}（押して切り替え）`,   // v3.123.0（DT-538 手直し）
   autoplayChoose: "オートプレイの竜を選ぶ",
@@ -44661,6 +44663,15 @@ const AUTO_LOOP_MARGIN      = 60;    // 建物の大きさに足す輪のゆと�
 const AUTO_LOOP_STEP_PX     = 40;    // 輪・線の点の間隔（px）
 const AUTO_CANNON_FLAG_CHANCE = 0.6; // 砲撃竜が狙った建物に旗を立てる割合
 const AUTO_POINTER_ID       = 9001;  // 合成するタップの指の番号（人の指と混ざらない値）
+// v3.164.0（案帳 DT-599・Shooter「軌道ステージでオートプレイするといつまで経ってもボスに向かわない」）:
+// 軌道の首都（司令列車）は御召線を走り続ける。今の位置に輪を置くと、群れが着くころには列車は輪の外へ抜けていて、
+// 群れは空の輪を回り続けていた（実測：首都へ向かう線を何十本引いても、首都の半径＋60px に入った竜は0歩・首都の傷0）。
+// 群れが着くころの列車の位置（線路の先）に輪を置き、輪を短い間隔で引き直して列車に付いて行く。
+// 首都を狙えるようになったら、ほかの建物へ気を散らさず追い続ける（3割で他を選ぶと、追いかけがそのたびに途切れる）
+const AUTO_RAIL_BOSS_FLOCK_SPEED = 160;  // 群れの着く時間の見積もりに使う群れの速さ（px/秒。竜の巡航 BASE_CFG.maxSpeed と同じ）
+const AUTO_RAIL_BOSS_LEAD_MAX_S  = 12;   // 先読みの上限（遠すぎると線路を回り込んだ先を狙ってしまう）
+const AUTO_RAIL_BOSS_STROKE_S    = 1.2;  // 列車を狙っている間の線の引き直し間隔（輪を列車に付いて行かせる）
+const AUTO_RAIL_BOSS_PICK_P      = 1;    // 列車を狙ってよいとき、列車を選ぶ割合（ふつうの首都は AUTO_BOSS_PICK_P）
 
 const autoplay = { wait: 0, strokeWait: 0, stageKey: -1, species: "fire", showUi: false, retreating: false };
 const AUTO_SPECIES_RANDOM = "random";   // v3.123.0: 竜の一覧で「ランダム」を選んだ＝ランのたびに解放済みからランダム
@@ -44675,6 +44686,7 @@ autoplayPauseEl.querySelector(".ap-title").textContent = STRINGS.autoplayPauseTi
 autoplayPauseEl.querySelector(".ap-note").textContent = STRINGS.autoplayNote;
 autoplayPauseEl.querySelector(".ap-resume").textContent = STRINGS.autoplayResume;
 autoplayPauseEl.querySelector(".ap-stop").textContent = STRINGS.autoplayStop;
+autoplayPauseEl.querySelector(".ap-report").textContent = STRINGS.autoplayReport;
 // v3.123.0: ボタンは「その上で押して離した」ときだけ効かせる。一時停止を開いたタップの指がボタンの上で離れても押したことにしない
 function bindPauseButton(sel, fn) {
   const btn = autoplayPauseEl.querySelector(sel);
@@ -44689,6 +44701,8 @@ function bindPauseButton(sel, fn) {
 }
 bindPauseButton(".ap-resume", () => resumeAutoplay());
 bindPauseButton(".ap-stop", () => stopAutoplay());
+// v3.164.0（案帳 DT-599）: UIを隠したオートプレイでは隅の📝が出ないので、一時停止の窓から報告の窓を開く（閉じたらこの窓へ戻る）
+bindPauseButton(".ap-report", () => openReportPanel());
 // v3.123.0（DT-538 手直し・Shooter「ui表示ありもポーズメニュー内で選べるように」）
 bindPauseButton(".ap-ui", () => {
   autoplay.showUi = !autoplay.showUi;
@@ -44701,9 +44715,13 @@ function applyAutoplayUi() {
 }
 // 画面のどこを触っても（UIは隠れているので）一時停止にする。capture で先に取り、ゲームの入力へは渡さない。
 // オートプレイ自身が合成して押すタップ（AUTO_POINTER_ID）は素通しする
+// v3.164.0（案帳 DT-599・Shooter「オートプレイ中もチケット起票はできるように」）: 📝と報告の窓も素通しする。
+// これまでは📝を押した指をここで取って一時停止の窓（全面）を出していたため、指を離した先が一時停止の窓になって📝の click が届かず、
+// 報告の窓を開いていても、欄やボタンを触るたびに preventDefault で文字が打てず・後ろで一時停止の窓が開いていた
 document.addEventListener("pointerdown", (e) => {
   if (!autoplayActive || e.pointerId === AUTO_POINTER_ID) return;
   if (autoplayPauseEl.contains(e.target)) return;
+  if (e.target instanceof Node && (reportBtnEl.contains(e.target) || reportPanelEl.contains(e.target))) return;
   e.stopPropagation(); e.preventDefault();
   if (!autoplayPaused) pauseAutoplay();
 }, true);
@@ -44886,6 +44904,11 @@ function autoplayPlan(c) {
   for (const b of settlements) { if (!b || b.isBoss || b._isWall) continue; all++; if (!b.fallen) left++; }
   const bossOk = !!boss && !boss.fallen &&
     (standing >= AUTO_BOSS_MIN_FLOCK || stageS > AUTO_BOSS_LATE_S || (all > 0 && left / all < AUTO_BOSS_LEFT_RATIO));
+  if (bossOk && boss._railRide && fxRandom() < AUTO_RAIL_BOSS_PICK_P) {
+    // v3.164.0（DT-599）: 走る司令列車は、群れが着くころの位置を狙う
+    const lead = autoplayRailBossLead(boss, c);
+    return { kind: "target", x: lead.wx, y: lead.wy, t: lead };
+  }
   if (bossOk && fxRandom() < AUTO_BOSS_PICK_P) return { kind: "target", x: boss.wx, y: boss.wy, t: boss };
   const near = [];
   for (const b of settlements) {
@@ -44903,6 +44926,23 @@ function autoplayPlan(c) {
   return boss && !boss.fallen ? { kind: "target", x: boss.wx, y: boss.wy, t: boss } : null;
 }
 
+/**
+ * v3.164.0（DT-599）: 軌道の首都（司令列車）を狙う点。群れが今の重心からまっすぐ飛んで着くまでの時間だけ、
+ * 列車を線路に沿って先へ進めた位置（押されている速さは数えない：すぐ減衰するので）。
+ * 返すのは輪の中心と大きさだけを持つ写し（autoplayStroke は t.wx / t.wy / t.radius しか見ない）
+ */
+function autoplayRailBossLead(boss, c) {
+  const line = railLines[boss._railRide.line];
+  if (!line) return boss;
+  const arriveS = Math.min(AUTO_RAIL_BOSS_LEAD_MAX_S, Math.hypot(boss.wx - c.x, boss.wy - c.y) / AUTO_RAIL_BOSS_FLOCK_SPEED);
+  let s = boss._railRide.s + RAIL_BOSS_SPEED * arriveS;
+  if (line.loop) s = ((s % line.len) + line.len) % line.len;
+  else s = Math.max(0, Math.min(line.len, s));
+  const pt = { x: 0, y: 0, tx: 1, ty: 0 };
+  railPointAt(line, s, pt);
+  return { wx: pt.x, wy: pt.y, radius: boss.radius, _railBossLead: true };
+}
+
 /** 線を1本引く（人の指と同じ入口を通す。1フレームで描き終える） */
 function autoplayStroke() {
   const c = calcFriendlyCentroid();
@@ -44910,6 +44950,7 @@ function autoplayStroke() {
   autoplay.retreating = !!plan && plan.kind === "retreat";   // 殻竜は退くときだけこもる（updateShell）
   if (!plan) return;
   const t = plan.t;   // 狙う建物（退く・卵のときは無い）
+  if (t && t._railBossLead) autoplay.strokeWait = Math.min(autoplay.strokeWait, AUTO_RAIL_BOSS_STROKE_S);   // v3.164.0（DT-599）
   const pts = [];
   if (plan.kind !== "target") {
     // 退く・卵を拾う：まっすぐ引く（卵は先まで伸ばして確実に通る）
@@ -52596,7 +52637,7 @@ function captureUiShot() {
     .then((html2canvas) => html2canvas(document.body, {
       backgroundColor: "#000000", logging: false, useCORS: true, scale,
       x: window.scrollX, y: window.scrollY, width: w, height: h, windowWidth: w, windowHeight: h,
-      ignoreElements: (el) => el.id === "report-panel" || el.id === "report-btn",
+      ignoreElements: (el) => el.id === "report-panel" || el.id === "report-btn" || el.id === "autoplay-pause",   // v3.164.0（DT-599）: 一時停止の窓も入れない
     }))
     .then((shot) => new Promise((resolve) => shot.toBlob((blob) => resolve(blob), "image/png")));
 }
@@ -52623,10 +52664,15 @@ function renderReportKinds() {
 
 function setReportMessage(text) { reportPanelEl.querySelector(".rp-msg").textContent = text; }
 
+let reportFromAutoplayPause = false;   // v3.164.0（DT-599）: オートプレイの一時停止の窓から開いた（閉じたらその窓へ戻す）
 function openReportPanel() {
   if (reportPaused) return;
-  reportShotPromise = captureReportShot();   // 窓を出す前の盤面を撮る
+  reportShotPromise = captureReportShot();   // 窓を出す前の盤面を撮る（一時停止の窓は絵に入れない：captureUiShot）
   reportPaused = true;
+  // v3.164.0（DT-599）: 一時停止の窓は報告の窓の後ろに隠す（止めたまま。tick は reportPaused / autoplayPaused のどちらでも世界を止め、
+  // オートプレイも reportPaused の間は動かない）
+  reportFromAutoplayPause = autoplayActive && autoplayPaused;
+  if (reportFromAutoplayPause) document.body.classList.remove("autoplay-paused");
   reportPausedAt = performance.now();
   inputEnd();   // 引きかけの線を切る（戻ったときに勝手に続かないように）
   reportPanelEl.querySelector(".rp-title").textContent = STRINGS.reportTitle;
@@ -52653,6 +52699,8 @@ function closeReportPanel() {
   runStartTime += pausedMs;
   reportPaused = false;
   reportPanelEl.classList.remove("visible");
+  if (reportFromAutoplayPause && autoplayActive && autoplayPaused) document.body.classList.add("autoplay-paused");
+  reportFromAutoplayPause = false;
   lastTickTs = performance.now();   // 止めていた間の時間を次の1歩に持ち込まない
 }
 
