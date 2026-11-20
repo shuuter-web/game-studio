@@ -1323,7 +1323,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.161.0";
+const GAME_VERSION = "v3.162.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1996,7 +1996,7 @@ function renderDebugPanel() {
       const have = stageCards[def.id] || 0;
       const full = have + (upgradeCounts[def.id] || 0) >= def.max;
       const color = def.artifact ? "#ffd060" : def.stageOnly ? "#ffd08a" : def.special ? "#c8a8ff" : null;
-      addBtn(`${def.icon} ${perkCardText(def.id).name} ${have}/${def.max}`, () => {
+      addBtn(`${def.icon} ${perkCardText(def.id).name} ${perkPicks(def, have)}/${def.max / (def.boost || 1)}`, () => {
         if (gameState !== "playing" || full) return;
         applyPerkCard(def);
         renderStageCardIcons();
@@ -31021,21 +31021,23 @@ const STRINGS = {
   stageCardListHead: "取った強化",
   levelUpEvo: "レベルアップ — 竜の進化",       // v3.65.0
   levelUpSpecial: "LEVEL UP",   // DT-502 手直し
+  levelUpFallback: (n) => `LEVEL UP　🔷竜晶 +${n}`,   // DT-593: 選べる特殊個体が無いときのレベルアップ
   statLevelUps: "このステージのレベルアップ",
   perkCards: {
-    fsp_direct: { name: "特殊個体の牙",   desc: "特殊個体の直接攻撃の威力 +60%" },
-    fsp_shot:   { name: "特殊個体の喉",   desc: "特殊個体のブレスの威力 +60%" },
-    fsp_impact: { name: "特殊個体の膂力", desc: "特殊個体の衝撃力 +60%" },
-    fsp_hp:     { name: "特殊個体の鱗",   desc: "特殊個体のHP +80%" },
-    fsp_revive: { name: "特殊個体の再起", desc: "特殊個体の復活時間 -25%" },
+    // DT-593（v3.162.0）: 通常の強化カードはアーティファクトになり、1回で前の何枚分も効く（NORMAL_TO_ARTIFACT）。説明の数字は1回分
+    fsp_direct: { name: "特殊個体の牙",   desc: "特殊個体の直接攻撃の威力 +120%" },
+    fsp_shot:   { name: "特殊個体の喉",   desc: "特殊個体のブレスの威力 +120%" },
+    fsp_impact: { name: "特殊個体の膂力", desc: "特殊個体の衝撃力 +120%" },
+    fsp_hp:     { name: "特殊個体の鱗",   desc: "特殊個体のHP +160%" },
+    fsp_revive: { name: "特殊個体の再起", desc: "特殊個体の復活時間 -44%" },
     // v3.140.0（案帳 DT-578）。上限の数は SPECIAL_SLOTS_BASE（この表より後ろで決まるので、読むときに引く）
-    fsp_more:   { name: "連れ合い",       get desc() { return `連れている特殊個体が、種類ごとに1体ずつ増える（合わせて${effSpecialSlots()}体まで。枠が足りなければ先に加わった種類から）`; } },
+    fsp_more:   { name: "連れ合い",       get desc() { return `連れている特殊個体が、種類ごとに2体ずつ増える（合わせて${effSpecialSlots()}体まで。枠が足りなければ先に加わった種類から）`; } },
     f_egg_twin: { name: "双子の卵",       desc: "卵から竜が2体ずつかえる" },
     f_down_egg: { name: "形見の卵",       desc: "竜が落ちると、半分の確率でその場に卵を残す（このステージだけ）" },
     f_gamble:   { name: "捨て身の賭け",   desc: "群れのHPが半分になるかわりに、攻撃が2倍" },
-    f_rush:     { name: "逆襲の血",       desc: "ラッシュの間、群れの攻撃 +50%" },
-    f_egg_power: { name: "卵の力",        desc: "このステージで拾った卵1つにつき、群れの攻撃 +1%（最大 +60%）" },
-    f_fall_roar: { name: "陥落の咆哮",    desc: "町が陥落するたびに、8秒間 群れの攻撃 +50%" },
+    f_rush:     { name: "逆襲の血",       desc: "ラッシュの間、群れの攻撃 +100%" },
+    f_egg_power: { name: "卵の力",        desc: "このステージで拾った卵1つにつき、群れの攻撃 +2%（最大 +100%）" },
+    f_fall_roar: { name: "陥落の咆哮",    desc: "町が陥落するたびに、8秒間 群れの攻撃 +100%" },
     // v3.140.0（案帳 DT-578）: 特殊個体だった3つ
     f_shell:     { name: "籠る殻",        desc: "指を離している間、群れ全体が殻にこもり、受ける傷が7割減る。殻の中では誰も攻撃しない（2枚で 受ける傷8割減・殻の中で毎秒 HP 3%回復）" },
     f_bundle:    { name: "束ね陣",        desc: "群れの広がりを半分に束ねる。体当たり +30%・弾から受ける傷 -25%。広く薙ぐのは苦手（2枚で 体当たり +60%・弾の傷 -41%）。広げ陣を持っていると出ない" },
@@ -31053,15 +31055,15 @@ const STRINGS = {
     f_rage:      { name: "逆鱗",          desc: "戦える竜が群れの1割を切ると咆哮（群れの数の表示 今/全体 で 今 が全体の1割未満）。まわりの敵を押し返し、10秒間 攻撃の速さ×1.5・受ける傷が半分。全員が起き上がると、また使える" },
   },
   cards: {
-    scale:     { name: "硬鱗",     desc: "竜のHP +20%" },
+    scale:     { name: "硬鱗",     desc: "竜のHP +60%" },
     wind:      { name: "疾風",     desc: "群れの速度 +8%" },
-    tide:      { name: "再生の潮", desc: "復帰時間 -15%" },
-    magnet:    { name: "吸引域",   desc: "XP吸引範囲 +40%" },   // v3.129.0（DT-546 手直し）: 卵は寄せない（親竜の呼び声へ）
+    tide:      { name: "再生の潮", desc: "復帰時間 -39%" },
+    magnet:    { name: "吸引域",   desc: "XP吸引範囲 +120%" },   // v3.129.0（DT-546 手直し）: 卵は寄せない（親竜の呼び声へ）
     brood:     { name: "大繁殖",   desc: "竜 +50（このステージだけ）" },   // v3.68.0（DT-497）: 上限は増やさない。ステージでだけ効き、竜を多めに足す
-    resonance: { name: "竜鱗共鳴", desc: "被ダメージ -12%" },
-    cat_direct: { name: "直撃の牙",   desc: "直接攻撃（体当たり・爪・刃・舌など）の威力 +12%" },
-    cat_shot:   { name: "烈火の喉",   desc: "ブレス（炎・氷槍・影弾・羽根・光）の威力 +12%" },
-    cat_blast:  { name: "爆ぜる心臓", desc: "爆発（爆風・爆撃・ロケット）の威力 +12%" },
+    resonance: { name: "竜鱗共鳴", desc: "被ダメージ -32%" },
+    cat_direct: { name: "直撃の牙",   desc: "直接攻撃（体当たり・爪・刃・舌など）の威力 +48%" },
+    cat_shot:   { name: "烈火の喉",   desc: "ブレス（炎・氷槍・影弾・羽根・光）の威力 +48%" },
+    cat_blast:  { name: "爆ぜる心臓", desc: "爆発（爆風・爆撃・ロケット）の威力 +48%" },
     dmg_beam:      { name: "火勢",     desc: "ブレス威力 +15%" },
     dmg_bullet:    { name: "氷威",     desc: "氷弾威力 +15%" },
     dmg_missile:   { name: "影炸",     desc: "ミサイル威力 +15%" },
@@ -31256,13 +31258,35 @@ const PERK_CARD_DEFS = [
   // 加入カードのある特殊個体ごとに1枚。runSpecials（連れ歩きの枠）には入れず、ステージが変わると消える。上限は STAGE_JOIN_MAX で別に数える
   // v3.65.0（DT-497）: 特殊個体はレベルアップで加わる（永続）ので、ステージ限定の加勢カードは出さない
 ];
+// DT-593（v3.162.0・Shooter「通常強化は基本的に全部効果を上げてアーティファクトに入れて」）:
+// 通常の強化カードはレベルアップの三択から外し、全部アーティファクトにした。アーティファクトは1ステージに2回しか出ないので、
+// 1回で前のカードの boost 枚分を足す（効果の式は upCount のままで、stageCards に boost を足す）。picks＝取れる回数。
+// 卵の力だけは「持っているか」で効くので、枚数ではなく EGG_POWER_* の値を上げた
+const NORMAL_TO_ARTIFACT = {
+  scale: { boost: 3, picks: 2 }, tide: { boost: 3, picks: 2 }, magnet: { boost: 3, picks: 2 }, resonance: { boost: 3, picks: 2 },
+  cat_direct: { boost: 4, picks: 2 }, cat_shot: { boost: 4, picks: 2 }, cat_blast: { boost: 4, picks: 2 },
+  fsp_direct: { boost: 2, picks: 2 }, fsp_shot: { boost: 2, picks: 2 }, fsp_impact: { boost: 2, picks: 2 },
+  fsp_hp: { boost: 2, picks: 2 }, fsp_revive: { boost: 2, picks: 2 },
+  fsp_more: { boost: 2, picks: Infinity },   // 連れ合い：1回で種類ごとに2体（枠に空きがあるあいだ何度でも）
+  f_rush: { boost: 2, picks: 2 }, f_fall_roar: { boost: 2, picks: 2 },
+  f_egg_power: { boost: 1, picks: 1 },
+};
+for (const d of PERK_CARD_DEFS) {
+  const a = NORMAL_TO_ARTIFACT[d.id];
+  if (!a || d.stageOnly) continue;
+  d.artifact = true;
+  d.boost = a.boost;
+  d.max = a.picks * a.boost;   // 上限は枚数（stageCards）で数える。1回で boost 枚
+}
+/** カードを何回取ったか（アーティファクトになった通常カードは1回で boost 枚） */
+function perkPicks(def, stacks) { return Math.floor(stacks / (def.boost || 1)); }
 // 群れが持っていない攻撃の強化は出さない（Shooter指示）。カード → 見る攻撃の成分（special＝特殊個体の攻撃だけを見る）
 const PERK_CARD_NEEDS = {
   cat_direct: { cat: "direct" }, cat_shot: { cat: "shot" }, cat_blast: { cat: "blast" },
   fsp_direct: { cat: "direct", special: true }, fsp_shot: { cat: "shot", special: true }, fsp_impact: { cat: "impact", special: true },
 };
-const EGG_POWER_PER_EGG  = 0.01;   // 卵の力：拾った卵1つで攻撃 +1%
-const EGG_POWER_MAX      = 0.6;
+const EGG_POWER_PER_EGG  = 0.02;   // 卵の力：拾った卵1つで攻撃 +2%（DT-593: アーティファクトになったので +1%→+2%）
+const EGG_POWER_MAX      = 1.0;    // DT-593: 0.6→1.0
 const FALL_ROAR_TIME     = 8;      // 陥落の咆哮：攻撃が上がっている秒数
 const FALL_ROAR_ATTACK   = 0.5;    // 1枚ごとの上げ幅
 const TRIUMPH_HEAL_BY_COUNT = [0, 0.35, 1.0];   // 凱旋：持っている枚数ごとの、陥落1回で回復する割合（最大HP比）
@@ -32594,7 +32618,15 @@ function stageCardNeed() {
 // v3.124.0 から：強化カードのレベルアップの5%はアーティファクトの三択（時間を止めて中央）
 // 竜の進化は分岐だけ（細かいレベルは刻まない）。進化した直後に続けて進化が出ないよう、間を空ける
 // v3.140.0（案帳 DT-578・Shooter「加入頻度をもう少し増やし」）: special 3→4（強化カード5に対して。特殊個体の回は 37.5%→44%）
-const LEVELUP_WEIGHTS = { cards: 5, special: 4, evo: 3 };
+// DT-593（v3.162.0・Shooter「通常の強化カードは無くして、全部アーティファクトに統合」）: レベルアップは特殊個体と竜の進化だけ。
+// 強化カードの回は無くした。特殊個体で選べるもの（加入・分岐・合成）が無いときは、竜晶を LEVELUP_FALLBACK_CRYSTALS だけ
+const LEVELUP_FALLBACK_CRYSTALS = 3;
+function levelUpFallback() {
+  const gain = awardCrystals(LEVELUP_FALLBACK_CRYSTALS);
+  pushWorldText(leader.x, leader.y - 40, STRINGS.levelUpFallback(gain), "#9fd8ff");
+  countStageLevelUp();
+  maybeAdvanceTier(true);
+}
 /** v3.140.0（案帳 DT-578・Shooter「特殊個体の加入の選択肢の際は、すでにいる個体は除外」）: いま加入の選択肢に出せる特殊個体のカード。
  *  枠がいっぱいなら無し。すでに連れている種類は出さない（同じ種類を増やすのは強化カード「連れ合い」） */
 function specialJoinPool() {
@@ -32634,11 +32666,8 @@ function specialLevelOptions() {
 const EVO_LEVELS = [20, 40, 60];   // 分岐 → 型 → （進化しきっていれば突然変異だけ）
 function rollLevelUpCategory() {
   if (EVO_LEVELS.includes(playerLevel) && dragonEvoOptions().length > 0) return "evo";
-  const avail = [["cards", LEVELUP_WEIGHTS.cards]];
-  if (specialJoinPool().length > 0 || specialLevelOptions().some(d => d.evo)) avail.push(["special", LEVELUP_WEIGHTS.special]);
-  let roll = random() * avail.reduce((a, [, w]) => a + w, 0);
-  for (const [c, w] of avail) { roll -= w; if (roll <= 0) return c; }
-  return "cards";
+  if (specialLevelOptions().length > 0) return "special";   // DT-593: 強化カードの回は無い
+  return "fallback";
 }
 function queueLevelUp() {
   levelUpsSinceEvo++;
@@ -32647,7 +32676,7 @@ function queueLevelUp() {
   // 案帳 DT-400: 祝砲はゲージがたまった瞬間に鳴る（強化カードの三択はスローなのでスローの中で広がる）。
   // 竜の進化の画面は時間が止まるので、閉じて動き出したときに鳴らす（止まった画面の裏で鳴っても見えない）
   if (cat === "evo" || upgradeCardsVisible) saluteAfterEvo++; else fireSalute();
-  if (cat === "cards") { queuePerkOffer(-1, false); return; }
+  if (cat === "fallback") { levelUpFallback(); return; }   // DT-593
   if (cat === "special") { queuePerkOffer(-1, false, "special"); return; }   // スロー・ツリーなしの下の三択
   levelUpCats.push(cat);
   pendingCards++;
@@ -32930,7 +32959,7 @@ function maybeShowLevelUp() {
   const opts = cat === "evo" ? dragonEvoOptions() : specialLevelOptions();
   if (opts.length === 0) {
     levelUpCats.shift(); pendingCards--; upgradeCardsVisible = false;
-    queuePerkOffer(-1, false);
+    queuePerkOffer(-1, false, "special");   // DT-593: 強化カードの回は無いので特殊個体へ（それも無ければ竜晶）
     if (pendingCards > 0) maybeShowLevelUp();
     return;
   }
@@ -40939,9 +40968,9 @@ function codexSpecialCanvas(kind) {
 function codexCardHtml() {
   // v3.66.0（案帳 DT-497）: レベルアップで出る強化カード（永続）の一覧。v3.124.0（DT-539）: 通常・ステージ限定（竜玉施設）・アーティファクト（まれにアーティファクトだけの三択）
   let html =
-    `<div class="tree-hint">経験値がたまるとレベルアップ。1回ごとに<b>強化カード</b>・<b>特殊個体</b>（加える・進化・合成）・` +
-      `<b>竜の進化</b>（Lv${EVO_LEVELS.join("・")}で必ず。分岐と突然変異）のどれか1つから選ぶ。` +
-      `強化カードの効果はランのあいだずっと残り、同じカードは最大回数まで重ねられる。</div>`;
+    `<div class="tree-hint">経験値がたまるとレベルアップ。1回ごとに<b>特殊個体</b>（加える・進化・合成）か` +
+      `<b>竜の進化</b>（Lv${EVO_LEVELS.join("・")}で必ず。分岐と突然変異）から選ぶ（選べる特殊個体が無いときは竜晶 +${LEVELUP_FALLBACK_CRYSTALS}）。` +
+      `強化カードは<b>アーティファクト</b>と竜玉施設の<b>ステージ限定</b>だけ。アーティファクトの効果はランのあいだずっと残り、同じものは最大回数まで重ねられる。</div>`;
   const groups = [
     { name: "通常", hint: "強化カードのレベルアップで出る。", pick: (d) => !d.artifact && !d.stageOnly },
     // 案帳 DT-511
@@ -43557,7 +43586,9 @@ function updateStageCardTotal() {
 // 運の5%（ARTIFACT_CHANCE）をやめ、1ステージに決まった回数だけ出す。出す時は、このステージで取ったレベルアップの回数が
 // 前後の警戒度の必要数のちょうど中間に届いたとき。ARTIFACT_MILESTONE_TIERS の t は「警戒度 t-1 と t の中間」
 //（1＝平時と動員の中間、2＝動員と総力戦の中間）。アーティファクトはレベルアップのおまけで、警戒度の回数には数えない
-const ARTIFACT_MILESTONE_TIERS = [1, 2];
+// DT-593 2回目（v3.162.0・Shooter「アーティファクトは動員、総力戦、決戦の間に。平時に入るのは速すぎる」）: [1, 2] → [2, 3]
+//（動員と総力戦の中間・総力戦と決戦の中間。大陸なら6回目と9回目）
+const ARTIFACT_MILESTONE_TIERS = [2, 3];
 let stageArtifactsGiven = 0;   // このステージで、決まった時のアーティファクトを何回出したか
 /** このステージでアーティファクトを出すレベルアップの回数（ARTIFACT_MILESTONE_TIERS の順） */
 function artifactMilestones() {
@@ -43764,7 +43795,8 @@ function openNextPerkOffer() {
     const opts = specialLevelOptions();
     picks = [];
     while (picks.length < 3 && opts.length > 0) picks.push(opts.splice(Math.floor(random() * opts.length), 1)[0]);
-    if (picks.length === 0) picks = pickPerkCards(false);   // 選べる特殊個体が無くなっていたら強化カードに回す
+    // 選べる特殊個体が無くなっていたら竜晶（DT-593: 強化カードの回は無くした）
+    if (picks.length === 0) { levelUpFallback(); openNextPerkOffer(); return; }
   } else picks = pickPerkCards(rare, artifact);
   if (picks.length === 0) { openNextPerkOffer(); return; }
   const isSpecialOffer = kind === "special" && picks.some(d => d.specialJoin !== undefined || d.evo);
@@ -43782,7 +43814,7 @@ function openNextPerkOffer() {
       `<span class="fo-name"></span><span class="fo-desc"></span></span>` +
       (def.artifact ? `<span class="fo-rare">${STRINGS.perkCardArtifact}</span>` : "") +
       (def.stageOnly ? `<span class="fo-stageonly">${STRINGS.perkCardStageOnly}</span>` : "") +
-      (def.max > 1 && def.max !== Infinity ? `<span class="fo-stack">${have + 1}/${def.max}</span>` : "");
+      (def.max / (def.boost || 1) > 1 && def.max !== Infinity ? `<span class="fo-stack">${perkPicks(def, have) + 1}/${def.max / (def.boost || 1)}</span>` : "");
     btn.querySelector(".fo-name").textContent = text.name;
     btn.querySelector(".fo-desc").textContent = text.desc;
     // v3.152.0（DT-584・Shooter「進化のアイコンはアイコンではなくその竜の絵に」）: 特殊個体の追加・進化・合成・突然変異のカードは、絵文字の代わりにその特殊個体の絵
@@ -43853,11 +43885,11 @@ function takePerkCard(def, townIndex) {
 function applyPerkCard(def) {
   const oldMax = effBoidMaxHp();
   const oldSpMult = 1 + SPECIAL_CARD_HP * upCount("fsp_hp");
-  stageCards[def.id] = (stageCards[def.id] || 0) + 1;
+  stageCards[def.id] = (stageCards[def.id] || 0) + (def.boost || 1);   // DT-593: 1回で boost 枚分
   if (def.id === "brood") applyCardImmediate("brood");
   if (def.id === "f_giant") makeGiants();   // v3.49.0
   if (def.id === "f_sp_double") for (const k of runSpecials.slice()) addRunSpecial(k, true);
-  if (def.id === "fsp_more") addOneOfEachSpecial();   // v3.140.0（DT-578）
+  if (def.id === "fsp_more") for (let k = 0; k < (def.boost || 1); k++) addOneOfEachSpecial();   // v3.140.0（DT-578）。DT-593: 1回で種類ごとに boost 体
   if (def.stageJoin) { stageSpecials.push(def.stageJoin); addRunSpecial(def.stageJoin, true); }   // v3.58.0: 加勢
   // HPの最大が変わるカード（硬鱗・捨て身の賭け）は、今のHPも同じ比で合わせる（取った瞬間に効きが見える）
   if (def.id === "f_gamble" || def.id === "scale") {
@@ -43920,7 +43952,7 @@ stageCardsHudEl.addEventListener("pointerdown", (e) => {
   stageCardListEl.replaceChildren(head, ...owned.map((d) => {
     const t = perkCardText(d.id);
     const row = document.createElement("div"); row.className = "sl-row";
-    const name = document.createElement("span"); name.className = "sl-name"; name.textContent = `${d.icon} ${t.name}` + (stageCards[d.id] > 1 ? ` ×${stageCards[d.id]}` : "");
+    const name = document.createElement("span"); name.className = "sl-name"; name.textContent = `${d.icon} ${t.name}` + (perkPicks(d, stageCards[d.id]) > 1 ? ` ×${perkPicks(d, stageCards[d.id])}` : "");
     const desc = document.createElement("span"); desc.className = "sl-desc"; desc.textContent = t.desc;
     row.append(name, desc);
     return row;
@@ -43937,7 +43969,8 @@ function renderStageCardIcons() {
     el.className = "sc";
     el.title = perkCardText(d.id).name;
     el.textContent = d.icon;
-    if (stageCards[d.id] > 1) { const b = document.createElement("b"); b.textContent = "×" + stageCards[d.id]; el.appendChild(b); }
+    const picks = perkPicks(d, stageCards[d.id]);   // DT-593: アーティファクトになった通常カードは1回で何枚分も入るので、取った回数で出す
+    if (picks > 1) { const b = document.createElement("b"); b.textContent = "×" + picks; el.appendChild(b); }
     return el;
   }));
 }
