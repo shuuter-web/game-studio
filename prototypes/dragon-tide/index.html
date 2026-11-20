@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.165.0";
+const GAME_VERSION = "v3.166.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -19936,6 +19936,22 @@ const TR_ELITE_SHOCKWAVE_HP = 4; // 衝撃波（ノックバック範囲攻撃�
 const TR_ELITE_SPEED   = 1.35;  // 速さの倍率の下限
 const TR_ELITE_MIN_SPEED = 120; // 速さの下限(px/s)。群れ（150〜200）より少し遅い＝逃げ続けるのは難しい
 const TR_ELITE_FEROCITY = 1.8;  // 攻撃の苛烈さ（間隔÷・威力×）。v3.50.4: 2.5→1.8（案帳 DT-472「衝撃波を連発してきて強すぎる」）
+// v3.166.0（案帳 DT-601・Shooter指示）: **押し飛ばす敵（ノックバック系）が追ってくるラッシュ**だけ、難易度を時代ごとの別の表で持つ。
+// 成長がマイルドになって、群れが揃っていない序盤（時代I〜II）に、群れの巡航（火竜 160px/s）の 3/4 の速さ（120）で追いつかれ、
+// 0.9秒ごとの衝撃波で押され続けて攻撃も逃げもできない、が目立った（石器の長牙のマンモスの精鋭の追跡者）。
+// 後半なら同じピンチは有っていいので、時代V（産業）からは今までどおり（120px/s・苛烈さ ×1.8）に戻す。
+// 対象は精鋭の追跡者・双頭の精鋭（追跡で足を速めるラッシュ）に、時代の大型（trEraDefs().large）が押し飛ばす敵のときだけ
+// （石器＝長牙のマンモス、産業＝衝撃兵、大戦＝衝撃砲。isKnockbackRushDef）。射撃型・レーザー型の時代は今までの TR_ELITE_* のまま。
+//   speed      … 追う速さの下限(px/s)。今までの TR_ELITE_MIN_SPEED の代わり。時代Iは巡航の半分弱＝線をまっすぐ引けば6秒で約500px離れる
+//   cruiseFrac … 追う速さの上限＝群れの巡航（竜種の最高速×速さの強化）×これ。遅い竜種（最高速90〜95）でも振り切れるように。null は上限なし
+//   ferocity   … 攻撃の苛烈さ（衝撃波・弾の間隔÷）。今までの TR_ELITE_FEROCITY の代わり。追いつかれても序盤は少しだけ間が空く
+const TR_KNOCKBACK_CURVE = [
+  { speed: 70,  cruiseFrac: 0.45, ferocity: 1.4 },   // I   石器: 群れは10〜30匹。走れば確実に離せる
+  { speed: 85,  cruiseFrac: 0.55, ferocity: 1.5 },   // II  古代
+  { speed: 100, cruiseFrac: 0.65, ferocity: 1.6 },   // III 中世
+  { speed: 110, cruiseFrac: 0.75, ferocity: 1.7 },   // IV  近世
+  { speed: TR_ELITE_MIN_SPEED, cruiseFrac: null, ferocity: TR_ELITE_FEROCITY },   // V〜VIII: 今までどおり（後半はこれくらいのピンチが有っていい）
+];
 // v3.50.4（案帳 DT-472・Shooter指示「追跡者以外のラッシュ敵は弱すぎる」）: 大型包囲・小型の大軍の敵を硬く・苛烈に
 const TR_UNIT_HP        = 2.5;   // 体力の倍率
 const TR_UNIT_FEROCITY  = 1.5;   // 攻撃の苛烈さ（間隔÷・威力×）
@@ -21353,6 +21369,19 @@ function spawnTrMover(def, x, y) {
 
 /** v3.71.0（案帳 DT-500）: 高頻度のノックバック範囲攻撃（衝撃波）を持つ精鋭か。足の速さと重なると別格に強い */
 function isShockwaveElite(def) { return def.attack?.type === "shockwave"; }
+/** v3.166.0（案帳 DT-601）: 群れを押し飛ばす敵か（衝撃波・押す弾 kind:1・着弾の衝撃波 knockR・図鑑の「押してくる」）。 */
+function isKnockbackRushDef(def) {
+  const a = def.attack;
+  return !!def.knockback || a?.type === "shockwave" || a?.kind === 1 || a?.knockR > 0;
+}
+/** v3.166.0（案帳 DT-601）: 追跡するラッシュの精鋭の速さの倍率と苛烈さ。押し飛ばす敵だけ時代ごとの表（TR_KNOCKBACK_CURVE）を使う。 */
+function trChaserTuning(def) {
+  if (!isKnockbackRushDef(def)) return { speedMult: Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed), ferocity: TR_ELITE_FEROCITY };
+  const row = TR_KNOCKBACK_CURVE[Math.min(TR_KNOCKBACK_CURVE.length - 1, Math.max(0, currentStage))];
+  let speed = Math.max(TR_ELITE_SPEED * def.speed, row.speed);
+  if (row.cruiseFrac !== null) speed = Math.min(speed, (mv().maxSpeed || BASE_CFG.maxSpeed) * (_simSpeedMult || 1) * row.cruiseFrac);
+  return { speedMult: speed / def.speed, ferocity: row.ferocity };
+}
 
 /** v3.50.4: 大型包囲・小型の大軍の敵を硬く・苛烈にする */
 function toughenTrMover(m) {
@@ -21490,9 +21519,10 @@ function startTierRush() {
       const r = offscreenSpawnRadius();
       const m = spawnTrMover(def, c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
       m.maxHp = m.hp = def.hp * (isShockwaveElite(def) ? TR_ELITE_SHOCKWAVE_HP : TR_ELITE_HP);
-      m.speedMult = Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed);
+      const tune = trChaserTuning(def);   // v3.166.0（DT-601）: 押し飛ばす敵は時代ごとの表
+      m.speedMult = tune.speedMult;
       m.xpValue = def.xp * TR_ELITE_XP;
-      m._trChase = true; m._trElite = true; m._trReward = "elite"; m._trFerocity = TR_ELITE_FEROCITY;
+      m._trChase = true; m._trElite = true; m._trReward = "elite"; m._trFerocity = tune.ferocity;
       d.total = 1;
       tr.dur = TR_ELITE_CHASE_TIME;
       break;
@@ -21543,9 +21573,10 @@ function startTierRush() {
         const aa = a + (k ? 0.5 : -0.5);
         const m = spawnTrMover(def, c.x + Math.cos(aa) * r, c.y + Math.sin(aa) * r);
         m.maxHp = m.hp = def.hp * (isShockwaveElite(def) ? TR_TWIN_SHOCKWAVE_HP : TR_TWIN_HP);
-        m.speedMult = Math.max(TR_ELITE_SPEED, TR_ELITE_MIN_SPEED / def.speed);
+        const tune = trChaserTuning(def);   // v3.166.0（DT-601）: 押し飛ばす敵は時代ごとの表
+        m.speedMult = tune.speedMult;
         m.xpValue = def.xp * TR_ELITE_XP * TR_TWIN_STRENGTH;
-        m._trChase = true; m._trElite = true; m._trReward = "twin"; m._trFerocity = TR_ELITE_FEROCITY;
+        m._trChase = true; m._trElite = true; m._trReward = "twin"; m._trFerocity = tune.ferocity;
         pair.push(m);
       }
       pair[0]._twin = pair[1]; pair[1]._twin = pair[0];
@@ -40371,7 +40402,7 @@ const CODEX_RUSH_DESC = {
   volley:   () => `町が群れを狙い、予告線のあと一斉に撃つ（${TR_VOLLEY_AT.length}回）`,
   firering: () => `群れを囲む炎の輪が縮んでくる。輪の上は毎秒${TR_RING_DPS}。隙間から抜けられる`,
   convoy:   () => `竜卵を積んだ隊列${TR_CONVOY_COUNT}台が首都へ逃げる。倒すと経験値${TR_CONVOY_XP}と群れの回復`,
-  elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}、衝撃波を持つ大型なら ×${TR_ELITE_SHOCKWAVE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶`,
+  elite:    () => `大型の精鋭が1体、${TR_ELITE_CHASE_TIME}秒間群れを追う（体力 ×${TR_ELITE_HP}、衝撃波を持つ大型なら ×${TR_ELITE_SHOCKWAVE_HP}・攻撃の苛烈さ ×${TR_ELITE_FEROCITY}）。倒すと群れの回復と竜晶。押し飛ばす大型（長牙のマンモスなど）は序盤ほど遅く・穏やか（追う速さ 時代I〜IV: ${TR_KNOCKBACK_CURVE.slice(0, 4).map(r => r.speed).join("・")}px/s、群れの巡航の ${TR_KNOCKBACK_CURVE.slice(0, 4).map(r => Math.round(r.cruiseFrac * 100)).join("・")}% まで。時代Vから ${TR_ELITE_MIN_SPEED}px/s）`,
   night:    () => `${TR_NIGHT_DUR}秒間、群れの周り（半径${TR_NIGHT_R}px）しか見えなくなる`,
   fortress: () => `四隅に砲台を積んだ大きな攻城塔が1台、ゆっくり群れを追う。砲台は1基ずつ狙いを付けて撃ってくる（<b>砲台は1基ずつ壊せる</b>。壊した砲台は撃たなくなる）。正面と横はとても硬く（受ける傷 ×${MOVER_DEFS.moving_fortress.shieldBlock}）、<b>後ろの扉だけ</b>がふつうに効く。${TR_FORTRESS_DUR}秒で去る`,
   gates:    () => `群れのまわりに門が${TR_GATE_COUNT}つ開き（群れについてくる）、${TR_GATE_DUR}秒のあいだ ${TR_GATE_SPAWN}秒ごとにその時代の小型の敵が湧き続ける（体力 ×${TR_UNIT_HP}）。門を壊すとそこからは出てこない`,
