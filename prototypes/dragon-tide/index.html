@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.164.0";
+const GAME_VERSION = "v3.165.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -6156,6 +6156,11 @@ const COUNTRY_LANE_HOUSE_GAP = 6;      // 家の足元の土から野道の縁�
 const COUNTRY_LANE_SKIRT     = 28;     // 集落の広がり＋これの内側は、なるべく通らず脇を抜ける
 const COUNTRY_LANE_JOIN      = 14;     // ほかの道にこれだけ近づいたら合流して止める
 const COUNTRY_LANE_LINK      = 900;    // 野道の端から、これより近い道があればそこまで伸ばしてつなぐ
+// DT-600（Shooter「くるっと一周しちゃってる」）: 野道は目当ての点へ向かいつつ集落の内側・家を避けて1歩ずつ曲がるので、
+// 目当てに届かないまま回り込み続けると輪を描いていた。曲がった量の合計と、自分の通った跡への近づきで打ち切る
+const COUNTRY_LANE_MAX_WIND   = Math.PI * 1.1;   // 歩き始めの向きからこれ以上（約200°）回り込んだら、そこで止める
+const COUNTRY_LANE_SELF_GAP   = 70;     // 自分の通った跡にこれより近づいたら止める（輪・すれ違いに見える）
+const COUNTRY_LANE_SELF_ARC   = 240;    // 道なりにこれより手前の点だけを「通った跡」として見る（すぐ後ろの点は除く）
 const COUNTRY_START_CLEAR    = 280;    // 開始地点のすぐまわりは畑を敷かない（群れが生まれる場所）
 const COUNTRY_START_FADE     = 540;    // ここまでは畑をまばらにして、開始地点から少しずつ田園に入る
 const COUNTRY_EDGE_FADE      = 260;    // 田園の外縁はこの幅で畑をまばらにして、くっきりした境目を作らない
@@ -6389,10 +6394,81 @@ function generateStartCountryside(tinyBuildings, buildings) {
     return best;
   };
 
+  /** DT-600: (x, y) が、道なりに COUNTRY_LANE_SELF_ARC より手前の自分の点に COUNTRY_LANE_SELF_GAP より近いか */
+  const laneNearItself = (pts, x, y) => {
+    let arc = Math.hypot(x - pts[pts.length - 1].x, y - pts[pts.length - 1].y);
+    for (let i = pts.length - 2; i >= 0; i--) {
+      arc += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+      if (arc > COUNTRY_LANE_SELF_ARC && dist2(x, y, pts[i].x, pts[i].y) < COUNTRY_LANE_SELF_GAP ** 2) return true;
+    }
+    return false;
+  };
+  /**
+   * DT-600: つなぎ合わせた1本（後ろへの延長＋前への道＋端の延長）の中で、道が自分と交わる・すれ違うほど近づく所の
+   * 間をはしょって輪を取り除く。walk の中の打ち切りは1回の歩きの中しか見ないので、継ぎ目をまたぐ輪はここで消す
+   */
+  const untangleLane = (pts) => {
+    const cross = (p1, p2, p3, p4) => {
+      const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
+      if (!d) return null;
+      const t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / d;
+      const u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / d;
+      return t > 0 && t < 1 && u > 0 && u < 1 ? { x: p1.x + (p2.x - p1.x) * t, y: p1.y + (p2.y - p1.y) * t } : null;
+    };
+    for (let guard = 0; guard < pts.length; guard++) {
+      let cut = null;
+      for (let b = 2; b < pts.length && !cut; b++) {
+        let arc = 0;
+        for (let a = b - 1; a >= 0 && !cut; a--) {
+          arc += Math.hypot(pts[a + 1].x - pts[a].x, pts[a + 1].y - pts[a].y);
+          if (a < b - 1 && b + 1 < pts.length) {
+            const c = cross(pts[a], pts[a + 1], pts[b], pts[b + 1]);
+            if (c) { cut = { a, b, mid: c }; break; }   // 交わる：a の次から b までを交点1つに置き換える
+          }
+          if (arc > COUNTRY_LANE_SELF_ARC && dist2(pts[a].x, pts[a].y, pts[b].x, pts[b].y) < COUNTRY_LANE_SELF_GAP ** 2) {
+            cut = { a, b: b - 1, mid: null };   // すれ違う：a から b へ直に渡す
+          }
+        }
+      }
+      if (!cut) break;
+      pts.splice(cut.a + 1, cut.b - cut.a, ...(cut.mid ? [cut.mid] : []));
+    }
+    return pts;
+  };
+  /**
+   * DT-600: 継ぎ目（後ろへの延長と前への道）をまたいで同じ向きへ回り続けると、交わらなくても大きな鉤（かぎ）・渦に見える。
+   * 道なりに曲がった量が、どこを切り出しても COUNTRY_LANE_MAX_WIND を超えない区間のうち、いちばん長いところだけを残す
+   */
+  const trimWinding = (pts) => {
+    if (pts.length < 3) return pts;
+    const turn = [0], arcAt = [0];   // turn[i]：点 i までに曲がった量の合計、arcAt[i]：点 i までの道のり
+    for (let i = 1; i < pts.length; i++) {
+      arcAt.push(arcAt[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+      if (i < 2) { turn.push(0); continue; }
+      const h0 = Math.atan2(pts[i - 1].y - pts[i - 2].y, pts[i - 1].x - pts[i - 2].x);
+      const h1 = Math.atan2(pts[i].y - pts[i - 1].y, pts[i].x - pts[i - 1].x);
+      turn.push(turn[i - 1] + wrapAngle(h1 - h0));
+    }
+    // 曲がり具合は点 i の手前の線分の向きで見るので、区間 [lo, hi] の曲がりは turn[lo+1..hi] の幅
+    let bestLo = 0, bestHi = pts.length - 1, bestArc = -1;
+    for (let lo = 0, hi = 0; lo < pts.length; lo++) {
+      if (hi < lo) hi = lo;
+      for (;;) {
+        if (hi + 1 >= pts.length) break;
+        let mn = Infinity, mx = -Infinity;
+        for (let k = lo + 1; k <= hi + 1; k++) { mn = Math.min(mn, turn[k]); mx = Math.max(mx, turn[k]); }
+        if (mx - mn > COUNTRY_LANE_MAX_WIND) break;
+        hi++;
+      }
+      if (arcAt[hi] - arcAt[lo] > bestArc) { bestArc = arcAt[hi] - arcAt[lo]; bestLo = lo; bestHi = hi; }
+      if (hi === pts.length - 1) break;
+    }
+    return pts.slice(bestLo, bestHi + 1);
+  };
   /** 野道を1本、1歩ずつ伸ばす。target へ向かいつつゆるく蛇行し、集落の内側を避け、家にふれる向きへは進まない */
   const walk = (sx, sy, dir, target, maxLen, id) => {
     const pts = [{ x: sx, y: sy }];
-    let x = sx, y = sy, len = 0, joined = false;
+    let x = sx, y = sy, len = 0, joined = false, wound = 0;
     const phase = random() * Math.PI * 2, sway = randRange(0.15, 0.4), swayLen = randRange(300, 520);
     while (len < maxLen) {
       if (target && dist2(x, y, target.x, target.y) < 60 * 60) {
@@ -6413,6 +6489,9 @@ function generateStartCountryside(tinyBuildings, buildings) {
         if (best) break;
       }
       if (!best) break;
+      // DT-600: 回り込みすぎ・自分の跡へ戻ってくる一歩は踏まずに止める（輪を描かない）
+      wound += best.h - dir;
+      if (Math.abs(wound) > COUNTRY_LANE_MAX_WIND || laneNearItself(pts, best.nx, best.ny)) break;
       dir = best.h; x = best.nx; y = best.ny; len += COUNTRY_LANE_STEP;
       pts.push({ x, y });
       if (inTown(x, y) || dist2(x, y, START_X, START_Y) > (COUNTRY_REACH + 300) ** 2) break;   // 町の入り口・田園の外で止める
@@ -6466,7 +6545,7 @@ function generateStartCountryside(tinyBuildings, buildings) {
       pts = pts.concat(extendEnd(end.x, end.y, fwd.dir, id).slice(1));
     }
     const back = extendEnd(a.x, a.y, toB + Math.PI, id);
-    pts = back.slice(1).reverse().concat(pts);
+    pts = trimWinding(untangleLane(back.slice(1).reverse().concat(pts)));   // DT-600
     if (laneLen(pts) >= COUNTRY_LANE_MIN_LEN) addLane(pts, id);
   }
   const branchCount = randInt(COUNTRY_LANE_BRANCH[0], COUNTRY_LANE_BRANCH[1]);
@@ -6480,7 +6559,9 @@ function generateStartCountryside(tinyBuildings, buildings) {
     const L = randRange(450, 1000);
     const id = laneId++;
     const w = walk(p.x, p.y, dir, { x: p.x + Math.cos(dir) * L, y: p.y + Math.sin(dir) * L }, L * 1.4, id);
-    if (w.len >= COUNTRY_LANE_MIN_LEN * 0.8) addLane(w.pts, id);
+    // DT-600: 合流の最後の一歩で急に折れて回り込みすぎることがあるので、枝道も同じく削る（根元から切れたら捨てる）
+    const branch = trimWinding(untangleLane(w.pts));
+    if (branch[0] === w.pts[0] && laneLen(branch) >= COUNTRY_LANE_MIN_LEN * 0.8) addLane(branch, id);
   }
 
   // --- 畑を敷けない所（点＋半径）：家・街道・野道・川・小川 ---
