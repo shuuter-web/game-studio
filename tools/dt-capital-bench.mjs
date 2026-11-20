@@ -2,13 +2,21 @@
 // Dragon Tide: 首都を落とすまでの時間を、決まった群れで測る（案帳 DT-594）
 //
 //   node tools/dt-capital-bench.mjs [--era 0] [--shape 0] [--species fire] [--flock 150] [--overflow 150]
-//                                   [--seconds 20] [--seed 4242] [--pattern loop|dart] [--file …]
+//                                   [--seconds 20] [--seed 4242] [--pattern loop|dart] [--file …] [--armed]
 //
 // 首都だけを残し（城壁・ほかの建物は陥落扱い）、首都は撃ってこずHP無限にして、
 // 群れ（動く竜 --flock 体＋上限超えの竜 --overflow 体）で首都のまわりに輪を引き続け、入った傷を測る。
 // 出すもの：1秒の傷・首都の最大HP・その傷で落とすまでの秒数（最大HP÷1秒の傷）。
 // 動く敵・敵の弾は毎歩消し、群れは無敵にする（守りの強さではなく、群れの攻撃に対する首都の硬さを見るため）。
 // 経験値・レベルアップは止める。強化カードの分は --setup "式" で入れる（例: --setup "stageCards.cat_shot=3"）
+//
+// 想定の群れ（DT-594・v3.161.0 の叩き台）の入れ方: --flock 150 --overflow 150 に
+//   --setup "stageCards.cat_shot=3; applyEvoNode(EVO_NODES['evo.br.fire.A'], effBoidMaxHp())"（焔竜。炉竜は .B）
+// 「攻撃の強化カード3枚」は stageCards で3枚（ブレスの威力 +36%）。進化の分岐は A・B どちらもありうるので両方測って平均する。
+//
+// --armed（DT-594 手直し）: 首都に撃たせ、群れも無敵にしない（敵の弾・首都の守りもそのまま）。首都のHPも本物のまま減らし、
+//   落ちるまでの秒数（輪に乗るまでの寄り道込み）と、そのときの群れの数を出す。上限 --seconds（既定 300）。
+//   町の兵はいない（ほかの建物は陥落扱い）ので、実プレイよりはまだ甘い。撃たれない計測との差を見るためのもの
 // -----------------------------------------------------------------
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,9 +29,10 @@ const file = path.resolve(REPO_ROOT, argValue("file", "prototypes/dragon-tide/in
 const ERA = Number(argValue("era", "0")), SHAPE = Number(argValue("shape", "0"));
 const SPECIES = argValue("species", "fire");
 const FLOCK = Number(argValue("flock", "150")), OVERFLOW = Number(argValue("overflow", "150"));
-const MEASURE_S = Number(argValue("seconds", "20"));
+const MEASURE_S = Number(argValue("seconds", args.includes("--armed") ? "300" : "20"));
 const SEED = argValue("seed", "4242");
 const PATTERN = argValue("pattern", "loop");
+const ARMED = args.includes("--armed");
 const SETUP = argValue("setup", "");
 const STEP_MS = 16;              // ゲームの固定歩幅と同じ
 const WARMUP_S = 5;              // 群れが首都に着いて輪に乗るまで（測らない）
@@ -34,7 +43,7 @@ const STROKE_STEP_PX = 24;
 
 const { browser, page, errors } = await openGame({ file, seed: SEED });
 try {
-  const setup = await page.evaluate(({ ERA, SHAPE, SPECIES, FLOCK, OVERFLOW, SETUP }) => {
+  const setup = await page.evaluate(({ ERA, SHAPE, SPECIES, FLOCK, OVERFLOW, SETUP, ARMED }) => {
     debugUnlockAllContinents();
     window.addXp = () => {};
     window.queueLevelUp = () => {};
@@ -48,12 +57,12 @@ try {
     const HUGE = 1e12;
     settlements.forEach((b, i) => { if (b && i !== bossIdx) b.fallen = true; });
     const maxHp = boss.maxHp;
-    boss.hp = HUGE; boss._noAttack = true; boss.attackRadius = 0; boss.projectileInterval = 1e9;
+    if (!ARMED) { boss.hp = HUGE; boss._noAttack = true; boss.attackRadius = 0; boss.projectileInterval = 1e9; }
     debugClearEnemies();
     for (let i = 0; i < N; i++) if (!boidDead[i] && countAliveBoids() > FLOCK) boidDead[i] = 1;
     if (countAliveBoids() < FLOCK) debugAddDragons(FLOCK - countAliveBoids());
     setFlockOverflow(OVERFLOW);
-    debugInvincible = true;
+    debugInvincible = !ARMED;
     if (SETUP) (0, eval)(SETUP);
     const r = (boss.radius || 40);
     const tx = boss.wx - r - 220, ty = boss.wy;
@@ -64,9 +73,9 @@ try {
     pathClear();
     window.__cap = { bossIdx, maxHp, HUGE, cx: boss.wx, cy: boss.wy, r, strokeT: 0, dealt: 0 };
     return { maxHp, alive: countAliveBoids(), overflow: flockOverflow, era: currentStage, stage: runStageIndex };
-  }, { ERA, SHAPE, SPECIES, FLOCK, OVERFLOW, SETUP });
+  }, { ERA, SHAPE, SPECIES, FLOCK, OVERFLOW, SETUP, ARMED });
 
-  const run = (seconds, measuring) => page.evaluate(({ seconds, measuring, PATTERN, STEP_MS, LOOP_MARGIN_PX, LOOP_REDRAW_S, DART_EVERY_S, STROKE_STEP_PX }) => {
+  const run = (seconds, measuring) => page.evaluate(({ seconds, measuring, ARMED, PATTERN, STEP_MS, LOOP_MARGIN_PX, LOOP_REDRAW_S, DART_EVERY_S, STROKE_STEP_PX }) => {
     const C = window.__cap;
     const stroke = (pts) => {
       cam.x = C.cx; cam.y = C.cy;
@@ -93,6 +102,20 @@ try {
       stroke(pts);
     };
     const steps = Math.round(seconds * 1000 / STEP_MS);
+    if (ARMED) {
+      C.t = C.t || 0;
+      for (let s = 0; s < steps && !C.killedAt; s++) {
+        if (countAliveBoids() <= 0) { C.wiped = true; break; }
+        C.strokeT -= STEP_MS / 1000;
+        if (C.strokeT <= 0) drawNext();
+        window.__dtStep(STEP_MS);
+        C.t += STEP_MS / 1000;
+        const b = settlements[C.bossIdx];
+        if (b.fallen || b.hp <= 0) C.killedAt = C.t;
+      }
+      return { done: !!C.killedAt || !!C.wiped, killedAt: C.killedAt || null, wiped: !!C.wiped, t: C.t,
+        alive: countAliveBoids(), overflow: flockOverflow, bossHp: Math.max(0, Math.round(settlements[C.bossIdx].hp)) };
+    }
     for (let s = 0; s < steps; s++) {
       C.strokeT -= STEP_MS / 1000;
       if (C.strokeT <= 0) drawNext();
@@ -105,8 +128,16 @@ try {
       if (measuring && d > 0) C.dealt += d;
     }
     return { dealt: C.dealt, state: gameState };
-  }, { seconds, measuring, PATTERN, STEP_MS, LOOP_MARGIN_PX, LOOP_REDRAW_S, DART_EVERY_S, STROKE_STEP_PX });
+  }, { seconds, measuring, ARMED, PATTERN, STEP_MS, LOOP_MARGIN_PX, LOOP_REDRAW_S, DART_EVERY_S, STROKE_STEP_PX });
 
+  if (ARMED) {
+    let res = null;
+    for (let left = MEASURE_S; left > 0 && !(res && res.done); left -= 10) res = await run(Math.min(10, left), true);
+    if (errors.length) throw new Error(errors.join("\n"));
+    console.log(JSON.stringify({ ...setup, species: SPECIES, pattern: PATTERN, armed: true,
+      secondsToKill: res.killedAt ? +res.killedAt.toFixed(1) : null, wiped: res.wiped, elapsed: +res.t.toFixed(1),
+      aliveAtEnd: res.alive, overflowAtEnd: res.overflow, bossHpLeft: res.bossHp }));
+  } else {
   await run(WARMUP_S, false);
   let res = null;
   for (let left = MEASURE_S; left > 0; left -= 10) res = await run(Math.min(10, left), true);
@@ -114,6 +145,7 @@ try {
   const perSecond = res.dealt / MEASURE_S;
   console.log(JSON.stringify({ ...setup, species: SPECIES, pattern: PATTERN, perSecond: Math.round(perSecond),
     secondsToKill: perSecond > 0 ? +(setup.maxHp / perSecond).toFixed(1) : null }));
+  }
 } finally {
   await browser.close();
 }
