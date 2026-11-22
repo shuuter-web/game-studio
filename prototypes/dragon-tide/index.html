@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.172.0";
+const GAME_VERSION = "v3.173.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -39115,64 +39115,88 @@ function drawMistClouds() {
   ctx.restore();
 }
 
-/** 骨の兵：白い小さな人形（頭に屍竜と同じ紫の灯）。起き上がる途中は地面からせり上がり、叩くときは腕を振り上げる */
-const SOLDIER_DRAW_SCALE = 1.3;   // 人形の大きさ（1＝高さ約11px。竜の胴27pxに対して小さく見える程度）
+/** 骨の兵：白い骨の人（頭に屍竜と同じ紫の灯）。起き上がる途中は地面から大きくなり、叩くときは右腕を前へ突き出す。
+ *  v3.173.0（DT-290 手直し・Shooter「D579で決めた人間の型に沿ってほしい」「トコトコ歩いてる感じは残す」）:
+ *  横から見た棒の人形をやめ、ほかの人型（DT-579）と同じ「真上から見た肩＋頭」（HUMAN_BODY・前＝向かう建物）にそろえた。
+ *  大きさは鎧の無い人と同じ 1.0倍（HUMAN_BODY_SCALE.bone_soldier）。トコトコ感は、前後に交互に出る足・逆に振れる手・
+ *  体の左右の揺れで残す（歩いた距離 s.walk に合わせて動くので、止まって叩いている間は揺れない）。体の絵は骨なので画像は使わずベクター */
+const BONE_SOLDIER_LOOK = { cloth: SOLDIER_COLOR, clothRim: SOLDIER_INK, head: SOLDIER_COLOR, headRim: SOLDIER_INK, pad: null, sprite: null };
+const SOLDIER_DRAW_SCALE = 1.3;   // 崩れたときの骨のかけらの大きさ（見た目だけ）
+const BONE_SOLDIER_WALK = {
+  phase: 0.45,      // 歩いた1pxあたりの足の位相（前の棒の人形と同じ速さで足が動く）
+  stride: 2.6,      // 足が前後に出る幅（px・体の大きさ1のとき）
+  footSide: 2.3,    // 足の左右の位置（肩の中心から）
+  footR: 1.15,      // 足の骨の大きさ
+  handSwing: 1.4,   // 手が前後に振れる幅（足と逆）
+  sway: 0.16,       // 体の左右の揺れ（ラジアン）
+  strikeReach: 3.6, // 叩くときに右手が前へ出る量
+  eyeFwd: 1.1, eyeSide: 0.95, eyeR: 0.6,
+  glowR: 5.5, glow: [[0.12, 1], [0.16, 0.6]],   // 体の下に敷く淡い光（[濃さ, 半径の倍率]）
+};
 function drawBoneSoldiers() {
   if (boneSoldiers.length === 0 && boneSoldierFx.length === 0) return;
-  const z = SOLDIER_DRAW_SCALE;
+  const z = humanBodyScale("bone_soldier"), B = HUMAN_BODY, W = BONE_SOLDIER_WALK;
   ctx.save();
-  ctx.lineCap = "round";
-  // 体（手足）：縁取り → 白
-  for (let pass = 0; pass < 2; pass++) {
-    ctx.strokeStyle = pass === 0 ? SOLDIER_INK : SOLDIER_COLOR;
-    ctx.lineWidth = (pass === 0 ? 3.2 : 1.6) * z;
-    ctx.beginPath();
-    for (const s of boneSoldiers) {
-      const p = Math.min(1, s.age / SOLDIER_RISE_TIME) * z;
-      const x = s.x, y = s.y + (z - p) * 4;   // 地面からせり上がる
-      const leg = Math.sin(s.walk * 0.45) * 2.4 * z;
-      const arm = (s.swing > 0 ? -4.5 : -Math.sin(s.walk * 0.45) * 1.6) * z;
-      ctx.moveTo(x, y - 6 * p); ctx.lineTo(x, y - 1.5 * p);                       // 背骨
-      ctx.moveTo(x, y - 1.5 * p); ctx.lineTo(x - 2 * z + leg * 0.5, y + 3 * p);    // 脚
-      ctx.moveTo(x, y - 1.5 * p); ctx.lineTo(x + 2 * z - leg * 0.5, y + 3 * p);
-      ctx.moveTo(x - 3 * z, y - 4.6 * p + arm * 0.4); ctx.lineTo(x + 3 * z, y - 4.6 * p - arm * 0.4);   // 腕
-      if (s.swing > 0) { ctx.moveTo(x + 3 * z, y - 4.6 * p); ctx.lineTo(x + 3.5 * z, y - 8.5 * p); }  // 振り上げた腕
-    }
-    ctx.stroke();
-  }
-  // 頭
-  ctx.fillStyle = SOLDIER_COLOR; ctx.strokeStyle = SOLDIER_INK; ctx.lineWidth = z;
-  ctx.beginPath();
   for (const s of boneSoldiers) {
-    const p = Math.min(1, s.age / SOLDIER_RISE_TIME) * z;
-    const hy = s.y + (z - p) * 4 - 8.2 * p;
-    ctx.moveTo(s.x + 2.4 * z, hy); ctx.arc(s.x, hy, 2.4 * z, 0, Math.PI * 2);
-  }
-  ctx.fill(); ctx.stroke();
-  // 紫の灯（淡い光の輪 → 目の点）
-  ctx.fillStyle = SOLDIER_EYE_COLOR;
-  for (let pass = 0; pass < 2; pass++) {
-    ctx.globalAlpha = pass === 0 ? 0.35 : 1;
+    const p = Math.min(1, s.age / SOLDIER_RISE_TIME);   // 起き上がり（0→1）
+    const k = z * (0.35 + 0.65 * p);
+    const st = s.targetObj;
+    const face = st ? Math.atan2(st.wy - s.y, st.wx - s.x) : 0;
+    const step = Math.sin(s.walk * W.phase);
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(face + step * W.sway * p);
+    // 紫の淡い光（体の下に敷く。上に重ねると小さな体が紫一色に見えるため）
+    ctx.fillStyle = SOLDIER_EYE_COLOR;
+    for (const [glowAlpha, glowScale] of W.glow) {   // 2枚重ねて縁をぼかす
+      ctx.globalAlpha = glowAlpha * p;
+      ctx.beginPath(); ctx.arc(B.headFwd * k, 0, W.glowR * glowScale * k, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 0.4 + 0.6 * p;
+    // 足（体の下）：左右が前後に交互に出る
+    ctx.fillStyle = SOLDIER_COLOR; ctx.strokeStyle = SOLDIER_INK; ctx.lineWidth = 0.6 * k;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.ellipse(side * step * W.stride * k, side * W.footSide * k, W.footR * 1.3 * k, W.footR * k, 0, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+    }
+    // 肩＋頭（ほかの人型と同じ形）
+    drawHumanBody(k, BONE_SOLDIER_LOOK);
+    // 肋骨の筋（肩の上の短い2本）
+    ctx.strokeStyle = SOLDIER_INK; ctx.lineWidth = 0.45 * k;
     ctx.beginPath();
-    for (const s of boneSoldiers) {
-      const p = Math.min(1, s.age / SOLDIER_RISE_TIME) * z;
-      const hy = s.y + (z - p) * 4 - 8.2 * p;
-      const rr = pass === 0 ? 3.8 * p : 1.0 * z;
-      ctx.moveTo(s.x + rr, hy); ctx.arc(s.x, hy, rr, 0, Math.PI * 2);
+    for (const side of [-1, 1]) { ctx.moveTo(-0.9 * k, side * 1.6 * k); ctx.lineTo(-0.9 * k, side * 3.8 * k); }
+    ctx.stroke();
+    // 手：歩くときは足と逆に振れ、叩くときは右手を前へ突き出す
+    ctx.fillStyle = SOLDIER_COLOR; ctx.lineWidth = 0.5 * k;
+    for (const side of [-1, 1]) {
+      const strike = s.swing > 0 && side === 1 ? W.strikeReach : 0;
+      const hx = (B.handFwd * 0.4 - side * step * W.handSwing + strike) * k, hy = side * B.handSide * k;
+      ctx.beginPath(); ctx.arc(hx, hy, B.handR * k, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    // 紫の灯（前向きの2つの目）
+    ctx.fillStyle = SOLDIER_EYE_COLOR;
+    ctx.beginPath();
+    for (const side of [-1, 1]) {
+      ctx.moveTo((B.headFwd + W.eyeFwd) * k + W.eyeR * k, side * W.eyeSide * k);
+      ctx.arc((B.headFwd + W.eyeFwd) * k, side * W.eyeSide * k, W.eyeR * k, 0, Math.PI * 2);
     }
     ctx.fill();
+    ctx.restore();
   }
+  ctx.lineCap = "round";
+  const zFx = SOLDIER_DRAW_SCALE;
   // 崩れた骨の兵：骨のかけらが散って薄れる
-  ctx.strokeStyle = SOLDIER_COLOR; ctx.lineWidth = 1.4 * z;
+  ctx.strokeStyle = SOLDIER_COLOR; ctx.lineWidth = 1.4 * zFx;
   for (const fx of boneSoldierFx) {
     const k = fx.t / SOLDIER_CRUMBLE_TIME;
     ctx.globalAlpha = 1 - k;
     ctx.beginPath();
     for (let j = 0; j < 4; j++) {
       const a = fx.seed * 6.28 + j * 1.57;
-      const d = (2 + 7 * k) * z;
-      const bx = fx.x + Math.cos(a) * d, by = fx.y - 3 * z + Math.sin(a) * d * 0.6 + 4 * k * z;
-      ctx.moveTo(bx - 1.5 * z, by); ctx.lineTo(bx + 1.5 * z, by + 0.6 * z);
+      const d = (2 + 7 * k) * zFx;
+      const bx = fx.x + Math.cos(a) * d, by = fx.y - 3 * zFx + Math.sin(a) * d * 0.6 + 4 * k * zFx;
+      ctx.moveTo(bx - 1.5 * zFx, by); ctx.lineTo(bx + 1.5 * zFx, by + 0.6 * zFx);
     }
     ctx.stroke();
   }
@@ -48458,7 +48482,7 @@ const HERO_DRAW = { glow: 1.45, ring: 1, cape: 1.05, sword: 1.6 };   // 体の�
 const HUMAN_BODY = { shoulderHalf: 5, shoulderDepth: 2.5, head: 2.3, headFwd: 0.5, padHalf: 1.9, padDepth: 2.1, padAt: 4.1, handR: 1, handFwd: 2.5, handSide: 4.8,
                      spriteSpan: 1.12 };   // 絵の横幅＝肩幅×これ（絵は縁取りのぶんだけ広い）
 const HUMAN_BODY_SCALE_MIN = 1, HUMAN_BODY_SCALE_MAX = 1.3;
-const HUMAN_BODY_SCALE = { hero: 1.25, hero_shield: 1.3, hero_mage: 1, hero_archer: 1.05 };   // 板金の鎧＝大きい、布の服＝小さい
+const HUMAN_BODY_SCALE = { hero: 1.25, hero_shield: 1.3, hero_mage: 1, hero_archer: 1.05, bone_soldier: 1 };   // v3.173.0: 骨の兵（DT-290）は鎧が無いので 1.0   // 板金の鎧＝大きい、布の服＝小さい
 const HUMAN_SKIN = "#e8c8a0";
 const HUMAN_RING = { mate: "rgba(255,255,255,0.6)", mateWidth: 1 };   // お供の足元の輪（英雄は HERO_COLORS.rim の金）
 const HERO_MATE_LOOK = {
