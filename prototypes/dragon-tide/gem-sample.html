@@ -295,6 +295,10 @@ function drawDragon(c, spec, parts, flapFactor, opts) {
     c.globalAlpha = Math.min(1, opts.glintAlpha);
     c.globalCompositeOperation = "lighter";
     c.drawImage(opts.glint, -pivotX, -pivotY, bodyDrawW, bodyDrawH);
+    if (opts.glint2 && opts.glintAlpha2 > 0.01) {   // 腹の2本の窓が重なる向きだけ、もう1枚
+      c.globalAlpha = Math.min(1, opts.glintAlpha2);
+      c.drawImage(opts.glint2, -pivotX, -pivotY, bodyDrawW, bodyDrawH);
+    }
     c.restore();
   }
 }
@@ -303,14 +307,18 @@ function drawDragon(c, spec, parts, flapFactor, opts) {
 // 光源は見せない・動かさない。「この向きを向いた竜はきらっとする」という向きを地図に1つ決めておくだけ。
 // 時間は使わないので、同じ位置・同じ向きの竜はいつでも同じ照り返しになる。
 // 群れが曲がると、先頭から順にその向きを通るので、光が群れの中を走って見える（イワシの群れのつもり）。
-const GLINT_HEADING = 0.35;  // きらっとする向きの基準（ここから120°おきに3つ）
+const GLINT_HEADING = 0.35;  // 見比べの止めた竜の向き（肩が光る向き）
 // DT-597 4回目（Shooter「多すぎる。それぞれの光る幅は広すぎるので半分に。箇所も3箇所に」）:
 // 1か所の幅を半分に：±8°で最大・±28°で消える → ±4°で最大・±14°で消える
 const GLINT_FULL = 4 * Math.PI / 180; // この角度までは照り返しが最大
 const GLINT_EDGE = 14 * Math.PI / 180; // ここまでで段々に消える
 // 向きの窓は3つ（6か所 → 3か所）：120°おき。窓どうしの間に 92° ずつ照り返しが0の向きがあるので、
 // 照り返しの絵が切り替わるのは必ず照り返しが0のとき（いきなり切り替わらない）
-const GLINT_WINDOWS = [0, 1, 2].map((k) => ({ center: k * Math.PI * 2 / 3, image: [3, 1, 0][k] }));
+// DT-597 手直し（v3.174.0・11/22 Shooter「背中の中央が光るのをやめて、肩と、腹と、逆側の腹の3箇所に。光る角度はすべてその線が同じ角度に入るときに」）:
+// どの光の筋も、画面の上でその筋が GLINT_LINE_ANGLE の向きにそろったときに光る。ゲーム（index.html の GEM_GLINT_LINES）と同じ値
+const GLINT_LINES = [{ image: 3, axis: 29 }, { image: 1, axis: 98 }, { image: 2, axis: 82 }];   // 肩・左の腹・右の腹（絵の筋の向き・度）
+const GLINT_LINE_ANGLE = 139;
+const GLINT_WINDOWS = GLINT_LINES.map((l) => ({ center: (GLINT_LINE_ANGLE - l.axis - 90) * Math.PI / 180, image: l.image }));
 // 「角度＋位置」のとき：地図に固定した斜めの縞の上にいる竜だけが照り返す（縞は描かない）
 const STRIPE_ANGLE = 0.6;
 const STRIPE_SPACING = 150;
@@ -333,14 +341,16 @@ function stripeGain(x, y) {
 }
 
 function glintFor(x, y, heading, usePosition) {
+  const out = { index: 0, strength: 0, index2: 0, strength2: 0 };
+  const byPosition = usePosition ? stripeGain(x, y) : 1;
   for (const win of GLINT_WINDOWS) {
-    const off = Math.abs(wrapAngle(heading - GLINT_HEADING - win.center));
+    const off = Math.abs(wrapAngle(heading - win.center));
     if (off >= GLINT_EDGE) continue;
     const byAngle = 1 - smoothstep(GLINT_FULL, GLINT_EDGE, off);
-    const byPosition = usePosition ? stripeGain(x, y) : 1;
-    return { index: win.image, strength: byAngle * byPosition };
+    if (out.strength === 0) { out.index = win.image; out.strength = byAngle * byPosition; }
+    else { out.index2 = win.image; out.strength2 = byAngle * byPosition; break; }
   }
-  return { index: 0, strength: 0 };
+  return out;
 }
 
 // ---- 読み込み ----
@@ -520,6 +530,8 @@ function drawTray(time) {
       wingAlpha: d.wingAlpha,
       glint: state.glintOn ? d.sp.glints[g.index] : null,
       glintAlpha: g.strength * d.sp.gloss,
+      glint2: state.glintOn ? d.sp.glints[g.index2] : null,
+      glintAlpha2: g.strength2 * d.sp.gloss,
     });
   }
 }
@@ -576,7 +588,8 @@ function drawCompare(time) {
     const g = glintFor(0, 0, heading, false);
     ctx.rotate(heading + Math.PI / 2);
     drawDragon(ctx, p.sp.gem, p.sp.gemParts, 1, {
-      glint: p.sp.glints[g.index], glintAlpha: g.strength * p.sp.gloss, wingAlpha: p.sp.wingAlpha[1] });
+      glint: p.sp.glints[g.index], glintAlpha: g.strength * p.sp.gloss, wingAlpha: p.sp.wingAlpha[1],
+      glint2: p.sp.glints[g.index2], glintAlpha2: g.strength2 * p.sp.gloss });
   }
 }
 
