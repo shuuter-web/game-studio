@@ -19,6 +19,12 @@
    ・「手番」「残り○区画」「世界の出来事」のようなストラテジーの言葉と画面全体の記録をやめた。
      育った・併合した・変わった、は地域を選んだときの説明（フレーバーテキスト）にまとめる。地図では光るだけ。
    ・時代は数字で出さず、首都のまわりの街並み（小屋→家→塔→煙突→摩天楼）で見せる。
+  3回目（11/22 手直し）：
+   ・最初のステージ（卵を奪った国）は地図で選ばない。落とした後の地図から始める。
+   ・攻略を「焼く」と言わない（攻める・滅ぼす・廃墟）。選べない国の名前は地図に出さない。
+   ・竜が滅ぼした土地（廃墟）は、次の回から1回に1区画ずつ、接している生き残った国が併合する。
+   ・英字の時代名をやめ、地域ごとの言い方（例：大樹海なら「樹上の砦」）にした。
+   ・説明文（物語の声）と操作の案内を分け、案内は地図の下の別の欄に出す。竜の印を上から見た竜の形にした。
   乱数は決定性を守るため makeRandomGenerator（mulberry32）だけを使う。ブラウザ任せの乱数は使わない。
 -->
 <style>
@@ -61,6 +67,8 @@ svg#map { display: block; width: 100%; height: auto; touch-action: manipulation;
 .ember { animation: flicker 1.6s ease-in-out infinite; }
 @keyframes drift { 0% { transform: translate(0, 0); } 50% { transform: translate(3px, -2px); } 100% { transform: translate(0, 0); } }
 .flock { animation: drift 3s ease-in-out infinite; }
+@keyframes flap { 0%, 100% { transform: scaleX(1); } 50% { transform: scaleX(0.72); } }
+.wings { animation: flap 0.9s ease-in-out infinite; transform-box: view-box; transform-origin: 0 0; }
 @keyframes rise { 0% { opacity: 0; transform: translateY(0); } 30% { opacity: 0.5; } 100% { opacity: 0; transform: translateY(-14px); } }
 .smoke { animation: rise 4s ease-out infinite; }
 .card {
@@ -69,6 +77,12 @@ svg#map { display: block; width: 100%; height: auto; touch-action: manipulation;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5), inset 0 0 40px rgba(120, 80, 30, 0.25);
   border: 1px solid var(--panel-edge);
 }
+.card[hidden] { display: none; }
+.guide {
+  margin-top: 12px; padding: 10px 12px; border-radius: 6px; border: 1px dashed #6a5638;
+  font-family: system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.6; color: #cdbf9f; background: rgba(0, 0, 0, 0.25);
+}
+.guide[hidden] { display: none; }
 .card .hint { color: var(--panel-dim); font-size: 16px; line-height: 1.8; text-align: center; padding-top: 30px; }
 .card h2 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: 0.04em; }
 .card .era { font-size: 13px; color: var(--panel-dim); letter-spacing: 0.12em; margin: 2px 0 10px; }
@@ -104,7 +118,8 @@ details.settings summary { cursor: pointer; padding: 6px 0; }
 <body>
 <div class="app">
   <div class="map-wrap"><svg id="map" viewBox="0 0 360 300" aria-label="世界図"></svg></div>
-  <div class="card" id="card"></div>
+  <div class="guide" id="guide"></div>
+  <div class="card" id="card" hidden></div>
   <details class="settings">
     <summary>サンプルの設定</summary>
     <div class="controls">
@@ -113,7 +128,7 @@ details.settings summary { cursor: pointer; padding: 6px 0; }
       <button class="btn-small" id="retryButton">やり直す</button>
       <button class="btn-small" id="starterButton" aria-pressed="false">はじまりの世界</button>
     </div>
-    <div class="note">数字はランのシード（URL の ?seed= でも指定できます）。「はじまりの世界」は中身まで固定の世界です。地図をタップして「焼きに行く」と、その地域は即クリアになります。</div>
+    <div class="note">数字はランのシード（URL の ?seed= でも指定できます）。「はじまりの世界」は中身まで固定の世界です。地図は最初のステージ（竜の卵を奪った国）を落とした後から始まります。国をタップして「この国を攻める」を押すと、その国は即クリアになります。</div>
   </details>
 </div>
 <script>
@@ -135,53 +150,113 @@ const STRINGS = {
     continent: "大陸", riverline: "大河", citadel: "城塞都市", frontline: "長城", forest: "大樹海", badlands: "荒地",
     serpent: "蛇神の密林", mushroom: "キノコの里", flower: "花の園", metro: "大都会", railway: "軌道", bomb: "爆弾玉の国", asteroids: "小惑星帯",
   },
-  eraNames: ["", "STONE AGE", "ANCIENT ERA", "MEDIEVAL AGE", "MODERN FORTRESS", "INDUSTRIAL AGE", "ELECTRIC AGE", "GREAT WAR", "FINAL DOMINION"],
   mapTitle: "世 界 図",
-  // 地域ごとの書き出し（その地の姿）
-  regionLore: {
-    continent: "なだらかな平野に街道がのび、畑と街がどこまでも続く。",
-    riverline: "一本の大河に沿って、街が細く長く連なっている。",
-    citadel: "幾重もの城壁が、中心の都を同心円に守っている。",
-    frontline: "国境に長い城壁を築き、外からの者を拒んできた。",
-    forest: "深い森が国を覆い、街は木々の間にひっそりと隠れている。",
-    badlands: "乾いた荒地に巨岩がそびえ、人々はその岩を神と拝む。",
-    serpent: "湿った密林の奥で、人々は大蛇を神として祀っている。",
-    mushroom: "胞子の霧の中、キノコが勝手に増えて里を埋めていく。",
-    flower: "大輪の花が咲き乱れる。その花は、竜をも喰らうという。",
-    metro: "鉄の車が昼も夜も絶えず流れる、眠らない大都会。",
-    railway: "人の乗らない列車が、決まった軌道を休みなく走り続けている。",
-    bomb: "城壁の内で火薬を練り、丸い爆弾玉を山と積み上げた国。",
-    asteroids: "大地を捨てて空の果てへ出た。いまは岩塊とともに宇宙を漂う。",
+  // 時代は英字の時代名を出さず、地域ごとの言い方にする（11/22 手直し）。
+  // 時代 I〜II・III〜IV・V〜VI・VII〜VIII の4段で { title: 見出しの下の一言, lore: 暮らしぶり }
+  eraLore: {
+    continent: [
+      { title: "畑の村々", lore: "平野に畑が拓かれ、村と村を土の道がつなぐ。" },
+      { title: "街道の王国", lore: "街道に石が敷かれ、王の城下に市が立つ。" },
+      { title: "煙突の平野", lore: "畑の向こうに煙突が並び、街道を蒸気の車が行き交う。" },
+      { title: "地平の大国", lore: "平野の果てまで街が続き、国じゅうが一つの都のようだ。" },
+    ],
+    riverline: [
+      { title: "川辺の集落", lore: "葦の舟で漁をし、岸辺に小屋を連ねて暮らす。" },
+      { title: "水運の都", lore: "帆船が川を上り下りし、岸の街は交易で栄える。" },
+      { title: "蒸気船の川", lore: "水車と蒸気船が川を埋め、岸には工場が並ぶ。" },
+      { title: "眠らない川岸", lore: "両岸を灯りが埋め、川は鉄の橋で幾重にも結ばれた。" },
+    ],
+    citadel: [
+      { title: "柵の輪", lore: "木の柵を輪にめぐらせ、その内に身を寄せ合って暮らす。" },
+      { title: "石の城壁", lore: "石の城壁が幾重にも築かれ、騎士が門を守る。" },
+      { title: "砲台の輪", lore: "城壁の上に砲台が並び、輪ごとに兵が詰めている。" },
+      { title: "鋼の輪", lore: "城壁は鋼に変わり、中心の都は決して落ちぬと信じられている。" },
+    ],
+    frontline: [
+      { title: "土塁の国境", lore: "国境に土を盛り、見張りの火を絶やさない。" },
+      { title: "石の長城", lore: "石の長城が山から山へ続き、物見の塔が並ぶ。" },
+      { title: "大砲の長城", lore: "長城に大砲が据えられ、兵舎が壁沿いに連なる。" },
+      { title: "鉄の要塞線", lore: "長城は鉄の要塞線となり、国境は夜も眠らない。" },
+    ],
+    forest: [
+      { title: "木陰の集落", lore: "狩りと木の実で暮らし、集落は木陰に溶けている。" },
+      { title: "樹上の砦", lore: "大樹の上に砦を組み、森の道を知る者だけが通れる。" },
+      { title: "製材の煙", lore: "森の外縁から木が切られ、製材の煙が上がりはじめた。" },
+      { title: "梢の灯り", lore: "森を残したまま街を広げ、梢の間に灯りがともる。" },
+    ],
+    badlands: [
+      { title: "岩を拝む民", lore: "巨岩のふもとに集まり、岩に供え物をして暮らす。" },
+      { title: "岩の神殿", lore: "巨岩を削って神殿を築き、神官が国を治める。" },
+      { title: "鉱山の荒地", lore: "巨岩の下から鉱石が掘り出され、荒地に線路がのびた。" },
+      { title: "岩の要塞", lore: "巨岩をくり抜いて砦とし、荒地は国ごと要塞になった。" },
+    ],
+    serpent: [
+      { title: "蛇を祀る部族", lore: "密林の奥で、大蛇に祈りを捧げる部族が暮らす。" },
+      { title: "蛇神の神殿", lore: "石の神殿が密林にそびえ、蛇神の祭りが国を一つにする。" },
+      { title: "密林の街", lore: "密林を切り開いて街が生まれ、川を蒸気船が上る。" },
+      { title: "蛇神の大国", lore: "蛇神の名のもと、密林の国は周りの国々を従えている。" },
+    ],
+    mushroom: [
+      { title: "胞子の里", lore: "勝手に増えるキノコを摘んで食べ、霧の中で静かに暮らす。" },
+      { title: "キノコ畑の国", lore: "キノコを畑で育て、その数で国の豊かさを測る。" },
+      { title: "胞子の工場", lore: "胞子を集める工場が建ち、キノコは国じゅうに広がった。" },
+      { title: "胞子の都", lore: "街はキノコと一体になり、どこまでが家かも分からない。" },
+    ],
+    flower: [
+      { title: "花摘みの村", lore: "花を摘んで暮らす村。竜をも喰らう花には近づかない。" },
+      { title: "花の王国", lore: "竜を喰らう花を育てる術を覚え、国境を花で守る。" },
+      { title: "温室の国", lore: "ガラスの温室が並び、竜を喰らう花は国の武器になった。" },
+      { title: "花に覆われた大国", lore: "国じゅうが竜を喰らう花に覆われ、竜が来るのを待っている。" },
+    ],
+    // 生まれる側の地域は低い時代では出ないので、低い段は上の段と同じ言い方
+    metro: [
+      { title: "車列の街", lore: "鉄の車が昼も夜も絶えず流れ、街は眠ることがない。" },
+      { title: "車列の街", lore: "鉄の車が昼も夜も絶えず流れ、街は眠ることがない。" },
+      { title: "車列の街", lore: "鉄の車が昼も夜も絶えず流れ、街は眠ることがない。" },
+      { title: "摩天楼の大都会", lore: "摩天楼が空を塞ぎ、車列は高架の道まで埋めている。" },
+    ],
+    railway: [
+      { title: "軌道の国", lore: "人の乗らない列車が、決まった軌道を休みなく走り続けている。" },
+      { title: "軌道の国", lore: "人の乗らない列車が、決まった軌道を休みなく走り続けている。" },
+      { title: "軌道の国", lore: "人の乗らない列車が、決まった軌道を休みなく走り続けている。" },
+      { title: "軌道の網", lore: "軌道は網の目のように国を覆い、列車は誰の命令もなく走る。" },
+    ],
+    bomb: [
+      { title: "火薬の国", lore: "城壁の内で火薬を練り、丸い爆弾玉を山と積み上げている。" },
+      { title: "火薬の国", lore: "城壁の内で火薬を練り、丸い爆弾玉を山と積み上げている。" },
+      { title: "火薬の国", lore: "城壁の内で火薬を練り、丸い爆弾玉を山と積み上げている。" },
+      { title: "爆弾玉の大国", lore: "爆弾玉は国の誇りとなり、城壁の上から空をにらんでいる。" },
+    ],
+    asteroids: [
+      { title: "宇宙を漂う国", lore: "大地を捨てて空の果てへ出た。いまは岩塊とともに宇宙を漂う。" },
+      { title: "宇宙を漂う国", lore: "大地を捨てて空の果てへ出た。いまは岩塊とともに宇宙を漂う。" },
+      { title: "宇宙を漂う国", lore: "大地を捨てて空の果てへ出た。いまは岩塊とともに宇宙を漂う。" },
+      { title: "宇宙を漂う国", lore: "大地を捨てて空の果てへ出た。いまは岩塊とともに宇宙を漂う。" },
+    ],
   },
-  // 時代ごとの暮らしぶり（時代は数字でなく様子で伝える）
-  eraLore: [
-    "",
-    "まだ石の斧と焚き火の村々。",
-    "神殿が建ち、王が国を治めはじめた。",
-    "騎士と城の時代を迎えている。",
-    "砦は大砲で守られるようになった。",
-    "煙突が立ち並び、機械の音が絶えない。",
-    "夜も電気の灯りで明るい。",
-    "国じゅうが戦の備えに染まっている。",
-    "文明は頂に達し、世界を統べようとしている。",
-  ],
-  eggCiv: "竜の卵を奪ったのは、この国の者たちだ。すべてはここから始まる。",
-  grewSince: (eraName) => `炎が世界を巡るあいだにも、この国は育ちつづけ、いまは ${eraName} に至った。`,
-  afterBurn: (burnedName) => `竜が${burnedName}を焼いたあと、`,
-  firstTimes: "はじめに、",
+  // ここから下の説明文（フレーバー）は物語の声だけで書く。操作の案内は guide に分ける（11/22 手直し）
+  grewSince: "竜がほかの国を襲うあいだにも、この国は育ちつづけていた。",
+  afterRuin: (ruinedName) => `竜が${ruinedName}を滅ぼしたあと、`,
   grewInto: (toName) => `この国は${toName}へと姿を変えた。`,
-  absorbed: (otherName) => `この国は隣の${otherName}を呑み込み、ふたつぶんの広さになった。`,
+  absorbed: (otherName) => `この国は隣の${otherName}を呑み込んだ。`,
+  resettled: (ruinedName) => `この国は${ruinedName}の跡地へ民を移し、国境を広げた。`,
   mergedInto: (toName) => `呑み込んだ勢いのまま、${toName}へと変わった。`,
   wentToSpace: (toName) => `頂に達したこの国は、大地を離れて${toName}となった。`,
   bigRealm: "首都はひとまわり大きく、竜晶も多く眠っている。",
-  attack: "この地を焼きに行く",
-  notChoosable: "まだ炎が届かない",
-  hintStart: "竜の卵を奪った国が、赤く脈打っている。<br>まずはそこから。",
-  hintPick: "炎が届く地が、白く縁取られている。<br>次に焼く地を選んで。",
-  burnedTitle: "焼け跡",
-  burnedText: (name) => `かつて${name}があった地。いまは灰と燃えさしが残るだけだ。`,
-  doneTitle: "世界は灰になった",
-  doneText: (first, last) => `${first}から始まった炎は、${last}を最後に世界を呑み尽くした。`,
+  ruinTitle: "廃墟",
+  ruinText: (name) => `かつて${name}があった地。いまは崩れた城壁と瓦礫が残るだけだ。`,
+  eggRuinText: (name) => `竜の卵を奪った${name}の跡。竜の怒りは、ここから始まった。`,
+  doneTitle: "すべての国が滅びた",
+  doneText: (first, last) => `${first}から始まった竜の侵攻は、${last}を最後に、世界のすべての国を滅ぼした。`,
+  // 操作の案内（物語の文とは別の欄・別の書体で出す）
+  attack: "この国を攻める",
+  notChoosable: "まだ攻め込めない",
+  guide: {
+    start: "最初のステージ（竜の卵を奪った国）を落とした後の地図です。白い点線で囲まれた国から、次に攻める国を選んでください。",
+    pick: "白い点線で囲まれた国から、次に攻める国を選んでください。",
+    locked: "この国にはまだ攻め込めません。廃墟に接している国（白い点線）から選んでください。",
+    selected: "「この国を攻める」でステージが始まります（サンプルでは即クリア）。",
+  },
   again: "もう一度この世界を",
   newWorld: "新しい世界へ",
   seedFixed: "固定",
@@ -384,7 +459,8 @@ function createWorld(seed, starter) {
   const state = {
     seed, starter, clockSeed: starter ? STARTER_WORLD.clockSeed : seed,
     turn: 1, regions: [], cellOwner: [], burned: new Set(), burnedNames: [], usedRegions: new Set(),
-    history: [], merges: 0, specials: 0, done: false, flashIds: new Set(), eggRegionId: null, lastBurnedCell: null,
+    history: [], merges: 0, specials: 0, done: false, flashIds: new Set(), eggRegionId: null, eggRegion: null, lastBurnedCell: null,
+    ruinTurn: [],
   };
   let layout;
   if (starter) {
@@ -405,7 +481,7 @@ function createWorld(seed, starter) {
   layout.forEach((entry, cellIndex) => {
     const region = {
       id: cellIndex, region: entry.region, era: entry.era, startEra: entry.era, cells: [cellIndex], capitalCell: cellIndex,
-      story: [],
+      story: [], absorbedRealms: 0,
     };
     state.regions.push(region);
     state.cellOwner[cellIndex] = region.id;
@@ -452,7 +528,8 @@ function destroyRegion(regionId) {
   if (!region || !choosableIds().has(regionId)) return;
   const playedTurn = world.turn;
   world.flashIds = new Set();
-  region.cells.forEach((c) => { world.cellOwner[c] = null; world.burned.add(c); world.burnedNames[c] = region.region; });
+  region.cells.forEach((c) => { world.cellOwner[c] = null; world.burned.add(c); world.burnedNames[c] = region.region; world.ruinTurn[c] = playedTurn; });
+  if (regionId === world.eggRegionId) world.eggRegion = region.region;
   world.lastBurnedCell = region.capitalCell;
   world.regions = world.regions.filter((r) => r.id !== regionId);
   world.history.push({ turn: playedTurn, region: region.region, era: region.era, cells: region.cells.length });
@@ -504,6 +581,26 @@ function advanceWorldClock(playedTurn, burnedRegion) {
     }
   }
 
+  // 廃墟の併合（11/22 手直し）：竜が滅ぼした土地は、次の回から生き残った国が併合する。
+  // 1回に1区画だけ、いちばん古い廃墟を、接している国のうち時代の高い国が取る。
+  // 滅ぼした直後の廃墟は残すので、次に攻められる国（廃墟に接する国）は必ずある
+  const oldRuins = [...world.burned].filter((c) => world.ruinTurn[c] < playedTurn)
+    .filter((c) => [...CELL_NEIGHBORS[c]].some((n) => world.cellOwner[n] !== null))
+    .sort((a, b) => world.ruinTurn[a] - world.ruinTurn[b] || a - b);
+  if (oldRuins.length > 0) {
+    const ruinCell = oldRuins[0];
+    const takers = [...new Set([...CELL_NEIGHBORS[ruinCell]].map((n) => world.cellOwner[n]).filter((o) => o !== null))]
+      .map(regionById);
+    const topEra = Math.max(...takers.map((r) => r.era));
+    const best = takers.filter((r) => r.era === topEra);
+    const taker = best[pickIndex(random, best.length)];
+    world.burned.delete(ruinCell);
+    world.cellOwner[ruinCell] = taker.id;
+    taker.cells.push(ruinCell);
+    world.flashIds.add(taker.id);
+    taker.story.push({ kind: "resettled", after, ruin: world.burnedNames[ruinCell] });
+  }
+
   // 併合：0〜1回。時代 VIII が隣にいれば6割、それ以外は3割。時代の高い方が低い方を呑む
   const pairs = [];
   world.regions.forEach((r) => neighborRegionIds(r).forEach((otherId) => {
@@ -522,6 +619,7 @@ function advanceWorldClock(playedTurn, burnedRegion) {
   if (small.era > big.era || (small.era === big.era && random() < 0.5)) [big, small] = [small, big];
   const bigEraBeforeMerge = big.era;
   small.cells.forEach((c) => { world.cellOwner[c] = big.id; });
+  big.absorbedRealms += 1 + small.absorbedRealms;
   big.cells = big.cells.concat(small.cells);
   big.era = Math.min(eraCap, big.era + 1);   // 呑んだ側はさらに +1（上限は滅ぼした数+1）
   world.regions = world.regions.filter((r) => r.id !== small.id);
@@ -542,22 +640,28 @@ function advanceWorldClock(playedTurn, burnedRegion) {
   }
 }
 
-// 地域を選んだときの説明。その国のいまの姿・暮らしぶり・これまでに起きたことを、ひと続きの文にする
+// 時代の段（I〜II・III〜IV・V〜VI・VII〜VIII）
+function eraEntry(region) {
+  const band = Math.min(3, Math.floor((region.era - 1) / 2));
+  return STRINGS.eraLore[region.region][band];
+}
+
+// 地域を選んだときの説明（物語の声だけ。操作の案内は入れない）
 function flavorOf(region) {
-  const paragraphs = [STRINGS.regionLore[region.region] + STRINGS.eraLore[region.era]];
-  if (world.turn === 1 && region.id === world.eggRegionId) paragraphs.push(STRINGS.eggCiv);
+  const paragraphs = [eraEntry(region).lore];
   let lastAfter = null;
   const events = region.story.map((event) => {
-    const lead = event.after === lastAfter ? "" : STRINGS.afterBurn(regionName(event.after));
+    const lead = event.after === lastAfter ? "" : STRINGS.afterRuin(regionName(event.after));
     lastAfter = event.after;
     if (event.kind === "grewInto") return lead + STRINGS.grewInto(regionName(event.to));
     if (event.kind === "space") return lead + STRINGS.wentToSpace(regionName(event.to));
     if (event.kind === "absorbed") return lead + STRINGS.absorbed(regionName(event.other));
+    if (event.kind === "resettled") return lead + STRINGS.resettled(regionName(event.ruin));
     return lead + STRINGS.mergedInto(regionName(event.to));
   });
   if (events.length > 0) paragraphs.push(events.join(""));
-  if (region.era > region.startEra) paragraphs.push(STRINGS.grewSince(STRINGS.eraNames[region.era]));
-  if (region.cells.length > 1) paragraphs.push(STRINGS.bigRealm);
+  if (region.era > region.startEra) paragraphs.push(STRINGS.grewSince);
+  if (region.absorbedRealms > 0) paragraphs.push(STRINGS.bigRealm);
   return paragraphs;
 }
 
@@ -566,6 +670,7 @@ function flavorOf(region) {
 // ---------------------------------------------------------------
 const mapElement = document.getElementById("map");
 const cardElement = document.getElementById("card");
+const guideElement = document.getElementById("guide");
 
 function regionCenter(region) {
   const sum = region.cells.reduce((acc, c) => [acc[0] + CELL_CENTERS[c][0], acc[1] + CELL_CENTERS[c][1]], [0, 0]);
@@ -621,14 +726,16 @@ function decorationLayer() {
     <path d="M${x},${y - 20} L${x + 3.5},${y} L${x},${y}Z" fill="#b8321f"/>
     <text x="${x}" y="${y - 23}" text-anchor="middle" font-size="7" font-weight="700" fill="${INK}">N</text>
   </g>`;
-  // 表題の巻物
-  svg += `<g pointer-events="none">
-    <path d="M128,6 h104 q6,0 6,7 q0,7 -6,7 h-104 q-6,0 -6,-7 q0,-7 6,-7Z" fill="#f4e7c6" stroke="${INK}" stroke-width="0.9"/>
-    <text x="180" y="17" text-anchor="middle" font-size="${LOOK.titleSize}" font-weight="800" fill="${INK}" letter-spacing="2">${STRINGS.mapTitle}</text>
-  </g>`;
   // 枠（二重線）
   svg += `<rect x="12" y="12" width="336" height="276" fill="none" stroke="${INK}" stroke-width="1.6" pointer-events="none"/>`;
   svg += `<rect x="8" y="8" width="344" height="284" fill="none" stroke="${INK}" stroke-width="0.6" pointer-events="none"/>`;
+  // 表題の巻物は枠の線より後に描き、巻物の中に線が透けないようにする（11/22 手直し）
+  // 表題の巻物
+  svg += `<g pointer-events="none">
+    <path d="M126,3 h108 q7,0 7,8.5 q0,8.5 -7,8.5 h-108 q-7,0 -7,-8.5 q0,-8.5 7,-8.5Z" fill="#f4e7c6" stroke="${INK}" stroke-width="0.9"/>
+    <text x="180" y="16" text-anchor="middle" font-size="${LOOK.titleSize}" font-weight="800" fill="${INK}" letter-spacing="2">${STRINGS.mapTitle}</text>
+  </g>`;
+
   svg += `<rect width="360" height="300" fill="url(#vignette)" pointer-events="none"/>`;
   svg += `<rect width="360" height="300" fill="#fff" filter="url(#paper)" pointer-events="none" opacity="0.9"/>`;
   return svg;
@@ -746,7 +853,7 @@ function cityMarks(region) {
     }
   }
   // 首都：赤い二重丸（ゲーム画面の約束）
-  const big = region.cells.length > 1;
+  const big = region.absorbedRealms > 0;
   out += `<circle cx="${cx}" cy="${cy}" r="${big ? 7.5 : 5.5}" fill="${dark ? "#3b3554" : "#f4e7c6"}" stroke="#c41e1e" stroke-width="${big ? 2.2 : 1.7}"/>`;
   out += `<circle cx="${cx}" cy="${cy}" r="${big ? 3.2 : 2.4}" fill="#c41e1e"/>`;
   return out;
@@ -768,22 +875,34 @@ function burnedMarks(cellIndex) {
   return out;
 }
 
-// 竜の群れ（橙の三角の集まり）。最後に焼いた地の上を舞う。まだ焼いていなければ海から卵の国をうかがう
+// 竜の印（上から見た竜：頭と角・広げた翼・長い尾）。原点が胴の中心、頭が上
+function dragonMark(x, y, scale, angle, delay) {
+  const wing = "M-1.6,-3.2 L-6.5,-7.5 L-14,-6.2 Q-11.2,-3.6 -12,-0.4 Q-9,-1.6 -7.8,1.8 Q-5.6,-0.2 -3.4,2.8 L-1.6,1.6Z";
+  return `<g transform="translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(${angle}) scale(${scale})">
+    <ellipse cx="0" cy="2" rx="3" ry="2" fill="#000" opacity="0.18" transform="translate(4,6)"/>
+    <path d="M0,4.5 Q-2.6,9 0.4,12.5 Q3,15.5 0.6,18" fill="none" stroke="#5a2a08" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M0,4.5 Q-2.6,9 0.4,12.5 Q3,15.5 0.6,18" fill="none" stroke="#f08a24" stroke-width="1.3" stroke-linecap="round"/>
+    <path d="M0.6,17 l2.4,3.2 l-3.6,0.2Z" fill="#f08a24" stroke="#5a2a08" stroke-width="0.6"/>
+    <g class="wings" style="animation-delay:${delay}s">
+      <path d="${wing}" fill="#f6a640" stroke="#5a2a08" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="${wing}" transform="scale(-1,1)" fill="#f6a640" stroke="#5a2a08" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M-1.8,-2.6 L-6.5,-7.2 M-2,-0.6 L-11.6,-5.6 M-2.6,1.4 L-9,-1.2" stroke="#b55a14" stroke-width="0.5"/>
+      <path d="M1.8,-2.6 L6.5,-7.2 M2,-0.6 L11.6,-5.6 M2.6,1.4 L9,-1.2" stroke="#b55a14" stroke-width="0.5"/>
+    </g>
+    <ellipse cx="0" cy="0" rx="2.6" ry="6" fill="#e8741c" stroke="#5a2a08" stroke-width="0.8"/>
+    <path d="M0,-11.5 L2.4,-6.8 L0,-5.4 L-2.4,-6.8Z" fill="#e8741c" stroke="#5a2a08" stroke-width="0.7"/>
+    <path d="M-1.4,-8.6 L-3.2,-11.6 M1.4,-8.6 L3.2,-11.6" stroke="#5a2a08" stroke-width="0.8" stroke-linecap="round"/>
+  </g>`;
+}
+
+// 竜の群れ。いちばん新しい廃墟の上を舞う
 function flockMarks() {
-  let target;
-  if (world.lastBurnedCell !== null) target = CELL_CENTERS[world.lastBurnedCell];
-  else {
-    const egg = world.eggRegionId !== null ? regionById(world.eggRegionId) : world.regions[0];
-    const [ex, ey] = CELL_CENTERS[egg.capitalCell];
-    target = [ex + (ex < 180 ? -14 : 14), ey - 28];
-  }
-  const [fx, fy] = [target[0] + 6, target[1] - 18];
-  const offsets = [[0, 0], [-9, 7], [9, 7], [-18, 14], [18, 14], [-4, 15], [5, 21]];
+  if (world.lastBurnedCell === null) return "";
+  const [tx, ty] = CELL_CENTERS[world.lastBurnedCell];
   let out = `<g class="flock" pointer-events="none">`;
-  offsets.forEach(([dx, dy]) => {
-    const x = fx + dx, y = fy + dy;
-    out += `<path d="M${x},${y - 5} l4.2,8.4 l-4.2,-2.1 l-4.2,2.1Z" fill="#f08a24" stroke="#5a2a08" stroke-width="0.7"/>`;
-  });
+  out += dragonMark(tx + 20, ty - 16, 0.85, 18, 0.4);
+  out += dragonMark(tx - 20, ty - 10, 0.85, -14, 0.15);
+  out += dragonMark(tx, ty - 26, 1.3, 4, 0);
   return out + `</g>`;
 }
 
@@ -811,6 +930,8 @@ function renderMap() {
       svg += `<path d="${outline}" fill="${REGION_COLORS[region.region]}"/>`;
       if (region.region !== "asteroids") svg += `<path d="${outline}" fill="url(#hatch)"/>`;
       svg += terrainMarks(region.region, cellIndex);
+      // 廃墟から併合した土地は、ほんのり煤けた色を残す
+      if (world.burnedNames[cellIndex]) svg += `<path d="${outline}" fill="#3a2516" opacity="0.18"/>`;
     } else {
       svg += `<path d="${outline}" fill="#2a1d15"/>`;
       svg += `<path d="${outline}" fill="#7a2c10" opacity="0.35"/>`;
@@ -847,12 +968,6 @@ function renderMap() {
       svg += `<path class="choosable" d="${pathOf(EDGE_LINES.get(edge.key), false)}" fill="none" stroke="#fff" stroke-width="2.2" stroke-dasharray="5 4" stroke-linecap="round" pointer-events="none"/>`;
     });
   });
-  // 最初の卵の国は赤く脈打つ
-  if (world.turn === 1 && world.eggRegionId !== null) {
-    const egg = regionById(world.eggRegionId);
-    egg.cells.forEach((c) => { svg += `<path class="ember" d="${pathOf(CELL_OUTLINES[c], true)}" fill="#ff4a1a" fill-opacity="0.18" pointer-events="none"/>`; });
-  }
-
   // 選んでいる地域は金の縁取り
   const selected = selectedRegionId !== null ? regionById(selectedRegionId) : null;
   if (selected) {
@@ -865,8 +980,10 @@ function renderMap() {
   }
 
   // 街並み・首都・地名
+  // 地名は攻められる国にだけ書く（選べない国の名前は地図に出さない。11/22 手直し）
   world.regions.forEach((region) => {
     svg += `<g pointer-events="none">${cityMarks(region)}`;
+    if (!choosable.has(region.id)) { svg += `</g>`; return; }
     const [lx, ly] = region.cells.length > 1 ? regionCenter(region) : CELL_CENTERS[region.capitalCell];
     const labelY = region.cells.length > 1 && Math.abs(ly - CELL_CENTERS[region.capitalCell][1]) > 20 ? ly : CELL_CENTERS[region.capitalCell][1] - 13;
     const light = region.region === "asteroids";
@@ -880,7 +997,15 @@ function renderMap() {
   mapElement.innerHTML = svg;
 }
 
+// 案内の欄（操作の説明。物語の文のカードとは書体も場所も分ける）
+let guideKey = "start";
+function renderGuide() {
+  guideElement.textContent = world.done ? "" : STRINGS.guide[guideKey];
+  guideElement.hidden = world.done;
+}
+
 function renderCard() {
+  cardElement.hidden = false;
   if (world.done) {
     const first = regionName(world.history[0].region);
     const last = regionName(world.history[world.history.length - 1].region);
@@ -892,26 +1017,33 @@ function renderCard() {
     return;
   }
   if (selectedBurnedCell !== null) {
-    cardElement.innerHTML = `<h2>${STRINGS.burnedTitle}</h2><div class="era">&nbsp;</div>
-      <div class="flavor"><p>${STRINGS.burnedText(regionName(world.burnedNames[selectedBurnedCell]))}</p></div>`;
+    const name = regionName(world.burnedNames[selectedBurnedCell]);
+    const text = world.ruinTurn[selectedBurnedCell] === 1 ? STRINGS.eggRuinText(name) : STRINGS.ruinText(name);
+    cardElement.innerHTML = `<h2>${STRINGS.ruinTitle}</h2><div class="era">&nbsp;</div>
+      <div class="flavor"><p>${text}</p></div>`;
     return;
   }
   const region = selectedRegionId !== null ? regionById(selectedRegionId) : null;
   if (!region) {
-    cardElement.innerHTML = `<div class="hint">${world.turn === 1 ? STRINGS.hintStart : STRINGS.hintPick}</div>`;
+    cardElement.hidden = true;
+    cardElement.innerHTML = "";
     return;
   }
-  const canAttack = choosableIds().has(region.id);
   const paragraphs = flavorOf(region).map((p) => `<p>${p}</p>`).join("");
   cardElement.innerHTML = `<h2>${regionName(region.region)}</h2>
-    <div class="era">${STRINGS.eraNames[region.era]}</div>
+    <div class="era">${eraEntry(region).title}</div>
     <div class="flavor">${paragraphs}</div>
-    <button class="attack" id="attackButton" ${canAttack ? "" : "disabled"}>${canAttack ? STRINGS.attack : STRINGS.notChoosable}</button>`;
-  if (canAttack) document.getElementById("attackButton").onclick = () => { destroyRegion(region.id); animateChanges = true; render(); animateChanges = false; };
+    <button class="attack" id="attackButton">${STRINGS.attack}</button>`;
+  document.getElementById("attackButton").onclick = () => {
+    destroyRegion(region.id);
+    guideKey = "pick";
+    animateChanges = true; render(); animateChanges = false;
+  };
 }
 
 function render() {
   renderMap();
+  renderGuide();
   renderCard();
 }
 
@@ -921,8 +1053,11 @@ mapElement.addEventListener("click", (event) => {
   if (!group || world.done) return;
   const cellIndex = Number(group.dataset.cell);
   const owner = world.cellOwner[cellIndex];
-  selectedRegionId = owner === null ? null : owner;
+  // まだ攻め込めない国は名前も説明も出さず、案内だけ出す
+  const locked = owner !== null && !choosableIds().has(owner);
+  selectedRegionId = owner === null || locked ? null : owner;
   selectedBurnedCell = owner === null ? cellIndex : null;
+  guideKey = locked ? "locked" : selectedRegionId !== null ? "selected" : (world.turn === 2 ? "start" : "pick");
   render();
 });
 
@@ -934,6 +1069,9 @@ const starterButton = document.getElementById("starterButton");
 
 function startWorld(seed, starter) {
   world = createWorld(seed >>> 0, starter);
+  // 最初のステージ（卵を奪った国）は地図で選ばない。落とした後の地図から始める（11/22 手直し）
+  destroyRegion(world.eggRegionId);
+  guideKey = "start";
   selectedRegionId = null;
   selectedBurnedCell = null;
   seedInput.value = starter ? STRINGS.seedFixed : String(world.seed);
