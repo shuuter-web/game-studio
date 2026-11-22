@@ -245,14 +245,17 @@ const STRINGS = {
     ],
   },
   // ここから下の説明文（フレーバー）は物語の声だけで書く。操作の案内は guide に分ける（11/22 手直し）
-  grewSince: "竜がほかの国を襲うあいだにも、この国は育ちつづけていた。",
-  afterRuin: (ruinedName) => `竜が${ruinedName}を滅ぼしたあと、`,
-  grewInto: (toName) => `この国は${toName}へと姿を変えた。`,
-  absorbed: (otherName) => `この国は隣の${otherName}を呑み込んだ。`,
-  resettled: (ruinedName) => `この国は${ruinedName}の跡地へ民を移し、国境を広げた。`,
-  mergedInto: (toName) => `呑み込んだ勢いのまま、${toName}へと変わった。`,
-  wentToSpace: (toName) => `頂に達したこの国は、大地を離れて${toName}となった。`,
-  bigRealm: "首都はひとまわり大きく、竜晶も多く眠っている。",
+  // 竜の動き（○○を滅ぼしたあと）は書かない。どこを呑んだかは地域が変わったときだけ書く（11/22 3回目の手直し）
+  grewInto: (toName) => `栄えるにつれて、${toName}へと姿を変えた。`,
+  absorbedChanged: (otherName, toName) => `隣の${otherName}を呑み込み、その勢いのまま${toName}へと変わった。`,
+  annexedOne: "隣の国を呑み込み、国土を広げた。",
+  annexedMany: "隣の国々を次々と呑み込み、国土を広げてきた。",
+  ruinsTaken: "竜が去った廃墟にも国境を押し広げた。",
+  annexedAndRuins: "隣の国を呑み込み、竜が去った廃墟にまで国境を押し広げた。",
+  // 姿が変わった文のあとに続けるときの頭（「呑み込み」が続いて読めるように）
+  furthermore: "さらに",
+  wentToSpace: (toName) => `栄華の頂に達し、大地を離れて${toName}となった。`,
+  bigRealm: "国が大きいぶん首都も堅く、そのぶん竜晶も多く眠っている。",
   ruinTitle: "廃墟",
   ruinText: (name) => `かつて${name}があった地。いまは崩れた城壁と瓦礫が残るだけだ。`,
   eggRuinText: (name) => `竜の卵を奪った${name}の跡。竜の怒りは、ここから始まった。`,
@@ -657,20 +660,35 @@ function eraEntry(region) {
 }
 
 // 地域を選んだときの説明（物語の声だけ。操作の案内は入れない）
+// 姿の変わった出来事は順に1文ずつ、姿の変わらない併合・廃墟の取り込みはまとめて1文にする（11/22 3回目の手直し）
 function flavorOf(region) {
   const paragraphs = [eraEntry(region).lore];
-  let lastAfter = null;
-  const events = region.story.map((event) => {
-    const lead = event.after === lastAfter ? "" : STRINGS.afterRuin(regionName(event.after));
-    lastAfter = event.after;
-    if (event.kind === "grewInto") return lead + STRINGS.grewInto(regionName(event.to));
-    if (event.kind === "space") return lead + STRINGS.wentToSpace(regionName(event.to));
-    if (event.kind === "absorbed") return lead + STRINGS.absorbed(regionName(event.other));
-    if (event.kind === "resettled") return lead + STRINGS.resettled(regionName(event.ruin));
-    return lead + STRINGS.mergedInto(regionName(event.to));
+  const changes = [];
+  let plainAbsorbed = 0;
+  let ruinsTaken = 0;
+  region.story.forEach((event, index) => {
+    const next = region.story[index + 1];
+    if (event.kind === "absorbed") {
+      // 呑み込んだ結果 姿が変わったときだけ、呑んだ相手の名を書く
+      if (next && next.kind === "mergedInto" && next.after === event.after) {
+        changes.push(STRINGS.absorbedChanged(regionName(event.other), regionName(next.to)));
+      } else {
+        plainAbsorbed += 1;
+      }
+      return;
+    }
+    if (event.kind === "mergedInto") return; // 直前の absorbed と一緒に書いた
+    if (event.kind === "resettled") { ruinsTaken += 1; return; }
+    if (event.kind === "grewInto") changes.push(STRINGS.grewInto(regionName(event.to)));
+    if (event.kind === "space") changes.push(STRINGS.wentToSpace(regionName(event.to)));
   });
-  if (events.length > 0) paragraphs.push(events.join(""));
-  if (region.era > region.startEra) paragraphs.push(STRINGS.grewSince);
+  const growth = [...changes];
+  if (plainAbsorbed > 0 && ruinsTaken > 0) growth.push(STRINGS.annexedAndRuins);
+  else if (plainAbsorbed > 1) growth.push(STRINGS.annexedMany);
+  else if (plainAbsorbed === 1) growth.push(STRINGS.annexedOne);
+  else if (ruinsTaken > 0) growth.push(STRINGS.ruinsTaken);
+  if (growth.length > changes.length && changes.length > 0) growth[changes.length] = STRINGS.furthermore + growth[changes.length];
+  if (growth.length > 0) paragraphs.push(growth.join(""));
   if (region.absorbedRealms > 0) paragraphs.push(STRINGS.bigRealm);
   return paragraphs;
 }
