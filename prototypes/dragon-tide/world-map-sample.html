@@ -144,17 +144,19 @@ details.settings summary { cursor: pointer; padding: 6px 0; }
 // ---------------------------------------------------------------
 // 表示文字（prototypes の単一HTMLはインライン辞書可。本制作では locales/ へ抽出）
 // 地域名は index.html の STRINGS.shapeNames と同じ正式名称。時代の名前は STAGE_CONFIGS の name
+// ただし continent（index.html では「大陸」）は、世界地図の1区画を「大陸」と呼ぶと地図と食い違うので、
+// このサンプルでは仮に「町の散らばる平原」と呼ぶ（11/22 4回目の手直し。名前は Shooter に選んでもらう）
 // ---------------------------------------------------------------
 const STRINGS = {
   regionNames: {
-    continent: "大陸", riverline: "大河の線状都市", citadel: "同心円の城塞都市", frontline: "長城の防衛線",
+    continent: "町の散らばる平原", riverline: "大河の線状都市", citadel: "同心円の城塞都市", frontline: "長城の防衛線",
     forest: "森に覆われた大樹海", badlands: "巨岩を拝む荒地", serpent: "蛇神を祀る密林の国",
     mushroom: "増えるキノコの里", flower: "竜食い花の園",
     metro: "車列の流れる大都会", railway: "無人列車の走る軌道", bomb: "爆弾玉の国", asteroids: "漂う岩塊の小惑星帯",
   },
   // 地図に書く地名（区画に収まる短さ）
   mapLabels: {
-    continent: "大陸", riverline: "大河", citadel: "城塞都市", frontline: "長城", forest: "大樹海", badlands: "荒地",
+    continent: "平原", riverline: "大河", citadel: "城塞都市", frontline: "長城", forest: "大樹海", badlands: "荒地",
     serpent: "蛇神の密林", mushroom: "キノコの里", flower: "花の園", metro: "大都会", railway: "軌道", bomb: "爆弾玉の国", asteroids: "小惑星帯",
   },
   mapTitle: "世 界 図",
@@ -250,12 +252,14 @@ const STRINGS = {
   absorbedChanged: (otherName, toName) => `隣の${otherName}を呑み込み、その勢いのまま${toName}へと変わった。`,
   annexedOne: "隣の国を呑み込み、国土を広げた。",
   annexedMany: "隣の国々を次々と呑み込み、国土を広げてきた。",
-  ruinsTaken: "竜が去った廃墟にも国境を押し広げた。",
-  annexedAndRuins: "隣の国を呑み込み、竜が去った廃墟にまで国境を押し広げた。",
+  // 滅びた国の残りの地（首都以外の区画）と、竜が去った廃墟を取り込んだとき（11/22 4回目の手直し）
+  ruinsTaken: "竜に滅ぼされた国の地にも国境を押し広げた。",
+  annexedAndRuins: "隣の国を呑み込み、竜に滅ぼされた国の地にまで国境を押し広げた。",
   // 姿が変わった文のあとに続けるときの頭（「呑み込み」が続いて読めるように）
   furthermore: "さらに",
   wentToSpace: (toName) => `栄華の頂に達し、大地を離れて${toName}となった。`,
-  bigRealm: "国が大きいぶん首都も堅く、そのぶん竜晶も多く眠っている。",
+  // 国が広がると時代（難しさ）も上がる（11/22 4回目の手直し）
+  bigRealm: "国が広がるにつれて文明も進み、首都はいっそう堅い。そのぶん竜晶も多く眠っている。",
   ruinTitle: "廃墟",
   ruinText: (name) => `かつて${name}があった地。いまは崩れた城壁と瓦礫が残るだけだ。`,
   eggRuinText: (name) => `竜の卵を奪った${name}の跡。竜の怒りは、ここから始まった。`,
@@ -267,7 +271,7 @@ const STRINGS = {
   guide: {
     start: "最初のステージ（竜の卵を奪った国）を落とした後の地図です。白い点線で囲まれた国から、次に攻める国を選んでください。",
     pick: "白い点線で囲まれた国から、次に攻める国を選んでください。",
-    locked: "この国にはまだ攻め込めません。廃墟に接している国（白い点線）から選んでください。",
+    locked: "この国にはまだ攻め込めません。竜のいる廃墟に接している国（白い点線）から選んでください。",
     selected: "「この国を攻める」でステージが始まります（サンプルでは即クリア）。",
   },
   again: "もう一度この世界を",
@@ -316,7 +320,11 @@ const WORLD_RULES = {
   startEraMax: 2,           // 最初の地図は時代 I〜II
   mergeChance: 0.3,         // 1回滅ぼすごとに0〜1回
   mergeChanceTopEra: 0.6,   // 時代 VIII の区画が隣を呑む確率
-  eraAheadOfTurn: 1,        // 時代は「滅ぼした数 +1」を超えない
+  eraAheadOfTurn: 1,        // 1区画の国の時代は「滅ぼした数 +1」を超えない
+  // 大きくなった国は首都だけでなく時代（難しさ）も上がる（11/22 4回目の手直し）：
+  // 国土が増えた回は 時代 +1。上限も区画1つにつき +1（最大 +2）だけ先へ行ける
+  eraLeadPerCell: 1,
+  eraLeadMax: 2,
   minChoices: 2,            // 選べる区画がこれ未満なら全区画から
 };
 
@@ -472,7 +480,7 @@ function createWorld(seed, starter) {
   const state = {
     seed, starter, clockSeed: starter ? STARTER_WORLD.clockSeed : seed,
     turn: 1, regions: [], cellOwner: [], burned: new Set(), burnedNames: [], usedRegions: new Set(),
-    history: [], merges: 0, specials: 0, done: false, flashIds: new Set(), eggRegionId: null, eggRegion: null, lastBurnedCell: null,
+    history: [], unclaimed: [], merges: 0, specials: 0, done: false, flashIds: new Set(), eggRegionId: null, eggRegion: null, lastBurnedCell: null,
     ruinTurn: [],
   };
   let layout;
@@ -541,14 +549,24 @@ function destroyRegion(regionId) {
   if (!region || !choosableIds().has(regionId)) return;
   const playedTurn = world.turn;
   world.flashIds = new Set();
-  region.cells.forEach((c) => { world.cellOwner[c] = null; world.burned.add(c); world.burnedNames[c] = region.region; world.ruinTurn[c] = playedTurn; });
+  // 廃墟は竜のいる1区画（滅ぼした国の首都の区画）だけ（11/22 4回目の手直し）。
+  // 前の廃墟と、滅ぼした国の首都以外の区画は、この回の世界の時計で生き残った国が併合する
+  const ruinCell = region.capitalCell;
+  world.unclaimed = [...world.burned].concat(region.cells.filter((c) => c !== ruinCell));
+  region.cells.forEach((c) => { world.cellOwner[c] = null; });
+  world.burned = new Set([ruinCell]);
+  world.burnedNames[ruinCell] = region.region;
+  world.ruinTurn[ruinCell] = playedTurn;
   if (regionId === world.eggRegionId) world.eggRegion = region.region;
-  world.lastBurnedCell = region.capitalCell;
+  world.lastBurnedCell = ruinCell;
   world.regions = world.regions.filter((r) => r.id !== regionId);
   world.history.push({ turn: playedTurn, region: region.region, era: region.era, cells: region.cells.length });
   selectedRegionId = null;
   selectedBurnedCell = null;
   if (world.regions.length === 0) {
+    // 最後の国まで滅ぼしたら、残りの地も全部廃墟のまま
+    world.unclaimed.forEach((c) => { world.burned.add(c); if (!world.burnedNames[c]) world.burnedNames[c] = region.region; });
+    world.unclaimed = [];
     world.done = true;
     return;
   }
@@ -560,6 +578,13 @@ function advanceWorldClock(playedTurn, burnedRegion) {
   // 成長と併合の引き方は専用の乱数（ランのシード＋何回目か）
   const random = makeRandomGenerator(mixSeed(world.clockSeed, playedTurn));
   const eraCap = Math.min(WORLD_RULES.maxEra, playedTurn + 1 + WORLD_RULES.eraAheadOfTurn);
+  // 大きい国ほど先の時代まで育てる（区画1つにつき +1、最大 +2）
+  const capOf = (r) => Math.min(WORLD_RULES.maxEra,
+    eraCap + Math.min(WORLD_RULES.eraLeadMax, (r.cells.length - 1) * WORLD_RULES.eraLeadPerCell));
+  // 上限は下げる向きには使わない（前の回に先へ行った国を引き戻さない）
+  const raiseEra = (r) => { r.era = Math.max(r.era, Math.min(capOf(r), r.era + 1)); };
+  // この回に国土が増えた国（あとで 時代 +1）
+  const grewThisTurn = new Set();
   const after = burnedRegion;
 
   // 併合での変化は「この回の初めからその地域だった」ときだけ（育って変わった直後に、続けて変わらないように）
@@ -569,7 +594,7 @@ function advanceWorldClock(playedTurn, burnedRegion) {
   const reachedTop = [];
   world.regions.forEach((r) => {
     const before = r.era;
-    r.era = Math.min(eraCap, r.era + 1);
+    raiseEra(r);
     if (before < WORLD_RULES.maxEra && r.era === WORLD_RULES.maxEra) reachedTop.push(r);
   });
 
@@ -594,25 +619,29 @@ function advanceWorldClock(playedTurn, burnedRegion) {
     }
   }
 
-  // 廃墟の併合（11/22 手直し）：竜が滅ぼした土地は、次の回から生き残った国が併合する。
-  // 1回に1区画だけ、いちばん古い廃墟を、接している国のうち時代の高い国が取る。
-  // 滅ぼした直後の廃墟は残すので、次に攻められる国（廃墟に接する国）は必ずある
-  const oldRuins = [...world.burned].filter((c) => world.ruinTurn[c] < playedTurn)
-    .filter((c) => [...CELL_NEIGHBORS[c]].some((n) => world.cellOwner[n] !== null))
-    .sort((a, b) => world.ruinTurn[a] - world.ruinTurn[b] || a - b);
-  if (oldRuins.length > 0) {
-    const ruinCell = oldRuins[0];
-    const takers = [...new Set([...CELL_NEIGHBORS[ruinCell]].map((n) => world.cellOwner[n]).filter((o) => o !== null))]
-      .map(regionById);
-    const topEra = Math.max(...takers.map((r) => r.era));
-    const best = takers.filter((r) => r.era === topEra);
-    const taker = best[pickIndex(random, best.length)];
-    world.burned.delete(ruinCell);
-    world.cellOwner[ruinCell] = taker.id;
-    taker.cells.push(ruinCell);
-    world.flashIds.add(taker.id);
-    taker.story.push({ kind: "resettled", after, ruin: world.burnedNames[ruinCell] });
+  // 滅びた地の併合（11/22 4回目の手直し）：竜が去った前の廃墟と、滅ぼした国の首都以外の区画は、
+  // 接している生き残った国のうち時代の高い国が取る。間に別の空き区画しか無い区画は、隣が取られてから取る
+  let pending = world.unclaimed.slice().sort((a, b) => a - b);
+  world.unclaimed = [];
+  while (pending.length > 0) {
+    const claimable = pending.filter((c) => [...CELL_NEIGHBORS[c]].some((n) => world.cellOwner[n] !== null));
+    if (claimable.length === 0) break;
+    claimable.forEach((cell) => {
+      const takers = [...new Set([...CELL_NEIGHBORS[cell]].map((n) => world.cellOwner[n]).filter((o) => o !== null))]
+        .map(regionById);
+      const topEra = Math.max(...takers.map((r) => r.era));
+      const best = takers.filter((r) => r.era === topEra);
+      const taker = best[pickIndex(random, best.length)];
+      world.cellOwner[cell] = taker.id;
+      taker.cells.push(cell);
+      world.flashIds.add(taker.id);
+      grewThisTurn.add(taker.id);
+      taker.story.push({ kind: "resettled", after });
+    });
+    pending = pending.filter((c) => world.cellOwner[c] === null);
   }
+  // どの国にも接していない地は廃墟のまま（地図がつながっているので起きない想定）
+  pending.forEach((c) => world.burned.add(c));
 
   // 併合：0〜1回。時代 VIII が隣にいれば6割、それ以外は3割。時代の高い方が低い方を呑む
   const pairs = [];
@@ -621,21 +650,24 @@ function advanceWorldClock(playedTurn, burnedRegion) {
   }));
   // この回に生まれたばかりの特殊な地域は、地図に一度も出ないまま消えないよう併合に加えない
   const freshPairs = pairs.filter(([a, b]) => !world.flashIds.has(a.id) && !world.flashIds.has(b.id));
-  if (freshPairs.length === 0) return;
+  if (freshPairs.length === 0) { grewThisTurn.forEach((id) => raiseEra(regionById(id))); return; }
   const topPairs = freshPairs.filter(([a, b]) => a.era === WORLD_RULES.maxEra || b.era === WORLD_RULES.maxEra);
   const usePairs = topPairs.length > 0 ? topPairs : freshPairs;
   const chance = topPairs.length > 0 ? WORLD_RULES.mergeChanceTopEra : WORLD_RULES.mergeChance;
   const roll = random();
   const pair = usePairs[pickIndex(random, usePairs.length)];
-  if (roll >= chance) return;
+  if (roll >= chance) { grewThisTurn.forEach((id) => raiseEra(regionById(id))); return; }
   let [big, small] = pair;
   if (small.era > big.era || (small.era === big.era && random() < 0.5)) [big, small] = [small, big];
   const bigEraBeforeMerge = big.era;
   small.cells.forEach((c) => { world.cellOwner[c] = big.id; });
   big.absorbedRealms += 1 + small.absorbedRealms;
   big.cells = big.cells.concat(small.cells);
-  big.era = Math.min(eraCap, big.era + 1);   // 呑んだ側はさらに +1（上限は滅ぼした数+1）
   world.regions = world.regions.filter((r) => r.id !== small.id);
+  grewThisTurn.delete(small.id);
+  grewThisTurn.add(big.id);
+  // 国土が増えた国は 時代 +1（呑んだ側も、滅びた地を取った側も。1回に +1 まで）
+  grewThisTurn.forEach((id) => raiseEra(regionById(id)));
   world.merges += 1;
   world.flashIds.add(big.id);
   big.story.push({ kind: "absorbed", after, other: small.region });
@@ -689,7 +721,7 @@ function flavorOf(region) {
   else if (ruinsTaken > 0) growth.push(STRINGS.ruinsTaken);
   if (growth.length > changes.length && changes.length > 0) growth[changes.length] = STRINGS.furthermore + growth[changes.length];
   if (growth.length > 0) paragraphs.push(growth.join(""));
-  if (region.absorbedRealms > 0) paragraphs.push(STRINGS.bigRealm);
+  if (region.cells.length > 1) paragraphs.push(STRINGS.bigRealm);
   return paragraphs;
 }
 
@@ -882,7 +914,7 @@ function cityMarks(region, showCapital) {
   }
   // 首都：赤い二重丸（ゲーム画面の約束）。攻め込めない国では出さない（選べる印に見えるため。11/22 2回目の手直し）
   if (!showCapital) return out;
-  const big = region.absorbedRealms > 0;
+  const big = region.cells.length > 1;
   out += `<circle cx="${cx}" cy="${cy}" r="${big ? 7.5 : 5.5}" fill="${dark ? "#3b3554" : "#f4e7c6"}" stroke="#c41e1e" stroke-width="${big ? 2.2 : 1.7}"/>`;
   out += `<circle cx="${cx}" cy="${cy}" r="${big ? 3.2 : 2.4}" fill="#c41e1e"/>`;
   return out;
