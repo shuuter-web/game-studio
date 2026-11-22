@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.173.0";
+const GAME_VERSION = "v3.174.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -17651,10 +17651,17 @@ const BEACH_START_Y       = 4600;        // 開始地点の高さ（海と岩場
 const BEACH_TOWN_MARGIN   = 560;         // 町の中心を波打ち際・岩場からこれだけ離す（町の広がり×BEACH_TOWN_SPREAD）
 const BEACH_TOWN_SPREAD   = 1.6;        // 町の建物を中心から広げる倍率（家の下にヤドカリの体が入る隙間を作る）
 const BEACH_LAND_MARGIN   = 40;
-const BEACH_RELAX_ITERS   = 24;
-const BEACH_CAPITAL_GAP    = 30;          // 首都区画のヤドカリは城ヤドカリの体からこれだけ離す           // 重なったヤドカリを押し離す回数
-const BEACH_RELAX_GAP     = 0.95;        // 殻の半径の和×これまで離す（脚が少し重なるくらい）
-const BEACH_RELAX_CELL    = 160;         // 押し離すときに近くを探す格子（いちばん大きい殻の直径より大きく）          // 散らばった家を海・岩場から離す
+const BEACH_RELAX_ITERS   = 40;          // 重なったヤドカリを押し離す回数
+const BEACH_CAPITAL_GAP   = 30;          // 首都区画のヤドカリは城ヤドカリの体からこれだけ離す
+// v3.174.0（案帳 DT-293 手直し）: 「配置時点でヤドカリ同士が重ならないようにして下さい」（11/22 Shooter）。
+// 殻だけでなく脚・はさみまで含めた外形（殻の半径×BEACH_CRAB_FOOT の円）どうしが、BEACH_CRAB_GAP 以上離れるように置く。
+// 押し離しで離しきれなかったヤドカリは、近くの空いている砂浜を渦巻きに探して置き直す（必ず重ならない）
+const BEACH_CRAB_FOOT     = 1.5;         // 外形の半径＝殻の半径×これ（はさみの先が殻の半径の約1.45倍）
+const BEACH_CRAB_GAP      = 10;          // 外形どうしのすき間（px）
+const BEACH_RELAX_CELL    = 260;         // 押し離すときに近くを探す格子（いちばん大きい外形の直径より大きく）
+const BEACH_FREE_STEP     = 0.5;         // 空いている場所を探す渦巻きの歩幅（外形の半径×これ。BEACH_FREE_STEP_MIN より狭くしない）
+const BEACH_FREE_STEP_MIN = 18;
+const BEACH_FREE_TRIES    = 3000;        // 空いている場所を探す回数（渦巻きの外の端は歩幅×約66。見つからなければ押し離した位置のまま）
 const BEACH_BOSS_X_SWAY   = 300;         // 首都を浜の真ん中からずらす幅
 const BEACH_BOSS_Y_SWAY   = 250;
 const BEACH_SHELL_SCALE   = 1.45;         // 1軒のヤドカリの殻の半径＝家の半径×これ＋BEACH_SHELL_PAD
@@ -17683,7 +17690,11 @@ const BEACH_BIG_SHELL     = 1.35;  // 大きいヤドカリの殻の半径＝背
 const BEACH_OFFWORLD      = -50000;   // 潜っている間の家の置き場（当たり・射撃・オートプレイの狙いから外す）
 const BEACH_GRID_INTERVAL = 4;     // 動いたヤドカリがいるとき、当たりの格子を作り直す間隔（フレーム。MOVING_BUILDING_GRID_INTERVAL と同じ考え）
 const BEACH_MINIMAP_EVERY = 0.6;   // ミニマップのヤドカリの点を描き直す間隔（秒）
-const BEACH_LEG_STEP      = 12;    // 脚の絵が切り替わる歩幅（px）
+// v3.174.0（案帳 DT-293 手直し）: 「脚がダメです。生理的に気持ち悪い動きになってます」（11/22 Shooter）。
+// 細い脚6本を2コマで前後に振っていたのが、虫が這うようにちらついて見えていた。脚は殻の下からのぞく太く短い丸い脚2本ずつにして動かさず、
+// 歩いているのは体全体をゆっくり左右に揺らして見せる（揺れは毎フレーム計算するので、コマ切り替えのちらつきが出ない）
+const BEACH_WALK_SWAY_LEN = 46;    // 揺れ1往復の歩幅（px）
+const BEACH_WALK_SWAY_ANG = 0.06;  // 揺れの角度（rad）
 // 首都＝城ヤドカリ
 const BEACH_BOSS_BODY     = 2.1;   // 体の半径＝首都の半径×これ（城の絵が殻の上に載る大きさ）
 const BEACH_BOSS_TURN     = 0.6;   // 向きを変える速さ（rad/秒）。群れのほうへはさみを向ける
@@ -17791,6 +17802,10 @@ function buildBeachCrabs(buildings) {
     }
     groups.push(group);
   }
+  // 同じ集落のヤドカリはみんな同じ向き（v3.174.0・DT-293 手直し「同じ集落のヤドカリはみんな同じ向きにして下さい」）。
+  // 首都区画・城下の家も1つの集落として向きをそろえる。散らばった家は1匹ずつ
+  const townAngles = new Map();
+  const angleFor = (key) => { if (key === null) return random() * Math.PI * 2; if (!townAngles.has(key)) townAngles.set(key, random() * Math.PI * 2); return townAngles.get(key); };
   for (const group of groups) {
     let gx = 0, gy = 0, r2 = 0;
     for (const b of group) { gx += b.wx; gy += b.wy; r2 += b.radius * b.radius; }
@@ -17812,7 +17827,7 @@ function buildBeachCrabs(buildings) {
     const pad = R + BEACH_LAND_MARGIN;
     if (cy < beachSeaY(cx) + pad) cy = beachSeaY(cx) + pad + random() * 200;
     else if (cy > beachRockY(cx) - pad) cy = beachRockY(cx) - pad - random() * 200;
-    const ang = random() * Math.PI * 2;
+    const ang = angleFor(meta ? `t${group[0]._townIndex}` : capital ? "capital" : null);
     const crab = { x: cx, y: cy, ang, R, cls: big ? "big" : (BEACH_CRAB_CLASSES[group[0].size] ? group[0].size : "small"), big,
       dir: 0, calm: 0, land: 0, sub: 0, shut: false, walk: 0, buildings: group, subX: 0, subY: 0 };
     // 背の家の位置は体の向きに対して持つ（向きが変わると家も一緒に回る）。大きいヤドカリは殻の中に収まるよう詰める
@@ -17829,7 +17844,65 @@ function buildBeachCrabs(buildings) {
     beachCrabs.push(crab);
   }
   relaxBeachCrabs();
+  const dropped = settleBeachCrabs(boss);
+  if (dropped.size > 0) {   // 砂浜に収まらなかったふつうの家のヤドカリは置かない（後の時代ほど家が多く、浜に入りきらない）
+    beachCrabs = beachCrabs.filter(c => !dropped.has(c));
+    const gone = new Set();
+    for (const c of dropped) for (const b of c.buildings) gone.add(b);
+    for (let i = buildings.length - 1; i >= 0; i--) if (gone.has(buildings[i])) buildings.splice(i, 1);
+  }
   for (const crab of beachCrabs) placeBeachCrab(crab);
+}
+/** 置けなかったら省いてよいヤドカリか（ふつうの家だけを背負っている。卵持ち・花火要塞・役割・時代兵器・名所などは必ず置く） */
+function beachCrabDroppable(crab) {
+  for (const b of crab.buildings) if (b.isEggBearer || b.isFirework || b._emplacement || b._townRole || b._landmark || b._orbFacility) return false;
+  return true;
+}
+/** ヤドカリを置ける砂浜か（地図の中・海と岩場から離れている） */
+function beachCrabSpotOnLand(x, y, R) {
+  if (x < R + 60 || x > WORLD_W - R - 60) return false;
+  const pad = R + BEACH_LAND_MARGIN;
+  return y >= beachSeaY(x) + pad && y <= beachRockY(x) - pad;
+}
+/**
+ * 押し離しのあと、まだ外形が重なっているヤドカリを空いている砂浜へ置き直す（v3.174.0・DT-293 手直し）。
+ * 省けないヤドカリ（役割のある建物・卵持ちなど）→ 大きいヤドカリの順に置き、置いたものとは必ず重ならない場所を渦巻きに探す。
+ * 空きが見つからなかったふつうの家のヤドカリは、返す集合に入れる（呼び出し側で省く）。乱数は使わない
+ */
+function settleBeachCrabs(boss) {
+  const cell = BEACH_RELAX_CELL, grid = new Map();
+  const keyOf = (x, y) => ((x / cell) | 0) * 100003 + ((y / cell) | 0);
+  const bossFoot = boss ? boss.radius * BEACH_BOSS_BODY * BEACH_CRAB_FOOT : 0;
+  const free = (x, y, R) => {
+    if (!beachCrabSpotOnLand(x, y, R)) return false;
+    const F = R * BEACH_CRAB_FOOT;
+    if (boss && Math.hypot(x - boss.wx, y - boss.wy) < bossFoot + F + BEACH_CAPITAL_GAP) return false;
+    const kx = (x / cell) | 0, ky = (y / cell) | 0;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const list = grid.get((kx + dx) * 100003 + ky + dy);
+      if (!list) continue;
+      for (const o of list) if (Math.hypot(x - o.x, y - o.y) < F + o.R * BEACH_CRAB_FOOT + BEACH_CRAB_GAP) return false;
+    }
+    return true;
+  };
+  const dropped = new Set();
+  const order = beachCrabs.map(c => ({ c, keep: !beachCrabDroppable(c) }))
+    .sort((p, q) => (q.keep - p.keep) || (q.c.R - p.c.R)).map(o => o.c);
+  for (const crab of order) {
+    if (!free(crab.x, crab.y, crab.R)) {
+      const step = Math.max(BEACH_FREE_STEP_MIN, crab.R * BEACH_CRAB_FOOT * BEACH_FREE_STEP);
+      let found = false;
+      for (let k = 1; k <= BEACH_FREE_TRIES; k++) {   // アルキメデスの渦巻き（外へ行くほど間隔が同じ）
+        const a = Math.sqrt(k) * 3.5, r = step * Math.sqrt(k) * 1.2;
+        const x = crab.x + Math.cos(a) * r, y = crab.y + Math.sin(a) * r;
+        if (free(x, y, crab.R)) { crab.x = x; crab.y = y; found = true; break; }
+      }
+      if (!found && beachCrabDroppable(crab)) { dropped.add(crab); continue; }
+    }
+    const k = keyOf(crab.x, crab.y);
+    let list = grid.get(k); if (!list) grid.set(k, list = []); list.push(crab);
+  }
+  return dropped;
 }
 /** 重なったヤドカリを少しずつ押し離す（町の家は詰まって建つので、殻と脚が重ならないように）。乱数は使わない */
 function relaxBeachCrabs() {
@@ -17848,7 +17921,7 @@ function relaxBeachCrabs() {
         for (const j of list) {
           if (j <= i) continue;
           const b = beachCrabs[j];
-          const want = (a.R + b.R) * BEACH_RELAX_GAP;
+          const want = (a.R + b.R) * BEACH_CRAB_FOOT + BEACH_CRAB_GAP;
           let ex = b.x - a.x, ey = b.y - a.y, d = Math.hypot(ex, ey);
           if (d >= want) continue;
           if (d < 0.01) { ex = Math.cos(i + j); ey = Math.sin(i + j); d = 1; } else { ex /= d; ey /= d; }
@@ -17901,6 +17974,7 @@ function updateBeach(dt) {
   }
   const centroid = n > 0 ? { x: sx / n, y: sy / n } : { x: leader.x, y: leader.y };
   let moved = false;
+  let blockGrid = null;   // 歩いているヤドカリが1匹でもいれば、この歩で1回だけ作る（ぶつかり判定用）
   for (const crab of beachCrabs) {
     if (crab.shut) continue;
     if (crab.sub > 0) {
@@ -17931,8 +18005,11 @@ function updateBeach(dt) {
     if (crab.calm <= 0 && crab.land <= 0) continue;
     const step = cls.speed * dt;
     if (crab.calm > 0) crab.calm -= dt; else crab.land -= step;
-    crab.x += -Math.sin(crab.ang) * crab.dir * step;
-    crab.y += Math.cos(crab.ang) * crab.dir * step;
+    const nx = crab.x - Math.sin(crab.ang) * crab.dir * step, ny = crab.y + Math.cos(crab.ang) * crab.dir * step;
+    // v3.174.0（DT-293 手直し）: 逃げた先で別のヤドカリに乗り上げない。ぶつかる歩は進まない（逃げる気は残す）
+    if (!blockGrid) blockGrid = buildBeachBlockGrid();
+    if (beachCrabBlocked(blockGrid, crab, nx, ny)) continue;
+    crab.x = nx; crab.y = ny;
     crab.x = Math.max(crab.R + 60, Math.min(WORLD_W - crab.R - 60, crab.x));
     crab.walk += step;
     moved = true;
@@ -17948,6 +18025,31 @@ function updateBeach(dt) {
   }
   beachMinimapT -= dt;
   if (moved && beachMinimapT <= 0) { beachMinimapT = BEACH_MINIMAP_EVERY; minimapBaseDirty = true; }
+}
+/** 立っているヤドカリの格子（歩いたヤドカリの位置はこの歩の途中で古くなるが、1歩の移動は数px なので構わない） */
+function buildBeachBlockGrid() {
+  const cell = BEACH_RELAX_CELL, grid = new Map();
+  for (const c of beachCrabs) {
+    if (c.sub > 0) continue;
+    const k = ((c.x / cell) | 0) * 100003 + ((c.y / cell) | 0);
+    let list = grid.get(k); if (!list) grid.set(k, list = []); list.push(c);
+  }
+  return grid;
+}
+/** (x, y) へ進むと、ほかのヤドカリの外形に今より深く食い込むか（すでに重なっているものからは離れる向きなら通す） */
+function beachCrabBlocked(grid, crab, x, y) {
+  const cell = BEACH_RELAX_CELL, kx = (x / cell) | 0, ky = (y / cell) | 0;
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+    const list = grid.get((kx + dx) * 100003 + ky + dy);
+    if (!list) continue;
+    for (const o of list) {
+      if (o === crab || o.sub > 0) continue;
+      const want = (crab.R + o.R) * BEACH_CRAB_FOOT;
+      const d = Math.hypot(x - o.x, y - o.y);
+      if (d < want && d < Math.hypot(crab.x - o.x, crab.y - o.y)) return true;
+    }
+  }
+  return false;
 }
 /** 海に入った：水しぶきの輪を残して潜る。家は地図の外へ（当たらない・撃たない・狙われない） */
 function diveBeachCrab(crab) {
@@ -18121,17 +18223,11 @@ function beachCrabSprite(R, pose, big) {
   c.scale(S, S); c.translate(half, half);
   const C = BEACH_CRAB_COLORS, r = Rb;
   c.lineCap = "round"; c.lineJoin = "round";
-  if (pose !== "shut") {   // 脚（3本ずつ）。歩く絵は2コマで前後に振る
-    c.strokeStyle = C.leg; c.lineWidth = Math.max(1.3, r * 0.1);
-    for (const side of [-1, 1]) for (let k = 0; k < 3; k++) {
-      const bx = (-0.45 + 0.45 * k) * r, by = side * 0.62 * r;
-      const swing = (pose === "w0" ? (k % 2 ? 1 : -1) : pose === "w1" ? (k % 2 ? -1 : 1) : 0) * 0.22 * r;
-      const reach = pose === "dead" ? 0.55 : 1;
-      c.beginPath();
-      c.moveTo(bx, by);
-      c.lineTo(bx + swing * 0.5 + (k - 1) * 0.15 * r, by + side * 0.55 * r * reach);
-      c.lineTo(bx + swing + (k - 1) * 0.3 * r * reach, by + side * (pose === "dead" ? 0.75 : 1.02) * r);
-      c.stroke();
+  if (pose !== "shut") {   // 脚：殻の下からのぞく太く短い丸い脚を左右2本ずつ（動かさない。v3.174.0）
+    c.fillStyle = C.leg; c.strokeStyle = C.clawEdge; c.lineWidth = Math.max(1, r * 0.05);
+    const reach = pose === "dead" ? 0.9 : 1.04;
+    for (const side of [-1, 1]) for (const lx of [-0.3, 0.3]) {
+      c.beginPath(); c.ellipse(lx * r, side * reach * r, 0.17 * r, 0.13 * r, 0, 0, Math.PI * 2); c.fill(); c.stroke();
     }
   }
   if (pose !== "dead") {
@@ -18212,8 +18308,9 @@ function drawBeachCrabs() {
     if (crab.x < view.x0 || crab.x > view.x1 || crab.y < view.y0 || crab.y > view.y1) continue;
     const alive = beachCrabAlive(crab);
     const moving = alive && !crab.shut && (crab.calm > 0 || crab.land > 0);
-    const pose = !alive ? "dead" : crab.shut ? "shut" : moving ? ((crab.walk / BEACH_LEG_STEP | 0) % 2 ? "w1" : "w0") : "idle";
-    drawBeachSprite(beachCrabSprite(crab.R, pose, crab.big), crab.x, crab.y, crab.ang);
+    const pose = !alive ? "dead" : crab.shut ? "shut" : "idle";
+    const sway = moving ? Math.sin(crab.walk / BEACH_WALK_SWAY_LEN * Math.PI * 2) * BEACH_WALK_SWAY_ANG : 0;   // 歩くときは体全体をゆっくり揺らす
+    drawBeachSprite(beachCrabSprite(crab.R, pose, crab.big), crab.x, crab.y, crab.ang + sway);
     for (const b of crab.buildings) {
       if (!b.fallen && beachPlainHouse(b)) drawBeachSprite(beachHouseSprite(b.radius), b.wx, b.wy, crab.ang + b._crabFace);
       else drawSettlementOnLayer(ctx, b);   // 役割・時代兵器・大きい建物は時代の絵（廃墟も同じ）
@@ -18252,8 +18349,9 @@ function drawBeachBoss() {
     ctx.beginPath(); ctx.arc(boss.wx, boss.wy, BEACH_CLAW_R, B.clawA - Math.PI / 2, B.clawA + Math.PI / 2); ctx.stroke(); ctx.setLineDash([]);
   }
   const moving = !boss.fallen && (B.st === "land" || (B.st === "toSea" && Math.abs(wrapAngle(Math.PI - B.ang)) < 0.15));
-  const pose = boss.fallen ? "dead" : moving ? ((B.walk / (BEACH_LEG_STEP * 3) | 0) % 2 ? "w1" : "w0") : "idle";
-  drawBeachSprite(beachCrabSprite(R, pose, false), boss.wx, boss.wy, B.ang);
+  const pose = boss.fallen ? "dead" : "idle";
+  const sway = moving ? Math.sin(B.walk / (BEACH_WALK_SWAY_LEN * 3) * Math.PI * 2) * BEACH_WALK_SWAY_ANG * 0.6 : 0;
+  drawBeachSprite(beachCrabSprite(R, pose, false), boss.wx, boss.wy, B.ang + sway);
   for (const f of beachFx) {   // 薙ぎ払い：半円を白い弧が掃く
     if (f.kind !== "claw") continue;
     const u = Math.min(1, f.t / BEACH_CLAW_SWEEP);
@@ -51124,11 +51222,16 @@ function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, tailBody,
     // v3.168.0（DT-597）: 宝石の照り返し。付いていく竜と向きは同じだが、組の番号 k で向きのずれ・強さを変えるので一斉には光らない。
     // 絵に重ねた暗さのぶん照り返しも弱める（遠くの竜が本物より明るく光らないように）
     if (glintSet) {
-      const glintAlpha = OVERFLOW_ALPHA * (1 - OVERFLOW_SHADE) * gloss * gemGlintStrength(angle, k, 1);
+      const glintScale = OVERFLOW_ALPHA * (1 - OVERFLOW_SHADE) * gloss;
+      const glintAlpha = glintScale * gemGlintStrength(angle, k, 1);
       if (glintAlpha > GEM_GLINT_MIN_ALPHA) {
         ctx.globalAlpha = glintAlpha;
         ctx.globalCompositeOperation = "lighter";
         ctx.drawImage(glintSet[gemGlintImageIndex], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+        if (glintScale * gemGlintStrength2 > GEM_GLINT_MIN_ALPHA) {
+          ctx.globalAlpha = glintScale * gemGlintStrength2;
+          ctx.drawImage(glintSet[gemGlintImageIndex2], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+        }
       }
     }
     ctx.restore();
@@ -51381,6 +51484,11 @@ function drawBoids() {
         ctx.globalCompositeOperation = "lighter";
         ctx.drawImage(glintSet[gemGlintImageIndex], 0, 0, spritePx, spritePx,
           -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+        if (alpha * gloss * gemGlintStrength2 > GEM_GLINT_MIN_ALPHA) {   // v3.174.0: 腹の2本の窓が重なる向きだけ
+          ctx.globalAlpha = alpha * gloss * gemGlintStrength2;
+          ctx.drawImage(glintSet[gemGlintImageIndex2], 0, 0, spritePx, spritePx,
+            -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+        }
       }
     }
     ctx.globalAlpha = 1.0;
@@ -53544,17 +53652,29 @@ const DRAGON_GEM_GLINT = {
 };
 const GEM_GLINT_BELLY_FADE = 0.06;               // belly の手前この割合で段々に消す（切り口を見せない）
 const GEM_GLINT_SOURCES = [0, 1, 2, 3].map((i) => `assets/dragon_gem_glint_${i}.png`);
-const GEM_GLINT_HEADING = 0.35;                  // きらっとする向きの基準（ラジアン・画面の右やや下へ飛ぶ向き）。ここから120°おきに3つ
 // DT-597 見本4回目（Shooter「多すぎる。それぞれの光る幅は広すぎるので半分に。箇所も3箇所に」）:
 // 6か所（60°おき）・±8°で最大・±28°で消える → 3か所（120°おき）・±4°で最大・±14°で消える
 const GEM_GLINT_FULL = 4 * Math.PI / 180;        // この角度のずれまでは照り返しが最大
 const GEM_GLINT_EDGE = 14 * Math.PI / 180;       // ここまでで段々に消える
-// 窓どうしの間に照り返しが0の向きが 92° ずつあるので、照り返しの絵が切り替わるのは必ず照り返しが0のとき（いきなり切り替わらない）
-const GEM_GLINT_WINDOWS = [
-  { center: 0,                image: 3 },
-  { center: Math.PI * 2 / 3,  image: 1 },
-  { center: -Math.PI * 2 / 3, image: 0 },
+// v3.174.0（DT-597 手直し・11/22 Shooter「背中の中央が光るのをやめて、肩と、腹と、逆側の腹の3箇所に。
+// 光る角度はすべてその線が同じ角度に入るときに」）:
+// 照り返しの絵は細長い光の筋。どの筋も「画面の上でその筋が GEM_GLINT_LINE_ANGLE の向きにそろったとき」に光る
+// （見えない光が1つの向きから当たっていて、その向きにそろった筋だけが光る、という見え方。3つの筋の光る角度がそろう）。
+// 竜の向き heading のとき、絵の中で axis の向きの筋は画面で axis + 90°（絵は頭が上なので）+ heading を向くから、
+// 光る竜の向き＝ GEM_GLINT_LINE_ANGLE − axis − 90°。
+// axis は assets/dragon_gem_glint_N.png の光の筋の向き（絵の座標・頭が上・y が下向き、頭の側から尾の側へ向く）を測った値
+// （0番＝背中の中央 86°…使わない、1番＝左の腹 98°、2番＝右の腹 82°、3番＝肩 29°）。
+// 筋は向きを持たせて（頭→尾）1周に1回だけ光らせる。線として裏返しでも光らせると1周に6回になり、前に「多すぎる」となった数に戻るため
+const GEM_GLINT_LINES = [
+  { image: 3, axis: 29 * Math.PI / 180 },   // 肩
+  { image: 1, axis: 98 * Math.PI / 180 },   // 左の腹
+  { image: 2, axis: 82 * Math.PI / 180 },   // 右の腹
 ];
+// 光る筋の画面の向き。肩が光る竜の向きが前の版（右やや下へ飛ぶ向き・0.35rad）と同じになるように選んだ（139°）。
+// このとき腹の2本は竜が右上（−49°・−33°）へ飛ぶときに光る。左右の腹の筋はほぼ平行なので、光る向きが16°しか離れておらず
+// 窓の端が重なる。重なる向きでは2枚とも重ねる（いきなり切り替わらないように。描き足すのはその向きの竜だけ）
+const GEM_GLINT_LINE_ANGLE = 139 * Math.PI / 180;
+const GEM_GLINT_WINDOWS = GEM_GLINT_LINES.map((line) => ({ center: GEM_GLINT_LINE_ANGLE - line.axis - Math.PI / 2, image: line.image }));
 // 1匹ずつの照り返す向きのずれ（±この角度）と強さの個体差（この割合〜1）。竜の番号から決まる値で、乱数は使わない
 // （向きのずれがあるので、同じ向きに飛ぶ群れでも一度に全部は光らず、何匹かずつ順にきらっとする）
 const GEM_GLINT_HEADING_SPREAD = 7 * Math.PI / 180;
@@ -53571,6 +53691,8 @@ const GEM_GLINT_MASK_DIRS    = 16;               // 縮める・戻すときに�
 const gemGlintImages = [];                       // 読み込んだ照り返しの絵（GEM_GLINT_SOURCES の順）
 const gemGlintFrames = new Map();                // 竜種の key → 照り返しの絵（スプライトと同じ座標・胴体で切り抜き済み）の配列
 let gemGlintImageIndex = 0;                      // gemGlintStrength が選んだ絵（毎匹オブジェクトを作らないための戻り値）
+let gemGlintImageIndex2 = 0;                     // 窓が重なる向きで、もう1枚重ねる絵と強さ（無ければ強さ0）
+let gemGlintStrength2 = 0;
 
 /** 竜の番号 n から 0〜1 の決まった値（salt で系列を分ける）。ゲーム状態の乱数列には触らない */
 function gemGlintHash(n, salt) {
@@ -53585,18 +53707,23 @@ function gemGlintHash(n, salt) {
  * salt は本物の竜（0）と上限超えの見た目だけの竜（1）で番号の系列を分けるため。
  */
 function gemGlintStrength(heading, n, salt) {
-  const h = heading - GEM_GLINT_HEADING + (gemGlintHash(n, salt * 2 + 3) * 2 - 1) * GEM_GLINT_HEADING_SPREAD;
+  const h = heading + (gemGlintHash(n, salt * 2 + 3) * 2 - 1) * GEM_GLINT_HEADING_SPREAD;
+  let first = 0;
+  gemGlintStrength2 = 0;
   for (let w = 0; w < GEM_GLINT_WINDOWS.length; w++) {
     let off = h - GEM_GLINT_WINDOWS[w].center;
     off -= Math.round(off / (Math.PI * 2)) * Math.PI * 2;
     off = Math.abs(off);
     if (off >= GEM_GLINT_EDGE) continue;
-    gemGlintImageIndex = GEM_GLINT_WINDOWS[w].image;
     const t = Math.max(0, Math.min(1, (off - GEM_GLINT_FULL) / (GEM_GLINT_EDGE - GEM_GLINT_FULL)));
     const byAngle = 1 - t * t * (3 - 2 * t);
-    return byAngle * (GEM_GLINT_STRENGTH_MIN + (1 - GEM_GLINT_STRENGTH_MIN) * gemGlintHash(n, salt * 2 + 4));
+    if (first === 0) { gemGlintImageIndex = GEM_GLINT_WINDOWS[w].image; first = byAngle; }
+    else { gemGlintImageIndex2 = GEM_GLINT_WINDOWS[w].image; gemGlintStrength2 = byAngle; break; }   // v3.174.0: 腹の2本の窓は端が重なる
   }
-  return 0;
+  if (first === 0) return 0;
+  const k = GEM_GLINT_STRENGTH_MIN + (1 - GEM_GLINT_STRENGTH_MIN) * gemGlintHash(n, salt * 2 + 4);
+  gemGlintStrength2 *= k;
+  return first * k;
 }
 
 /**
