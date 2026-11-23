@@ -1326,7 +1326,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.179.0";
+const GAME_VERSION = "v3.180.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1424,8 +1424,48 @@ let runWorldSeed = 0;
 
 function withWorldRandom(seed, fn) {
   const saved = nextLogicRandom;
-  nextLogicRandom = makeRandomGenerator(seed >>> 0);
+  const worldGenerator = makeRandomGenerator(seed >>> 0);
+  worldRandomCalls = 0;
+  // 案帳 DT-602: 地図の指紋に「ここまでに乱数を何回引いたか」を入れるために数える（値は変えない）
+  nextLogicRandom = () => { worldRandomCalls++; return worldGenerator(); };
   try { return fn(); } finally { nextLogicRandom = saved; }
+}
+
+// -----------------------------------------------------------------
+// 案帳 DT-602: 地図の指紋
+// 同じ版・同じシードなのに Shooter の端末とヘッドレスで建物の数が違った（9217 と 9323）。
+// 地図を作る途中の区切りごとに「建物の数・乱数を引いた回数・並びの短い指紋」を控え、
+// デバッグの画面と 📝 の報告に出す。両方を見比べれば、どの区切りで分かれたかが1回で分かる。
+// 位置は 1/4px に丸めて混ぜる（ごく小さな計算の誤差では変わらず、置く・置かないの分かれ目で変わる）。
+// -----------------------------------------------------------------
+let worldRandomCalls = 0;
+let mapFingerprint = [];        // [{label, count, calls, hash}]
+let mapTownFingerprint = "";    // 町ごとの指紋（1町1文字）
+let mapFingerprintDebugSwitched = false;   // デバッグの「地域・時代を選んで始める」で作った地図か
+const MAP_FINGERPRINT_POSITION_SCALE = 4;
+const MAP_FINGERPRINT_HASH_DIGITS = 4;
+const MAP_FINGERPRINT_TOWN_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+function mapFingerprintHash(items) {
+  let hash = 0x811C9DC5;
+  const mix = (value) => { hash ^= value | 0; hash = Math.imul(hash, 0x01000193); };
+  for (const item of items) {
+    mix(Math.round((item.wx ?? item.x ?? 0) * MAP_FINGERPRINT_POSITION_SCALE));
+    mix(Math.round((item.wy ?? item.y ?? 0) * MAP_FINGERPRINT_POSITION_SCALE));
+    mix(Math.round((item.radius ?? 0) * MAP_FINGERPRINT_POSITION_SCALE));
+  }
+  mix(worldRandomCalls);
+  return hash >>> 0;
+}
+
+function mapFingerprintMark(label, items) {
+  const hash = mapFingerprintHash(items).toString(16).padStart(8, "0").slice(0, MAP_FINGERPRINT_HASH_DIGITS);
+  mapFingerprint.push({ label, count: items.length, calls: worldRandomCalls, hash });
+}
+
+/** 📝 の報告に入れる1行（区切りの名前は短い記号。並びは generateStageLayout の区切りの順） */
+function mapFingerprintReportText() {
+  return mapFingerprint.map(m => `${m.label}${m.count}/${m.calls}/${m.hash}`).join(" ");
 }
 
 reseedForNewRun();   // 起動直後のタイトル演出などにも乱数が要るため先に初期化しておく
@@ -1488,6 +1528,7 @@ function debugStartStage(era, shape) {
   if (gameState !== "playing") beginRun(flockSpecies);   // ラン外なら今の竜種でランを始めてから差し替える
   runStageIndex = Math.max(0, Math.min(RUN_STAGES - 1, era));
   startStage(shape);
+  mapFingerprintDebugSwitched = true;   // 案帳 DT-602: 報告に「デバッグで切り替えた地図」と出す
 }
 
 function debugUnlockAllContinents() {
@@ -1856,7 +1897,9 @@ function debugStatusLine() {
          `竜晶:${profile.crystals} / runs:${profile.runsStarted} / clears:${profile.clears} / ` +
          `動き:${move} / 反動:${rec} / ` +
          // v0.38: 不具合報告用。この値を ?seed= に渡すと同じランをやり直せる
-         `seed:${debugGetSeed()}${fixedSeedParam !== null ? "(固定)" : ""}`;
+         `seed:${debugGetSeed()}${fixedSeedParam !== null ? "(固定)" : ""}` +
+         // 案帳 DT-602: 地図の指紋（区切り 数/乱数を引いた回数/指紋）。報告の「地図の指紋」と同じ
+         `<br>地図の指紋: ${mapFingerprintReportText()}<br>町ごとの指紋: ${mapTownFingerprint}`;
 }
 
 /**
@@ -7682,6 +7725,9 @@ function quietStartArea(result) {
 
 function generateStageLayout(stageIndex) {
   const config = STAGE_CONFIGS[stageIndex];
+  mapFingerprint = [];   // 案帳 DT-602: 区切りごとの指紋を作り直す
+  mapTownFingerprint = "";
+  mapFingerprintDebugSwitched = false;
 
   // --- (1) ボスを先に配置する ---
   // ボス＋要塞リングが確実にマップ内に収まる位置を確保してから、
@@ -7711,6 +7757,7 @@ function generateStageLayout(stageIndex) {
 
   const boss = placeBossBuilding(stageIndex, config);
   boss._fixedTier = maxPowerTier();
+  mapFingerprintMark("首", [boss]);   // 案帳 DT-602: 首都の位置
   {
     const tb = FIXED_TIER_BOOST;   // v3.0.1: 警戒度の表とは切り離した「壁」の強さ
     boss.maxHp = Math.round(boss.maxHp * tb.hp * CAPITAL_POWER_MULT * CAPITAL_ASSUMED_SWARM_HP_MULT);   // DT-594
@@ -7735,6 +7782,7 @@ function generateStageLayout(stageIndex) {
                     : worldShape === SHAPE_BEACH     ? placeTownCenters(townWanted, boss.wx, boss.wy).filter(c => beachOnLand(c.x, c.y, BEACH_TOWN_MARGIN))   // v3.169.0（案帳 DT-293）: 砂浜の上だけ
                     : placeTownCenters(townWanted, boss.wx, boss.wy);
 
+  mapFingerprintMark("町", townCenters);   // 案帳 DT-602: 町の中心
   // v0.9.1: 街道網（町同士＋ボス首都を最小全域木で接続。描画は建物レイヤー再構築時）
   // v1.2.0: 城塞都市は環状道路＋門を抜ける放射道路（最小全域木だと城壁を突き抜けてしまう）
   if (worldShape === SHAPE_CITADEL) {
@@ -7755,6 +7803,7 @@ function generateStageLayout(stageIndex) {
   // v0.10: 川を1本引き、街道との交点に橋を架ける（背景の地理と攻略導線）
   if (worldShape === SHAPE_CONTINENT) riverPolyline = generateRiver(stageIndex);
   bridgePlacements = computeBridges(townRoadEdges, riverPolyline);
+  mapFingerprintMark("道", riverPolyline);   // 案帳 DT-602: 街道・川（川の点で混ぜる。数は川の点の数。街道は乱数を引いた回数に出る）
 
   // v0.7: ボスに近い町を「要塞都市」に指定する（Shooterプレイテスト:
   // ボス周辺にもっと強い都市が欲しい・強さが見た目で分かること）。
@@ -7851,7 +7900,10 @@ function generateStageLayout(stageIndex) {
     // 案帳 DT-499: 格上の街は町の縁を暗い赤の破線で囲む（要塞都市は従来の城郭リム）
     if (tmeta && offset > 0 && !isFortress) tmeta._townMeta._advanced = true;
     for (const b of townBuildings) result.push(b);
+    // 案帳 DT-602: 町ごとの指紋（1町1文字）。町の中の建物が違うとき、どの町かが分かる
+    mapTownFingerprint += MAP_FINGERPRINT_TOWN_ALPHABET[mapFingerprintHash(townBuildings) % MAP_FINGERPRINT_TOWN_ALPHABET.length];
   }
+  mapFingerprintMark("街", result);   // 案帳 DT-602: 町の建物ぜんぶ
 
   // v1.5.0: 小惑星帯は町ごとに岩塊へ載せる（以後は岩塊と一緒に動く）
   if (worldShape === SHAPE_ASTEROIDS) buildAsteroidRocks(result, townCenters, boss);
@@ -8076,6 +8128,7 @@ function generateStageLayout(stageIndex) {
   }
   // 卵持ちフラグをステージ全体に散らばらせて付与する（町ごとに均等割当）。
   assignEggBearers(result);
+  mapFingerprintMark("役", result);   // 案帳 DT-602: 首都区画と重なる棟を退け、城壁・役割の建物を置いた後
   // v1.4.0: 防衛線の本土は卵が多い（長城を抜けた先がご褒美＝成長のスパイク）
   if (frontlinePlan) {
     const rich = new Set(townCenters.map((c, i) => i).filter(i => townCenters[i].eggRich));
@@ -8186,20 +8239,24 @@ function generateStageLayout(stageIndex) {
   if (worldShape === SHAPE_SKYLAND) skyAddHamletIslands(tinyAll);   // v3.84.0（案帳 DT-124 手直し）: 出発地のまわりの小集落に島を付ける
   const tinyBuildings = tinyAll.filter(keepLoose);
   for (const b of tinyBuildings) result.push(b);
+  mapFingerprintMark("小", tinyBuildings);   // 案帳 DT-602: 散らした小集落
 
   // --- (4b) v0.11: 道沿いの集落 — 街道のところどころに小さな民家群を置く。
   // 「道があるから人が住む」の地理感＋壊す対象の追加供給。卵割当は tiny と同率。
   // v0.75: こちらも集落1箇所ごとの抽選（generateRoadsideHamlets の中）。
   const roadsideBuildings = generateRoadsideHamlets(result, townRoadEdges, boss, config).filter(keepLoose);
   for (const b of roadsideBuildings) result.push(b);
+  mapFingerprintMark("沿", roadsideBuildings);   // 案帳 DT-602: 道沿いの集落
 
   // --- (4c) v0.29: スタート地点周辺の「まばらな家」（街は置かず単独の家を散らす）---
   const startHouses = generateStartAreaHouses(result, config).filter(keepLoose);
   for (const b of startHouses) result.push(b);
+  mapFingerprintMark("始", startHouses);   // 案帳 DT-602: 開始地点のまばらな家
 
   // --- (4d) DT-590: 撃ってこない埋め草（街道沿いの家並み・町の外縁のにじみ・空き地の密集地。首都へ近づくほど濃い）---
   const fillers = generateFillerBuildings(result, townRoadEdges, townMetas, boss, config, keepLoose).filter(keepLoose);
   for (const b of fillers) result.push(b);
+  mapFingerprintMark("埋", fillers);   // 案帳 DT-602: 埋め草
 
   // --- (5) v0.6-p3: 首都城壁リング（STAGE 2以降。ゲート数はステージで減る） ---
   // v3.22.0: 大都会は城壁を立てない（碁盤の目の街に輪の壁は合わない。首都は高層ビル）
@@ -8230,6 +8287,7 @@ function generateStageLayout(stageIndex) {
     }
   }
 
+  mapFingerprintMark("壁", result);   // 案帳 DT-602: 城壁・線路の退けの後
   placeDragonCage(result, boss, stageIndex, config, keepLoose);   // v3.175.0（案帳 DT-089）
 
   // v3.68.0（案帳 DT-490）: 道のある地図では、開始地点まわりを田園にする（集落の間を縫う野道・空き地を埋める畑・林）。
@@ -8244,6 +8302,7 @@ function generateStageLayout(stageIndex) {
 
   // --- (6) v0.6-p3: 地形障害物（岩山・湖）を空白地帯へ散布 ---
   // settlements とは別系統（破壊不可）。モジュールスコープの terrainObstacles を更新する。
+  mapFingerprintMark("田", result);   // 案帳 DT-602: 竜の檻・田園の後
   terrainObstacles = generateTerrainObstacles(result, boss);
   if (worldShape === SHAPE_WASTELAND) terrainObstacles = terrainObstacles.filter(o => o.type !== "lake");   // v3.77.0（案帳 DT-509）: 乾いた荒地に湖は無い（岩山は残す）
   if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO || worldShape === SHAPE_SKYLAND || worldShape === SHAPE_BEACH) terrainObstacles = [];   // v3.169.0: 浜に岩山・湖は無い（岩場は beachPlan）   // v1.5.0: 宇宙に岩山・湖は無い／v3.22.0: 都会に空き地は無い
@@ -8337,6 +8396,7 @@ function generateStageLayout(stageIndex) {
   if (worldShape === SHAPE_FLOWER) attachQueenFlower(boss);    // v3.147.0（案帳 DT-339）: 首都は王宮を飲み込んだ女王花
   if (worldShape === SHAPE_MUSHROOM) attachMushBoss(boss);     // v3.134.0（案帳 DT-554）: 首都は動かない大キノコ「大笠茸」
   if (worldShape === SHAPE_BEACH) { buildBeachCrabs(result); attachBeachBoss(boss); }   // v3.169.0（案帳 DT-293）: 家をヤドカリに載せる・首都は城ヤドカリ
+  mapFingerprintMark("終", result);   // 案帳 DT-602: できあがった地図（岩山・森・動く敵・花火要塞の後）
 
   return result;
 }
@@ -54941,6 +55001,10 @@ function buildReportStatusLines() {
     if (enemyList.length > REPORT_ENEMY_KINDS_MAX) shown.push(`ほか${enemyList.length - REPORT_ENEMY_KINDS_MAX}種`);
     lines.push(`敵: ${shown.length ? shown.join("、") : STRINGS.reportNone}`);
     lines.push(`群れ: ${countAliveBoids()}匹 ／ Lv.${playerLevel} ／ 警戒度 ${powerTier + 1} ／ 残機 ${runLives}`);
+    // 案帳 DT-602: 同じシードで地図が違うときに、どこで分かれたかを見比べるための行
+    lines.push(`建物の総数: ${settlements.filter(s => !s.isBoss && !s._isWall).length}${mapFingerprintDebugSwitched ? "（デバッグで地域を切り替えた地図）" : ""}`);
+    lines.push(`地図の指紋: ${mapFingerprintReportText()}`);
+    lines.push(`町ごとの指紋: ${mapTownFingerprint}`);
   }
   lines.push(`画面: ${window.innerWidth}×${window.innerHeight}`);
   return lines;
