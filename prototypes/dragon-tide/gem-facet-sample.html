@@ -1,0 +1,1031 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>宝石のきらめき見本</title>
+<style>
+  :root {
+    --ground: #2a3324;
+    --panel: #222a1d;
+    --ink: #e9ecdf;
+    --muted: #a9b19b;
+    --line: #3d4834;
+    --accent: #e0c27a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #1b2117; color: var(--ink);
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 6px; }
+  h2 { font-size: 16px; margin: 28px 0 8px; }
+  h3 { font-size: 15px; margin: 0 0 8px; }
+  p, li { font-size: 13px; line-height: 1.65; color: var(--muted); }
+  .lead { margin: 0 0 8px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px; margin: 12px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .cell span { font-size: 12px; color: var(--muted); }
+  canvas { display: block; background: var(--ground); border-radius: 6px; }
+  .note { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .chips button { font: inherit; font-size: 13px; color: var(--ink); background: #2f3a27;
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+  .chips button[aria-pressed="true"] { background: var(--accent); color: #1b2117; border-color: var(--accent); }
+  #tray { width: 100%; }
+</style>
+</head>
+<body>
+<main>
+  <h1>宝石のきらめき見本：カットした面が光る手法くらべ</h1>
+  <p class="lead">DT-609 の手直し（11/23 Shooter「キラメキはもっと一般的ないろんな手法があると思うので、適切な手法のサンプルをいくつか。
+    カッティングされた宝石のいろんな面が光る様に」）。下の「手法」で切り替えて見比べる。どの手法も<strong>竜の向きだけ</strong>で光り方が決まる
+    （時間・乱数では光らない。同じ向きなら同じ光り方）。光は画面の左上から当たっている決まりで、竜が向きを変えると、その向きで光をはね返す面だけが光る。</p>
+  <ul>
+    <li><strong>① 星</strong>：前回の見本。面の位置に白い十字の星が出る（点で光る）。</li>
+    <li><strong>② 面が光る</strong>：体を三角の面に区切り（面は見えない）、光をはね返す向きに来た面だけを白く光らせる。面の形のまま光るので、カットした宝石らしく見える。</li>
+    <li><strong>③ 面が光る＋にじみ</strong>：②に、光った面のまわりの淡いにじみ（ブルーム）を足す。小さく表示しても光ったのが分かりやすい。</li>
+    <li><strong>④ 虹色のファイア</strong>：ダイヤの「ファイア」（光が虹色に分かれる）。光る面が、向きの少しの違いで赤→黄→緑→青と色を変える。</li>
+    <li><strong>⑤ 光の帯が面を渡る</strong>：向きが変わると光の帯が体の頭から尾へ渡っていき、帯にかかった面だけが光る（帯は面の形で区切れる）。</li>
+    <li><strong>⑥ ベクターの低ポリ宝石</strong>：画像生成の絵を使わず、体を三角の面で塗る。面ごとの明るさが向きで変わり、光をはね返す面は白く飛ぶ。面と光がぴったり合う。</li>
+  </ul>
+  <p class="note">「翼を上に」は、翼を胴より上に描き、翼の付け根（胴に重なる縦の境目）をぼかす描き方（下の4倍の絵でも見比べられる）。</p>
+
+  <h2>1. 群れ（線をなぞって動く）</h2>
+  <div class="card">
+    <div class="chips" id="speciesChips"></div>
+    <div class="chips" id="modeChips"></div>
+    <div class="chips" id="optionChips"></div>
+    <canvas id="tray"></canvas>
+    <p class="note" id="modeNote"></p>
+  </div>
+
+  <h2>2. 手法ごとの見え方（ゲームの大きさ・4倍）</h2>
+  <p class="note">4倍の絵はゆっくり向きを変える。上の「手法」「面の大きさ」「翼を上に」がここにも効く。</p>
+  <div id="compare"></div>
+</main>
+
+<script>
+"use strict";
+
+// ---- 竜の寸法 ----
+// current は index.html の DRAGON_PART_SPRITES と同じ値。
+// gem（新しい絵）は bodyPivot・wingAnchor を tools/sprite_meta.py で実測し、
+// shoulder だけは「いまの絵」の手詰め値を画像幅の比で写した（形は同じなので。
+// 実測の肩は極光で棘の幅を拾い y=109 になり、手詰めの y=185 と大きくずれるため）。
+// current＝いまのゲームの絵（v3.179.0・ルース路線）。gem＝全身宝石の絵（tools/gen_sprite_cloud.py と同じ生成を、
+// いまの絵を下絵に渡して形を保ったまま描き直した）。寸法は tools/sprite_meta.py の実測。
+// 極光の肩だけは実測が棘の幅を拾うので、いまの絵の手詰め値を幅の比で写した（gem-sample.html と同じ扱い）
+const SPECIES = [
+  {
+    key: "fire",
+    label: "火竜（ルビー）",
+    current: {
+      body: "assets/dragon_fire_gem_body.png", wing: "assets/dragon_fire_gem_wing.png",
+      bodyPivot: { cx: 62.7, cy: 169.4, w: 126, h: 320 },
+      shoulder: { left: { x: 16.5, y: 152 }, right: { x: 108.6, y: 152 } },
+      wingAnchor: { x: 319, y: 63.4 },
+    },
+    gem: {
+      body: "assets/dragon_fire_sparkle_body.png", wing: "assets/dragon_fire_sparkle_wing.png",
+      bodyPivot: { cx: 62.4, cy: 169.4, w: 126, h: 320 },
+      shoulder: { left: { x: 14.2, y: 152 }, right: { x: 110.8, y: 152 } },
+      wingAnchor: { x: 319, y: 64.1 },
+    },
+    gloss: 0.9, glintColor: "#ffe6ea", sparkColor: "255,236,240", belly: 0.70, hueJitter: 6, lightJitter: 0.06, wingAlpha: [0.85, 0.95],
+  },
+  {
+    key: "ice",
+    label: "氷竜（アクアマリン）",
+    current: {
+      body: "assets/dragon_ice_gem_body.png", wing: "assets/dragon_ice_gem_wing.png",
+      bodyPivot: { cx: 81.8, cy: 175.5, w: 165, h: 320 },
+      shoulder: { left: { x: 23.9, y: 151 }, right: { x: 140.2, y: 151 } },
+      wingAnchor: { x: 319, y: 69.6 },
+    },
+    gem: {
+      body: "assets/dragon_ice_sparkle_body.png", wing: "assets/dragon_ice_sparkle_wing.png",
+      bodyPivot: { cx: 81.5, cy: 175.6, w: 164, h: 320 },
+      shoulder: { left: { x: 21.4, y: 152 }, right: { x: 141.6, y: 152 } },
+      wingAnchor: { x: 319, y: 69.0 },
+    },
+    gloss: 0.9, glintColor: "#f2fbff", sparkColor: "240,252,255", belly: 0.72, hueJitter: 8, lightJitter: 0.05, wingAlpha: [0.78, 0.92],
+  },
+  {
+    key: "rainbow",
+    label: "極光（ダイヤモンドの虹色）",
+    current: {
+      body: "assets/dragon_rainbow_body.png", wing: "assets/dragon_rainbow_wing.png",
+      bodyPivot: { cx: 73.0, cy: 168.2, w: 147, h: 320 },
+      shoulder: { left: { x: 35.2, y: 185 }, right: { x: 110.8, y: 185 } },
+      wingAnchor: { x: 316, y: 58.4 },
+    },
+    gem: {
+      body: "assets/dragon_rainbow_sparkle_body.png", wing: "assets/dragon_rainbow_sparkle_wing.png",
+      bodyPivot: { cx: 70.8, cy: 168.2, w: 143, h: 320 },
+      shoulder: { left: { x: 34.2, y: 185 }, right: { x: 107.8, y: 185 } },
+      wingAnchor: { x: 319, y: 55.7 },
+    },
+    gloss: 0.85, glintColor: "#ffffff", sparkColor: "255,255,255", belly: 0.72, hueJitter: 16, lightJitter: 0.04, wingAlpha: [0.8, 0.94],
+  },
+];
+const BODY_DRAW_H = 27;   // ゲームと同じ（論理px）
+const WING_DRAW_W = 25;
+const GLINT_FILES = [0, 1, 2, 3].map((i) => `assets/dragon_gem_glint_${i}.png`);
+const TINT_VARIANTS = 3;          // 竜ごとの色むらは、読み込み時に作る3色から選ぶ
+const ZOOM = 4;
+const GROUND = "#2a3324";
+
+// ---- 決定的なハッシュ（Math.random は使わない） ----
+function hash01(index, salt) {
+  let h = (index * 374761393 + salt * 668265263) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("画像を読めない: " + src));
+    img.src = src;
+  });
+}
+
+function makeCanvas(w, h) {
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  return canvas;
+}
+
+// 色相回転と明るさを画素に掛けた写しを作る（読み込み時に1回だけ）。
+// file:// で開くと getImageData が使えないことがあるので、そのときは元画像を返す。
+function tintedCopy(img, hueDegrees, brightness) {
+  const canvas = makeCanvas(img.naturalWidth, img.naturalHeight);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+  try {
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const px = data.data;
+    const a = hueDegrees * Math.PI / 180, cos = Math.cos(a), sin = Math.sin(a);
+    // 輝度を保つ色相回転行列（CSS の hue-rotate と同じ係数）
+    const m = [
+      0.213 + cos * 0.787 - sin * 0.213, 0.715 - cos * 0.715 - sin * 0.715, 0.072 - cos * 0.072 + sin * 0.928,
+      0.213 - cos * 0.213 + sin * 0.143, 0.715 + cos * 0.285 + sin * 0.140, 0.072 - cos * 0.072 - sin * 0.283,
+      0.213 - cos * 0.213 - sin * 0.787, 0.715 - cos * 0.715 + sin * 0.715, 0.072 + cos * 0.928 + sin * 0.072,
+    ];
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i + 3] === 0) continue;
+      const r = px[i], g = px[i + 1], b = px[i + 2];
+      px[i]     = (m[0] * r + m[1] * g + m[2] * b) * brightness;
+      px[i + 1] = (m[3] * r + m[4] * g + m[5] * b) * brightness;
+      px[i + 2] = (m[6] * r + m[7] * g + m[8] * b) * brightness;
+    }
+    ctx.putImageData(data, 0, 0);
+  } catch (error) {
+    return img;
+  }
+  return canvas;
+}
+
+// DT-597 手直し（Shooter「照り返しが竜をはみ出している」「足側がはみ出てるのが気になる。腹までに収めて」）:
+// ゲーム（index.html の gemGlintBodyMask）と同じ。胴体の形を CUT だけ縮めて脚・腕を消し、REGROW だけ戻し、
+// belly（胴体の絵の高さの割合）より後ろ（後脚・尾）を消した形で切り抜く。単位は竜の論理px
+const GLINT_MASK_CUT = 2.0, GLINT_MASK_REGROW = 1.0, GLINT_MASK_FEATHER = 0.5, GLINT_MASK_DIRS = 16, GLINT_BELLY_FADE = 0.06;
+function glintBodyMask(bodyImg, sp) {
+  const w = bodyImg.naturalWidth, h = bodyImg.naturalHeight, pxPerLogical = h / BODY_DRAW_H;
+  const ring = (r) => {
+    const out = [];
+    for (const rr of [r * 0.5, r]) for (let k = 0; k < GLINT_MASK_DIRS; k++) {
+      const a = k * Math.PI * 2 / GLINT_MASK_DIRS;
+      out.push([Math.cos(a) * rr, Math.sin(a) * rr]);
+    }
+    return out;
+  };
+  const eroded = makeCanvas(w, h), ec = eroded.getContext("2d");
+  ec.drawImage(bodyImg, 0, 0, w, h);
+  ec.globalCompositeOperation = "destination-in";
+  for (const [dx, dy] of ring((sp.maskCut ?? GLINT_MASK_CUT) * pxPerLogical)) ec.drawImage(bodyImg, dx, dy, w, h);
+  const grown = makeCanvas(w, h), gc = grown.getContext("2d");
+  gc.drawImage(eroded, 0, 0);
+  for (const [dx, dy] of ring((sp.maskRegrow ?? GLINT_MASK_REGROW) * pxPerLogical)) gc.drawImage(eroded, dx, dy);
+  const soft = makeCanvas(w, h), sc = soft.getContext("2d");
+  const f = GLINT_MASK_FEATHER * pxPerLogical * 0.5;
+  sc.globalCompositeOperation = "lighter";
+  sc.globalAlpha = 1 / 9;
+  for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) sc.drawImage(grown, ox * f, oy * f);
+  sc.globalAlpha = 1;
+  sc.globalCompositeOperation = "destination-in";
+  sc.drawImage(bodyImg, 0, 0, w, h);
+  if (sp.belly !== undefined) {
+    const g = sc.createLinearGradient(0, h * (sp.belly - GLINT_BELLY_FADE), 0, h * sp.belly);
+    g.addColorStop(0, "rgba(0,0,0,1)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    sc.fillStyle = g;
+    sc.fillRect(0, 0, w, h);
+  }
+  return soft;
+}
+
+// 照り返しの絵を竜種ごとに胴体の内側の形で切り抜いておく（読み込み時に1回だけ）。
+// こうしておけば描画時は drawImage 1回で済み、竜の外・脚に光がはみ出さない。
+function maskedGlint(glintImg, bodyImg, color, bodyMask) {
+  const w = bodyImg.naturalWidth, h = bodyImg.naturalHeight;
+  const canvas = makeCanvas(w, h);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(glintImg, 0, 0, w, h);
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.drawImage(bodyMask, 0, 0, w, h);
+  return canvas;
+}
+
+// ---- ゲームの drawPartSeparatedDragon と同じ組み方 ----
+// spec: 寸法、parts: { body, wing }（Image か Canvas）、原点＝胴体ピボット、上が前
+function drawDragon(c, spec, parts, flapFactor, opts) {
+  const bodyImg = parts.body, wingImg = parts.wing;
+  const bodyNatW = spec.bodyPivot.w, bodyNatH = spec.bodyPivot.h;
+  const bodyDrawH = BODY_DRAW_H;
+  const bodyDrawW = bodyDrawH * (bodyNatW / bodyNatH);
+  const kx = bodyDrawW / bodyNatW, ky = bodyDrawH / bodyNatH;
+  const pivotX = spec.bodyPivot.cx * kx, pivotY = spec.bodyPivot.cy * ky;
+  const wingNatW = wingImg.naturalWidth || wingImg.width;
+  const wingNatH = wingImg.naturalHeight || wingImg.height;
+  const wingDrawH = WING_DRAW_W * (wingNatH / wingNatW);
+  const rootX = spec.wingAnchor.x * (WING_DRAW_W / wingNatW);
+  const rootY = spec.wingAnchor.y * (wingDrawH / wingNatH);
+  const shoulder = (raw) => ({ x: kx * (raw.x - spec.bodyPivot.cx), y: ky * (raw.y - spec.bodyPivot.cy) });
+  const left = shoulder(spec.shoulder.left), right = shoulder(spec.shoulder.right);
+
+  const wingAlpha = opts && opts.wingAlpha !== undefined ? opts.wingAlpha : 1;
+  // 11/23 手直し（Shooter「胴体が翼より表示優先が高いせいで足の下に翼が来ている。翼を上にして、縦の境界線はぼかす」）:
+  // wingOver のときは胴を先に描き、付け根をぼかした翼（parts.wingFaded）を上に重ねる
+  const wingOver = !!(opts && opts.wingOver && parts.wingFaded);
+  const drawWings = () => {
+    const img = wingOver ? parts.wingFaded : wingImg;
+    c.save();
+    c.globalAlpha = wingAlpha;
+    c.save();
+    c.translate(left.x, left.y);
+    c.scale(flapFactor, 1);
+    c.drawImage(img, -rootX, -rootY, WING_DRAW_W, wingDrawH);
+    c.restore();
+    c.save();
+    c.translate(right.x, right.y);
+    c.scale(-flapFactor, 1);
+    c.drawImage(img, -rootX, -rootY, WING_DRAW_W, wingDrawH);
+    c.restore();
+    c.restore();
+  };
+  if (!wingOver) drawWings();
+
+  const technique = opts && opts.technique;
+  if (technique === "vector" && opts.facetSet) drawFacetLayer(c, opts, parts.mask || bodyImg, bodyNatW, bodyNatH, -pivotX, -pivotY, bodyDrawW, bodyDrawH, "vector");
+  else c.drawImage(bodyImg, -pivotX, -pivotY, bodyDrawW, bodyDrawH);
+  // 照り返し：画像1枚を薄く重ねるだけ
+  if (opts && opts.glint && opts.glintAlpha > 0.01) {
+    c.save();
+    c.globalAlpha = Math.min(1, opts.glintAlpha);
+    c.globalCompositeOperation = "lighter";
+    c.drawImage(opts.glint, -pivotX, -pivotY, bodyDrawW, bodyDrawH);
+    if (opts.glint2 && opts.glintAlpha2 > 0.01) {   // 腹の2本の窓が重なる向きだけ、もう1枚
+      c.globalAlpha = Math.min(1, opts.glintAlpha2);
+      c.drawImage(opts.glint2, -pivotX, -pivotY, bodyDrawW, bodyDrawH);
+    }
+    c.restore();
+  }
+  // ②〜⑤：面が光る手法（三角の面を光らせて、胴の形で切り抜いて足す）
+  if (technique && technique !== "star" && technique !== "vector" && opts.facetSet) {
+    drawFacetLayer(c, opts, parts.mask || bodyImg, bodyNatW, bodyNatH, -pivotX, -pivotY, bodyDrawW, bodyDrawH, technique);
+  }
+  if (wingOver) drawWings();
+  // ① きらめき：面ごとの星。星は画面に対してまっすぐ（竜と一緒に回さない）
+  if (opts && opts.facets && (!technique || technique === "star")) {
+    c.save();
+    c.globalCompositeOperation = "lighter";
+    for (const f of opts.facets) {
+      const k = sparkleStrength(opts.heading, f);
+      if (k <= 0.01) continue;
+      const size = SPARKLE_SIZE * f.size * (0.4 + 0.6 * k);
+      c.save();
+      c.translate(f.x * kx - pivotX, f.y * ky - pivotY);
+      c.rotate(-(opts.heading + Math.PI / 2));
+      c.globalAlpha = k;
+      c.drawImage(opts.sparkle, -size, -size, size * 2, size * 2);
+      c.restore();
+    }
+    c.restore();
+  }
+}
+
+// ---- 照り返し：竜の向き（と地図上の位置）だけで決める ----
+// 光源は見せない・動かさない。「この向きを向いた竜はきらっとする」という向きを地図に1つ決めておくだけ。
+// 時間は使わないので、同じ位置・同じ向きの竜はいつでも同じ照り返しになる。
+// 群れが曲がると、先頭から順にその向きを通るので、光が群れの中を走って見える（イワシの群れのつもり）。
+const GLINT_HEADING = 0.35;  // 見比べの止めた竜の向き（肩が光る向き）
+// DT-597 4回目（Shooter「多すぎる。それぞれの光る幅は広すぎるので半分に。箇所も3箇所に」）:
+// 1か所の幅を半分に：±8°で最大・±28°で消える → ±4°で最大・±14°で消える
+const GLINT_FULL = 4 * Math.PI / 180; // この角度までは照り返しが最大
+const GLINT_EDGE = 14 * Math.PI / 180; // ここまでで段々に消える
+// 向きの窓は3つ（6か所 → 3か所）：120°おき。窓どうしの間に 92° ずつ照り返しが0の向きがあるので、
+// 照り返しの絵が切り替わるのは必ず照り返しが0のとき（いきなり切り替わらない）
+// DT-597 手直し（v3.174.0・11/22 Shooter「背中の中央が光るのをやめて、肩と、腹と、逆側の腹の3箇所に。光る角度はすべてその線が同じ角度に入るときに」）:
+// どの光の筋も、画面の上でその筋が GLINT_LINE_ANGLE の向きにそろったときに光る。ゲーム（index.html の GEM_GLINT_LINES）と同じ値
+// DT-597 手直し（v3.179.0・11/23 Shooter「左右の腹はどちらかを180度反対に。左腹の光る角度を180度ズラして」）: 左の腹は反対側の面なので筋の向きを裏返す
+const GLINT_LINES = [{ image: 3, axis: 29 }, { image: 1, axis: 98 + 180 }, { image: 2, axis: 82 }];   // 肩・左の腹・右の腹（絵の筋の向き・度）
+const GLINT_LINE_ANGLE = 139;
+const GLINT_WINDOWS = GLINT_LINES.map((l) => ({ center: (GLINT_LINE_ANGLE - l.axis - 90) * Math.PI / 180, image: l.image }));
+// 「角度＋位置」のとき：地図に固定した斜めの縞の上にいる竜だけが照り返す（縞は描かない）
+const STRIPE_ANGLE = 0.6;
+const STRIPE_SPACING = 150;
+
+function wrapAngle(a) {
+  while (a <= -Math.PI) a += Math.PI * 2;
+  while (a > Math.PI) a -= Math.PI * 2;
+  return a;
+}
+
+function smoothstep(edge0, edge1, x) {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+function stripeGain(x, y) {
+  const along = (x * Math.cos(STRIPE_ANGLE) + y * Math.sin(STRIPE_ANGLE)) / STRIPE_SPACING;
+  const wave = 0.5 + 0.5 * Math.cos(along * Math.PI * 2);
+  return smoothstep(0.3, 0.85, wave);
+}
+
+function glintFor(x, y, heading, usePosition) {
+  const out = { index: 0, strength: 0, index2: 0, strength2: 0 };
+  const byPosition = usePosition ? stripeGain(x, y) : 1;
+  for (const win of GLINT_WINDOWS) {
+    const off = Math.abs(wrapAngle(heading - win.center));
+    if (off >= GLINT_EDGE) continue;
+    const byAngle = 1 - smoothstep(GLINT_FULL, GLINT_EDGE, off);
+    if (out.strength === 0) { out.index = win.image; out.strength = byAngle * byPosition; }
+    else { out.index2 = win.image; out.strength2 = byAngle * byPosition; break; }
+  }
+  return out;
+}
+
+// ---- きらめき（全身宝石の路線で足したもの） ----
+// 体の面（ファセット）ごとに「光る向き」を1つ決めておき、竜の向きがその向きを通ったときだけ、その面に星が光る。
+// 時間も乱数も使わない（ランダムに光らせない）。面の場所と光る向きは竜ごとに固定（hash01）。
+const SPARKLE_FULL = 3 * Math.PI / 180;   // ここまでは星が最大
+const SPARKLE_EDGE = 10 * Math.PI / 180;  // ここまでで段々に消える
+const SPARKLE_SIZE = 5.2;                 // 星の腕の長さ（竜の論理px。胴の長さ 27px に対して）
+const SPARKLE_DENSITY = { few: 4, normal: 9, many: 16 };   // 1匹あたりの面の数
+const SPARKLE_SAMPLE_STEP = 6;            // 面を置ける場所を胴の形から拾う間隔（画像px）
+const SPARKLE_SPRITE_SIZE = 64;
+
+// 星の絵（白の十字＋にじみ）を1回だけ作る
+function makeSparkleSprite(rgb) {
+  const n = SPARKLE_SPRITE_SIZE, canvas = makeCanvas(n, n), c = canvas.getContext("2d");
+  const half = n / 2;
+  const glow = c.createRadialGradient(half, half, 0, half, half, half * 0.45);
+  glow.addColorStop(0, `rgba(${rgb},0.9)`);
+  glow.addColorStop(1, `rgba(${rgb},0)`);
+  c.fillStyle = glow;
+  c.fillRect(0, 0, n, n);
+  c.fillStyle = `rgba(${rgb},1)`;
+  for (const [w, h] of [[n, n * 0.06], [n * 0.06, n], [n * 0.55, n * 0.035], [n * 0.035, n * 0.55]]) {
+    // 細い菱形で十字の腕を描く（先が細る）
+    c.beginPath();
+    c.moveTo(half - w / 2, half); c.lineTo(half, half - h / 2); c.lineTo(half + w / 2, half); c.lineTo(half, half + h / 2);
+    c.closePath();
+    c.fill();
+  }
+  c.beginPath(); c.arc(half, half, n * 0.05, 0, Math.PI * 2); c.fill();
+  return canvas;
+}
+
+// 胴の形（照り返しと同じ、腹まで・縁の内側）から面を置ける点を拾う
+function sparkleSpotsFrom(mask) {
+  const spots = [];
+  try {
+    const c = mask.getContext("2d"), data = c.getImageData(0, 0, mask.width, mask.height).data;
+    for (let y = 0; y < mask.height; y += SPARKLE_SAMPLE_STEP)
+      for (let x = 0; x < mask.width; x += SPARKLE_SAMPLE_STEP)
+        if (data[(y * mask.width + x) * 4 + 3] > 200) spots.push({ x, y });
+  } catch (error) { /* file:// では読めない。そのときは胴の真ん中の線に並べる */ }
+  if (spots.length === 0) for (let k = 0; k < 20; k++) spots.push({ x: mask.width / 2, y: mask.height * (0.2 + 0.025 * k) });
+  return spots;
+}
+
+function sparkleFacets(sp, seed, count) {
+  const facets = [];
+  for (let k = 0; k < count; k++) {
+    const spot = sp.sparkleSpots[Math.floor(hash01(seed, 100 + k) * sp.sparkleSpots.length)];
+    facets.push({ x: spot.x, y: spot.y, angle: hash01(seed, 200 + k) * Math.PI * 2 - Math.PI, size: 0.7 + hash01(seed, 300 + k) * 0.6 });
+  }
+  return facets;
+}
+
+function sparkleStrength(heading, facet) {
+  const off = Math.abs(wrapAngle(heading - facet.angle));
+  return off >= SPARKLE_EDGE ? 0 : 1 - smoothstep(SPARKLE_FULL, SPARKLE_EDGE, off);
+}
+
+// ---- ②〜⑥ 面（ファセット）が光る手法 ----
+// 体（胴の絵の範囲）を、少しゆがめた三角の格子で面に区切る。面ごとに「面の向き」（体に対する角度 phi）を決めておき、
+// 竜の向き heading を足した「地図の上での面の向き」が光の向き LIGHT_ANGLE に近いときだけ、その面が光をはね返して光る。
+// 時間・乱数は使わない（面の形と向きは hash01 で竜種・色むらごとに固定）
+const LIGHT_ANGLE = -Math.PI * 0.75;          // 光は画面の左上から
+const FACET_FULL = 4 * Math.PI / 180;         // ここまでは最大に光る
+const FACET_EDGE = 13 * Math.PI / 180;        // ここまでで段々に消える
+const FIRE_EDGE = 22 * Math.PI / 180;         // ④ 虹色のファイア：色が変わりながら光る幅
+const FACET_SIZES = { coarse: 52, normal: 38, fine: 26 };   // 面の大きさ（胴の絵の画素。胴の絵は高さ320）
+const FACET_JITTER = 0.28;                    // 格子の点をずらす幅（面の大きさ×これ）
+const SHEEN_WIDTH = 0.07;                     // ⑤ 光の帯の幅（胴の長さに対して）
+const SHEEN_EDGE = 0.13;
+const BLOOM_SCALE = 2.6;                      // ③ にじみの大きさ（面の大きさ×これ）
+const VECTOR_PALETTES = {                     // ⑥ ベクターの面の色（暗い面・明るい面）
+  fire:    { dark: [96, 6, 26], light: [236, 64, 92] },
+  ice:     { dark: [20, 86, 120], light: [150, 232, 250] },
+  rainbow: { dark: [120, 120, 150], light: [246, 248, 255], hue: true },
+};
+let facetScratch = null;
+let bloomSprite = null;
+
+function facetMaskData(img) {
+  // 面の真ん中が胴の上にあるかを見るための透明度（file:// では読めないので、そのときは全部の面を使う）
+  try {
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    const c = makeCanvas(w, h).getContext("2d");
+    c.drawImage(img, 0, 0);
+    return { w, h, data: c.getImageData(0, 0, w, h).data };
+  } catch (error) { return null; }
+}
+
+function buildFacetSet(sp, size, seed) {
+  const key = size + "|" + seed;
+  sp.facetSets = sp.facetSets || {};
+  if (sp.facetSets[key]) return sp.facetSets[key];
+  const W = sp.gem.bodyPivot.w, H = sp.gem.bodyPivot.h, step = FACET_SIZES[size];
+  const rowH = step * 0.866;
+  const rows = Math.ceil(H / rowH) + 1, cols = Math.ceil(W / step) + 2;
+  const pt = [];
+  for (let r = 0; r <= rows; r++) {
+    pt.push([]);
+    for (let c = -1; c <= cols; c++) {
+      const id = (r * 97 + c + 7) * 13 + seed * 7919;
+      const jx = (hash01(id, 1) - 0.5) * 2 * FACET_JITTER * step, jy = (hash01(id, 2) - 0.5) * 2 * FACET_JITTER * step;
+      pt[r].push([c * step + (r % 2) * step / 2 + jx, r * rowH + jy]);
+    }
+  }
+  const mask = sp.maskData;
+  const onBody = (x, y) => {
+    if (!mask) return true;
+    const ix = Math.round(x / W * mask.w), iy = Math.round(y / H * mask.h);
+    if (ix < 0 || iy < 0 || ix >= mask.w || iy >= mask.h) return false;
+    return mask.data[(iy * mask.w + ix) * 4 + 3] > 40;
+  };
+  const facets = [];
+  const add = (a, b, c) => {
+    const cx = (a[0] + b[0] + c[0]) / 3, cy = (a[1] + b[1] + c[1]) / 3;
+    if (!onBody(cx, cy) && !onBody(a[0], a[1]) && !onBody(b[0], b[1]) && !onBody(c[0], c[1])) return;
+    const n = facets.length;
+    facets.push({ pts: [a, b, c], cx, cy, v: cy / H,
+      phi: hash01(seed * 131 + n, 41) * Math.PI * 2, gain: 0.65 + 0.35 * hash01(seed * 131 + n, 42),
+      hue: hash01(seed * 131 + n, 43) * 360 });
+  };
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols + 1; c++) {
+      const odd = r % 2 === 1;
+      const p00 = pt[r][c], p01 = pt[r][c + 1], p10 = pt[r + 1][c], p11 = pt[r + 1][c + 1];
+      if (!p01 || !p11) continue;
+      if (odd) { add(p00, p11, p10); add(p00, p01, p11); }
+      else { add(p00, p01, p10); add(p01, p11, p10); }
+    }
+  }
+  const set = { facets, step, W, H };
+  sp.facetSets[key] = set;
+  return set;
+}
+
+function makeBloomSprite() {
+  const n = 64, canvas = makeCanvas(n, n), c = canvas.getContext("2d");
+  const g = c.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+  g.addColorStop(0, "rgba(255,255,255,0.75)");
+  g.addColorStop(0.35, "rgba(255,255,255,0.25)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  c.fillStyle = g;
+  c.fillRect(0, 0, n, n);
+  return canvas;
+}
+
+/** 面の向きが光の向きからどれだけずれているか（-π〜π） */
+function facetOffset(facet, heading) { return wrapAngle(facet.phi + heading - LIGHT_ANGLE); }
+
+/** 面の光り方：[強さ 0〜1, 色 "r,g,b"] */
+function facetLight(technique, facet, heading, sp) {
+  const off = facetOffset(facet, heading);
+  if (technique === "fire") {
+    const a = Math.abs(off);
+    if (a >= FIRE_EDGE) return null;
+    const k = (1 - smoothstep(FIRE_EDGE * 0.45, FIRE_EDGE, a)) * facet.gain;
+    // ずれの向きで色を変える（-端＝赤 → 0＝黄緑 → +端＝青紫）。光の分かれ方（分散）のつもり
+    const hue = 10 + (off / FIRE_EDGE + 1) * 0.5 * 260;
+    return [k, hslToRgb(hue, 1, 0.68)];
+  }
+  if (technique === "sheen") {
+    // 光の帯：竜の向きが光の向きの±60°を通るあいだに、帯が頭（0）から尾（1）へ渡る
+    const u = (wrapAngle(heading - LIGHT_ANGLE) + Math.PI / 3) / (Math.PI * 2 / 3);
+    if (u < -0.2 || u > 1.2) return null;
+    const d = Math.abs(facet.v - u);
+    if (d >= SHEEN_EDGE) return null;
+    const k = (1 - smoothstep(SHEEN_WIDTH, SHEEN_EDGE, d)) * (0.45 + 0.55 * facet.gain * (0.5 + 0.5 * Math.cos(facet.phi * 3)));
+    return [k, sp.sparkColor];
+  }
+  const a = Math.abs(off);
+  if (a >= FACET_EDGE) return null;
+  return [(1 - smoothstep(FACET_FULL, FACET_EDGE, a)) * facet.gain, sp.sparkColor];
+}
+
+function hslToRgb(h, s, l) {
+  const k = (n) => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return `${Math.round(f(0) * 255)},${Math.round(f(8) * 255)},${Math.round(f(4) * 255)}`;
+}
+
+/**
+ * 面の層を手元の小さな canvas に描き、胴の形で切り抜いてから竜の上に重ねる。
+ * mode が "vector" のときは胴そのものを面で塗る（⑥）。ほかは光った面だけを足す（②〜⑤）
+ */
+function drawFacetLayer(c, opts, maskImg, natW, natH, x0, y0, drawW, drawH, mode) {
+  const set = opts.facetSet, sp = opts.species, heading = opts.heading;
+  const scale = Math.max(0.5, opts.pixelScale || 1);
+  const pw = Math.max(4, Math.ceil(drawW * scale)), ph = Math.max(4, Math.ceil(drawH * scale));
+  if (!facetScratch) facetScratch = makeCanvas(pw, ph);
+  if (facetScratch.width < pw || facetScratch.height < ph) { facetScratch.width = Math.max(facetScratch.width, pw); facetScratch.height = Math.max(facetScratch.height, ph); }
+  const g = facetScratch.getContext("2d");
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = "source-over";
+  g.globalAlpha = 1;
+  g.clearRect(0, 0, pw, ph);
+  g.setTransform(pw / natW, 0, 0, ph / natH, 0, 0);
+  const tri = (f) => { g.beginPath(); g.moveTo(f.pts[0][0], f.pts[0][1]); g.lineTo(f.pts[1][0], f.pts[1][1]); g.lineTo(f.pts[2][0], f.pts[2][1]); g.closePath(); };
+  let anyLit = false;
+  if (mode === "vector") {
+    const pal = VECTOR_PALETTES[sp.key];
+    for (const f of set.facets) {
+      // 面の明るさ：光の向きとのずれで決める（正面＝明るい、反対＝暗い）。光をはね返す向きでは白く飛ぶ
+      const off = facetOffset(f, heading);
+      const diffuse = 0.5 + 0.5 * Math.cos(off);
+      const t = 0.15 + 0.85 * diffuse * (0.7 + 0.3 * f.gain);
+      let r = pal.dark[0] + (pal.light[0] - pal.dark[0]) * t, gg = pal.dark[1] + (pal.light[1] - pal.dark[1]) * t, b = pal.dark[2] + (pal.light[2] - pal.dark[2]) * t;
+      if (pal.hue) { const [hr, hg, hb] = hslToRgb((f.hue + heading * 40) % 360, 0.55, 0.72).split(",").map(Number); r = r * 0.7 + hr * 0.3; gg = gg * 0.7 + hg * 0.3; b = b * 0.7 + hb * 0.3; }
+      const a = Math.abs(off);
+      const spec = a < FACET_EDGE ? (1 - smoothstep(FACET_FULL, FACET_EDGE, a)) * f.gain : 0;
+      r += (255 - r) * spec; gg += (255 - gg) * spec; b += (255 - b) * spec;
+      g.fillStyle = `rgb(${r | 0},${gg | 0},${b | 0})`;
+      tri(f); g.fill();
+      g.strokeStyle = `rgba(255,255,255,${0.18 + 0.4 * spec})`;
+      g.lineWidth = Math.max(1.2, natH / ph * 0.8);
+      g.stroke();
+    }
+    anyLit = true;
+  } else {
+    for (const f of set.facets) {
+      const lit = facetLight(mode, f, heading, sp);
+      if (!lit || lit[0] <= 0.02) continue;
+      anyLit = true;
+      g.globalAlpha = Math.min(1, lit[0] * 0.95);
+      g.fillStyle = `rgb(${lit[1]})`;
+      tri(f); g.fill();
+      g.strokeStyle = "rgba(255,255,255,1)";
+      g.lineWidth = Math.max(1, natH / ph * 0.9);
+      g.stroke();
+      if (mode === "bloom") {
+        if (!bloomSprite) bloomSprite = makeBloomSprite();
+        const R = set.step * BLOOM_SCALE * (0.5 + 0.5 * lit[0]);
+        g.globalAlpha = lit[0] * 0.8;
+        g.drawImage(bloomSprite, f.cx - R / 2, f.cy - R / 2, R, R);
+      }
+    }
+    g.globalAlpha = 1;
+  }
+  if (!anyLit) return;
+  // 胴の形で切り抜く（にじみだけは少しはみ出してよいので、③は切り抜いた後にもう一度薄く足す…はせず、胴の中に収める）
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = "destination-in";
+  g.drawImage(maskImg, 0, 0, pw, ph);
+  c.save();
+  if (mode !== "vector") c.globalCompositeOperation = "lighter";
+  c.drawImage(facetScratch, 0, 0, pw, ph, x0, y0, drawW, drawH);
+  if (mode === "vector") {   // 目・角・縁取りの線を残すため、生成した絵をうっすら重ねる
+    c.globalAlpha = 0.22;
+    c.globalCompositeOperation = "multiply";
+    c.drawImage(opts.bodyArt, x0, y0, drawW, drawH);
+  }
+  c.restore();
+}
+
+/** 翼の付け根（胴に重なる縦の境目）をぼかした写し。付け根から翼の幅の WING_FADE ぶんで透明→不透明にする */
+const WING_FADE = 0.22;
+function fadedWing(wingImg, anchorX) {
+  const w = wingImg.naturalWidth || wingImg.width, h = wingImg.naturalHeight || wingImg.height;
+  const canvas = makeCanvas(w, h), c = canvas.getContext("2d");
+  c.drawImage(wingImg, 0, 0);
+  c.globalCompositeOperation = "destination-in";
+  // 付け根は絵の右の端（anchorX）。付け根に近いほど薄く
+  const gr = c.createLinearGradient(anchorX, 0, anchorX - w * WING_FADE, 0);
+  gr.addColorStop(0, "rgba(0,0,0,0)");
+  gr.addColorStop(0.35, "rgba(0,0,0,0.35)");
+  gr.addColorStop(1, "rgba(0,0,0,1)");
+  c.fillStyle = gr;
+  c.fillRect(0, 0, w, h);
+  return canvas;
+}
+
+// ---- 読み込み ----
+async function loadAll() {
+  const glints = await Promise.all(GLINT_FILES.map(loadImage));
+  for (const sp of SPECIES) {
+    const [cb, cw, gb, gw] = await Promise.all([
+      loadImage(sp.current.body), loadImage(sp.current.wing), loadImage(sp.gem.body), loadImage(sp.gem.wing)]);
+    sp.currentParts = { body: cb, wing: cw };
+    sp.gemParts = { body: gb, wing: gw };
+    const bodyMask = glintBodyMask(gb, sp);
+    sp.glints = glints.map((g) => maskedGlint(g, gb, sp.glintColor, bodyMask));
+    sp.sparkleSpots = sparkleSpotsFrom(bodyMask);
+    sp.sparkleSprite = makeSparkleSprite(sp.sparkColor);
+    sp.maskData = facetMaskData(gb);
+    sp.gemParts.wingFaded = fadedWing(gw, sp.gem.wingAnchor.x);
+    sp.currentParts.wingFaded = fadedWing(cw, sp.current.wingAnchor.x);
+    sp.gemParts.mask = gb;
+    // 色むらの3色：色相を -j/0/+j、明るさを少しずらす
+    sp.variants = [];
+    for (let v = 0; v < TINT_VARIANTS; v++) {
+      const t = v - 1;
+      sp.variants.push({
+        body: tintedCopy(gb, t * sp.hueJitter, 1 + t * sp.lightJitter * (v === 0 ? 1 : 0.6)),
+        wing: tintedCopy(gw, t * sp.hueJitter, 1 + t * sp.lightJitter * (v === 0 ? 1 : 0.6)),
+      });
+      const last = sp.variants[sp.variants.length - 1];
+      last.wingFaded = fadedWing(last.wing, sp.gem.wingAnchor.x);
+      last.mask = gb;
+    }
+  }
+}
+
+function setupCanvas(canvas, cssW, cssH) {
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  return { ctx, dpr, w: cssW, h: cssH };
+}
+
+// ---- 1. 群れ：プレイヤーの引いた線（毎回ちがう形）をなぞって飛ぶ ----
+const state = { filter: "all", usePosition: false, showPath: true, glintOn: false, paused: false, sparkleOn: true, density: "normal", lookCurrent: false,
+  technique: "facet", facetSize: "normal", wingOver: false };
+const FLOCK_SPEED = 75;          // 群れの速さ（論理px/秒）
+const FLOCK_ALONG = 85;          // 群れの前後の広がり（半分）
+const FLOCK_ACROSS = 34;         // 群れの左右の広がり（半分）
+const DRAGONS_PER_SPECIES = 40;
+const DRAGONS_PER_SPECIES_MIXED = 12;
+const TRAY_HEIGHT = 440;
+const PATH_SAMPLES = 2400;
+// なぞる線は毎回ちがう形（DT-597 3回目・Shooter「サンプルの軌道はもっとランダムに」）。
+// 閉じた曲線にするため、ゆらぎの波（1〜PATH_HARMONICS 番目）を重ねて作り、枠に収める
+const PATH_HARMONICS = 7;
+let pathSeed = 1 + Math.floor(Date.now() % 100000);   // ページを開くたびに変わる（「軌道を変える」でも変わる）
+let trayView = null;
+let dragons = [];
+let path = null;
+
+function buildPath(width, height) {
+  const waves = [];
+  for (let k = 1; k <= PATH_HARMONICS; k++) {
+    // 高い波ほど小さく（大きくうねりつつ、ときどき小さく曲がる）
+    const amp = 1 / Math.pow(k, 1.1);
+    waves.push({ k, ax: amp * (hash01(pathSeed, k * 4) - 0.5), px: hash01(pathSeed, k * 4 + 1) * Math.PI * 2,
+                 ay: amp * (hash01(pathSeed, k * 4 + 2) - 0.5), py: hash01(pathSeed, k * 4 + 3) * Math.PI * 2 });
+  }
+  const raw = [];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i <= PATH_SAMPLES; i++) {
+    const u = (i / PATH_SAMPLES) * Math.PI * 2;
+    let x = 0, y = 0;
+    for (const w of waves) { x += w.ax * Math.sin(w.k * u + w.px); y += w.ay * Math.sin(w.k * u + w.py); }
+    raw.push({ x, y });
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const margin = FLOCK_ALONG * 0.6;
+  const sx = (width - margin * 2) / Math.max(1e-6, maxX - minX), sy = (height - margin * 2) / Math.max(1e-6, maxY - minY);
+  const points = [];
+  let length = 0;
+  for (let i = 0; i <= PATH_SAMPLES; i++) {
+    const p = { x: margin + (raw[i].x - minX) * sx, y: margin + (raw[i].y - minY) * sy, s: 0 };
+    if (i > 0) {
+      const q = points[i - 1];
+      length += Math.hypot(p.x - q.x, p.y - q.y);
+    }
+    p.s = length;
+    points.push(p);
+  }
+  return { points, length };
+}
+
+// 線の上の道のり s の点と向き
+function pointOnPath(s) {
+  const total = path.length;
+  s = ((s % total) + total) % total;
+  let lo = 0, hi = path.points.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (path.points[mid].s <= s) lo = mid; else hi = mid;
+  }
+  const a = path.points[lo], b = path.points[hi];
+  const t = (s - a.s) / Math.max(1e-6, b.s - a.s);
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, heading: Math.atan2(b.y - a.y, b.x - a.x) };
+}
+
+function buildDragons() {
+  dragons = [];
+  const pool = state.filter === "all" ? SPECIES : SPECIES.filter((s) => s.key === state.filter);
+  const count = state.filter === "all" ? DRAGONS_PER_SPECIES_MIXED : DRAGONS_PER_SPECIES;
+  const total = pool.length * count;
+  for (let n = 0; n < total; n++) {
+    const seed = n + 1;
+    const sp = pool[n % pool.length];
+    // 群れの中の持ち場：楕円の中に散らす（真ん中ほど密）
+    const radius = Math.sqrt(hash01(seed, 1));
+    const angle = hash01(seed, 2) * Math.PI * 2;
+    dragons.push({
+      sp,
+      along: Math.cos(angle) * radius * FLOCK_ALONG,
+      across: Math.sin(angle) * radius * FLOCK_ACROSS,
+      // 1匹ずつ向きが少し揺れる（同じ群れでも光る竜と光らない竜が混ざる）
+      wobble: 0.06 + hash01(seed, 3) * 0.1,
+      wobbleRate: 1.2 + hash01(seed, 11) * 1.6,
+      wobblePhase: hash01(seed, 12) * Math.PI * 2,
+      x: 0, y: 0, heading: 0,
+      variant: Math.floor(hash01(seed, 4) * TINT_VARIANTS),
+      wingAlpha: sp.wingAlpha[0] + (sp.wingAlpha[1] - sp.wingAlpha[0]) * hash01(seed, 6),
+      flapPhase: hash01(seed, 7) * Math.PI * 2,
+      flapRate: 5.5 + hash01(seed, 8) * 2.5,
+      scale: 0.94 + hash01(seed, 9) * 0.12,
+      facets: sparkleFacets(sp, seed, SPARKLE_DENSITY[state.density]),
+    });
+  }
+  stepTray(simTime);
+}
+
+function setupTray() {
+  const canvas = document.getElementById("tray");
+  const width = Math.max(300, Math.round(canvas.parentElement.clientWidth - 24));
+  trayView = setupCanvas(canvas, width, TRAY_HEIGHT);
+  path = buildPath(width, TRAY_HEIGHT);
+  buildDragons();
+}
+
+function stepTray(time) {
+  const flockS = time * FLOCK_SPEED;
+  for (const d of dragons) {
+    const p = pointOnPath(flockS + d.along);
+    const nx = -Math.sin(p.heading), ny = Math.cos(p.heading);
+    d.x = p.x + nx * d.across;
+    d.y = p.y + ny * d.across;
+    d.heading = p.heading + Math.sin(time * d.wobbleRate + d.wobblePhase) * d.wobble;
+  }
+}
+
+function drawTray(time) {
+  const { ctx, dpr, w, h } = trayView;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = GROUND;
+  ctx.fillRect(0, 0, w, h);
+  if (state.showPath) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 7]);
+    ctx.beginPath();
+    for (let i = 0; i < path.points.length; i++) {
+      const p = path.points[i];
+      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  for (const d of dragons) {
+    const g = glintFor(d.x, d.y, d.heading, state.usePosition);
+    const parts = state.lookCurrent ? d.sp.currentParts : d.sp.variants[d.variant];
+    const flap = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(time * d.flapRate + d.flapPhase));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(d.x, d.y);
+    // 画像の上＝前なので、進行方向に +90° 足して回す
+    ctx.rotate(d.heading + Math.PI / 2);
+    ctx.scale(d.scale, d.scale);
+    if (state.lookCurrent) { drawDragon(ctx, d.sp.current, parts, flap, { wingOver: state.wingOver }); continue; }
+    drawDragon(ctx, d.sp.gem, parts, flap, {
+      technique: state.sparkleOn ? state.technique : null, species: d.sp, bodyArt: parts.body,
+      facetSet: buildFacetSet(d.sp, state.facetSize, d.variant + 1), pixelScale: dpr * d.scale, wingOver: state.wingOver,
+      wingAlpha: d.wingAlpha,
+      heading: d.heading, facets: state.sparkleOn ? d.facets : null, sparkle: d.sp.sparkleSprite,
+      glint: state.glintOn ? d.sp.glints[g.index] : null,
+      glintAlpha: g.strength * d.sp.gloss,
+      glint2: state.glintOn ? d.sp.glints[g.index2] : null,
+      glintAlpha2: g.strength2 * d.sp.gloss,
+    });
+  }
+}
+
+// ---- 2. 見比べ ----
+const comparePanels = [];
+const COMPARE_TURN_RATE = 0.45;  // 4倍の新しい絵が向きを変える速さ（ラジアン/秒）
+
+function buildCompare() {
+  const root = document.getElementById("compare");
+  for (const sp of SPECIES) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const title = document.createElement("h3");
+    title.textContent = sp.label;
+    card.appendChild(title);
+    const row = document.createElement("div");
+    row.className = "row";
+    const addCell = (labelText, w, h, kind, zoom) => {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      const canvas = document.createElement("canvas");
+      const label = document.createElement("span");
+      label.textContent = labelText;
+      cell.appendChild(canvas);
+      cell.appendChild(label);
+      row.appendChild(cell);
+      comparePanels.push({ sp, kind, zoom, view: setupCanvas(canvas, w, h), facets: sparkleFacets(sp, 777, SPARKLE_DENSITY.many) });
+    };
+    addCell("いまの絵（等倍）", 76, 64, "current", 1);
+    addCell("選んだ手法（等倍）", 76, 64, "gem", 1);
+    addCell("いまの絵（4倍）", 220, 170, "current", ZOOM);
+    addCell("選んだ手法（4倍・回る）", 220, 170, "gem", ZOOM);
+    card.appendChild(row);
+    root.appendChild(card);
+  }
+}
+
+function drawCompare(time) {
+  for (const p of comparePanels) {
+    const { ctx, dpr, w, h } = p.view;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = GROUND;
+    ctx.fillRect(0, 0, w, h);
+    ctx.translate(w / 2, h / 2 + 2 * p.zoom);
+    ctx.scale(p.zoom, p.zoom);
+    if (p.kind === "current") {
+      drawDragon(ctx, p.sp.current, p.sp.currentParts, 1, { wingOver: state.wingOver });
+      continue;
+    }
+    // 4倍の方はゆっくり回し、決まった向きを通るときだけ照り返しが入る様子を見せる
+    const heading = p.zoom > 1 ? -Math.PI / 2 + time * COMPARE_TURN_RATE : GLINT_HEADING;
+    const g = glintFor(0, 0, heading, false);
+    ctx.rotate(heading + Math.PI / 2);
+    drawDragon(ctx, p.sp.gem, p.sp.gemParts, 1, {
+      glint: state.glintOn ? p.sp.glints[g.index] : null, glintAlpha: g.strength * p.sp.gloss, wingAlpha: p.sp.wingAlpha[1],
+      glint2: state.glintOn ? p.sp.glints[g.index2] : null, glintAlpha2: g.strength2 * p.sp.gloss,
+      heading, facets: p.facets, sparkle: p.sp.sparkleSprite,
+      technique: state.technique, species: p.sp, bodyArt: p.sp.gemParts.body,
+      facetSet: buildFacetSet(p.sp, state.facetSize, 1), pixelScale: dpr * p.zoom, wingOver: state.wingOver });
+  }
+}
+
+// ---- ボタン ----
+const MODE_NOTES = {
+  angle: "角度だけ：決まった向き（120°おきに3か所。それぞれ±4°で最大、±14°までで段々に消える）を向いた竜だけが照り返す。群れが曲がると先頭から順に光が走る。",
+  position: "角度＋位置：上の条件に加えて、地図に固定した斜めの縞（見えない）の上にいるときだけ照り返す。同じ場所を同じ向きで通れば毎回同じところで光る。",
+};
+
+function makeChip(parent, label, pressed, onClick) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.setAttribute("aria-pressed", String(pressed));
+  b.addEventListener("click", () => onClick(b));
+  parent.appendChild(b);
+  return b;
+}
+
+const TECHNIQUES = [
+  ["star", "① 星"], ["facet", "② 面が光る"], ["bloom", "③ 面＋にじみ"], ["fire", "④ 虹色のファイア"], ["sheen", "⑤ 光の帯"], ["vector", "⑥ ベクターの低ポリ"],
+];
+function buildChips() {
+  const techniqueChips = document.createElement("div");
+  techniqueChips.className = "chips";
+  document.getElementById("speciesChips").before(techniqueChips);
+  for (const [key, label] of TECHNIQUES) {
+    makeChip(techniqueChips, label, state.technique === key, (b) => {
+      state.technique = key;
+      for (const other of techniqueChips.children) other.setAttribute("aria-pressed", "false");
+      b.setAttribute("aria-pressed", "true");
+    });
+  }
+  const sizeChips = document.createElement("div");
+  sizeChips.className = "chips";
+  techniqueChips.after(sizeChips);
+  for (const [key, label] of [["coarse", "面：大きい"], ["normal", "面：ふつう"], ["fine", "面：細かい"]]) {
+    makeChip(sizeChips, label, state.facetSize === key, (b) => {
+      state.facetSize = key;
+      for (const other of sizeChips.children) other.setAttribute("aria-pressed", "false");
+      b.setAttribute("aria-pressed", "true");
+    });
+  }
+  makeChip(sizeChips, "翼を上に（付け根をぼかす）", state.wingOver, (b) => {
+    state.wingOver = !state.wingOver;
+    b.setAttribute("aria-pressed", String(state.wingOver));
+  });
+  const speciesChips = document.getElementById("speciesChips");
+  const options = [{ key: "all", label: "全部まぜる" }].concat(
+    SPECIES.map((s) => ({ key: s.key, label: s.label.replace(/（.*/, "") })));
+  for (const o of options) {
+    makeChip(speciesChips, o.label, state.filter === o.key, (b) => {
+      state.filter = o.key;
+      for (const other of speciesChips.children) other.setAttribute("aria-pressed", "false");
+      b.setAttribute("aria-pressed", "true");
+      buildDragons();
+    });
+  }
+  const modeChips = document.getElementById("modeChips");
+  const note = document.getElementById("modeNote");
+  const modes = [{ key: "angle", label: "角度だけ" }, { key: "position", label: "角度＋位置" }];
+  for (const m of modes) {
+    makeChip(modeChips, m.label, (m.key === "position") === state.usePosition, (b) => {
+      state.usePosition = m.key === "position";
+      for (const other of modeChips.children) other.setAttribute("aria-pressed", "false");
+      b.setAttribute("aria-pressed", "true");
+      note.textContent = MODE_NOTES[m.key];
+    });
+  }
+  note.textContent = MODE_NOTES[state.usePosition ? "position" : "angle"];
+  const optionChips = document.getElementById("optionChips");
+  const toggles = [
+    { prop: "lookCurrent", label: "いまの絵で見る" },
+    { prop: "sparkleOn", label: "きらめき（手法）" },
+    { prop: "glintOn", label: "照り返し" },
+    { prop: "showPath", label: "なぞる線" },
+    { prop: "paused", label: "止める" },
+  ];
+  makeChip(optionChips, "軌道を変える", false, () => { pathSeed++; setupTray(); });
+  const densityChips = document.createElement("div");
+  densityChips.className = "chips";
+  optionChips.after(densityChips);
+  for (const [key, label] of [["few", "①の星：少なめ（面4つ）"], ["normal", "①の星：ふつう（9つ）"], ["many", "①の星：多め（16）"]]) {
+    makeChip(densityChips, label, state.density === key, (b) => {
+      state.density = key;
+      for (const other of densityChips.children) other.setAttribute("aria-pressed", "false");
+      b.setAttribute("aria-pressed", "true");
+      buildDragons();
+    });
+  }
+  for (const t of toggles) {
+    makeChip(optionChips, t.label, state[t.prop], (b) => {
+      state[t.prop] = !state[t.prop];
+      b.setAttribute("aria-pressed", String(state[t.prop]));
+    });
+  }
+}
+
+let simTime = 0;
+let lastFrame = 0;
+function frame(now) {
+  const dt = Math.min(0.05, lastFrame ? (now - lastFrame) / 1000 : 0);
+  lastFrame = now;
+  if (!state.paused) {
+    simTime += dt;
+    stepTray(simTime);
+  }
+  drawCompare(simTime);
+  drawTray(simTime);
+  requestAnimationFrame(frame);
+}
+
+loadAll().then(() => {
+  // ?t=秒 でその時刻から始める、?mode=position で「角度＋位置」から始める（スクリーンショットの確認用）
+  const params = new URLSearchParams(location.search);
+  const startAt = Number(params.get("t"));
+  if (startAt > 0) simTime = startAt;
+  if (params.get("mode") === "position") state.usePosition = true;
+  if (params.get("tech")) state.technique = params.get("tech");
+  if (params.get("wing") === "over") state.wingOver = true;
+  buildCompare();
+  buildChips();
+  setupTray();
+  requestAnimationFrame(frame);
+}).catch((error) => {
+  const p = document.createElement("p");
+  p.textContent = String(error.message || error);
+  document.querySelector("main").prepend(p);
+});
+</script>
+</body>
+</html>
