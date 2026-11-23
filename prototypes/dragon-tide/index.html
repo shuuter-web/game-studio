@@ -1326,7 +1326,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.180.0";
+const GAME_VERSION = "v3.181.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1422,13 +1422,169 @@ function debugGetSeed() { return currentSeedText; }
 // それまでの乱数の消費数から完全に独立する。
 let runWorldSeed = 0;
 
+// -----------------------------------------------------------------
+// 案帳 DT-602（v3.181.0）: 地図作りの間だけ使う「どのブラウザでも同じ答えになる」計算。
+// 同じ版・同じシードで、Shooter の iPhone（Safari・Chrome＝どちらも WebKit）とこちらの Chromium で地図が違った。
+// 地図の指紋を見比べると、乱数を引いた回数も建物の数も同じまま「埋め草」の並びから分かれていた。
+// Math.sin・cos・atan2・hypot・log・exp・pow は仕様で答えの最後の桁までは決まっておらず、ブラウザの作りで1桁違うことがある。
+// ヘッドレスでこれらの答えを最後の1桁だけずらすと、Shooter の地図と同じ区切り（埋・田）で分かれた（hypot をずらすと田の数も同じ 10036）。
+// そこで地図を作る間（withWorldRandom の中）だけ、足し算・掛け算・割り算・平方根（この4つは仕様で答えが1つに決まる）
+// だけで組んだ版（fdlibm と同じ式）に差し替える。遊んでいる間の計算は今までどおりブラウザの Math を使う（速さのため）。
+// -----------------------------------------------------------------
+const PortableMath = (() => {
+  const view = new DataView(new ArrayBuffer(8));
+  const highWord = (x) => { view.setFloat64(0, x, true); return view.getUint32(4, true); };
+  /** 2 の k 乗（-1022 ≦ k ≦ 1023 を、ビットから直に作る） */
+  const pow2 = (k) => { view.setUint32(0, 0, true); view.setUint32(4, (k + 1023) << 20, true); return view.getFloat64(0, true); };
+  const scale = (y, k) => {
+    if (k > 1023) return y * pow2(1023) * pow2(k - 1023);
+    if (k < -1022) return y * pow2(-1022) * pow2(k + 1022);
+    return y * pow2(k);
+  };
+  // --- sin・cos（fdlibm の __rem_pio2 の中くらいの引数向けと __kernel_sin・__kernel_cos） ---
+  const INV_PIO2 = 6.36619772367581382433e-01;
+  const PIO2_1 = 1.57079632673412561417e+00, PIO2_2 = 6.07710050630396597660e-11, PIO2_3 = 2.02226624871116645580e-21;
+  const S1 = -1.66666666666666324348e-01, S2 = 8.33333333332248946124e-03, S3 = -1.98412698298579493134e-04,
+        S4 = 2.75573137070700676789e-06, S5 = -2.50507602534068634195e-08, S6 = 1.58969099521155010221e-10;
+  const C1 = 4.16666666666666019037e-02, C2 = -1.38888888888741095749e-03, C3 = 2.48015872894767294178e-05,
+        C4 = -2.75573143513906633035e-07, C5 = 2.08757232129817482790e-09, C6 = -1.13596475577881948265e-11;
+  const kernelSin = (x) => { const z = x * x, v = z * x, r = S2 + z * (S3 + z * (S4 + z * (S5 + z * S6))); return x + v * (S1 + z * r); };
+  const kernelCos = (x) => {
+    const z = x * x, r = z * (C1 + z * (C2 + z * (C3 + z * (C4 + z * (C5 + z * C6)))));
+    const hz = 0.5 * z, w = 1 - hz;
+    return w + (((1 - w) - hz) + z * r);
+  };
+  // 地図で使う角度は数千までなので、π/2 を3つに割った定数での引き戻しで足りる（n が 2^20 を超える角度は来ない）
+  const reduce = (x) => {
+    const n = Math.round(x * INV_PIO2);
+    return [((x - n * PIO2_1) - n * PIO2_2) - n * PIO2_3, n & 3];
+  };
+  const sin = (x) => {
+    if (!isFinite(x)) return NaN;
+    if (Math.abs(x) <= 0.7853981633974483) return kernelSin(x);
+    const [r, q] = reduce(x);
+    return q === 0 ? kernelSin(r) : q === 1 ? kernelCos(r) : q === 2 ? -kernelSin(r) : -kernelCos(r);
+  };
+  const cos = (x) => {
+    if (!isFinite(x)) return NaN;
+    if (Math.abs(x) <= 0.7853981633974483) return kernelCos(x);
+    const [r, q] = reduce(x);
+    return q === 0 ? kernelCos(r) : q === 1 ? -kernelSin(r) : q === 2 ? -kernelCos(r) : kernelSin(r);
+  };
+  // --- atan・atan2（fdlibm の s_atan・e_atan2） ---
+  const ATAN_HI = [4.63647609000806093515e-01, 7.85398163397448278999e-01, 9.82793723247329054082e-01, 1.57079632679489655800e+00];
+  const ATAN_LO = [2.26987774529616870924e-17, 3.06161699786838301793e-17, 1.39033110312309984516e-17, 6.12323399573676603587e-17];
+  const AT = [3.33333333333329318027e-01, -1.99999999998764832476e-01, 1.42857142725034663711e-01, -1.11111104054623557880e-01,
+              9.09088713343650656196e-02, -7.69187620504482999495e-02, 6.66107313738753120669e-02, -5.83357013379057348645e-02,
+              4.97687799461593236017e-02, -3.65315727442169155270e-02, 1.62858201153657823623e-02];
+  const PI = 3.1415926535897931160e+00, PI_LO = 1.2246467991473531772e-16, PI_O2 = 1.5707963267948965580e+00;
+  const atan = (input) => {
+    if (input !== input) return NaN;
+    const negative = input < 0;
+    let x = Math.abs(input), id;
+    if (x >= 7.378697629483821e+19) return negative ? -PI_O2 : PI_O2;   // 2^66 より大きければ ±π/2
+    if (x < 0.4375) { if (x < 1e-29) return input; id = -1; }
+    else if (x < 1.1875) {
+      if (x < 0.6875) { id = 0; x = (2 * x - 1) / (2 + x); } else { id = 1; x = (x - 1) / (x + 1); }
+    } else if (x < 2.4375) { id = 2; x = (x - 1.5) / (1 + 1.5 * x); }
+    else { id = 3; x = -1 / x; }
+    const z = x * x, w = z * z;
+    const s1 = z * (AT[0] + w * (AT[2] + w * (AT[4] + w * (AT[6] + w * (AT[8] + w * AT[10])))));
+    const s2 = w * (AT[1] + w * (AT[3] + w * (AT[5] + w * (AT[7] + w * AT[9]))));
+    if (id < 0) { const r = x - x * (s1 + s2); return negative ? -r : r; }
+    const r = ATAN_HI[id] - ((x * (s1 + s2) - ATAN_LO[id]) - x);
+    return negative ? -r : r;
+  };
+  const isNegative = (v) => v < 0 || (v === 0 && 1 / v < 0);
+  const atan2 = (y, x) => {
+    if (y !== y || x !== x) return NaN;
+    if (!isFinite(x) || !isFinite(y)) return nativeMath.atan2(y, x);   // 地図では来ない
+    if (y === 0) return isNegative(x) ? (isNegative(y) ? -PI : PI) : y;
+    if (x === 0) return y < 0 ? -PI_O2 : PI_O2;
+    if (x === 1) return atan(y);
+    const a = atan(Math.abs(y / x));
+    if (x > 0) return y < 0 ? -a : a;
+    return y < 0 ? (a - PI_LO) - PI : PI - (a - PI_LO);
+  };
+  // --- hypot・acos（平方根は仕様で答えが決まっている） ---
+  const hypot = (...values) => {
+    let sum = 0, nan = false;
+    for (const v of values) { const n = +v; if (n === Infinity || n === -Infinity) return Infinity; if (n !== n) nan = true; sum += n * n; }
+    return nan ? NaN : Math.sqrt(sum);
+  };
+  const acos = (x) => (x !== x || x > 1 || x < -1) ? NaN : atan2(Math.sqrt((1 - x) * (1 + x)), x);
+  // --- log・exp（fdlibm の e_log・e_exp） ---
+  const LN2_HI = 6.93147180369123816490e-01, LN2_LO = 1.90821492927058770002e-10;
+  const LG1 = 6.666666666666735130e-01, LG2 = 3.999999999940941908e-01, LG3 = 2.857142874366239149e-01, LG4 = 2.222219843214978396e-01,
+        LG5 = 1.818357216161805012e-01, LG6 = 1.531383769920937332e-01, LG7 = 1.479819860511658591e-01;
+  const log = (input) => {
+    if (input !== input || input < 0) return NaN;
+    if (input === 0) return -Infinity;
+    if (input === Infinity) return Infinity;
+    let x = input, k = 0;
+    if (x < 2.2250738585072014e-308) { x *= 18014398509481984; k = -54; }   // 非正規数は 2^54 倍してから
+    const hx = highWord(x);
+    k += ((hx >>> 20) & 0x7ff) - 1023;
+    // 仮数を [√2/2, √2) にそろえる（fdlibm と同じ境目 0x6a09e）
+    const mantissaHigh = hx & 0x000fffff;
+    const up = (mantissaHigh + 0x95f64) & 0x100000;
+    view.setFloat64(0, x, true);
+    view.setUint32(4, mantissaHigh | (up ^ 0x3ff00000), true);
+    k += up >> 20;
+    const f = view.getFloat64(0, true) - 1;
+    const s = f / (2 + f), z = s * s, w = z * z;
+    const t1 = w * (LG2 + w * (LG4 + w * LG6)), t2 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)));
+    const R = t2 + t1, hfsq = 0.5 * f * f;
+    return k * LN2_HI - ((hfsq - (s * (hfsq + R) + k * LN2_LO)) - f);
+  };
+  const INV_LN2 = 1.44269504088896338700e+00;
+  const P1 = 1.66666666666666019037e-01, P2 = -2.77777777770155933842e-03, P3 = 6.61375632143793436117e-05,
+        P4 = -1.65339022054652515390e-06, P5 = 4.13813679705723846039e-08;
+  const exp = (x) => {
+    if (x !== x) return NaN;
+    if (x > 7.09782712893383973096e+02) return Infinity;
+    if (x < -7.45133219101941108420e+02) return 0;
+    if (Math.abs(x) < 3.725290298461914e-09) return 1 + x;
+    const k = Math.trunc(INV_LN2 * x + (x < 0 ? -0.5 : 0.5));
+    const hi = x - k * LN2_HI, lo = k * LN2_LO, r = hi - lo;
+    const t = r * r, c = r - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))));
+    const y = 1 - ((lo - (r * c) / (2 - c)) - hi);
+    return k === 0 ? y : scale(y, k);
+  };
+  const pow = (x, y) => {
+    x = +x; y = +y;
+    if (y === 0) return 1;
+    if (x !== x || y !== y) return NaN;
+    // 整数の小さな指数は掛け算で（2乗・3乗などは端末に関係なく同じ）
+    if (Number.isInteger(y) && Math.abs(y) <= 64) {
+      let result = 1, base = x, e = Math.abs(y);
+      while (e > 0) { if (e & 1) result *= base; base *= base; e >>= 1; }
+      return y < 0 ? 1 / result : result;
+    }
+    if (x > 0 && isFinite(x) && isFinite(y)) return exp(y * log(x));
+    return nativeMath.pow(x, y);   // 負の数の小数乗・無限大など（地図では来ない）
+  };
+  const nativeMath = { sin: Math.sin, cos: Math.cos, atan2: Math.atan2, atan: Math.atan, hypot: Math.hypot, acos: Math.acos, log: Math.log, exp: Math.exp, pow: Math.pow };
+  const portable = { sin, cos, atan2, atan, hypot, acos, log, exp, pow };
+  let depth = 0;
+  return {
+    portable,
+    /** fn を、Math の答えの揺れる関数を差し替えた中で呼ぶ（入れ子にしてよい） */
+    run(fn) {
+      if (depth++ === 0) Object.assign(Math, portable);
+      try { return fn(); } finally { if (--depth === 0) Object.assign(Math, nativeMath); }
+    },
+  };
+})();
+
 function withWorldRandom(seed, fn) {
   const saved = nextLogicRandom;
   const worldGenerator = makeRandomGenerator(seed >>> 0);
   worldRandomCalls = 0;
   // 案帳 DT-602: 地図の指紋に「ここまでに乱数を何回引いたか」を入れるために数える（値は変えない）
   nextLogicRandom = () => { worldRandomCalls++; return worldGenerator(); };
-  try { return fn(); } finally { nextLogicRandom = saved; }
+  // 案帳 DT-602: 地図を作る間は、どのブラウザでも同じ答えになる計算に差し替える（PortableMath の説明を参照）
+  try { return PortableMath.run(fn); } finally { nextLogicRandom = saved; }
 }
 
 // -----------------------------------------------------------------
