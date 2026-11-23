@@ -4,6 +4,8 @@
 //   node tools/dt-bench.mjs --species fire [--special aim] [--branch A1] [--pattern loop|sweep|dart] [--seed 4242] [--flock 20] [--seconds 60]
 //   node tools/dt-bench.mjs --all-species   # 全竜種 × 2つの動き × 2シードを表にする
 //   node tools/dt-bench.mjs --all-specials  # 火竜の群れに主な特殊個体を1体ずつ入れて表にする
+//   node tools/dt-bench.mjs --combos [--species crimson,shark] [--sets "なし=;煽る風=wake;穿つ楔=wedge;両方=wake,wedge"]
+//                                          # 特殊個体の組み合わせごとに、群れ全体の1秒の傷を比べる（DT-607）
 //
 // オートプレイで測ると、群れの増え方・狙う建物・倒しきった後の余り・敵の反撃が竜種ごとに違い、
 // 「強いのに弱く出る」ことがあった（彗星竜など）。そこで条件をそろえる：
@@ -19,6 +21,9 @@
 // 群れの差で測ると、1匹足しただけで群れの動きが変わり、傷を出さない特殊個体でも ±30 揺れたため。
 // 特殊個体の竜は自分の竜種の攻撃も特殊個体の当たりとして出す（強化カードの倍率が乗る）ので、その分（ふつうの竜1匹ぶん）も込み。
 // 撃ってくる建物・敵の弾が要る特殊個体（虹弓・暴食）はこの場では働かないので測れない。
+// --combos は、ほかの竜の一撃を強める特殊個体（煽る風・穿つ楔など）のため、特殊個体の当たりだけでなく
+// 群れ全体（特殊個体も込み）の傷で比べる。--special は「wake,wedge」のように複数書ける。
+// 組み合わせの「=」の後ろに「|式」を足すと、特殊個体を入れた後にその式をページで実行する（例「両方・倍率なし=wake,wedge|effWakeHitMult=()=>1」）
 // -----------------------------------------------------------------
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,10 +64,10 @@ const TOWN_MIN_BUILDINGS = 50;
 const TOWN_MAX_BUILDINGS = 90;
 
 /** 1回測る。返り値は { total, perSecond, perDragon, alive, town } */
-async function measureOnce({ seed, species, special, pattern, dir = 0 }) {
+async function measureOnce({ seed, species, special, pattern, dir = 0, setupExpr = "" }) {
   const { browser, page, errors } = await openGame({ file, seed });
   try {
-    const setup = await page.evaluate(({ species, special, dir, FLOCK, TOWN_MIN_BUILDINGS, TOWN_MAX_BUILDINGS, BRANCH }) => {
+    const setup = await page.evaluate(({ species, special, dir, FLOCK, TOWN_MIN_BUILDINGS, TOWN_MAX_BUILDINGS, BRANCH, setupExpr }) => {
       debugUnlockAllContinents();
       // 強化カードで強さが変わらないように、経験値とレベルアップを止める
       window.addXp = () => {};
@@ -117,11 +122,12 @@ async function measureOnce({ seed, species, special, pattern, dir = 0 }) {
       for (let i = 0; i < N; i++) if (!boidDead[i] && countAliveBoids() > FLOCK) boidDead[i] = 1;
       if (countAliveBoids() < FLOCK) debugAddDragons(FLOCK - countAliveBoids());
       debugInvincible = true;
-      if (special) {
-        const kind = Object.keys(SPECIAL_DEFS).find(k => SPECIAL_DEFS[k].key === special);
-        if (kind === undefined) throw new Error(`特殊個体 ${special} が無い`);
+      for (const key of (special || "").split(",").filter(Boolean)) {
+        const kind = Object.keys(SPECIAL_DEFS).find(k => SPECIAL_DEFS[k].key === key);
+        if (kind === undefined) throw new Error(`特殊個体 ${key} が無い`);
         addRunSpecial(Number(kind));
       }
+      if (setupExpr) (0, eval)(setupExpr);
       // 群れを街の手前へ運ぶ（dir＝0:西 1:北 2:東 3:南。どの竜種も同じ所から始める）
       const ang = Math.PI + dir * Math.PI / 2;
       const tx = best.cx + Math.cos(ang) * (spread + 200), ty = best.cy + Math.sin(ang) * (spread + 200);
@@ -134,7 +140,7 @@ async function measureOnce({ seed, species, special, pattern, dir = 0 }) {
       cam.x = best.cx; cam.y = best.cy;
       pathClear();
       return { town: best.key, buildings: keep.size, spread: Math.round(spread), alive: countAliveBoids() };
-    }, { species, special, dir, FLOCK, TOWN_MIN_BUILDINGS, TOWN_MAX_BUILDINGS, BRANCH });
+    }, { species, special, dir, FLOCK, TOWN_MIN_BUILDINGS, TOWN_MAX_BUILDINGS, BRANCH, setupExpr });
 
     const run = (seconds, measuring) => page.evaluate(({ seconds, measuring, pattern, STEP_MS, LOOP_MARGIN_PX, LOOP_REDRAW_S, SWEEP_OVERSHOOT_PX, SWEEP_EVERY_S, DART_EVERY_S, STROKE_STEP_PX, REBUILD_S }) => {
       const B = window.__bench;
@@ -291,6 +297,35 @@ if (hasFlag("all-species")) {
   rows.sort((a, b) => a.mean - b.mean);
   for (const r of rows) console.log([r.special, ...r.per.map(fmt), fmt(r.mean)].join("\t"));
   const errs = jobs.map((j, k) => res[k].error ? `${j.special} ${j.pattern} ${j.seed}: ${res[k].error}` : null).filter(Boolean);
+  if (errs.length) console.log("測れなかった:\n" + errs.join("\n"));
+} else if (hasFlag("combos")) {
+  const speciesList = argValue("species", "crimson,shark").split(",");
+  const sets = argValue("sets", "なし=;煽る風=wake;穿つ楔=wedge;両方=wake,wedge").split(";").map((item) => {
+    const eq = item.indexOf("=");
+    const [specials, setupExpr = ""] = item.slice(eq + 1).split("|");
+    return { label: item.slice(0, eq), specials, setupExpr };
+  });
+  const jobs = [];
+  for (const species of speciesList) for (const set of sets) for (const pattern of patterns) for (const seed of seeds) for (const dir of dirs)
+    jobs.push({ species, special: set.specials, setupExpr: set.setupExpr, label: set.label, pattern, seed, dir });
+  const res = await runAll(jobs);
+  if (argValue("json", "")) (await import("node:fs")).writeFileSync(argValue("json", ""), JSON.stringify(jobs.map((j, k) => ({ ...j, ...res[k] }))));
+  console.log(`特殊個体の組み合わせ（群れ ${FLOCK}＋特殊個体 の全体の1秒の傷。${MEASURE_S}秒・シード ${seeds.join("/")}・入る向き${dirs.length}通りの平均。（）は1つ目の組み合わせに対する倍率）`);
+  console.log(["竜種", "組み合わせ", ...patterns, "平均"].join("\t"));
+  for (const species of speciesList) {
+    let baseMean = NaN;
+    for (const set of sets) {
+      const per = patterns.map(p => {
+        const v = jobs.map((j, k) => j.species === species && j.label === set.label && j.pattern === p && !res[k].error ? res[k].perSecond : null).filter(v => v !== null);
+        return v.length ? v.reduce((x, y) => x + y, 0) / v.length : NaN;
+      });
+      const ok = per.filter(v => !Number.isNaN(v));
+      const mean = ok.length ? ok.reduce((x, y) => x + y, 0) / ok.length : NaN;
+      if (Number.isNaN(baseMean)) baseMean = mean;
+      console.log([species, set.label, ...per.map(fmt), `${fmt(mean)}（×${(mean / baseMean).toFixed(2)}）`].join("\t"));
+    }
+  }
+  const errs = jobs.map((j, k) => res[k].error ? `${j.species} ${j.label} ${j.pattern} ${j.seed}: ${res[k].error}` : null).filter(Boolean);
   if (errs.length) console.log("測れなかった:\n" + errs.join("\n"));
 } else {
   const r = await measureOnce({ dir: Number(argValue("dir", "0")), seed: argValue("seed", "4242"), species: argValue("species", "fire"), special: argValue("special", ""), pattern: argValue("pattern", "loop") });

@@ -123,7 +123,8 @@ node tools/check.mjs prototypes/dragon-tide/index.html
 
 **Dragon Tide の攻撃の強さの計測**（DT-550〜）: `node tools/dt-bench.mjs --all-species` / `--all-specials` は、街を1つだけ残し
 （撃ってこない・倒れたら10秒で建て直す）、群れ20匹で決まった線（輪・薙ぎ・真ん中で離す）を60秒引いて、竜1匹・特殊個体1体の1秒の傷を表にする。
-オートプレイでの計測は群れの増え方や狙いの癖で竜種ごとに大きくずれるので、強さの比較はこちらで行う。数値を変える案は `--file` に書き換えた写しを渡して先に測る。
+オートプレイでの計測は群れの増え方や狙いの癖で竜種ごとに大きくずれるので、強さの比較はこちらで行う。
+ほかの竜の一撃を強める特殊個体（煽る風・穿つ楔など）の組み合わせは `--combos --species crimson,shark --sets "なし=;両方=wake,wedge"` で群れ全体の傷を比べる（DT-607）。数値を変える案は `--file` に書き換えた写しを渡して先に測る。
 
 **Dragon Tide の首都の硬さの計測**（DT-594〜）: `node tools/dt-capital-bench.mjs --era 0 --flock 150 --overflow 150 [--setup "stageCards.cat_shot=3"]`
 は、首都だけを残して（撃たない・HP無限）群れで輪を引き続け、1秒の傷と「首都の最大HP÷1秒の傷」（落とすまでの秒数）を出す。首都の強さを変えるときはこれで測る。
