@@ -1326,7 +1326,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.182.0";
+const GAME_VERSION = "v3.183.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -18102,13 +18102,23 @@ const BEACH_MINIMAP_EVERY = 0.6;   // ミニマップのヤドカリの点を描
 const BEACH_LEG_EASE      = 5;     // 脚が出る・引っ込む速さ（1秒あたり。0.2秒で出きる）
 const BEACH_LEG_ROOT      = 0.62;  // 脚の付け根（家の半径×これ。家の絵の下に隠れる）
 const BEACH_LEG_EDGE      = 1.12;  // 家の絵の縁（家の半径×これ。家の絵は半径×2.2の四角）
-const BEACH_LEG_REACH     = 0.45;  // 脚が出きったとき、家の絵の縁からのぞく長さ（家の半径×これ）
+// v3.183.0（DT-293 手直し3・11/24 Shooter「脚はもっと短くしましょう」）: 0.45 → 0.2
+const BEACH_LEG_REACH     = 0.2;   // 脚が出きったとき、家の絵の縁からのぞく長さ（家の半径×これ）
 const BEACH_LEG_WIDTH     = 0.3;   // 脚の太さ（家の半径×これ）
 const BEACH_LEG_CYCLE     = 36;    // 脚が1回出入りする歩幅（px）
 const BEACH_LEG_FRONT     = 0.36;  // 前後の脚の位置（家の半径×これ。体の前後）
 const BEACH_PEEK_FIRST    = [160, 360];   // 歩き出してから最初に立ち止まるまでの距離（px。町ごと・1匹ごとにばらす）
 const BEACH_PEEK_GAP      = 320;   // その後はこの距離（px）歩くごとに立ち止まる（同じ町はそろって止まるよう、ばらさない）
-const BEACH_PEEK_TIME     = 0.8;   // 立ち止まって目とはさみを出している秒数
+const BEACH_PEEK_TIME     = 0.8;   // 立ち止まって目を出している秒数
+// v3.183.0（DT-293 手直し3・11/24 Shooter「止まった時の目ももっと控えめで」「ハサミは無しで」）: はさみは描かず、目は家の縁から少しだけのぞかせる
+const BEACH_PEEK_EYE_OUT  = 0.18;  // 目が家の絵の縁から出る長さ（家の半径×これ。前は 0.5）
+const BEACH_PEEK_EYE_R    = 0.07;  // 目の半径（家の半径×これ。前は 0.11）
+// v3.183.0（DT-293 手直し3・11/24 Shooter「街の完全同期は、悩ましいですが見た目がイマイチなので、多少重なるのは許容でばらけさせて下さい」）:
+// 町ごとの隊列（v3.182.0）をやめ、1匹ずつ気づいて1匹ずつの速さで逃げる。詰まって建つ町の家が前の家にぶつかって動けなくならないよう、
+// ふつうの家のヤドカリどうしのぶつかりは見ない（多少重なるのは許す）。同じ町の向きはそろえたまま、速さと立ち止まる距離を1匹ずつばらす
+const BEACH_TOWN_SYNC     = false; // true にすると v3.182.0 の隊列に戻る
+const BEACH_CRAB_BLOCK    = false; // ヤドカリどうしのぶつかりを見るか（隊列をやめたので見ない）
+const BEACH_SPEED_JITTER  = 0.25;  // 横歩きの速さを1匹ずつ ±これの割合でばらす（同じ町が同じ速さで並んで動かないように）
 const BEACH_PEEK_EASE     = 0.15;  // 目とはさみが出る・引っ込むのにかかる秒数
 const BEACH_WALK_SWAY_LEN = 46;    // 揺れ1往復の歩幅（px）
 const BEACH_WALK_SWAY_ANG = 0.06;  // 揺れの角度（rad）
@@ -18278,6 +18288,7 @@ function buildBeachCrabs(buildings) {
   for (const crab of beachCrabs) {
     crab.speed = BEACH_CRAB_CLASSES[crab.cls].speed;
     const key = crab._townKey;
+    if (!BEACH_TOWN_SYNC) { crab.speed *= 1 + BEACH_SPEED_JITTER * (random() * 2 - 1); crab.peekAt = randRange(BEACH_PEEK_FIRST[0], BEACH_PEEK_FIRST[1]); continue; }
     if (key === null) { crab.peekAt = randRange(BEACH_PEEK_FIRST[0], BEACH_PEEK_FIRST[1]); continue; }
     let T = beachTowns.get(key);
     if (!T) beachTowns.set(key, T = { key, dir: 0, calm: 0, alert: false, members: [], peekAt: randRange(BEACH_PEEK_FIRST[0], BEACH_PEEK_FIRST[1]) });
@@ -18468,13 +18479,15 @@ function updateBeach(dt) {
     if (crab.calm > 0) crab.calm -= dt; else crab.land -= step;
     const nx = crab.x - Math.sin(crab.ang) * crab.dir * step, ny = crab.y + Math.cos(crab.ang) * crab.dir * step;
     // v3.174.0（DT-293 手直し）: 逃げた先で別のヤドカリに乗り上げない。ぶつかる歩は進まない（逃げる気は残す）
-    if (!blockGrid) blockGrid = buildBeachBlockGrid();
-    if (beachCrabBlocked(blockGrid, crab, nx, ny)) continue;
+    if (BEACH_CRAB_BLOCK) {
+      if (!blockGrid) blockGrid = buildBeachBlockGrid();
+      if (beachCrabBlocked(blockGrid, crab, nx, ny)) continue;
+    }
     crab.x = nx; crab.y = ny;
     crab.x = Math.max(crab.R + 60, Math.min(WORLD_W - crab.R - 60, crab.x));
     crab.walk += step;
     moved = true;
-    if (crab.walk >= crab.peekAt) { crab.peek = BEACH_PEEK_TIME; crab.peekAt += BEACH_PEEK_GAP; }
+    if (crab.walk >= crab.peekAt) { crab.peek = BEACH_PEEK_TIME; crab.peekAt += BEACH_TOWN_SYNC ? BEACH_PEEK_GAP : BEACH_PEEK_GAP * (0.7 + 0.6 * random()); }
     if (crab.y < beachSeaY(crab.x) - crab.R * BEACH_DIVE_FRAC) { diveBeachCrab(crab); continue; }
     if (crab.y + crab.R * 0.6 > beachRockY(crab.x)) { crab.shut = true; crab.calm = 0; crab.land = 0; }   // 岩場に追い詰められた：家に籠る
     placeBeachCrab(crab);
@@ -18815,16 +18828,14 @@ function drawBeachHouseCrabLimbs(crab, radius) {
       ctx.beginPath(); ctx.moveTo(lx, side * r * BEACH_LEG_ROOT); ctx.lineTo(lx, side * tip); ctx.stroke();
     }
   }
-  if (crab.peek > 0) {   // 前から目とはさみをのぞかせる（出る・引っ込むは BEACH_PEEK_EASE 秒）
+  if (crab.peek > 0) {   // 前から目だけを少しのぞかせる（v3.183.0: はさみは出さない。出る・引っ込むは BEACH_PEEK_EASE 秒）
     const k = Math.max(0, Math.min(1, crab.peek / BEACH_PEEK_EASE, (BEACH_PEEK_TIME - crab.peek) / BEACH_PEEK_EASE));
-    const out = r * (0.85 + 0.55 * k);
+    const tip = r * (BEACH_LEG_EDGE - 0.1 + BEACH_PEEK_EYE_OUT * k);
     for (const side of [-1, 1]) {
-      ctx.fillStyle = C.claw; ctx.strokeStyle = C.clawEdge; ctx.lineWidth = Math.max(1, r * 0.08);
-      ctx.beginPath(); ctx.ellipse(out, side * r * 0.5, r * 0.3, r * 0.2, side * 0.3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      ctx.strokeStyle = C.leg; ctx.lineWidth = Math.max(1, r * 0.1);   // 目の柄
-      ctx.beginPath(); ctx.moveTo(r * 0.7, side * r * 0.16); ctx.lineTo(r * (0.9 + 0.5 * k), side * r * 0.2); ctx.stroke();
+      ctx.strokeStyle = C.leg; ctx.lineWidth = Math.max(1, r * 0.07);   // 目の柄（根元は家の絵に隠れる）
+      ctx.beginPath(); ctx.moveTo(r * 0.8, side * r * 0.16); ctx.lineTo(tip, side * r * 0.18); ctx.stroke();
       ctx.fillStyle = C.eye;
-      ctx.beginPath(); ctx.arc(r * (0.9 + 0.5 * k), side * r * 0.2, Math.max(1.5, r * 0.11), 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(tip, side * r * 0.18, Math.max(1.2, r * BEACH_PEEK_EYE_R), 0, Math.PI * 2); ctx.fill();
     }
   }
   ctx.restore();
