@@ -450,7 +450,6 @@ const VECTOR_PALETTES = {                     // ⑥ ベクターの面の色（
   ice:     { dark: [20, 86, 120], light: [150, 232, 250] },
   rainbow: { dark: [120, 120, 150], light: [246, 248, 255], hue: true },
 };
-let facetScratch = null;
 let bloomSprite = null;
 
 function facetMaskData(img) {
@@ -504,7 +503,7 @@ function buildFacetSet(sp, size, seed) {
       else { add(p00, p01, p10); add(p01, p11, p10); }
     }
   }
-  const set = { facets, step, W, H };
+  const set = { facets, step, W, H, seed };
   sp.facetSets[key] = set;
   return set;
 }
@@ -558,13 +557,42 @@ function hslToRgb(h, s, l) {
  * 面の層を手元の小さな canvas に描き、胴の形で切り抜いてから竜の上に重ねる。
  * mode が "vector" のときは胴そのものを面で塗る（⑥）。ほかは光った面だけを足す（②〜⑤）
  */
+// 11/24 手直し（Shooter「①以外は処理落ちしているようです。そんなに重いのでしょうか」）:
+// 前の版は竜1匹ごと・毎フレーム、面を全部（数十〜百数十の三角）手元の canvas に描き直し、胴の形で切り抜いてから重ねていた。
+// 1枚の手元の canvas を描いては使い、描いては使いを竜の数だけ繰り返すので、そのたびに描画の待ち合わせが起きて重かった。
+// 面の光り方は「竜の向き」だけで決まる（時間・乱数を使わない）ので、向きを2°刻みにして、切り抜いた面の層を向きごとに1回だけ作って取っておく。
+// 2回目からは竜1匹あたり drawImage 1回（①の星と同じくらいの軽さ）。ゲームに入れるときも同じ作り方にする
+const FACET_HEADING_STEPS = 180;   // 向きの刻み（2°）。光る幅（±3〜10°）より十分細かい
+const FACET_CACHE_MAX = 6000;      // 取っておく層の数の上限（超えたら古いものから捨てる）
+const facetCache = new Map();
 function drawFacetLayer(c, opts, maskImg, natW, natH, x0, y0, drawW, drawH, mode) {
-  const set = opts.facetSet, sp = opts.species, heading = opts.heading;
-  const scale = Math.max(0.5, opts.pixelScale || 1);
+  const set = opts.facetSet, sp = opts.species;
+  const scale = Math.max(0.5, Math.ceil((opts.pixelScale || 1) * 2) / 2);
   const pw = Math.max(4, Math.ceil(drawW * scale)), ph = Math.max(4, Math.ceil(drawH * scale));
-  if (!facetScratch) facetScratch = makeCanvas(pw, ph);
-  if (facetScratch.width < pw || facetScratch.height < ph) { facetScratch.width = Math.max(facetScratch.width, pw); facetScratch.height = Math.max(facetScratch.height, ph); }
-  const g = facetScratch.getContext("2d");
+  const step = Math.PI * 2 / FACET_HEADING_STEPS;
+  const bucket = ((Math.round(opts.heading / step) % FACET_HEADING_STEPS) + FACET_HEADING_STEPS) % FACET_HEADING_STEPS;
+  const key = `${sp.key}|${mode}|${set.step}|${set.seed}|${pw}x${ph}|${bucket}|${maskImg === opts.bodyArt ? 0 : 1}`;
+  let layer = facetCache.get(key);
+  if (layer === undefined) {
+    layer = renderFacetLayer(set, sp, bucket * step, maskImg, natW, natH, pw, ph, mode);
+    if (facetCache.size >= FACET_CACHE_MAX) facetCache.delete(facetCache.keys().next().value);
+    facetCache.set(key, layer);
+  }
+  if (!layer) return;
+  c.save();
+  if (mode !== "vector") c.globalCompositeOperation = "lighter";
+  c.drawImage(layer, 0, 0, pw, ph, x0, y0, drawW, drawH);
+  if (mode === "vector") {   // 目・角・縁取りの線を残すため、生成した絵をうっすら重ねる
+    c.globalAlpha = 0.22;
+    c.globalCompositeOperation = "multiply";
+    c.drawImage(opts.bodyArt, x0, y0, drawW, drawH);
+  }
+  c.restore();
+}
+/** 1つの向きの面の層を作る（胴の形で切り抜き済み。光る面が無ければ null） */
+function renderFacetLayer(set, sp, heading, maskImg, natW, natH, pw, ph, mode) {
+  const canvas = makeCanvas(pw, ph);
+  const g = canvas.getContext("2d");
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.globalCompositeOperation = "source-over";
   g.globalAlpha = 1;
@@ -611,24 +639,17 @@ function drawFacetLayer(c, opts, maskImg, natW, natH, x0, y0, drawW, drawH, mode
     }
     g.globalAlpha = 1;
   }
-  if (!anyLit) return;
-  // 胴の形で切り抜く（にじみだけは少しはみ出してよいので、③は切り抜いた後にもう一度薄く足す…はせず、胴の中に収める）
+  if (!anyLit) return null;
+  // 胴の形で切り抜く（にじみも胴の中に収める）
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.globalCompositeOperation = "destination-in";
   g.drawImage(maskImg, 0, 0, pw, ph);
-  c.save();
-  if (mode !== "vector") c.globalCompositeOperation = "lighter";
-  c.drawImage(facetScratch, 0, 0, pw, ph, x0, y0, drawW, drawH);
-  if (mode === "vector") {   // 目・角・縁取りの線を残すため、生成した絵をうっすら重ねる
-    c.globalAlpha = 0.22;
-    c.globalCompositeOperation = "multiply";
-    c.drawImage(opts.bodyArt, x0, y0, drawW, drawH);
-  }
-  c.restore();
+  return canvas;
 }
 
 /** 翼の付け根（胴に重なる縦の境目）をぼかした写し。付け根から翼の幅の WING_FADE ぶんで透明→不透明にする */
-const WING_FADE = 0.22;
+// 11/24 手直し（Shooter「ぼかしの範囲が広すぎて翼が体から離れて見えます。2割ではなく3%くらいで」）: 0.22 → 0.03
+const WING_FADE = 0.03;
 function fadedWing(wingImg, anchorX) {
   const w = wingImg.naturalWidth || wingImg.width, h = wingImg.naturalHeight || wingImg.height;
   const canvas = makeCanvas(w, h), c = canvas.getContext("2d");

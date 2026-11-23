@@ -1326,7 +1326,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.183.0";
+const GAME_VERSION = "v3.184.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -54829,6 +54829,33 @@ function easeAngle(cur, target, k) {
   return cur + d * k;
 }
 
+// v3.184.0（案帳 DT-609・11/23 Shooter「胴体が翼より表示優先が高いせいで足の下に翼が来ています。翼を上にして、縦の境界線はぼかす」
+// 「翼を上にする描き方は、全竜種に適用したいです」「ぼかしの範囲が広すぎて翼が体から離れて見えます。2割ではなく3%くらいで」）:
+// 胴を先に描き、翼を上に重ねる。翼の付け根（胴に重なる縦の境目）を翼の絵の幅の DRAGON_WING_ROOT_FADE ぶん、透明→不透明にぼかす。
+// 竜の絵は向き・羽ばたきごとに前もって作って使い回す（renderDragonFrame）ので、描く順を変えても毎フレームの重さは変わらない
+const DRAGON_WING_OVER      = true;   // false で v0.36 からの描き方（翼の上に胴）に戻る
+const DRAGON_WING_ROOT_FADE = 0.03;   // 付け根のぼかしの幅（翼の絵の幅×これ）
+const dragonFadedWings = new Map();   // 竜種（DRAGON_PART_SPRITES のキー）→ 付け根をぼかした翼の絵
+/** 付け根をぼかした翼の絵（竜種ごとに1回だけ作る）。付け根は wingAnchor.x（翼の絵の肩側の端） */
+function getFadedDragonWing(partsKey, wingImg, anchorX) {
+  let faded = dragonFadedWings.get(partsKey);
+  if (faded) return faded;
+  const w = wingImg.naturalWidth, h = wingImg.naturalHeight;
+  faded = document.createElement("canvas");
+  faded.width = w; faded.height = h;
+  const c = faded.getContext("2d");
+  c.drawImage(wingImg, 0, 0);
+  c.globalCompositeOperation = "destination-in";
+  const fade = w * DRAGON_WING_ROOT_FADE;
+  const gr = c.createLinearGradient(anchorX, 0, anchorX - fade, 0);
+  gr.addColorStop(0, "rgba(0,0,0,0)");
+  gr.addColorStop(1, "rgba(0,0,0,1)");
+  c.fillStyle = gr;
+  c.fillRect(0, 0, w, h);
+  dragonFadedWings.set(partsKey, faded);
+  return faded;
+}
+
 /**
  * 胴体（固定サイズ）+ 翼（左右、flapFactorで羽ばたき）を合成描画する（カテゴリA）。
  * 胴体まで一緒に伸縮すると「蝶々がペラペラ開閉している」ように見えてしまうため、
@@ -54878,24 +54905,27 @@ function drawPartSeparatedDragon(partsKey, flapFactor, c, variant) {
   // 逆順（胴体が下）だと翼の肩側の膜が背中を覆ってしまい、
   // 竜のシルエットが読めなくなる（ユーザー指摘の「翼の位置がよくない」の一因）。
 
+  // v3.184.0（DT-609）: DRAGON_WING_OVER のときは胴を先に描き、付け根をぼかした翼を上に重ねる（上の定数の説明）
+  if (DRAGON_WING_OVER) c.drawImage(bodyImg, -bodyPivotX, -bodyPivotY, bodyDrawW, bodyDrawH);
+  const wingArt = hasWing && DRAGON_WING_OVER ? getFadedDragonWing(partsKey, wingImg, spec.wingAnchor.x) : wingImg;
   // ---- 左翼: 肩に付け根(root)を合わせ、翼のスパン軸（画像ローカルX）にのみflapFactorを適用 ----
   if (hasWing) {
   c.save();
   c.translate(leftShoulder.localY, -leftShoulder.localX);
   c.scale(flapFactor, 1);
-  c.drawImage(wingImg, -wingRootX, -wingRootY, wingDrawW, wingDrawH);
+  c.drawImage(wingArt, -wingRootX, -wingRootY, wingDrawW, wingDrawH);
   c.restore();
 
   // ---- 右翼: 左翼と左右対称の同一画像を水平反転して使う ----
   c.save();
   c.translate(rightShoulder.localY, -rightShoulder.localX);
   c.scale(-flapFactor, 1);
-  c.drawImage(wingImg, -wingRootX, -wingRootY, wingDrawW, wingDrawH);
+  c.drawImage(wingArt, -wingRootX, -wingRootY, wingDrawW, wingDrawH);
   c.restore();
   }
 
-  // ---- 胴体（固定サイズ・flapFactorのscaleを適用しない）: 翼の上に重ねる ----
-  c.drawImage(bodyImg, -bodyPivotX, -bodyPivotY, bodyDrawW, bodyDrawH);
+  // ---- 胴体（固定サイズ・flapFactorのscaleを適用しない）: 翼の上に重ねる（DRAGON_WING_OVER のときは先に描いた） ----
+  if (!DRAGON_WING_OVER) c.drawImage(bodyImg, -bodyPivotX, -bodyPivotY, bodyDrawW, bodyDrawH);
 }
 
 /**
