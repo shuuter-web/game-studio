@@ -1050,6 +1050,8 @@
   .op-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
                       border-radius: 50%; background: #e8eef8; transition: left 0.15s; }
   .op-switch.on::after { left: 23px; }
+  .op-vol .op-body { width: 100%; }
+  .op-range { width: 100%; margin-top: 8px; accent-color: #4adf80; }
   #codex-overlay .tree-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
   #codex-overlay .tree-title { font-family: -apple-system, BlinkMacSystemFont, serif; font-size: 20px; font-weight: bold; color: #ffe0b0; letter-spacing: 0.12em; text-shadow: 0 0 20px rgba(255,140,40,0.6); }
   #codex-overlay .tree-crystals { font-family: monospace; font-size: 14px; color: #8cd8ff; margin-left: auto; }
@@ -1324,7 +1326,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.175.0";
+const GAME_VERSION = "v3.176.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -31185,6 +31187,7 @@ function settlementFall(settlementIndex) {
   const settlement = settlements[settlementIndex];
   settlement.fallen = true;
   settlement.hp = 0;
+  sfxCollapse();   // v3.176.0（DT-075）: 何十棟同時でも1つ（間引きは sfxGate）
   // v3.21.0: 壊れた建物に接している樹冠も一緒に崩れる（Shooter指示）
   // v3.21.3: 一瞬で消すのをやめ、火が付いて燃えて消える（Shooter指示）
   canopyIgniteCircle(settlement.wx, settlement.wy, (settlement.radius || 10) + CANOPY_FALL_MARGIN);
@@ -31254,6 +31257,7 @@ function settlementFall(settlementIndex) {
       if (orbTown ? settlement._orbFacility !== undefined : st.fallen / st.total >= TOWN_SURRENDER_RATIO) {
         st.surrendered = true;
         townJustSurrendered = true;
+        sfxTownFall(false);   // v3.176.0（DT-075）
         pushWorldText(st.cx, st.cy, "陥落", "#ffe08a", true);   // v3.28.0: 画面の外なら画面の端に寄せて出す
         onTownFallFx(settlement._townIndex, st);   // v3.36.0: 守りが崩れる輪・警戒度へ飛ぶ光の粒
         hapticPulse(120);
@@ -31941,6 +31945,7 @@ function collectNearbyEggs() {
       if (dx * dx + dy * dy < 60 * 60) {
         eggActive[e] = 0;
         totalEggCount++;
+        sfxEgg();   // v3.176.0（DT-075）
         if (upCount("f_egg_wave") > 0) eggShockwave(eggWx[e], eggWy[e]);   // v3.49.0: 孵化の衝撃
         // 卵回収 = その場で竜+1（群れ上限未満のときのみ）
         // v0.6: 上限到達後の卵は XP+10 に変換する（拾って無駄がない）
@@ -34414,6 +34419,7 @@ function maybeShowLevelUp() {
   levelupTitleEl.textContent = cat === "evo" ? STRINGS.levelUpEvo : STRINGS.levelUpSpecial;
   // v3.53.0（案帳 DT-238・Shooter指示）: 下に選択肢、上にツリー。選択肢を押すとその竜・特殊個体のツリーが出て、「これにする」で決まる
   renderLevelUpChoice(opts);
+  sfxChime();   // v3.176.0（DT-075）
   levelupOverlayEl.classList.add("visible", "lv-center");
   armLevelUpCards();
   triggerFlash("rgba(160,236,255,0.35)", 0.15);
@@ -34983,6 +34989,7 @@ function updateHUDWeapon() {
 function damageBuilding(settlementIdx, damage) {
   const settlement = settlements[settlementIdx];
   if (!settlement || settlement.fallen) return;
+  sfxBreathHit();   // v3.176.0（DT-075）: ブレスのざわめきの大きさに数える
   if (beachHidden(settlement)) return;   // v3.169.0（案帳 DT-293）: 海に潜っているヤドカリには当たらない
   damage *= incomingDamageMult(settlement);   // v1.1.1: 楔竜のひび
   if (settlement._crab && settlement._crab.shut) damage *= BEACH_SHUT_MULT;   // v3.169.0: 岩場で籠ったヤドカリは少し固い
@@ -41478,6 +41485,201 @@ const CODEX_SPECIAL_SHOTS = [
 ];
 
 // -----------------------------------------------------------------
+// v3.176.0（案帳 DT-075 1回目）: 音の土台と効果音の最小セット
+// -----------------------------------------------------------------
+// 方向（Shooter と合意）：16ビット機の音源の雰囲気＝少しこもったやわらかい音色に深めの残響。効果音は小さく短く、高い音を避ける。
+// 音のファイルは使わず、Web Audio でその場で鳴らす（単一HTMLのまま読み込みが増えない・時代ごとに数値で変えられる）。
+// うるさくしない決まり：同じ効果音は SOUND_SFX_MIN_GAP 秒に1回まで（崩壊が一度に何十棟起きても1つ）、
+// 全部の音をコンプレッサにまとめて重なったら自動で下げ、陥落のような大きい音のときは他を一瞬下げる。
+// 鳴らし方の揺らぎは fxRandom（ゲームの乱数列に触らない）。音は人が画面に触れたとき（isTrusted）に初めて作るので、
+// 合成の入力で回すヘッドレス再生では作られない＝鳴らない。
+const SOUND_DEFAULT_SE      = 40;     // 効果音の既定の音量（0〜100。仮。実機で聞いて決める）
+const SOUND_DEFAULT_BGM     = 50;     // BGM の既定の音量（BGM は2回目で入る。値の置き場だけ先に作る）
+const SOUND_SFX_MIN_GAP     = 0.1;    // 同じ効果音を鳴らす最短の間隔（秒）
+const SOUND_MUFFLE_HZ       = 2600;   // こもらせるローパス（16ビット機の低いサンプリングのこもり）
+const SOUND_REVERB_SECONDS  = 2.4;    // 残響の長さ
+const SOUND_REVERB_DECAY    = 2.6;    // 残響の減り方（大きいほど早く消える）
+const SOUND_REVERB_SEND     = 0.34;   // 残響へ送る量
+const SOUND_SE_HEADROOM     = 0.55;   // 効果音の音量 100 のときの実際の大きさ（コンプレッサの手前で頭を空けておく）
+const SOUND_DUCK_DEPTH      = 0.45;   // 陥落の音で他の音を下げる深さ
+const SOUND_DUCK_SECONDS    = 0.9;    // 下げてから戻るまで
+const SOUND_BREATH_GAIN_MAX = 0.10;   // ブレスのざわめきの最大の大きさ
+const SOUND_BREATH_FULL_RATE = 240;   // この回数/秒 建物に当たっていたら、ざわめきが最大
+const SOUND_BREATH_UPDATE_MS = 100;   // ざわめきの大きさを見直す間隔
+const SOUND_BREATH_SMOOTH   = 0.35;   // ざわめきの大きさの追いつき（秒）
+
+let soundCtx = null;
+let soundNodes = null;          // { master, seBus, duck, muffle, reverb, breathGain }
+const soundLastAt = {};         // 効果音ごとの最後に鳴らした時刻（間引き）
+let soundBreathHits = 0;        // 前の見直しから、建物に当たった回数
+let soundBreathTimer = null;
+
+function soundOptions() { return (profile && profile.options) || {}; }
+/** 音を鳴らすか（既定は鳴らす）。 */
+function soundOn() { return soundOptions().sound !== false; }
+function soundSeVolume() { const v = soundOptions().seVolume; return typeof v === "number" ? v : SOUND_DEFAULT_SE; }
+function soundSetOption(key, value) {
+  if (!profile.options) profile.options = {};
+  profile.options[key] = value;
+  saveProfile();
+  soundApplyVolume();
+}
+function soundApplyVolume() {
+  if (!soundCtx || !soundNodes) return;
+  const t = soundCtx.currentTime;
+  soundNodes.seBus.gain.setTargetAtTime(soundOn() ? (soundSeVolume() / 100) * SOUND_SE_HEADROOM : 0, t, 0.05);
+  if (soundOn() && !document.hidden) soundCtx.resume().catch(() => {});
+}
+
+/** 残響の響き（減っていくノイズ）。見た目用の乱数で作る。 */
+function soundMakeImpulse(ctx) {
+  const len = Math.floor(ctx.sampleRate * SOUND_REVERB_SECONDS);
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) d[i] = (fxRandom() * 2 - 1) * Math.pow(1 - i / len, SOUND_REVERB_DECAY);
+  }
+  return buf;
+}
+
+/** 初めて人が画面に触れたときに音の回路を作る（ブラウザの決まりで、触れるまでは鳴らせない）。 */
+function soundInit() {
+  if (soundCtx) { soundApplyVolume(); return; }
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  try { soundCtx = new Ctx(); } catch (err) { soundCtx = null; return; }
+  const ctx = soundCtx;
+  const comp = ctx.createDynamicsCompressor();   // 全部の音をまとめ、重なったら自動で下げる
+  comp.threshold.value = -20; comp.knee.value = 12; comp.ratio.value = 6;
+  comp.attack.value = 0.005; comp.release.value = 0.25;
+  const master = ctx.createGain(); master.gain.value = 1;
+  comp.connect(master); master.connect(ctx.destination);
+  const muffle = ctx.createBiquadFilter(); muffle.type = "lowpass"; muffle.frequency.value = SOUND_MUFFLE_HZ; muffle.Q.value = 0.5;
+  const duck = ctx.createGain(); duck.gain.value = 1;     // 陥落のときに一瞬下げる
+  const seBus = ctx.createGain(); seBus.gain.value = 0;
+  const reverb = ctx.createConvolver(); reverb.buffer = soundMakeImpulse(ctx);
+  const send = ctx.createGain(); send.gain.value = SOUND_REVERB_SEND;
+  seBus.connect(muffle); muffle.connect(duck); duck.connect(comp);
+  muffle.connect(send); send.connect(reverb); reverb.connect(comp);
+  // ブレスのざわめき：ずっと流しているノイズを、吐いている量に合わせて上げ下げするだけ（1匹ずつは鳴らさない）
+  const noiseLen = ctx.sampleRate * 2;
+  const noiseBuf = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < noiseLen; i++) nd[i] = fxRandom() * 2 - 1;
+  const noise = ctx.createBufferSource(); noise.buffer = noiseBuf; noise.loop = true;
+  const band = ctx.createBiquadFilter(); band.type = "bandpass"; band.frequency.value = 520; band.Q.value = 0.6;
+  const breathGain = ctx.createGain(); breathGain.gain.value = 0;
+  noise.connect(band); band.connect(breathGain); breathGain.connect(seBus);
+  noise.start();
+  soundNodes = { master, seBus, duck, muffle, reverb, breathGain, noiseBuf };
+  soundBreathTimer = setInterval(soundUpdateBreath, SOUND_BREATH_UPDATE_MS);
+  soundApplyVolume();
+}
+for (const type of ["pointerdown", "keydown"]) {
+  window.addEventListener(type, (e) => { if (e.isTrusted) soundInit(); }, { capture: true, passive: true });
+}
+document.addEventListener("visibilitychange", () => {   // タブを離れたら止める
+  if (!soundCtx) return;
+  if (document.hidden) soundCtx.suspend().catch(() => {});
+  else if (soundOn()) soundCtx.resume().catch(() => {});
+});
+
+function soundUpdateBreath() {
+  if (!soundCtx || !soundNodes) return;
+  const rate = soundBreathHits * (1000 / SOUND_BREATH_UPDATE_MS);
+  soundBreathHits = 0;
+  const playing = gameState === "playing" && !upgradeCardsVisible && !perkOfferArtifact;
+  const level = playing ? Math.min(1, Math.sqrt(rate / SOUND_BREATH_FULL_RATE)) : 0;
+  soundNodes.breathGain.gain.setTargetAtTime(level * SOUND_BREATH_GAIN_MAX, soundCtx.currentTime, SOUND_BREATH_SMOOTH);
+}
+/** 竜の攻撃が建物に当たった（ざわめきの大きさに数えるだけ。毎回は鳴らさない）。 */
+function sfxBreathHit() { if (soundCtx) soundBreathHits++; }
+
+/** 間引き：同じ音は SOUND_SFX_MIN_GAP 秒に1回まで。鳴らせるときだけ時刻を返す。 */
+function sfxGate(key) {
+  if (!soundCtx || !soundNodes || !soundOn() || soundCtx.state !== "running") return -1;
+  const t = soundCtx.currentTime;
+  if (soundLastAt[key] !== undefined && t - soundLastAt[key] < SOUND_SFX_MIN_GAP) return -1;
+  soundLastAt[key] = t;
+  return t;
+}
+/** 1音：波形・高さ・大きさ・長さ。高さを途中で落とす（toFreq）こともできる。 */
+function sfxTone(t, type, freq, gain, dur, toFreq, attack = 0.008) {
+  const ctx = soundCtx;
+  const o = ctx.createOscillator(); o.type = type;
+  o.frequency.setValueAtTime(freq * (1 + (fxRandom() - 0.5) * 0.02), t);   // わずかに揺らして機械的に聞こえないように
+  if (toFreq) o.frequency.exponentialRampToValueAtTime(toFreq, t + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(gain, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(soundNodes.seBus);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+/** こもったノイズの「ぼふっ」。 */
+function sfxNoise(t, cutoff, gain, dur) {
+  const ctx = soundCtx;
+  const src = ctx.createBufferSource(); src.buffer = soundNodes.noiseBuf;
+  const f = ctx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = cutoff;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(gain, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f); f.connect(g); g.connect(soundNodes.seBus);
+  src.start(t, fxRandom() * 1.5); src.stop(t + dur + 0.05);
+}
+/** 大きい音のとき、ほかの音を一瞬下げて戻す。 */
+function sfxDuck(t) {
+  const g = soundNodes.duck.gain;
+  g.cancelScheduledValues(t);
+  g.setValueAtTime(g.value, t);
+  g.linearRampToValueAtTime(1 - SOUND_DUCK_DEPTH, t + 0.05);
+  g.linearRampToValueAtTime(1, t + SOUND_DUCK_SECONDS);
+}
+
+// --- 効果音の最小セット ---
+/** 建物の崩壊：低い「ぼふっ」。 */
+function sfxCollapse() {
+  const t = sfxGate("collapse"); if (t < 0) return;
+  sfxNoise(t, 420, 0.55, 0.32);
+  sfxTone(t, "sine", 92, 0.45, 0.28, 46);
+}
+/** 町・首都の陥落：短い和音（首都は少し長く、1つ上の音を足す）。 */
+function sfxTownFall(capital) {
+  const t = sfxGate(capital ? "capitalFall" : "townFall"); if (t < 0) return;
+  sfxDuck(t);
+  const dur = capital ? 2.6 : 1.3;
+  const notes = capital ? [146.8, 220.0, 293.7, 349.2] : [146.8, 220.0, 293.7];   // レ・ラ・レ（＋ファ）：落ち着いた短調寄り
+  notes.forEach((f, k) => sfxTone(t + k * 0.045, "triangle", f, 0.22, dur, null, 0.03));
+  sfxNoise(t, 300, 0.4, 0.5);
+}
+/** 卵：小さな鈴。 */
+function sfxEgg() {
+  const t = sfxGate("egg"); if (t < 0) return;
+  sfxTone(t, "sine", 880, 0.12, 0.35);
+  sfxTone(t, "sine", 1318.5, 0.04, 0.22);
+}
+/** 竜の被弾：低いこもった音。 */
+function sfxHit() {
+  const t = sfxGate("hit"); if (t < 0) return;
+  sfxNoise(t, 260, 0.30, 0.12);
+  sfxTone(t, "sine", 120, 0.20, 0.12, 80);
+}
+/** 警戒度アップ：低い鐘（倍音をずらして鐘らしく）。 */
+function sfxAlert() {
+  const t = sfxGate("alert"); if (t < 0) return;
+  sfxDuck(t);
+  sfxTone(t, "sine", 164.8, 0.32, 2.2, null, 0.004);
+  sfxTone(t, "sine", 164.8 * 2.76, 0.08, 1.3, null, 0.004);
+  sfxTone(t, "sine", 164.8 * 5.40, 0.03, 0.7, null, 0.004);
+}
+/** レベルアップ・アーティファクトの三択：やわらかいチャイム。 */
+function sfxChime() {
+  const t = sfxGate("chime"); if (t < 0) return;
+  sfxTone(t, "triangle", 523.3, 0.14, 0.9, null, 0.02);
+  sfxTone(t + 0.12, "triangle", 784.0, 0.11, 1.1, null, 0.02);
+}
+
+// -----------------------------------------------------------------
 // v0.99.1: オプション画面
 // -----------------------------------------------------------------
 // 設定は profile.options に持って localStorage に残す。
@@ -41533,14 +41735,43 @@ function renderOptions() {
         `<div class="op-switch ${on ? "on" : ""}"></div>` +
       `</div>`;
   }
+  // v3.176.0（案帳 DT-075）: 音。切り替えと音量（0〜100）。BGM の音量は BGM を入れる回に足す
+  html +=
+    `<div class="op-row" data-sound="toggle">` +
+      `<div class="op-body">` +
+        `<div class="op-name">音</div>` +
+        `<div class="op-desc">効果音を鳴らす。最初に画面に触れたときから鳴る。タブを離れると止まる。</div>` +
+      `</div>` +
+      `<div class="op-switch ${soundOn() ? "on" : ""}"></div>` +
+    `</div>` +
+    `<div class="op-row op-vol">` +
+      `<div class="op-body">` +
+        `<div class="op-name">効果音の音量 <span class="op-vol-val">${soundSeVolume()}</span></div>` +
+        `<input class="op-range" type="range" min="0" max="100" step="5" value="${soundSeVolume()}" data-vol="seVolume">` +
+      `</div>` +
+    `</div>`;
   html += `</div>`;
   optionsOverlayEl.innerHTML = html;
+  const soundRow = optionsOverlayEl.querySelector('[data-sound="toggle"]');
+  soundRow.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    soundSetOption("sound", !soundOn());
+    renderOptions();
+  });
+  for (const range of optionsOverlayEl.querySelectorAll(".op-range")) {
+    range.addEventListener("pointerdown", (e) => e.stopPropagation());
+    range.addEventListener("input", () => {
+      soundSetOption(range.getAttribute("data-vol"), Number(range.value));
+      range.parentElement.querySelector(".op-vol-val").textContent = range.value;
+    });
+    range.addEventListener("change", () => sfxEgg());   // 離したときに今の大きさで1つ鳴らす
+  }
 
   optionsOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
     e.stopPropagation();
     closeOptions();
   });
-  for (const row of optionsOverlayEl.querySelectorAll(".op-row")) {
+  for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-key]")) {
     row.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       const key = row.getAttribute("data-key");
@@ -43641,6 +43872,7 @@ function dismissStageIntro() {
 /** 首都が落ちた。最終ステージならラン完了、それ以外はステージクリア。 */
 function onCapitalFallen() {
   cancelTierRush(true);   // v3.16.0
+  sfxTownFall(true);   // v3.176.0（DT-075）
   if (runStageIndex >= RUN_STAGES - 1) triggerRunComplete();
   else triggerStageCleared();
 }
@@ -44926,6 +45158,7 @@ function advanceTier() {
     reinforceSettlementForTier(s, nextTier);
   }
 
+  sfxAlert();   // v3.176.0（DT-075）: 警戒度アップの低い鐘
   // (3) 城壁を張り直す（首都は最初から最大なのでボスは触らない）
   rebuildWallsForTier();
   markAllAsteroidsDirty();   // v1.5.0: 補強で色が締まり、廃墟が建ち直るので岩塊の絵も焼き直す
@@ -45721,6 +45954,7 @@ function openNextPerkOffer() {
   // v3.124.0（DT-539・Shooter「三択表示の際は時間を止めて画面中央に出して」）: アーティファクトは竜の進化と同じく時間を止める（tick が止める）。
   // ほかの三択は v3.49.0 のとおり止めずにスロー
   perkOfferArtifact = !!artifact && picks.every(d => d.artifact);
+  if (perkOfferArtifact) sfxChime();   // v3.176.0（DT-075）: アーティファクトの三択
   perkOfferSlowmo = perkOfferArtifact ? 0 : SLOWMO_DURATION;
   perkOfferEl.querySelector(".fo-title").textContent = isSpecialOffer ? STRINGS.levelUpSpecial : perkOfferArtifact ? STRINGS.perkOfferTitleArtifact : rare ? STRINGS.perkOfferTitleRare : STRINGS.perkOfferTitleShard;
   perkOfferEl.querySelector(".fo-sub").textContent = isSpecialOffer ? STRINGS.levelUpSpecialSub : STRINGS.perkOfferSub;
@@ -47291,6 +47525,7 @@ function applyDamageToBoid(boidIndex, damage, hit) {
               * scatterTakenMult()                  // v3.94.0（DT-204）: 広げ陣の「散り身」
               * (boidIndex === lanceIdx ? LANCE_TAKEN_MULT : 1);   // v3.125.0（DT-548）: 一番槍
   boidHp[boidIndex] -= dealt;
+  sfxHit();   // v3.176.0（DT-075）
   reportDragonDamage(boidIndex, dealt);   // v2.11.0: 軽減を掛けた後の、実際に減った量を出す
   if (boidHp[boidIndex] <= 0) {
     // 変更2: 消滅ではなくダウン状態へ移行（恒久喪失なし）
