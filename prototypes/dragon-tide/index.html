@@ -1326,7 +1326,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.176.0";
+const GAME_VERSION = "v3.177.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -6286,7 +6286,7 @@ const START_STREAM_STEPS     = 45;           // 最長 1800px
 const START_STREAM_W         = 9;            // 小川の幅（川は100前後）
 const START_STREAM_TOWN_GAP  = 80;
 const HAMLET_RAMPART_CHANCE  = 0.12;   // 小集落に前哨堡（小）が立つ確率
-const HAMLET_RAMPART_FROM    = 1100;   // 開始地点からこれより遠い小集落だけ（最初の数十秒は撃たれない）
+const HAMLET_RAMPART_FROM    = 1100;   // 開始地点からこれより遠い小集落だけ（v3.177.0: 決まりは「走り出しても最初の3秒は撃たれない」。quietStartArea も参照）
 const HAMLET_RAMPART_SHOTS   = 3;      // 1射の弾数（町の前哨堡は RAMPART_COUNT=7）
 const HAMLET_RAMPART_RADIUS  = 10;
 
@@ -7108,7 +7108,7 @@ const FILLER = {
   gradientMax: 1.4,        // 首都のそばでの濃さ
   clearance: 5,            // 家どうし・ほかの建物との隙間
   // DT-590 手直し2（v3.171.0・Shooter「スタート地点周囲も撃ってこない建物は立っていて良い。今は完全に空白」）:
-  // 300 → 150。群れが生まれて最初の線を引ける広さだけ空ける（埋め草は撃たないので、最初の数十秒は撃たれないまま）
+  // 300 → 150。群れが生まれて最初の線を引ける広さだけ空ける（埋め草は撃たないので、最初の3秒は撃たれないまま）
   startClear: 150,
   gridCell: 64,
   // --- DT-590 手直し2（v3.171.0・Shooter「道沿いの家は全部一列だと整然としすぎなので、所々厚みや間隔を変えてほしい」）---
@@ -7395,7 +7395,7 @@ function generateFillerBuildings(existing, roadEdges, townMetas, boss, config, k
 
   // 4. DT-590 手直し2（Shooter「スタート地点周囲も、撃ってこない建物は立っていて良い。今は完全に空白」）:
   // 開始地点のすぐまわり（小集落の帯より内）に、数軒が寄った農家の組と、畑の中の一軒家を置く。
-  // 群れが生まれる真ん中（startClear）だけは空ける。どれも撃たないので、最初の数十秒は撃たれないまま
+  // 群れが生まれる真ん中（startClear）だけは空ける。どれも撃たないので、最初の3秒は撃たれないまま
   const farmSpots = [];
   const groups = randInt(FILLER.startFarmGroups[0], FILLER.startFarmGroups[1]);
   for (let tries = 0; tries < groups * 60 && farmSpots.length < groups; tries++) {   // 開始地点は地図の端・角に寄っていることが多い（半分以上が地図の外）ので多めに試す
@@ -7652,6 +7652,26 @@ function placeDragonCage(result, boss, stageIndex, config, keepLoose) {
       near[k]._emplacement = key;
       near[k].attackRadius = Math.max(near[k].attackRadius, EMPLACEMENT_DEFS[key].range);
     }
+  }
+}
+
+// v3.177.0（案帳 DT-605・Shooter「走り出しても、の方で、5秒ではなく3秒に」「撃たない家に替える、で良い」）:
+// 決まりは「走り出しても最初の3秒は撃たれない」。群れが開始地点から最速で3秒走って届く距離より内に、射程の端が入る撃つ建物は、
+// 消さずに撃たない家に替える（家の並び・卵・経験値はそのまま＝地図の見た目は変わらない）。
+// 前哨堡・時代兵器も、その場では撃たない家に戻す（砲が付いたまま黙っていると、撃つ建物に見えるため）。
+const START_SAFE_SECONDS   = 3;
+const START_SAFE_RUN_SPEED = 200;   // 群れの速さ（160〜200px/秒）の速い方
+function quietStartArea(result) {
+  const reach = START_SAFE_SECONDS * START_SAFE_RUN_SPEED;
+  for (const b of result) {
+    if (b.isBoss || b._isWall || b._isCapital || b._noAttack || b._beamTower || b._miniBeam || !(b.attackRadius > 0)) continue;
+    if (Math.hypot(b.wx - START_X, b.wy - START_Y) - b.attackRadius >= reach) continue;
+    if (b._townRole === "rampart") {
+      delete b._townRole; delete b._rampartAngle; delete b._rampartShots; delete b._faceAngle; delete b._noFlip;
+    }
+    delete b._emplacement;
+    b._noAttack = true;
+    b._quietStart = true;
   }
 }
 
@@ -8257,6 +8277,8 @@ function generateStageLayout(stageIndex) {
   clearExplosionFx();   // v3.9.0
   floodWave = null;          // v0.43: 前ステージの洪水を持ち越さない
   resetRaiderState();   // v0.8: レイダー湧き状態もステージごとにリセット
+
+  quietStartArea(result);   // v3.177.0（案帳 DT-605）: 走り出しても最初の3秒は撃たれない
 
   // --- (8) v0.6-p4: 後半ステージの難度底上げ（仕様 §4。プレイヤーの3択強化ぶんを相殺） ---
   // ボスは BOSS_HP_STAGE_MULT で既にスケールするため対象外。城壁もステージ別HP設定済みのため対象外。
@@ -8982,7 +9004,7 @@ function buildSanctuaryRoadNetwork(centers, boss) {
 const BEAM_TOWER_COUNT     = 14;    // 8400×8400 の地図に立てる塔の数
 const BEAM_TOWER_SPACING   = 1000;  // 塔どうしの最小の間隔
 const BEAM_TOWER_TOWN_GAP  = 300;   // 町の中心から塔までの最小の距離（塔は町の外の野に立つ）
-const BEAM_TOWER_START_GAP = 1500;  // 開始地点の近くには立てない（最初の数十秒は群れを育てる）
+const BEAM_TOWER_START_GAP = 1500;  // 開始地点の近くには立てない（最初の3秒は撃たれない決まり。それより遠くても、序盤は群れを育てる場所にする）
 const BEAM_TOWER_CAPITAL_GAP = 1100; // 首都の近くにも立てない（首都区画はプリズムの割れた光線で崩す）
 const BEAM_TOWER_HP_MULT   = 2.2;   // 塔の固さ（大きい建物のこの倍）
 const BEAM_TOWER_RADIUS    = 30;
