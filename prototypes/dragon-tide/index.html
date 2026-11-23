@@ -1324,7 +1324,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.174.0";
+const GAME_VERSION = "v3.175.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -7521,6 +7521,138 @@ function generateTownWalls(townMetas, stageIndex) {
   return result;
 }
 
+/**
+ * v3.175.0（案帳 DT-089）: 竜檻を1マップに1つまで建てる。
+ * 首都から遠い格上の街・要塞都市の真ん中の建物を檻にし、まわりをいまの城壁で八角形に囲む。
+ * 壁の中に前哨堡2基、壁の外に前哨堡4基、近くの建物に時代兵器2基を足す（どれもいまの建物のまま）。
+ * 町・城壁・線路の退けが済んだあとに呼ぶ（檻の城壁が線路の退けで欠けないように）。
+ */
+function placeDragonCage(result, boss, stageIndex, config, keepLoose) {
+  // 町が動く・浮く・碁盤の目・固い壁で組む地域には建てない（八角形の城壁が地形と噛み合わない）
+  if (worldShape === SHAPE_ASTEROIDS || worldShape === SHAPE_METRO || worldShape === SHAPE_SKYLAND ||
+      worldShape === SHAPE_BEACH || worldShape === SHAPE_BOMB || worldShape === SHAPE_MUSHROOM) return;
+  const metaMap = buildTownMetaMap(result);
+  const strong = new Set();
+  for (const b of result) {
+    if (b._townIndex === undefined || b.isBoss || b._isWall || b._isCapital) continue;
+    if (b._fixedTier != null || (b._tierOffset || 0) > 0) strong.add(b._townIndex);
+  }
+  const candidates = [];
+  for (const t of strong) { const m = metaMap.get(t); if (m && !m._rock) candidates.push({ t, m }); }
+  if (candidates.length === 0) return;
+  if (random() >= DRAGON_CAGE_CHANCE) return;
+  // 首都から離れた街を選ぶ（首都の守りと重ねない）
+  candidates.sort((x, y) => dist2(y.m.cx, y.m.cy, boss.wx, boss.wy) - dist2(x.m.cx, x.m.cy, boss.wx, boss.wy));
+  const { t: townIndex, m: meta } = candidates[0];
+
+  // 檻：町の真ん中にいちばん近い大きめの建物を建て替える
+  let cage = null, bestD = Infinity;
+  for (const b of result) {
+    if (b._townIndex !== townIndex || b._isWall || b.isBoss || b._landmark || b._isDam) continue;
+    if (b.size !== "large" && b.size !== "medium") continue;
+    const d = dist2(b.wx, b.wy, meta.cx, meta.cy);
+    if (d < bestD) { bestD = d; cage = b; }
+  }
+  if (!cage) return;
+  const bLarge = config.buildings.large;
+  const large = BUILDING_SIZE_PARAMS.large;
+  cage.size   = "large";
+  cage.radius = DRAGON_CAGE_RADIUS;
+  cage.maxHp  = cage.hp = Math.round((large.hpMin + large.hpMax) / 2);   // 乱数を引かない
+  cage.reward = bLarge.reward;
+  cage._townRole = "dragonCage";
+  delete cage._emplacement;
+  cage._noAttack = true;   // 檻そのものは撃たない
+  cage.attackRadius = 0;
+  cage.isEggBearer = false;
+  cage._noFlip = true;     // 四角い檻（向きを揃える）
+  const cx = cage.wx, cy = cage.wy;
+  const town = { _townIndex: townIndex, _tierOffset: cage._tierOffset, _fixedTier: cage._fixedTier, _fortified: cage._fortified };
+
+  // 置き場所に掛かる建物をどける。町の下地をぶら下げている棟・檻・首都は残す
+  const clearAround = (x, y, r) => {
+    for (let i = result.length - 1; i >= 0; i--) {
+      const b = result[i];
+      if (b === cage || b._townMeta || b.isBoss || b._isCapital || b._cageWall) continue;
+      const rr = r + (b.radius || 0) + 2;
+      if (dist2(b.wx, b.wy, x, y) < rr * rr) result.splice(i, 1);
+    }
+  };
+  const inWorld = (x, y, m) => x > m && x < WORLD_W - m && y > m && y < WORLD_H - m;
+
+  // 八角形の城壁（辺が上下左右を向く。入口は無い＝壊せば入れる）
+  const wcfg = WALL_STAGE_CONFIG[stageIndex] ?? WALL_STAGE_CONFIG[WALL_STAGE_CONFIG.length - 1];
+  const wallHp = Math.round((wcfg && wcfg.hp ? wcfg.hp : 52) * 0.7);   // いまの町の城壁と同じ硬さ
+  const R = DRAGON_CAGE_WALL_RADIUS;
+  const corners = [];
+  for (let k = 0; k < 8; k++) {
+    const a = Math.PI / 8 + k * Math.PI / 4;
+    corners.push({ x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R });
+  }
+  const walls = [];
+  for (let k = 0; k < 8; k++) {
+    const a = corners[k], b = corners[(k + 1) % 8];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const n = Math.max(1, Math.round(len / WALL_SEG_SPACING));
+    for (let j = 0; j < n; j++) {
+      const f = j / n;
+      const x = a.x + (b.x - a.x) * f, y = a.y + (b.y - a.y) * f;
+      if (!inWorld(x, y, 20)) continue;
+      const w = makeWallSegment(x, y, wallHp, Math.atan2(b.y - a.y, b.x - a.x));
+      w._cageWall = true;   // 警戒度が上がっても張り直さない（開けた穴が塞がらない）
+      walls.push(w);
+    }
+  }
+  for (const w of walls) clearAround(w.wx, w.wy, WALL_SEG_RADIUS * 0.6);
+
+  // 前哨堡を1基建てる（中くらいの建物。砲口は檻から見て外向き）
+  const bMid = config.buildings.medium;
+  const mid = BUILDING_SIZE_PARAMS.medium;
+  const addRampart = (x, y) => {
+    if (!inWorld(x, y, 40)) return;
+    clearAround(x, y, RAMPART_PROMOTED_RADIUS);
+    const b = makeBuilding(x, y, "medium", cage.color, bMid, Math.round((mid.hpMin + mid.hpMax) / 2));
+    Object.assign(b, town);
+    if (b._fixedTier == null) delete b._fixedTier;
+    if (!b._fortified) delete b._fortified;
+    if (keepLoose && !keepLoose(b)) return;   // 川・線路の上には建てない
+    b.radius = RAMPART_PROMOTED_RADIUS;
+    b._townRole = "rampart";
+    b.attackRadius = Math.max(b.attackRadius, RAMPART_RANGE);
+    b._rampartAngle = Math.atan2(y - cy, x - cx);
+    b._faceAngle = b._rampartAngle + RAMPART_SPRITE_OFFSET;
+    b._noFlip = true;
+    b._cageGuard = true;
+    result.push(b);
+  };
+  const turn = random() * Math.PI * 2;
+  for (let k = 0; k < DRAGON_CAGE_INNER_DEFENSES; k++) {
+    const a = turn + k * Math.PI * 2 / DRAGON_CAGE_INNER_DEFENSES;
+    addRampart(cx + Math.cos(a) * R * DRAGON_CAGE_INNER_DIST, cy + Math.sin(a) * R * DRAGON_CAGE_INNER_DIST);
+  }
+  for (let k = 0; k < DRAGON_CAGE_OUTER_RAMPARTS; k++) {
+    const a = turn + Math.PI / DRAGON_CAGE_OUTER_RAMPARTS + k * Math.PI * 2 / DRAGON_CAGE_OUTER_RAMPARTS;
+    const d = R + DRAGON_CAGE_OUTER_GAP;
+    addRampart(cx + Math.cos(a) * d, cy + Math.sin(a) * d);
+  }
+  for (const w of walls) result.push(w);
+
+  // 近くの大きめの建物に時代兵器を足す（その時代の兵器の並びの先頭から。石器のように兵器の無い時代は足さない）
+  const feat = stageFeatures(stageIndex);
+  const keys = (feat.emplacements || []).map(e => e[0]).filter(k => EMPLACEMENT_DEFS[k]);
+  if (keys.length > 0) {
+    const near = result.filter(b => b._townIndex === townIndex && !b._isWall && !b.isBoss && !b._townRole &&
+      !b._emplacement && !b._landmark && !b._noAttack && (b.size === "large" || b.size === "medium") &&
+      dist2(b.wx, b.wy, cx, cy) < DRAGON_CAGE_EMPLACEMENT_REACH ** 2);
+    near.sort((x, y) => dist2(x.wx, x.wy, cx, cy) - dist2(y.wx, y.wy, cx, cy));
+    for (let k = 0; k < DRAGON_CAGE_EXTRA_EMPLACEMENTS && k < near.length; k++) {
+      const key = keys[k % keys.length];
+      near[k]._emplacement = key;
+      near[k].attackRadius = Math.max(near[k].attackRadius, EMPLACEMENT_DEFS[key].range);
+    }
+  }
+}
+
 function generateStageLayout(stageIndex) {
   const config = STAGE_CONFIGS[stageIndex];
 
@@ -8071,6 +8203,8 @@ function generateStageLayout(stageIndex) {
     }
   }
 
+  placeDragonCage(result, boss, stageIndex, config, keepLoose);   // v3.175.0（案帳 DT-089）
+
   // v3.68.0（案帳 DT-490）: 道のある地図では、開始地点まわりを田園にする（集落の間を縫う野道・空き地を埋める畑・林）。
   // 家・町・城壁・線路の退けが全部済んでから敷く（野道も畑も家をよけるため）。岩山・湖・森はこのあと畑をよけて置く
   if (townRoadEdges.length > 0) generateStartCountryside(tinyBuildings, result, config, keepLoose);
@@ -8154,7 +8288,7 @@ function generateStageLayout(stageIndex) {
     const fwCandidates = [];
     for (let i = 0; i < result.length; i++) {
       const b = result[i];
-      if (b.isBoss || b._isWall || b._isCapital || b.isEggBearer) continue;
+      if (b.isBoss || b._isWall || b._isCapital || b.isEggBearer || b._townRole === "dragonCage") continue;
       fwCandidates.push(i);
     }
     const fwCount = 1 + Math.floor(stageIndex / 3);   // stage1-3=1, 4-6=2, 7-8=3
@@ -11440,6 +11574,9 @@ const CONCUSSION_BATTERY_KNOCK_R = 58;   // 着弾衝撃の半径（周りの竜
 const TOWN_ROLE_DEFS = {
   granary:  { label: "穀倉",  ring: "#a8e070",
               desc: "壊すと卵がまとめて出る" },
+  // v3.175.0（案帳 DT-089）: 竜檻。穀倉より卵がずっと多いぶん、八角形の城壁と前哨堡・時代兵器に固められている
+  dragonCage: { label: "竜檻", ring: "#ffd040",
+              desc: "奪われた卵を積んだ檻。壊すと卵がどっと出る。八角形の城壁に囲まれ、壁の内と外に前哨堡が立つ" },
   barracks: { label: "兵舎",  ring: "#ff9a6a",
               desc: "生きている間、近づくと戸口から兵の隊を出し続ける" },
   // v0.81: 表が手強くない（実機判定 2026-09-12）への回答。
@@ -11472,6 +11609,19 @@ const GRANARY_EGG_COUNT = 4;
 // 穀倉の屋根の卵の印：画面上の最小半径(px)と、印どうしの間隔（半径の何倍）。4つ並べるので1つの卵持ち建物（5px）より小さめ
 const GRANARY_EGG_MARK_MIN_PX = 3.6;
 const GRANARY_EGG_MARK_GAP    = 2.6;
+// v3.175.0（案帳 DT-089）: 竜檻。穀倉（卵4個・守りなし）の「報酬が多くて守りが固い」版。1マップに1つまで、出ないマップもある。
+// 新しい仕組みは足さない：檻（卵を積んだ四角い建物）のほかは、いまの城壁（八角形に並べる）・前哨堡・時代兵器だけで組む。
+const DRAGON_CAGE_CHANCE          = 0.5;   // そのマップに竜檻が建つ割合（格上の街か要塞都市があるときだけ）
+const DRAGON_CAGE_EGG_COUNT       = 20;    // 壊すと出る卵（Shooter「20個くらいあっていい」）
+const DRAGON_CAGE_RADIUS          = 24;    // 檻の当たりの大きさ（大きい建物と同じくらい）
+const DRAGON_CAGE_WALL_RADIUS     = 118;   // 八角形の城壁の、檻から角までの距離
+const DRAGON_CAGE_INNER_DEFENSES  = 2;     // 壁の中の前哨堡（Shooter「壁の中にも2基くらい」）
+const DRAGON_CAGE_INNER_DIST      = 0.55;  // 壁の中の前哨堡の、檻からの距離（城壁の半径の何倍）
+const DRAGON_CAGE_OUTER_RAMPARTS  = 4;     // 壁の外に足す前哨堡（その町のいつもの数とは別に）
+const DRAGON_CAGE_OUTER_GAP       = 36;    // 壁の外の前哨堡を、城壁からどれだけ外へ置くか
+const DRAGON_CAGE_EXTRA_EMPLACEMENTS = 2;  // 近くの建物に足す時代兵器
+const DRAGON_CAGE_EMPLACEMENT_REACH  = 380;   // 時代兵器を足す建物を探す、檻からの距離
+const DRAGON_CAGE_EGG_MARK_COLS   = 5;     // 屋根の卵の印の並べ方（5×4で20個）
 // 兵舎: 群れがこの距離に入ると兵を出す／出す間隔／1棟あたりの同時上限
 // v3.91.0（案帳 DT-519・Shooter「兵が出てる実感が全然なかった。もうちょっと頻繁に、出る時はまとまった数が出るように」）:
 // 1回に1体（6秒ごと・同時2体）だったのを、1回に隊（BARRACKS_SQUAD 体）でまとめて出す形にした。間隔も詰めた
@@ -31080,6 +31230,16 @@ function settlementFall(settlementIndex) {
     }
     triggerFlash("rgba(160,224,112,0.12)", 0.18);
   }
+  // v3.175.0（案帳 DT-089）: 竜檻は卵をどっと吐く。警戒度で建て直っても、卵は最初に壊したときの1回だけ
+  if (settlement._townRole === "dragonCage" && !settlement._cageOpened) {
+    settlement._cageOpened = true;
+    for (let k = 0; k < DRAGON_CAGE_EGG_COUNT; k++) {
+      const angle = (k / DRAGON_CAGE_EGG_COUNT) * Math.PI * 2 + random() * 0.3;
+      const r = settlement.radius + 16 + random() * 60;
+      spawnEgg(settlement.wx + Math.cos(angle) * r, settlement.wy + Math.sin(angle) * r);
+    }
+    triggerFlash("rgba(255,208,64,0.16)", 0.24);
+  }
 
   // v0.79: 町の陥落判定。城壁とボスは数えない（recomputeTownRoles と同じ基準）。
   // v1.0.7: この1棟で町が沈黙したか。警戒度はこの区切りでしか上がらない
@@ -41526,9 +41686,10 @@ function codexBuildingHtml() {
           `<div class="cx-name">${def.label}</div>` +
           `<div class="cx-tags">${
               key === "barracks" ? "格上の街・要塞都市だけ" :
+              key === "dragonCage" ? "格上の街・要塞都市に1マップ1つまで（出ないマップもある）" :
               key === "rampart"  ? `どの町にも${RAMPART_PER_TOWN}基（格上${RAMPART_PER_ADVANCED_TOWN}／要塞${RAMPART_PER_FORTRESS_TOWN}）` :
                                    "どの町にも1つ"}` +
-            ` ／ ${key === "granary" ? "町の裏側" : "町の表側"}</div>` +
+            ` ／ ${key === "granary" ? "町の裏側" : key === "dragonCage" ? "町の真ん中" : "町の表側"}</div>` +
           `<div class="cx-atk">${def.desc}</div>` +
           (key === "rampart"
             ? codexPowerHtml([{ label: "通常弾（1発）", note: "I〜VIII",
@@ -41538,6 +41699,8 @@ function codexBuildingHtml() {
             : "") +
           `<div class="cx-stat">${
             key === "granary"  ? `卵 ${GRANARY_EGG_COUNT}個（町に散らばる卵は1町2〜3個）` :
+            key === "dragonCage" ? `卵 ${DRAGON_CAGE_EGG_COUNT}個・檻は撃たない／八角形の城壁の中に前哨堡${DRAGON_CAGE_INNER_DEFENSES}基、` +
+                                   `外に前哨堡${DRAGON_CAGE_OUTER_RAMPARTS}基・時代兵器${DRAGON_CAGE_EXTRA_EMPLACEMENTS}基` :
             key === "rampart"  ? `${RAMPART_COUNT}発の扇・${RAMPART_INTERVAL}秒ごと・射程${RAMPART_RANGE}` +
                                  `／<b>正面±${Math.round(RAMPART_ARC * 180 / Math.PI)}度にしか撃てない</b>` +
                                  `（1発の威力は普通の弾の${Math.round(RAMPART_DMG_MULT * 100)}%）` :
@@ -44728,7 +44891,7 @@ function rebuildWallsForTier() {
   const kept = [];
   for (let i = 0; i < settlements.length; i++) {
     // v1.4.0: 防衛線の長城は張り直さない（開けた突破口が段階のたびに塞がると、突破が積み上がらない）
-    if (!settlements[i]._isWall || settlements[i]._lineWall || settlements[i]._bombWall) kept.push(settlements[i]);   // v3.146.0: 火薬庫の城の城壁も張り直さない（爆発で開けた穴が塞がらない）
+    if (!settlements[i]._isWall || settlements[i]._lineWall || settlements[i]._bombWall || settlements[i]._cageWall) kept.push(settlements[i]);   // v3.175.0（DT-089）: 竜檻の八角形の城壁も張り直さない   // v3.146.0: 火薬庫の城の城壁も張り直さない（爆発で開けた穴が塞がらない）
   }
   const boss = kept.find(s => s.isBoss);
   if (!boss) { settlements = kept; return; }
@@ -50410,7 +50573,7 @@ function collectFrameMarkedSettlements() {
   for (const st of settlements) {
     if (!st || st.fallen) continue;
     if (st.isEggBearer) f.eggBearers.push(st);
-    if (st._townRole === "granary") f.granaries.push(st);
+    if (st._townRole === "granary" || (st._townRole === "dragonCage" && !st._cageOpened)) f.granaries.push(st);   // v3.175.0: 竜檻も屋根に卵の印
     if (st.isFirework) f.fireworks.push(st);
     if (st._emplacement || st._townRole) f.emplacements.push(st);
     if (st._townRole === "rampart" && st._rampartAngle !== undefined) f.ramparts.push(st);
@@ -50912,9 +51075,11 @@ function drawEggBearerMarkers(now) {
         st.wy < bounds.minY || st.wy > bounds.maxY) continue;
     const worldR = Math.max(GRANARY_EGG_MARK_MIN_PX / cam.scale, GRANARY_EGG_MARK_MIN_PX);
     const gap = worldR * GRANARY_EGG_MARK_GAP;
-    const cols = Math.ceil(Math.sqrt(GRANARY_EGG_COUNT));
-    const rows = Math.ceil(GRANARY_EGG_COUNT / cols);
-    for (let k = 0; k < GRANARY_EGG_COUNT; k++) {
+    const isCage = st._townRole === "dragonCage";   // v3.175.0（DT-089）: 竜檻は卵20個をぎっしり
+    const eggCount = isCage ? DRAGON_CAGE_EGG_COUNT : GRANARY_EGG_COUNT;
+    const cols = isCage ? DRAGON_CAGE_EGG_MARK_COLS : Math.ceil(Math.sqrt(eggCount));
+    const rows = Math.ceil(eggCount / cols);
+    for (let k = 0; k < eggCount; k++) {
       const ox = st.wx + ((k % cols) - (cols - 1) / 2) * gap;
       const oy = st.wy + (Math.floor(k / cols) - (rows - 1) / 2) * gap;
       ctx.globalAlpha = pulse * 0.35; ctx.fillStyle = "#ffd040";
@@ -53144,6 +53309,7 @@ const BUILDING_IMAGE_SOURCES = {
   // v0.78: **役割を持つ建物**（Shooter指示「どれから倒すかを選べるように」）。
   // 時代ごとではなく**機能ごとに1枚**（時代兵器と同じ扱い）。
   role_granary:  "assets/building_role_granary.png",
+  role_dragonCage: "assets/building_role_dragon_cage.png",   // v3.175.0（案帳 DT-089）
   role_barracks: "assets/building_role_barracks.png",
   // v0.84: 前哨堡は**指向性のある絵**（大砲・バリスタ等）に差し替え、時代ごとに用意した。
   // どれも**砲口が画像の上（-y）を向いている**。描画は _faceAngle で回すので、
