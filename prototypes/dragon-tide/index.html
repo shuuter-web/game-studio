@@ -1326,7 +1326,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.177.0";
+const GAME_VERSION = "v3.178.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -5122,9 +5122,14 @@ function screenToWorld(sx, sy) {
   };
 }
 
-function updateCamera(dt) {
+// v3.178.0（案帳 DT-074）: カメラが群れの真ん中へ寄る割合は「1歩（fixedStepMs）あたり8%」を基準に、経過時間から決める。
+// それまでは1回の呼び出しごとに8%だったので、ループの回る回数が少ない（fps の低い）端末ほど追従が遅れていた
+const CAMERA_FOLLOW_PER_STEP = 0.08;
+function updateCamera(dt, followDt = dt) {
   const centroid = wispActive() && wisp ? wispCameraTarget() : calcFriendlyCentroid();   // v3.36.0: 鬼火は列の前のほうを追う
-  const lerpFactor = 0.08;
+  // 追従は実時間で決める（スローモー・ヒットストップ中も今までどおり寄る）。基準の1歩ちょうどなら今までと同じ8%
+  const followSteps = followDt * 1000 / BASE_CFG.fixedStepMs;
+  const lerpFactor = followSteps === 1 ? CAMERA_FOLLOW_PER_STEP : 1 - Math.pow(1 - CAMERA_FOLLOW_PER_STEP, followSteps);
   cam.x += (centroid.x - cam.x) * lerpFactor;
   cam.y += (centroid.y - cam.y) * lerpFactor;
 
@@ -46596,29 +46601,43 @@ function inputEnd() {
   touchRing.active = false;
 }
 
+// v3.178.0（案帳 DT-074）: 線を引き始めた指の番号（Touch.identifier）。その指だけを読む。
+// それまでは毎回「いま触れている1本目の指」を読んでいたので、2本目の指が触れると線が引き直しになり、
+// 1本目を離すと操縦点が2本目の指へ飛んでいた。2本目以降の指は触れても動かしても離しても無視する
+let activeTouchId = null;
+function findTouchById(list, id) {
+  for (let i = 0; i < list.length; i++) if (list[i].identifier === id) return list[i];
+  return null;
+}
 canvas.addEventListener("touchstart", (e) => {
-  const t = e.touches[0];
-  inputStart(t.clientX, t.clientY, performance.now());
   e.preventDefault();
+  // 覚えた指がもう画面に無い（touchcancel で取り残された等）なら忘れて、新しい指で始め直す
+  if (activeTouchId !== null && findTouchById(e.touches, activeTouchId)) return;
+  const t = e.changedTouches[0];
+  activeTouchId = t.identifier;
+  inputStart(t.clientX, t.clientY, performance.now());
 }, { passive: false });
 
 canvas.addEventListener("touchmove", (e) => {
-  const t = e.touches[0];
-  inputMove(t.clientX, t.clientY, performance.now());
   e.preventDefault();
+  const t = activeTouchId === null ? null : findTouchById(e.touches, activeTouchId);
+  if (t) inputMove(t.clientX, t.clientY, performance.now());
 }, { passive: false });
 
 canvas.addEventListener("touchend", (e) => {
-  // touches が残っている（マルチタッチの一本が離れただけ）は無視する。
-  // e.touches.length === 0 のときのみ入力終了とする。
-  if (e.touches.length === 0) { inputEnd(); }
   e.preventDefault();
+  // 覚えた指が離れたら、ほかの指が残っていても線を終える（残った指で続けるときは触り直す）。
+  // 指が1本も残っていないときも念のため終える
+  if ((activeTouchId !== null && findTouchById(e.changedTouches, activeTouchId)) || e.touches.length === 0) {
+    activeTouchId = null;
+    inputEnd();
+  }
 }, { passive: false });
 // touchcancel はスクロール防止 preventDefault の失敗時などに誤発火しやすい。
 // isDrawing を切らず、そのまま巡航継続させる。
 // ただし touches が完全に 0 になった場合は終了する（ハードウェア切断など）。
 canvas.addEventListener("touchcancel", (e) => {
-  if (e.touches.length === 0) { inputEnd(); }
+  if (e.touches.length === 0) { activeTouchId = null; inputEnd(); }
   e.preventDefault();
 }, { passive: false });
 
@@ -55123,7 +55142,7 @@ function tick() {
     updateMushroom(wdt);          // v3.130.0（案帳 DT-551）: キノコの家が生える・胞子玉
     updateFlowerGarden(wdt);      // v3.147.0（案帳 DT-339）: 茨の蔓・女王花の吸い込み・吐き出し
     updateBombland(wdt);          // v3.146.0（案帳 DT-333）: 爆弾玉・臼砲・誘爆
-    updateCamera(wdt);
+    updateCamera(wdt, dt);   // v3.178.0（DT-074）: 追従は実時間（今までも歩ごとに一定で、スローモーの影響を受けていなかった）
     // v3.16.0: 猛進のあいだは敵側（建物の射撃・弾・動く敵）だけ時間を速める
     rebuildMoverGrid();           // v3.23.0: 竜の攻撃が近くの敵だけを見るための格子（敵が多い地域だけ）
     updateStageCardEffects(wdt);                  // v3.49.0: 陥落の咆哮・巨竜の踏みつけ
