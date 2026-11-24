@@ -68,6 +68,12 @@ function installRecorder() {
     window[name] = function (...a) { return fn(orig, this, a); };
   };
   rec.openStage = () => {
+    // 前のステージが終わらないまま次が始まった（--setup の debugStartStage で差し替えたなど）。時間が経っていなければ捨てる
+    const prev = rec.stage;
+    if (prev && prev.endT === null) {
+      if (t() - prev.startT < 1000) rec.stages.pop();
+      else rec.closeStage("switched");
+    }
     rec.stage = { ...stageInfo(), startT: t(), tierUpT: [], capitalT: null, endT: null, end: null, wipes: 0,
                   startFlock: flock(), startLevel: playerLevel, buildingsAtStart: aliveBuildings(),
                   lastProgressT: t(), lastBuildings: aliveBuildings() };
