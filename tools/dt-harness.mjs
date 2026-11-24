@@ -10,8 +10,13 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
-/** ゲームを開き、ゲームループが登録されるまで待つ。errors には実行時エラーが溜まる。 */
-export async function openGame({ file, seed }) {
+/**
+ * ゲームを開き、ゲームループが登録されるまで待つ。errors には実行時エラーが溜まる。
+ * noRender: true で画面を描かない（render と地図を空にする）。DT-615: 1歩の時間のほとんどは描画で、
+ * 描かないと8〜10倍速く回る。オートプレイの判断は v3.192.0 から描画と別の乱数なので、描いても描かなくても同じランになる
+ * （指紋で確かめた）。画面の絵を撮る道具（dt-probe の --shot）では描く。
+ */
+export async function openGame({ file, seed, noRender = false }) {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const errors = [];
@@ -62,6 +67,11 @@ export async function openGame({ file, seed }) {
       const frame = rafQueue; rafQueue = [];
       for (const r of frame) r.fn(fakeNow);
     };
+    // DT-615: 1回の呼びかけで n 歩進める（ページへの往復を減らす）。stop が真を返したらそこで止まり、進めた歩数を返す
+    window.__dtStepMany = (ms, n, stop) => {
+      for (let k = 1; k <= n; k++) { window.__dtStep(ms); if (stop && stop()) return k; }
+      return n;
+    };
     try { localStorage.clear(); } catch (e) { /* 無くてよい */ }
   });
 
@@ -72,5 +82,14 @@ export async function openGame({ file, seed }) {
     if (waited > 60000) throw new Error("ゲームループが始まらなかった");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  if (noRender) await page.evaluate(() => { window.render = () => {}; window.drawMinimap = () => {}; });
   return { browser, page, errors };
+}
+
+/** n 歩をページの中でまとめて進める（DT-615）。stopExpr（式の文字列）が真になったらそこで止まり、進めた歩数を返す */
+export async function stepMany(page, n, { stepMs = 16, stopExpr = "" } = {}) {
+  return page.evaluate(([ms, count, expr]) => {
+    const stop = expr ? () => (0, eval)(expr) : null;
+    return window.__dtStepMany(ms, count, stop);
+  }, [stepMs, n, stopExpr]);
 }

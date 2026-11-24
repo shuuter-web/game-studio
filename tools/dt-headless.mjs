@@ -1,7 +1,11 @@
 // -----------------------------------------------------------------
 // Dragon Tide のヘッドレス再生（同じシード・同じ時計で決定的に回す）
 //
-//   node tools/dt-headless.mjs [--seed 12345] [--ticks 20000] [--species fire] [--every 500] [--advance-every 0] [--file prototypes/dragon-tide/index.html]
+//   node tools/dt-headless.mjs [--seed 12345] [--ticks 20000] [--species fire] [--every 500] [--advance-every 0] [--file prototypes/dragon-tide/index.html] [--render]
+//
+// DT-615: 既定では画面を描かずに、報告・警戒度を進める歩の間をまとめて進める（描くより8〜10倍速い）。
+// --render で描きながら1歩ずつ回す（描画の中で状態が変わっていないかを確かめるときや --profile で描画も測るとき）。
+// 描いても描かなくても同じ引数なら同じ指紋になる（v3.192.0 で確かめた）。
 //
 // オートプレイでランを回し、一定間隔ごとにゲーム状態の指紋（ハッシュ）を出す。
 // リファクタリングの前後で同じ引数の出力が一致すれば「挙動を変えていない」と言える。
@@ -10,7 +14,7 @@
 // -----------------------------------------------------------------
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { openGame } from "./dt-harness.mjs";
+import { openGame, stepMany } from "./dt-harness.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -33,8 +37,9 @@ const probeExpr = argValue("probe", "");
 const stageArg = argValue("stage", "");
 // 固定歩幅。ゲーム側の BASE_CFG.fixedStepMs と同じ 16ms で刻む
 const STEP_MS = 16;
+const withRender = args.includes("--render");
 
-const { browser, page, errors } = await openGame({ file, seed });
+const { browser, page, errors } = await openGame({ file, seed, noRender: !withRender });
 
 await page.evaluate((sp) => { startAutoplay(sp); }, species);
 
@@ -70,7 +75,14 @@ if (profileTop > 0) {
 }
 const started = Date.now();
 for (let t = 1; t <= totalTicks; t++) {
-  await page.evaluate((ms) => window.__dtStep(ms), STEP_MS);
+  if (withRender) await page.evaluate((ms) => window.__dtStep(ms), STEP_MS);
+  else {
+    // 次に何かする歩（警戒度を進める・報告する・最後）の手前までまとめて進める
+    const nextEvent = Math.min(totalTicks, reportEvery > 0 ? Math.ceil(t / reportEvery) * reportEvery : totalTicks,
+                               advanceEvery > 0 ? Math.ceil(t / advanceEvery) * advanceEvery : totalTicks);
+    await stepMany(page, nextEvent - t + 1, { stepMs: STEP_MS });
+    t = nextEvent;
+  }
   if (advanceEvery > 0 && t % advanceEvery === 0) await page.evaluate(() => debugAdvanceStage());
   if (t % reportEvery === 0) {
     const fp = await fingerprint();

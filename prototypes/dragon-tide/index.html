@@ -1386,7 +1386,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.191.0";
+const GAME_VERSION = "v3.192.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -1441,6 +1441,8 @@ let currentSeed        = 0;
 let currentSeedText    = "";
 let nextLogicRandom    = null;
 let nextFxRandom       = null;
+let nextAutoRandom     = null;
+const AUTO_RANDOM_SEED_SALT = 0x85EBCA6B;   // オートプレイの列の種のずらし（ほかの2本と重ならない値なら何でもよい）
 
 function reseedRandom(seedValue) {
   currentSeed = (typeof seedValue === "number") ? (seedValue >>> 0) : hashSeed(seedValue);
@@ -1448,11 +1450,16 @@ function reseedRandom(seedValue) {
   nextLogicRandom = makeRandomGenerator(currentSeed);
   // 演出用は別ストリーム。ロジック側の消費数に一切影響されないよう種をずらす。
   nextFxRandom    = makeRandomGenerator((currentSeed ^ 0x9E3779B9) >>> 0);
+  // v3.192.0（案帳 DT-615）: オートプレイ・アシストの判断（線を引く間・狙い・カード・国選び）は3本目の列。
+  // 見た目の乱数を使っていたため、描画を飛ばすと判断がずれて同じランにならなかった（速く回す計測で描かずに回すため）。
+  // ロジックの列とも分けるのは、AI の選び方を変えても地図や敵の動きの乱数が変わらないようにするため
+  nextAutoRandom  = makeRandomGenerator((currentSeed ^ AUTO_RANDOM_SEED_SALT) >>> 0);
   return currentSeed;
 }
 
 function random()   { return nextLogicRandom(); }   // ゲーム状態に影響する乱数
 function fxRandom() { return nextFxRandom(); }      // 見た目だけの乱数
+function autoRandom() { return nextAutoRandom(); }  // オートプレイ・アシストの判断だけの乱数（描画の有無に左右されない）
 
 // v3.120.0（案帳 DT-538）: オートプレイ中か。プロファイル・ランのセーブを書かない判定に起動直後から使うので、ここで宣言する
 let autoplayActive = false;
@@ -49042,7 +49049,7 @@ function autoTap(el) {
   el.dispatchEvent(new PointerEvent("pointerup", o));
   el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
 }
-function autoPickFrom(list) { return list.length ? list[Math.floor(fxRandom() * list.length)] : null; }
+function autoPickFrom(list) { return list.length ? list[Math.floor(autoRandom() * list.length)] : null; }
 
 /**
  * tick から毎フレーム（実時間）。次に押すもの・引く線を決める。
@@ -49081,7 +49088,7 @@ function updateAutoplay(dt) {
   if (wipeShowTimer > 0) return;   // 全滅の見せ場では動かさない
   autoplay.strokeWait -= dt;
   if (autoplay.strokeWait > 0) return;
-  autoplay.strokeWait = AUTO_STROKE_MIN_S + fxRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
+  autoplay.strokeWait = AUTO_STROKE_MIN_S + autoRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
   dismissStageIntro();
   autoplayStroke();
 }
@@ -49132,7 +49139,7 @@ function updateAssist(dt) {
   if (wipeShowTimer > 0) return;
   autoplay.strokeWait -= dt;
   if (autoplay.strokeWait > 0) return;
-  autoplay.strokeWait = AUTO_STROKE_MIN_S + fxRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
+  autoplay.strokeWait = AUTO_STROKE_MIN_S + autoRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
   dismissStageIntro();
   autoplayStroke();
 }
@@ -49164,7 +49171,7 @@ function autoplayBestCard(defs) {
     else if (def.artifact) score = AUTO_CARD_SCORE.ultra;
     else if (def.stageOnly) score = AUTO_CARD_SCORE.rare;
     if ((upgradeCounts[def.id] || 0) + (stageCards[def.id] || 0) > 0) score += AUTO_CARD_SCORE.stackBonus;
-    score += fxRandom() * AUTO_CARD_SCORE.jitter;
+    score += autoRandom() * AUTO_CARD_SCORE.jitter;
     if (score > bestScore) { bestScore = score; best = def; }
   }
   return best;
@@ -49222,12 +49229,12 @@ function autoplayPlan(c) {
   for (const b of settlements) { if (!b || b.isBoss || b._isWall) continue; all++; if (!b.fallen) left++; }
   const bossOk = !!boss && !boss.fallen &&
     (standing >= AUTO_BOSS_MIN_FLOCK || stageS > AUTO_BOSS_LATE_S || (all > 0 && left / all < AUTO_BOSS_LEFT_RATIO));
-  if (bossOk && boss._railRide && fxRandom() < AUTO_RAIL_BOSS_PICK_P) {
+  if (bossOk && boss._railRide && autoRandom() < AUTO_RAIL_BOSS_PICK_P) {
     // v3.164.0（DT-599）: 走る司令列車は、群れが着くころの位置を狙う
     const lead = autoplayRailBossLead(boss, c);
     return { kind: "target", x: lead.wx, y: lead.wy, t: lead };
   }
-  if (bossOk && fxRandom() < AUTO_BOSS_PICK_P) return { kind: "target", x: boss.wx, y: boss.wy, t: boss };
+  if (bossOk && autoRandom() < AUTO_BOSS_PICK_P) return { kind: "target", x: boss.wx, y: boss.wy, t: boss };
   const near = [];
   for (const b of settlements) {
     if (!b || b.fallen || b.isBoss || b._isWall) continue;
@@ -49292,7 +49299,7 @@ function autoplayStroke() {
     const len = plan.kind === "egg" ? d + AUTO_EGG_OVERSHOOT : d, n = Math.max(2, Math.ceil(len / AUTO_LOOP_STEP_PX));
     for (let k = 0; k <= n; k++) pts.push({ x: c.x + dx / d * len * k / n, y: c.y + dy / d * len * k / n });
     if (plan.kind === "retreat") autoplay.strokeWait = Math.min(autoplay.strokeWait, AUTO_RETREAT_STROKE_S);
-  } else if (fxRandom() < AUTO_SWEEP_CHANCE) {
+  } else if (autoRandom() < AUTO_SWEEP_CHANCE) {
     // 薙ぐ：群れから建物を突き抜けて先まで
     const dx = t.wx - c.x, dy = t.wy - c.y, d = Math.hypot(dx, dy) || 1;
     const len = d + AUTO_SWEEP_OVERSHOOT, n = Math.max(2, Math.ceil(len / AUTO_LOOP_STEP_PX));
@@ -49300,7 +49307,7 @@ function autoplayStroke() {
   } else {
     // 囲む：建物のまわりに閉じた輪（群れに近い側から描き始める）。閉じた線なので群れは輪を回り続ける
     const r = Math.max(AUTO_LOOP_RADIUS_MIN, (t.radius || 20) + AUTO_LOOP_MARGIN);
-    const a0 = Math.atan2(c.y - t.wy, c.x - t.wx), dir = fxRandom() < 0.5 ? 1 : -1;
+    const a0 = Math.atan2(c.y - t.wy, c.x - t.wx), dir = autoRandom() < 0.5 ? 1 : -1;
     const n = Math.max(12, Math.ceil(Math.PI * 2 * r / AUTO_LOOP_STEP_PX));
     for (let k = 0; k <= n; k++) { const a = a0 + dir * Math.PI * 2 * k / n; pts.push({ x: t.wx + Math.cos(a) * r, y: t.wy + Math.sin(a) * r }); }
   }
@@ -49311,7 +49318,7 @@ function autoplayStroke() {
   beginDraw(s0.x, s0.y, now);
   for (let k = 1; k < pts.length; k++) { const s = worldToScreen(pts[k].x, pts[k].y); inputMove(s.x, s.y, now); }
   inputEnd();
-  if (t && flockWeapon === "shell" && fxRandom() < AUTO_CANNON_FLAG_CHANCE) cannonPlantFlag(t.wx, t.wy);
+  if (t && flockWeapon === "shell" && autoRandom() < AUTO_CANNON_FLAG_CHANCE) cannonPlantFlag(t.wx, t.wy);
 }
 
 // -----------------------------------------------------------------
