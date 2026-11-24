@@ -1386,7 +1386,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.192.0";
+const GAME_VERSION = "v3.193.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2528,6 +2528,7 @@ const STAGE_SHAPES = [
   // v3.169.0: 宿借りの浜（正方形・案帳 DT-293）… 上の辺が海、下の辺の奥が岩場、間は広い砂浜。家を背負った大きなヤドカリが暮らし、
   // 群れが近づくと体の左右（横）へ歩いて逃げる。海に入ると潜って別の浜へ上がる。スタートは左の辺の真ん中、首都＝城ヤドカリは浜の真ん中
   { id: "beach",     w: 8400, h: 8400,  icon: "🦀" },
+  { id: "beacon",    w: 8400, h: 8400,  icon: "⛰" },   // v3.193.0（案帳 DT-611）: 烽火の連なる丘陵（id は世界図の地域の名前に合わせる）
 ];
 const SHAPE_CONTINENT = 0;
 const SHAPE_RIVERLINE = 1;
@@ -2545,6 +2546,7 @@ const SHAPE_SKYLAND   = STAGE_SHAPES.findIndex(sh => sh.id === "skyland");
 const SHAPE_SERPENT   = STAGE_SHAPES.findIndex(sh => sh.id === "serpent");
 const SHAPE_FLOWER    = STAGE_SHAPES.findIndex(sh => sh.id === "flowergarden");   // v3.147.0（案帳 DT-339）
 const SHAPE_BEACH     = STAGE_SHAPES.findIndex(sh => sh.id === "beach");          // v3.169.0（案帳 DT-293）
+const SHAPE_HILLS     = STAGE_SHAPES.findIndex(sh => sh.id === "beacon");         // v3.193.0（案帳 DT-611）
 const SHAPE_BOMB      = STAGE_SHAPES.findIndex(sh => sh.id === "bombland");   // v3.146.0（案帳 DT-333）
 const SHAPE_MUSHROOM  = STAGE_SHAPES.findIndex(sh => sh.id === "mushroom");   // v3.130.0（案帳 DT-551）
 const SHAPE_SWORD     = STAGE_SHAPES.findIndex(sh => sh.id === "swordway");   // v3.122.0（案帳 DT-535）   // v3.102.0（案帳 DT-180）   // v3.78.0: 番号は直書きしない（地域の追加と衝突しない）
@@ -5472,7 +5474,8 @@ function shapeStartPoint(shape, w, h) {
   if (shape === SHAPE_RIVERLINE) return { x: w * 0.5, y: h - 250 };   // 下流の端（首都は上流）
   if (shape === SHAPE_CITADEL || shape === SHAPE_ASTEROIDS || shape === SHAPE_RAILWAY || shape === SHAPE_FOREST ||
       shape === SHAPE_METRO || shape === SHAPE_PLATEAU || shape === SHAPE_HEROLAND || shape === SHAPE_WASTELAND || shape === SHAPE_SKYLAND ||
-      shape === SHAPE_SERPENT || shape === SHAPE_SWORD || shape === SHAPE_MUSHROOM || shape === SHAPE_BOMB || shape === SHAPE_FLOWER) {
+      shape === SHAPE_SERPENT || shape === SHAPE_SWORD || shape === SHAPE_MUSHROOM || shape === SHAPE_BOMB || shape === SHAPE_FLOWER ||
+      shape === SHAPE_HILLS) {
     return { x: 320, y: h - 320 };   // 左下の角（首都は中心か、v3.116.0 から右上寄り＝CAPITAL_FAR_SHAPES）
   }
   if (shape === SHAPE_FRONTLINE || shape === SHAPE_SANCTUARY) return { x: w * 0.5, y: h - 250 };   // 下辺の中央
@@ -8200,6 +8203,11 @@ function generateStageLayout(stageIndex) {
   if (worldShape === SHAPE_PLATEAU) {
     for (const t of placeBeamTowers(boss, config, townCenters, result)) { result.push(t); beamTowers.push(t); }
   }
+  // v3.193.0（案帳 DT-611）: 烽火の連なる丘陵の丘と火炎台（町のふもとの丘）
+  flameTowers = []; flameHills = []; flameJets.length = 0; flameTick = 0; flameCapitalAngle = 0;
+  if (worldShape === SHAPE_HILLS) {
+    for (const t of placeFlameHills(boss, config, townCenters, result)) { result.push(t); flameTowers.push(t); }
+  }
   // v1.4.0: 聖地の祠（参道の突き当たり）
   if (worldShape === SHAPE_SANCTUARY) {
     for (const sh of placeSanctuaryShrines(boss, config)) {
@@ -8366,6 +8374,9 @@ function generateStageLayout(stageIndex) {
   // v3.39.0: 光線の高原の町の光線の砲（町の役割を置いた後。役割の無い建物から選ぶ）
   if (worldShape === SHAPE_PLATEAU) {
     for (const t of placeMiniBeams(result)) beamTowers.push(t);
+  }
+  if (worldShape === SHAPE_HILLS) {
+    for (const t of placeMiniFlames(result)) flameTowers.push(t);   // v3.193.0（案帳 DT-611）: 町の小さな火炎の砲
   }
   // 卵持ちフラグをステージ全体に散らばらせて付与する（町ごとに均等割当）。
   assignEggBearers(result);
@@ -9303,9 +9314,10 @@ function buildSanctuaryRoadNetwork(centers, boss) {
 // v3.34.0: 光線の高原（SHAPE_PLATEAU・案帳 DT-015）
 // =====================================================================
 // 見晴らしのよい高原に人間の光線の塔が点々と立つ。塔は群れを見つけると予告の線で群れを追い、止まった向きへ極太の光線を撃つ
-// （v3.34.0 は光線を出しっぱなしで追ってきたが、v3.39.0 で予告→撃つ→休むに変えた。下の BEAM_KINDS）。光線は竜を焼くが、敵の建物と動く敵も区別なく焼く（塔は自分の街を巻き込んでも止めない）。
-// 群れは光線より少し速いので、止まらなければ焼かれない。群れで光線を敵の街の上へ連れて行くのが遊びの中心。
-// 首都は中央の巨大なプリズム塔。光線がプリズムに当たると何本にも割れて首都区画じゅうに飛び散る（首都の守りも焼ける）。
+// （v3.34.0 は光線を出しっぱなしで追ってきたが、v3.39.0 で予告→撃つ→休むに変えた。下の BEAM_KINDS）。光線は竜だけを焼く
+// （v3.62.0 で敵の建物・動く敵を焼くのをやめた。Shooter「街が焼けるのはほとんど見えないので訳がわからない」「敵の同士討ちは不要」）。
+// 群れは光線より少し速いので、止まらなければ焼かれない。
+// 首都は中央の巨大なプリズム塔。光線がプリズムに当たると何本にも割れて首都区画じゅうに飛び散る（割れた光線も竜だけを焼く）。
 // プリズム（首都の本体）と光線の塔は光線では壊れない（塔どうしで壊し合わないように）。
 const BEAM_TOWER_COUNT     = 14;    // 8400×8400 の地図に立てる塔の数
 const BEAM_TOWER_SPACING   = 1000;  // 塔どうしの最小の間隔
@@ -9341,7 +9353,7 @@ const BEAM_KINDS = {
     length: 2000,      // 光線の長さ（画面の端まで届く）
     halfW: 34,         // 当たりの半幅（v3.34.0 の追ってくる光線は16）
     dragonDps: 24,     // 竜への秒間威力（竜のHPは30）
-    hitsAll: true,     // 敵の建物と動く敵も焼く・プリズムで割れる
+    hitsAll: true,     // プリズム（首都）で割れる（v3.62.0 から敵の建物・動く敵は焼かない。名前は当時のまま）
   },
   mini: {
     detectR: 560, loseR: 760, aimTime: 1.1, lockTime: 0.3, aimTurn: 4.0,
@@ -9639,6 +9651,263 @@ function drawBeams(now) {
       ctx[k ? "lineTo" : "moveTo"](boss.wx + Math.cos(a) * r, boss.wy + Math.sin(a) * r);
     }
     ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// =====================================================================
+// v3.193.0: 烽火の連なる丘陵（SHAPE_HILLS・案帳 DT-611）
+// =====================================================================
+// 丘の国。地図に丘（明るい緑の楕円）が点々とあり、丘の上の火炎台が近づいた群れへ扇の形の火炎を浴びせる。
+// 光線の塔が立つ高原の短い射程版（世界図では時代 VI で光線の塔が立つ高原へ育つ。火→光）。
+// 11/25 Shooter 判定：火炎に予告は付けない（見つけたらすぐ浴びせる。炎が伸びきるまでの短い間だけが逃げる間）・
+// 火炎は竜だけを焼く（敵の町・動く敵は焼かない）・火の竜種の耐性などの属性の相性は付けない。
+// 町の中にも小さな火炎の砲が混じる。首都は大きな炉で、4本の火炎を出したままゆっくり回る（灯台のように。切れ目に群れを入れる）。
+const FLAME_TOWER_COUNT       = 14;    // 8400×8400 の地図に置く丘（＝火炎台）の数の目安
+const FLAME_HILL_TOWN_DIST    = [420, 560];   // 町の中心から丘の中心までの距離（町は丘のふもとに並ぶ）
+const FLAME_HILL_TOWN_GAP     = 330;   // どの町の中心からもこれだけ離す（丘の上に町は建たない）
+const FLAME_HILL_SPACING      = 760;   // 丘どうしの最小の間隔
+const FLAME_HILL_START_GAP    = 1300;  // 開始地点の近くには置かない（序盤は群れを育てる場所）
+const FLAME_HILL_CAPITAL_GAP  = 1000;  // 首都の近くにも置かない（首都は回る火炎で守る）
+const FLAME_HILL_EDGE         = 300;   // 地図の縁からの最小の距離
+const FLAME_HILL_CLEAR        = 60;    // 火炎台をほかの建物とこれだけ離す
+const FLAME_HILL_RX           = [190, 250];   // 丘の楕円の半径（長いほう）
+const FLAME_HILL_RY_RATIO     = [0.62, 0.8];  // 短いほうの半径の割合
+const FLAME_TOWER_HP_MULT     = 2.0;   // 火炎台の固さ（大きい建物のこの倍）
+const FLAME_TOWER_RADIUS      = 26;
+const FLAME_MINI_PER_TOWN     = 1;     // 町ごとの小さな火炎の砲の数
+// 火を吐くものごとの値。big＝丘の火炎台、mini＝町の火炎の砲。
+// 予告は無い：群れの重心が detectR に入ったら、その向きへ火炎を吐き始める。炎は growTime 秒かけて伸びきる
+const FLAME_KINDS = {
+  big: {
+    detectR: 450,      // 群れの重心がこの距離に入ると吐く
+    fireTime: 1.5,     // 吐いている秒数
+    coolTime: 1.7,     // 吐き終わってから次に吐けるまで
+    growTime: 0.35,    // 炎が伸びきるまでの秒数（この間は届く長さが短い）
+    length: 400,       // 届く長さ（光線の塔の2000・町の光線の砲の650よりずっと短い）
+    halfAngle: 0.3,    // 扇の半角（rad）。400px 先で幅およそ240px
+    sweep: 0.35,       // 吐いている間に向きを左右へ振る幅（rad）
+    sweepRate: 2.2,    // 振る速さ（rad/秒。sin の位相）
+    dragonDps: 18,     // 竜への秒間の傷（竜のHPは30）
+  },
+  mini: {
+    detectR: 250, fireTime: 1.0, coolTime: 2.2, growTime: 0.25, length: 220, halfAngle: 0.26, sweep: 0.25, sweepRate: 2.6, dragonDps: 14,
+  },
+};
+// 首都の大きな炉：4本の火炎がいつも出たまま回る
+const FLAME_CAPITAL_JETS      = 4;
+const FLAME_CAPITAL_LENGTH    = 560;   // 首都の縁から先の長さ
+const FLAME_CAPITAL_HALF      = 0.17;  // 1本の扇の半角（rad）
+const FLAME_CAPITAL_SPIN      = 0.3;   // 回る速さ（rad/秒。1周およそ21秒。4本なので、ある向きを次の火炎が通るまで約5秒）
+const FLAME_CAPITAL_DPS       = 20;
+const FLAME_TICK              = 0.1;   // 当たりの判定の間隔（秒）
+// 見た目（丘・火炎台・炎）。炉の色は時代が進むほど白く熱くなる（時代 VI で光の塔へ育つ前ぶれ）
+const FLAME_COLORS = {
+  hill: "rgba(150,190,110,0.30)", hillRim: "rgba(70,100,50,0.35)", hillTop: "rgba(175,210,130,0.22)",
+  base: "#8c8c88", baseRim: "#45443f",
+  furnaceByEra: ["#ff7a1a", "#ff7a1a", "#ff8a24", "#ff9a30", "#ffb040", "#ffc860", "#fff0b0", "#fff8e0"],
+  outer: "rgba(255,70,20,0.40)", mid: "rgba(255,140,30,0.55)", core: "rgba(255,240,170,0.85)",
+};
+
+let flameTowers = [];   // 丘の火炎台と町の火炎の砲の建物オブジェクト（settlements の中にもある）。t.flame.kind で分ける
+let flameHills  = [];   // 丘 { x, y, rx, ry, rot }（地面の層に焼く）
+let flameJets   = [];   // このフレームの炎 { x, y, angle, half, len, kind }（描画と当たりの判定で共有）
+let flameTick   = 0;
+let flameCapitalAngle = 0;
+
+function hillsInRegion() { return worldShape === SHAPE_HILLS; }
+
+/** 丘を決めて、丘の上に火炎台を立てる（ワールド生成から。町・首都の建物が並んだ後）。町のふもとの丘を先に、残りを野に */
+function placeFlameHills(boss, config, townCenters, existing) {
+  const bLarge = config.buildings.large;
+  const out = [];
+  flameHills = [];
+  const ok = (x, y) => {
+    if (x < FLAME_HILL_EDGE || y < FLAME_HILL_EDGE || x > WORLD_W - FLAME_HILL_EDGE || y > WORLD_H - FLAME_HILL_EDGE) return false;
+    if (dist2(x, y, START_X, START_Y) < FLAME_HILL_START_GAP ** 2) return false;
+    if (dist2(x, y, boss.wx, boss.wy) < FLAME_HILL_CAPITAL_GAP ** 2) return false;
+    if (townCenters.some(c => dist2(x, y, c.x, c.y) < FLAME_HILL_TOWN_GAP ** 2)) return false;
+    if (flameHills.some(h => dist2(x, y, h.x, h.y) < FLAME_HILL_SPACING ** 2)) return false;
+    if (existing.some(b => dist2(x, y, b.wx, b.wy) < (FLAME_HILL_CLEAR + (b.radius || 0)) ** 2)) return false;
+    return true;
+  };
+  const addHill = (x, y) => {
+    const rx = randRange(FLAME_HILL_RX[0], FLAME_HILL_RX[1]);
+    flameHills.push({ x, y, rx, ry: rx * randRange(FLAME_HILL_RY_RATIO[0], FLAME_HILL_RY_RATIO[1]), rot: random() * Math.PI });
+    const hp = Math.round(randInt(BUILDING_SIZE_PARAMS.large.hpMin, BUILDING_SIZE_PARAMS.large.hpMax) * FLAME_TOWER_HP_MULT);
+    const t = makeBuilding(x, y, "large", FLAME_COLORS.base, bLarge, hp);
+    t._flameTower  = true;
+    t._emplacement = null;
+    t.radius       = FLAME_TOWER_RADIUS;
+    t.attackRadius = 0;           // 弾は撃たない（火炎だけ）
+    t._noAttack    = true;
+    t._fixedTier   = maxPowerTier();
+    t.flame = newFlameState("big");
+    out.push(t);
+  };
+  // 町のふもとの丘：町を順に見て、町から少し離れた所に丘を1つ
+  const order = townCenters.map((c, i) => i).sort(() => random() - 0.5);
+  for (const i of order) {
+    if (out.length >= FLAME_TOWER_COUNT) break;
+    const c = townCenters[i];
+    for (let tries = 0; tries < 24; tries++) {
+      const a = random() * Math.PI * 2, d = randRange(FLAME_HILL_TOWN_DIST[0], FLAME_HILL_TOWN_DIST[1]);
+      const x = c.x + Math.cos(a) * d, y = c.y + Math.sin(a) * d;
+      if (ok(x, y)) { addHill(x, y); break; }
+    }
+  }
+  // 足りなければ野に足す
+  for (let tries = 0; tries < FLAME_TOWER_COUNT * 60 && out.length < FLAME_TOWER_COUNT; tries++) {
+    const x = randRange(FLAME_HILL_EDGE, WORLD_W - FLAME_HILL_EDGE), y = randRange(FLAME_HILL_EDGE, WORLD_H - FLAME_HILL_EDGE);
+    if (ok(x, y)) addHill(x, y);
+  }
+  return out;
+}
+
+function newFlameState(kind) { return { kind, state: "idle", t: 0, base: random() * Math.PI * 2, phase: 0, angle: 0 }; }
+
+/** 町の小さな火炎の砲。町ごとに、役割の無い中・大の建物を FLAME_MINI_PER_TOWN 棟まで砲にする（役割を置いた後に呼ぶ） */
+function placeMiniFlames(result) {
+  const byTown = new Map();
+  for (const b of result) {
+    if (b.isBoss || b._isWall || b._emplacement || b._landmark || b._noAttack || b._townRole || b._flameTower) continue;
+    if (b.size !== "large" && b.size !== "medium") continue;
+    if (b._townIndex === undefined || b._townIndex < 0) continue;
+    if (!byTown.has(b._townIndex)) byTown.set(b._townIndex, []);
+    byTown.get(b._townIndex).push(b);
+  }
+  const out = [];
+  for (const pool of byTown.values()) {
+    for (let k = 0; k < FLAME_MINI_PER_TOWN && pool.length > 0; k++) {
+      const b = pool.splice(Math.floor(random() * pool.length), 1)[0];
+      b._miniFlame   = true;
+      b.attackRadius = 0;      // 弾は撃たない（火炎だけ）
+      b._noAttack    = true;
+      b.flame = newFlameState("mini");
+      out.push(b);
+    }
+  }
+  return out;
+}
+
+/** 首都（大きな炉）。まだ立っていれば建物オブジェクト */
+function hillsCapital() {
+  if (!hillsInRegion()) return null;
+  const boss = bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null;
+  return boss && !boss.fallen ? boss : null;
+}
+
+/** 火炎台・町の火炎の砲・首都の炉の毎フレーム（見つける→吐く→休む）と、当たりの判定（FLAME_TICK ごと） */
+function updateFlameTowers(dt) {
+  flameJets.length = 0;
+  if (!hillsInRegion() || gameState !== "playing") return;
+  const n = countAliveBoids();
+  const c = calcFriendlyCentroid();
+  for (const t of flameTowers) {
+    if (t.fallen) continue;
+    const f = t.flame, P = FLAME_KINDS[f.kind];
+    if (n === 0 || (t._miniFlame && isTownSurrendered(t._townIndex))) { f.state = "idle"; continue; }
+    if (f.state === "idle") {
+      if (dist2(t.wx, t.wy, c.x, c.y) > P.detectR * P.detectR) continue;
+      // 見つけた瞬間に群れの方へ吐き始める（予告なし。振り始めの向きは左右どちらか）
+      f.state = "fire"; f.t = 0; f.base = Math.atan2(c.y - t.wy, c.x - t.wx); f.phase = random() < 0.5 ? 0 : Math.PI;
+    }
+    f.t += dt;
+    if (f.state === "cool") {
+      if (f.t >= P.coolTime) { f.state = "idle"; f.t = 0; }
+      continue;
+    }
+    if (f.t >= P.fireTime) { f.state = "cool"; f.t = 0; continue; }
+    f.angle = f.base + P.sweep * Math.sin(f.phase + f.t * P.sweepRate);
+    const grow = Math.min(1, f.t / P.growTime, (P.fireTime - f.t) / (P.growTime * 0.5) + 0.2);
+    flameJets.push({ x: t.wx, y: t.wy, r0: t.radius * 0.4, angle: f.angle, half: P.halfAngle, len: P.length * grow, kind: f.kind, dps: P.dragonDps });
+  }
+  const boss = hillsCapital();
+  if (boss) {
+    flameCapitalAngle = (flameCapitalAngle + FLAME_CAPITAL_SPIN * dt) % (Math.PI * 2);
+    for (let k = 0; k < FLAME_CAPITAL_JETS; k++) {
+      flameJets.push({ x: boss.wx, y: boss.wy, r0: boss.radius * 0.5, angle: flameCapitalAngle + k * Math.PI * 2 / FLAME_CAPITAL_JETS,
+                       half: FLAME_CAPITAL_HALF, len: boss.radius + FLAME_CAPITAL_LENGTH, kind: "capital", dps: FLAME_CAPITAL_DPS });
+    }
+  }
+  if (flameJets.length === 0) { flameTick = 0; return; }
+  flameTick += dt;
+  if (flameTick < FLAME_TICK) return;
+  const tick = flameTick;
+  flameTick = 0;
+  for (const j of flameJets) applyFlameDamage(j, tick);
+}
+
+/** 炎1本ぶんの当たり。竜だけを焼く（敵の建物・動く敵は焼かない。11/25 Shooter 判定） */
+function applyFlameDamage(j, tick) {
+  const len2 = j.len * j.len, r02 = j.r0 * j.r0;
+  for (let i = 0; i < N; i++) {
+    if (boidDead[i] || boidDowned[i]) continue;
+    const dx = px[i] - j.x, dy = py[i] - j.y, d2 = dx * dx + dy * dy;
+    if (d2 > len2 || d2 < r02) continue;
+    if (Math.abs(wrapAngle(Math.atan2(dy, dx) - j.angle)) > j.half) continue;
+    const d = Math.sqrt(d2) || 1;
+    hitBoid(i, { shot: j.dps * tick }, dx / d, dy / d);
+  }
+}
+
+/** 丘（地面の層。道より下） */
+function drawHillsOnLayer(bctx, bounds) {
+  if (!hillsInRegion()) return;
+  bctx.save();
+  for (const h of flameHills) {
+    if (h.x + h.rx < bounds.x0 || h.x - h.rx > bounds.x1 || h.y + h.rx < bounds.y0 || h.y - h.rx > bounds.y1) continue;
+    bctx.fillStyle = FLAME_COLORS.hill; bctx.strokeStyle = FLAME_COLORS.hillRim; bctx.lineWidth = 3;
+    bctx.beginPath(); bctx.ellipse(h.x, h.y, h.rx, h.ry, h.rot, 0, Math.PI * 2); bctx.fill(); bctx.stroke();
+    // 頂の明るい所（少し上へずらして丘の高さを見せる）
+    bctx.fillStyle = FLAME_COLORS.hillTop;
+    bctx.beginPath(); bctx.ellipse(h.x, h.y - h.ry * 0.12, h.rx * 0.55, h.ry * 0.5, h.rot, 0, Math.PI * 2); bctx.fill();
+  }
+  bctx.restore();
+}
+
+/** 炎（扇。芯が白っぽい黄で外が橙→赤）と、火炎台・砲の炉（竜の下） */
+function drawFlames(now) {
+  if (!hillsInRegion()) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  const flick = (k) => 1 + 0.06 * Math.sin(now * 0.025 + k * 1.7);
+  let k = 0;
+  for (const j of flameJets) {
+    k++;
+    // 外の赤・中の橙・芯の黄の3枚の扇を、少しずつ短く細く重ねる。先は揺らす
+    const layers = [[1.0, 1.0, FLAME_COLORS.outer], [0.82, 0.72, FLAME_COLORS.mid], [0.58, 0.42, FLAME_COLORS.core]];
+    for (const [lenK, halfK, col] of layers) {
+      const len = j.len * lenK * flick(k), half = j.half * halfK;
+      if (len <= j.r0) continue;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(j.x + Math.cos(j.angle) * j.r0, j.y + Math.sin(j.angle) * j.r0);
+      ctx.arc(j.x, j.y, len, j.angle - half, j.angle + half);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  ctx.globalCompositeOperation = "source-over";
+  // 火炎台と砲の炉（吐いている間は大きく明るく）
+  const furnace = FLAME_COLORS.furnaceByEra[Math.min(FLAME_COLORS.furnaceByEra.length - 1, runStageIndex)];
+  for (const t of flameTowers) {
+    if (t.fallen) continue;
+    const mini = t.flame.kind === "mini", s = mini ? 0.5 : 1;
+    const firing = t.flame.state === "fire";
+    if (!mini) {
+      ctx.fillStyle = FLAME_COLORS.base; ctx.strokeStyle = FLAME_COLORS.baseRim; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(t.wx, t.wy, t.radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    ctx.fillStyle = furnace;
+    ctx.globalAlpha = firing ? 1 : 0.7;
+    ctx.beginPath(); ctx.arc(t.wx, t.wy, (firing ? 11 : 8) * s, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  const boss = hillsCapital();
+  if (boss) {
+    ctx.fillStyle = furnace; ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.arc(boss.wx, boss.wy, boss.radius * 0.45, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
   }
   ctx.restore();
 }
@@ -10307,7 +10576,7 @@ function isStrongTownPlainHouse(b) {
 
 // v3.116.0（案帳 DT-534）: 首都をスタートの対角寄りに置く地域（スタートは左下の角）。
 // 縁からの余白は、大樹海の大樹の根（820）・荒地の首都の環状列石（600）・浮き城の空の首都の島が地図に収まる幅
-const CAPITAL_FAR_SHAPES  = new Set([SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND, SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD, SHAPE_MUSHROOM, SHAPE_BOMB, SHAPE_FLOWER]);
+const CAPITAL_FAR_SHAPES  = new Set([SHAPE_HILLS, SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND, SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD, SHAPE_MUSHROOM, SHAPE_BOMB, SHAPE_FLOWER]);
 const CAPITAL_FAR_MARGIN  = 950;
 const CAPITAL_FAR_SPREAD  = 700;   // 右上の角からばらす幅（縦横それぞれ）
 // 大都会の首都を置く交差点（道路の番号。真ん中の 10,10 と同じく 4 で割って 2 余る＝街境で大通りでない）
@@ -29264,6 +29533,7 @@ function paintGroundTile(bctx, bounds) {
   // v0.8: 地面のディテール（土のパッチ＋スペックル）を最背面に焼く
   drawGroundDetailOnLayer(bctx, bounds);
   drawBeachOnLayer(bctx, bounds);   // v3.169.0（案帳 DT-293）: 海・波打ち際・岩場
+  drawHillsOnLayer(bctx, bounds);   // v3.193.0（案帳 DT-611）: 烽火の連なる丘陵の丘
 
   // v0.10: 川（街道より下に敷き、橋は街道の後で川の上に架ける）
   drawRiverOnLayer(bctx);
@@ -32911,8 +33181,8 @@ const STRINGS = {
   // v1.2.0: パネルの列（ステージの形）。順番は STAGE_SHAPES と同じ
   shapeNames: ["大陸", "大河の線状都市", "同心円の城塞都市", "長城の防衛線", "四方の祠の結界", "漂う岩塊の小惑星帯",
                "無人列車の走る軌道", "森に覆われた大樹海", "車列の流れる大都会", "光線の塔が立つ高原", "英雄が守る王国", "巨岩を拝む荒地",
-               "雲海に浮かぶ浮き城の空", "蛇神を祀る密林の国", "剣の道の国", "増えるキノコの里", "爆弾玉の国", "竜食い花の園", "宿借りの浜"],
-  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国", "荒地", "浮島", "蛇神", "剣の道", "キノコ", "爆弾玉", "花園", "浜"],
+               "雲海に浮かぶ浮き城の空", "蛇神を祀る密林の国", "剣の道の国", "増えるキノコの里", "爆弾玉の国", "竜食い花の園", "宿借りの浜", "烽火の連なる丘陵"],
+  shapeShortNames: ["大陸", "大河", "城塞", "防衛線", "結界", "岩塊", "軌道", "樹海", "都会", "高原", "王国", "荒地", "浮島", "蛇神", "剣の道", "キノコ", "爆弾玉", "花園", "浜", "丘陵"],
   wardHud: (n) => `結界${n}`,
   // v1.6.0: 図鑑「地域」タブ。順番は STAGE_SHAPES と同じ
   regionHint: "地域ごとに土地の形と遊び方が変わる。時代（建物・敵・兵器）はどの地域でも同じ。",
@@ -32947,8 +33217,8 @@ const STRINGS = {
       rule: "灯を落とすほど樹の心臓（首都）に攻撃が通る。伏兵は近づくと飛び出す。火のブレスが当たった所の樹冠は燃える" },
     { route: "角 → 対角の高層ビル", play: "地図じゅうが碁盤の目の道路と建物で埋まった都市。道路を車の列が流れ、渋滞ごとまとめて薙げる。",
       rule: "車は道路の上しか走れない。戦車は大通りだけ。首都に近づくと攻撃ヘリが飛んでくる。壊した区画は建て直されない" },
-    { route: "角 → 対角のプリズム塔", play: "見晴らしのよい高原に光線の塔が立つ。塔は予告の線で群れを狙い、止まった向きへ極太の光線を撃つ。光線は敵の街も焼くので、予告の線の先に街を入れてから横へ避ける。町には小さな光線の砲もある。",
-      rule: "群れは光線より少し速い。止まらなければ焼かれない。光線がプリズム（首都）に当たると割れて首都区画を焼く。塔とプリズムは光線では壊れない" },
+    { route: "角 → 対角のプリズム塔", play: "見晴らしのよい高原に光線の塔が立つ。塔は予告の線で群れを狙い、止まった向きへ極太の光線を撃つ。光線は竜だけを焼く。予告の線の向きを見て横へ避ける。町には小さな光線の砲もある。",
+      rule: "群れは光線より少し速い。止まらなければ焼かれない。光線がプリズム（首都）に当たると割れて首都区画じゅうに飛び散る。塔とプリズムは光線では壊れない" },
     { route: "角 → 対角の王城", play: "人類の英雄が王城から出てきて群れを追う。構えから高速で踏み込み、竜を1体ずつ一刀両断する。",
       rule: "衝撃を当てると英雄は吹っ飛んで気絶する。撃退すると王城へ戻り、45秒後に1段強くなって帰ってくる。王城に迫るともう退かず、英雄が立っている間は王城が傷を半分しか受けない" },
     // v3.77.0（案帳 DT-509）
@@ -32972,6 +33242,8 @@ const STRINGS = {
       rule: "竜食い花は口を閉じている間はほぼ攻撃が通らない（傷1/100）。つぼみが震えて（予告1秒。食べる範囲が地面に出る）口が開くと攻撃が通り（傷2倍）、口が閉じる瞬間に範囲にいた竜は飲み込まれる（普通のダウン。時間で戻る）。開いている間に叩いて、閉じる前に範囲を出る。口を閉じたまま蔦を伸ばしてくることもある（帯の予告のあと打つ）。茨の蔓は近い花どうしを結ぶ帯で、上を通ると傷を受けて遅くなる。蔓は壊せず、両端のどちらかの花を倒すと枯れる。町の中にも咲く。紫の花は種を山なりに撃ち、落ちた種は8秒で小さな竜食い花になる（芽のうちに倒す）。黄の花は花粉の雲を吐き、中の竜は半分の速さになる。橙の花は花蜂8匹の巣で、群れが近づくと蜂が追って刺す（巣を倒すと散る）。首都の女王花は花びら12枚が盾で、口が閉じている間はほぼ攻撃が通らない。16秒ごとに花びら全体が震えて地面に渦が出て、口を開いて4秒かけて群れを芯へ吸い寄せる（その間は攻撃が通る）。吸い込みが終わって口が閉じる瞬間に、芯の口にいた竜は飲み込まれる。動く敵はその時代のいつもの敵（花飾り付き）" },
     { route: "左の辺 → 浜の真ん中の城ヤドカリ", play: "上が海、奥（下）が岩場の広い砂浜。人より大きなヤドカリが、貝殻の代わりに人の家を背負って暮らしている。ヤドカリは体の左右（横）にしか歩けないので、横から近づくとまっすぐ逃げられ、前から近づくと横へずれて射線を外される。逃げる向きを読んで線を引く。",
       rule: "家は1軒ずつ小さいヤドカリの背に載っている。格上の街・要塞都市には、ときどき数軒と城壁を背負った大きいヤドカリがいる。群れが近づくと、左右のうち群れから離れる側へ横歩きで逃げる（小さいほど遠くから気づいて速い。向きは変えない）。海に入ったヤドカリは潜って消え、10秒後に浜の別の場所へ上がってくる（削った傷はそのまま）。岩場に追い詰められたヤドカリは家に籠って動かなくなる（受ける傷が減る・もう逃げない）。首都は城を背負った城ヤドカリで、浜の真ん中に構えて、群れが近づくと大きなはさみで半円を薙ぎ払う（地面に赤い半円の予告）。体力が半分を切ると城を背負ったまま海へ歩き出し、海に入ると10秒後に別の浜から上がってくる（上がる場所には先に泡が立つ）。動く敵はその時代のいつもの敵" },
+    { route: "角 → 対角の大きな炉", play: "丘の国。丘の上の火炎台が、近づいた群れへ扇の形の火炎を浴びせる。予告は無く、近づくとすぐ吐く。届く長さは光線の塔よりずっと短く、吐いている間は左右に振れる。町にも小さな火炎の砲がある。",
+      rule: "火炎は竜だけを焼く。吐き終わると少し休むので、休んでいる間に火炎台を壊すか、輪で丘を回り込む。首都の大きな炉は4本の火炎を出したまま回る。火炎の切れ目に群れを入れる" },
   ],
   startRun: "はじめる",
   autoplayStart: "👀 オートプレイ",                          // v3.120.0（案帳 DT-538）
@@ -44125,6 +44397,17 @@ function codexRegionCanvas(shape) {
     for (const [x, y, r] of [[8, 48, 4], [18, 50, 3.4], [30, 47, 4.4], [42, 49, 3.6], [50, 46, 3]]) dot(x, y, r, BEACH_ROCK_FILL);
     for (const [x, y] of [[12, 22], [38, 20], [10, 36], [40, 36], [22, 40]]) { dot(x, y, 3.2, BEACH_CRAB_COLORS.shell); dot(x, y, 1.6, BEACH_CRAB_COLORS.roofA); dot(x + 3.2, y + 1, 1, BEACH_CRAB_COLORS.claw); }
     dot(26, 28, 5, BEACH_CRAB_COLORS.shell); diamond(26, 28, 3); dot(4, 28, 2.2, CODEX_RG.start);
+  } else if (shape === SHAPE_HILLS) {
+    // v3.193.0（案帳 DT-611）: 明るい緑の丘の上に火炎台（灰の台に橙の炉）。丘のふもとに町（点）。1つの台から橙の扇の火炎、右上に大きな炉と4本の火炎
+    for (const [x, y] of [[14, 14], [36, 38], [12, 38], [30, 14]]) {
+      c.fillStyle = FLAME_COLORS.hill; c.beginPath(); c.ellipse(x, y, 7, 5, 0.4, 0, Math.PI * 2); c.fill();
+      dot(x, y, 2.2, FLAME_COLORS.base); dot(x, y, 1.1, FLAME_COLORS.furnaceByEra[0]);
+    }
+    for (const [x, y] of [[20, 20], [42, 32], [6, 30], [24, 8]]) dot(x, y, 2.6, CODEX_RG.town);
+    c.fillStyle = FLAME_COLORS.mid; c.beginPath(); c.moveTo(36, 38); c.arc(36, 38, 12, Math.PI * 0.95, Math.PI * 1.25); c.closePath(); c.fill();
+    c.fillStyle = FLAME_COLORS.mid;
+    for (let k = 0; k < 4; k++) { const a = 0.4 + k * Math.PI / 2; c.beginPath(); c.moveTo(42, 10); c.arc(42, 10, 9, a - 0.2, a + 0.2); c.closePath(); c.fill(); }
+    diamond(42, 10, 3); dot(4, 48, 2.2, CODEX_RG.start);
   } else if (shape === SHAPE_BOMB) {
     // v3.146.0（案帳 DT-333）: 煤けた土。町（点）のあいだに大中小の黒い玉、右上に四角い城壁の火薬庫の城
     c.fillStyle = "rgba(50,44,36,0.6)"; c.fillRect(0, 0, S, S);
@@ -44463,10 +44746,10 @@ const STRINGS = {
     ],
     // 8回目で新しく足した地域
     beacon: [
-      { title: "のろしの丘", lore: "丘の上でのろしを上げ、丘から丘へ知らせを送る。" },
-      { title: "烽火台の国", lore: "丘ごとに烽火台が立ち、火の合図が一晩で国の端まで届く。" },
-      { title: "信号塔の丘陵", lore: "烽火台は鏡と灯火の信号塔になり、光の合図が丘をつないでいる。" },
-      { title: "光の丘陵", lore: "塔の灯りは夜通し丘を照らし、もう火を焚く者はいない。" },
+      { title: "のろしの丘", lore: "丘の上で火を焚き、近づく竜を火で追い払う。" },
+      { title: "烽火台の国", lore: "丘ごとに火炎台が立ち、ふもとへ火を浴びせて町を守る。" },
+      { title: "炉の砲台の丘陵", lore: "火炎台は大きな炉の砲台になり、白く熱い火を吐く。" },
+      { title: "光の丘陵", lore: "炉の火はいつしか光に変わり、丘の上の台は光の塔になりかけている。" },
     ],
     peaks: [
       { title: "峰の集落", lore: "雲より高い峰に小屋を構え、雲海を見下ろして暮らす。" },
@@ -45755,7 +46038,7 @@ const REGION_CHOICE_COUNT = 3;
 // v3.7.0: 列車（軌道）以外は最初から全部（Shooter指示）。列車だけは初めてステージ5に着いたときに解放する
 const INITIAL_REGIONS     = [SHAPE_CONTINENT, SHAPE_RIVERLINE, SHAPE_CITADEL, SHAPE_FRONTLINE, SHAPE_SANCTUARY, SHAPE_ASTEROIDS,
                              SHAPE_FOREST, SHAPE_METRO, SHAPE_PLATEAU, SHAPE_HEROLAND, SHAPE_WASTELAND,
-                             SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD, SHAPE_MUSHROOM, SHAPE_BOMB, SHAPE_FLOWER, SHAPE_BEACH];   // v3.169.0: 宿借りの浜も最初から（案帳 DT-293）   // v3.147.0: 竜食い花の園も最初から（案帳 DT-339）   // v3.146.0: 爆弾玉の国も最初から（案帳 DT-333）   // v3.130.0: 増えるキノコの里も最初から（案帳 DT-551）   // v3.122.0: 剣の道の国も最初から（案帳 DT-535）   // v3.102.0: 蛇神の国も最初から（案帳 DT-180）   // v3.78.0: 浮き城の空も最初から（案帳 DT-124）   // v3.77.0: 巨岩信仰の荒地も最初から（案帳 DT-509）／v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
+                             SHAPE_SKYLAND, SHAPE_SERPENT, SHAPE_SWORD, SHAPE_MUSHROOM, SHAPE_BOMB, SHAPE_FLOWER, SHAPE_BEACH, SHAPE_HILLS];   // v3.193.0: 烽火の連なる丘陵も最初から（案帳 DT-611）   // v3.169.0: 宿借りの浜も最初から（案帳 DT-293）   // v3.147.0: 竜食い花の園も最初から（案帳 DT-339）   // v3.146.0: 爆弾玉の国も最初から（案帳 DT-333）   // v3.130.0: 増えるキノコの里も最初から（案帳 DT-551）   // v3.122.0: 剣の道の国も最初から（案帳 DT-535）   // v3.102.0: 蛇神の国も最初から（案帳 DT-180）   // v3.78.0: 浮き城の空も最初から（案帳 DT-124）   // v3.77.0: 巨岩信仰の荒地も最初から（案帳 DT-509）／v3.34.0: 光線の高原も最初から／v3.35.0: 英雄の国も   // v3.22.0: 大都会も最初から   // v3.17.0: 大樹海も最初から（列車以外は最初から全部の方針どおり）
 // 全滅で戻された直後の無敵。戻った先で即また落ちる連鎖を切るため
 const WIPE_GRACE_SECONDS  = 2;
 
@@ -53211,6 +53494,7 @@ function render(now) {
   drawCanopy();              // v3.17.0: 大樹海の樹冠（敵と街の上・竜とブレスの下）
   drawSkylandCloudShadows(); // v3.78.0: 浮き城の空の雲の影（町・地面・地上の敵の上、竜の下）
   drawBeams(now);            // v3.34.0: 光線の高原の光線・塔のレンズ・プリズム（竜の下）
+  drawFlames(now);           // v3.193.0（案帳 DT-611）: 烽火の連なる丘陵の火炎と炉（竜の下）
   drawFallFx();              // v3.36.0: 陥落の輪・煙・逃げる住民・光の粒（竜の下）
   drawTreasureFlags();       // v3.44.0: 竜の宝のある町の旗（地図には出さない）
   if (forestActive) drawEmbers();   // v3.19.2: 燃える樹冠の火の粉・煙が葉に隠れないよう樹冠の上で描く
@@ -57665,6 +57949,7 @@ function tick() {
     updateFires(wdt);             // v0.10: 燃える建物の火の粉・煙柱
     updateCanopy(wdt);            // v3.17.0: 大樹海の樹冠の延焼
     updateBeamTowers(wdt);        // v3.34.0: 光線の高原の塔と光線
+    updateFlameTowers(wdt);       // v3.193.0（案帳 DT-611）: 烽火の連なる丘陵の火炎台・首都の回る火炎
     updateHeroLand(wdt);          // v3.35.0: 英雄の国（英雄が出てくる・戻ってくる）
     updateKites(wdt);             // v3.61.0: 雷凧の兵の置き場所・流れた凧
     placeRockGiants();            // v3.77.0（案帳 DT-509）: 荒地の岩の巨人を町のそばに置く（町の一覧ができてから1回だけ）
