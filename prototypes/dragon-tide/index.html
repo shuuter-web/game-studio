@@ -1171,6 +1171,11 @@
   /* 弾の見本（drawEraShot が実際に描くのと同じ絵をここに出す） */
   .cx-shot { width: 52px; height: 52px; flex: 0 0 52px; background: rgba(0,0,0,0.35);
              border-radius: 8px; }
+  /* v3.189.0（DT-609 手直し）: 竜種の行の下の進化の姿 */
+  .cx-forms { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
+  .cx-form { display: flex; flex-direction: column; align-items: center; width: 52px; }
+  .cx-form .cx-shot { width: 44px; height: 44px; flex: 0 0 44px; }
+  .cx-form-name { font-size: 10px; line-height: 1.2; text-align: center; word-break: break-all; }
 
   /* v0.25: チャレンジ達成トースト */
   #challenge-toast {
@@ -1370,7 +1375,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.188.1";
+const GAME_VERSION = "v3.189.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2211,12 +2216,28 @@ function renderDebugPanel() {
     addBtn("← もどる", () => { debugPage = "main"; renderDebugPanel(); }, { full: true });
     for (const { species } of SPECIES_CHOICES) {
       const def = SPECIES_DEFS[species];
-      addBtn(`${def.icon} ${def.ja}${species === flockSpecies ? " ●" : ""}`, () => {
+      // v3.189.0（DT-609 手直し・Shooter「デバッグの竜種選択で進化後の竜種も選べるように」）:
+      // 竜種の下に進化の姿（分岐 A・B とその先の型）を並べる。押すとその竜種にして、進化の分岐をその姿にする（強さの上乗せはしない）
+      const spec = SPECIES_EVO_SPEC[species];
+      const br = runSpeciesBranch[species] || {};
+      const isNow = (t10, t20) => species === flockSpecies && (br.t10 || null) === t10 && (br.t20 || null) === t20;
+      const pick = (t10, t20) => () => {
         if (gameState !== "playing") return;
         unlockSpeciesForever(species);
-        convertFlock(species);
+        if (species !== flockSpecies) convertFlock(species);
+        const b = speciesBranch(species);
+        if (t10) b.t10 = t10; else delete b.t10;
+        if (t20) b.t20 = t20; else delete b.t20;
+        runFormLv = 1;
         renderDebugPanel();
-      }, { color: def.color });
+      };
+      addBtn(`${def.icon} ${def.ja}${isNow(null, null) ? " ●" : ""}`, pick(null, null), { color: def.color, full: !!spec });
+      if (!spec) continue;
+      // 2列の並び：1段目に分岐 A・B、その下に A の型2つ、B の型2つ
+      for (const o of ["A", "B"]) if (spec[o]) addBtn(`└ ${spec[o].name}${isNow(o, null) ? " ●" : ""}`, pick(o, null), { color: spec[o].tint });
+      for (const o of ["A", "B"]) {
+        for (const t of tier2Options(species, o)) addBtn(`└└ ${t.name.split("・").pop()}${isNow(o, t.id) ? " ●" : ""}`, pick(o, t.id), { color: t.tint });
+      }
     }
     return;
   }
@@ -43094,6 +43115,7 @@ function codexDragonHtml() {
           `<div class="cx-stat">${main.stat}</div>` +
           codexDragonFireRateHtml(def) +
           `<div class="cx-stat">${codexTargetsLabel(attackTargets(ATTACK_DEFS[def.attack]))}</div>` +
+          codexDragonFormsHtml(species) +
         `</div>` +
       `</div>`;
   }
@@ -43157,6 +43179,9 @@ function codexFillDragonCanvases() {
   for (const slot of codexOverlayEl.querySelectorAll(".cx-dr-slot")) {
     slot.replaceWith(codexDragonCanvas(slot.getAttribute("data-species")));
   }
+  for (const slot of codexOverlayEl.querySelectorAll(".cx-form-slot")) {
+    slot.replaceWith(codexDragonCanvas(slot.getAttribute("data-species"), { tier: Number(slot.getAttribute("data-tier")), opt: slot.getAttribute("data-opt") }));
+  }
 }
 
 /**
@@ -43164,19 +43189,64 @@ function codexFillDragonCanvases() {
  * getSpeciesSprites（16コマ×LRU 8列）は通さず**1コマだけ**描く。13種をキャッシュに
  * 載せると本編で使っている列が押し出され、次のランの頭に作り直しが走るため。
  */
-function codexDragonCanvas(species) {
+// v3.189.0（DT-609 手直し・Shooter「図鑑で尻尾が描かれていないので描いて」）: 図鑑の竜の尻尾のしなり（節ごとに曲げる角度。ラジアン）
+const CODEX_TAIL_CURL = 0.14;
+/**
+ * form（省略可）＝進化の姿 { tier: 1|2, opt: "A"|"B"|"A1"… }。分岐の色を重ね、宝石の竜は進化の段階の絵（原石・宝石・全身カット）で描く
+ * （v3.189.0・DT-609 手直し「図鑑で進化後の竜種も表示されるように」）
+ */
+function codexDragonCanvas(species, form) {
   const cv = document.createElement("canvas");
   cv.width = 104; cv.height = 104;   // DPR2相当。CSSで52pxに縮める
   cv.className = "cx-shot";
   const def = SPECIES_DEFS[species];
   if (!def) return cv;
   const box = 132;   // 竜の論理サイズ66 × 2。翼幅が約80px＝枠の8割に収まる
-  const frame = renderDragonFrame(def.element, 0, box);
+  const gem = gemSparkleForSpecies(species, form ? form.tier : 0);
+  const frame = renderDragonFrame(gem ? gem.look : def.element, 0, box);
+  const evo = form && SPECIES_EVO_SPEC[species] ? SPECIES_EVO_SPEC[species][form.opt[0]] : null;
+  const tint = evo ? evo.tint : def.spriteTint;
+  if (tint) {   // 分岐の色（ゲームの tintedSprites と同じ重ね方）。仮の絵の竜種は spriteTint
+    const g = frame.getContext("2d");
+    g.globalCompositeOperation = "source-atop";
+    g.globalAlpha = EVO_TINT_ALPHA;
+    g.fillStyle = tint;
+    g.fillRect(0, 0, frame.width, frame.height);
+  }
   const c = cv.getContext("2d");
   c.translate(52, 52);
   c.rotate(-Math.PI / 2);
+  if (!def.noTail) {   // 尻尾（ゲームの群れの尻尾と同じ長さ・太さ・色。胴の後ろから少ししならせる）
+    const unit = box / DRAGON_SPRITE_LOGICAL;
+    const palette = DRAGON_ELEMENT_COLORS[def.element] ?? DRAGON_ELEMENT_COLORS.fire;
+    let x = -10 * unit, y = 0, a = Math.PI;
+    c.strokeStyle = tint && evo ? tint : palette.body;
+    c.lineCap = "round";
+    for (let s = 0; s < TAIL_SEGS; s++) {
+      a += CODEX_TAIL_CURL;
+      const nx = x + Math.cos(a) * TAIL_SEG_LEN * unit, ny = y + Math.sin(a) * TAIL_SEG_LEN * unit;
+      const taper = 1 - (s + 1) / (TAIL_SEGS + 1);
+      c.lineWidth = Math.max(0.4, TAIL_WIDTH0 * taper * unit);
+      c.beginPath(); c.moveTo(x, y); c.lineTo(nx, ny); c.stroke();
+      x = nx; y = ny;
+    }
+  }
   c.drawImage(frame, -box / 2, -box / 2, box, box);
   return cv;
+}
+/** 図鑑の竜種の行の下に並べる進化の姿（分岐 A・B と、その先の型）。進化の無い竜種は "" */
+function codexDragonFormsHtml(species) {
+  const spec = SPECIES_EVO_SPEC[species];
+  if (!spec) return "";
+  let html = `<div class="cx-forms">`;
+  for (const o of ["A", "B"]) {
+    if (!spec[o]) continue;
+    html += `<div class="cx-form"><div class="cx-form-slot" data-species="${species}" data-tier="1" data-opt="${o}"></div><div class="cx-form-name" style="color:${spec[o].tint}">${spec[o].name}</div></div>`;
+    for (const t of tier2Options(species, o)) {
+      html += `<div class="cx-form"><div class="cx-form-slot" data-species="${species}" data-tier="2" data-opt="${t.id}"></div><div class="cx-form-name" style="color:${t.tint}">${t.name.split("・").pop()}</div></div>`;
+    }
+  }
+  return html + `</div>`;
 }
 
 const CODEX_SPECIAL_ORDER = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIAL_DEFLECT, SPECIAL_MECHA, SPECIAL_WAKE, SPECIAL_WEDGE, SPECIAL_HEAL, SPECIAL_FROST,
@@ -56224,13 +56294,13 @@ function dragonPartsKey(element) {
 // tiers は進化の段階（0＝進化前・1＝1回目・2＝2回目）ごとの絵（DRAGON_PART_SPRITES のキー）と、きらめきの量（full＝全部の面・few＝減らす）。
 // gloss はきらめきの最大の濃さ。plain は虹色にせず白く光らせる
 const GEM_SPARKLE_SPECIES = {
-  fire:     { tiers: [{ look: "fire_rough", amount: "few" }, { look: "fire", amount: "few" }, { look: "fire_sparkle", amount: "full" }], gloss: 0.9 },
-  ice:      { tiers: [{ look: "ice_rough", amount: "few" }, { look: "ice", amount: "few" }, { look: "ice_sparkle", amount: "full" }], gloss: 0.9 },
-  gargoyle: { tiers: [{ look: "gargoyle", amount: "few" }, { look: "gargoyle", amount: "few" }, { look: "gargoyle", amount: "few" }], gloss: 0.45, plain: true },
+  fire:     { tiers: [{ look: "fire_rough", amount: "rare" }, { look: "fire", amount: "few" }, { look: "fire_sparkle", amount: "full" }], gloss: 0.9 },
+  ice:      { tiers: [{ look: "ice_rough", amount: "rare" }, { look: "ice", amount: "few" }, { look: "ice_sparkle", amount: "full" }], gloss: 0.9 },
+  gargoyle: { tiers: [{ look: "gargoyle", amount: "rare" }, { look: "gargoyle", amount: "few" }, { look: "gargoyle", amount: "few" }], gloss: 0.45, plain: true },
 };
 // 特殊個体（SPECIAL_DEFS の key）。tiers は 0＝進化前・1＝進化後
 const GEM_SPARKLE_SPECIALS = {
-  rainbow: { tiers: [{ look: "rainbow", amount: "few" }, { look: "rainbow_sparkle", amount: "full" }], gloss: 0.85 },
+  rainbow: { tiers: [{ look: "rainbow", amount: "rare" }, { look: "rainbow_sparkle", amount: "full" }], gloss: 0.85 },
 };
 // 光を入れる形を胴の縁から内側へ縮める幅を、絵ごとに変える（ガーゴイルは手足が太いので強めに縮める）
 const GEM_SPARKLE_MASK = { gargoyle: { maskCut: 3.0, maskRegrow: 1.5 } };
@@ -56238,6 +56308,12 @@ const GEM_SPARKLE_PLAIN_COLOR   = "246,242,232";   // plain の竜の光の色
 const GEM_SPARKLE_FACET_SIZE    = 38;    // 面の大きさ（胴の絵の画素。胴の絵は高さ320）。見本の「ふつう」
 const GEM_SPARKLE_FACET_JITTER  = 0.28;  // 格子の点をずらす幅（面の大きさ×これ）。区切りを格子に見せない
 const GEM_SPARKLE_FEW_SHARE     = 0.25;  // few のときに光ることのある面の割合
+// v3.189.0（DT-609 手直し・Shooter「進化前のきらめきはもっと減らして。頻度は1/3くらい、面積の大きな面は使わない」）:
+// rare（進化前）は面を小さく区切り直し（38→26px。1つの面の広さは約半分）、その中でも広い方の半分は使わない。
+// 光ることのある面の数が few の約3分の1になるよう割合を決めた（26px の面は 38px の約2.1倍の数、広い半分を除いて約1.07倍 → 0.25÷3÷1.07）
+const GEM_SPARKLE_RARE_FACET_SIZE = 26;
+const GEM_SPARKLE_RARE_SHARE      = 0.078;
+const GEM_SPARKLE_RARE_MAX_AREA   = 1.0;   // 面の広さがこの倍率（ずらす前の三角の広さに対して）を超える面は使わない
 const GEM_SPARKLE_FIRE_EDGE     = 22 * Math.PI / 180;   // 面が光る向きの幅（±）。この中で色が赤→青へ変わる
 const GEM_SPARKLE_FIRE_FULL     = 0.45;  // 幅のこの割合までは最大に光る
 const GEM_SPARKLE_BLOOM         = 2.6;   // にじみの大きさ（面の大きさ×これ）
@@ -56314,11 +56390,11 @@ function gemGlintBodyMask(bodyImg, w, h, pxPerLogical, def) {
 }
 
 /** 群れの竜種 speciesId のいまの進化の段階のきらめきの設定（宝石の竜でなければ null） */
-function gemSparkleForSpecies(speciesId) {
+function gemSparkleForSpecies(speciesId, tierIndex) {
   const def = GEM_SPARKLE_SPECIES[(SPECIES_DEFS[speciesId] || {}).element];
   if (!def) return null;
   const br = runSpeciesBranch[speciesId];
-  const tier = def.tiers[br && br.t20 ? 2 : br && br.t10 ? 1 : 0];
+  const tier = def.tiers[tierIndex ?? (br && br.t20 ? 2 : br && br.t10 ? 1 : 0)];
   return { look: tier.look, amount: tier.amount, gloss: def.gloss, plain: !!def.plain };
 }
 /** 特殊個体（SPECIAL_DEFS の key）のきらめきの設定（宝石の特殊個体でなければ null） */
@@ -56336,9 +56412,11 @@ function gemSparkleHeading(heading, x, y, n, salt) {
 }
 
 /** 絵 look の胴を面に区切る（1つの絵に1度だけ）。面ごとに光る向き phi・強さ gain・few で光るか、を決めておく */
-function gemSparkleFacets(look, bodyImg) {
-  if (gemSparkleFacetSets.has(look)) return gemSparkleFacetSets.get(look);
-  const W = bodyImg.naturalWidth, H = bodyImg.naturalHeight, step = GEM_SPARKLE_FACET_SIZE;
+function gemSparkleFacets(look, bodyImg, step = GEM_SPARKLE_FACET_SIZE) {
+  const setKey = look + "|" + step;
+  if (gemSparkleFacetSets.has(setKey)) return gemSparkleFacetSets.get(setKey);
+  const W = bodyImg.naturalWidth, H = bodyImg.naturalHeight;
+  const nominalArea = step * step * 0.866 / 2;
   // 面の真ん中が胴の上にあるかを見る（読めないとき＝file:// などは全部の面を使う。外の面は切り抜きで消える）
   let alpha = null;
   try {
@@ -56370,8 +56448,10 @@ function gemSparkleFacets(look, bodyImg) {
     const cx = (a[0] + b[0] + c[0]) / 3, cy = (a[1] + b[1] + c[1]) / 3;
     if (!onBody(cx, cy) && !onBody(a[0], a[1]) && !onBody(b[0], b[1]) && !onBody(c[0], c[1])) return;
     const n = seed * 131 + facets.length;
+    const area = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2;
     facets.push({ pts: [a, b, c], cx, cy, phi: gemGlintHash(n, 41) * Math.PI * 2,
-      gain: 0.65 + 0.35 * gemGlintHash(n, 42), few: gemGlintHash(n, 44) < GEM_SPARKLE_FEW_SHARE });
+      gain: 0.65 + 0.35 * gemGlintHash(n, 42), few: gemGlintHash(n, 44) < GEM_SPARKLE_FEW_SHARE,
+      rare: gemGlintHash(n, 44) < GEM_SPARKLE_RARE_SHARE && area <= nominalArea * GEM_SPARKLE_RARE_MAX_AREA });
   };
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols + 1; c++) {
@@ -56381,7 +56461,7 @@ function gemSparkleFacets(look, bodyImg) {
       else { add(p00, p01, p10); add(p01, p11, p10); }
     }
   }
-  gemSparkleFacetSets.set(look, facets);
+  gemSparkleFacetSets.set(setKey, facets);
   return facets;
 }
 
@@ -56412,7 +56492,8 @@ function gemSparkleLayer(cfg, heading) {
 }
 
 function renderGemSparkleLayer(cfg, spec, bodyImg, heading) {
-  const facets = gemSparkleFacets(cfg.look, bodyImg);
+  const facetSize = cfg.amount === "rare" ? GEM_SPARKLE_RARE_FACET_SIZE : GEM_SPARKLE_FACET_SIZE;
+  const facets = gemSparkleFacets(cfg.look, bodyImg, facetSize);
   const bodyW = bodyImg.naturalWidth, bodyH = bodyImg.naturalHeight;
   const spriteDpr = Math.min(window.devicePixelRatio || 1, 2);
   const spritePx  = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
@@ -56440,6 +56521,7 @@ function renderGemSparkleLayer(cfg, spec, bodyImg, heading) {
   let anyLit = false;
   for (const f of facets) {
     if (cfg.amount === "few" && !f.few) continue;
+    if (cfg.amount === "rare" && !f.rare) continue;
     let off = f.phi + heading;
     off -= Math.round(off / (Math.PI * 2)) * Math.PI * 2;
     const a = Math.abs(off);
@@ -56459,7 +56541,7 @@ function renderGemSparkleLayer(cfg, spec, bodyImg, heading) {
     g.strokeStyle = "#fff";
     g.lineWidth = edgeWidth;
     g.stroke();
-    const R = GEM_SPARKLE_FACET_SIZE * GEM_SPARKLE_BLOOM * (0.5 + 0.5 * k);
+    const R = facetSize * GEM_SPARKLE_BLOOM * (0.5 + 0.5 * k);
     g.globalAlpha = k * 0.8;
     g.drawImage(gemSparkleBloomSprite, f.cx - R / 2, f.cy - R / 2, R, R);
   }
