@@ -801,6 +801,17 @@
     background: rgba(8, 16, 26, 0.80); border: 1px solid rgba(120, 200, 255, 0.35); color: #fff;
     touch-action: manipulation; }
   body.on-title #report-btn, body.autoplay:not(.autoplay-ui) #report-btn { display: none; }
+  /* v3.190.0（案帳 DT-617）: ラン中に「手動・半オート・オート」を切り替えるボタン。📝の下に置く（眺めるだけのオートプレイでは出さない） */
+  #assist-btn { position: fixed; top: calc(var(--hud-band) + 142px); right: 8px; z-index: 30; height: 36px; min-width: 36px;
+    border-radius: 10px; font-size: 12px; line-height: 34px; text-align: center; padding: 0 8px; cursor: pointer; white-space: nowrap;
+    background: rgba(8, 16, 26, 0.80); border: 1px solid rgba(120, 200, 255, 0.35); color: #fff; font-family: monospace;
+    touch-action: manipulation; }
+  #assist-btn.assist-on { background: rgba(30, 70, 40, 0.88); border-color: rgba(150, 240, 170, 0.7); }
+  #assist-note { position: fixed; top: calc(var(--hud-band) + 182px); right: 8px; z-index: 30; max-width: 220px; padding: 4px 8px;
+    border-radius: 8px; font-size: 11px; font-family: monospace; color: #e4f2ff; background: rgba(8, 16, 26, 0.85);
+    pointer-events: none; opacity: 0; transition: opacity 0.3s; }
+  #assist-note.visible { opacity: 1; }
+  body.on-title #assist-btn, body.autoplay #assist-btn, body.on-title #assist-note, body.autoplay #assist-note { display: none; }
   #report-panel { display: none; position: fixed; inset: 0; z-index: 90; background: rgba(4,8,16,0.72);
     align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #e4f2ff; }
   #report-panel.visible { display: flex; }
@@ -1351,7 +1362,7 @@
 <div id="autoplay-pause"><div class="ap-title"></div><div class="ap-name"></div><div class="ap-note"></div><button type="button" class="ap-resume"></button><button type="button" class="ap-ui"></button><button type="button" class="ap-report"></button><button type="button" class="ap-stop"></button></div>
 
 <!-- v3.132.0（案帳 DT-553 2回目）: ゲームから案帳の報告ポストへ報告する -->
-<button type="button" id="report-btn">📝</button>
+<button type="button" id="report-btn">📝</button><button type="button" id="assist-btn"></button><div id="assist-note"></div>
 <div id="report-panel"><div class="rp-box">
   <div class="rp-title"></div>
   <div class="rp-kinds"></div>
@@ -1375,7 +1386,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.189.0";
+const GAME_VERSION = "v3.190.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -32977,6 +32988,13 @@ const STRINGS = {
   autoplayStop: "■ タイトルへ戻る",
   autoplayUi: (on) => `UI表示：${on ? "あり" : "なし"}（押して切り替え）`,   // v3.123.0（DT-538 手直し）
   autoplayChoose: "オートプレイの竜を選ぶ",
+  // v3.190.0（案帳 DT-617）: ラン中の操作の切り替え（押すたびに 手動 → 半オート → オート → 手動）
+  assistModeLabel: { manual: "✋ 手動", semi: "🤝 半オート", full: "🤖 オート" },
+  assistModeNote: {
+    manual: "手動：線も選ぶのも自分で",
+    semi: "半オート：線はAIが引く。三択強化・地域などは自分で選ぶ（触ればその間は自分の線）",
+    full: "オート：線も選ぶのもAI（触ればその間は自分の線）。記録は残ります",
+  },
   backToTitle: "← もどる",
   openTree: (crystals) => `竜晶の強化　🔷${crystals}`,
   openChallenges: (done, total) => `チャレンジ・解放　${done}/${total}`,
@@ -35001,7 +35019,8 @@ function maybeShowLevelUp() {
     return;
   }
   // v3.121.0（DT-538 手直し）: オートプレイは画面を出さずに選び終える
-  if (autoplayActive) { chooseCard(autoplayBestCard(opts) || opts[0]); return; }
+  if (autoPicksCards()) { chooseCard(autoplayBestCard(opts) || opts[0]); return; }   // v3.190.0（DT-617）: 「オート」も同じ
+  assistOpenChoice = { kind: "levelup", opts };   // v3.190.0（DT-617）: 開いたあとで「オート」にされたら、これから選ぶ
   levelupTitleEl.textContent = cat === "evo" ? STRINGS.levelUpEvo : STRINGS.levelUpSpecial;
   // v3.53.0（案帳 DT-238・Shooter指示）: 下に選択肢、上にツリー。選択肢を押すとその竜・特殊個体のツリーが出て、「これにする」で決まる
   renderLevelUpChoice(opts);
@@ -36933,7 +36952,7 @@ function shellDragonAlive() { return upCount("f_shell") > 0; }
 function updateShell(dt) {
   // v3.124.0（DT-538 手直し）: オートプレイは線を1フレームで引き終えて指を離すので、殻竜がいると殻にこもりっぱなしで攻撃が止まっていた。
   // オートプレイ中は退いているときだけこもる（攻めている間は指を当てているものとして扱う）
-  const holding = isDrawing || (autoplayActive && !autoplay.retreating);
+  const holding = isDrawing || (autoDrawsLines() && !autoplay.retreating);   // v3.190.0（DT-617）: 半オート・オートも同じ
   if (holding || !shellDragonAlive()) { shellReleasedFor = 0; shellOn = false; }
   else { shellReleasedFor += dt; shellOn = shellReleasedFor >= SHELL_DELAY; }
   shellAnim = Math.max(0, Math.min(1, shellAnim + (shellOn ? dt * 6 : -dt * 8)));
@@ -48152,13 +48171,14 @@ function openNextPerkOffer() {
   perkOfferArmTimer = setTimeout(() => perkOfferEl.classList.add("armed"), PERK_OFFER_ARM_MS);
   perkOfferEl.classList.add("visible");
   // v3.121.0（DT-538 手直し）: オートプレイは押せるのを待たずに中で選ぶ（画面は隠れている）
-  if (autoplayActive) {
+  if (autoPicksCards()) {   // v3.190.0（DT-617）: 「オート」も同じ
     clearTimeout(perkOfferArmTimer);
     perkOfferEl.classList.add("armed");
     const def = autoplayBestCard(picks) || picks[0];
     if (def.specialJoin !== undefined || def.evo) takeSpecialLevel(def); else takePerkCard(def, townIndex);
     return;
   }
+  assistOpenChoice = { kind: "perk", picks, townIndex };   // v3.190.0（DT-617）: 開いたあとで「オート」にされたら、これから選ぶ
   hapticPulse(40);
 }
 
@@ -48876,10 +48896,44 @@ const AUTO_RAIL_BOSS_LEAD_MAX_S  = 12;   // 先読みの上限（遠すぎると
 const AUTO_RAIL_BOSS_STROKE_S    = 1.2;  // 列車を狙っている間の線の引き直し間隔（輪を列車に付いて行かせる）
 const AUTO_RAIL_BOSS_PICK_P      = 1;    // 列車を狙ってよいとき、列車を選ぶ割合（ふつうの首都は AUTO_BOSS_PICK_P）
 
-const autoplay = { wait: 0, strokeWait: 0, stageKey: -1, species: "fire", showUi: false, retreating: false };
+const autoplay = { wait: 0, strokeWait: 0, stageKey: -1, species: "fire", showUi: false, retreating: false, choiceWait: 0 };
 const AUTO_SPECIES_RANDOM = "random";   // v3.123.0: 竜の一覧で「ランダム」を選んだ＝ランのたびに解放済みからランダム
 const AUTO_UI_STORE_KEY = "dragonTide.autoplayUi";   // UI表示のあり／なし（見ている人ごとの好み。消えても困らない）
 try { autoplay.showUi = localStorage.getItem(AUTO_UI_STORE_KEY) === "1"; } catch (e) { autoplay.showUi = false; }
+// v3.190.0（案帳 DT-617）: ふつうのランの操作の任せ方。見ている人がその場で選ぶ（この開いている間だけ覚える。次に開いたら手動から）
+const ASSIST_MANUAL = "manual", ASSIST_SEMI = "semi", ASSIST_FULL = "full";
+const ASSIST_MODES = [ASSIST_MANUAL, ASSIST_SEMI, ASSIST_FULL];
+const ASSIST_HANDS_OFF_S = 2.5;     // プレイヤーが指を離してから AI が線を引き直すまでの秒数
+const ASSIST_NOTE_MS = 2600;        // 切り替えたときの説明を出しておく時間
+const ASSIST_CHOICE_WAIT_S = 0.8;   // 「オート」に切り替えたとき、開いていた三択を選ぶまでの間（何が選ばれたか目で追えるように）
+let assistOpenChoice = null;        // 画面に開いている三択の中身（{kind, opts} か {kind, picks, townIndex}）
+let assistMode = ASSIST_MANUAL;
+/** 線を AI が引くか（眺めるオートプレイ・半オート・オート） */
+function autoDrawsLines() { return autoplayActive || (assistMode !== ASSIST_MANUAL && gameState !== "title"); }
+/** 三択強化・特殊個体などを AI が選ぶか（眺めるオートプレイ・オート） */
+function autoPicksCards() { return autoplayActive || assistMode === ASSIST_FULL; }
+const assistBtnEl = document.getElementById("assist-btn");
+const assistNoteEl = document.getElementById("assist-note");
+let assistNoteTimer = 0;
+function refreshAssistButton() {
+  assistBtnEl.textContent = STRINGS.assistModeLabel[assistMode];
+  assistBtnEl.classList.toggle("assist-on", assistMode !== ASSIST_MANUAL);
+}
+function setAssistMode(mode) {
+  assistMode = mode;
+  autoplay.retreating = false;
+  autoplay.wait = AUTO_UI_WAIT_S;
+  autoplay.strokeWait = ASSIST_HANDS_OFF_S;   // 切り替えた指の直後にいきなり線を引き直さない
+  refreshAssistButton();
+  assistNoteEl.textContent = STRINGS.assistModeNote[mode];
+  assistNoteEl.classList.add("visible");
+  clearTimeout(assistNoteTimer);
+  assistNoteTimer = setTimeout(() => assistNoteEl.classList.remove("visible"), ASSIST_NOTE_MS);
+  autoplay.choiceWait = ASSIST_CHOICE_WAIT_S;   // オートに切り替えた時点で開いている三択は、少し見せてから選ぶ（updateAssist）
+}
+refreshAssistButton();
+dbgTap(assistBtnEl, () => setAssistMode(ASSIST_MODES[(ASSIST_MODES.indexOf(assistMode) + 1) % ASSIST_MODES.length]));
+
 /** オートプレイでUIを隠しているか（canvas に描くUIもこれで止める） */
 function autoplayHidesUi() { return autoplayActive && !autoplay.showUi; }
 // v3.121.0（DT-538 手直し・Shooter「タップした時だけポーズでメニューを出して、タイトルに戻るかオートプレイに戻るかを選ぶ」）
@@ -48994,6 +49048,7 @@ function autoPickFrom(list) { return list.length ? list[Math.floor(fxRandom() * 
 function updateAutoplay(dt) {
   if (autoplayPaused) return;
   autoplay.wait = Math.max(0, autoplay.wait - dt);
+  if (!autoplayActive) { updateAssist(dt); return; }
   if (gameState === "title") { autoplayTitle(); return; }
   if (gameState === "all-clear") {
     if (autoplay.wait <= 0 && retryBtn.classList.contains("visible")) { autoplay.wait = AUTO_UI_WAIT_S; autoTap(retryBtn); }
@@ -49020,6 +49075,57 @@ function updateAutoplay(dt) {
   const stageKey = runStageIndex * 100 + runShape;
   if (stageKey !== autoplay.stageKey) { autoplay.stageKey = stageKey; autoplay.strokeWait = AUTO_STAGE_START_WAIT_S; }
   if (wipeShowTimer > 0) return;   // 全滅の見せ場では動かさない
+  autoplay.strokeWait -= dt;
+  if (autoplay.strokeWait > 0) return;
+  autoplay.strokeWait = AUTO_STROKE_MIN_S + fxRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
+  dismissStageIntro();
+  autoplayStroke();
+}
+
+/**
+ * v3.190.0（案帳 DT-617・Shooter「手動プレイと、完全オートモードと、三択強化などはユーザーに委ねるモードを選べるように」）:
+ * ふつうのランの中で、線を引くのを AI に任せる（半オート）・選ぶのまで任せる（オート）。眺めるだけのオートプレイと違い、記録は残る。
+ * ランの終わり（全滅・全クリア）では止まる（次のランを勝手に始めない）。
+ * プレイヤーが触っている間と離してから ASSIST_HANDS_OFF_S 秒は AI は線を引かない（自分で引いた線を上書きしない）
+ */
+function updateAssist(dt) {
+  if (gameState === "title" || gameState === "all-clear") return;
+  const full = assistMode === ASSIST_FULL;
+  if (regionPicking) {
+    if (!full || autoplay.wait > 0) return;
+    if (worldMapShowing) {
+      const pick = autoPickFrom([...WORLD_MAP.choosableIds()]);
+      if (pick !== null) { autoplay.wait = AUTO_UI_WAIT_S; worldMapAttack(pick); }
+      return;
+    }
+    const card = autoPickFrom([...cardListEl.querySelectorAll(".region-card")]);
+    if (card) { autoplay.wait = AUTO_UI_WAIT_S; autoTap(card); }
+    return;
+  }
+  if (gameState === "stage-clear") {
+    if (full && autoplay.wait <= 0) { autoplay.wait = AUTO_UI_WAIT_S; proceedToNextStage(); }
+    return;
+  }
+  // 開いている三択（オートに切り替える前に開いたもの）も、見せる間を置いてから選ぶ
+  if (full && (upgradeCardsVisible || perkOfferVisible) && assistOpenChoice) {
+    autoplay.choiceWait -= dt;
+    if (autoplay.choiceWait > 0) return;
+    autoplay.choiceWait = ASSIST_CHOICE_WAIT_S;
+    const open = assistOpenChoice; assistOpenChoice = null;
+    if (open.kind === "levelup" && upgradeCardsVisible) chooseCard(autoplayBestCard(open.opts) || open.opts[0]);
+    else if (open.kind === "perk" && perkOfferVisible) {
+      clearTimeout(perkOfferArmTimer); perkOfferEl.classList.add("armed");
+      const def = autoplayBestCard(open.picks) || open.picks[0];
+      if (def.specialJoin !== undefined || def.evo) takeSpecialLevel(def); else takePerkCard(def, open.townIndex);
+    }
+    return;
+  }
+  autoplay.choiceWait = ASSIST_CHOICE_WAIT_S;
+  if (gameState !== "playing" || upgradeCardsVisible || perkOfferVisible) return;
+  if (isDrawing || inputMode === "TAP_PENDING") { autoplay.strokeWait = ASSIST_HANDS_OFF_S; return; }   // 指が乗っている＝プレイヤーの線
+  const stageKey = runStageIndex * 100 + runShape;
+  if (stageKey !== autoplay.stageKey) { autoplay.stageKey = stageKey; autoplay.strokeWait = AUTO_STAGE_START_WAIT_S; }
+  if (wipeShowTimer > 0) return;
   autoplay.strokeWait -= dt;
   if (autoplay.strokeWait > 0) return;
   autoplay.strokeWait = AUTO_STROKE_MIN_S + fxRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
@@ -57243,6 +57349,7 @@ function buildReportStatusLines() {
   // 固定なしのランも debugGetSeed() は ?seed= にそのまま渡せる文字（DT-555）
   lines.push(fixedSeedParam !== null ? `シード: ${fixedSeedParam}（?seed=${fixedSeedParam} で固定）` : `シード: ${debugGetSeed()}（固定なし・?seed=${debugGetSeed()} で同じラン）`);
   lines.push(`場面: ${gameState}`);
+  if (!autoplayActive) lines.push(`操作: ${STRINGS.assistModeLabel[assistMode]}`);   // v3.190.0（DT-617）
   if (playing) {
     lines.push(`経過時間: ステージ ${formatReportClock(nowMs - stageStartTime)} ／ ラン ${formatReportClock(nowMs - runStartTime)}`);
     const era = CONTINENT_DEFS[runStageIndex];
@@ -57551,7 +57658,7 @@ function tick() {
 
   if (flashTimer > 0) flashTimer = Math.max(0, flashTimer - dt);
   if (shakeTimer > 0) shakeTimer = Math.max(0, shakeTimer - dt);
-  if (autoplayActive && !reportPaused) updateAutoplay(dt);   // v3.120.0（DT-538）: 実時間で動かす（レベルアップで時間が止まっていても選べるように）
+  if ((autoplayActive || assistMode !== ASSIST_MANUAL) && !reportPaused) updateAutoplay(dt);   // v3.120.0（DT-538）: 実時間で動かす（レベルアップで時間が止まっていても選べるように）
 
   render(now);
   // v3.71.0（案帳 DT-505）: タイトル画面では上部の UI を隠す。切り替わった時だけ class を触る
