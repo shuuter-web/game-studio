@@ -1386,7 +1386,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.190.0";
+const GAME_VERSION = "v3.191.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -33483,6 +33483,10 @@ const EVO_LINEAR = { dmg: 0.15, range: 0.15, hp: 0.20, speed: 0.08, arc: 40, aoe
 const EVO_GEOMETRIC = { rate: 0.82, chgRamp: 0.80 };
 // 分岐で群れの色を寄せる強さ（色相を残す程度）
 const EVO_TINT_ALPHA = 0.42;
+// v3.191.0（DT-609 手直し・Shooter「竜種の持つイメージの方を優位に」）: カットした宝石の絵（1回目・2回目の進化）は分岐の色を薄く重ねる。
+// 0.42 だと焔竜の淡い橙でルビーが桃色に、2回目の進化の金の飾りも埋もれていた。分岐の見分けがつく程度に残す
+const EVO_TINT_ALPHA_GEM = 0.15;
+const EVO_TINT_GEM_LOOKS = new Set(["fire_sparkle", "ice_sparkle", "fire_jewel", "ice_jewel", "rainbow_sparkle"]);
 
 function evoCardId(key, kind) {
   switch (key) {
@@ -34516,7 +34520,7 @@ function tintedSprites(baseKey, frames, tint) {
     const g = c.getContext("2d");
     g.drawImage(src, 0, 0);
     g.globalCompositeOperation = "source-atop";
-    g.globalAlpha = EVO_TINT_ALPHA;
+    g.globalAlpha = EVO_TINT_GEM_LOOKS.has(frames.gemLook) ? EVO_TINT_ALPHA_GEM : EVO_TINT_ALPHA;
     g.fillStyle = tint;
     g.fillRect(0, 0, c.width, c.height);
     return c;
@@ -43228,7 +43232,7 @@ function codexDragonCanvas(species, form) {
   if (tint) {   // 分岐の色（ゲームの tintedSprites と同じ重ね方）。仮の絵の竜種は spriteTint
     const g = frame.getContext("2d");
     g.globalCompositeOperation = "source-atop";
-    g.globalAlpha = EVO_TINT_ALPHA;
+    g.globalAlpha = gem && EVO_TINT_GEM_LOOKS.has(gem.look) ? EVO_TINT_ALPHA_GEM : EVO_TINT_ALPHA;
     g.fillStyle = tint;
     g.fillRect(0, 0, frame.width, frame.height);
   }
@@ -56151,6 +56155,27 @@ const DRAGON_PART_SPRITES = {
     bodyDrawH: 27,
     wingDrawW: 25,
   },
+  // v3.191.0（DT-609 手直し・Shooter「2進化は、それに加えてアクセサリー的な縁取りや飾りを加えましょう。石とは別の色の飾り」）:
+  // *_jewel＝2回目の進化。全身カットの宝石の絵（*_sparkle）を下絵に渡して金の飾り（頭の環・首輪・足輪・尾の環・背の鋲、翼の骨の金具）を描き足し、
+  // 輪郭の外に細い金の縁取りを足したもの。寸法は tools/sprite_meta.py の実測（翼の幅だけほかの宝石の竜にそろえて 25）
+  fire_jewel: {
+    body: "assets/dragon_fire_jewel_body.png",
+    wing: "assets/dragon_fire_jewel_wing.png",
+    bodyPivot:  { cx: 55.0, cy: 151.7, w: 111, h: 320 },
+    shoulder:   { left: { x: 13.0, y: 122 }, right: { x: 97.0, y: 122 } },
+    wingAnchor: { x: 318, y: 69.5 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
+  ice_jewel: {
+    body: "assets/dragon_ice_jewel_body.png",
+    wing: "assets/dragon_ice_jewel_wing.png",
+    bodyPivot:  { cx: 76.8, cy: 164.6, w: 155, h: 320 },
+    shoulder:   { left: { x: 19.9, y: 136 }, right: { x: 134.1, y: 136 } },
+    wingAnchor: { x: 318, y: 72.9 },
+    bodyDrawH: 27,
+    wingDrawW: 25,
+  },
   rainbow_sparkle: {
     body: "assets/dragon_rainbow_sparkle_body.png",
     wing: "assets/dragon_rainbow_sparkle_wing.png",
@@ -56397,16 +56422,21 @@ function dragonPartsKey(element) {
 //   極光（特殊個体）：進化前＝いまの絵で面を減らして、進化後＝全身カットの宝石の絵で全部の面。
 //   ガーゴイル：灰色の石なので絵は変えず、面を減らした白いきらめきを弱く（虹色にしない）。
 // -----------------------------------------------------------------
-// tiers は進化の段階（0＝進化前・1＝1回目・2＝2回目）ごとの絵（DRAGON_PART_SPRITES のキー）と、きらめきの量（full＝全部の面・few＝減らす）。
+// v3.191.0（DT-609 手直し・Shooter 11/25「進化前はきらめき無し」「色あせた感じをやめて竜種の持つイメージを優位に」
+// 「1進化はカットの入ったルース、宝石。キラキラをしっかりいれた今の状態で良い」「2進化はそれに加えてアクセサリー的な縁取りや飾り」）:
+//   火竜・氷竜：進化前＝原石の絵できらめき無し（火竜の原石は明るい赤に塗り直した）、1回目の進化＝全身カットの宝石の絵（*_sparkle）で全部の面、
+//   2回目の進化＝それに金の飾りと縁取りを足した絵（*_jewel）で全部の面。前の1回目の進化の宝石（ルース）の絵（fire・ice）は使わなくなった
+//   （戻すなら tiers[1] の look を "fire"・"ice"、amount を "few" に）。極光・ガーゴイルも進化前はきらめき無し。
+// tiers は進化の段階（0＝進化前・1＝1回目・2＝2回目）ごとの絵（DRAGON_PART_SPRITES のキー）と、きらめきの量（full＝全部の面・few＝減らす・rare＝さらに減らす・none＝無し）。
 // gloss はきらめきの最大の濃さ。plain は虹色にせず白く光らせる
 const GEM_SPARKLE_SPECIES = {
-  fire:     { tiers: [{ look: "fire_rough", amount: "rare" }, { look: "fire", amount: "few" }, { look: "fire_sparkle", amount: "full" }], gloss: 0.9 },
-  ice:      { tiers: [{ look: "ice_rough", amount: "rare" }, { look: "ice", amount: "few" }, { look: "ice_sparkle", amount: "full" }], gloss: 0.9 },
-  gargoyle: { tiers: [{ look: "gargoyle", amount: "rare" }, { look: "gargoyle", amount: "few" }, { look: "gargoyle", amount: "few" }], gloss: 0.45, plain: true },
+  fire:     { tiers: [{ look: "fire_rough", amount: "none" }, { look: "fire_sparkle", amount: "full" }, { look: "fire_jewel", amount: "full" }], gloss: 0.9 },
+  ice:      { tiers: [{ look: "ice_rough", amount: "none" }, { look: "ice_sparkle", amount: "full" }, { look: "ice_jewel", amount: "full" }], gloss: 0.9 },
+  gargoyle: { tiers: [{ look: "gargoyle", amount: "none" }, { look: "gargoyle", amount: "few" }, { look: "gargoyle", amount: "few" }], gloss: 0.45, plain: true },
 };
 // 特殊個体（SPECIAL_DEFS の key）。tiers は 0＝進化前・1＝進化後
 const GEM_SPARKLE_SPECIALS = {
-  rainbow: { tiers: [{ look: "rainbow", amount: "rare" }, { look: "rainbow_sparkle", amount: "full" }], gloss: 0.85 },
+  rainbow: { tiers: [{ look: "rainbow", amount: "none" }, { look: "rainbow_sparkle", amount: "full" }], gloss: 0.85 },
 };
 // 光を入れる形を胴の縁から内側へ縮める幅を、絵ごとに変える（ガーゴイルは手足が太いので強めに縮める）
 const GEM_SPARKLE_MASK = { gargoyle: { maskCut: 3.0, maskRegrow: 1.5 } };
@@ -56583,6 +56613,7 @@ function gemSparkleHue(h) {
  * 向きを GEM_SPARKLE_HEADING_STEPS に刻み、刻みごとに1度だけ作って取っておく
  */
 function gemSparkleLayer(cfg, heading) {
+  if (cfg.amount === "none") return null;   // v3.191.0（DT-609）: 進化前はきらめき無し（絵だけ段階のものを使う）
   const stepAngle = Math.PI * 2 / GEM_SPARKLE_HEADING_STEPS;
   const bucket = ((Math.round(heading / stepAngle) % GEM_SPARKLE_HEADING_STEPS) + GEM_SPARKLE_HEADING_STEPS) % GEM_SPARKLE_HEADING_STEPS;
   const key = cfg.look + "|" + cfg.amount + "|" + (cfg.plain ? 1 : 0) + "|" + bucket;
@@ -57221,6 +57252,7 @@ function getSpeciesSprites(speciesId, variant) {
   }
   const def = SPECIES_DEFS[speciesId] || SPECIES_DEFS.fire;
   frames = buildElementSprites(gemLook || def.element, variant);
+  frames.gemLook = gemLook;   // 分岐の色を重ねる濃さを絵で変える（tintedSprites）
   // v3.8.0: 仮の絵（別の竜種の絵を借りている）は色を寄せて見分けられるようにする
   if (def.spriteTint) frames = tintedSprites("base:" + cacheKey, frames, def.spriteTint);
   spriteCache.set(cacheKey, frames);
@@ -57248,6 +57280,7 @@ function getSpecialSprites(kind) {
     return frames;
   }
   frames = buildElementSprites(gemLook || def.key);
+  frames.gemLook = gemLook;
   if (def.spriteTint) frames = tintedSprites("base:" + cacheKey, frames, def.spriteTint);   // v3.8.0: 仮の絵
   spriteCache.set(cacheKey, frames);
   while (spriteCache.size > SPRITE_CACHE_MAX) {
