@@ -106,7 +106,7 @@ function installRecorder() {
   });
   wrap("triggerRunComplete", (orig, self, a) => { rec.result = rec.result || { outcome: "complete", t: t() }; return orig.apply(self, a); });
   wrap("triggerRunDefeat", (orig, self, a) => { rec.closeStage("defeat"); rec.result = rec.result || { outcome: "defeat", t: t() }; return orig.apply(self, a); });
-  const cardKind = (def) => def.fuse ? "合成" : (def.becomes || def.becomesSpecial) ? "突然変異" : def.evo ? "進化"
+  const cardKind = (def) => def.fuse ? "合成" : def.becomesSpecial ? "突然変異" : def.evo ? "進化"
     : (def.specialJoin !== undefined || def.stageJoin) ? "加入" : def.artifact ? "アーティファクト" : def.stageOnly ? "ステージ限定" : "強化";
   const cardName = (def) => (STRINGS.cards && STRINGS.cards[def.id] && STRINGS.cards[def.id].name) || def.name || def.id;
   const noteCard = (def, via) => rec.cards.push({ t: t(), stage: runStageNumber, id: def.id, name: cardName(def), kind: cardKind(def), via, level: playerLevel });
