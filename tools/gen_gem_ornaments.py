@@ -4,9 +4,10 @@
 
 前の版（v3.191.0）は画像生成で「全身の金の縁取り＋細かい飾り」を描いたので、全体を縁取っただけに見えた。
 こちらは手で形を決めて飾る部位だけを太く描き、**元の輪郭からはみ出させる**（画像の余白を足して広げる）。
-  火竜（ルビー）… 金の額飾り（頭。顔の前へは出さない）・翼の前の縁の外側半分の金の縁取りと先の爪の覆い・金の尾の刃。胴・足・翼の後ろの縁は飾らない
-  氷竜（アクアマリン）… 白金（プラチナ）の首輪とアクアマリンの雫・翼の後ろの縁の外側だけ白金の縁取りと垂れる氷柱・先の氷の槍。頭・胴・足・尾は飾らない
-  （v3.196.0 の炎の冠・氷柱のティアラは顔の前へ突き出て異様に見えたのでやめた。DT-609 11/25 Shooter）
+竜種ごとに「突き出る飾り2つ」＋「細い縁取り（v3.191.0 のもの）を一部の部位だけ」（v3.199.0・DT-609 11/25 Shooter）:
+  火竜（ルビー）… 金の尾の刃と返し・翼の先の後ろへ反る金の炎の刃3枚・額飾り。縁取りは翼の外まわりと腰から尾の先まで
+  氷竜（アクアマリン）… 翼の白金の氷の結晶・氷柱・槍（v3.196.0 のまま）・尾の先の氷の結晶の房・首輪と雫。縁取り（白金）は頭から腰まで
+  （v3.196.0 の炎の冠・氷柱のティアラは顔の前へ突き出て異様に見えたのでやめた。頭から前へ突き出る飾りは付けない）
 乱数は使わない（毎回同じ絵になる）。絵の作り置き（向き×羽ばたき）は今までどおりゲーム側で1回だけ。
 """
 import math
@@ -113,6 +114,25 @@ def flame(cx, cy, length, width, angle, lean=0.35):
     return pts_l + pts_r[::-1]
 
 
+def curved_blade(cx, cy, length, width, angle, bend):
+    """曲がった刃（炎の舌を細く鋭くしたもの）。根元 (cx,cy) から angle の向きへ、先へ行くほど bend（ラジアン）だけ向きが回る。
+    返り値は（刃の形, 芯の折れ線）"""
+    pts_l, pts_r, spine = [], [], []
+    x, y = cx, cy
+    steps = 16
+    for i in range(steps + 1):
+        t = i / steps
+        a = angle + bend * t * t
+        dx, dy = math.sin(a), -math.cos(a)
+        nx, ny = -dy, dx
+        half = width * 0.5 * (1 - t) ** 1.15
+        pts_l.append((x + nx * half, y + ny * half))
+        pts_r.append((x - nx * half, y - ny * half))
+        spine.append((x, y))
+        x, y = x + dx * length / steps, y + dy * length / steps
+    return pts_l + pts_r[::-1], spine[1:-3]
+
+
 def spike(cx, cy, length, width, angle, base_w=None):
     """まっすぐな棘（氷柱・刃の先）。根元 (cx,cy) から angle の向きへ"""
     dx, dy = math.sin(angle), -math.cos(angle)
@@ -180,11 +200,29 @@ def studs(canvas, points, pal, every, size):
         canvas.shape([[(x, y - size), (x + size * 0.8, y), (x, y + size), (x - size * 0.8, y)]], pal, axis=(0.5, 1.0), outline=2.5)
 
 
+def rim(canvas, sprite_alpha, pal, keep, width=5.0, axis=(0.0, 1.0)):
+    """輪郭の外側の細い縁取り（v3.191.0 の全身の金の縁取りを、keep で選んだ部位だけに戻す）。
+    sprite_alpha: 絵の「ある」所（bool）。keep(xs, ys) -> bool の配列：縁取りを残す所（元の絵の画素の座標）。
+    胴・翼の下（back）に敷くので、見えるのは輪郭の外へはみ出た分だけ"""
+    h, w = sprite_alpha.shape
+    m = Image.fromarray((sprite_alpha * 255).astype(np.uint8), "L").resize((w * SS, h * SS), Image.BILINEAR)
+    m = m.point(lambda v: 255 if v >= 128 else 0)
+    grown = m
+    for _ in range(int(round(width * SS / 2))):     # 3×3 の膨らませを重ねて width 画素ぶん外へ
+        grown = grown.filter(ImageFilter.MaxFilter(3))
+    ys, xs = np.mgrid[0:h * SS, 0:w * SS].astype(np.float32) / SS
+    sel = Image.fromarray((keep(xs, ys) * 255).astype(np.uint8), "L")
+    canvas.paint(ImageChops.multiply(grown, sel), pal, axis, outline=2.0)
+
+
 # ---------------------------------------------------------------- 火竜（ルビー・金）
-# v3.198.0（DT-609 手直し・Shooter「顔の前に出るトゲトゲは変。火竜も氷竜も」「縁の飾りも、全部を覆わず一部の部位に」）:
-# 炎の冠をやめ、頭は顔の前へ出ない細い金の額飾り（ルビー付き）だけ。縁の飾りは翼の前の縁の外側半分（手首→翼の先）だけ。尾の刃はそのまま。
-FIRE_PAD = dict(left=0, top=0, right=0, bottom=70)
-FIRE_WING_PAD = dict(left=10, top=10, right=0, bottom=0)
+# v3.199.0（DT-609 手直し・Shooter「地味になりすぎ」「突出した二つくらいのパーツに加えて、無くした縁取りを一部戻して」）:
+#   突き出る飾り＝尾の金の刃（と返し）・翼の先の金の炎の刃（外へ）。頭は目の後ろの細い額飾り（顔の前へは出さない）。
+#   縁取り（v3.191.0 の細い金の縁）を戻すのは、翼の外まわり（付け根を除く）と、腰から尾の先まで。頭・首・胴・足には付けない。
+#   v3.198.0 の「翼の前の縁の外側半分の太い金の帯と鋲」は、細い縁取りに置き換えた。
+RIM = 8                         # 縁取りがはみ出す分の余白
+FIRE_PAD = dict(left=RIM, top=RIM, right=RIM, bottom=70)
+FIRE_WING_PAD = dict(left=110, top=RIM, right=0, bottom=40)
 
 
 def stack(back, sprite, front):
@@ -201,6 +239,8 @@ def fire_body(src):
     back, front = Canvas(*sprite.size), Canvas(*sprite.size)
     ox, oy = p["left"], p["top"]
     cx = ox + 63.0
+    # 縁取り：腰（後ろ足の付け根の下）から尾の先まで
+    rim(back, body_alpha(sprite), GOLD, lambda xs, ys: ys > oy + 236)
     # 尾の刃（先は元の尾の先 y≈318 の外へ）。胴の下に敷いて、はみ出た所だけが見える。根元に金の輪
     ty = oy + 290
     blade = [(cx, ty + 100), (cx + 12, ty + 76), (cx + 22, ty + 44), (cx + 18, ty + 18), (cx + 8, ty + 8),
@@ -224,91 +264,115 @@ def fire_wing(src):
     p = FIRE_WING_PAD
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     a = body_alpha(sprite)
-    front = Canvas(*sprite.size)
+    back = Canvas(*sprite.size)
+    w = sprite.size[0]
     left_x = int(np.nonzero(a.any(axis=0))[0].min())
-    top_x = int(np.argmin([np.nonzero(a[:, x])[0].min() if a[:, x].any() else 1e9 for x in range(a.shape[1])]))
-    # 前の縁のうち、翼の先から手首（いちばん上の爪の手前）までだけを金で縁取る。根元側・後ろの縁は飾らない
-    line = edge_line(a, left_x + 3, top_x - 14, "upper", offset=-1.5)
-    front.stroke(line, 13, GOLD, axis=(0.0, 1.0), outline=4.0)
-    studs(front, line, GOLD, every=16, size=7)
-    # 翼の先に金の爪の覆い（先の向きのまま少し伸ばす）
-    ty = float(np.nonzero(a[:, left_x + 1])[0].mean())
-    front.shape([[(left_x + 22, ty - 12), (left_x - 10, ty + 2), (left_x + 20, ty + 10)]], GOLD, axis=(0.0, 1.0), outline=4.0)
+    # 縁取り：翼の外まわり。付け根（右の端・胴に重なる所）の 12% は付けない（胴の上に金の線が渡らないように）
+    rim(back, a, GOLD, lambda xs, ys: xs < w - (w - p["left"]) * 0.12)
+    # 翼の先の金の炎の刃：先から外（左）へ3枚、炎のように後ろへ反って扇に突き出る。翼の下に敷く
+    ty = float(np.nonzero(a[:, left_x + 2])[0].mean())
+    for ang, length, width, bend in ((-62, 66, 20, -0.5), (-86, 108, 26, -0.55), (-110, 74, 20, -0.5)):
+        poly, spine = curved_blade(left_x + 26, ty, length, width, math.radians(ang), math.radians(bend * 70))
+        back.shape([poly], GOLD, axis=(0.3, 1.0), ridge=spine)
     out = Image.new("RGBA", sprite.size, (0, 0, 0, 0))
+    out.alpha_composite(back.finish())
     out.alpha_composite(sprite)
-    out.alpha_composite(front.finish())
     return out
 
 
 # ---------------------------------------------------------------- 氷竜（アクアマリン・白金）
-# v3.198.0（DT-609 手直し）: 氷柱のティアラ・翼の前の縁の結晶（どちらも前へ突き出る）をやめた。
-# 頭は飾らず、首の付け根に白金の首輪（アクアマリンの雫）。翼は後ろの縁のうち先から2本目の指までの膜だけ白金で縁取り、指の先から短い氷柱を後ろへ垂らす。先の氷の槍は外向きなので残す。
-ICE_PAD = dict(left=0, top=0, right=0, bottom=0)
-ICE_WING_PAD = dict(left=48, top=0, right=0, bottom=40)
+# v3.199.0（DT-609 手直し・Shooter「氷竜の翼の飾りは全然ダメじゃなかった」「無くした縁取りを一部戻して」）:
+#   翼は v3.196.0 の飾り（前の縁の氷の結晶3本・後ろの縁の指の先から垂れる氷柱・先の氷の槍）に戻した。
+#   v3.198.0 で前の縁の結晶もやめたのは「顔の前に出るトゲトゲ」を「前へ突き出るもの全部」と広く読み違えたため（ダメと言われたのは頭のティアラだけ）。
+#   突き出る飾りの2つ目は、頭の代わりに尾の先の氷の結晶の房（後ろへ3本）。頭は飾らず、首の付け根の白金の首輪とアクアマリンの雫は残す。
+#   縁取り（白金）を戻すのは、頭から腰まで（胴の外まわり）。翼・尾には付けない（翼は結晶、尾は房で飾るので）。
+ICE_PAD = dict(left=RIM, top=RIM, right=RIM, bottom=56)
+ICE_WING_PAD = dict(left=48, top=46, right=0, bottom=50)
 
 
 def ice_body(src):
     p = ICE_PAD
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
-    front = Canvas(*sprite.size)
+    back, front = Canvas(*sprite.size), Canvas(*sprite.size)
     ox, oy = p["left"], p["top"]
     cx = ox + 82.0
-    ny = oy + 124
+    a = body_alpha(sprite)
+    # 縁取り：頭から腰まで（後ろ足の付け根の下で切る）
+    rim(back, a, PLATINUM, lambda xs, ys: ys < oy + 250)
+    # 尾の先の氷の結晶の房（後ろへ、真ん中が長い3本）。尾の下に敷く
+    tail_y = float(np.nonzero(a.any(axis=1))[0].max())
+    tail_x = float(np.nonzero(a[int(tail_y) - 6])[0].mean())
+    for ang, length, width in ((180, 64, 20), (152, 44, 15), (208, 44, 15)):
+        r = math.radians(ang)
+        x, y = tail_x, tail_y - 16
+        poly = spike(x, y, length, width, r, base_w=width)
+        dx, dy = math.sin(r), -math.cos(r)
+        nx, ny = -dy, dx
+        half = [(x, y), (x + dx * length, y + dy * length), (x + nx * width * 0.5 + dx * length * 0.12, y + ny * width * 0.5 + dy * length * 0.12)]
+        back.shape([poly], PLATINUM, axis=(0.6, 1.0), facet=half)
+    ny_ = oy + 124
     # 首輪：いちばん細い首（幅 ±34）より少し広い帯。胴の上に重ねる
-    front.shape([band(cx, ny, 40, 13, curve=10)], PLATINUM, axis=(0.0, 1.0))
+    front.shape([band(cx, ny_, 40, 13, curve=10)], PLATINUM, axis=(0.0, 1.0))
     # 前の雫（首輪から胸へ垂れる。後ろ向き）
-    drop = [(cx, ny + 6), (cx + 10, ny + 18), (cx, ny + 36), (cx - 10, ny + 18)]
+    drop = [(cx, ny_ + 6), (cx + 10, ny_ + 18), (cx, ny_ + 36), (cx - 10, ny_ + 18)]
     front.shape([drop], GEM_BLUE, outline=3.0)
-    out = Image.new("RGBA", sprite.size, (0, 0, 0, 0))
-    out.alpha_composite(sprite)
-    out.alpha_composite(front.finish())
-    return out
+    return stack(back, sprite, front)
 
 
 def ice_wing(src):
+    """v3.196.0 の翼の飾りのまま（DT-609 11/25 Shooter「全然ダメじゃなかった」）"""
     p = ICE_WING_PAD
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     a = body_alpha(sprite)
-    back, front = Canvas(*sprite.size), Canvas(*sprite.size)
+    back = Canvas(*sprite.size)
     w, h = sprite.size
 
-    def crystal(canvas, x, y, length, width, ang):
+    def crystal(x, y, length, width, ang):
         poly = spike(x, y, length, width, ang, base_w=width)
         dx, dy = math.sin(ang), -math.cos(ang)
         nx, ny = -dy, dx
         half = [(x, y), (x + dx * length, y + dy * length), (x + nx * width * 0.5 + dx * length * 0.12, y + ny * width * 0.5 + dy * length * 0.12)]
-        canvas.shape([poly], PLATINUM, axis=(0.6, 1.0), facet=half)
+        back.shape([poly], PLATINUM, axis=(0.6, 1.0), facet=half)
 
-    left_x = int(np.nonzero(a.any(axis=0))[0].min())
     lower = np.array([np.nonzero(a[:, x])[0].max() if a[:, x].any() else -1 for x in range(w)], np.float32)
-    # 後ろの縁の山（指の先）を拾う。飾るのは翼の先から2本目の指の先までの膜だけ（根元側の膜は飾らない）
+    upper = np.array([np.nonzero(a[:, x])[0].min() if a[:, x].any() else -1 for x in range(w)], np.float32)
+    # 下の縁（羽根の先）の山を拾って、そこから氷柱を下へ・外へのばす
     peaks = []
-    for x in range(left_x + 20, w - 40):
-        win = lower[x - 10:x + 11]
-        if lower[x] == win.max() and (not peaks or x - peaks[-1] > 30) and lower[x] > np.median(lower[lower >= 0]) + 8:
+    med = np.median(lower[lower >= 0])
+    for x in range(14, w - 40):
+        win = lower[x - 14:x + 15]
+        if lower[x] >= 0 and lower[x] == win.max() and (not peaks or x - peaks[-1] > 26) and lower[x] > med + 4:
             peaks.append(x)
-    peaks = peaks[:2]
-    # 膜の弧ごとに白金の縁を付け、指の先の前後は切る（指の先からは氷柱を垂らす）
-    # 2つ目の弧は指の先に近い急な所を外し、真ん中のゆるい所だけ（花綱のように見える）
-    spans = [(left_x + 20, peaks[0] - 7)] + [(x0 + 18, x1 - 26) for x0, x1 in zip(peaks[:-1], peaks[1:])]
-    for x0, x1 in spans:
-        line = edge_line(a, x0, x1, "lower", offset=1.0, smooth=0)
-        front.stroke(line, 11, PLATINUM, axis=(0.0, 1.0), outline=4.0)
-    for i, x in enumerate(peaks):
-        crystal(back, x, lower[x] - 6, 46 - i * 8, 16, math.radians(176 + i * 6))
-    # 翼の先に長い氷の槍を外へ
+    for x in peaks:
+        crystal(x, lower[x] - 6, 52 + 10 * (1 - x / w), 22, math.radians(160 + (x / w) * 16))
+    # 前の縁（上）に、前へ向く氷の結晶を3本（翼の骨に沿って並べる）
+    for f, length in ((0.34, 58), (0.52, 66), (0.70, 54)):
+        x = int(w * f)
+        crystal(x, upper[x] + 8, length, 22, math.radians(-8 + 30 * f))
+    # 翼の先（左端）に長い氷の槍を外へ
+    left_x = int(np.nonzero(a.any(axis=0))[0].min())
     ty = float(np.nonzero(a[:, left_x + 2])[0].mean())
-    crystal(back, left_x + 14, ty, 70, 26, math.radians(-98))
+    crystal(left_x + 14, ty, 70, 26, math.radians(-98))
     out = Image.new("RGBA", sprite.size, (0, 0, 0, 0))
     out.alpha_composite(back.finish())
     out.alpha_composite(sprite)
-    out.alpha_composite(front.finish())
     return out
 
 
-def report(name, body, wing, src_body, src_wing, pad_body, pad_wing):
-    """DRAGON_PART_SPRITES に貼る値。元の胴の重心・肩・翼の付け根を、余白ぶんずらして写す"""
-    return None
+SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel はここに余白を足して作る）
+    "fire": dict(cx=62.4, cy=169.4, sl=(14.2, 152), sr=(110.8, 152), wa=(319, 64.1)),
+    "ice": dict(cx=81.5, cy=175.6, sl=(21.4, 152), sr=(141.6, 152), wa=(319, 69.0)),
+}
+
+
+def report(element, body, wing, pad_b, pad_w):
+    """DRAGON_PART_SPRITES に貼る値。元の胴の重心・肩・翼の付け根を、余白ぶんずらして写す（胴の高さ 27・翼の幅 25 は絵の大きさに比例）"""
+    s = SPARKLE_SPEC[element]
+    L, T = pad_b["left"], pad_b["top"]
+    print(f"  {element}_jewel: bodyPivot {{ cx: {s['cx'] + L:.1f}, cy: {s['cy'] + T:.1f}, w: {body.width}, h: {body.height} }}"
+          f" shoulder L({s['sl'][0] + L:.1f},{s['sl'][1] + T}) R({s['sr'][0] + L:.1f},{s['sr'][1] + T})"
+          f" wingAnchor {{ x: {s['wa'][0] + pad_w['left']}, y: {s['wa'][1] + pad_w['top']:.1f} }}"
+          f" bodyDrawH: {27 * body.height / 320:.2f} wingDrawW: {25 * wing.width / 320:.2f}")
 
 
 def main():
@@ -322,8 +386,8 @@ def main():
         jb, jw = body_fn(sb), wing_fn(sw)
         jb.save(os.path.join(ASSETS, f"dragon_{element}_jewel_body.png"), optimize=True)
         jw.save(os.path.join(ASSETS, f"dragon_{element}_jewel_wing.png"), optimize=True)
-        out[element] = dict(body=jb.size, wing=jw.size, pad_b=pad_b, pad_w=pad_w, sb=sb.size, sw=sw.size)
         print(element, "body", sb.size, "->", jb.size, "wing", sw.size, "->", jw.size)
+        report(element, jb, jw, pad_b, pad_w)
 
 
 if __name__ == "__main__":
