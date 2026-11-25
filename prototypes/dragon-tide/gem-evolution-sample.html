@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>宝石の竜の進化サンプル</title>
+<style>
+  :root {
+    --ground: #2a3324;
+    --panel: #222a1d;
+    --ink: #e9ecdf;
+    --muted: #a9b19b;
+    --line: #3d4834;
+    --accent: #e0c27a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #1b2117; color: var(--ink);
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 6px; }
+  h2 { font-size: 16px; margin: 26px 0 8px; }
+  p, li { font-size: 13px; line-height: 1.65; color: var(--muted); }
+  .lead { margin: 0 0 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  .chips button { font: inherit; font-size: 13px; color: var(--ink); background: #2f3a27;
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+  .chips button[aria-pressed="true"] { background: var(--accent); color: #1b2117; border-color: var(--accent); }
+  .species { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 12px 0; }
+  .species h2 { margin: 0 0 4px; }
+  .species .about { margin: 0 0 10px; }
+  .stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .stage { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+  .stage canvas { width: 100%; aspect-ratio: 1 / 1; display: block; background: var(--ground); border-radius: 6px; }
+  .stage .name { font-size: 14px; color: var(--ink); }
+  .stage .sub { font-size: 12px; color: var(--muted); text-align: center; }
+  #status { font-size: 13px; color: var(--accent); }
+  #loader { position: fixed; left: -10000px; top: 0; width: 390px; height: 844px; border: 0; visibility: hidden; }
+  @media (max-width: 560px) { .stages { grid-template-columns: 1fr; } .stage canvas { max-width: 340px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>宝石の竜の進化サンプル（DT-609）</h1>
+  <p class="lead">火竜（ルビー）と氷竜（アクアマリン）を、進化の3段階（原石 / 1回目の進化 / 2回目の進化）で大きく並べ、ゆっくり回している。
+    絵・きらめき・竜の向きの決め方は<strong>ゲーム本体（index.html）の描く関数をそのまま呼んでいる</strong>ので、ゲームの中と同じ見た目になる
+    （きらめきの層だけ、大きく見ても粗くならないよう作り置きの解像度を上げている）。分岐の色の重ねは入れていない。</p>
+  <div class="chips" id="controls">
+    <button type="button" id="spin" aria-pressed="true">回す</button>
+    <button type="button" id="flap" aria-pressed="true">羽ばたく</button>
+    <button type="button" id="slow" aria-pressed="false">さらにゆっくり</button>
+  </div>
+  <p id="status">ゲームの絵を読み込み中…</p>
+
+  <section class="species">
+    <h2>火竜（ルビー）</h2>
+    <p class="about">2回目の進化は<strong>金</strong>の飾り。飾るのは頭と尾だけ。頭は炎の形の金の冠（頭の幅の倍近くまで広がる）、尾は先に金の刃と返し。
+      翼・胴・足は飾らず、ルビーのまま。</p>
+    <div class="stages" id="row-fire"></div>
+  </section>
+
+  <section class="species">
+    <h2>氷竜（アクアマリン）</h2>
+    <p class="about">2回目の進化は<strong>白金（プラチナ）</strong>の飾り。飾るのは頭と翼だけ。頭は氷柱を扇に並べたティアラ、
+      翼は縁に氷柱の結晶を生やし、先に長い氷の槍。尾・胴・足は飾らず、アクアマリンのまま。</p>
+    <div class="stages" id="row-ice"></div>
+  </section>
+
+  <p>見本のため、きらめきは「竜の向き」だけで決まる（ゲームでは向き＋地図の上の位置）。向きがその面の光る向きを通ったときだけ、その面が光る。
+    原石はきらめき無し。</p>
+</main>
+
+<iframe id="loader" title="ゲーム本体（絵の読み込み用・非表示）"></iframe>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------
+// ゲーム本体（index.html）を見えない iframe に読み込み、その中の描く関数
+// （renderDragonFrame・gemSparkleLayer など）を呼んで、ゲームと同じ絵ときらめきを描く。
+// ---------------------------------------------------------------
+const GAME_URL = "index.html";
+const STAGES = [
+  { tier: 0, name: "原石", sub: "進化前・きらめき無し" },
+  { tier: 1, name: "1回目の進化", sub: "全身カットの宝石・全部の面がきらめく" },
+  { tier: 2, name: "2回目の進化", sub: "飾る部位だけ金属の飾り" },
+];
+const SPECIES = [
+  { id: "fire", rowId: "row-fire" },
+  { id: "ice", rowId: "row-ice" },
+];
+const SPIN_SPEED = 0.38;          // 回る速さ（ラジアン/秒）
+const SPIN_SPEED_SLOW = 0.15;
+const FLAP_SPEED = 3.2;           // 羽ばたきの速さ（ラジアン/秒）。ゲームの群れより遅い
+const FLAP_STEPS = 16;            // ゲームと同じ羽ばたきのコマ数
+const MAX_WING_ANGLE = Math.PI * 0.65;
+const SPARKLE_LAYER_DPR = 3;      // きらめきの層の作り置きの解像度（ゲームは最大2）。大きく見ても粗くならないよう上げる
+const VIEW_ZOOM = 1.0;            // 1コマ（論理66）を枠いっぱいに。1より大きくすると回ったとき翼の先や飾りが枠で切れる
+const STATIC_FLAP_STEP = 3;       // 羽ばたかないときの翼のコマ（ほぼ水平に開いた形）
+
+const statusEl = document.getElementById("status");
+const spinBtn = document.getElementById("spin"), flapBtn = document.getElementById("flap"), slowBtn = document.getElementById("slow");
+const state = { spin: true, flap: true, slow: false };
+for (const [btn, key] of [[spinBtn, "spin"], [flapBtn, "flap"], [slowBtn, "slow"]]) {
+  btn.addEventListener("click", () => { state[key] = !state[key]; btn.setAttribute("aria-pressed", String(state[key])); });
+}
+
+const cells = [];   // { canvas, ctx, speciesId, tier, index }
+let angleOffset = 0;
+
+function buildCells() {
+  let index = 0;
+  for (const sp of SPECIES) {
+    const row = document.getElementById(sp.rowId);
+    for (const st of STAGES) {
+      const box = document.createElement("div");
+      box.className = "stage";
+      const canvas = document.createElement("canvas");
+      const name = document.createElement("div"); name.className = "name"; name.textContent = st.name;
+      const sub = document.createElement("div"); sub.className = "sub"; sub.textContent = st.sub;
+      box.append(canvas, name, sub);
+      row.append(box);
+      cells.push({ canvas, ctx: canvas.getContext("2d"), speciesId: sp.id, tier: st.tier, index: index++ });
+    }
+  }
+}
+
+async function loadGame() {
+  const iframe = document.getElementById("loader");
+  let html;
+  try {
+    const res = await fetch(GAME_URL);
+    if (!res.ok) throw new Error(String(res.status));
+    html = await res.text();
+  } catch (err) {
+    throw new Error("index.html を読めない（ファイルを直接開かず、サーバー経由かプレビューのリンクで開く）: " + err.message);
+  }
+  // きらめきの層の作り置きの解像度だけ上げる（ゲームは最大2。ここは大きく見るので上げる）。当たらなければそのまま（少し粗いだけ）
+  html = html.replace(/(function renderGemSparkleLayer\([^)]*\)\s*\{[\s\S]*?const spriteDpr = )Math\.min\(window\.devicePixelRatio \|\| 1, 2\)/,
+    "$1window.__sampleSparkleDpr || Math.min(window.devicePixelRatio || 1, 2)");
+  const base = new URL(GAME_URL, location.href).href.replace(/[^/]*$/, "");
+  html = html.replace("<head>", `<head><base href="${base}"><script>window.__sampleSparkleDpr = ${SPARKLE_LAYER_DPR};<\/script>`);
+  await new Promise((resolve) => { iframe.addEventListener("load", resolve, { once: true }); iframe.srcdoc = html; });
+  const win = iframe.contentWindow;
+  const api = win.eval("({ renderDragonFrame, gemSparkleLayer, gemSparkleHeading, gemSparkleForSpecies, dragonPartImages, DRAGON_SPRITE_LOGICAL, GAME_VERSION })");
+  return { win, api };
+}
+
+function allLooks(api) {
+  const looks = new Set();
+  for (const sp of SPECIES) for (const st of STAGES) looks.add(api.gemSparkleForSpecies(sp.id, st.tier).look);
+  return [...looks];
+}
+
+async function waitImages(api, looks) {
+  for (let i = 0; i < 400; i++) {   // 最大およそ20秒
+    const ready = looks.every((look) => {
+      const imgs = api.dragonPartImages[look];
+      return imgs && imgs.body && imgs.body.naturalWidth > 0 && imgs.wing && imgs.wing.naturalWidth > 0;
+    });
+    if (ready) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error("竜の絵が読み込めなかった");
+}
+
+function fitCanvases() {
+  const dpr = window.devicePixelRatio || 1;
+  for (const cell of cells) {
+    const size = Math.max(100, Math.round(cell.canvas.clientWidth * dpr));
+    if (cell.canvas.width !== size) { cell.canvas.width = size; cell.canvas.height = size; }
+  }
+}
+
+async function main() {
+  buildCells();
+  const { api } = await loadGame();
+  await waitImages(api, allLooks(api));
+  statusEl.textContent = "ゲーム " + api.GAME_VERSION + " の絵で表示中";
+  const logical = api.DRAGON_SPRITE_LOGICAL;
+  const frameCache = new Map();   // 絵の名前|羽ばたきのコマ|大きさ → 1コマの canvas
+  function frameFor(look, step, px) {
+    const key = look + "|" + step + "|" + px;
+    let frame = frameCache.get(key);
+    if (!frame) {
+      // ゲームの getSpeciesSprites と同じ羽ばたきの角度の決め方
+      const phase = step / FLAP_STEPS * Math.PI * 2;
+      frame = api.renderDragonFrame(look, (Math.sin(phase) * 0.5 + 0.5) * MAX_WING_ANGLE, px);
+      frameCache.set(key, frame);
+    }
+    return frame;
+  }
+  fitCanvases();
+  window.addEventListener("resize", fitCanvases);
+
+  let last = performance.now(), time = 0;
+  function tick(now) {
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    time += dt;
+    if (state.spin) angleOffset += dt * (state.slow ? SPIN_SPEED_SLOW : SPIN_SPEED);
+    const step = state.flap ? Math.floor(time * FLAP_SPEED / (Math.PI * 2) * FLAP_STEPS) % FLAP_STEPS : STATIC_FLAP_STEP;
+    for (const cell of cells) {
+      const { canvas, ctx } = cell;
+      const px = canvas.width;
+      const gem = api.gemSparkleForSpecies(cell.speciesId, cell.tier);
+      // 竜の向き：鼻先は進行方向（+x）。回すと鼻先が円を描く。3匹で向きをずらして、同じ瞬間に別の面が光るようにする
+      const angle = angleOffset - Math.PI / 2 + cell.index * 0.9;
+      ctx.clearRect(0, 0, px, px);
+      ctx.save();
+      ctx.translate(px / 2, px / 2);
+      ctx.rotate(angle);
+      ctx.scale(VIEW_ZOOM, VIEW_ZOOM);
+      ctx.drawImage(frameFor(gem.look, step, px), -px / 2, -px / 2, px, px);
+      const layer = api.gemSparkleLayer(gem, api.gemSparkleHeading(angle, 0, 0, cell.index, 1));
+      if (layer) {
+        ctx.globalAlpha = gem.gloss;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.drawImage(layer, 0, 0, layer.width, layer.height, -px / 2, -px / 2, px, px);
+      }
+      ctx.restore();
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  // 見えない側のゲームの時計を止める（絵と関数だけ使うので、ゲームの動きは要らない）
+  try { const w = document.getElementById("loader").contentWindow; w.requestAnimationFrame = () => 0; } catch (e) { /* 止められなくても見本は動く */ }
+}
+
+main().catch((err) => { statusEl.textContent = "読み込みに失敗: " + err.message; });
+</script>
+</body>
+</html>
