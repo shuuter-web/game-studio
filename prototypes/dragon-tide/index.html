@@ -1381,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.209.0";
+const GAME_VERSION = "v3.210.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -21771,11 +21771,13 @@ function updateMovers(dt) {
         m.attackTimer = 0.4;
       }
     } else if (atk.type === "broadside") {
-      // 陸上甲鉄艦: 進行方向と直交する2方向に3連砲
+      // 陸上甲鉄艦: 進行方向と直交する2方向に count 連砲
+      // v3.210.0（案帳 DT-068 ②）: 前は左右3発に決め打ちで、count: 4 の敵（ウォーロード・装甲列車）も3発だった。定義の count を使う
       const heading = Math.atan2(m.headingY, m.headingX);
+      const shots = atk.count ?? 3;
       for (const side of [Math.PI / 2, -Math.PI / 2]) {
-        for (let k = -1; k <= 1; k++) {
-          spawnFanProjectileRaw(m.wx, m.wy, heading + side + k * 0.15, atk.speed, atk.damage * ferocity, "#90b0d0", 1);
+        for (let k = 0; k < shots; k++) {
+          spawnFanProjectileRaw(m.wx, m.wy, heading + side + (k - (shots - 1) / 2) * BROADSIDE_MOVER_SPREAD, atk.speed, atk.damage * ferocity, "#90b0d0", 1);
         }
       }
     } else if (atk.type === "chain") {
@@ -31730,6 +31732,8 @@ function spawnFanProjectileRaw(fromWx, fromWy, angle, speed, damage, color, kind
   const styleIdx = styleOverride ?? eraShotStyle();
   // 変更3: 弾速倍率を適用（v0.57: 文明ごとの弾速倍率／v0.62: 1/3 の減速を重ねる）
   // ここを通るのは扇撃ち＝すべて通常弾（矢・カタパルト弾）なので一律で減速する。
+  // v3.210.0（DT-068）: 首都の重い光弾（kind=2）も扇で撃つときは弾種を保つようにしたが、速さは今までどおり（扇の通常弾と同じ減速）。
+  // 1発撃ちの spawnProjectile と同じく減速を外すと3倍速くなり、首都の難しさが大きく変わるため
   const actualSpeed = speed * PROJECTILE_SPEED_MULT * SHOT_STYLES[styleIdx].speedMult * NORMAL_SHOT_SPEED_SCALE;
   projActive[slot]     = 1;
   projWx[slot]         = fromWx;
@@ -31857,8 +31861,11 @@ function shotKnockImpulse(kind) {
   // 変更5: カタパルト弾は強く（体感できる吹き飛び）、矢は弱く（ちょっと押される程度）
   return kind === 1 ? CATAPULT_KNOCKBACK_SPEED : ARROW_KNOCKBACK_SPEED;
 }
-/** 扇撃ち（spawnFanProjectileRaw）で実際に使われる弾種。カタパルト弾以外は矢に丸められる。 */
-function fanShotKind(kind) { return kind === 1 ? 1 : 0; }
+const BROADSIDE_MOVER_SPREAD = 0.15;   // 舷側砲（動く敵）の1方向の弾どうしの角度（ラジアン）
+/** 扇撃ち（spawnFanProjectileRaw）で実際に使われる弾種。カタパルト弾・ボス重弾以外は矢に丸められる。
+ *  v3.210.0（案帳 DT-068 ①・Shooter「ゲームの方を修正で」）: 首都は7方向の扇で撃つので、前はボス重弾（2）も矢に丸められていた。
+ *  図鑑どおり「重い光弾」（強く押し戻す・光る芯の絵・飛距離 BOSS_SHOT_MAX_RANGE）で飛ぶようにした */
+function fanShotKind(kind) { return kind === 1 || kind === 2 ? kind : 0; }
 // 巻き込み（projectileAoe を持つ弾）の周囲へのダメージ＝撃った側の damage のこの割合
 const AOE_SPLASH_FACTOR = 0.6;
 
@@ -36463,8 +36470,10 @@ function updateDragonProjectiles(dt) {
         dprojHits[i]--;
         if (dprojHits[i] <= 0) dprojActive[i] = 0;
       } else {
-        hitMover(m, { shot: MISSILE_DAMAGE * effWeaponDmgMult("missile") }, dprojX[i], dprojY[i]);
-        spawnCollisionParticles(dprojX[i], dprojY[i]);
+        // v3.210.0（案帳 DT-068 ③）: 動く敵に当たったときも、建物に当たったときと同じく爆発する（前は直撃だけだった）
+        const dmg = MISSILE_DAMAGE * effWeaponDmgMult("missile");
+        hitMover(m, { shot: dmg }, dprojX[i], dprojY[i]);
+        missileExplode(dprojX[i], dprojY[i], dmg, projTargets, -1, m);
         dprojActive[i] = 0;
       }
       hitAnyMover = true;
@@ -36497,30 +36506,38 @@ function updateDragonProjectiles(dt) {
       } else {
         // ミサイル: 直撃＋爆発範囲ダメージ
         const dmg  = MISSILE_DAMAGE * effWeaponDmgMult("missile");
-        const aoeR = MISSILE_AOE * effMissileAoeMult();
         hitBuilding(sIdx, { shot: dmg }, dprojX[i], dprojY[i]);
-        // 爆心周辺の他建物に範囲ダメージ
-        buildingGridQueryRadius(dprojX[i], dprojY[i], Math.max(1, Math.ceil(aoeR / BUILDING_GRID_CELL)), _dprojNeighbourBuf);
-        for (const aIdx of _dprojNeighbourBuf) {
-          if (aIdx === sIdx) continue;
-          const a = settlements[aIdx];
-          if (!a || a.fallen) continue;
-          // v2.13.0: 爆発も「当たらない」分類には入れない（影弾の爆風は城壁を削らない）
-          if (!targetHittable(projTargets, settlementTargetClass(a))) continue;
-          const adx = a.wx - dprojX[i];
-          const ady = a.wy - dprojY[i];
-          if (adx * adx + ady * ady < (aoeR + a.radius) * (aoeR + a.radius)) {
-            hitBuilding(aIdx, { blast: dmg * MISSILE_AOE_FACTOR }, dprojX[i], dprojY[i]);
-          }
-        }
-        spawnExplosionFx(dprojX[i], dprojY[i], aoeR, { fire: 0.7 });   // v3.9.0: 影弾の爆ぜ
-        canopyApplyBlast(dprojX[i], dprojY[i], aoeR);                  // v3.21.0: 爆発は樹冠を抉る
-        hapticPulse(12);
+        missileExplode(dprojX[i], dprojY[i], dmg, projTargets, sIdx, null);
         dprojActive[i] = 0;
         break;
       }
     }
   }
+}
+
+/** 影竜のミサイルの爆発。直撃した相手（skipIdx の建物・skipMover）を除いて、爆心の周りの建物と動く敵に範囲ダメージ。
+ *  v3.210.0（案帳 DT-068 ③）: 前は建物に当たったときだけ爆発し、爆風も建物にしか入らなかった。図鑑どおり動く敵にも入れる */
+function missileExplode(x, y, dmg, targets, skipIdx, skipMover) {
+  const aoeR = MISSILE_AOE * effMissileAoeMult();
+  const blast = { blast: dmg * MISSILE_AOE_FACTOR };
+  buildingGridQueryRadius(x, y, Math.max(1, Math.ceil(aoeR / BUILDING_GRID_CELL)), _dprojNeighbourBuf);
+  for (const aIdx of _dprojNeighbourBuf) {
+    if (aIdx === skipIdx) continue;
+    const a = settlements[aIdx];
+    if (!a || a.fallen) continue;
+    // v2.13.0: 爆発も「当たらない」分類には入れない（影弾の爆風は城壁を削らない）
+    if (!targetHittable(targets, settlementTargetClass(a))) continue;
+    const adx = a.wx - x, ady = a.wy - y;
+    if (adx * adx + ady * ady < (aoeR + a.radius) * (aoeR + a.radius)) hitBuilding(aIdx, blast, x, y);
+  }
+  if (targetHittable(targets, "mover")) for (const m of moversNear(x, y, aoeR)) {
+    if (!m.alive || m === skipMover) continue;
+    const mdx = m.wx - x, mdy = m.wy - y, reach = aoeR + m.def.radius;
+    if (mdx * mdx + mdy * mdy < reach * reach) hitMover(m, blast, x, y);
+  }
+  spawnExplosionFx(x, y, aoeR, { fire: 0.7 });   // v3.9.0: 影弾の爆ぜ
+  canopyApplyBlast(x, y, aoeR);                  // v3.21.0: 爆発は樹冠を抉る
+  hapticPulse(12);
 }
 
 /** 自軍投射物の描画。カメラ変換内（ワールド座標系）で呼ぶこと。 */
