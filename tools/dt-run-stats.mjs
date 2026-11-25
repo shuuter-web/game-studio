@@ -53,7 +53,8 @@ function installRecorder() {
     stage: null,
   };
   const aliveBuildings = () => { let n = 0; for (const s of settlements) if (!s.fallen && !s.isBoss && !s._isWall) n++; return n; };
-  const flock = () => countAliveBoids() + flockOverflow;
+  // DT-622: HUD の分子と同じ数え方（上限超えの竜は戦えている分だけ）。countFlockNow の無い古い版（--file）では前の数え方
+  const flock = () => (typeof countFlockNow === "function" ? countFlockNow() : countAliveBoids() + flockOverflow);
   rec.aliveBuildings = aliveBuildings;
   rec.flock = flock;
   const stageInfo = () => ({
