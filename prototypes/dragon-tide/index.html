@@ -1381,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.199.1";
+const GAME_VERSION = "v3.200.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -18378,6 +18378,25 @@ function drawFlowerMoverCaps() {
 // 岩場は「後で撤去できると思うのでやっぱり岩場は一旦アリで」（11/20 Shooter）。外すときは BEACH_ROCKS_ON を false にする
 // （岩場の絵・岩場で籠る処理・町を岩場から離す処理がまとめて止まる。beachRockY が Infinity を返す）
 // -----------------------------------------------------------------
+// v3.200.0（案帳 DT-293 手直し・11/25 Shooter「背景がやや寂しいので、何か飾りの絵を追加して」）:
+// 浜の地面に飾りの絵（画像生成）を散らす。地面の層に1回だけ焼くので毎フレームの重さは変わらない。
+// 置く場所は格子のマスごとに位置だけから決める（乱数を引かない＝ランの乱数列も地図も変わらない）。
+// 波打ち際の近く＝海藻・貝殻・ヒトデ、砂浜の真ん中＝浜の草・流木・貝殻（ときどき椰子）、岩場の近く＝潮だまり・浜の草・椰子
+const BEACH_DECOR_CELL    = 230;         // 飾りを置く格子の1マス（px）
+const BEACH_DECOR_FILL    = 0.6;         // マスに飾りを置く割合
+const BEACH_DECOR_SHORE   = 260;         // 波打ち際からこの距離までを「波打ち際の近く」とみなす
+const BEACH_DECOR_ROCKSIDE = 320;        // 岩場の縁からこの距離までを「岩場の近く」とみなす
+const BEACH_DECOR_ALPHA   = 0.92;        // 飾りの濃さ（竜・家より目立たないよう少しだけ透かす）
+// 種類ごとの絵・大きさ（長い辺のpx）・回すか・場所ごとの出やすさ [波打ち際, 真ん中, 岩場の近く]
+const BEACH_DECOR_KINDS   = [
+  { img: "beachSeaweed",   size: 92,  turn: true,  w: [5, 0, 0] },
+  { img: "beachShells",    size: 54,  turn: true,  w: [4, 2, 1] },
+  { img: "beachStarfish",  size: 38,  turn: true,  w: [3, 1, 0] },
+  { img: "beachGrass",     size: 66,  turn: true,  w: [0, 5, 4] },
+  { img: "beachDriftwood", size: 150, turn: true,  w: [1, 2, 0] },
+  { img: "beachPalm",      size: 230, turn: true,  w: [0, 1, 3] },
+  { img: "beachTidepool",  size: 150, turn: true,  w: [0, 0, 3] },
+];
 const BEACH_SAND_BG       = "#c4ae7e";   // 明るい砂色（竜と弾が沈まないよう、白っぽくはしない）
 const BEACH_WET_SAND      = "rgba(120,100,62,0.45)";   // 波打ち際の濡れた砂
 const BEACH_WET_W         = 90;          // 濡れた砂の帯の幅
@@ -19051,6 +19070,7 @@ function drawBeachOnLayer(bctx, bounds) {
     }
     bctx.globalAlpha = 1;
   }
+  drawBeachDecorOnLayer(bctx, bounds);   // v3.200.0（DT-293 手直し）: 浜の飾り（岩場より下に敷く）
   if (BEACH_ROCKS_ON && bounds.y1 > WORLD_H - BEACH_ROCK_DEPTH - 300) {
     bctx.fillStyle = BEACH_ROCK_GROUND;
     bctx.beginPath();
@@ -19068,6 +19088,46 @@ function drawBeachOnLayer(bctx, bounds) {
       bctx.fillStyle = "rgba(255,255,255,0.12)";
       bctx.beginPath(); bctx.arc(r.x - r.r * 0.3, r.y - r.r * 0.3, r.r * 0.45, 0, Math.PI * 2); bctx.fill();
     }
+  }
+  bctx.restore();
+}
+
+/** 格子のマス (ix, iy) と番号 k から 0〜1 の値（乱数の列を引かずに、位置だけで決まる） */
+function beachDecorHash(ix, iy, k) {
+  let h = Math.imul(ix | 0, 374761393) ^ Math.imul(iy | 0, 668265263) ^ Math.imul(k | 0, 2246822519);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+/** v3.200.0（DT-293 手直し）: 浜の飾りの絵を地面の層に焼く（上の BEACH_DECOR_* の説明） */
+function drawBeachDecorOnLayer(bctx, bounds) {
+  const C = BEACH_DECOR_CELL, reach = 140;   // reach：いちばん大きい飾りの半分（マスの外へはみ出す分）
+  const ix0 = Math.floor((bounds.x0 - reach) / C), ix1 = Math.floor((bounds.x1 + reach) / C);
+  const iy0 = Math.floor((bounds.y0 - reach) / C), iy1 = Math.floor((bounds.y1 + reach) / C);
+  bctx.save();
+  bctx.globalAlpha = BEACH_DECOR_ALPHA;
+  for (let iy = iy0; iy <= iy1; iy++) for (let ix = ix0; ix <= ix1; ix++) {
+    if (beachDecorHash(ix, iy, 0) > BEACH_DECOR_FILL) continue;
+    const x = (ix + 0.15 + 0.7 * beachDecorHash(ix, iy, 1)) * C;
+    const y = (iy + 0.15 + 0.7 * beachDecorHash(ix, iy, 2)) * C;
+    if (x < 0 || x > WORLD_W) continue;
+    const fromSea = y - beachSeaY(x), toRock = beachRockY(x) - y;
+    if (fromSea < 20 || toRock < -10) continue;   // 海の中・岩場の中には置かない
+    const zone = fromSea < BEACH_DECOR_SHORE ? 0 : toRock < BEACH_DECOR_ROCKSIDE ? 2 : 1;
+    let total = 0;
+    for (const kd of BEACH_DECOR_KINDS) total += kd.w[zone];
+    let pick = beachDecorHash(ix, iy, 3) * total, kind = null;
+    for (const kd of BEACH_DECOR_KINDS) { pick -= kd.w[zone]; if (pick < 0) { kind = kd; break; } }
+    const img = kind && terrainImages[kind.img];
+    if (!img) continue;
+    const size = kind.size * (0.8 + 0.4 * beachDecorHash(ix, iy, 4));
+    if (!layerBoundsHitCircle(bounds, x, y, size)) continue;
+    const scale = size / Math.max(img.width, img.height), w = img.width * scale, h = img.height * scale;
+    bctx.save();
+    bctx.translate(x, y);
+    if (kind.turn) bctx.rotate(beachDecorHash(ix, iy, 5) * Math.PI * 2);
+    bctx.drawImage(img, -w / 2, -h / 2, w, h);
+    bctx.restore();
   }
   bctx.restore();
 }
@@ -19250,7 +19310,135 @@ function beachShellSprite(R, dead) {
  *   はさみ：ふだんは前へ構える。予告（赤い半円）の間は薙ぐ側へ腕を開いて振りかぶり、はさみを開く。薙ぐ瞬間に左右の腕が半円を掃いて閉じる
  *   目：柄の先の目が、群れのいる向きへ少し寄る
  */
+// v3.200.0（案帳 DT-293 手直し・11/25 Shooter「ボスヤドカリがやっぱり気持ち悪いので、ヤドカリらしく関節のあるパーツにして画像生成も使って」）:
+// 城ヤドカリを画像生成のパーツで描く。脚は「上の節」と「先の節（爪の先）」を膝でつないだ2節（左右3本ずつ）、
+// はさみは「腕の節」＋「手のひら（下の動かない指つき）」＋「動く指」の3つで、指の付け根を軸に開け閉めする。頭（目と触角つき）・殻も絵。
+// 絵が読めなかったときは前のベクターの描き方（drawCrabBossBodyVector）に戻る。
+// 各パーツの絵の中の関節の位置（絵の幅・高さに対する割合）。横長の絵は「左の関節 → 右の先」の向きで描いてある
+const BEACH_BOSS_PARTS = {
+  leg:    { from: [0.05, 0.62], to: [0.95, 0.5] },    // 脚の上の節（腕の節にも使う）：付け根（左）→膝（右）
+  legTip: { from: [0.04, 0.56], to: [0.98, 0.78] },   // 脚の先の節：膝（左）→爪の先（右）
+  claw:   { from: [0.05, 0.5],  hinge: [0.6, 0.3] },  // 手のひら：手首（左）。hinge＝動く指の付け根
+  finger: { from: [0.07, 0.58] },                     // 動く指：付け根（左）
+};
+const BEACH_BOSS_SHELL_W    = 2.15;   // 殻の絵の幅＝体の半径×これ
+const BEACH_BOSS_HEAD_W     = 1.3;    // 頭の絵の幅＝体の半径×これ（絵は下が前。触角の広がりまで含む）
+const BEACH_BOSS_HEAD_X     = 1.0;    // 頭の絵の上の端（体の半径×これだけ前。殻の縁の少し内から生える）
+const BEACH_BOSS_LEG_W      = [0.26, 0.21];   // 脚の上の節・先の節を描く高さ（体の半径×これ）
+const BEACH_BOSS_LEG_LEN    = [0.72, 0.7];    // 脚の上の節・先の節の長さ（体の半径×これ）
+const BEACH_BOSS_ARM_W      = 0.31;   // はさみの腕の節を描く高さ
+const BEACH_BOSS_ARM_LEN    = 0.62;   // はさみの腕の節の長さ
+const BEACH_BOSS_CLAW_LEN   = 0.95;   // 手のひら（指の先まで）の長さ
+const BEACH_BOSS_FINGER_LEN = 0.46;   // 動く指の長さ
+/** 横長のパーツの絵を、絵の中の点 from が (ax, ay) に来て、そこから角度 ang の向きへ to までが長さ len になるように描く。thick は描く高さ。flip で上下を返す */
+function drawBossPart(c, img, from, to, ax, ay, ang, len, thick, flip) {
+  const w = len / (to[0] - from[0]);
+  c.save();
+  c.translate(ax, ay); c.rotate(ang);
+  if (flip) c.scale(1, -1);
+  c.drawImage(img, -from[0] * w, -from[1] * thick, w, thick);
+  c.restore();
+}
+/** 殻の絵（倒れた後は暗くした版）。1回だけ作って使い回す */
+function beachBossShellArt(dead) {
+  const img = terrainImages.beachBossShell;
+  if (!img || !dead) return img;
+  const key = "bossShellDead";
+  let cv = beachSpriteCache.get(key);
+  if (cv) return cv;
+  cv = document.createElement("canvas");
+  cv.width = img.width; cv.height = img.height;
+  const c = cv.getContext("2d");
+  c.drawImage(img, 0, 0);
+  c.globalCompositeOperation = "source-atop";
+  c.fillStyle = "rgba(40,32,24,0.55)";
+  c.fillRect(0, 0, cv.width, cv.height);
+  beachSpriteCache.set(key, cv);
+  return cv;
+}
 function drawCrabBossBody(boss, B, R, walking, sway) {
+  const T = terrainImages, P = BEACH_BOSS_PARTS;
+  if (!T.beachBossShell || !T.beachBossLeg || !T.beachBossLegTip || !T.beachBossClaw || !T.beachBossFinger || !T.beachBossHead) {
+    drawCrabBossBodyVector(boss, B, R, walking, sway);
+    return;
+  }
+  const dead = boss.fallen;
+  ctx.save();
+  ctx.translate(boss.wx, boss.wy); ctx.rotate(B.ang + sway);
+  // --- 脚（左右3本ずつ・2節）：付け根 → 膝 → 爪の先。前の脚は前へ、後ろの脚は後ろへ開く。歩くあいだ順に踏み出す ---
+  const phase = B.walk / (BEACH_LEG_CYCLE * 2.5) * Math.PI * 2;
+  for (const side of [-1, 1]) for (let j = 0; j < 3; j++) {
+    const spread = (1 - j) * 0.55;                        // 前（j=0）は前へ、後ろ（j=2）は後ろへ
+    const ph = phase + j * 2.1 + (side > 0 ? Math.PI : 0);
+    const lift = dead ? -0.25 : walking ? Math.sin(ph) : 0;   // 踏み出し（+）と引き寄せ（-）
+    const swing = walking ? Math.cos(ph) * 0.14 : 0;
+    const hipX = (1 - j) * 0.36 * R, hipY = side * 0.5 * R;
+    const a1 = side * (Math.PI / 2 - spread * 0.8 - swing - 0.12 * lift);
+    const L1 = R * BEACH_BOSS_LEG_LEN[0] * (1 + 0.08 * lift);
+    const kx = hipX + Math.cos(a1) * L1, ky = hipY + Math.sin(a1) * L1;
+    const a2 = a1 + side * (0.75 - 0.2 * lift);           // 膝で後ろ・内へ曲がる
+    // 先の節を先に描いて、上の節を重ねる（膝の継ぎ目が上の節の丸い端で隠れる）
+    drawBossPart(ctx, T.beachBossLegTip, P.legTip.from, P.legTip.to, kx, ky, a2, R * BEACH_BOSS_LEG_LEN[1], R * BEACH_BOSS_LEG_W[1], side < 0);
+    drawBossPart(ctx, T.beachBossLeg, P.leg.from, P.leg.to, hipX, hipY, a1, L1, R * BEACH_BOSS_LEG_W[0], side < 0);
+  }
+  // --- 頭（殻の前からのぞく。目と触角つき。群れのいる向きへ少し向く） ---
+  const rel = wrapAngle(B.clawA - (B.ang + sway));
+  if (!dead) {
+    const look = Math.max(-0.35, Math.min(0.35, rel * 0.25));
+    const hw = R * BEACH_BOSS_HEAD_W, hh = hw * T.beachBossHead.height / T.beachBossHead.width;
+    ctx.save();
+    ctx.translate(R * BEACH_BOSS_HEAD_X, 0); ctx.rotate(look - Math.PI / 2);   // 絵は下が前 → 体の前（+x）へ
+    ctx.drawImage(T.beachBossHead, -hw / 2, -hh * 0.15, hw, hh);
+    ctx.restore();
+  }
+  // --- はさみ（腕の節＋手のひら＋動く指）。殻より先に描いて、腕の付け根を殻の縁で隠す ---
+  if (!dead) {
+    const aim = Math.max(-1.2, Math.min(1.2, rel));
+    let open = 0.12;
+    const armAngle = (side) => {
+      if (B.claw === "warn") {
+        const k = 1 - B.clawT / BEACH_CLAW_WARN;
+        open = 0.12 + 0.6 * k;
+        return aim + side * (0.35 + 0.75 * k);          // 薙ぐ側へ向き、腕を外へ開いて振りかぶる
+      }
+      if (B.claw === "sweep") {
+        const u = Math.min(1, 1 - B.clawT / BEACH_CLAW_SWEEP);
+        open = 0.72 * (1 - u);
+        return aim + side * (1.1 - 1.25 * u);           // 左右の腕が半円を掃いて真ん中で閉じる
+      }
+      return side * 0.42 + Math.sin(beachClock * 1.3 + side) * 0.05;   // ふだんは前へ構える（少しだけ揺らす）
+    };
+    for (const side of [-1, 1]) {
+      const a = armAngle(side);
+      const sx = 0.62 * R, sy = side * 0.42 * R, L = BEACH_BOSS_ARM_LEN * R;
+      const ex = sx + Math.cos(a) * L, ey = sy + Math.sin(a) * L;
+      drawBossPart(ctx, T.beachBossLeg, P.leg.from, P.leg.to, sx, sy, a, L, R * BEACH_BOSS_ARM_W, side > 0);
+      // 手のひら：手首から腕の向きに。動かない指は内側（体の真ん中の側）、動く指は外側
+      const img = T.beachBossClaw;
+      const clawW = R * BEACH_BOSS_CLAW_LEN / (1 - P.claw.from[0]), clawH = clawW * img.height / img.width;
+      ctx.save();
+      ctx.translate(ex, ey); ctx.rotate(a);
+      if (side > 0) ctx.scale(1, -1);                    // 下の指（絵の +y）が内側を向くように
+      // 動く指：付け根（hinge）を軸に、open だけ外へ開く。手のひらの下に敷いて、付け根を手のひらで隠す
+      const hx = (P.claw.hinge[0] - P.claw.from[0]) * clawW, hy = (P.claw.hinge[1] - P.claw.from[1]) * clawH;
+      const fImg = T.beachBossFinger;
+      const fW = R * BEACH_BOSS_FINGER_LEN / (1 - P.finger.from[0]), fH = fW * fImg.height / fImg.width;
+      ctx.save();
+      ctx.translate(hx, hy); ctx.rotate(-open);
+      ctx.drawImage(fImg, -P.finger.from[0] * fW, -P.finger.from[1] * fH, fW, fH);
+      ctx.restore();
+      ctx.drawImage(img, -P.claw.from[0] * clawW, -P.claw.from[1] * clawH, clawW, clawH);
+      ctx.restore();
+    }
+  }
+  // --- 殻（城の絵はこの上に首都として載る） ---
+  const shell = beachBossShellArt(dead);
+  const sw = R * BEACH_BOSS_SHELL_W, sh = sw * shell.height / shell.width;
+  ctx.drawImage(shell, -sw / 2, -sh / 2, sw, sh);
+  ctx.restore();
+}
+/** v3.182.0 のベクターの城ヤドカリ（パーツの絵が読めなかったときだけ使う） */
+function drawCrabBossBodyVector(boss, B, R, walking, sway) {
   const C = BEACH_CRAB_COLORS, dead = boss.fallen;
   ctx.save();
   ctx.translate(boss.wx, boss.wy); ctx.rotate(B.ang + sway);
@@ -56200,6 +56388,20 @@ const TERRAIN_IMAGE_SOURCES = {
   canopyD: "assets/terrain_canopy_d.png",   // 黄葉まじり（少なめに混ぜる）
   dwellerLantern: "assets/terrain_dweller_lantern.png",   // きのこ笠の灯り持ち
   dwellerMage:    "assets/terrain_dweller_mage.png",      // 葉の帽子の杖持ち
+  // v3.200.0（案帳 DT-293 手直し）: 宿借りの浜の飾りと、城ヤドカリのパーツ（画像生成。tools/gen_sprite_cloud.py）
+  beachShells:    "assets/beach_deco_shells.png",
+  beachStarfish:  "assets/beach_deco_starfish.png",
+  beachSeaweed:   "assets/beach_deco_seaweed.png",
+  beachGrass:     "assets/beach_deco_grass.png",
+  beachDriftwood: "assets/beach_deco_driftwood.png",
+  beachPalm:      "assets/beach_deco_palm.png",
+  beachTidepool:  "assets/beach_deco_tidepool.png",
+  beachBossShell:  "assets/beach_boss_shell.png",
+  beachBossLeg:    "assets/beach_boss_leg.png",
+  beachBossLegTip: "assets/beach_boss_legtip.png",
+  beachBossClaw:   "assets/beach_boss_claw.png",
+  beachBossFinger: "assets/beach_boss_finger.png",
+  beachBossHead:   "assets/beach_boss_head.png",
 };
 const terrainImages = {};
 
