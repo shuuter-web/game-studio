@@ -1386,7 +1386,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.193.0";
+const GAME_VERSION = "v3.194.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -33161,8 +33161,10 @@ const STRINGS = {
                  : "竜の進化",
   // DT-502: 竜の突然変異のカード本文（改行で段を分ける。カードと店の説明は white-space: pre-line）
   mutationSpecies: (name, speciesDesc) => `${name}とは：${speciesDesc}`,
-  mutationDesc: (name, needText, keepsBranch) =>
-    `群れごと${name}に変わり、攻撃と飛び方が${name}のものになる。強さは引き継いで、進化1回ぶん伸びる。` +
+  // v3.194.0（DT-618）: 「強さ」の言い方をやめ、突然変異した後の進化の共通の分（commonText）を出す
+  mutationDesc: (name, needText, keepsBranch, commonText) =>
+    `群れごと${name}に変わり、攻撃と飛び方が${name}のものになる。これまでの進化の伸びは${name}の伸び方で引き継ぎ、進化1回ぶん伸びる` +
+    (commonText ? `（突然変異した後の共通の分の合計：${commonText}）` : "") + "。" +
     (keepsBranch ? `前に選んだ${name}の進化の姿のまま\n` : `この先の進化は${name}の進化先から選ぶ\n`) +
     `条件：${needText}を連れている（突然変異しても減らない）`,
   evoRecorded: (name, reward) => `📖 進化図鑑に記録: ${name}  +${reward}🔷`,
@@ -34233,7 +34235,8 @@ for (const k in SPECIAL_DEFS) SPECIAL_KIND_BY_KEY[SPECIAL_DEFS[k].key] = Number(
 
 // v3.50.0（案帳 DT-238・Shooter指示）: 細かく刻むのをやめ、以前のように**形態ごとに Lv1〜3、Lv3 で進化**する。
 //   竜も特殊個体も、形態の Lv3 に着くと「進化（分岐）・突然変異（・合成）」が選べるようになり、進化したら次の形態を Lv1 から。
-//   能力は「強さ」＝これまでに上げた回数（runDragonLv・runSpLv）で決まり、形態が変わっても減らない。1回で実感できるくらい伸びる。
+//   能力は「強さ」＝これまでに上げた回数（runSpLv）で決まり、形態が変わっても減らない。1回で実感できるくらい伸びる。
+//   v3.194.0（DT-618）: 竜の強さ（runDragonLv）はやめた。竜の伸びは進化した回数（runDragonEvos）と選んだ分岐・型で決まる。
 const FORM_LV_MAX       = 3;          // 形態ごとのレベルの上限（ここで進化できる）
 const EVO_LV_MAX        = 10;         // 特殊個体の強さの上限（基本の形態→進化で6。突然変異・合成で先へ）
 const EVO_LV_PER_SLOPE  = 2;          // この回数で「傾き」1つぶん伸びる（1回で傾きの半分）
@@ -34242,8 +34245,13 @@ const EVO_LV_PER_SLOPE  = 2;          // この回数で「傾き」1つぶん�
 // （Lv60 で以前の Lv30 と同じ強さ）。分岐・突然変異のレベルも2倍。
 // v3.50.0: 竜の強さの上限と伸び方（1回で傾きの約0.36。基本の形態→進化→進化で強さ7、突然変異した先でも進化して15まで）
 // 1ランのレベルアップは約33回。上限が低いと突然変異した先で上げられず、後半が竜玉（経験値）ばかりになった（試算）
-const DRAGON_LV_MAX        = 15;
-const DRAGON_LV_PER_SLOPE  = 2.8;
+// v3.194.0（案帳 DT-618・Shooter指示「B」）: 竜の「強さ」（runDragonLv）の仕組みをやめ、伸びは進化そのものに付ける。
+//   進化（分岐・型）・突然変異を1回するたびに、その分岐・型の能力に加えて「その竜種の進化の共通の分」（傾き×3/2.8）が付く。
+//   突然変異した先では、それまでの進化の回数ぶんの共通の分を新しい竜種の伸び方で引き継ぐ（今までの強さと同じ数字になる）。
+//   数で数える効果（同時に焼ける相手など）は回数ぶんを足してから切り捨てる（以前の強さの計算と同じ数字にするため）。
+const DRAGON_EVO_COMMON_UNITS     = 3;     // 進化1回の共通の分（傾きの 3/2.8）。以前の「進化で強さ +3」と同じ量
+const DRAGON_EVO_COMMON_UNITS_MAX = 14;    // 共通の分の上限（進化4回＋2/3回ぶん）。以前の強さの上限 15 と同じ所で止める
+const DRAGON_EVO_UNITS_PER_SLOPE  = 2.8;   // この量で傾き1つぶん
 const EVO_TIER2_MULT    = 2;          // Lv20 の型は旧ツリーの続き（1段ぶん）の2倍
 const EVO_TIER2_SCALE   = 1.08;       // Lv20 の型を選ぶと少し大きくなる
 // 数で数える効果（切り捨てる）
@@ -34344,7 +34352,7 @@ function tier2Options(sid, t10) {
 }
 
 // ---- ランの中の進化の状態（セーブする）----
-let runDragonLv      = 1;
+let runDragonEvos    = 0;    // v3.194.0（DT-618）: このランで竜が進化・突然変異した回数（共通の分の数）
 let runSpeciesBranch = {};   // 竜種 -> { t10: "A"|"B", t20: "A1"|"A2"|... }（行き来しても覚えている）
 let runSpLv          = {};   // 特殊個体の種類 key -> レベル
 let runSpBranch      = {};   // 特殊個体の種類 key -> "A"|"B"
@@ -34356,7 +34364,7 @@ let runCrossOffered  = {};
 let runFuseOffered   = {};   // v3.10.0: 合成の画面を出したレシピ（id -> true）
 
 function initEvoForRun() {
-  runDragonLv = 1;
+  runDragonEvos = 0;
   runFormLv = 1;
   runSpFormLv = {};
   runSpeciesBranch = {};
@@ -34374,6 +34382,29 @@ function spLevel(key) { return runSpLv[key] || 1; }
 function spFormLv(key) { return runSpFormLv[key] || 1; }
 
 /** 今の竜の分岐で足される能力（Lv10 の分岐＋Lv20 の型）。 */
+/** v3.194.0（DT-618）: 進化 evos 回ぶんの共通の分（数で数える効果は合計してから切り捨てる）。 */
+function dragonEvoCommonEffects(sid, evos) {
+  const slope = SPECIES_SLOPE[sid] || {};
+  const m = Math.min(DRAGON_EVO_COMMON_UNITS_MAX, DRAGON_EVO_COMMON_UNITS * Math.max(0, evos)) / DRAGON_EVO_UNITS_PER_SLOPE;
+  const out = {};
+  for (const k in slope) {
+    const v = slope[k] * m;
+    out[k] = EVO_INTEGER_KEYS[k] ? Math.floor(v + 1e-9) : v;
+  }
+  return out;
+}
+/** v3.194.0（DT-618）: 進化をもう1回したときに付く共通の分（evos 回目→evos+1 回目。増えない項目は落とす）。 */
+function dragonEvoCommonGain(sid, evos) {
+  const a = dragonEvoCommonEffects(sid, evos), b = dragonEvoCommonEffects(sid, evos + 1);
+  const out = {};
+  for (const k in b) { const d = b[k] - (a[k] || 0); if (d > 1e-9) out[k] = d; }
+  return out;
+}
+/** v3.194.0（DT-618）: この進化で上がる分の全部（共通の分＋この分岐・型の分）。カード・店・図鑑の本文に出す。 */
+function dragonEvoTotalGain(sid, branchEff, evos) {
+  return sumEffects([dragonEvoCommonGain(sid, evos), branchEff || {}]);
+}
+
 function branchEffectsOf(sid) {
   const br = runSpeciesBranch[sid];
   if (!br || !br.t10) return null;
@@ -34397,7 +34428,7 @@ function computeEvoStacks() {
   };
   const sid = flockSpecies;
   if (SPECIES_SLOPE[sid]) {
-    add(levelEffects(SPECIES_SLOPE[sid], runDragonLv, DRAGON_LV_MAX, DRAGON_LV_PER_SLOPE), speciesKind(sid));
+    add(dragonEvoCommonEffects(sid, runDragonEvos), speciesKind(sid));   // v3.194.0（DT-618）: 進化した回数ぶんの共通の分
     add(branchEffectsOf(sid), speciesKind(sid));
   }
   for (const kind of new Set(runSpecials)) {
@@ -34452,8 +34483,8 @@ function lvText(L, max = EVO_LV_MAX) { return L >= max ? "Lv Max" : `Lv${L}`; }
     get color() { return flockEvoVisual()?.tint || sp().color; },
     get lv() { return runFormLv + 1; }, lvCount: FORM_LV_MAX,
     label: () => `${currentFormName()} Lv${runFormLv + 1}`,
-    desc: () => `竜種のレベルアップ（Lv${FORM_LV_MAX} で進化できる）／ ` +
-                (evoEffectText(levelGain(SPECIES_SLOPE[flockSpecies] || {}, runDragonLv, DRAGON_LV_MAX, DRAGON_LV_PER_SLOPE), speciesKind(flockSpecies)) || "強さは上限（進化への段だけ進む）"),
+    // v3.194.0（DT-618）: 強さの仕組みをやめたので、形態のレベルを進めるだけ（伸びは進化のときに付く）
+    desc: () => `竜種のレベルアップ（Lv${FORM_LV_MAX} で進化できる）／ 進化への段だけ進む`,
   });
   // v3.11.0: 竜の突然変異の画面の「このまま」（竜のレベルは自動で上がるので、変えない選択）
   defineEvoCard("evo.keep", {
@@ -34471,10 +34502,10 @@ function lvText(L, max = EVO_LV_MAX) { return L >= max ? "Lv Max" : `Lv${L}`; }
     for (const br of ["A", "B"]) {
       const b = SPECIES_EVO_SPEC[sid][br];
       defineEvoCard(`evo.br.${sid}.${br}`, { sid, tier: 10, opt: br, icon: "\u{1F409}", rarity: "star", tag: "branch", color: b.tint,
-        label: `${def.ja}→【${b.name}】`, desc: () => "姿が変わる ／ " + (b.note ? b.note + "、" : "") + evoEffectText(b.eff, kind) });
+        label: `${def.ja}→【${b.name}】`, desc: () => "姿が変わる ／ " + (b.note ? b.note + "、" : "") + evoEffectText(dragonEvoTotalGain(sid, b.eff, runDragonEvos), kind) });
       for (const o of tier2Options(sid, br)) {
         defineEvoCard(`evo.br.${sid}.${o.id}`, { sid, tier: 20, opt: o.id, parent: br, icon: "\u{1F409}", rarity: "star", tag: "branch",
-          color: o.tint, label: `${b.name}→【${o.name}】`, desc: () => "型が決まる ／ " + (o.note ? o.note + "、" : "") + evoEffectText(o.eff, kind) });
+          color: o.tint, label: `${b.name}→【${o.name}】`, desc: () => "型が決まる ／ " + (o.note ? o.note + "、" : "") + evoEffectText(dragonEvoTotalGain(sid, o.eff, runDragonEvos), kind) });
       }
     }
   }
@@ -34488,10 +34519,11 @@ function lvText(L, max = EVO_LV_MAX) { return L >= max ? "Lv Max" : `Lv${L}`; }
       label: () => `${currentFormName()}→【${to.ja}】`,
       // DT-502（Shooter指摘「竜種自体の説明がなく、選んだら何が起こるか分からない」「古い仕様の記載が残っている」）:
       // 変わる先の竜種の説明（SPECIES_DEFS の desc）を species に分けて目立たせ、本文は今の仕様（applyEvoNode の becomes）どおりの変化、3行目に条件。
-      // 「Lv1 から」は形態のレベルを刻んでいた頃（v3.50）の名残。今は竜のレベルを刻まず、進化1回ぶん（EVO_STRENGTH_STEP）強さが伸びる。
+      // 「Lv1 から」は形態のレベルを刻んでいた頃（v3.50）の名残。今は竜のレベルを刻まず、進化1回ぶんの共通の分が付く（DT-618）。
       // 条件の特殊個体は消費しない（applyEvoNode は群れの竜種を変えるだけ）
       species: () => STRINGS.mutationSpecies(to.ja, to.desc),
-      desc: () => STRINGS.mutationDesc(to.ja, needText, !!runSpeciesBranch[cx.to]?.t10) });
+      desc: () => STRINGS.mutationDesc(to.ja, needText, !!runSpeciesBranch[cx.to]?.t10,
+                                       evoEffectText(dragonEvoCommonEffects(cx.to, runDragonEvos + 1), speciesKind(cx.to))) });
   }
   // 特殊個体：レベル・分岐（Lv10）・種またぎ（Lv5・15・25）
   for (const key in SPECIAL_EVO_SPEC) {
@@ -34660,19 +34692,18 @@ function applyEvoNode(node, oldMaxHp) {
     doFusion(node.fuse);
     flashTint = node.color;
   } else if (node.id === "evo.dlv") {
-    runDragonLv = Math.min(DRAGON_LV_MAX, runDragonLv + 1);
     runFormLv = Math.min(FORM_LV_MAX, runFormLv + 1);
   } else if (node.tier) {
     const br = speciesBranch(node.sid);
     if (node.tier === 10) br.t10 = node.opt; else br.t20 = node.opt;
     runFormLv = 1;
-    runDragonLv = Math.min(DRAGON_LV_MAX, runDragonLv + EVO_STRENGTH_STEP);   // v3.55.0: いきなり進化（形態の Lv1〜3 ぶんをまとめて）
+    runDragonEvos++;   // v3.194.0（DT-618）: この進化の共通の分が付く
     recordEvoSeen(`d:${node.sid}.${node.opt}`, node);
     flashTint = node.color;
   } else if (node.becomes) {
     setFlockSpecies(node.becomes);
     runFormLv = 1;
-    runDragonLv = Math.min(DRAGON_LV_MAX, runDragonLv + EVO_STRENGTH_STEP);
+    runDragonEvos++;   // v3.194.0（DT-618）: 突然変異も進化1回に数える（それまでの共通の分は新しい竜種の伸び方で引き継ぐ）
     for (let i = 0; i < N; i++) if (boidFireTimer) boidFireTimer[i] = random() * currentFireInterval();
     unlockSpeciesForever(node.becomes);
     recordEvoSeen(`x:${node.becomes}`, node);
@@ -34709,7 +34740,7 @@ function applyEvoNode(node, oldMaxHp) {
     triggerFlash(hexToRgba(flashTint, 0.45), 0.35);
     hapticPulse(120);
     const c = calcFriendlyCentroid();
-    pushWorldText(c.x, c.y - 30, node.becomes ? `${SPECIES_DEFS[node.becomes].ja} ${lvText(runDragonLv)}` : STRINGS.cards[node.id].name, flashTint);
+    pushWorldText(c.x, c.y - 30, node.becomes ? SPECIES_DEFS[node.becomes].ja : STRINGS.cards[node.id].name, flashTint);
   }
   updateHUDWeapon();
 }
@@ -44100,23 +44131,25 @@ function codexEvoFullHtml() {
   const head = (text) => `<div class="evo-line" style="color:#ffd08a;margin-top:6px">${text}</div>`;
   const line = (text, pad = 8) => `<div class="evo-line" style="padding-left:${pad}px">${text}</div>`;
   let html = `<div class="tree-hint">（デバッグ表示）竜も特殊個体も形態ごとに Lv1〜${FORM_LV_MAX}。Lv${FORM_LV_MAX} で進化（分岐）・突然変異。` +
-             `強さ（上げた回数）は竜 1〜${DRAGON_LV_MAX}・特殊個体 1〜${EVO_LV_MAX}。もう一度押すと元の表示に戻る。</div><div class="cx-list">`;
+             `竜の能力は進化した回数で決まる：進化・突然変異のたびに「その竜種の共通の分＋選んだ分岐・型の分」が付く（下の数字はその合計）。` +
+             `特殊個体の強さ（上げた回数）は 1〜${EVO_LV_MAX}。もう一度押すと元の表示に戻る。</div><div class="cx-list">`;
   for (const sid of Object.keys(SPECIES_EVO_SPEC)) {
     const def = SPECIES_DEFS[sid];
     if (!def) continue;
     const kind = speciesKind(sid);
     const spec = SPECIES_EVO_SPEC[sid];
     html += `<div class="cx-row"><div class="cx-body"><div class="cx-name">${def.icon} ${def.ja}${isSpeciesUnlocked(sid) ? "" : "　🔒"}</div>`;
-    html += head("レベルごとの能力");
-    for (const L of [4, 7, 15]) html += line(`強さ${L}：${evoEffectText(levelEffects(SPECIES_SLOPE[sid], L, DRAGON_LV_MAX, DRAGON_LV_PER_SLOPE), kind)}`);
+    // v3.194.0（DT-618・Shooter指示「B」）: 「レベルごとの能力」「強さ」の段はやめ、進化ごとに上がる分の合計（共通の分＋分岐・型の分）を出す
+    const parts = (gainCommon) => `<span style="opacity:.7">（うち、どの分岐・型でも付く共通の分：${evoEffectText(gainCommon, kind) || "なし"}）</span>`;
     for (const br of ["A", "B"]) {
       const b = spec[br];
-      html += head(`${swatch(b.tint)}進化1 分岐 ${br}：${b.name}`) + line(evoEffectText(b.eff, kind));
-      for (const o of tier2Options(sid, br)) html += line(`${swatch(o.tint)}進化2 型：${o.name} ／ ${evoEffectText(o.eff, kind)}`, 16);
+      html += head(`${swatch(b.tint)}進化1 分岐 ${br}：${b.name}`) + line(evoEffectText(dragonEvoTotalGain(sid, b.eff, 0), kind)) + line(parts(dragonEvoCommonGain(sid, 0)));
+      for (const o of tier2Options(sid, br)) html += line(`${swatch(o.tint)}進化2 型：${o.name} ／ ${evoEffectText(dragonEvoTotalGain(sid, o.eff, 1), kind)}`, 16) + line(parts(dragonEvoCommonGain(sid, 1)), 24);
     }
     const cx = CROSS_EVOLUTIONS.find(c => c.to === sid);
     if (cx) html += head("この竜種への竜の突然変異") +
-      line(Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・") + ` を連れていれば、どの竜種からでも（形態の Lv${FORM_LV_MAX} で）`);
+      line(Object.keys(cx.needs).map(k => `${SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name}×${cx.needs[k]}`).join("・") + ` を連れていれば、どの竜種からでも（形態の Lv${FORM_LV_MAX} で）`) +
+      line(`突然変異も進化1回に数える。それまでの進化の共通の分は${def.ja}の伸び方で引き継ぐ（例：2回進化してから突然変異すると ${evoEffectText(dragonEvoCommonEffects(sid, 3), kind)}）`);
     html += `</div></div>`;
   }
   for (const key in SPECIAL_EVO_SPEC) {
@@ -46462,10 +46495,10 @@ let lastStageTimeMs = Infinity;
 // =====================================================================
 // ステージ中のレベルアップをやめ、貯めた経験値を通貨にして、ここで加入と進化を買う（balatro の店の感じ）。
 // ・特殊個体の加入：解放済みの特殊個体から3体を抽選して並べる。引き直しは通貨を払う（引くたびに高くなる）
-// ・竜の進化（分岐・型）・突然変異：レベルを刻まず、いきなり進化する（強さ +EVO_STRENGTH_STEP）
+// ・竜の進化（分岐・型）・突然変異：レベルを刻まず、いきなり進化する（その竜種の進化の共通の分＋分岐・型の分。DT-618）
 // ・特殊個体の進化（分岐）・突然変異・合成：同じくいきなり
 // 買うとその場で効き、途中セーブにも残る。「次へ」で地域3択へ進む。
-const EVO_STRENGTH_STEP = 3;   // 進化1回で上がる強さ（以前の形態 Lv1〜3 とその進化ぶん）
+const EVO_STRENGTH_STEP = 3;   // 特殊個体の進化1回で上がる強さ（以前の形態 Lv1〜3 とその進化ぶん）。竜は DRAGON_EVO_COMMON_UNITS（DT-618）
 const SHOP_COST = {
   join: 12000, joinPerOwned: 6000,     // 加入：連れている特殊個体1体ごとに高くなる
   reroll: 2000, rerollStep: 2000,      // 引き直し：この店で引くたびに高くなる
@@ -47229,7 +47262,7 @@ function snapshotRunSave() {
     runBanished:   [...runBanished],
     // v3.5.0: 進化の形態
     // v3.6.0: 竜のレベル・特殊個体のレベル・分岐
-    runDragonLv, runSpeciesBranch: JSON.parse(JSON.stringify(runSpeciesBranch)), runCrossOffered: Object.assign({}, runCrossOffered), runFuseOffered: Object.assign({}, runFuseOffered),
+    runDragonEvos, runSpeciesBranch: JSON.parse(JSON.stringify(runSpeciesBranch)), runCrossOffered: Object.assign({}, runCrossOffered), runFuseOffered: Object.assign({}, runFuseOffered),
     runSpLv: Object.assign({}, runSpLv), runSpBranch: Object.assign({}, runSpBranch),
     runFormLv, runSpFormLv: Object.assign({}, runSpFormLv),   // v3.50.0
     // v3.11.7: 途中セーブで抜けていたもの（Shooter「竜の数がセーブされていない」）
@@ -47282,7 +47315,9 @@ function resumeRun() {
   for (const k of Object.keys(upgradeCounts)) delete upgradeCounts[k];
   if (save.upgradeCounts) Object.assign(upgradeCounts, save.upgradeCounts);
   // v3.5.0: 進化の形態（無い／壊れていれば今の竜種の元の形態から）
-  runDragonLv      = Math.max(1, Math.min(DRAGON_LV_MAX, save.runDragonLv | 0 || 1));
+  // v3.194.0（DT-618）: 旧セーブの強さ（1＋進化ごとに3）は進化の回数に直す
+  runDragonEvos    = Number.isFinite(save.runDragonEvos) ? Math.max(0, save.runDragonEvos | 0)
+                   : Math.max(0, Math.round(((save.runDragonLv | 0 || 1) - 1) / DRAGON_EVO_COMMON_UNITS));
   runSpeciesBranch = (save.runSpeciesBranch && typeof save.runSpeciesBranch === "object") ? save.runSpeciesBranch : {};
   runSpLv          = (save.runSpLv && typeof save.runSpLv === "object") ? save.runSpLv : {};
   // v3.50.0: 強さの上限が変わった（竜 60→15・特殊個体 30→10）。旧セーブは上限で切り、形態のレベルは Lv1 から
