@@ -1386,7 +1386,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.194.0";
+const GAME_VERSION = "v3.195.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -54260,7 +54260,7 @@ function drawOverflowDragons(sprites, evoScale, spritePx, halfLogical, tailBody,
     ctx.translate(wx, wy);
     ctx.rotate(angle);
     ctx.scale(sc, sc);
-    ctx.drawImage(shaded[frameIdx], 0, 0, spritePx, spritePx, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
+    ctx.drawImage(shaded[frameIdx], 0, 0, shaded[frameIdx].width, shaded[frameIdx].height, -halfLogical, -halfLogical, DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL);
     // v3.188.0（DT-609）: 宝石のきらめき。付いていく竜と向きは同じだが、組の番号 k と位置で光る面がずれるので一斉には光らない。
     // 絵に重ねた暗さのぶんきらめきも弱める（遠くの竜が本物より明るく光らないように）
     if (sparkle) {
@@ -54314,14 +54314,16 @@ function drawBoids() {
   // v3.2.0: 進化の分岐・進化形の色と大きさ
   const evoVis        = flockEvoVisual();
   const evoScale      = evoVis ? evoVis.scale : 1;
-  const sprites       = evoVis ? tintedSprites(flockSpecies, getSpeciesSprites(flockSpecies), evoVis.tint)
-                               : getSpeciesSprites(flockSpecies);
+  // v3.195.0（DT-620）: 鯨竜のように大きく描く竜種は細かく焼いた絵を使う（巨竜化・一番槍は1匹だけなのでふつうの絵のまま）
+  const flockRes      = spriteResForScale((sp().bodyScale || 1) * evoScale);
+  const sprites       = evoVis ? tintedSprites(flockSpecies + "#" + flockRes, getSpeciesSprites(flockSpecies, undefined, flockRes), evoVis.tint)
+                               : getSpeciesSprites(flockSpecies, undefined, flockRes);
   // v0.47.1: 跳躍ポーズの列（持っている竜種＝蛙竜だけ）。滞空中の個体はこちらを使う。
   const partsKeyNow   = dragonPartsKey(element);
   const hasAirPose    = !!(partsKeyNow && DRAGON_PART_SPRITES[partsKeyNow].bodyAir);
   const spritesAir    = !hasAirPose ? null
-                      : evoVis ? tintedSprites(flockSpecies + ":air", getSpeciesSprites(flockSpecies, "air"), evoVis.tint)
-                      : getSpeciesSprites(flockSpecies, "air");
+                      : evoVis ? tintedSprites(flockSpecies + ":air#" + flockRes, getSpeciesSprites(flockSpecies, "air", flockRes), evoVis.tint)
+                      : getSpeciesSprites(flockSpecies, "air", flockRes);
   const paletteFlock  = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
   // v3.188.0（DT-609）: 宝石のきらめき（GEM_SPARKLE_SPECIES にある竜種だけ。進化の段階で量が変わる）
   const sparkleFlock  = gemSparkleForSpecies(flockSpecies);
@@ -54397,9 +54399,11 @@ function drawBoids() {
     // 足元リングだけだと群れの中で見失うので、本体ごと差し替える。
     const spKind    = boidSpecial[i];
     const spVis     = spKind !== SPECIAL_NONE ? specialEvoVisual(spKind) : null;
+    // v3.195.0（DT-620）: 止まらぬ鉄塊は育つほど大きく描くので、その大きさに合わせて細かく焼いた絵を使う
+    const spRes     = spKind === SPECIAL_HEAVY ? spriteResForScale(effHeavyScale()) : 1;
     const spSprites = spKind === SPECIAL_NONE ? null
-                    : spVis ? tintedSprites("sp:" + spKind, getSpecialSprites(spKind), spVis.tint)
-                    : getSpecialSprites(spKind);
+                    : spVis ? tintedSprites("sp:" + spKind + "#" + spRes, getSpecialSprites(spKind, spRes), spVis.tint)
+                    : getSpecialSprites(spKind, spRes);
     const sprite    = spSprites ? spSprites[frameIdx]
                     : (spritesAir && boidHopAir[i] > 0.15) ? spritesAir[frameIdx] : sprites[frameIdx];
     // 尾は毎フレーム描くので、胴体を差し替えたら尾の色も合わせる
@@ -54505,7 +54509,7 @@ function drawBoids() {
     // スプライト中心が竜の重心に来るよう -halfLogical オフセット
     ctx.drawImage(
       sprite,
-      0, 0, spritePx, spritePx,             // ソース（物理px）
+      0, 0, sprite.width, sprite.height,    // ソース（物理px。DT-620: 大きく描く竜は細かく焼いてあるので絵の大きさそのまま）
       -halfLogical, -halfLogical,             // デスト位置（論理px）
       DRAGON_SPRITE_LOGICAL, DRAGON_SPRITE_LOGICAL, // デストサイズ（論理px）
     );
@@ -57529,9 +57533,9 @@ function drawWing(c, bx, _by, wingTipY, palette) {
 }
 
 /** 1属性ぶんの羽ばたき全コマをプリレンダして返す。 */
-function buildElementSprites(element, variant) {
+function buildElementSprites(element, variant, res = 1) {
   const spriteDpr = Math.min(window.devicePixelRatio || 1, 2);
-  const spritePx  = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
+  const spritePx  = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr * res);   // v3.195.0（DT-620）: 大きく描く竜は細かく焼く
   const frames    = [];
   for (let f = 0; f < DRAGON_FLAP_FRAMES; f++) {
     // 羽ばたきの位相: 0〜2π を FLAP_FRAMES 分割
@@ -57559,16 +57563,29 @@ const spriteCache = new Map();      // speciesId -> フレーム配列
 // 竜種2列（ふだん・跳躍）＋特殊個体の全種類＋竜種が変わった直後の前の列、で足りる数にしてある
 const SPRITE_CACHE_MAX = 28;
 
+// v3.195.0（案帳 DT-620・Shooter「止まらぬ鉄塊がボケて表示される。縮小描画したものを拡大していませんか」）:
+// 絵は 66px（×端末の画素比）で1回焼いて、それを体格の倍率で引き伸ばして描いている。止まらぬ鉄塊は ×1.5〜×3.5、鯨竜は ×2.2 なので、
+// 焼いた絵を2〜4倍に引き伸ばしてぼけていた。ふつうより大きく描く特殊個体・竜種だけ、描く大きさに合わせて細かく焼く（res 倍）。
+// 0.5刻みにして、育つたびに焼き直さないようにする。上限は 3（1種16コマで約10MB。4 だと約18MB になる）
+const SPRITE_RES_STEP = 0.5;
+const SPRITE_RES_MAX  = 3;
+/** 体格の倍率 scale で描く絵を、何倍の細かさで焼くか（1＝ふつう）。カメラが一番寄ったとき（CAM_SCALE_MIN_COUNT）でもぼけない細かさ */
+function spriteResForScale(scale) {
+  if (scale <= 1) return 1;   // ふつうの大きさの竜は今までどおり（群れ全員の絵を細かくするとメモリが倍以上になる）
+  const need = scale * CAM_SCALE_MIN_COUNT;
+  return Math.min(SPRITE_RES_MAX, Math.ceil(need / SPRITE_RES_STEP) * SPRITE_RES_STEP);
+}
+
 /**
  * 竜種のスプライト列を返す。
  * v0.47.1: variant="air" で「跳躍ポーズ」の列を別に持てる（蛙竜の脚の動き）。
  * キャッシュキーを分けるだけなので、変種を持たない竜種では従来どおり1列しか作られない。
  */
-function getSpeciesSprites(speciesId, variant) {
+function getSpeciesSprites(speciesId, variant, res = 1) {
   // v3.188.0（DT-609）: 宝石の竜は進化の段階で絵が変わる（原石→宝石→全身カットの宝石）。段階ごとに別の列として持つ
   const gemSparkle = gemSparkleForSpecies(speciesId);
   const gemLook = gemSparkle ? gemSparkle.look : null;
-  const cacheKey = (variant ? speciesId + ":" + variant : speciesId) + (gemLook ? "@" + gemLook : "");
+  const cacheKey = (variant ? speciesId + ":" + variant : speciesId) + (gemLook ? "@" + gemLook : "") + (res !== 1 ? "#" + res : "");
   let frames = spriteCache.get(cacheKey);
   if (frames) {
     // 参照されたら最新に回す（Map は挿入順を保つので削除→再挿入でLRUになる）
@@ -57577,7 +57594,7 @@ function getSpeciesSprites(speciesId, variant) {
     return frames;
   }
   const def = SPECIES_DEFS[speciesId] || SPECIES_DEFS.fire;
-  frames = buildElementSprites(gemLook || def.element, variant);
+  frames = buildElementSprites(gemLook || def.element, variant, res);
   frames.gemLook = gemLook;   // 分岐の色を重ねる濃さを絵で変える（tintedSprites）
   // v3.8.0: 仮の絵（別の竜種の絵を借りている）は色を寄せて見分けられるようにする
   if (def.spriteTint) frames = tintedSprites("base:" + cacheKey, frames, def.spriteTint);
@@ -57593,19 +57610,19 @@ function getSpeciesSprites(speciesId, variant) {
  * 竜種と同じ spriteCache に「sp:<key>」で相乗りする（LRU も共通）。
  * SPECIAL_DEFS[].key がそのまま DRAGON_PART_SPRITES のキーになっている。
  */
-function getSpecialSprites(kind) {
+function getSpecialSprites(kind, res = 1) {
   const def = SPECIAL_DEFS[kind];
   if (!def) return null;
   const gemSparkle = gemSparkleForSpecial(def.key);   // v3.188.0（DT-609）: 極光は進化すると全身カットの宝石の絵
   const gemLook = gemSparkle ? gemSparkle.look : null;
-  const cacheKey = "sp:" + def.key + (gemLook ? "@" + gemLook : "");
+  const cacheKey = "sp:" + def.key + (gemLook ? "@" + gemLook : "") + (res !== 1 ? "#" + res : "");
   let frames = spriteCache.get(cacheKey);
   if (frames) {
     spriteCache.delete(cacheKey);
     spriteCache.set(cacheKey, frames);
     return frames;
   }
-  frames = buildElementSprites(gemLook || def.key);
+  frames = buildElementSprites(gemLook || def.key, undefined, res);
   frames.gemLook = gemLook;
   if (def.spriteTint) frames = tintedSprites("base:" + cacheKey, frames, def.spriteTint);   // v3.8.0: 仮の絵
   spriteCache.set(cacheKey, frames);
