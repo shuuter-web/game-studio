@@ -1381,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.205.0";
+const GAME_VERSION = "v3.206.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -34883,6 +34883,7 @@ function applyEvoNode(node, oldMaxHp) {
     runFormLv = 1;
     recordEvoSeen(`d:${node.sid}.${node.opt}`, node);
     flashTint = node.color;
+    soundMelodyEvent("evolve");   // DT-624 手直し: 10・20の大きな進化で竜の主題
   } else if (node.special !== undefined && node.id.startsWith("evo.slv.")) {
     runSpLv[node.key] = Math.min(EVO_LV_MAX, spLevel(node.key) + 1);
     runSpFormLv[node.key] = Math.min(FORM_LV_MAX, spFormLv(node.key) + 1);
@@ -42632,6 +42633,8 @@ const soundRun = {              // 続けて鳴らす効果音の今の位置（
   drawOn: false, drawIdx: 0, drawDist: 0, drawAt: -9, drawTop: 0,
   breathRate: 0, breathHits: 0,
   duckUntilStep: -1,
+  melodyFrom: -1, melodyUntil: -1,   // DT-624 手直し: 角笛の主題を吹く16分音符の範囲（いつもは吹かない）
+  playSec: 0, melodyLastSec: 0,      // プレイ中の時間（ステージの頭から）と、最後に吹いた時刻（思い出したように吹くため）
 };
 
 function soundOptions() { return (profile && profile.options) || {}; }
@@ -42843,9 +42846,11 @@ function soundSchedule() {
   soundRun.breathRate += (soundRun.breathHits * (1000 / SOUND_SCHEDULE_MS) - soundRun.breathRate) * 0.08;
   soundRun.breathHits = 0;
   if (!soundOn()) return;
+  if (level === 1) soundMelodyRemember(SOUND_SCHEDULE_MS / 1000);
   if (soundSongStart === 0 || soundStepTime(soundNextStep) < now - 0.25) {   // 初めて・長く止まっていた後は、少し先の小節の頭から始め直す
     soundSongStart = now + 0.05;
     soundNextStep = 0;
+    soundRun.melodyFrom = soundRun.melodyUntil = -1;   // 数え直すので、予約していた主題の範囲は捨てる
   }
   while (soundStepTime(soundNextStep) < now + SOUND_LOOKAHEAD) {
     soundPlayStep(soundNextStep, soundStepTime(soundNextStep));
@@ -42857,7 +42862,6 @@ function soundPlayStep(step, t) {
   const m = soundMusic, spb = m.stepsPerBar, bars = soundBarCount();
   const bus = soundNodes.bgmBus;
   const barAbs = Math.floor(step / spb), bar = barAbs % bars, s = step % spb;
-  const loop = Math.floor(barAbs / bars);
   const chord = m.chords[bar];
   const stepSec = soundStepSec();
   const tier = (typeof powerTier === "number" ? powerTier : 0);
@@ -42880,9 +42884,9 @@ function soundPlayStep(step, t) {
       soundPlay(bus, tr.inst, pitch, t, tr.gain);
     }
   }
-  // 竜の主題（角笛）
+  // 竜の主題（角笛）。DT-624 手直し: いつもは吹かず、呼ばれたフレーズの間だけ吹く
   const mel = m.melody;
-  if (!ducked && !mel.rest.includes(loop % mel.cycle)) {
+  if (!ducked && step >= soundRun.melodyFrom && step < soundRun.melodyUntil) {
     for (const [at, midi, len] of mel.bars[bar]) if (at === s) soundPlay(bus, mel.inst, midi, t, mel.gain, { attack: 0.02, len: len * stepSec * 0.92, release: 0.12 });
   }
   // 息：竜のブレスが建物に当たっている量に合わせて、シェイカーを刻む（1匹ずつは鳴らさない）
@@ -42891,6 +42895,45 @@ function soundPlayStep(step, t) {
     const amount = Math.min(1, Math.sqrt(soundRun.breathRate / br.fullRate));
     sfxPlay("breath", br.inst, m.instruments[br.inst].base, t, br.gain * amount * (s % 4 === 0 ? 1 : 0.6));
   }
+}
+
+// --- 竜の主題を呼ぶ（DT-624 手直し） ---
+// 主旋律がずっと鳴るとほかの音（拍に乗る効果音）の邪魔になるので、いつもは吹かない。
+// 出来事（警戒度アップ・大きな進化・首都の陥落）のときと、長く吹いていないときだけ、フレーズの区切りから吹く。
+// フレーズの区切りを待つのは、節が和音の進みに合わせて書いてあり、途中から吹くと和音とずれるため。
+/** 竜の主題を phrases フレーズぶん吹く（すでに吹いている間に呼ばれたら、そのぶん延ばす） */
+function soundCallMelody(phrases) {
+  if (!soundCtx || !soundLive() || !(phrases > 0)) return;
+  const mel = soundMusic.melody;
+  const phraseSteps = soundMusic.stepsPerBar * mel.phraseBars;
+  const nowStep = soundStepAt(soundCtx.currentTime + SOUND_GRID_SAFETY);
+  if (nowStep < soundRun.melodyUntil) {   // 吹いている途中：今のフレーズの後ろに足す
+    soundRun.melodyUntil += phrases * phraseSteps;
+  } else {
+    const from = Math.ceil(Math.max(nowStep, soundRun.duckUntilStep) / phraseSteps) * phraseSteps;   // 警戒度の鐘で伴奏を引いている間は待つ
+    soundRun.melodyFrom = from;
+    soundRun.melodyUntil = from + phrases * phraseSteps;
+  }
+  soundRun.melodyLastSec = soundRun.playSec;
+}
+/** 出来事で呼ぶ（music.json の melody.calls に書いた数のフレーズ） */
+function soundMelodyEvent(kind) {
+  if (!soundMusic) return;
+  soundCallMelody(soundMusic.melody.calls[kind] || 0);
+}
+/** プレイ中の時間を進め、長く吹いていなければ1フレーズだけ思い出したように吹く */
+function soundMelodyRemember(dt) {
+  const mel = soundMusic.melody;
+  soundRun.playSec += dt;
+  if (soundRun.playSec < mel.quietStartSec) return;
+  if (soundRun.playSec - soundRun.melodyLastSec < mel.rememberSec) return;
+  soundCallMelody(1);
+}
+/** ステージの頭：静かな時間から始め直し、吹きかけの主題も止める */
+function soundStageStart() {
+  soundRun.playSec = 0;
+  soundRun.melodyLastSec = 0;
+  soundRun.melodyFrom = soundRun.melodyUntil = -1;
 }
 
 // --- 効果音 ---
@@ -42925,6 +42968,7 @@ function sfxTownFall(capital) {
     sfxPlay("fall", "crash", 60, t, f.crash);
     chord.tones.forEach((n, k) => sfxPlay("fall", "horn", n, t + k * 0.03, f.horn, { attack: 0.03, len: 1.6, release: 0.5 }));
     chord.tones.forEach((n) => sfxPlay("fall", "pad", n - 12, t, f.pad, { attack: 0.05, len: 2.2, release: 0.8 }));
+    soundMelodyEvent("capitalFall");   // DT-624 手直し
   } else {
     chord.tones.forEach((n, k) => sfxPlay("fall", "harp", n + 12, t + k * 0.03, f.harp));
     sfxPlay("fall", "tom", chord.root + 12, t, f.tom);
@@ -42959,6 +43003,7 @@ function sfxAlert() {
   sfxPlay("alert", a.inst, a.midi, t, a.gain);
   sfxPlay("alert", a.inst, a.midi + 12, t, a.gain * 0.35);
   soundRun.duckUntilStep = step + soundMusic.stepsPerBar * a.duckBars;
+  soundMelodyEvent("alert");   // DT-624 手直し: 引いた1小節のあと、次のフレーズの区切りから竜の主題
 }
 /** レベルアップ・アーティファクトの三択：竜の主題の切れ端をオルゴールで */
 function sfxChime() {
@@ -46748,6 +46793,7 @@ function dismissRegionPick() {
  * デバッグの「地域・時代を選んで始める」は前のとおり時代で作る（ベンチの数字が版をまたいで比べられるように）
  */
 function startStage(shape, seedIndex = runStageNumber - 1) {
+  soundStageStart();   // DT-624 手直し: ステージの始めは竜の主題を吹かない
   clearStageCards(true);   // v3.65.0（DT-497）: 強化カードは永続（ステージの宝・警戒度の数だけ戻す）
   runShape      = clampShape(shape);
   runEra        = clampEra(runStageIndex);
