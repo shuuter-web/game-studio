@@ -4,10 +4,11 @@
 
 前の版（v3.191.0）は画像生成で「全身の金の縁取り＋細かい飾り」を描いたので、全体を縁取っただけに見えた。
 こちらは手で形を決めて飾る部位だけを太く描き、**元の輪郭からはみ出させる**（画像の余白を足して広げる）。
-竜種ごとに「突き出る飾り2つ」＋「細い縁取り（v3.191.0 のもの）を一部の部位だけ」（v3.199.0・DT-609 11/25 Shooter）:
-  火竜（ルビー）… 金の尾の刃と返し・翼の先の後ろへ反る金の炎の刃3枚・額飾り。縁取りは翼の外まわりと腰から尾の先まで
-  氷竜（アクアマリン）… 翼の白金の氷の結晶・氷柱・槍（v3.196.0 のまま）・尾の先の氷の結晶の房・首輪と雫。縁取り（白金）は頭から腰まで
-  （v3.196.0 の炎の冠・氷柱のティアラは顔の前へ突き出て異様に見えたのでやめた。頭から前へ突き出る飾りは付けない）
+竜種ごとの突き出る飾り（v3.203.0・DT-609 11/25 Shooter「縁取りはイマイチなのでやめる」「首輪やハチマキのような飾りはペットみたいなのでやめる」
+「顔の前の飾りは変だったが、後頭部に付いていればたぶん問題ない」）:
+  火竜（ルビー）… 後頭部から後ろ・外へなびく金の炎のたてがみ・翼の先の後ろへ反る金の炎の刃3枚・金の尾の刃と返し
+  氷竜（アクアマリン）… 後頭部から後ろ・外へ広がる白金の氷柱の冠・翼の白金の氷の結晶・氷柱・槍（v3.196.0 のまま）・尾の先の氷の結晶の房
+  細い縁取り（rim）・額飾り・首輪と雫・尾の根元の輪は付けない（rim() は使わないが、縁取りの作り方の記録として残す）
 乱数は使わない（毎回同じ絵になる）。絵の作り置き（向き×羽ばたき）は今までどおりゲーム側で1回だけ。
 """
 import math
@@ -220,8 +221,8 @@ def rim(canvas, sprite_alpha, pal, keep, width=5.0, axis=(0.0, 1.0)):
 #   突き出る飾り＝尾の金の刃（と返し）・翼の先の金の炎の刃（外へ）。頭は目の後ろの細い額飾り（顔の前へは出さない）。
 #   縁取り（v3.191.0 の細い金の縁）を戻すのは、翼の外まわり（付け根を除く）と、腰から尾の先まで。頭・首・胴・足には付けない。
 #   v3.198.0 の「翼の前の縁の外側半分の太い金の帯と鋲」は、細い縁取りに置き換えた。
-RIM = 8                         # 縁取りがはみ出す分の余白
-FIRE_PAD = dict(left=RIM, top=RIM, right=RIM, bottom=70)
+RIM = 8                         # 上の余白（v3.199.0 の縁取りの名残。値を変えると胴の重心の値も変わるのでそのまま）
+FIRE_PAD = dict(left=24, top=RIM, right=24, bottom=70)   # 左右は炎のたてがみがはみ出す分
 FIRE_WING_PAD = dict(left=110, top=RIM, right=0, bottom=40)
 
 
@@ -236,12 +237,10 @@ def stack(back, sprite, front):
 def fire_body(src):
     p = FIRE_PAD
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
-    back, front = Canvas(*sprite.size), Canvas(*sprite.size)
+    back = Canvas(*sprite.size)
     ox, oy = p["left"], p["top"]
     cx = ox + 63.0
-    # 縁取り：腰（後ろ足の付け根の下）から尾の先まで
-    rim(back, body_alpha(sprite), GOLD, lambda xs, ys: ys > oy + 236)
-    # 尾の刃（先は元の尾の先 y≈318 の外へ）。胴の下に敷いて、はみ出た所だけが見える。根元に金の輪
+    # 尾の刃（先は元の尾の先 y≈318 の外へ）。胴の下に敷いて、はみ出た所だけが見える
     ty = oy + 290
     blade = [(cx, ty + 100), (cx + 12, ty + 76), (cx + 22, ty + 44), (cx + 18, ty + 18), (cx + 8, ty + 8),
              (cx - 8, ty + 8), (cx - 18, ty + 18), (cx - 22, ty + 44), (cx - 12, ty + 76)]
@@ -251,13 +250,13 @@ def fire_body(src):
     for s in (-1, 1):
         barb = [(cx + s * 6, ty + 28), (cx + s * 26, ty + 14), (cx + s * 44, ty + 40), (cx + s * 20, ty + 64)]
         back.shape([barb], GOLD, axis=(0.3, 1.0))
-    front.shape([band(cx, ty + 10, 14, 13, curve=0)], GOLD, axis=(0.0, 1.0))
-    # 額飾り：目の後ろに金の細い帯とルビー。頭の輪郭から左右へ少しだけはみ出し、前（顔の先）へは何も出さない
-    hy = oy + 44
-    front.shape([band(cx, hy + 10, 31, 10, curve=6)], GOLD, axis=(0.0, 1.0))
-    gem = [(cx, hy + 1), (cx + 8, hy + 10), (cx, hy + 19), (cx - 8, hy + 10)]
-    front.shape([gem], dict(light=(255, 190, 190), base=(214, 22, 44), dark=(110, 4, 20), line=GOLD["line"]), outline=3.0)
-    return stack(back, sprite, front)
+    # 炎のたてがみ（v3.196.0 の炎の冠を後頭部へ移した）：頭のいちばん幅のある所（y≈56）の左右から、後ろ・外へなびく炎の舌を3枚ずつ。
+    # 角度は 0＝顔の向き（上）なので、90°より大きい＝後ろ向き。胴の下に敷くので、根元は頭に隠れ、はみ出た先だけが見える
+    hy = oy + 56
+    for ang, length, width, root in ((104, 52, 22, 20), (128, 66, 24, 17), (150, 80, 24, 13)):
+        for side in (-1, 1):
+            back.shape([flame(cx + side * root, hy, length, width, math.radians(side * ang), lean=0.45 * side)], GOLD, axis=(0.0, -1.0))
+    return stack(back, sprite, Canvas(*sprite.size))
 
 
 def fire_wing(src):
@@ -265,10 +264,7 @@ def fire_wing(src):
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     a = body_alpha(sprite)
     back = Canvas(*sprite.size)
-    w = sprite.size[0]
     left_x = int(np.nonzero(a.any(axis=0))[0].min())
-    # 縁取り：翼の外まわり。付け根（右の端・胴に重なる所）の 12% は付けない（胴の上に金の線が渡らないように）
-    rim(back, a, GOLD, lambda xs, ys: xs < w - (w - p["left"]) * 0.12)
     # 翼の先の金の炎の刃：先から外（左）へ3枚、炎のように後ろへ反って扇に突き出る。翼の下に敷く
     ty = float(np.nonzero(a[:, left_x + 2])[0].mean())
     for ang, length, width, bend in ((-62, 66, 20, -0.5), (-86, 108, 26, -0.55), (-110, 74, 20, -0.5)):
@@ -286,37 +282,38 @@ def fire_wing(src):
 #   v3.198.0 で前の縁の結晶もやめたのは「顔の前に出るトゲトゲ」を「前へ突き出るもの全部」と広く読み違えたため（ダメと言われたのは頭のティアラだけ）。
 #   突き出る飾りの2つ目は、頭の代わりに尾の先の氷の結晶の房（後ろへ3本）。頭は飾らず、首の付け根の白金の首輪とアクアマリンの雫は残す。
 #   縁取り（白金）を戻すのは、頭から腰まで（胴の外まわり）。翼・尾には付けない（翼は結晶、尾は房で飾るので）。
-ICE_PAD = dict(left=RIM, top=RIM, right=RIM, bottom=56)
+ICE_PAD = dict(left=24, top=RIM, right=24, bottom=56)    # 左右は氷柱の冠がはみ出す分
 ICE_WING_PAD = dict(left=48, top=46, right=0, bottom=50)
 
 
 def ice_body(src):
     p = ICE_PAD
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
-    back, front = Canvas(*sprite.size), Canvas(*sprite.size)
+    back = Canvas(*sprite.size)
     ox, oy = p["left"], p["top"]
     cx = ox + 82.0
     a = body_alpha(sprite)
-    # 縁取り：頭から腰まで（後ろ足の付け根の下で切る）
-    rim(back, a, PLATINUM, lambda xs, ys: ys < oy + 250)
-    # 尾の先の氷の結晶の房（後ろへ、真ん中が長い3本）。尾の下に敷く
-    tail_y = float(np.nonzero(a.any(axis=1))[0].max())
-    tail_x = float(np.nonzero(a[int(tail_y) - 6])[0].mean())
-    for ang, length, width in ((180, 64, 20), (152, 44, 15), (208, 44, 15)):
-        r = math.radians(ang)
-        x, y = tail_x, tail_y - 16
+
+    def crystal(x, y, length, width, ang_deg):
+        r = math.radians(ang_deg)
         poly = spike(x, y, length, width, r, base_w=width)
         dx, dy = math.sin(r), -math.cos(r)
         nx, ny = -dy, dx
         half = [(x, y), (x + dx * length, y + dy * length), (x + nx * width * 0.5 + dx * length * 0.12, y + ny * width * 0.5 + dy * length * 0.12)]
         back.shape([poly], PLATINUM, axis=(0.6, 1.0), facet=half)
-    ny_ = oy + 124
-    # 首輪：いちばん細い首（幅 ±34）より少し広い帯。胴の上に重ねる
-    front.shape([band(cx, ny_, 40, 13, curve=10)], PLATINUM, axis=(0.0, 1.0))
-    # 前の雫（首輪から胸へ垂れる。後ろ向き）
-    drop = [(cx, ny_ + 6), (cx + 10, ny_ + 18), (cx, ny_ + 36), (cx - 10, ny_ + 18)]
-    front.shape([drop], GEM_BLUE, outline=3.0)
-    return stack(back, sprite, front)
+
+    # 尾の先の氷の結晶の房（後ろへ、真ん中が長い3本）。尾の下に敷く
+    tail_y = float(np.nonzero(a.any(axis=1))[0].max())
+    tail_x = float(np.nonzero(a[int(tail_y) - 6])[0].mean())
+    for ang, length, width in ((180, 64, 20), (152, 44, 15), (208, 44, 15)):
+        crystal(tail_x, tail_y - 16, length, width, ang)
+    # 氷柱の冠（v3.196.0 の氷柱のティアラを後頭部へ移した）：頭のいちばん幅のある所（y≈66）の左右から、後ろ・外へ広がる氷柱を3本ずつ。
+    # 火竜の炎のたてがみと違って、まっすぐ鋭い。胴の下に敷くので、根元は頭に隠れ、はみ出た先だけが見える
+    hy = oy + 66
+    for ang, length, width, root in ((100, 50, 17, 24), (124, 66, 19, 20), (148, 82, 20, 15)):
+        for side in (-1, 1):
+            crystal(cx + side * root, hy, length, width, side * ang)
+    return stack(back, sprite, Canvas(*sprite.size))
 
 
 def ice_wing(src):
