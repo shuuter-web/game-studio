@@ -1381,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.206.0";
+const GAME_VERSION = "v3.207.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -16794,6 +16794,20 @@ function drawSwordBoss(boss) {
   ctx.restore();
 }
 
+// v3.207.0（DT-579）: 剣の道の国の人の見た目。sprite が読めていない間は cloth（null＝def.color）の肩＋頭で描く。
+// blade＝刀の長さ（当たりの半径×これ。前の版の丸から出していた長さに近づけた）
+const SWORD_HUMAN_LOOK = {
+  militia: { cloth: null, clothRim: "#4a5466", head: "#c9b88a", headRim: "#8a7a50", sprite: "human_militia",   blade: 1.9, bladeWidth: 1.3 },   // 笠
+  runner:  { cloth: null, clothRim: "#4a5466", head: "#22242a", headRim: "#0e0f12", sprite: "human_swordsman", blade: 1.9, bladeWidth: 1.5 },
+  charger: { cloth: null, clothRim: "#c8283a", head: "#22242a", headRim: "#0e0f12", pad: "#4a5563", sprite: "human_charger", blade: 1.6, bladeWidth: 2 },
+};
+const SWORD_HUMAN_RING = {   // 足元の輪（当たりの半径）。兵はごく薄く、突進の剣士は少し濃く
+  militia: { color: "rgba(255,255,255,0.18)", width: 0.8 },
+  runner:  { color: "rgba(255,255,255,0.25)", width: 0.9 },
+  charger: { color: "rgba(255,224,160,0.45)", width: 1.1 },
+};
+const SWORD_HUMAN_IDLE = { back: 0.7, out: 0.35 };   // 走る間の刀：手から後ろへ×back、外へ×out
+const SWORD_ONI = { span: 1.25, handFwd: 0.25, handSide: 0.8 };   // 大太刀の鬼：絵の横幅＝当たりの直径×span、刀を持つ手の位置（当たりの半径×）
 /** 剣士・突進の剣士（青灰の体に白い刀。構え・溜めの予告もここで描く） */
 /** 動く敵の体力の帯（頭の上。ボスの帯の縮小版）。出すかどうかは呼ぶ側が決める */
 function drawMoverHpBar(m) {
@@ -16842,6 +16856,44 @@ function drawSwordUnit(m) {
     ctx.restore();
     return;
   }
+  const ready = S && (S.st === "windup" || S.st === "aim" || S.st === "dash");
+  // v3.207.0（案帳 DT-579 剣の道の国・Shooter「コアの人間部分のサイズは統一しつつ」）: 足軽・剣士・突進の剣士は丸をやめて、
+  // 英雄やお供と同じ「真上から見た肩＋頭」の体（1.0〜1.25倍）。当たりの半径は足元の輪で見せ、刀は右手から出す
+  const look = SWORD_HUMAN_LOOK[def.sword];
+  if (look) {
+    const bs = humanBodyScale(def.name), B = HUMAN_BODY, ring = SWORD_HUMAN_RING[def.sword];
+    ctx.strokeStyle = ring.color; ctx.lineWidth = ring.width;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.rotate(a);
+    const crouch = S && S.st === "aim" ? 0.88 : 1;
+    ctx.scale(crouch, 1 / crouch);
+    drawHumanBody(bs, { ...look, cloth: look.cloth || def.color });
+    drawHumanHand(bs);
+    const hx = B.handFwd * bs, hy = B.handSide * bs, bl = r * look.blade;
+    ctx.strokeStyle = "#f4f8ff"; ctx.lineWidth = look.bladeWidth;
+    ctx.beginPath(); ctx.moveTo(hx, hy);
+    if (ready) ctx.lineTo(hx + bl, hy);                          // 構え・溜め・駆け抜け：前へ
+    else ctx.lineTo(hx - bl * SWORD_HUMAN_IDLE.back, hy + bl * SWORD_HUMAN_IDLE.out);   // 走る間：脇に下げる
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  // v3.207.0（DT-579・Shooter「大太刀も鬼にして大サイズに」）: 大太刀は人ではなく鬼。当たりの大きさのまま、角のある鬼の絵
+  if (def.sword === "brute" && enemyImages.sword_oni) {
+    const img = enemyImages.sword_oni, w = r * 2 * SWORD_ONI.span, h = w * img.naturalHeight / img.naturalWidth;
+    ctx.rotate(a);
+    ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.beginPath(); ctx.ellipse(3, 5, r * 0.6, r * 1.05, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save(); ctx.rotate(Math.PI / 2);   // 絵は前（角）が上
+    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    ctx.restore();
+    const hx = r * SWORD_ONI.handFwd, hy = r * SWORD_ONI.handSide;
+    ctx.strokeStyle = "#f4f8ff"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(hx, hy);
+    if (ready) ctx.lineTo(r * 3.4, hy); else ctx.lineTo(-r * 2.2, hy + r * 0.9);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
   ctx.rotate(a);
   const crouch = S && S.st === "aim" ? 0.88 : 1;
   ctx.scale(crouch, 1 / crouch);
@@ -16856,8 +16908,7 @@ function drawSwordUnit(m) {
   } else if (def.sword === "militia") {   // 足軽は笠（明るい円）
     ctx.fillStyle = "#c9b88a"; ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, Math.PI * 2); ctx.fill();
   }
-  // 刀：構え・溜めの間は前へ、走る間は脇に
-  const ready = S && (S.st === "windup" || S.st === "aim" || S.st === "dash");
+  // 刀：構え・溜めの間は前へ、走る間は脇に（絵が読めていない間だけここを通る）
   ctx.strokeStyle = "#f4f8ff"; ctx.lineWidth = def.sword === "brute" ? 4 : def.sword === "charger" ? 2.5 : 2;
   const bl = def.sword === "brute" ? 3.4 : 2.4;   // 大太刀は長い刀
   ctx.beginPath();
@@ -52076,7 +52127,8 @@ const HERO_DRAW = { glow: 1.45, ring: 1, cape: 1.05, sword: 1.6 };   // 体の�
 const HUMAN_BODY = { shoulderHalf: 5, shoulderDepth: 2.5, head: 2.3, headFwd: 0.5, padHalf: 1.9, padDepth: 2.1, padAt: 4.1, handR: 1, handFwd: 2.5, handSide: 4.8,
                      spriteSpan: 1.12 };   // 絵の横幅＝肩幅×これ（絵は縁取りのぶんだけ広い）
 const HUMAN_BODY_SCALE_MIN = 1, HUMAN_BODY_SCALE_MAX = 1.3;
-const HUMAN_BODY_SCALE = { hero: 1.25, hero_shield: 1.3, hero_mage: 1, hero_archer: 1.05, bone_soldier: 1 };   // v3.173.0: 骨の兵（DT-290）は鎧が無いので 1.0   // 板金の鎧＝大きい、布の服＝小さい
+const HUMAN_BODY_SCALE = { hero: 1.25, hero_shield: 1.3, hero_mage: 1, hero_archer: 1.05, bone_soldier: 1,
+                           sword_militia: 1, sword_runner: 1.1, sword_charger: 1.25 };   // v3.207.0（DT-579 剣の道の国）: 足軽＝布の服、剣士＝着物と肩衣、突進の剣士＝当世具足   // v3.173.0: 骨の兵（DT-290）は鎧が無いので 1.0   // 板金の鎧＝大きい、布の服＝小さい
 const HUMAN_SKIN = "#e8c8a0";
 const HUMAN_RING = { mate: "rgba(255,255,255,0.6)", mateWidth: 1 };   // お供の足元の輪（英雄は HERO_COLORS.rim の金）
 const HERO_MATE_LOOK = {
@@ -56482,6 +56534,10 @@ const ENEMY_IMAGE_SOURCES = {
   // 案帳 DT-239 手直し: 鎌付き戦車の車体と鎌（別々に生成して drawScytheChariotSprite が組み立てる。ENEMY_SPRITE_META には載せない）
   scythe_chariot_body: "assets/mover_scythe_chariot_body.png",
   // v3.145.0（案帳 DT-579 手直し・Shooter「パーツを画像生成で」）: 人の体（真上から見た肩＋頭。前が上）。drawHumanBody が使う。ENEMY_SPRITE_META には載せない
+  human_militia:       "assets/mover_human_militia.png",     // v3.207.0（DT-579 剣の道の国）: 足軽（笠）
+  human_swordsman:     "assets/mover_human_swordsman.png",   // 剣士（髷・肩衣）
+  human_charger:       "assets/mover_human_charger.png",     // 突進の剣士（鉢巻・具足・赤い襷）
+  sword_oni:           "assets/mover_sword_oni.png",         // 大太刀（鬼。角が前）。drawSwordUnit が使う
   human_hero:          "assets/mover_human_hero.png",
   human_shield:        "assets/mover_human_shield.png",
   human_mage:          "assets/mover_human_mage.png",
