@@ -1,6 +1,6 @@
 """Dragon Tide（DT-609）: 2回目の進化の飾りを、全身カットの宝石の絵（*_sparkle）に描き足して *_jewel を作る。
 
-  python3 tools/gen_gem_ornaments.py            # 火竜・氷竜の *_jewel_body.png / *_jewel_wing.png を書き出し、DRAGON_PART_SPRITES に貼る値を出す
+  python3 tools/gen_gem_ornaments.py [竜種...]   # 火竜・氷竜・影竜・緋竜・飛竜（名指しでその竜種だけ）の *_jewel_body.png / *_jewel_wing.png を書き出し、DRAGON_PART_SPRITES に貼る値を出す
 
 前の版（v3.191.0）は画像生成で「全身の金の縁取り＋細かい飾り」を描いたので、全体を縁取っただけに見えた。
 こちらは手で形を決めて飾る部位だけを太く描き、**元の輪郭からはみ出させる**（画像の余白を足して広げる）。
@@ -356,9 +356,209 @@ def ice_wing(src):
     return out
 
 
+# ---------------------------------------------------------------- 影竜・緋竜・飛竜（v3.205.0・DT-609）
+# 11/25 Shooter「他の竜では、外側に広がるだけでなく上に乗ってる飾りとか、色々バリエーションを出して」「色も金属に限らなくていい」
+# 「首輪は良くないが、襷掛けとか斜め掛けなら行ける」。火竜・氷竜はどちらも「外へ突き出る金属の飾り」なので、
+# 3竜種は飾る部位・形・素材をばらばらにした（同じ形の飾りが群れごとに並ばないように）:
+#   影竜（アメジスト）… 背に乗る黒曜石の背びれ（首の付け根から尾まで）と尾の先から突き出る黒曜石の刃・翼の先の月長石の三日月と雫
+#   緋竜（ガーネット）… 左肩から右の腰へ斜めに掛けた白絹の襷（藍の縁）と、腰の結び目から後ろ・外へなびく2本の垂れ。翼は飾らない
+#   飛竜（エメラルド）… 背に乗る象牙の鞍板（真ん中に琥珀、左右の角が胴から少しはみ出す）・尾の先の緋色の羽根飾り3枚。翼は飾らない
+# 「上に乗る」飾り（背びれ・襷・鞍板）は胴の上（front）に描く。輪郭の外へ出る分だけが輪郭を変える。
+OBSIDIAN = dict(light=(176, 150, 222), base=(46, 34, 70), dark=(14, 10, 24), line=(0, 0, 0))
+MOONSTONE = dict(light=(255, 255, 255), base=(214, 228, 248), dark=(132, 150, 204), line=(28, 28, 70))
+SILK = dict(light=(255, 255, 255), base=(246, 242, 232), dark=(196, 186, 176), line=(36, 20, 40))
+INDIGO = dict(light=(110, 140, 220), base=(40, 56, 130), dark=(18, 24, 70), line=(10, 10, 30))
+IVORY = dict(light=(255, 252, 238), base=(238, 224, 190), dark=(168, 142, 100), line=(66, 40, 16))
+AMBER = dict(light=(255, 236, 160), base=(244, 156, 36), dark=(166, 76, 8), line=(66, 30, 4))
+SCARLET = dict(light=(255, 214, 120), base=(232, 64, 40), dark=(132, 18, 30), line=(48, 8, 10))
+GARNET_KNOT = dict(light=(255, 150, 160), base=(150, 20, 40), dark=(70, 6, 20), line=(30, 4, 8))
+
+
+def ellipse_poly(cx, cy, rx, ry, steps=28):
+    return [(cx + rx * math.cos(i / steps * math.tau), cy + ry * math.sin(i / steps * math.tau)) for i in range(steps)]
+
+
+def clip_to(canvas, sprite_alpha, grow_px):
+    """front に描いた飾りを、胴の輪郭を grow_px だけ広げた形で切る（襷が胴に巻き付いて見えるように、外へは少しだけ出す）"""
+    h, w = sprite_alpha.shape
+    m = Image.fromarray((sprite_alpha * 255).astype(np.uint8), "L").resize((w * SS, h * SS), Image.BILINEAR)
+    m = m.point(lambda v: 255 if v >= 128 else 0)
+    for _ in range(int(round(grow_px * SS / 2))):
+        m = m.filter(ImageFilter.MaxFilter(3))
+    r, g, b, a = canvas.layer.split()
+    canvas.layer = Image.merge("RGBA", (r, g, b, ImageChops.multiply(a, m)))
+
+
+SHADOW_PAD = dict(left=0, top=0, right=0, bottom=40)        # 尾の先から突き出る黒曜石の刃の分
+SHADOW_WING_PAD = dict(left=70, top=0, right=0, bottom=40)  # 翼の先の三日月と、垂れる雫の分
+
+
+def shadow_body(src):
+    p = SHADOW_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    front = Canvas(*sprite.size)
+    back = Canvas(*sprite.size)
+    cx = p["left"] + 74.5
+    # 黒曜石の背びれ：背骨に沿って、後ろ向きの菱形の板を少しずつ重ねて並べる（前の板が上）。
+    # 頭・首には付けない（顔の前に出さない・首輪に見せない）。胴より細い尾のあたりは小さく
+    fins = ((118, 13, 30), (146, 16, 34), (176, 16, 34), (206, 14, 30), (234, 13, 28), (262, 11, 24), (288, 9, 22))
+    for y, half, length in reversed(fins):
+        poly = [(cx, y - length * 0.35), (cx + half, y), (cx + half * 0.35, y + length * 0.55), (cx, y + length * 0.75),
+                (cx - half * 0.35, y + length * 0.55), (cx - half, y)]
+        front.shape([poly], OBSIDIAN, axis=(0.4, 1.0), outline=3.5, ridge=[(cx, y - length * 0.3), (cx, y + length * 0.6)],
+                    facet=[(cx, y - length * 0.35), (cx + half, y), (cx + half * 0.35, y + length * 0.55), (cx, y + length * 0.75)])
+    # 尾の先から後ろへ突き出る黒曜石の刃（尾の下に敷く）
+    ty = 300
+    back.shape([[(cx, ty + 52), (cx + 12, ty + 20), (cx + 7, ty - 6), (cx - 7, ty - 6), (cx - 12, ty + 20)]], OBSIDIAN,
+               axis=(1.0, 0.3), ridge=[(cx, ty), (cx, ty + 44)], facet=[(cx, ty - 6), (cx + 12, ty + 20), (cx, ty + 52)])
+    return stack(back, sprite, front)
+
+
+def shadow_wing(src):
+    p = SHADOW_WING_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    a = body_alpha(sprite)
+    back = Canvas(*sprite.size)
+    w, h = sprite.size
+    left_x = int(np.nonzero(a.any(axis=0))[0].min())
+    ty = float(np.nonzero(a[:, left_x + 2])[0].mean())
+    # 月長石の三日月：翼の先を外側から抱くように。丸の外側の弧と、右へずらした丸の内側の弧で切り出す
+    mx, my, r_out = left_x + 26, ty + 4, 50
+    outer, inner = [], []
+    for i in range(25):
+        t = math.radians(100 + i * 160 / 24)            # 上（100°）→ 左 → 下（260°）
+        outer.append((mx + r_out * math.cos(t), my - r_out * math.sin(t)))
+    for i in range(25):
+        t = math.radians(260 - i * 160 / 24)
+        ri = r_out * 0.84
+        inner.append((mx + 18 + ri * math.cos(t), my - ri * math.sin(t) * 0.92))
+    back.shape([outer + inner], MOONSTONE, axis=(-0.3, 1.0), outline=4.0, ridge=outer[4:-4])
+    # 後ろの縁の外側2つの山から、月長石の雫を垂らす（翼の下に敷く）
+    lower = np.array([np.nonzero(a[:, x])[0].max() if a[:, x].any() else -1 for x in range(w)], np.float32)
+    med = np.median(lower[lower >= 0])
+    peaks = []
+    for x in range(left_x + 30, w - 40):
+        win = lower[max(0, x - 14):x + 15]
+        if lower[x] >= 0 and lower[x] == win.max() and (not peaks or x - peaks[-1] > 26) and lower[x] > med + 4:
+            peaks.append(x)
+    for x in peaks[:2]:
+        y0 = lower[x] - 4
+        back.shape([[(x - 3, y0), (x + 3, y0), (x + 2, y0 + 14)]], MOONSTONE, outline=2.5)
+        back.shape([ellipse_poly(x, y0 + 24, 9, 12)], MOONSTONE, axis=(-0.4, 1.0), outline=3.0)
+    out = Image.new("RGBA", sprite.size, (0, 0, 0, 0))
+    out.alpha_composite(back.finish())
+    out.alpha_composite(sprite)
+    return out
+
+
+def ribbon(x, y, length, width, angle, wave):
+    """なびく布の垂れ：幅を保ったまま横へ波打ち（wave＝振れ幅）、先を燕尾（V字の切れ込み）にする。返り値は（形, 芯）"""
+    dx, dy = math.sin(angle), -math.cos(angle)
+    nx, ny = -dy, dx
+    left, right, spine = [], [], []
+    steps = 20
+    for i in range(steps + 1):
+        t = i / steps
+        side = wave * math.sin(t * math.pi * 1.6) * t
+        half = width * 0.5 * (1 + 0.25 * t)
+        px, py = x + dx * length * t + nx * side, y + dy * length * t + ny * side
+        left.append((px + nx * half, py + ny * half))
+        right.append((px - nx * half, py - ny * half))
+        spine.append((px, py))
+    notch = (spine[-1][0] - dx * width * 0.8, spine[-1][1] - dy * width * 0.8)
+    return left + [notch] + right[::-1], spine
+
+
+CRIMSON_PAD = dict(left=0, top=0, right=60, bottom=70)   # 腰の結び目から右・後ろへなびく垂れの分
+
+
+def crimson_body(src):
+    p = CRIMSON_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    a = body_alpha(sprite)
+    front = Canvas(*sprite.size)
+    # 襷：左肩（頭が上の絵で左）から右の腰へ斜めに。藍の太い帯の上に白絹の帯を重ねて、藍を縁に見せる
+    path = [(46, 116), (80, 150), (112, 188), (140, 222), (152, 240)]   # 肩の付け根から（腕・手の上は通さない）
+    front.stroke(path, 32, INDIGO, axis=(1.0, 1.0), outline=3.0, ridge=False)
+    front.stroke(path, 21, SILK, axis=(1.0, 1.0), outline=0.1, ridge=True)
+    clip_to(front, a, 4.0)          # 胴の外へは帯の厚みの分だけ（巻き付いて見える）
+    # 結び目から後ろ・外（右下）へなびく2本の垂れ。胴の外へ突き出る（切らない）。
+    # 刃に見えないよう、幅を保ったまま波打たせ、先を燕尾に切る
+    tails = Canvas(*sprite.size)
+    kx, ky = 152, 240
+    for ang, length, width, wave in ((158, 104, 17, 9.0), (132, 84, 15, -8.0)):
+        poly, spine = ribbon(kx, ky, length, width, math.radians(ang), wave)
+        tails.shape([poly], INDIGO, axis=(1.0, 1.0), outline=3.0)
+        inner_poly, _ = ribbon(kx, ky, length - 6, width * 0.55, math.radians(ang), wave)
+        tails.shape([inner_poly], SILK, axis=(1.0, 1.0), outline=0.1)
+    # 結び目（ガーネットの留め玉。濃い赤なので白絹の上で目立つ）
+    tails.shape([ellipse_poly(kx, ky, 14, 12)], SILK, axis=(0.5, 1.0), outline=3.0)
+    tails.shape([ellipse_poly(kx, ky, 7, 7, 16)], GARNET_KNOT, axis=(0.5, 1.0), outline=2.0)
+    out = stack(Canvas(*sprite.size), sprite, front)
+    out.alpha_composite(tails.finish())
+    return out
+
+
+def crimson_wing(src):
+    """緋竜の翼は飾らない（襷が胴を斜めに横切るので、翼まで飾ると重い）。None＝*_sparkle の翼の絵をそのまま使う"""
+    return None
+
+
+WYVERN_PAD = dict(left=8, top=0, right=8, bottom=64)    # 鞍板の角と、尾の先の羽根飾りの分
+
+
+def feather(x, y, length, width, ang_deg, bend):
+    """羽根：曲がった刃より幅の広い葉の形（根元が細く、中ほどが太い）。返り値は（形, 軸の折れ線）"""
+    pts_l, pts_r, spine = [], [], []
+    px, py = x, y
+    steps = 18
+    for i in range(steps + 1):
+        t = i / steps
+        a = math.radians(ang_deg) + bend * t * t
+        dx, dy = math.sin(a), -math.cos(a)
+        nx, ny = -dy, dx
+        half = width * 0.5 * math.sin(math.pi * min(1.0, 0.12 + t * 0.95)) ** 0.7
+        pts_l.append((px + nx * half, py + ny * half))
+        pts_r.append((px - nx * half, py - ny * half))
+        spine.append((px, py))
+        px, py = px + dx * length / steps, py + dy * length / steps
+    return pts_l + pts_r[::-1], spine[1:-2]
+
+
+def wyvern_body(src):
+    p = WYVERN_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + 64.5
+    # 象牙の鞍板：肩から腰の手前まで背に乗る盾の形。左右の角は胴の幅から少しはみ出す
+    plate = [(cx, 126), (cx + 30, 134), (cx + 54, 148), (cx + 34, 160), (cx + 30, 186), (cx + 14, 206), (cx, 214),
+             (cx - 14, 206), (cx - 30, 186), (cx - 34, 160), (cx - 54, 148), (cx - 30, 134)]
+    front.shape([plate], IVORY, axis=(0.3, 1.0), outline=4.0, ridge=[(cx, 132), (cx, 208)],
+                facet=[(cx, 126), (cx + 30, 134), (cx + 54, 148), (cx + 34, 160), (cx + 30, 186), (cx + 14, 206), (cx, 214)])
+    front.shape([[(cx, 152), (cx + 14, 170), (cx, 190), (cx - 14, 170)]], AMBER, axis=(0.5, 1.0), outline=3.0)   # 琥珀（菱形のカット）
+    for sy in (140, 200):     # 鞍板の前後に小さな琥珀の粒
+        front.shape([ellipse_poly(cx, sy, 4.5, 4.5, 12)], AMBER, outline=2.0)
+    # 尾の先の緋色の羽根飾り（後ろへ扇に3枚。尾の下に敷く）
+    tx, ty = cx, 306
+    for ang, length, width, bend in ((180, 74, 22, 0.0), (156, 58, 18, -0.25), (204, 58, 18, 0.25)):
+        poly, spine = feather(tx, ty, length, width, ang, bend)
+        back.shape([poly], SCARLET, axis=(0.0, 1.0), outline=3.5, ridge=spine)
+    return stack(back, sprite, front)
+
+
+def wyvern_wing(src):
+    """飛竜の翼は飾らない（鞍板と羽根飾りで足りる。翼まで飾ると火竜・氷竜と同じ「翼に飾り」になる）。None＝*_sparkle の翼の絵をそのまま使う"""
+    return None
+
+
 SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel はここに余白を足して作る）
     "fire": dict(cx=62.4, cy=169.4, sl=(14.2, 152), sr=(110.8, 152), wa=(319, 64.1)),
     "ice": dict(cx=81.5, cy=175.6, sl=(21.4, 152), sr=(141.6, 152), wa=(319, 69.0)),
+    # 影竜・緋竜・飛竜の *_sparkle は元の絵と同じ輪郭（下絵のアルファで切った）なので、元の竜種の値のまま
+    "shadow": dict(cx=74.5, cy=174.7, sl=(22.8, 177), sr=(126.2, 177), wa=(317, 63.4)),
+    "crimson": dict(cx=97.5, cy=176.6, sl=(18.1, 161), sr=(176.9, 161), wa=(316, 66.7)),
+    "wyvern": dict(cx=64.4, cy=169.1, sl=(17.0, 152), sr=(112.0, 152), wa=(317, 64.7)),
 }
 
 
@@ -373,16 +573,24 @@ def report(element, body, wing, pad_b, pad_w):
 
 
 def main():
-    out = {}
+    only = set(sys.argv[1:])     # 竜種を名指しすると、その竜種だけ作り直す（ほかの竜種の絵を書き換えない）
     for element, body_fn, wing_fn, pad_b, pad_w in (
         ("fire", fire_body, fire_wing, FIRE_PAD, FIRE_WING_PAD),
         ("ice", ice_body, ice_wing, ICE_PAD, ICE_WING_PAD),
+        ("shadow", shadow_body, shadow_wing, SHADOW_PAD, SHADOW_WING_PAD),
+        ("crimson", crimson_body, crimson_wing, CRIMSON_PAD, dict(left=0, top=0, right=0, bottom=0)),
+        ("wyvern", wyvern_body, wyvern_wing, WYVERN_PAD, dict(left=0, top=0, right=0, bottom=0)),
     ):
+        if only and element not in only:
+            continue
         sb = Image.open(os.path.join(ASSETS, f"dragon_{element}_sparkle_body.png")).convert("RGBA")
         sw = Image.open(os.path.join(ASSETS, f"dragon_{element}_sparkle_wing.png")).convert("RGBA")
         jb, jw = body_fn(sb), wing_fn(sw)
         jb.save(os.path.join(ASSETS, f"dragon_{element}_jewel_body.png"), optimize=True)
-        jw.save(os.path.join(ASSETS, f"dragon_{element}_jewel_wing.png"), optimize=True)
+        if jw is None:     # 翼を飾らない竜種は *_sparkle の翼の絵を DRAGON_PART_SPRITES からそのまま指す（同じ絵を2枚置かない）
+            jw = sw
+        else:
+            jw.save(os.path.join(ASSETS, f"dragon_{element}_jewel_wing.png"), optimize=True)
         print(element, "body", sb.size, "->", jb.size, "wing", sw.size, "->", jw.size)
         report(element, jb, jw, pad_b, pad_w)
 
