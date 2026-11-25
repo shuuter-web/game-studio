@@ -3,7 +3,8 @@
 //
 //   node tools/dt-run-stats.mjs [--species fire,wyvern | all | random] [--seeds 1,2,3 | --runs 10 --seed-base 100]
 //        [--parallel 4] [--out runs.json] [--stage-limit-min 30] [--stall-min 5] [--run-limit-min 240]
-//        [--sample-sec 30] [--setup "式"] [--file prototypes/dragon-tide/index.html]
+//        [--sample-sec 30] [--setup "式"] [--file prototypes/dragon-tide/index.html] [--resume]
+//   --out の JSON は1ラン終わるたびに書き足す。--resume で、そこにある竜種・シードのランは回さずに使う（途中で止まった計測の続き）
 //
 // オートプレイでランを最初から最後まで回し、1ランごとの記録を JSON に書き出して、竜種ごとの表を出す。
 // dt-headless.mjs（前後で挙動が同じかを見る指紋）と違い、こちらは「どれくらいかかったか・どこで詰まったか」を見る道具。
@@ -114,7 +115,8 @@ function installRecorder() {
   wrap("takePerkCard", (orig, self, a) => { if (perkArmed() && a[0]) noteCard(a[0], "強化カード"); return orig.apply(self, a); });
   wrap("takeSpecialLevel", (orig, self, a) => { if (perkArmed() && a[0]) noteCard(a[0], "特殊個体"); return orig.apply(self, a); });
   rec.sample = () => rec.samples.push({ t: t(), stage: runStageNumber, flock: flock(), joined: countJoinedBoids() + flockOverflow,
-    level: playerLevel, tier: powerTier + 1, lives: runLives, buildings: aliveBuildings(), species: flockSpecies, state: gameState });
+    level: playerLevel, tier: powerTier + 1, lives: runLives, buildings: aliveBuildings(), species: flockSpecies,
+      speciesName: SPECIES_DEFS[flockSpecies] ? SPECIES_DEFS[flockSpecies].ja : flockSpecies, state: gameState });
 }
 
 async function runOne({ seed, species }) {
@@ -167,6 +169,7 @@ async function runOne({ seed, species }) {
       };
     }, stopReason);
     rec.startSpecies = sid;
+    rec.startSpeciesName = await page.evaluate((id) => (SPECIES_DEFS[id] ? SPECIES_DEFS[id].ja : id), sid);
     if (errors.length) rec.errors = errors.slice(0, 5);
     return rec;
   } finally {
@@ -189,23 +192,50 @@ for (const species of speciesList) for (const seed of seeds) jobs.push({ species
 
 const results = new Array(jobs.length);
 let nextJob = 0;
+// 1ラン終わるたびに --out へ書き足す（長い計測の途中で止まっても、それまでのランを失わないため）。
+// --resume を付けると、--out にすでにある同じ竜種・シードのランは回さずに使う
+const writeOut = () => {
+  if (!outPath) return;
+  fs.writeFileSync(path.resolve(outPath), JSON.stringify({ file: path.relative(REPO_ROOT, file), args, runs: results.filter(Boolean) }, null, 1));
+};
+if (hasResume() && outPath && fs.existsSync(path.resolve(outPath))) {
+  const done = JSON.parse(fs.readFileSync(path.resolve(outPath), "utf8")).runs || [];
+  for (let j = 0; j < jobs.length; j++) {
+    const hit = done.find((r) => (r.startSpecies || r.species) === jobs[j].species && String(r.seed) === String(jobs[j].seed));
+    if (hit && hit.outcome !== "error") results[j] = hit;   // 落ちたランは回し直す
+  }
+  process.stderr.write(`resume: ${results.filter(Boolean).length}/${jobs.length} ランは前の記録を使う\n`);
+}
+function hasResume() { return args.includes("--resume"); }
+// 表と進み具合は、始めた竜種で分ける（突然変異で竜種が変わっても、どの竜種で始めたランかで比べたいため）。終わりの竜種が違えば「→」で添える
+const runLabel = (r) => {
+  const start = r.startSpeciesName || r.startSpecies || r.species;
+  // ランが終わるとタイトルに戻って竜種が火竜に戻るので、終わりの竜種は最後の記録（30秒ごと）から取る
+  const last = (r.samples || []).findLast((x) => x.state !== "title");
+  const end = last && last.speciesName ? last.speciesName : (r.speciesName || r.species);
+  return end && end !== start ? `${start}→${end}` : start;
+};
+const runGroup = (r) => r.startSpeciesName || r.startSpecies || r.species;
+
 const started = Date.now();
 async function worker() {
   for (;;) {
     const j = nextJob++;
     if (j >= jobs.length) return;
+    if (results[j]) continue;   // --resume で前の記録を使うラン
     const t0 = Date.now();
     try { results[j] = await runOne(jobs[j]); }
     catch (e) { results[j] = { species: jobs[j].species, seed: jobs[j].seed, outcome: "error", errors: [String(e && e.stack || e)] }; }
     const r = results[j];
-    process.stderr.write(`  ${j + 1}/${jobs.length} ${r.speciesName || r.species} seed=${jobs[j].seed} → ${r.outcome}` +
+    writeOut();
+    process.stderr.write(`  ${j + 1}/${jobs.length} ${runLabel(r)} seed=${jobs[j].seed} → ${r.outcome}` +
       ` ${r.minutes ?? "?"}分 ステージ${r.stagesCleared ?? "?"}つ 全滅${r.wipes ?? "?"} （実時間 ${((Date.now() - t0) / 1000).toFixed(0)}秒）\n`);
   }
 }
 await Promise.all(Array.from({ length: Math.min(parallel, jobs.length) }, worker));
 
 if (outPath) {
-  fs.writeFileSync(path.resolve(outPath), JSON.stringify({ file: path.relative(REPO_ROOT, file), args, runs: results }, null, 1));
+  writeOut();
   process.stderr.write(`→ ${outPath}\n`);
 }
 
@@ -213,8 +243,8 @@ if (outPath) {
 const fmt = (x) => (Number.isFinite(x) ? x.toFixed(1) : "-");
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
 const bySpecies = new Map();
-for (const r of results) { const k = r.speciesName || r.species; if (!bySpecies.has(k)) bySpecies.set(k, []); bySpecies.get(k).push(r); }
-console.log(`竜種\tラン\t完了\t敗北\t打ち切り\t平均分\t平均ステージ\t平均全滅\t平均Lv\t最大群れ\tステージの平均分（1,2,3…）`);
+for (const r of results) { const k = runGroup(r); if (!bySpecies.has(k)) bySpecies.set(k, []); bySpecies.get(k).push(r); }
+console.log(`始めた竜種\tラン\t完了\t敗北\t打ち切り\t平均分\t平均ステージ\t平均全滅\t平均Lv\t最大群れ\tステージの平均分（1,2,3…）`);
 for (const [k, rs] of bySpecies) {
   const ok = rs.filter((r) => r.outcome === "complete").length, lost = rs.filter((r) => r.outcome === "defeat").length;
   const perStage = [];
@@ -226,6 +256,6 @@ for (const [k, rs] of bySpecies) {
 const cut = results.filter((r) => !["complete", "defeat"].includes(r.outcome));
 for (const r of cut) {
   const s = (r.stages || []).at(-1);
-  console.log(`打ち切り: ${r.speciesName || r.species} seed=${r.seed} ${r.outcome}${s ? ` ステージ${s.number}（${s.eraName}／${s.shapeName}）残り${s.buildingsLeft}棟` : ""}${r.errors ? " " + r.errors[0].split("\n")[0] : ""}`);
+  console.log(`打ち切り: ${runLabel(r)} seed=${r.seed} ${r.outcome}${s ? ` ステージ${s.number}（${s.eraName}／${s.shapeName}）残り${s.buildingsLeft}棟` : ""}${r.errors ? " " + r.errors[0].split("\n")[0] : ""}`);
 }
 console.error(`elapsed ${((Date.now() - started) / 1000).toFixed(0)}s`);
