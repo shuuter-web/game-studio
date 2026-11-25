@@ -1381,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.203.0";
+const GAME_VERSION = "v3.204.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -32231,7 +32231,7 @@ function settlementFall(settlementIndex) {
   const settlement = settlements[settlementIndex];
   settlement.fallen = true;
   settlement.hp = 0;
-  sfxCollapse();   // v3.176.0（DT-075）: 何十棟同時でも1つ（間引きは sfxGate）
+  sfxCollapse(settlement.wx);   // v3.204.0（DT-624）: 次の空いた16分音符に並べてアルペジオにする（左右は建物の位置）
   // v3.21.0: 壊れた建物に接している樹冠も一緒に崩れる（Shooter指示）
   // v3.21.3: 一瞬で消すのをやめ、火が付いて燃えて消える（Shooter指示）
   canopyIgniteCircle(settlement.wx, settlement.wy, (settlement.radius || 10) + CANOPY_FALL_MARGIN);
@@ -33007,7 +33007,7 @@ function collectNearbyEggs() {
       if (dx * dx + dy * dy < 60 * 60) {
         eggActive[e] = 0;
         totalEggCount++;
-        sfxEgg();   // v3.176.0（DT-075）
+        sfxEgg(eggWx[e]);   // v3.204.0（DT-624）: 続けて拾うほど音階を上る（左右は卵の位置）
         if (upCount("f_egg_wave") > 0) eggShockwave(eggWx[e], eggWy[e]);   // v3.49.0: 孵化の衝撃
         // 卵回収 = その場で竜+1（群れ上限未満のときのみ）
         // v0.6: 上限到達後の卵は XP+10 に変換する（拾って無駄がない）
@@ -42574,34 +42574,64 @@ const CODEX_SPECIAL_SHOTS = [
 ];
 
 // -----------------------------------------------------------------
-// v3.176.0（案帳 DT-075 1回目）: 音の土台と効果音の最小セット
+// v3.204.0（案帳 DT-624 1回目）: 音を作り直す。芯は「群れが楽団になる」
 // -----------------------------------------------------------------
-// 方向（Shooter と合意）：16ビット機の音源の雰囲気＝少しこもったやわらかい音色に深めの残響。効果音は小さく短く、高い音を避ける。
-// 音のファイルは使わず、Web Audio でその場で鳴らす（単一HTMLのまま読み込みが増えない・時代ごとに数値で変えられる）。
-// うるさくしない決まり：同じ効果音は SOUND_SFX_MIN_GAP 秒に1回まで（崩壊が一度に何十棟起きても1つ）、
-// 全部の音をコンプレッサにまとめて重なったら自動で下げ、陥落のような大きい音のときは他を一瞬下げる。
-// 鳴らし方の揺らぎは fxRandom（ゲームの乱数列に触らない）。音は人が画面に触れたとき（isTrusted）に初めて作るので、
-// 合成の入力で回すヘッドレス再生では作られない＝鳴らない。
-const SOUND_DEFAULT_SE      = 40;     // 効果音の既定の音量（0〜100。仮。実機で聞いて決める）
+// 前の音（DT-075 の効果音と BGM）は使わず、作り方から替えた（11/25 Shooter「既存の素材は一切使わなくていい」）。
+// ・作り方：16ビット機の本当の音源に寄せた「短い音のかけら（サンプル）＋小さなトラッカー」。
+//   かけらは assets/audio/*.wav（tools/gen_dt_samples.mjs で作る。録音・生成した音に同じ名前で差し替えられる）、
+//   曲・伴奏・効果音の音階は assets/audio/music.json（数値を変えるだけで曲や効果音を直せる）。
+//   低い質のかけらを鳴らして、こもらせ（SOUND_MUFFLE_HZ）、拍に合わせたエコーと残響をかける。
+// ・遊びが拍と調に乗る：効果音は次の16分音符の格子に寄せて鳴らし、高さはその時の和音・音階から選ぶ。
+//   建物の崩壊は1つずつ次の空いた16分音符に並べてマリンバのアルペジオにする（何十棟続いても騒音にならず、曲の一部になる）。
+//   線を引いている間は引いた長さに合わせてハープが音階を上り、指を離すと上りきった所から和音を鳴らす（ため→解放）。
+//   卵は続けて拾うほど音階を1つずつ上がり、少し途切れると戻る。
+// ・竜の主題（レ・ラ・ソ・ファ・ラ）を角笛で吹く曲を1つ。強化のチャイムもこの切れ端にする。
+//   警戒度で打楽器を1層ずつ足す（警戒度で曲を組み変える本式は2回目）。
+// ・聞かせ方の決まり：卵と崩壊は画面の左右の位置に振る。同時に鳴らす効果音の数に優先度ごとの上限（voiceLimit）を置き、
+//   下の音から省く。陥落・警戒度の鐘のときは他を一瞬下げる。大事な音は中音域に置く。
+// ・決定性：鳴らす高さ・時刻は譜面と時計だけで決め、ゲームの乱数に触らない（残響の響きだけ fxRandom）。
+//   音は人が画面に触れたとき（isTrusted）に初めて作り、かけらもそこで読む。合成の入力で回すヘッドレス再生では作られない＝鳴らない。
+const SOUND_DEFAULT_SE      = 40;     // 効果音の既定の音量（0〜100）
 const SOUND_DEFAULT_BGM     = 50;     // BGM の既定の音量（0〜100）
-const SOUND_SFX_MIN_GAP     = 0.1;    // 同じ効果音を鳴らす最短の間隔（秒）
-const SOUND_MUFFLE_HZ       = 2600;   // こもらせるローパス（16ビット機の低いサンプリングのこもり）
-const SOUND_REVERB_SECONDS  = 2.4;    // 残響の長さ
-const SOUND_REVERB_DECAY    = 2.6;    // 残響の減り方（大きいほど早く消える）
-const SOUND_REVERB_SEND     = 0.34;   // 残響へ送る量
-const SOUND_SE_HEADROOM     = 0.55;   // 効果音の音量 100 のときの実際の大きさ（コンプレッサの手前で頭を空けておく）
-const SOUND_DUCK_DEPTH      = 0.45;   // 陥落の音で他の音を下げる深さ
+const SOUND_DIR             = "assets/audio/";
+const SOUND_MUSIC_FILE      = "music.json";
+const SOUND_MUFFLE_HZ       = 5200;   // こもらせるローパス（16ビット機の低いサンプリングのこもり）
+const SOUND_REVERB_SECONDS  = 2.0;    // 残響の長さ
+const SOUND_REVERB_DECAY    = 3.0;    // 残響の減り方（大きいほど早く消える）
+const SOUND_REVERB_SEND     = 0.22;   // 残響へ送る量
+const SOUND_ECHO_STEPS      = 3;      // エコーの遅れ（16分音符の数。付点8分）
+const SOUND_ECHO_FEEDBACK   = 0.28;   // エコーの返り
+const SOUND_ECHO_SEND       = 0.16;   // エコーへ送る量
+const SOUND_ECHO_LOWPASS_HZ = 2400;   // エコーの返りをこもらせる（返るたびに遠く聞こえる）
+const SOUND_SE_HEADROOM     = 0.9;    // 効果音の音量 100 のときの実際の大きさ
+const SOUND_BGM_HEADROOM    = 0.8;    // BGM の音量 100 のときの実際の大きさ
+const SOUND_DUCK_DEPTH      = 0.5;    // 陥落・鐘で他の音を下げる深さ
 const SOUND_DUCK_SECONDS    = 0.9;    // 下げてから戻るまで
-const SOUND_BREATH_GAIN_MAX = 0.10;   // ブレスのざわめきの最大の大きさ
-const SOUND_BREATH_FULL_RATE = 240;   // この回数/秒 建物に当たっていたら、ざわめきが最大
-const SOUND_BREATH_UPDATE_MS = 100;   // ざわめきの大きさを見直す間隔
-const SOUND_BREATH_SMOOTH   = 0.35;   // ざわめきの大きさの追いつき（秒）
+const SOUND_SCHEDULE_MS     = 25;     // トラッカーが先読みし直す間隔
+const SOUND_LOOKAHEAD       = 0.12;   // 何秒先まで予約するか
+const SOUND_GRID_SAFETY     = 0.012;  // 格子に寄せるとき、これより近い格子は間に合わないので次へ
+const SOUND_MENU_LEVEL      = 0.45;   // メニュー・カード選びの間の BGM の大きさ（プレイ中＝1）
+const SOUND_LEVEL_SMOOTH    = 0.6;    // 場面で BGM の大きさを変えるときの追いつき（秒）
+const SOUND_PAN_WIDTH       = 0.75;   // 画面の端の音をどこまで左右に振るか（1＝片側だけ）
 
 let soundCtx = null;
-let soundNodes = null;          // { master, seBus, bgmBus, duck, muffle, reverb, breathGain }
+let soundNodes = null;          // { seBus, bgmBus, bgmVol, duck, echoDelay }
+let soundMusic = null;          // music.json の中身（読み終えるまで null）
+const soundBuffers = {};        // 楽器名 → AudioBuffer
+let soundReady = false;         // かけらと譜面を読み終えた
+let soundTimer = null;
+let soundSongStart = 0;         // 曲の頭（16分音符の0番）の時刻（音の回路の時計）
+let soundNextStep = 0;          // 次に予約する16分音符の番号（曲の頭から数える）
+let soundSceneLevel = -1;
+const soundVoices = [];         // 鳴っている効果音 { end, prio }（同時に鳴らす数の上限に使う）
 const soundLastAt = {};         // 効果音ごとの最後に鳴らした時刻（間引き）
-let soundBreathHits = 0;        // 前の見直しから、建物に当たった回数
-let soundBreathTimer = null;
+const soundRun = {              // 続けて鳴らす効果音の今の位置（崩壊のアルペジオ・卵の音階・線の駆け上がり）
+  collapseIdx: 0, collapseAt: -9, collapseSlot: 0,
+  eggIdx: 0, eggAt: -9,
+  drawOn: false, drawIdx: 0, drawDist: 0, drawAt: -9, drawTop: 0,
+  breathRate: 0, breathHits: 0,
+  duckUntilStep: -1,
+};
 
 function soundOptions() { return (profile && profile.options) || {}; }
 /** 音を鳴らすか（既定は鳴らす）。 */
@@ -42618,11 +42648,11 @@ function soundApplyVolume() {
   if (!soundCtx || !soundNodes) return;
   const t = soundCtx.currentTime;
   soundNodes.seBus.gain.setTargetAtTime(soundOn() ? (soundSeVolume() / 100) * SOUND_SE_HEADROOM : 0, t, 0.05);
-  soundNodes.bgmVol.gain.setTargetAtTime(soundOn() ? (soundBgmVolume() / 100) * BGM_HEADROOM : 0, t, 0.05);
+  soundNodes.bgmVol.gain.setTargetAtTime(soundOn() ? (soundBgmVolume() / 100) * SOUND_BGM_HEADROOM : 0, t, 0.05);
   if (soundOn() && !document.hidden) soundCtx.resume().catch(() => {});
 }
 
-/** 残響の響き（減っていくノイズ）。見た目用の乱数で作る。 */
+/** 残響の響き（減っていくノイズ）。見た目用の乱数で作る（ゲームの乱数列に触らない）。 */
 function soundMakeImpulse(ctx) {
   const len = Math.floor(ctx.sampleRate * SOUND_REVERB_SECONDS);
   const buf = ctx.createBuffer(2, len, ctx.sampleRate);
@@ -42633,7 +42663,7 @@ function soundMakeImpulse(ctx) {
   return buf;
 }
 
-/** 初めて人が画面に触れたときに音の回路を作る（ブラウザの決まりで、触れるまでは鳴らせない）。 */
+/** 初めて人が画面に触れたときに音の回路を作り、かけらと譜面を読む（ブラウザの決まりで、触れるまでは鳴らせない）。 */
 function soundInit() {
   if (soundCtx) { soundApplyVolume(); return; }
   const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -42641,38 +42671,50 @@ function soundInit() {
   try { soundCtx = new Ctx(); } catch (err) { soundCtx = null; return; }
   const ctx = soundCtx;
   const comp = ctx.createDynamicsCompressor();   // 全部の音をまとめ、重なったら自動で下げる
-  comp.threshold.value = -20; comp.knee.value = 12; comp.ratio.value = 6;
-  comp.attack.value = 0.005; comp.release.value = 0.25;
-  const master = ctx.createGain(); master.gain.value = 1;
-  comp.connect(master); master.connect(ctx.destination);
+  comp.threshold.value = -16; comp.knee.value = 10; comp.ratio.value = 5;
+  comp.attack.value = 0.004; comp.release.value = 0.2;
+  comp.connect(ctx.destination);
+  const duck = ctx.createGain(); duck.gain.value = 1;     // 陥落・鐘のときに一瞬下げる
   const muffle = ctx.createBiquadFilter(); muffle.type = "lowpass"; muffle.frequency.value = SOUND_MUFFLE_HZ; muffle.Q.value = 0.5;
-  const duck = ctx.createGain(); duck.gain.value = 1;     // 陥落のときに一瞬下げる
-  const seBus = ctx.createGain(); seBus.gain.value = 0;
+  muffle.connect(duck); duck.connect(comp);
   const reverb = ctx.createConvolver(); reverb.buffer = soundMakeImpulse(ctx);
-  const send = ctx.createGain(); send.gain.value = SOUND_REVERB_SEND;
-  seBus.connect(muffle); muffle.connect(duck); duck.connect(comp);
-  muffle.connect(send); send.connect(reverb); reverb.connect(comp);
-  // ブレスのざわめき：ずっと流しているノイズを、吐いている量に合わせて上げ下げするだけ（1匹ずつは鳴らさない）
-  const noiseLen = ctx.sampleRate * 2;
-  const noiseBuf = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
-  const nd = noiseBuf.getChannelData(0);
-  for (let i = 0; i < noiseLen; i++) nd[i] = fxRandom() * 2 - 1;
-  const noise = ctx.createBufferSource(); noise.buffer = noiseBuf; noise.loop = true;
-  const band = ctx.createBiquadFilter(); band.type = "bandpass"; band.frequency.value = 520; band.Q.value = 0.6;
-  const breathGain = ctx.createGain(); breathGain.gain.value = 0;
-  noise.connect(band); band.connect(breathGain); breathGain.connect(seBus);
-  noise.start();
-  // v3.201.0（DT-075 2回目）: BGM の通り道。音量 → 場面の大きさ（プレイ中・メニュー）→ 少しだけこもらせる → 陥落で下げる（duck）。残響にも送る
+  const reverbSend = ctx.createGain(); reverbSend.gain.value = SOUND_REVERB_SEND;
+  muffle.connect(reverbSend); reverbSend.connect(reverb); reverb.connect(duck);
+  // エコー：遅れは曲の付点8分にそろえる（読み終えたらテンポから決め直す）。返りはこもらせて遠くする
+  const echoDelay = ctx.createDelay(2); echoDelay.delayTime.value = 0.4;
+  const echoFeedback = ctx.createGain(); echoFeedback.gain.value = SOUND_ECHO_FEEDBACK;
+  const echoLow = ctx.createBiquadFilter(); echoLow.type = "lowpass"; echoLow.frequency.value = SOUND_ECHO_LOWPASS_HZ;
+  const echoSend = ctx.createGain(); echoSend.gain.value = SOUND_ECHO_SEND;
+  muffle.connect(echoSend); echoSend.connect(echoDelay); echoDelay.connect(echoLow); echoLow.connect(echoFeedback);
+  echoFeedback.connect(echoDelay); echoLow.connect(duck);
+  const seBus = ctx.createGain(); seBus.gain.value = 0;
+  seBus.connect(muffle);
+  // BGM：音量 → 場面の大きさ（プレイ中・メニュー）→ 効果音と同じこもり・エコー・残響
   const bgmVol = ctx.createGain(); bgmVol.gain.value = 0;
   const bgmBus = ctx.createGain(); bgmBus.gain.value = 0;
-  const bgmMuffle = ctx.createBiquadFilter(); bgmMuffle.type = "lowpass"; bgmMuffle.frequency.value = BGM_MUFFLE_HZ; bgmMuffle.Q.value = 0.5;
-  const bgmSend = ctx.createGain(); bgmSend.gain.value = BGM_REVERB_SEND;
-  bgmBus.connect(bgmVol); bgmVol.connect(bgmMuffle); bgmMuffle.connect(duck);
-  bgmMuffle.connect(bgmSend); bgmSend.connect(reverb);
-  soundNodes = { master, seBus, bgmBus, bgmVol, duck, muffle, reverb, breathGain, noiseBuf };
-  soundBreathTimer = setInterval(soundUpdateBreath, SOUND_BREATH_UPDATE_MS);
-  bgmTimer = setInterval(bgmSchedule, BGM_SCHEDULE_MS);
+  bgmBus.connect(bgmVol); bgmVol.connect(muffle);
+  soundNodes = { seBus, bgmBus, bgmVol, duck, echoDelay };
   soundApplyVolume();
+  soundLoad().catch((err) => console.warn("[sound] 音のかけらを読めなかった", err));
+}
+
+function soundDecode(arrayBuffer) {
+  return new Promise((resolve, reject) => {
+    const p = soundCtx.decodeAudioData(arrayBuffer, resolve, reject);   // 古い Safari は約束（Promise）を返さないので両方で受ける
+    if (p && p.then) p.then(resolve, reject);
+  });
+}
+async function soundLoad() {
+  const res = await fetch(SOUND_DIR + SOUND_MUSIC_FILE);
+  const music = await res.json();
+  await Promise.all(Object.entries(music.instruments).map(async ([name, def]) => {
+    const r = await fetch(SOUND_DIR + def.file);
+    soundBuffers[name] = await soundDecode(await r.arrayBuffer());
+  }));
+  soundMusic = music;
+  soundNodes.echoDelay.delayTime.value = soundStepSec() * SOUND_ECHO_STEPS;
+  soundReady = true;
+  soundTimer = setInterval(soundSchedule, SOUND_SCHEDULE_MS);
 }
 for (const type of ["pointerdown", "keydown"]) {
   window.addEventListener(type, (e) => { if (e.isTrusted) soundInit(); }, { capture: true, passive: true });
@@ -42683,300 +42725,289 @@ document.addEventListener("visibilitychange", () => {   // タブを離れたら
   else if (soundOn()) soundCtx.resume().catch(() => {});
 });
 
-function soundUpdateBreath() {
-  if (!soundCtx || !soundNodes) return;
-  const rate = soundBreathHits * (1000 / SOUND_BREATH_UPDATE_MS);
-  soundBreathHits = 0;
-  const playing = gameState === "playing" && !upgradeCardsVisible && !perkOfferArtifact;
-  const level = playing ? Math.min(1, Math.sqrt(rate / SOUND_BREATH_FULL_RATE)) : 0;
-  soundNodes.breathGain.gain.setTargetAtTime(level * SOUND_BREATH_GAIN_MAX, soundCtx.currentTime, SOUND_BREATH_SMOOTH);
+// --- 時計と和音 ---
+function soundStepSec() { return 60 / soundMusic.tempo / 4; }
+function soundBarCount() { return soundMusic.chords.length; }
+/** 時刻 t は曲の頭から何番目の16分音符か（小数のまま） */
+function soundStepAt(t) { return (t - soundSongStart) / soundStepSec(); }
+function soundStepTime(step) { return soundSongStart + step * soundStepSec(); }
+function soundChordAtStep(step) {
+  const bar = Math.floor(step / soundMusic.stepsPerBar);
+  const n = soundBarCount();
+  return soundMusic.chords[((bar % n) + n) % n];
 }
-/** 竜の攻撃が建物に当たった（ざわめきの大きさに数えるだけ。毎回は鳴らさない）。 */
-function sfxBreathHit() { if (soundCtx) soundBreathHits++; }
+/** 次の16分音符の格子（間に合わない近さなら1つ先）。返すのは番号 */
+function soundNextGridStep(every = 1) {
+  const s = soundStepAt(soundCtx.currentTime + SOUND_GRID_SAFETY);
+  return Math.ceil(s / every) * every;
+}
+/** 鳴らせるか（回路・かけら・音の設定・タブが前に出ている） */
+function soundLive() {
+  return soundReady && soundOn() && soundCtx.state === "running";
+}
+/** 音階の n 番目の高さ（start から上へ。和音の scale があればそれ、無ければ曲の調） */
+function soundScaleNote(chord, start, n) {
+  const scale = chord.scale || soundMusic.keyScale;
+  const key = soundMusic.key % 12;
+  // start 以上で一番近い音階の音から数え始める
+  const pcs = scale.map(d => (key + d) % 12).sort((a, b) => a - b);
+  let octave = Math.floor(start / 12), idx = pcs.findIndex(pc => octave * 12 + pc >= start);
+  if (idx < 0) { idx = 0; octave++; }
+  const k = idx + n;
+  return (octave + Math.floor(k / pcs.length)) * 12 + pcs[((k % pcs.length) + pcs.length) % pcs.length];
+}
+/** 和音の音を下から順に n 番目（3つで1オクターブ上がる） */
+function soundChordNote(chord, n) {
+  const k = chord.tones.length;
+  return chord.tones[((n % k) + k) % k] + 12 * Math.floor(n / k);
+}
 
-/** 間引き：同じ音は SOUND_SFX_MIN_GAP 秒に1回まで。鳴らせるときだけ時刻を返す。 */
-function sfxGate(key) {
-  if (!soundCtx || !soundNodes || !soundOn() || soundCtx.state !== "running") return -1;
+// --- かけらを鳴らす ---
+/** 楽器 inst を高さ midi で時刻 t に鳴らす。len を渡すとその長さで離す（伸ばす楽器）。pan は -1（左）〜1（右） */
+function soundPlay(bus, inst, midi, t, gain, opts = {}) {
+  const buf = soundBuffers[inst];
+  const def = soundMusic.instruments[inst];
+  if (!buf || !def || gain <= 0) return 0;
+  const ctx = soundCtx;
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  src.playbackRate.value = Math.pow(2, (midi - def.base) / 12);
+  const g = ctx.createGain();
+  const attack = opts.attack || 0;
+  const natural = buf.duration / src.playbackRate.value;
+  let end = t + natural;
+  if (attack > 0) { g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(gain, t + attack); }
+  else g.gain.setValueAtTime(gain, t);
+  if (opts.len) {
+    const release = opts.release || 0.08;
+    const off = Math.min(t + opts.len, end - release);
+    g.gain.setValueAtTime(gain, Math.max(t + attack, off));
+    g.gain.linearRampToValueAtTime(0.0001, off + release);
+    end = off + release;
+  }
+  src.connect(g);
+  let out = g;
+  if (opts.pan && ctx.createStereoPanner) {
+    const p = ctx.createStereoPanner(); p.pan.value = Math.max(-1, Math.min(1, opts.pan));
+    g.connect(p); out = p;
+  }
+  out.connect(bus);
+  src.start(Math.max(t, ctx.currentTime));
+  src.stop(end + 0.02);
+  return end;
+}
+/** 効果音の同時に鳴らす数の上限（優先度ごと）。鳴らせるときだけ true */
+function soundVoiceAllowed(prio) {
+  const now = soundCtx.currentTime;
+  for (let i = soundVoices.length - 1; i >= 0; i--) if (soundVoices[i].end < now) soundVoices.splice(i, 1);
+  return soundVoices.length < (soundMusic.voiceLimit[prio] || 0);
+}
+function sfxPlay(prio, inst, midi, t, gain, opts) {
+  const end = soundPlay(soundNodes.seBus, inst, midi, t, gain, opts);
+  if (end) soundVoices.push({ end, prio });
+}
+/** 同じ効果音を minGap 秒に1回まで */
+function sfxGap(key, minGap) {
   const t = soundCtx.currentTime;
-  if (soundLastAt[key] !== undefined && t - soundLastAt[key] < SOUND_SFX_MIN_GAP) return -1;
+  if (soundLastAt[key] !== undefined && t - soundLastAt[key] < minGap) return false;
   soundLastAt[key] = t;
-  return t;
+  return true;
 }
-/** 1音：波形・高さ・大きさ・長さ。高さを途中で落とす（toFreq）こともできる。 */
-function sfxTone(t, type, freq, gain, dur, toFreq, attack = 0.008) {
-  const ctx = soundCtx;
-  const o = ctx.createOscillator(); o.type = type;
-  o.frequency.setValueAtTime(freq * (1 + (fxRandom() - 0.5) * 0.02), t);   // わずかに揺らして機械的に聞こえないように
-  if (toFreq) o.frequency.exponentialRampToValueAtTime(toFreq, t + dur);
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(gain, t + attack);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g); g.connect(soundNodes.seBus);
-  o.start(t); o.stop(t + dur + 0.05);
+/** 地図の上の位置を画面の左右に直す（画面の外は端に寄せる） */
+function soundPanAt(wx) {
+  if (typeof wx !== "number" || !viewW) return 0;
+  const sx = (wx - cam.x) * cam.scale;
+  return Math.max(-1, Math.min(1, sx / (viewW * 0.5))) * SOUND_PAN_WIDTH;
 }
-/** こもったノイズの「ぼふっ」。 */
-function sfxNoise(t, cutoff, gain, dur) {
-  const ctx = soundCtx;
-  const src = ctx.createBufferSource(); src.buffer = soundNodes.noiseBuf;
-  const f = ctx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = cutoff;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(gain, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  src.connect(f); f.connect(g); g.connect(soundNodes.seBus);
-  src.start(t, fxRandom() * 1.5); src.stop(t + dur + 0.05);
-}
-/** 大きい音のとき、ほかの音を一瞬下げて戻す。 */
+/** 大きい音のとき、ほかの音を一瞬下げて戻す */
 function sfxDuck(t) {
   const g = soundNodes.duck.gain;
   g.cancelScheduledValues(t);
   g.setValueAtTime(g.value, t);
-  g.linearRampToValueAtTime(1 - SOUND_DUCK_DEPTH, t + 0.05);
+  g.linearRampToValueAtTime(1 - SOUND_DUCK_DEPTH, t + 0.04);
   g.linearRampToValueAtTime(1, t + SOUND_DUCK_SECONDS);
 }
 
-// --- 効果音の最小セット ---
-/** 建物の崩壊：低い「ぼふっ」。 */
-function sfxCollapse() {
-  const t = sfxGate("collapse"); if (t < 0) return;
-  sfxNoise(t, 420, 0.55, 0.32);
-  sfxTone(t, "sine", 92, 0.45, 0.28, 46);
-}
-/** 町・首都の陥落：短い和音（首都は少し長く、1つ上の音を足す）。 */
-function sfxTownFall(capital) {
-  const t = sfxGate(capital ? "capitalFall" : "townFall"); if (t < 0) return;
-  sfxDuck(t);
-  const dur = capital ? 2.6 : 1.3;
-  const notes = capital ? [146.8, 220.0, 293.7, 349.2] : [146.8, 220.0, 293.7];   // レ・ラ・レ（＋ファ）：落ち着いた短調寄り
-  notes.forEach((f, k) => sfxTone(t + k * 0.045, "triangle", f, 0.22, dur, null, 0.03));
-  sfxNoise(t, 300, 0.4, 0.5);
-}
-/** 卵：小さな鈴。 */
-function sfxEgg() {
-  const t = sfxGate("egg"); if (t < 0) return;
-  sfxTone(t, "sine", 880, 0.12, 0.35);
-  sfxTone(t, "sine", 1318.5, 0.04, 0.22);
-}
-/** 竜の被弾：低いこもった音。 */
-function sfxHit() {
-  const t = sfxGate("hit"); if (t < 0) return;
-  sfxNoise(t, 260, 0.30, 0.12);
-  sfxTone(t, "sine", 120, 0.20, 0.12, 80);
-}
-/** 警戒度アップ：低い鐘（倍音をずらして鐘らしく）。 */
-function sfxAlert() {
-  const t = sfxGate("alert"); if (t < 0) return;
-  sfxDuck(t);
-  sfxTone(t, "sine", 164.8, 0.32, 2.2, null, 0.004);
-  sfxTone(t, "sine", 164.8 * 2.76, 0.08, 1.3, null, 0.004);
-  sfxTone(t, "sine", 164.8 * 5.40, 0.03, 0.7, null, 0.004);
-}
-/** レベルアップ・アーティファクトの三択：やわらかいチャイム。 */
-function sfxChime() {
-  const t = sfxGate("chime"); if (t < 0) return;
-  sfxTone(t, "triangle", 523.3, 0.14, 0.9, null, 0.02);
-  sfxTone(t + 0.12, "triangle", 784.0, 0.11, 1.1, null, 0.02);
-}
-
-// -----------------------------------------------------------------
-// v3.201.0（案帳 DT-075 2回目・11/25 Shooter「BGM はもう少し音楽になっている方がいい」）: BGM を1曲（全時代共通）
-// v3.202.0（DT-075 手直し・11/25 Shooter「試しに塊魂みたいな雰囲気にしてみて」）: 曲を作り替えた
-// -----------------------------------------------------------------
-// 方向：明るく弾む、少しとぼけた陽気なラウンジ・ジャズ寄りのポップ（渋谷系っぽい和音、跳ねるリズム、賑やかな楽器）。
-// 既存の曲の節や和音進行は借りない（雰囲気だけ寄せた、このゲームのための曲）。
-// 曲：ハ長調・4/4・BGM_TEMPO・跳ねる8分（裏拍を BGM_SWING だけ遅らせる）。
-//   A（8小節：C6・Am7・Dm7・G7…のツーファイブで弾む）→ B（8小節：Fmaj7 → Fm6 の切ない下がりを入れて、G7 の駆け上がりで頭へ戻る）。1周＝約29秒。
-// 楽器：エレピ（裏で刻む和音）・はねるベース（次の小節の根音へ半音下から寄る）・はじけるホーン（区切りの「パッ」）・柔らかいオルガンの帯・
-//   旋律は周ごとに「おもちゃのサックス（矩形波）」→「口笛（正弦波）」→「ホーンの合奏（のこぎり波2本）」と替え、4周目は旋律を休んでエレピとベースだけにする。
-// 打楽器は警戒度で1層ずつ足す（警戒度1＝太鼓と刻み、2＝手拍子、3以上＝タンバリン）。メニュー・カード選びの間は BGM_MENU_LEVEL まで下げる。
-// 16ビット機の音源の雰囲気（短い波形の音色・少しこもらせる・残響）は効果音と同じ回路に通して保つ。
-// 音は人が画面に触れて音の回路ができてから先読みで鳴らす（setInterval で BGM_LOOKAHEAD 秒先までを予約）。ヘッドレス再生では回路ができないので鳴らない。
-// 乱数は使わない（譜面どおり）。
-const BGM_TEMPO        = 132;     // 1分の拍数
-const BGM_SWING        = 0.3;     // 裏拍の8分音符を、8分音符のこの割合だけ遅らせる（跳ねる感じ）
-const BGM_HEADROOM     = 0.42;    // BGM の音量 100 のときの実際の大きさ
-const BGM_MUFFLE_HZ    = 4800;    // BGM のこもらせ（明るい曲なので前より開ける）
-const BGM_REVERB_SEND  = 0.2;
-const BGM_SCHEDULE_MS  = 60;      // 予約し直す間隔
-const BGM_LOOKAHEAD    = 0.3;     // 何秒先まで予約するか
-const BGM_MENU_LEVEL   = 0.45;    // メニュー・カード選びの間の大きさ（プレイ中＝1）
-const BGM_LEVEL_SMOOTH = 0.6;     // 場面で大きさを変えるときの追いつき（秒）
-// 和音（16小節）：根音と構成音（MIDI の番号。60＝真ん中のド）。4和音
-const BGM_CHORDS = [
-  [48, [48, 52, 55, 57]], [45, [45, 48, 52, 55]], [50, [50, 53, 57, 60]], [43, [43, 47, 50, 53]],   // C6    Am7  Dm7  G7
-  [52, [52, 55, 59, 62]], [45, [45, 49, 52, 55]], [50, [50, 53, 57, 60]], [43, [43, 47, 50, 53]],   // Em7   A7   Dm7  G7
-  [41, [41, 45, 48, 52]], [41, [41, 44, 48, 50]], [52, [52, 55, 59, 62]], [45, [45, 49, 52, 55]],   // Fmaj7 Fm6  Em7  A7
-  [50, [50, 53, 57, 60]], [43, [43, 47, 50, 53]], [48, [48, 52, 55, 57]], [43, [43, 47, 50, 53]],   // Dm7   G7   C6   G7
-];
-// 旋律：小節ごとに「音名:8分音符の数」（r は休み）。1小節＝8分音符8つ
-const BGM_MELODY = [
-  "E5:1 G5:1 r:1 A5:1 G5:2 E5:2", "C5:1 D5:1 E5:1 G5:1 r:1 E5:1 D5:2", "F5:1 A5:1 r:1 C6:1 B5:1 A5:1 F5:2", "G5:3 F5:1 E5:1 D5:1 B4:2",
-  "E5:1 G5:1 r:1 B5:1 A5:2 G5:2", "C#6:2 A5:1 G5:1 E5:2 C#5:2", "D5:1 F5:1 A5:1 C6:1 r:1 A5:1 F5:1 D5:1", "G5:4 r:4",
-  "A5:2 C6:1 A5:1 G5:2 F5:2", "Ab5:2 G5:1 F5:1 D5:2 C5:2", "B4:1 D5:1 E5:1 G5:1 B5:2 A5:2", "G5:1 E5:1 C#5:1 E5:1 A5:4",
-  "F5:2 E5:1 F5:1 A5:2 G5:2", "F5:1 D5:1 B4:1 D5:1 G5:2 F5:2", "E5:3 D5:1 C5:2 E5:2", "D5:1 E5:1 F5:1 G5:1 A5:1 B5:1 D6:2",
-].map(bgmParseBar);
-// エレピの刻み（8分音符8つ。1＝和音を短く鳴らす。裏拍が多いのは跳ねさせるため）
-const BGM_COMP  = [0, 1, 0, 1, 1, 0, 0, 1];
-// ベース（8分音符8つ。数字は根音からの半音、"a" は次の小節の根音の半音下から寄る音、null は鳴らさない）
-const BGM_BASS  = [0, null, 12, null, 7, null, 12, "a"];
-const BGM_BASS_LEN = [2, 0, 1, 0, 2, 0, 1, 1];
-// ホーンの「パッ」（小節番号 → 鳴らす8分音符の位置）。区切りの小節で賑やかにする
-const BGM_HORNS = { 3: [6, 7], 7: [5, 6], 8: [0], 11: [6, 7], 15: [3, 5, 7] };
-// 打楽器（8分音符8つ）：k＝太鼓・h＝刻み・c＝手拍子・t＝タンバリン
-const BGM_DRUMS = { k: [1, 0, 0, 1, 1, 0, 0, 0], h: [1, 1, 1, 1, 1, 1, 1, 1], c: [0, 0, 1, 0, 0, 0, 1, 0], t: [0, 1, 0, 1, 0, 1, 0, 1] };
-
-let bgmTimer = null;
-let bgmStep = 0;          // 曲の頭からの8分音符の数（16小節×8 で1周）
-let bgmNextAt = 0;        // 次の8分音符を鳴らす時刻（音の回路の時計。跳ねる前の、まっすぐな拍の時刻）
-let bgmLevel = -1;        // いまの場面の大きさ（変わったときだけ動かす）
-
-function bgmParseBar(text) {
-  const NAMES = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-  let at = 0;
-  return text.split(" ").map((tok) => {
-    const [name, len] = tok.split(":");
-    const ev = { at, len: Number(len), midi: null };
-    at += ev.len;
-    if (name !== "r") {
-      const m = name.match(/^([A-G])(#|b)?(\d)$/);
-      ev.midi = 12 * (Number(m[3]) + 1) + NAMES[m[1]] + (m[2] === "#" ? 1 : m[2] === "b" ? -1 : 0);
-    }
-    return ev;
-  });
-}
-function bgmFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
-
-/** 1音を BGM の通り道へ。type＝波形、env＝[立ち上がり, 保つ大きさの割合, 消えるまで]。
- *  opts.lowpass＝こもらせる周波数、opts.lpFrom＝そこから lowpass まで素早く閉じる（ホーンの「パッ」の開き） */
-function bgmVoice(t, type, midi, gain, dur, env, opts = {}) {
-  const ctx = soundCtx, f = bgmFreq(midi);
-  const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
-  if (opts.detune) o.detune.setValueAtTime(opts.detune, t);
-  if (opts.bend) { o.frequency.setValueAtTime(f * Math.pow(2, opts.bend / 12), t); o.frequency.exponentialRampToValueAtTime(f, t + 0.06); }   // 下からしゃくり上げる
-  if (opts.vibrato) {   // 伸ばした音にだけ、少し遅れて揺れをかける
-    const lfo = ctx.createOscillator(); lfo.frequency.value = opts.vibratoHz || 5.6;
-    const depth = ctx.createGain(); depth.gain.setValueAtTime(0, t); depth.gain.linearRampToValueAtTime(f * (opts.vibratoDepth || 0.008), t + Math.min(0.3, dur * 0.6));
-    lfo.connect(depth); depth.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + env[2] + 0.05);
-  }
-  const g = ctx.createGain();
-  const [atk, sus, rel] = env;
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(gain, t + atk);
-  g.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain * sus), t + Math.max(atk + 0.01, dur * 0.7));
-  g.gain.setValueAtTime(Math.max(0.0001, gain * sus), t + dur);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur + rel);
-  let tail = g;
-  if (opts.lowpass) {
-    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = opts.q || 0.7;
-    if (opts.lpFrom) { lp.frequency.setValueAtTime(opts.lpFrom, t); lp.frequency.exponentialRampToValueAtTime(opts.lowpass, t + 0.14); }
-    else lp.frequency.value = opts.lowpass;
-    g.connect(lp); tail = lp;
-  }
-  o.connect(g); tail.connect(soundNodes.bgmBus);
-  o.start(t); o.stop(t + dur + rel + 0.05);
-}
-/** 打楽器（ノイズを削った音と、高さの落ちる音） */
-function bgmDrum(t, kind, gain) {
-  const ctx = soundCtx;
-  if (kind === "k") {
-    const o = ctx.createOscillator(); o.type = "sine";
-    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(52, t + 0.12);
-    const g = ctx.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
-    o.connect(g); g.connect(soundNodes.bgmBus); o.start(t); o.stop(t + 0.2);
-    return;
-  }
-  // 手拍子は少しずらした3つの短いノイズを重ねて、人が叩いた感じにする
-  const hits = kind === "c" ? [0, 0.011, 0.022] : [0];
-  for (const off of hits) {
-    const src = ctx.createBufferSource(); src.buffer = soundNodes.noiseBuf;
-    const f = ctx.createBiquadFilter(); f.type = "bandpass";
-    const g = ctx.createGain();
-    const last = off === hits[hits.length - 1];
-    const dur = kind === "h" ? 0.035 : kind === "t" ? 0.07 : last ? 0.12 : 0.012;
-    if (kind === "h") { f.frequency.value = 7000; f.Q.value = 1.4; }
-    else if (kind === "t") { f.frequency.value = 9500; f.Q.value = 2.5; }
-    else { f.frequency.value = 1400; f.Q.value = 1.1; }
-    g.gain.setValueAtTime(gain, t + off); g.gain.exponentialRampToValueAtTime(0.0001, t + off + dur);
-    src.connect(f); f.connect(g); g.connect(soundNodes.bgmBus);
-    src.start(t + off, ((bgmStep % 16) * 0.09 + off * 7) % 0.9); src.stop(t + off + dur + 0.02);   // ノイズの読み出し位置は拍で決める（乱数を使わない）
-  }
-}
-/** エレピ：正弦波の芯に、すぐ消える高い倍音を足してベルのように */
-function bgmKeys(t, midi, gain, dur) {
-  bgmVoice(t, "sine", midi, gain, dur, [0.004, 0.45, 0.12]);
-  bgmVoice(t, "triangle", midi + 12, gain * 0.25, dur * 0.5, [0.002, 0.1, 0.08]);
-}
-
-/** いまの場面の大きさ：プレイ中は 1、メニュー・カード選び・タイトルは BGM_MENU_LEVEL */
-function bgmSceneLevel() {
+// --- トラッカー（曲） ---
+/** いまの場面の大きさ：プレイ中は 1、メニュー・カード選び・タイトルは SOUND_MENU_LEVEL */
+function soundSceneTarget() {
   const playing = gameState === "playing" && !upgradeCardsVisible && !perkOfferArtifact;
-  return playing ? 1 : BGM_MENU_LEVEL;
+  return playing ? 1 : SOUND_MENU_LEVEL;
 }
-/** 8分音符1つぶんを予約する（t は跳ねさせた後の時刻） */
-function bgmPlayStep(t) {
-  const STEPS = BGM_CHORDS.length * 8;
-  const pos = bgmStep % STEPS, bar = Math.floor(pos / 8), e = pos % 8;
-  const loop = Math.floor(bgmStep / STEPS);
-  const eighth = 60 / BGM_TEMPO / 2;
-  const [root, tones] = BGM_CHORDS[bar];
-  const nextRoot = BGM_CHORDS[(bar + 1) % BGM_CHORDS.length][0];
-  // オルガンの帯（小節の頭で全音符。小さく、和音の上の3音だけ）
-  if (e === 0) for (const n of tones.slice(1)) bgmVoice(t, "triangle", n + 12, 0.016, eighth * 8, [0.08, 0.85, 0.3]);
-  // エレピの刻み
-  if (BGM_COMP[e]) for (const n of tones.slice(1)) bgmKeys(t, n + 12, 0.035, eighth * 0.6);
-  // ベース（はねる。小節の終わりは次の根音の半音下から寄る）
-  const b = BGM_BASS[e];
-  if (b !== null) {
-    const midi = b === "a" ? nextRoot - 13 : root - 12 + b;
-    bgmVoice(t, "square", midi, 0.07, eighth * BGM_BASS_LEN[e] * 0.7, [0.005, 0.5, 0.06], { lowpass: 700 });
-    bgmVoice(t, "triangle", midi, 0.09, eighth * BGM_BASS_LEN[e] * 0.7, [0.005, 0.5, 0.06]);
-  }
-  // ホーンの「パッ」（区切りの小節）
-  const horns = BGM_HORNS[bar];
-  if (horns && horns.includes(e)) {
-    for (const n of tones.slice(1)) {
-      bgmVoice(t, "sawtooth", n + 12, 0.022, eighth * 0.5, [0.01, 0.5, 0.08], { lowpass: 900, lpFrom: 3200, detune: -6 });
-      bgmVoice(t, "sawtooth", n + 12, 0.022, eighth * 0.5, [0.01, 0.5, 0.08], { lowpass: 900, lpFrom: 3200, detune: 6 });
-    }
-  }
-  // 旋律（周ごとに楽器を替える。4周目は休む）
-  const lead = loop % 4;
-  if (lead !== 3) {
-    for (const ev of BGM_MELODY[bar]) {
-      if (ev.at !== e || ev.midi === null) continue;
-      const len = eighth * ev.len * (ev.len === 1 ? 0.7 : 0.9);   // 短い音は切って弾ませる
-      const long = ev.len >= 3;
-      if (lead === 0) {          // おもちゃのサックス：こもらせた矩形波、伸ばす音はしゃくって揺らす
-        bgmVoice(t, "square", ev.midi, 0.05, len, [0.015, 0.7, 0.1], { lowpass: 2000, q: 2, vibrato: long, bend: long ? -1 : 0 });
-      } else if (lead === 1) {   // 口笛：1オクターブ上の正弦波、深めの揺れ
-        bgmVoice(t, "sine", ev.midi + 12, 0.09, len, [0.03, 0.8, 0.12], { vibrato: true, vibratoHz: 6.2, vibratoDepth: 0.01, bend: -0.5 });
-      } else {                   // ホーンの合奏：のこぎり波2本を開いて閉じる
-        bgmVoice(t, "sawtooth", ev.midi, 0.03, len, [0.02, 0.75, 0.1], { lowpass: 1500, lpFrom: 3500, detune: -5, vibrato: long });
-        bgmVoice(t, "sawtooth", ev.midi - 12, 0.022, len, [0.02, 0.75, 0.1], { lowpass: 1100, lpFrom: 2600, detune: 5 });
-      }
-    }
-  }
-  // 打楽器（警戒度で1層ずつ足す）
-  const tier = (typeof powerTier === "number" ? powerTier : 0) + 1;
-  if (BGM_DRUMS.k[e]) bgmDrum(t, "k", 0.2);
-  if (BGM_DRUMS.h[e]) bgmDrum(t, "h", e % 2 ? 0.025 : 0.045);   // 表拍を強く
-  if (tier >= 2 && BGM_DRUMS.c[e]) bgmDrum(t, "c", 0.14);
-  if (tier >= 3 && BGM_DRUMS.t[e]) bgmDrum(t, "t", 0.03);
-}
-/** 先読みで BGM_LOOKAHEAD 秒先までを予約する（setInterval で呼ぶ） */
-function bgmSchedule() {
-  if (!soundCtx || !soundNodes || soundCtx.state !== "running") return;
+function soundSchedule() {
+  if (!soundCtx || !soundReady || soundCtx.state !== "running") return;
   const now = soundCtx.currentTime;
-  const level = bgmSceneLevel();
-  if (level !== bgmLevel) { soundNodes.bgmBus.gain.setTargetAtTime(level, now, bgmLevel < 0 ? 0.05 : BGM_LEVEL_SMOOTH); bgmLevel = level; }
-  if (!soundOn() || soundBgmVolume() <= 0) { bgmNextAt = 0; return; }
-  if (bgmNextAt < now) bgmNextAt = now + 0.05;   // 初めて・止まっていた後は、少し先から始める
-  const eighth = 60 / BGM_TEMPO / 2;
-  while (bgmNextAt < now + BGM_LOOKAHEAD) {
-    bgmPlayStep(bgmNextAt + (bgmStep % 2 ? eighth * BGM_SWING : 0));   // 裏拍を遅らせて跳ねさせる
-    bgmNextAt += eighth;
-    bgmStep++;
+  const level = soundSceneTarget();
+  if (level !== soundSceneLevel) { soundNodes.bgmBus.gain.setTargetAtTime(level, now, soundSceneLevel < 0 ? 0.05 : SOUND_LEVEL_SMOOTH); soundSceneLevel = level; }
+  // 息（ブレスが建物に当たった数）は少しずつならして、シェイカーの刻みの大きさにする
+  soundRun.breathRate += (soundRun.breathHits * (1000 / SOUND_SCHEDULE_MS) - soundRun.breathRate) * 0.08;
+  soundRun.breathHits = 0;
+  if (!soundOn()) return;
+  if (soundSongStart === 0 || soundStepTime(soundNextStep) < now - 0.25) {   // 初めて・長く止まっていた後は、少し先の小節の頭から始め直す
+    soundSongStart = now + 0.05;
+    soundNextStep = 0;
   }
+  while (soundStepTime(soundNextStep) < now + SOUND_LOOKAHEAD) {
+    soundPlayStep(soundNextStep, soundStepTime(soundNextStep));
+    soundNextStep++;
+  }
+}
+/** 16分音符1つぶんを予約する */
+function soundPlayStep(step, t) {
+  const m = soundMusic, spb = m.stepsPerBar, bars = soundBarCount();
+  const bus = soundNodes.bgmBus;
+  const barAbs = Math.floor(step / spb), bar = barAbs % bars, s = step % spb;
+  const loop = Math.floor(barAbs / bars);
+  const chord = m.chords[bar];
+  const stepSec = soundStepSec();
+  const tier = (typeof powerTier === "number" ? powerTier : 0);
+  const ducked = step < soundRun.duckUntilStep;   // 警戒度の鐘のあと1小節は伴奏を引いて「空気が変わった」を作る
+  for (const tr of m.tracks) {
+    if (ducked && tr.type !== "chord") continue;
+    if (tr.type === "chord") {
+      if (s === 0) for (const n of chord.tones) soundPlay(bus, tr.inst, n + (tr.octave || 0), t, tr.gain, { attack: tr.attack, len: spb * stepSec, release: tr.release });
+    } else if (tr.type === "arp") {
+      for (const [at, idx] of tr.notes) if (at === s) soundPlay(bus, tr.inst, soundChordNote(chord, idx), t, tr.gain);
+    } else if (tr.type === "bass") {
+      for (const [at, semi, len] of tr.notes) if (at === s) soundPlay(bus, tr.inst, chord.root + semi, t, tr.gain, { len: len * stepSec * 0.9, release: 0.05 });
+    } else if (tr.type === "drum") {
+      if (tier < (tr.minTier || 0)) continue;
+      if (tr.everyBars && (barAbs % tr.everyBars) !== tr.everyBars - 1) continue;
+      const k = tr.steps.indexOf(s);
+      if (k < 0) continue;
+      const def = m.instruments[tr.inst];
+      const pitch = tr.pitchSteps ? chord.root + 12 + tr.pitchSteps[k] : def.base;
+      soundPlay(bus, tr.inst, pitch, t, tr.gain);
+    }
+  }
+  // 竜の主題（角笛）
+  const mel = m.melody;
+  if (!ducked && !mel.rest.includes(loop % mel.cycle)) {
+    for (const [at, midi, len] of mel.bars[bar]) if (at === s) soundPlay(bus, mel.inst, midi, t, mel.gain, { attack: 0.02, len: len * stepSec * 0.92, release: 0.12 });
+  }
+  // 息：竜のブレスが建物に当たっている量に合わせて、シェイカーを刻む（1匹ずつは鳴らさない）
+  const br = m.sfx.breath;
+  if (soundRun.breathRate > 1 && s % br.everySteps === 0 && soundVoiceAllowed("breath")) {
+    const amount = Math.min(1, Math.sqrt(soundRun.breathRate / br.fullRate));
+    sfxPlay("breath", br.inst, m.instruments[br.inst].base, t, br.gain * amount * (s % 4 === 0 ? 1 : 0.6));
+  }
+}
+
+// --- 効果音 ---
+/** 竜の攻撃が建物に当たった（息の大きさに数えるだけ。毎回は鳴らさない）。 */
+function sfxBreathHit() { if (soundCtx) soundRun.breathHits++; }
+/** 建物の崩壊：次の空いた16分音符に並べ、和音の音を順に上るマリンバ（4つに1つは低い「どん」） */
+function sfxCollapse(wx) {
+  if (!soundCtx || !soundLive()) return;
+  const c = soundMusic.sfx.collapse;
+  const now = soundCtx.currentTime;
+  const slot = Math.max(soundNextGridStep(), soundRun.collapseSlot);
+  if (slot - soundStepAt(now) > c.maxAheadSteps) return;   // 詰まりすぎたら省く（遅れて鳴る音はうれしくない）
+  if (!soundVoiceAllowed("collapse")) return;
+  if (now - soundRun.collapseAt > c.resetSec) soundRun.collapseIdx = 0;
+  soundRun.collapseAt = now;
+  soundRun.collapseSlot = slot + 1;
+  const chord = soundChordAtStep(slot);
+  const n = soundRun.collapseIdx++ % (chord.tones.length * 2);   // 2オクターブ上ったら下から
+  const t = soundStepTime(slot), pan = soundPanAt(wx);
+  sfxPlay("collapse", c.inst, soundChordNote(chord, n) + c.octave, t, c.gain, { pan });
+  if (n % c.tom.everySteps === 0) sfxPlay("collapse", c.tom.inst, chord.root + 12, t, c.tom.gain, { pan });
+}
+/** 町・首都の陥落：次の拍で鐘と和音（首都は角笛の主題の和音とシンバルを足して長く） */
+function sfxTownFall(capital) {
+  if (!soundCtx || !soundLive() || !soundVoiceAllowed("fall")) return;
+  const f = soundMusic.sfx[capital ? "capitalFall" : "townFall"];
+  const step = soundNextGridStep(capital ? 4 : 2);
+  const t = soundStepTime(step), chord = soundChordAtStep(step);
+  sfxDuck(t);
+  sfxPlay("fall", "bell", chord.root + 24, t, f.bell);
+  if (capital) {
+    sfxPlay("fall", "crash", 60, t, f.crash);
+    chord.tones.forEach((n, k) => sfxPlay("fall", "horn", n, t + k * 0.03, f.horn, { attack: 0.03, len: 1.6, release: 0.5 }));
+    chord.tones.forEach((n) => sfxPlay("fall", "pad", n - 12, t, f.pad, { attack: 0.05, len: 2.2, release: 0.8 }));
+  } else {
+    chord.tones.forEach((n, k) => sfxPlay("fall", "harp", n + 12, t + k * 0.03, f.harp));
+    sfxPlay("fall", "tom", chord.root + 12, t, f.tom);
+  }
+}
+/** 卵：オルゴールで音階を1つずつ上る（続けて拾うほど上がり、少し途切れると戻る） */
+function sfxEgg(wx) {
+  if (!soundCtx || !soundLive() || !sfxGap("egg", soundStepSec() * 0.9) || !soundVoiceAllowed("egg")) return;
+  const e = soundMusic.sfx.egg;
+  const now = soundCtx.currentTime;
+  if (now - soundRun.eggAt > e.resetSec) soundRun.eggIdx = 0;
+  soundRun.eggAt = now;
+  const step = soundNextGridStep();
+  const chord = soundChordAtStep(step);
+  const n = Math.min(soundRun.eggIdx++, e.maxSteps);
+  sfxPlay("egg", e.inst, soundScaleNote(chord, chord.tones[0] + e.octave, n), soundStepTime(step), e.gain, { pan: soundPanAt(wx) });
+}
+/** 竜の被弾：低いこもった音（すぐ鳴らす。格子に寄せると当たった感じが遅れる） */
+function sfxHit() {
+  if (!soundCtx || !soundLive()) return;
+  const h = soundMusic.sfx.hit;
+  if (!sfxGap("hit", h.minGapSec) || !soundVoiceAllowed("hit")) return;
+  sfxPlay("hit", h.inst, h.midi, soundCtx.currentTime, h.gain);
+}
+/** 警戒度アップ：次の拍で鐘の一打。そのあと1小節だけ伴奏を引く */
+function sfxAlert() {
+  if (!soundCtx || !soundLive() || !soundVoiceAllowed("alert")) return;
+  const a = soundMusic.sfx.alert;
+  const step = soundNextGridStep(4);
+  const t = soundStepTime(step);
+  sfxDuck(t);
+  sfxPlay("alert", a.inst, a.midi, t, a.gain);
+  sfxPlay("alert", a.inst, a.midi + 12, t, a.gain * 0.35);
+  soundRun.duckUntilStep = step + soundMusic.stepsPerBar * a.duckBars;
+}
+/** レベルアップ・アーティファクトの三択：竜の主題の切れ端をオルゴールで */
+function sfxChime() {
+  if (!soundCtx || !soundLive() || !sfxGap("chime", 0.3)) return;
+  const c = soundMusic.sfx.chime;
+  const step = soundNextGridStep();
+  soundMusic.motif.slice(0, c.notes).forEach((n, k) => sfxPlay("alert", c.inst, n + c.octave, soundStepTime(step + k * (c.gapSteps + 1)), c.gain));
+}
+/** 線を引き始めた：駆け上がりを下から始める */
+function sfxDrawStart() {
+  soundRun.drawOn = true; soundRun.drawIdx = 0; soundRun.drawDist = 0;
+}
+/** 線を引いている：引いた長さ（画面 px）が stepPx 進むごとにハープが音階を1つ上る */
+function sfxDrawMove(distPx) {
+  if (!soundRun.drawOn || !soundCtx || !soundLive()) return;
+  const d = soundMusic.sfx.draw;
+  soundRun.drawDist += distPx;
+  if (soundRun.drawDist < d.stepPx) return;
+  soundRun.drawDist = 0;
+  const now = soundCtx.currentTime;
+  if (now - soundRun.drawAt < d.minGapSec || !soundVoiceAllowed("draw")) return;
+  soundRun.drawAt = now;
+  const chord = soundChordAtStep(Math.floor(soundStepAt(now)));
+  const n = Math.min(soundRun.drawIdx, d.maxSteps);
+  const top = n >= d.maxSteps;   // 上りきったら、てっぺんで小さくゆらす（上り続けると耳に痛い）
+  const midi = soundScaleNote(chord, chord.tones[0] + d.octave, top ? n - (soundRun.drawIdx % 2) : n);
+  sfxPlay("draw", d.inst, midi, now, d.gain * (top ? 0.6 : 0.7 + 0.3 * n / d.maxSteps), { len: d.noteSec, release: 0.25 });   // 短く離す（駆け上がりの音が積もって他の音の枠を食わないように）
+  soundRun.drawTop = midi;
+  soundRun.drawIdx++;
+}
+/** 指を離した＝群れが薙ぐ：上りきった所から、次の16分音符で和音をかき鳴らす */
+function sfxDrawRelease() {
+  const steps = soundRun.drawIdx;
+  soundRun.drawOn = false;
+  if (!soundCtx || !soundLive()) return;
+  const r = soundMusic.sfx.release;
+  if (steps < r.minSteps || !soundVoiceAllowed("draw")) return;
+  const step = soundNextGridStep();
+  const t = soundStepTime(step), chord = soundChordAtStep(step);
+  // てっぺんの音から下へ、和音の音を1オクターブぶん拾って下から上へかき鳴らす
+  const top = soundRun.drawTop;
+  const notes = [];
+  for (let k = 0; notes.length < chord.tones.length + 1 && k < 24; k++) {
+    const m = top - k;
+    if (chord.tones.some(n => ((n - m) % 12 + 12) % 12 === 0)) notes.unshift(m);
+  }
+  const amount = Math.min(1, steps / soundMusic.sfx.draw.maxSteps);
+  notes.forEach((n, k) => sfxPlay("draw", r.inst, n, t + k * r.strumSec, r.gain * (0.6 + 0.4 * amount)));
+  sfxPlay("draw", "bass", chord.root + 12, t, r.gain * 1.2 * amount, { len: 0.5, release: 0.2 });
+  if (steps >= r.crashFromSteps) sfxPlay("draw", "crash", 60, t, r.crashGain);
 }
 
 // -----------------------------------------------------------------
@@ -49423,6 +49454,7 @@ function beginDraw(sx, sy, now) {
   touchRing.x = sx;
   touchRing.y = sy;
   hapticPulse(10);
+  sfxDrawStart();   // v3.204.0（DT-624）: 線を引く間、ハープが音階を上る
 }
 
 function inputMove(sx, sy, now) {
@@ -49442,6 +49474,7 @@ function inputMove(sx, sy, now) {
   // 変更3: 指が動いたときも最新ワールド座標を更新する
   pointerWorldX = w.x;
   pointerWorldY = w.y;
+  sfxDrawMove(Math.hypot(sx - touchRing.x, sy - touchRing.y));   // v3.204.0（DT-624）: 引いた長さ（画面 px）で音階を上る
   touchRing.x = sx;
   touchRing.y = sy;
 }
@@ -49478,7 +49511,7 @@ function inputEnd() {
     }
     promoteTapToDraw();   // 押している間に使えなくなった：ふつうの短い一押しとして扱う（下で線を終える）
   }
-  if (inputMode === "DRAW") { const v = swipeVelocity(); magnetOnSwipe(v.x, v.y); aimOnRelease(pointerWorldX, pointerWorldY); recallOnRelease(pointerWorldX, pointerWorldY); barrierOnRelease(); }   // v3.64.0: 指先竜は離した所へ撃つ   // v3.33.0: 磁竜は離したときのスワイプで破片を投げる
+  if (inputMode === "DRAW") { const v = swipeVelocity(); magnetOnSwipe(v.x, v.y); aimOnRelease(pointerWorldX, pointerWorldY); recallOnRelease(pointerWorldX, pointerWorldY); barrierOnRelease(); sfxDrawRelease(); }   // v3.204.0（DT-624）: 離したら上りきった所から和音   // v3.64.0: 指先竜は離した所へ撃つ   // v3.33.0: 磁竜は離したときのスワイプで破片を投げる
   isDrawing = false;
   inputMode = "NONE";
   touchRing.active = false;
