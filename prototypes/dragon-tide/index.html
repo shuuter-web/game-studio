@@ -1381,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.200.0";
+const GAME_VERSION = "v3.201.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -42583,7 +42583,7 @@ const CODEX_SPECIAL_SHOTS = [
 // 鳴らし方の揺らぎは fxRandom（ゲームの乱数列に触らない）。音は人が画面に触れたとき（isTrusted）に初めて作るので、
 // 合成の入力で回すヘッドレス再生では作られない＝鳴らない。
 const SOUND_DEFAULT_SE      = 40;     // 効果音の既定の音量（0〜100。仮。実機で聞いて決める）
-const SOUND_DEFAULT_BGM     = 50;     // BGM の既定の音量（BGM は2回目で入る。値の置き場だけ先に作る）
+const SOUND_DEFAULT_BGM     = 50;     // BGM の既定の音量（0〜100）
 const SOUND_SFX_MIN_GAP     = 0.1;    // 同じ効果音を鳴らす最短の間隔（秒）
 const SOUND_MUFFLE_HZ       = 2600;   // こもらせるローパス（16ビット機の低いサンプリングのこもり）
 const SOUND_REVERB_SECONDS  = 2.4;    // 残響の長さ
@@ -42598,7 +42598,7 @@ const SOUND_BREATH_UPDATE_MS = 100;   // ざわめきの大きさを見直す間
 const SOUND_BREATH_SMOOTH   = 0.35;   // ざわめきの大きさの追いつき（秒）
 
 let soundCtx = null;
-let soundNodes = null;          // { master, seBus, duck, muffle, reverb, breathGain }
+let soundNodes = null;          // { master, seBus, bgmBus, duck, muffle, reverb, breathGain }
 const soundLastAt = {};         // 効果音ごとの最後に鳴らした時刻（間引き）
 let soundBreathHits = 0;        // 前の見直しから、建物に当たった回数
 let soundBreathTimer = null;
@@ -42607,6 +42607,7 @@ function soundOptions() { return (profile && profile.options) || {}; }
 /** 音を鳴らすか（既定は鳴らす）。 */
 function soundOn() { return soundOptions().sound !== false; }
 function soundSeVolume() { const v = soundOptions().seVolume; return typeof v === "number" ? v : SOUND_DEFAULT_SE; }
+function soundBgmVolume() { const v = soundOptions().bgmVolume; return typeof v === "number" ? v : SOUND_DEFAULT_BGM; }
 function soundSetOption(key, value) {
   if (!profile.options) profile.options = {};
   profile.options[key] = value;
@@ -42617,6 +42618,7 @@ function soundApplyVolume() {
   if (!soundCtx || !soundNodes) return;
   const t = soundCtx.currentTime;
   soundNodes.seBus.gain.setTargetAtTime(soundOn() ? (soundSeVolume() / 100) * SOUND_SE_HEADROOM : 0, t, 0.05);
+  soundNodes.bgmVol.gain.setTargetAtTime(soundOn() ? (soundBgmVolume() / 100) * BGM_HEADROOM : 0, t, 0.05);
   if (soundOn() && !document.hidden) soundCtx.resume().catch(() => {});
 }
 
@@ -42660,8 +42662,16 @@ function soundInit() {
   const breathGain = ctx.createGain(); breathGain.gain.value = 0;
   noise.connect(band); band.connect(breathGain); breathGain.connect(seBus);
   noise.start();
-  soundNodes = { master, seBus, duck, muffle, reverb, breathGain, noiseBuf };
+  // v3.201.0（DT-075 2回目）: BGM の通り道。音量 → 場面の大きさ（プレイ中・メニュー）→ 少しだけこもらせる → 陥落で下げる（duck）。残響にも送る
+  const bgmVol = ctx.createGain(); bgmVol.gain.value = 0;
+  const bgmBus = ctx.createGain(); bgmBus.gain.value = 0;
+  const bgmMuffle = ctx.createBiquadFilter(); bgmMuffle.type = "lowpass"; bgmMuffle.frequency.value = BGM_MUFFLE_HZ; bgmMuffle.Q.value = 0.5;
+  const bgmSend = ctx.createGain(); bgmSend.gain.value = BGM_REVERB_SEND;
+  bgmBus.connect(bgmVol); bgmVol.connect(bgmMuffle); bgmMuffle.connect(duck);
+  bgmMuffle.connect(bgmSend); bgmSend.connect(reverb);
+  soundNodes = { master, seBus, bgmBus, bgmVol, duck, muffle, reverb, breathGain, noiseBuf };
   soundBreathTimer = setInterval(soundUpdateBreath, SOUND_BREATH_UPDATE_MS);
+  bgmTimer = setInterval(bgmSchedule, BGM_SCHEDULE_MS);
   soundApplyVolume();
 }
 for (const type of ["pointerdown", "keydown"]) {
@@ -42769,6 +42779,170 @@ function sfxChime() {
 }
 
 // -----------------------------------------------------------------
+// v3.201.0（案帳 DT-075 2回目・11/25 Shooter「BGM はもう少し音楽になっている方がいい」）: BGM を1曲（全時代共通）
+// -----------------------------------------------------------------
+// 案の「ゆっくり動く和音の帯にまばらな節」（アンビエント）ではなく、旋律・和音・ベース・アルペジオ・軽い打楽器のある曲にした。
+// 16ビット機の音源の雰囲気（短い波形の音色・少しこもらせる・深めの残響）は効果音と同じ回路に通して保つ。
+// 曲：ニ短調（ドリア寄り）・4/4・BGM_TEMPO。A（8小節：旅立ちの節）→ B（8小節：盛り上がって属和音で戻る）の16小節を繰り返す。
+// 繰り返すたびに旋律の楽器を「笛（三角波）」→「角笛（矩形波）」→「笛」と替え、4周目は旋律を休んで伴奏だけにする（同じに聞こえ続けないように）。1周＝約40秒。
+// 打楽器は警戒度で1層ずつ足す（警戒度1＝足踏みの太鼓だけ、2＝刻み、3以上＝小太鼓）。メニュー・カード選びの間は BGM_MENU_LEVEL まで下げる。
+// 音は人が画面に触れて音の回路ができてから先読みで鳴らす（setInterval で BGM_LOOKAHEAD 秒先までを予約）。ヘッドレス再生では回路ができないので鳴らない。
+// 乱数は使わない（譜面どおり）。
+const BGM_TEMPO        = 96;      // 1分の拍数
+const BGM_HEADROOM     = 0.42;    // BGM の音量 100 のときの実際の大きさ
+const BGM_MUFFLE_HZ    = 3400;    // BGM のこもらせ（効果音より少し明るく。旋律が埋もれないように）
+const BGM_REVERB_SEND  = 0.28;
+const BGM_SCHEDULE_MS  = 60;      // 予約し直す間隔
+const BGM_LOOKAHEAD    = 0.3;     // 何秒先まで予約するか
+const BGM_MENU_LEVEL   = 0.45;    // メニュー・カード選びの間の大きさ（プレイ中＝1）
+const BGM_LEVEL_SMOOTH = 0.6;     // 場面で大きさを変えるときの追いつき（秒）
+// 和音（16小節）：根音と構成音（MIDI の番号。60＝真ん中のド）
+const BGM_CHORDS = [
+  [50, [50, 53, 57]], [46, [46, 50, 53]], [48, [48, 52, 55]], [45, [45, 48, 52]],   // Dm  B♭  C   Am
+  [50, [50, 53, 57]], [41, [41, 45, 48]], [43, [43, 47, 50]], [45, [45, 49, 52]],   // Dm  F   G   A
+  [46, [46, 50, 53]], [48, [48, 52, 55]], [45, [45, 48, 52]], [50, [50, 53, 57]],   // B♭  C   Am  Dm
+  [43, [43, 46, 50]], [48, [48, 52, 55]], [46, [46, 50, 53]], [45, [45, 49, 52]],   // Gm  C   B♭  A
+];
+// 旋律：小節ごとに「音名:8分音符の数」（r は休み）。1小節＝8分音符8つ
+const BGM_MELODY = [
+  "A4:3 D5:1 E5:2 F5:2", "F5:3 E5:1 D5:4", "E5:2 G5:2 E5:2 C5:2", "A4:6 r:2",
+  "A4:2 D5:2 F5:2 A5:2", "G5:3 F5:1 E5:2 C5:2", "D5:2 B4:2 D5:2 G5:2", "E5:4 C#5:4",
+  "D5:3 F5:1 Bb5:4", "A5:2 G5:2 E5:2 C5:2", "E5:3 A5:1 G5:2 E5:2", "F5:6 r:2",
+  "G5:2 Bb5:2 A5:2 G5:2", "E5:3 F5:1 G5:4", "F5:2 D5:2 Bb4:2 D5:2", "C#5:4 E5:2 A4:2",
+].map(bgmParseBar);
+// アルペジオ（8分音符ごとに、和音の何番目の音か。3＝根音の1オクターブ上）
+const BGM_ARP   = [0, 1, 2, 3, 2, 1, 0, 1];
+// ベース（8分音符8つ。数字は根音からの半音、null は鳴らさない）
+const BGM_BASS  = [0, null, null, 12, 7, null, 0, null];
+const BGM_BASS_LEN = [3, 0, 0, 1, 2, 0, 2, 0];
+// 打楽器（8分音符8つ）：k＝足踏みの太鼓・h＝刻み・s＝小太鼓
+const BGM_DRUMS = { k: [1, 0, 0, 0, 0, 1, 0, 0], h: [0, 1, 0, 1, 0, 1, 0, 1], s: [0, 0, 0, 0, 1, 0, 0, 0] };
+
+let bgmTimer = null;
+let bgmStep = 0;          // 曲の頭からの8分音符の数（16小節×8 で1周）
+let bgmNextAt = 0;        // 次の8分音符を鳴らす時刻（音の回路の時計）
+let bgmLevel = -1;        // いまの場面の大きさ（変わったときだけ動かす）
+
+function bgmParseBar(text) {
+  const NAMES = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  let at = 0;
+  return text.split(" ").map((tok) => {
+    const [name, len] = tok.split(":");
+    const ev = { at, len: Number(len), midi: null };
+    at += ev.len;
+    if (name !== "r") {
+      const m = name.match(/^([A-G])(#|b)?(\d)$/);
+      ev.midi = 12 * (Number(m[3]) + 1) + NAMES[m[1]] + (m[2] === "#" ? 1 : m[2] === "b" ? -1 : 0);
+    }
+    return ev;
+  });
+}
+function bgmFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
+
+/** 1音を BGM の通り道へ。type＝波形、env＝[立ち上がり, 保つ大きさの割合, 消えるまで] */
+function bgmVoice(t, type, midi, gain, dur, env, opts = {}) {
+  const ctx = soundCtx, f = bgmFreq(midi);
+  const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+  if (opts.detune) o.detune.setValueAtTime(opts.detune, t);
+  if (opts.vibrato) {   // 伸ばした音にだけ、少し遅れて揺れをかける（笛・角笛らしく）
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 5.2;
+    const depth = ctx.createGain(); depth.gain.setValueAtTime(0, t); depth.gain.linearRampToValueAtTime(f * 0.006, t + Math.min(0.35, dur * 0.6));
+    lfo.connect(depth); depth.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + env[2] + 0.05);
+  }
+  const g = ctx.createGain();
+  const [atk, sus, rel] = env;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(gain, t + atk);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain * sus), t + Math.max(atk + 0.01, dur * 0.7));
+  g.gain.setValueAtTime(Math.max(0.0001, gain * sus), t + dur);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur + rel);
+  let tail = g;
+  if (opts.lowpass) {
+    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = opts.lowpass; lp.Q.value = opts.q || 0.7;
+    g.connect(lp); tail = lp;
+  }
+  o.connect(g); tail.connect(soundNodes.bgmBus);
+  o.start(t); o.stop(t + dur + rel + 0.05);
+}
+/** 打楽器（ノイズを削った音と、高さの落ちる音） */
+function bgmDrum(t, kind, gain) {
+  const ctx = soundCtx;
+  if (kind === "k") {
+    const o = ctx.createOscillator(); o.type = "sine";
+    o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(48, t + 0.16);
+    const g = ctx.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(soundNodes.bgmBus); o.start(t); o.stop(t + 0.25);
+    return;
+  }
+  const src = ctx.createBufferSource(); src.buffer = soundNodes.noiseBuf;
+  const f = ctx.createBiquadFilter();
+  const g = ctx.createGain();
+  const dur = kind === "h" ? 0.05 : 0.16;
+  if (kind === "h") { f.type = "bandpass"; f.frequency.value = 5200; f.Q.value = 1.2; }
+  else { f.type = "bandpass"; f.frequency.value = 1700; f.Q.value = 0.8; }
+  g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f); f.connect(g); g.connect(soundNodes.bgmBus);
+  src.start(t, (bgmStep % 16) * 0.09); src.stop(t + dur + 0.02);   // ノイズの読み出し位置は拍で決める（乱数を使わない）
+  if (kind === "s") bgmVoice(t, "triangle", 54, gain * 0.6, 0.04, [0.002, 0.3, 0.08]);
+}
+
+/** いまの場面の大きさ：プレイ中は 1、メニュー・カード選び・タイトルは BGM_MENU_LEVEL */
+function bgmSceneLevel() {
+  const playing = gameState === "playing" && !upgradeCardsVisible && !perkOfferArtifact;
+  return playing ? 1 : BGM_MENU_LEVEL;
+}
+/** 8分音符1つぶんを予約する */
+function bgmPlayStep(t) {
+  const STEPS = BGM_CHORDS.length * 8;
+  const pos = bgmStep % STEPS, bar = Math.floor(pos / 8), e = pos % 8;
+  const loop = Math.floor(bgmStep / STEPS);
+  const eighth = 60 / BGM_TEMPO / 2;
+  const [root, tones] = BGM_CHORDS[bar];
+  // 和音の帯（小節の頭で全音符。のこぎり波2つを少しずらして重ね、強めにこもらせる）
+  if (e === 0) {
+    for (const n of tones) {
+      bgmVoice(t, "sawtooth", n + 12, 0.028, eighth * 8, [0.25, 0.8, 0.5], { detune: -7, lowpass: 1100 });
+      bgmVoice(t, "sawtooth", n + 12, 0.028, eighth * 8, [0.25, 0.8, 0.5], { detune: 7, lowpass: 1100 });
+    }
+  }
+  // アルペジオ（ハープ：三角波のはじく音）
+  const arpTones = [tones[0] + 12, tones[1] + 12, tones[2] + 12, tones[0] + 24];
+  bgmVoice(t, "triangle", arpTones[BGM_ARP[e]], 0.07, eighth * 0.9, [0.005, 0.25, 0.35]);
+  // ベース（矩形波を低くこもらせて、はじくように）
+  if (BGM_BASS[e] !== null) bgmVoice(t, "square", root - 12 + BGM_BASS[e], 0.075, eighth * BGM_BASS_LEN[e] * 0.85, [0.01, 0.55, 0.08], { lowpass: 620 });
+  // 旋律（4周目は休む。楽器は周ごとに笛と角笛を替える）
+  if (loop % 2 === 0 || loop % 4 === 1) {
+    const lead = loop % 4 === 1 ? "square" : "triangle";
+    for (const ev of BGM_MELODY[bar]) {
+      if (ev.at !== e || ev.midi === null) continue;
+      const g = lead === "square" ? 0.045 : 0.11;
+      bgmVoice(t, lead, ev.midi, g, eighth * ev.len * 0.92, [0.02, 0.7, 0.18], { vibrato: ev.len >= 3, lowpass: lead === "square" ? 2200 : 0 });
+      if (lead === "triangle") bgmVoice(t, "sine", ev.midi + 12, 0.025, eighth * ev.len * 0.92, [0.03, 0.6, 0.15]);   // 笛の息の倍音
+    }
+  }
+  // 打楽器（警戒度で1層ずつ足す）
+  const tier = (typeof powerTier === "number" ? powerTier : 0) + 1;
+  if (BGM_DRUMS.k[e]) bgmDrum(t, "k", 0.22);
+  if (tier >= 2 && BGM_DRUMS.h[e]) bgmDrum(t, "h", 0.05);
+  if (tier >= 3 && BGM_DRUMS.s[e]) bgmDrum(t, "s", 0.12);
+}
+/** 先読みで BGM_LOOKAHEAD 秒先までを予約する（setInterval で呼ぶ） */
+function bgmSchedule() {
+  if (!soundCtx || !soundNodes || soundCtx.state !== "running") return;
+  const now = soundCtx.currentTime;
+  const level = bgmSceneLevel();
+  if (level !== bgmLevel) { soundNodes.bgmBus.gain.setTargetAtTime(level, now, bgmLevel < 0 ? 0.05 : BGM_LEVEL_SMOOTH); bgmLevel = level; }
+  if (!soundOn() || soundBgmVolume() <= 0) { bgmNextAt = 0; return; }
+  if (bgmNextAt < now) bgmNextAt = now + 0.05;   // 初めて・止まっていた後は、少し先から始める
+  const eighth = 60 / BGM_TEMPO / 2;
+  while (bgmNextAt < now + BGM_LOOKAHEAD) {
+    bgmPlayStep(bgmNextAt);
+    bgmNextAt += eighth;
+    bgmStep++;
+  }
+}
+
+// -----------------------------------------------------------------
 // v0.99.1: オプション画面
 // -----------------------------------------------------------------
 // 設定は profile.options に持って localStorage に残す。
@@ -42829,7 +43003,7 @@ function renderOptions() {
     `<div class="op-row" data-sound="toggle">` +
       `<div class="op-body">` +
         `<div class="op-name">音</div>` +
-        `<div class="op-desc">効果音を鳴らす。最初に画面に触れたときから鳴る。タブを離れると止まる。</div>` +
+        `<div class="op-desc">BGM と効果音を鳴らす。最初に画面に触れたときから鳴る。タブを離れると止まる。</div>` +
       `</div>` +
       `<div class="op-switch ${soundOn() ? "on" : ""}"></div>` +
     `</div>` +
@@ -42837,6 +43011,13 @@ function renderOptions() {
       `<div class="op-body">` +
         `<div class="op-name">効果音の音量 <span class="op-vol-val">${soundSeVolume()}</span></div>` +
         `<input class="op-range" type="range" min="0" max="100" step="5" value="${soundSeVolume()}" data-vol="seVolume">` +
+      `</div>` +
+    `</div>` +
+    // v3.201.0（DT-075 2回目）: BGM の音量
+    `<div class="op-row op-vol">` +
+      `<div class="op-body">` +
+        `<div class="op-name">BGM の音量 <span class="op-vol-val">${soundBgmVolume()}</span></div>` +
+        `<input class="op-range" type="range" min="0" max="100" step="5" value="${soundBgmVolume()}" data-vol="bgmVolume">` +
       `</div>` +
     `</div>`;
   // v3.185.0（案帳 DT-610・Shooter「地域のみのサンプルは、デバッグ版のみでオプションあたりから行けるように」）
@@ -42864,7 +43045,7 @@ function renderOptions() {
       soundSetOption(range.getAttribute("data-vol"), Number(range.value));
       range.parentElement.querySelector(".op-vol-val").textContent = range.value;
     });
-    range.addEventListener("change", () => sfxEgg());   // 離したときに今の大きさで1つ鳴らす
+    range.addEventListener("change", () => { if (range.getAttribute("data-vol") === "seVolume") sfxEgg(); });   // 効果音は離したときに今の大きさで1つ鳴らす（BGM は流れている曲で分かる）
   }
 
   optionsOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
