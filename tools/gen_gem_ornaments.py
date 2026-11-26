@@ -286,7 +286,29 @@ ICE_PAD = dict(left=24, top=RIM, right=24, bottom=56)    # 左右は氷柱の冠
 ICE_WING_PAD = dict(left=48, top=46, right=0, bottom=50)
 
 
-def ice_body(src):
+def ice_crystal(canvas, x, y, length, width, ang_deg):
+    """氷竜の白金の氷の結晶1本（片側の面を明るく）"""
+    r = math.radians(ang_deg)
+    poly = spike(x, y, length, width, r, base_w=width)
+    dx, dy = math.sin(r), -math.cos(r)
+    nx, ny = -dy, dx
+    half = [(x, y), (x + dx * length, y + dy * length), (x + nx * width * 0.5 + dx * length * 0.12, y + ny * width * 0.5 + dy * length * 0.12)]
+    canvas.shape([poly], PLATINUM, axis=(0.6, 1.0), facet=half)
+
+
+ICE_TAIL_CRYSTALS = ((180, 64, 20), (152, 44, 15), (208, 44, 15))   # 尾の先の氷の結晶の房（向き・長さ・幅。後ろへ、真ん中が長い3本）
+
+
+def ice_tailtip():
+    """v3.234.0（DT-609 手直し・11/26 Shooter「氷竜も先端がいい」）: 尾の先の氷の結晶の房を、動く尻尾の先に付ける絵（根元が上）"""
+    c = Canvas(110, 80)
+    for ang, length, width in ICE_TAIL_CRYSTALS:
+        ice_crystal(c, 55, 6, length, width, ang)
+    c.shape([ellipse_poly(55, 6, 8, 6, 16)], PLATINUM, axis=(0.4, 1.0), outline=2.5)
+    return c.finish(), (55, 6)
+
+
+def ice_body(src, tail="root"):
     p = ICE_PAD
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
@@ -303,10 +325,12 @@ def ice_body(src):
         back.shape([poly], PLATINUM, axis=(0.6, 1.0), facet=half)
 
     # 尾の先の氷の結晶の房（後ろへ、真ん中が長い3本）。尾の下に敷く
-    tail_y = float(np.nonzero(a.any(axis=1))[0].max())
-    tail_x = float(np.nonzero(a[int(tail_y) - 6])[0].mean())
-    for ang, length, width in ((180, 64, 20), (152, 44, 15), (208, 44, 15)):
-        crystal(tail_x, tail_y - 16, length, width, ang)
+    # tail="tip"（v3.234.0）は胴の絵に描かず、ice_tailtip の絵を動く尻尾の先に重ねる（余白は "root" と同じにして寸法の値をそろえる）
+    if tail == "root":
+        tail_y = float(np.nonzero(a.any(axis=1))[0].max())
+        tail_x = float(np.nonzero(a[int(tail_y) - 6])[0].mean())
+        for ang, length, width in ICE_TAIL_CRYSTALS:
+            crystal(tail_x, tail_y - 16, length, width, ang)
     # 氷柱の冠（v3.196.0 の氷柱のティアラを後頭部へ移した）：頭のいちばん幅のある所（y≈66）の左右から、後ろ・外へ広がる氷柱を3本ずつ。
     # 火竜の炎のたてがみと違って、まっすぐ鋭い。胴の下に敷くので、根元は頭に隠れ、はみ出た先だけが見える
     hy = oy + 66
@@ -736,6 +760,7 @@ def report(element, body, wing, pad_b, pad_w, spec_of=None):
 
 
 TAIL_TIP = {   # v3.233.0: 尾の飾りを動く尻尾の先にも付けられる竜種（胴の余白, 尻尾の先の絵を作る関数）
+    "ice": (ICE_PAD, ice_tailtip),   # v3.234.0
     "falcon": (FALCON_PAD_TIP, falcon_tailtip),
     "swallow": (SWALLOW_PAD_TIP, swallow_tailtip),
     "hornet": (HORNET_PAD_TIP, hornet_tailtip),

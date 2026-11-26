@@ -1429,7 +1429,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.233.0";
+const GAME_VERSION = "v3.234.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -34738,7 +34738,7 @@ const EVO_TINT_ALPHA_GEM = 0.15;
 const EVO_TINT_GEM_LOOKS = new Set(["fire_sparkle", "ice_sparkle", "fire_jewel", "ice_jewel", "rainbow_sparkle",
   "shadow_sparkle", "shadow_jewel", "crimson_sparkle", "crimson_jewel", "wyvern_sparkle", "wyvern_jewel",   // v3.205.0: 影竜・緋竜・飛竜
   "falcon_sparkle", "falcon_jewel", "swallow_sparkle", "swallow_jewel", "hornet_sparkle", "hornet_jewel",
-  "falcon_jewelt", "swallow_jewelt", "hornet_jewelt"]);   // v3.233.0: 尾の飾りを尻尾の先に付けるときの胴   // v3.216.0: 隼竜・燕竜・蜂竜   // v3.205.0: 影竜・緋竜・飛竜
+  "falcon_jewelt", "swallow_jewelt", "hornet_jewelt", "ice_jewelt"]);   // v3.233.0: 尾の飾りを尻尾の先に付けるときの胴   // v3.216.0: 隼竜・燕竜・蜂竜   // v3.205.0: 影竜・緋竜・飛竜
 
 function evoCardId(key, kind) {
   switch (key) {
@@ -45025,6 +45025,7 @@ function codexDragonCanvas(species, form) {
     const unit = box / DRAGON_SPRITE_LOGICAL;
     const palette = DRAGON_ELEMENT_COLORS[def.element] ?? DRAGON_ELEMENT_COLORS.fire;
     let x = -10 * unit, y = 0, a = Math.PI;
+    let tipX = 0, tipY = 0, tipA = 0;   // v3.234.0: 尾の飾りを付ける場所（gem.tailAt）
     c.strokeStyle = tint && evo ? tint : palette.body;
     c.lineCap = "round";
     for (let s = 0; s < TAIL_SEGS; s++) {
@@ -45033,9 +45034,10 @@ function codexDragonCanvas(species, form) {
       const taper = 1 - (s + 1) / (TAIL_SEGS + 1);
       c.lineWidth = Math.max(0.4, TAIL_WIDTH0 * taper * unit);
       c.beginPath(); c.moveTo(x, y); c.lineTo(nx, ny); c.stroke();
+      if (gem && gem.tailAt && s === gem.tailAt.seg) { tipX = x + (nx - x) * gem.tailAt.along; tipY = y + (ny - y) * gem.tailAt.along; tipA = a; }
       x = nx; y = ny;
     }
-    if (gem && gem.tailTip) drawGemTailTip(c, gem.tailTip, x, y, a, unit);   // v3.233.0（DT-609）
+    if (gem && gem.tailTip) drawGemTailTip(c, gem.tailTip, tipX, tipY, tipA, unit);   // v3.233.0（DT-609）
   }
   c.drawImage(frame, -box / 2, -box / 2, box, box);
   return cv;
@@ -56360,7 +56362,8 @@ function drawBoids() {
     // 時間ベースの微小揺れ（個体ごとに位相をずらす）
     const wobble = Math.sin(breathTime * 1.5 + BOID_FLAP_PHASE[i] * Math.PI * 2) * TAIL_WOBBLE;
 
-    let lastSegAngle = angle + Math.PI;   // v3.233.0: 尻尾の先の飾りの向き
+    const gemTailAt = sparkleFlock && sparkleFlock.tailTip ? sparkleFlock.tailAt : null;   // v3.234.0: 尾の飾りを付ける節
+    let gemTailX = segX, gemTailY = segY, gemTailAngle = angle + Math.PI;
     for (let s = 0; s < (speciesNoTail && !spSprites ? 0 : TAIL_SEGS); s++) {
       // s番目のセグメントは「s個前の角度履歴」の逆方向（後方）を使う
       // 旋回差：現在角度と履歴角度の差をセグメント方向に加える
@@ -56390,14 +56393,18 @@ function drawBoids() {
       ctx.lineTo(nextX, nextY);
       ctx.stroke();
 
+      if (gemTailAt && s === gemTailAt.seg) {
+        gemTailX = segX + (nextX - segX) * gemTailAt.along;
+        gemTailY = segY + (nextY - segY) * gemTailAt.along;
+        gemTailAngle = segAngle;
+      }
       segX = nextX;
       segY = nextY;
-      lastSegAngle = segAngle;
     }
-    // v3.233.0（DT-609 手直し）: 宝石の竜の2回目の進化で、尾の飾りを動く尻尾の先に付ける竜種
-    if (sparkleFlock && sparkleFlock.tailTip && !spSprites && !(speciesNoTail && !spSprites)) {
+    // v3.233.0（DT-609 手直し）: 宝石の竜の2回目の進化で、尾の飾りを動く尻尾（v3.234.0〜 先か途中の節）に付ける竜種
+    if (gemTailAt && !spSprites && !(speciesNoTail && !spSprites)) {
       ctx.globalAlpha = alpha;
-      drawGemTailTip(ctx, sparkleFlock.tailTip, segX, segY, lastSegAngle, unitScale);
+      drawGemTailTip(ctx, sparkleFlock.tailTip, gemTailX, gemTailY, gemTailAngle, unitScale);
     }
 
     ctx.globalAlpha = 1.0;
@@ -58537,6 +58544,16 @@ const DRAGON_PART_SPRITES = {
     bodyDrawH: 32.40,
     wingDrawW: 28.75,
   },
+  // v3.234.0（DT-609 手直し・11/26 Shooter「氷竜も先端がいい」）: 尾の先の氷の結晶の房を動く尻尾の先に付けるときの胴（房を描いていない。余白は ice_jewel と同じ）
+  ice_jewelt: {
+    body: "assets/dragon_ice_jewelt_body.png",
+    wing: "assets/dragon_ice_jewel_wing.png",
+    bodyPivot:  { cx: 105.5, cy: 183.6, w: 212, h: 384 },
+    shoulder:   { left: { x: 45.4, y: 160 }, right: { x: 165.6, y: 160 } },
+    wingAnchor: { x: 367, y: 115.0 },
+    bodyDrawH: 32.40,
+    wingDrawW: 28.75,
+  },
   // v3.205.0（DT-609・Shooter 11/25「ゲームに反映して、他の竜も進めて」「外側に広がるだけでなく上に乗ってる飾りとか、色々バリエーションを」
   // 「色も金属に限らなくていい」「首輪は良くないが、襷掛けとか斜め掛けなら行ける」）: 影竜・緋竜・飛竜にも 原石→全身カットの宝石→飾り の3段階。
   // 原石・宝石の絵はいまの絵を下絵に渡して材質だけ描き直し、アルファは下絵で切った（輪郭が元の絵と同じなので、寸法は元の竜種の値のまま）。
@@ -58996,18 +59013,21 @@ function dragonPartsKey(element) {
 // v3.233.0（DT-609 手直し・11/26 Shooter「尻尾にパーツを追加する場合、ゲームで描画される動く尻尾の先端も選択肢にできますか。
 // 今の尻尾の根本に追加もありですが、バリエーションとして」）: 2回目の進化の尾の飾りを、胴の絵の尾の付け根（"root"）に描くか、
 // 動く尻尾の先（"tip"）に重ねるか。竜種ごとに選ぶ。見本ページ（gem-evolution-sample.html）のボタンで両方を見比べられる
-const GEM_TAIL_ORNAMENT = { falcon: "root", swallow: "root", hornet: "root" };
+// v3.234.0（DT-609 手直し・11/26 Shooter「蜂竜は先端、燕竜は真ん中3ブロック目、隼竜は先端、あと氷竜も先端がいい」）:
+// 値は "root"（胴の絵の尾の付け根）・"tip"（動く尻尾の先）・"seg3" のような "seg" ＋節の番号（根元から数えて何番目の節の真ん中か。1〜TAIL_SEGS）
+const GEM_TAIL_ORNAMENT = { falcon: "tip", swallow: "seg3", hornet: "tip", ice: "tip" };
 const GEM_TAIL_TIPS = {   // 尻尾の先の絵（tools/gen_gem_ornaments.py が書き出す）。ax, ay＝絵の中の根元（尻尾の先に合わせる点）
   falcon:  { key: "falcon",  src: "assets/dragon_falcon_tailtip.png",  ax: 46, ay: 6 },
   swallow: { key: "swallow", src: "assets/dragon_swallow_tailtip.png", ax: 65, ay: 8 },
   hornet:  { key: "hornet",  src: "assets/dragon_hornet_tailtip.png",  ax: 20, ay: 8 },
+  ice:     { key: "ice",     src: "assets/dragon_ice_tailtip.png",     ax: 55, ay: 6 },   // v3.234.0
 };
 const GEM_TAIL_TIP_PX_TO_LOGICAL = 27 / 320;   // 胴の絵と同じ縮尺（胴の高さ 320 画素を論理 27 で描く）
 const gemTailTipImages = {};
 for (const tip of Object.values(GEM_TAIL_TIPS)) { const img = new Image(); img.src = tip.src; gemTailTipImages[tip.key] = img; }
 const GEM_SPARKLE_SPECIES = {
   fire:     { tiers: [{ look: "fire_rough", amount: "none" }, { look: "fire_sparkle", amount: "full" }, { look: "fire_jewel", amount: "full" }], gloss: 0.9 },
-  ice:      { tiers: [{ look: "ice_rough", amount: "none" }, { look: "ice_sparkle", amount: "full" }, { look: "ice_jewel", amount: "full" }], gloss: 0.9 },
+  ice:      { tiers: [{ look: "ice_rough", amount: "none" }, { look: "ice_sparkle", amount: "full" }, { look: "ice_jewel", amount: "full", tailTipLook: "ice_jewelt" }], gloss: 0.9 },
   // v3.205.0（DT-609「他の竜も進めて」）: 影竜（アメジスト）・緋竜（ガーネット）・飛竜（エメラルド）も火竜・氷竜と同じ3段階
   shadow:   { tiers: [{ look: "shadow_rough", amount: "none" }, { look: "shadow_sparkle", amount: "full" }, { look: "shadow_jewel", amount: "full" }], gloss: 0.9 },
   crimson:  { tiers: [{ look: "crimson_rough", amount: "none" }, { look: "crimson_sparkle", amount: "full" }, { look: "crimson_jewel", amount: "full" }], gloss: 0.9 },
@@ -59117,10 +59137,21 @@ function gemSparkleForSpecies(speciesId, tierIndex) {
   const br = runSpeciesBranch[speciesId];
   const tier = def.tiers[tierIndex ?? (br && br.t20 ? 2 : br && br.t10 ? 1 : 0)];
   // v3.233.0（DT-609 手直し）: 尾の飾りを動く尻尾の先に付ける竜種は、2回目の進化の胴を尾の飾りの無い絵にして、尻尾の先の絵を添える
-  const tip = tier.tailTipLook && GEM_TAIL_ORNAMENT[element] === "tip" ? GEM_TAIL_TIPS[element] : null;
-  return { look: tip ? tier.tailTipLook : tier.look, amount: tier.amount, gloss: def.gloss, plain: !!def.plain, tailTip: tip };
+  const at = tier.tailTipLook ? gemTailOrnamentAt(GEM_TAIL_ORNAMENT[element]) : null;
+  const tip = at ? GEM_TAIL_TIPS[element] : null;
+  return { look: tip ? tier.tailTipLook : tier.look, amount: tier.amount, gloss: def.gloss, plain: !!def.plain, tailTip: tip, tailAt: at };
 }
-/** v3.233.0: 尻尾の先の飾り（tip）を、尻尾の最後の節の先 (x, y) に、尻尾の向き angle（根元→先）へ向けて描く。unit＝竜の大きさの倍率 */
+/**
+ * v3.234.0: GEM_TAIL_ORNAMENT の値 → 尾の飾りを付ける尻尾の上の場所 { seg: 節の番号（0 始まり）, along: 節の根元 0〜先 1 }。
+ * "root"（胴の絵に描く）や読めない値は null
+ */
+function gemTailOrnamentAt(place) {
+  if (place === "tip") return { seg: TAIL_SEGS - 1, along: 1 };
+  const m = /^seg(\d+)$/.exec(place || "");
+  if (!m) return null;
+  return { seg: Math.min(TAIL_SEGS, Math.max(1, Number(m[1]))) - 1, along: 0.5 };
+}
+/** v3.233.0: 尻尾の飾り（tip）を、尻尾の上の (x, y)（v3.234.0〜 gem.tailAt の場所）に、その節の向き angle（根元→先）へ向けて描く。unit＝竜の大きさの倍率 */
 function drawGemTailTip(c, tip, x, y, angle, unit) {
   const img = gemTailTipImages[tip.key];
   if (!img || !img.naturalWidth) return;

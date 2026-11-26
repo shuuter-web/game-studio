@@ -47,7 +47,7 @@
     <button type="button" id="spin" aria-pressed="true">回す</button>
     <button type="button" id="flap" aria-pressed="true">羽ばたく</button>
     <button type="button" id="slow" aria-pressed="false">さらにゆっくり</button>
-    <button type="button" id="tailtip" aria-pressed="false">尾の飾り：尾の付け根</button>
+    <button type="button" id="tailtip" aria-pressed="true">尾の飾り：ゲームと同じ（動く尻尾）</button>
   </div>
   <!-- DT-609 手直し（11/26 Shooter「見本ページが、しばらくみているとエラーになる。全部一気に並べない方が良さげ？」）:
        8竜種×3段階を一度に描くと、作り置きの絵（羽ばたき16コマ×24・きらめきの層）が増え続けてスマホのタブが落ちていた。1竜種ずつ選んで見る -->
@@ -63,7 +63,7 @@
 
   <section class="species">
     <h2>氷竜（アクアマリン）</h2>
-    <p class="about">2回目の進化は<strong>白金（プラチナ）</strong>の飾り。突き出る飾りは後頭部から後ろ・外へ広がる白金の氷柱の冠・翼の白金の氷（前の縁の結晶3本・指の先の氷柱・先の長い槍）・尾の先の氷の結晶の房。
+    <p class="about">2回目の進化は<strong>白金（プラチナ）</strong>の飾り。突き出る飾りは後頭部から後ろ・外へ広がる白金の氷柱の冠・翼の白金の氷（前の縁の結晶3本・指の先の氷柱・先の長い槍）・尾の先の氷の結晶の房（動く尻尾の先に付ける）。
       縁取り・首輪は無し（顔の前へ出る飾りも無し）。首・胴・前足はアクアマリンのまま。</p>
     <div class="stages" id="row-ice"></div>
   </section>
@@ -153,8 +153,11 @@ for (const [btn, key] of [[spinBtn, "spin"], [flapBtn, "flap"], [slowBtn, "slow"
 
 // v3.233.0（DT-609 手直し・Shooter「尻尾にパーツを追加する場合、ゲームで描画される動く尻尾の先端も選択肢にできますか」）:
 // 尾の飾りを「尾の付け根（胴の絵）」か「動く尻尾の先」かで見比べる。尻尾の先に付けられるのは隼竜・燕竜・蜂竜
+// v3.234.0（11/26 Shooter「蜂竜は先端、燕竜は真ん中3ブロック目、隼竜は先端、あと氷竜も先端」）: 始めはゲームと同じ付け方（GEM_TAIL_ORNAMENT のまま）。
+// ボタンで「尾の付け根」と切り替える
 const tailBtn = document.getElementById("tailtip");
-let tailTipOn = false;
+let tailTipOn = true;
+let gameTailOrnament = null;   // ゲームの GEM_TAIL_ORNAMENT の写し（戻すため）
 const TAIL_SWAY_SPEED = 2.2;   // 尻尾のしなりの速さ（ラジアン/秒）
 const TAIL_SWAY = 0.16;        // しなりの大きさ（節ごとの曲がり。ラジアン）
 const TAIL_CURL = 0.08;        // いつもの曲がり（図鑑と同じ向き）
@@ -278,8 +281,9 @@ async function main() {
   tailBtn.addEventListener("click", async () => {
     tailTipOn = !tailTipOn;
     tailBtn.setAttribute("aria-pressed", String(tailTipOn));
-    tailBtn.textContent = "尾の飾り：" + (tailTipOn ? "動く尻尾の先" : "尾の付け根");
-    for (const k of Object.keys(api.GEM_TAIL_ORNAMENT)) api.GEM_TAIL_ORNAMENT[k] = tailTipOn ? "tip" : "root";
+    tailBtn.textContent = "尾の飾り：" + (tailTipOn ? "ゲームと同じ（動く尻尾）" : "尾の付け根");
+    if (!gameTailOrnament) gameTailOrnament = { ...api.GEM_TAIL_ORNAMENT };
+    for (const k of Object.keys(api.GEM_TAIL_ORNAMENT)) api.GEM_TAIL_ORNAMENT[k] = tailTipOn ? gameTailOrnament[k] : "root";
     frameCache.clear();
     api.gemSparkleLayers.clear();
     await waitImages(api, allLooks(api));
@@ -318,6 +322,7 @@ async function main() {
         const unit = px / api.DRAGON_SPRITE_LOGICAL;
         const palette = api.DRAGON_ELEMENT_COLORS[sdef.element] || api.DRAGON_ELEMENT_COLORS.fire;
         let x = -10 * unit, y = 0, a = Math.PI;
+        let tipX = 0, tipY = 0, tipA = 0;   // v3.234.0: 尾の飾りを付ける場所（gem.tailAt＝先か、途中の節の真ん中）
         ctx.strokeStyle = palette.body;
         ctx.lineCap = "round";
         for (let s = 0; s < api.TAIL_SEGS; s++) {
@@ -325,9 +330,10 @@ async function main() {
           const nx = x + Math.cos(a) * api.TAIL_SEG_LEN * unit, ny = y + Math.sin(a) * api.TAIL_SEG_LEN * unit;
           ctx.lineWidth = Math.max(0.4, api.TAIL_WIDTH0 * (1 - (s + 1) / (api.TAIL_SEGS + 1)) * unit);
           ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
+          if (gem.tailAt && s === gem.tailAt.seg) { tipX = x + (nx - x) * gem.tailAt.along; tipY = y + (ny - y) * gem.tailAt.along; tipA = a; }
           x = nx; y = ny;
         }
-        if (gem.tailTip) api.drawGemTailTip(ctx, gem.tailTip, x, y, a, unit);
+        if (gem.tailTip) api.drawGemTailTip(ctx, gem.tailTip, tipX, tipY, tipA, unit);
       }
       ctx.drawImage(frameFor(gem.look, step, px), -px / 2, -px / 2, px, px);
       const layer = api.gemSparkleLayer(gem, api.gemSparkleHeading(angle, 0, 0, cell.index, 1));
