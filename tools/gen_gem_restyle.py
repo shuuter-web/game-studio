@@ -1,6 +1,7 @@
 """Dragon Tide（DT-609）: いまの竜の絵を下絵に渡し、形を保ったまま材質だけ「原石」「全身カットの宝石」に描き直す。
 
-  python3 tools/gen_gem_restyle.py <竜種> <rough|sparkle> <body|wing> ["<材質の描写>"]
+  python3 tools/gen_gem_restyle.py <竜種> <rough|sparkle> <body|wing|body_air> ["<材質の描写>"]
+  （body_air は蛙竜の跳んでいるときの胴。v3.235.0）
 
   例: python3 tools/gen_gem_restyle.py falcon sparkle body
       → prototypes/dragon-tide/assets/dragon_falcon_sparkle_body.png
@@ -25,6 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.normpath(os.path.join(HERE, "..", "prototypes", "dragon-tide", "assets"))
 MODEL = os.environ.get("SPRITE_MODEL", "gemini-3.1-flash-image")
 GREEN = (0, 255, 0)
+TRIES = int(os.environ.get("GEM_TRIES", "4"))                   # 覆いが足りないときに描き直させる回数
+COVER_OK = 0.97               # 生成の絵が下絵の「ある」所をこれだけ覆えば使う
 PAD_RATIO = 0.18              # 下絵のまわりに足す緑の余白（生成が端まで描いて切れないように）
 
 # 竜種ごとの宝石（2つの段階で同じ石。原石＝磨く前、sparkle＝全身カット）
@@ -32,12 +35,24 @@ GEMS = {
     "falcon": "clear rock crystal quartz with a faint icy blue tint (colorless transparent gemstone)",
     "swallow": "paraiba tourmaline, vivid neon teal blue-green gemstone",
     "hornet": "golden yellow citrine gemstone, with the dark stripes made of polished black onyx",
+    # v3.235.0（DT-609「続けて他の竜も」）: 鮫竜・蛙竜・亀竜・雷雲竜
+    "shark": "deep cornflower-blue sapphire gemstone (ocean blue, saturated)",
+    "frog": "vivid lime-green peridot gemstone (bright yellowish green)",
+    "tortoise": "translucent VIVID saturated imperial-green jadeite jade gemstone (bright leaf green like a tortoise, recolour everything green, NOT grey, NOT stone grey)",
+    "thunder": "bright lemon-gold heliodor (golden yellow beryl) gemstone, electric and luminous",
 }
+
+# 専用の絵が無く、別の竜種の絵を借りている竜種（index.html の DRAGON_PARTS_ALIAS と同じ）。宝石の絵はその輪郭のまま作る
+SOURCE = {"shark": "swallow", "tortoise": "gargoyle", "thunder": "shadow"}
+
+# v3.235.0: 緑の宝石（ペリドット・翡翠）は緑の背景だと石まで抜け（覆いが2〜3割）、緑かぶり消しで色もくすむので、マゼンタの背景で抜く
+MAGENTA = (255, 0, 255)
+MAGENTA_BG = {"frog", "tortoise"}
 
 STAGE_PROMPTS = {
     "rough": ("Redraw this exact creature as if it were carved from a ROUGH, UNCUT {gem} ORE: raw crystal chunks and natural crystal "
               "clusters, matte, no polished facets, no sparkle stars. Keep the species colour strong and saturated (not faded, not brown, "
-              "not grey rock)."),
+              "not grey rock). Do not add a rock base, slab or crystals around the creature: only the creature itself."),
     "sparkle": ("Redraw this exact creature as if its WHOLE BODY were a brilliant FACET-CUT {gem}: the surface is divided into many "
                 "triangular and kite-shaped polished facets with thin white edge highlights, deep saturated colour inside, bright "
                 "reflections and a few small white sparkle stars."),
@@ -45,7 +60,15 @@ STAGE_PROMPTS = {
 
 COMMON = ("Keep EXACTLY the same silhouette, pose, outline, proportions, size and position as the input image: same head, horns, "
           "limbs, tail, wing bones and membrane edges, nothing added or removed. Top-down view, flat cel-shaded game sprite with a "
-          "thick dark ink outline. Solid flat pure green background (#00FF00), no shadow, no text.")
+          "thick dark ink outline. Solid flat pure {bg_name} background ({bg_hex}), no shadow, no text.")
+
+
+# v3.235.0: 翼だけの下絵に頭・胴・尻尾を描き足して竜を丸ごと描くことがあった（覆いが7割に落ちる）ので、部位を言い切る
+PART_HINTS = {
+    "wing": "The input is ONLY ONE SINGLE DETACHED WING seen from above (no head, no body, no tail, no legs): draw ONLY that one wing. ",
+    "body": "The input is the body WITHOUT wings: do not add wings. ",
+    "body_air": "The input is the body WITHOUT wings, legs stretched out in a jump: do not add wings. ",
+}
 
 
 def generate(prompt, image):
@@ -80,6 +103,19 @@ def key_green(img):
     return Image.fromarray(a.astype(np.uint8), "RGBA")
 
 
+def key_magenta(img):
+    """key_green の色を入れ替えたもの（マゼンタ＝赤と青が緑より強い所を抜き、縁のマゼンタかぶりも消す）"""
+    a = np.array(img).astype(np.float32)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    excess = np.minimum(r, b) - g
+    alpha = np.clip(1 - (excess - 30) / 70, 0, 1)
+    over = excess > 0
+    a[..., 0] = np.where(over, r - excess * 0.85, r)
+    a[..., 2] = np.where(over, b - excess * 0.85, b)
+    a[..., 3] = alpha * 255
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "RGBA")
+
+
 def bbox(alpha, thresh=40):
     return Image.fromarray((alpha > thresh).astype(np.uint8) * 255).getbbox()
 
@@ -87,19 +123,39 @@ def bbox(alpha, thresh=40):
 def main():
     species, stage, part = sys.argv[1:4]
     gem = sys.argv[4] if len(sys.argv) > 4 else GEMS[species]
-    src = Image.open(os.path.join(ASSETS, f"dragon_{species}_{part}.png")).convert("RGBA")
+    src = Image.open(os.path.join(ASSETS, f"dragon_{SOURCE.get(species, species)}_{part}.png")).convert("RGBA")
     src_a = np.array(src)[..., 3]
     # 生成に渡す下絵：緑の上に置いて、余白を足して大きめに（小さい絵だと描き込みが粗くなる）
     pad = int(max(src.size) * PAD_RATIO)
     scale = 1024 / (max(src.size) + pad * 2)
-    canvas = Image.new("RGBA", (src.width + pad * 2, src.height + pad * 2), GREEN + (255,))
+    magenta = species in MAGENTA_BG
+    bg, key = (MAGENTA, key_magenta) if magenta else (GREEN, key_green)
+    common = COMMON.format(bg_name="magenta" if magenta else "green", bg_hex="#FF00FF" if magenta else "#00FF00")
+    canvas = Image.new("RGBA", (src.width + pad * 2, src.height + pad * 2), bg + (255,))
     canvas.alpha_composite(src, (pad, pad))
     canvas = canvas.resize((round(canvas.width * scale), round(canvas.height * scale)), Image.LANCZOS).convert("RGB")
-    out = key_green(generate(STAGE_PROMPTS[stage].format(gem=gem) + " " + COMMON, canvas))
-    # 生成した絵の外接矩形を下絵の外接矩形に合わせて伸縮し、下絵のアルファで切る（輪郭を下絵とそろえる）
-    gb = bbox(np.array(out)[..., 3])
+    # v3.235.0: 生成が下絵より細く描くと（輪郭の内側に余白・光の粒が外接矩形を広げる）下絵の色がのぞくので、
+    # 下絵の「ある」所を生成の絵がどれだけ覆うかを測り、足りなければ描き直させる（最大 TRIES 回。いちばん覆った絵を使う）
     sb = bbox(src_a)
-    fitted = out.crop(gb).resize((sb[2] - sb[0], sb[3] - sb[1]), Image.LANCZOS)
+    best = None
+    for attempt in range(TRIES):
+        raw = generate(PART_HINTS.get(part, "") + STAGE_PROMPTS[stage].format(gem=gem) + " " + common, canvas)
+        if os.environ.get("GEM_RAW_DIR"):
+            raw.save(os.path.join(os.environ["GEM_RAW_DIR"], f"{species}_{stage}_{part}_{attempt}.png"))
+        out = key(raw)
+        # 生成した絵の外接矩形を下絵の外接矩形に合わせて伸縮し、下絵のアルファで切る（輪郭を下絵とそろえる）
+        gb = bbox(np.array(out)[..., 3])
+        fitted = out.crop(gb).resize((sb[2] - sb[0], sb[3] - sb[1]), Image.LANCZOS)
+        fa = np.zeros_like(src_a)
+        fa[sb[1]:sb[3], sb[0]:sb[2]] = np.array(fitted)[..., 3]
+        inside = src_a > 90
+        cover = float((fa[inside] > 128).mean())
+        print(f"  試し{attempt + 1}: 下絵を覆う割合 {cover:.3f}", file=sys.stderr)
+        if best is None or cover > best[0]:
+            best = (cover, fitted)
+        if cover >= COVER_OK:
+            break
+    fitted = best[1]
     # 生成がわずかに細くて下絵の縁が残るところは、下絵の色がのぞく（緑や黒の欠けにしない）
     result = src.copy()
     result.alpha_composite(fitted, (sb[0], sb[1]))
