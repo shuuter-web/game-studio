@@ -1388,7 +1388,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.219.0";
+const GAME_VERSION = "v3.220.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -43227,6 +43227,8 @@ const soundRun = {              // 続けて鳴らす効果音の今の位置（
   duckUntilStep: -1,
   melodyFrom: -1, melodyUntil: -1,   // DT-624 手直し: 角笛の主題を吹く16分音符の範囲（いつもは吹かない）
   playSec: 0, melodyLastSec: 0,      // プレイ中の時間（ステージの頭から）と、最後に吹いた時刻（思い出したように吹くため）
+  // DT-624 手直し5: 文明の音楽と竜の曲の綱引き。progress＝ステージの進み具合（0〜1）、civMix・dragonMix＝いまの大きさ（ならしたもの）
+  progress: 0, progressAt: -9, civStopped: false, civMix: 0, dragonMix: 1,
 };
 
 function soundOptions() { return (profile && profile.options) || {}; }
@@ -43237,6 +43239,8 @@ function soundBgmVolume() { const v = soundOptions().bgmVolume; return typeof v 
 // v3.214.0（案帳 DT-624 手直し2）: BGM の曲（music.json の songs の名前）。既定は標準
 const SOUND_DEFAULT_SONG = "standard";
 function soundSongId() { const v = soundOptions().bgmSong; return typeof v === "string" ? v : SOUND_DEFAULT_SONG; }
+// v3.220.0（案帳 DT-624 手直し5）: 時代の文明の音楽を重ねるか（既定は重ねる。切ると今までどおり竜の曲だけ）
+function soundCivOn() { return soundOptions().civMusic !== false; }
 /** 選んだ曲を標準の譜面に重ねて soundMusic にする（書いた項目だけ差し替え）。曲の頭から始め直す */
 function soundApplySong() {
   if (!soundMusicBase) return;
@@ -43467,6 +43471,7 @@ function soundSchedule() {
   soundRun.breathHits = 0;
   if (!soundOn()) return;
   if (level === 1) soundMelodyRemember(SOUND_SCHEDULE_MS / 1000);
+  soundCivUpdate(SOUND_SCHEDULE_MS / 1000);
   if (soundSongStart === 0 || soundStepTime(soundNextStep) < now - 0.25) {   // 初めて・長く止まっていた後は、少し先の小節の頭から始め直す
     soundSongStart = now + 0.05;
     soundNextStep = 0;
@@ -43485,6 +43490,45 @@ function soundSwingSteps(s) {
   if (sw.unit === 8) return (s % 4 === 2) ? sw.amount : 0;
   return (s % 2 === 1) ? sw.amount : 0;
 }
+/** 伴奏の層を16分音符1つぶん鳴らす。mix＝層ぜんたいの大きさ（DT-624 手直し5: 竜の曲と文明の音楽の綱引き） */
+function soundPlayTracks(tracks, mix, step, t, tSwing, tier, ducked) {
+  const m = soundMusic, spb = m.stepsPerBar, bars = soundBarCount();
+  const bus = soundNodes.bgmBus;
+  const barAbs = Math.floor(step / spb), bar = barAbs % bars, s = step % spb;
+  const chord = m.chords[bar];
+  const stepSec = soundStepSec();
+  for (const tr of tracks) {
+    if (ducked && tr.type !== "chord") continue;
+    if (tier < (tr.minTier || 0)) continue;   // DT-624 手直し2: 警戒度で足す層は打楽器に限らない
+    if (tr.onBars && !tr.onBars.includes(bar)) continue;   // DT-624 手直し3: ループの決まった小節だけ鳴らす（合いの手・決め）
+    const tt = tr.straight ? t : tSwing;
+    if (tr.type === "chord") {
+      if (s === 0) for (const n of chord.tones) soundPlay(bus, tr.inst, n + (tr.octave || 0), t, tr.gain * mix, { attack: tr.attack, len: spb * stepSec, release: tr.release });
+    } else if (tr.type === "comp") {
+      // DT-624 手直し3: 和音を決まった拍で短く刻む（エレピ・オルガン・金管の一撃）。[step, 長さ（16分音符）, 強さ]
+      for (const [at, len, vel] of tr.notes) if (at === s) for (const n of chord.tones) soundPlay(bus, tr.inst, n + (tr.octave || 0), tt, tr.gain * mix * (vel ?? 1), { attack: tr.attack, len: len * stepSec, release: tr.release || 0.06 });
+    } else if (tr.type === "arp") {
+      for (const [at, idx, vel] of tr.notes) if (at === s) soundPlay(bus, tr.inst, soundChordNote(chord, idx) + (tr.octave || 0), tt, tr.gain * mix * (vel ?? 1));
+    } else if (tr.type === "bass") {
+      for (const [at, semi, len, vel] of tr.notes) if (at === s) soundPlay(bus, tr.inst, chord.root + semi, tt, tr.gain * mix * (vel ?? 1), { len: len * stepSec * 0.9, release: 0.05 });
+    } else if (tr.type === "walk") {
+      // DT-624 手直し3: 歩くベース。和音ごとに書いた4つの音（chords の walk。根音からの半音）を4分音符で
+      const k = tr.steps.indexOf(s);
+      if (k >= 0 && chord.walk) soundPlay(bus, tr.inst, chord.root + chord.walk[k % chord.walk.length], tt, tr.gain * mix * (k === 0 ? 1 : 0.85), { len: 4 * stepSec * 0.85, release: 0.06 });
+    } else if (tr.type === "tune") {
+      // DT-624 手直し5: 文明の音楽の旋律。小節ごとに [step, 和音の何番目の音, 長さ]（和音に合わせるので、どの曲の和音でも外れない）
+      for (const [at, idx, len] of tr.bars[barAbs % tr.bars.length]) if (at === s) soundPlay(bus, tr.inst, soundChordNote(chord, idx) + (tr.octave || 0), tt, tr.gain * mix, { attack: 0.03, len: len * stepSec * 0.92, release: 0.15 });
+    } else if (tr.type === "drum") {
+      // everyBars 小節ごとに1回。鳴らす小節は barOffset（書かなければ組の最後の小節＝フィル）
+      if (tr.everyBars && (barAbs % tr.everyBars) !== (typeof tr.barOffset === "number" ? tr.barOffset : tr.everyBars - 1)) continue;
+      const k = tr.steps.indexOf(s);
+      if (k < 0) continue;
+      const def = m.instruments[tr.inst];
+      const pitch = tr.pitchSteps ? chord.root + 12 + tr.pitchSteps[k] : def.base;
+      soundPlay(bus, tr.inst, pitch, tt, tr.gain * mix * (tr.accents ? tr.accents[k] : 1));   // accents＝その拍の強さ（ゴースト・アクセント）
+    }
+  }
+}
 /** 16分音符1つぶんを予約する */
 function soundPlayStep(step, t) {
   const m = soundMusic, spb = m.stepsPerBar, bars = soundBarCount();
@@ -43495,38 +43539,15 @@ function soundPlayStep(step, t) {
   const tier = (typeof powerTier === "number" ? powerTier : 0);
   const ducked = step < soundRun.duckUntilStep;   // 警戒度の鐘のあと1小節は伴奏を引いて「空気が変わった」を作る
   const tSwing = t + soundSwingSteps(s) * stepSec;   // DT-624 手直し3: 跳ねる曲（ジャズ・ソウル）は裏の音を少し遅らせる
-  for (const tr of m.tracks) {
-    if (ducked && tr.type !== "chord") continue;
-    if (tier < (tr.minTier || 0)) continue;   // DT-624 手直し2: 警戒度で足す層は打楽器に限らない
-    if (tr.onBars && !tr.onBars.includes(bar)) continue;   // DT-624 手直し3: ループの決まった小節だけ鳴らす（合いの手・決め）
-    const tt = tr.straight ? t : tSwing;
-    if (tr.type === "chord") {
-      if (s === 0) for (const n of chord.tones) soundPlay(bus, tr.inst, n + (tr.octave || 0), t, tr.gain, { attack: tr.attack, len: spb * stepSec, release: tr.release });
-    } else if (tr.type === "comp") {
-      // DT-624 手直し3: 和音を決まった拍で短く刻む（エレピ・オルガン・金管の一撃）。[step, 長さ（16分音符）, 強さ]
-      for (const [at, len, vel] of tr.notes) if (at === s) for (const n of chord.tones) soundPlay(bus, tr.inst, n + (tr.octave || 0), tt, tr.gain * (vel ?? 1), { attack: tr.attack, len: len * stepSec, release: tr.release || 0.06 });
-    } else if (tr.type === "arp") {
-      for (const [at, idx, vel] of tr.notes) if (at === s) soundPlay(bus, tr.inst, soundChordNote(chord, idx) + (tr.octave || 0), tt, tr.gain * (vel ?? 1));
-    } else if (tr.type === "bass") {
-      for (const [at, semi, len, vel] of tr.notes) if (at === s) soundPlay(bus, tr.inst, chord.root + semi, tt, tr.gain * (vel ?? 1), { len: len * stepSec * 0.9, release: 0.05 });
-    } else if (tr.type === "walk") {
-      // DT-624 手直し3: 歩くベース。和音ごとに書いた4つの音（chords の walk。根音からの半音）を4分音符で
-      const k = tr.steps.indexOf(s);
-      if (k >= 0 && chord.walk) soundPlay(bus, tr.inst, chord.root + chord.walk[k % chord.walk.length], tt, tr.gain * (k === 0 ? 1 : 0.85), { len: 4 * stepSec * 0.85, release: 0.06 });
-    } else if (tr.type === "drum") {
-      // everyBars 小節ごとに1回。鳴らす小節は barOffset（書かなければ組の最後の小節＝フィル）
-      if (tr.everyBars && (barAbs % tr.everyBars) !== (typeof tr.barOffset === "number" ? tr.barOffset : tr.everyBars - 1)) continue;
-      const k = tr.steps.indexOf(s);
-      if (k < 0) continue;
-      const def = m.instruments[tr.inst];
-      const pitch = tr.pitchSteps ? chord.root + 12 + tr.pitchSteps[k] : def.base;
-      soundPlay(bus, tr.inst, pitch, tt, tr.gain * (tr.accents ? tr.accents[k] : 1));   // accents＝その拍の強さ（ゴースト・アクセント）
-    }
-  }
+  // DT-624 手直し5: 選んだ曲（竜の側）と、時代の文明の音楽（町の側）を、綱引きの大きさで重ねる
+  soundPlayTracks(m.tracks, soundRun.dragonMix, step, t, tSwing, tier, ducked);
+  const civ = soundCivEra();
+  if (civ && soundRun.civMix > 0.01) soundPlayTracks(civ.tracks, soundRun.civMix, step, t, tSwing, tier, ducked);
   // 竜の主題（角笛）。DT-624 手直し: いつもは吹かず、呼ばれたフレーズの間だけ吹く
   const mel = m.melody;
   if (!ducked && step >= soundRun.melodyFrom && step < soundRun.melodyUntil) {
-    for (const [at, midi, len] of mel.bars[bar]) if (at === s) soundPlay(bus, mel.inst, midi, tSwing, mel.gain, { attack: 0.02, len: len * stepSec * 0.92, release: 0.12 });
+    const melGain = mel.gain * Math.max(m.civ ? m.civ.melodyFloor : 1, soundRun.dragonMix);   // DT-624 手直し5: 始めはかすか、街を落とすほど前に出る
+    for (const [at, midi, len] of mel.bars[bar]) if (at === s) soundPlay(bus, mel.inst, midi, tSwing, melGain, { attack: 0.02, len: len * stepSec * 0.92, release: 0.12 });
   }
   // 息：竜のブレスが建物に当たっている量に合わせて、シェイカーを刻む（1匹ずつは鳴らさない）
   const br = m.sfx.breath;
@@ -43534,6 +43555,49 @@ function soundPlayStep(step, t) {
     const amount = Math.min(1, Math.sqrt(soundRun.breathRate / br.fullRate));
     sfxPlay("breath", br.inst, m.instruments[br.inst].base, t, br.gain * amount * (s % 4 === 0 ? 1 : 0.6));
   }
+}
+
+// --- 文明の音楽と竜の曲の綱引き（DT-624 手直し5） ---
+// 町の側＝その時代の文明の音楽（music.json の civ.eras）、プレイヤーの側＝選んだ曲と角笛の竜の主題。
+// ステージの始めは文明の音楽が主で竜の曲はかすか。街を落とすほど竜の曲が前に出て文明の音楽が退き、首都を落とすと文明の音楽が止む。
+// 進み具合を耳で聞かせるため（11/26 Shooter「時代の文明の音楽と竜の主題の綱引き、というのも盛り込んで見ることは可能ですか」）。
+// 大きさは鳴らす音ごとに掛けるだけ（ゲームの状態は読むだけで、乱数にも触らない）。
+const SOUND_PROGRESS_EVERY_SEC = 0.5;   // 進み具合を数え直す間隔（建物を全部数えるので毎回はやらない）
+/** いまの時代の文明の音楽（プレイ中で、オプションで切っていないときだけ） */
+function soundCivEra() {
+  const civ = soundMusic.civ;
+  if (!civ || !soundCivOn() || gameState !== "playing" || !settlements.length) return null;
+  return civ.eras[Math.max(0, Math.min(civ.eras.length - 1, currentStage))] || null;
+}
+/** 進み具合＝落とした街の割合（城壁と首都は数えない）。首都が落ちたら 1 で文明の音楽は止む */
+function soundStageProgress() {
+  let total = 0, fallen = 0, bossFallen = false;
+  for (const st of settlements) {
+    if (st.isBoss) { if (st.fallen) bossFallen = true; continue; }
+    if (st._isWall) continue;
+    total++;
+    if (st.fallen) fallen++;
+  }
+  return { p: bossFallen ? 1 : (total ? fallen / total : 0), bossFallen };
+}
+function soundCivUpdate(dt) {
+  const civ = soundMusic.civ;
+  if (!civ) return;
+  const active = !!soundCivEra();
+  soundRun.progressAt += dt;
+  if (active && soundRun.progressAt >= SOUND_PROGRESS_EVERY_SEC) {
+    soundRun.progressAt = 0;
+    const pr = soundStageProgress();
+    soundRun.progress = pr.p;
+    soundRun.civStopped = pr.bossFallen;
+  }
+  const p = soundRun.progress;
+  const civTarget = !active || soundRun.civStopped ? 0 : civ.civGain.start + (civ.civGain.end - civ.civGain.start) * p;
+  const dragonTarget = !active ? 1 : civ.dragonGain.start + (civ.dragonGain.end - civ.dragonGain.start) * p;
+  const k = Math.min(1, dt / civ.smoothSec);
+  // 首都の陥落で文明の音楽はすぐ止める（ならすと「止んだ」に聞こえない）
+  soundRun.civMix = civTarget === 0 && soundRun.civStopped ? 0 : soundRun.civMix + (civTarget - soundRun.civMix) * k;
+  soundRun.dragonMix += (dragonTarget - soundRun.dragonMix) * k;
 }
 
 // --- 竜の主題を呼ぶ（DT-624 手直し） ---
@@ -43565,12 +43629,15 @@ function soundMelodyRemember(dt) {
   const mel = soundMusic.melody;
   soundRun.playSec += dt;
   if (soundRun.playSec < mel.quietStartSec) return;
-  if (soundRun.playSec - soundRun.melodyLastSec < mel.rememberSec) return;
+  // DT-624 手直し5: 進むほど思い出す間が縮む（竜の主題が前に出てくる）
+  const shrink = soundMusic.civ && soundCivOn() ? 1 - (1 - soundMusic.civ.rememberAtEnd) * soundRun.progress : 1;
+  if (soundRun.playSec - soundRun.melodyLastSec < mel.rememberSec * shrink) return;
   soundCallMelody(1);
 }
 /** ステージの頭：静かな時間から始め直し、吹きかけの主題も止める */
 function soundStageStart() {
   soundRun.playSec = 0;
+  soundRun.progress = 0; soundRun.progressAt = -9; soundRun.civStopped = false;
   soundRun.melodyLastSec = 0;
   soundRun.melodyFrom = soundRun.melodyUntil = -1;
 }
@@ -43779,6 +43846,13 @@ function renderOptions() {
         `<div class="op-name">BGM の曲：<span class="op-song-val">${soundSongName()}</span></div>` +
         `<div class="op-desc">たたくたびに曲が替わる。標準＝角笛の曲／ループ＝刻みが前に出る短いループ／ジャズ・フュージョン・ソウル＝跳ねや刻みの違うループ／エレクトロニカ＝シンセの音色のループ。どの曲も竜の主題は出来事のときだけ鳴る。</div>` +
       `</div>` +
+    `</div>` +
+    // v3.220.0（DT-624 手直し5）: 時代の文明の音楽と竜の曲の綱引き
+    `<div class="op-row" data-sound="civ">` +
+      `<div class="op-body">` +
+        `<div class="op-name">文明の音楽：<span class="op-civ-val">${soundCivOn() ? "あり" : "なし"}</span></div>` +
+        `<div class="op-desc">ありにすると、その時代の文明の音楽（石器時代＝皮の太鼓と骨の笛、中世＝リュートと教会の鐘…）が上の曲に重なる。始めは文明の音楽が主で、街を落とすほど竜の曲が前に出て、首都を落とすと文明の音楽が止む。</div>` +
+      `</div>` +
     `</div>`;
   // v3.185.0（案帳 DT-610・Shooter「地域のみのサンプルは、デバッグ版のみでオプションあたりから行けるように」）
   if (DEBUG_FEATURES_ENABLED) html +=
@@ -43797,6 +43871,11 @@ function renderOptions() {
     e.stopPropagation();
     soundNextSong();
     optionsOverlayEl.querySelector(".op-song-val").textContent = soundSongName();
+  });
+  optionsOverlayEl.querySelector('[data-sound="civ"]').addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    soundSetOption("civMusic", !soundCivOn());
+    optionsOverlayEl.querySelector(".op-civ-val").textContent = soundCivOn() ? "あり" : "なし";
   });
   const soundRow = optionsOverlayEl.querySelector('[data-sound="toggle"]');
   soundRow.addEventListener("pointerdown", (e) => {

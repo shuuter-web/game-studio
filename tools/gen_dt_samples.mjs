@@ -416,6 +416,133 @@ function fmbell(rate, midi, sec) {
   return fadeEdges(out, rate, 0.001, 0.08);
 }
 
+// --- DT-624 手直し5：時代ごとの「文明の音楽」の楽器（竜の主題との綱引きの、町の側） ---
+/** 皮の太鼓：低い胴の鳴りと、手で張った皮をたたく「ぱん」（石器時代・古代の枠太鼓は高さを上げて使う） */
+function skinDrum(rate) {
+  const rnd = makeRandom(61);
+  const len = Math.floor(rate * 0.6), out = new Float32Array(len);
+  let phase = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate; phase += midiHz(43) * (1 + 0.25 * Math.exp(-t * 18)) / rate;
+    out[i] = Math.sin(TAU * phase) * Math.exp(-t * 6) + 0.45 * Math.sin(TAU * phase * 1.59) * Math.exp(-t * 14) + (rnd() * 2 - 1) * 0.5 * Math.exp(-t * 45);
+  }
+  return fadeEdges(onePoleLow(out, rate, 1400), rate, 0.0005, 0.05);
+}
+/** 骨の笛：息のまじった柔らかい笛（基音が強く、息のノイズが乗る） */
+function flute(rate, midi, sec) {
+  const rnd = makeRandom(67);
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  let phase = 0, breath = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const vib = t > 0.3 ? 0.005 * Math.min(1, (t - 0.3) * 2) * Math.sin(TAU * 4.6 * t) : 0;
+    phase += f * (1 + vib) / rate;
+    breath += 0.08 * ((rnd() * 2 - 1) - breath);
+    const env = Math.min(1, t / 0.07);
+    out[i] = (Math.sin(TAU * phase) + 0.18 * Math.sin(TAU * phase * 2) + 0.06 * Math.sin(TAU * phase * 3) + breath * 1.4 * (0.6 + 0.4 * Math.exp(-t * 6))) * env;
+  }
+  onePoleLow(out, rate, 3600);
+  return fadeEdges(out, rate, 0.01, 0.15);
+}
+/** 合唱：「あー」の声。のこぎり波を数本ずらして、母音の山（フォルマント）だけを残す */
+function choir(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), raw = new Float32Array(len);
+  const detune = [0.994, 1, 1.006, 1.011];
+  const ph = detune.map(() => 0);
+  const maxH = Math.min(24, Math.floor(rate / 2 / f / 1.02) - 1);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    detune.forEach((d, k) => { ph[k] += f * d * (1 + 0.004 * Math.sin(TAU * (4.8 + k * 0.4) * t + k)) / rate; v += sawH(ph[k], maxH); });
+    raw[i] = v * Math.min(1, t / 0.18);
+  }
+  // 「あ」の母音の山（約 750Hz・1200Hz）を2つの帯で取り出して足す
+  const out = new Float32Array(len);
+  for (const [hz, q, amp] of [[750, 6, 1], [1200, 7, 0.6], [2600, 8, 0.2]]) {
+    const w = TAU * hz / rate, alpha = Math.sin(w) / (2 * q), cw = Math.cos(w);
+    const b0 = alpha, b2 = -alpha, a0 = 1 + alpha, a1 = -2 * cw, a2 = 1 - alpha;
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < len; i++) {
+      const x = raw[i];
+      const y = (b0 * x + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+      x2 = x1; x1 = x; y2 = y1; y1 = y;
+      out[i] += y * amp;
+    }
+  }
+  return fadeEdges(out, rate, 0.02, 0.3);
+}
+/** リュート：はじいた弦を明るく短く（ハープより鼻にかかった音・早く消える） */
+function lute(rate, midi, sec) {
+  const rnd = makeRandom(71);
+  const period = rate / midiHz(midi);
+  const len = Math.floor(rate * sec), out = new Float32Array(len);
+  const n = Math.round(period), ring = new Float32Array(n);
+  for (let i = 0; i < n; i++) ring[i] = (rnd() * 2 - 1) * (i < n * 0.3 ? 1 : 0.3);   // 弦の端近くをはじく＝倍音が多い
+  let idx = 0;
+  for (let i = 0; i < len; i++) {
+    const next = (idx + 1) % n, v = ring[idx];
+    ring[idx] = (v + ring[next]) * 0.5 * 0.993;
+    out[i] = v; idx = next;
+  }
+  // 胴の共鳴（中音の山）で鼻にかける
+  for (let i = 2; i < len; i++) out[i] += 0.35 * (out[i] - out[i - 2]);
+  return fadeEdges(onePoleLow(out, rate, 4200), rate, 0.001, 0.08);
+}
+/** 金床：かーん、と高く長く残る金属（倍音が整数でない） */
+function anvil(rate) {
+  const len = Math.floor(rate * 1.2), out = new Float32Array(len);
+  const parts = [[1, 1, 2.2], [2.76, 0.6, 3.5], [5.4, 0.35, 5], [8.9, 0.2, 8]];
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    for (const [m, a, d] of parts) v += a * Math.sin(TAU * midiHz(72) * m * t) * Math.exp(-t * d);
+    out[i] = v * Math.min(1, t / 0.0008);
+  }
+  return fadeEdges(out, rate, 0.0005, 0.1);
+}
+/** アコーディオン：リードのこすれる音（細い矩形を2枚少しずらし、ゆっくり揺らす） */
+function accordion(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  const maxH = Math.min(16, Math.floor(rate / 2 / f / 1.01) - 1);
+  let p1 = 0, p2 = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    p1 += f / rate; p2 += f * 1.007 / rate;
+    let v = 0;
+    for (let h = 1; h <= maxH; h++) { const a = Math.sin(Math.PI * h * 0.3) / h; v += a * (Math.sin(TAU * p1 * h) + Math.sin(TAU * p2 * h)); }
+    out[i] = v * Math.min(1, t / 0.04) * (0.9 + 0.1 * Math.sin(TAU * 5 * t));
+  }
+  onePoleLow(out, rate, 3800);
+  return fadeEdges(out, rate, 0.005, 0.1);
+}
+/** テルミン：揺れの大きい澄んだ正弦波（電気時代の、はじめての電子の声） */
+function theremin(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  let phase = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const vib = 0.012 * Math.min(1, t * 1.5) * Math.sin(TAU * 6.2 * t);
+    phase += f * (1 + vib) / rate;
+    out[i] = (Math.sin(TAU * phase) + 0.12 * Math.sin(TAU * phase * 2)) * Math.min(1, t / 0.12);
+  }
+  return fadeEdges(out, rate, 0.01, 0.2);
+}
+/** 銅鑼：低いうなりが後から膨らんで長く残る（最終王朝の宮廷） */
+function gong(rate) {
+  const rnd = makeRandom(79);
+  const len = Math.floor(rate * 3.0), out = new Float32Array(len);
+  const parts = [[1, 1, 0.9], [1.48, 0.7, 1.2], [2.1, 0.5, 1.6], [2.9, 0.35, 2.2], [3.7, 0.25, 3]];
+  let nz = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    for (const [m, a, d] of parts) v += a * Math.sin(TAU * midiHz(38) * m * t * (1 + 0.002 * Math.sin(TAU * 0.7 * t))) * Math.exp(-t * d);
+    nz += 0.2 * ((rnd() * 2 - 1) - nz);
+    out[i] = v * (0.6 + 0.4 * Math.min(1, t / 0.35)) + nz * 0.25 * Math.exp(-t * 2.5);
+  }
+  return fadeEdges(onePoleLow(out, rate, 2600), rate, 0.002, 0.3);
+}
+
 const INSTRUMENTS = [
   // [ファイル名, 作り方, 基準の MIDI, 長さ（秒）, サンプリング周波数]
   ["harp.wav",     (r) => harp(r, 60, 1.6),     22050],
@@ -449,6 +576,15 @@ const INSTRUMENTS = [
   ["ehat.wav",     (r) => ehat(r),              32000],
   ["lead.wav",     (r) => lead(r, 60, 2.2),     22050],
   ["fmbell.wav",   (r) => fmbell(r, 72, 1.6),   22050],
+  // DT-624 手直し5（時代ごとの文明の音楽）
+  ["skindrum.wav", (r) => skinDrum(r),          16000],
+  ["flute.wav",    (r) => flute(r, 72, 1.6),    16000],
+  ["choir.wav",    (r) => choir(r, 57, 2.6),    16000],
+  ["lute.wav",     (r) => lute(r, 60, 1.0),     22050],
+  ["anvil.wav",    (r) => anvil(r),             22050],
+  ["accordion.wav",(r) => accordion(r, 60, 1.6), 16000],
+  ["theremin.wav", (r) => theremin(r, 72, 2.0), 16000],
+  ["gong.wav",     (r) => gong(r),              16000],
 ];
 
 mkdirSync(OUT, { recursive: true });
