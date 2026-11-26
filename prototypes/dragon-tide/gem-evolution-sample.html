@@ -41,14 +41,16 @@
 <body>
 <main>
   <h1>宝石の竜の進化サンプル（DT-609）</h1>
-  <p class="lead">火竜（ルビー）・氷竜（アクアマリン）・影竜（アメジスト）・緋竜（ガーネット）・飛竜（エメラルド）を、進化の3段階（原石 / 1回目の進化 / 2回目の進化）で大きく並べ、ゆっくり回している。
-    絵・きらめき・竜の向きの決め方は<strong>ゲーム本体（index.html）の描く関数をそのまま呼んでいる</strong>ので、ゲームの中と同じ見た目になる
-    （きらめきの層だけ、大きく見ても粗くならないよう作り置きの解像度を上げている）。分岐の色の重ねは入れていない。</p>
+  <p class="lead">宝石の竜（今は8竜種）を、進化の3段階（原石 / 1回目の進化 / 2回目の進化）で大きく並べ、ゆっくり回している。下のボタンで<strong>1竜種ずつ</strong>選んで見る（全部を一度に描くとスマホでメモリが足りなくなるため）。
+    絵・きらめき・竜の向きの決め方は<strong>ゲーム本体（index.html）の描く関数をそのまま呼んでいる</strong>ので、ゲームの中と同じ見た目になる。分岐の色の重ねは入れていない。</p>
   <div class="chips" id="controls">
     <button type="button" id="spin" aria-pressed="true">回す</button>
     <button type="button" id="flap" aria-pressed="true">羽ばたく</button>
     <button type="button" id="slow" aria-pressed="false">さらにゆっくり</button>
   </div>
+  <!-- DT-609 手直し（11/26 Shooter「見本ページが、しばらくみているとエラーになる。全部一気に並べない方が良さげ？」）:
+       8竜種×3段階を一度に描くと、作り置きの絵（羽ばたき16コマ×24・きらめきの層）が増え続けてスマホのタブが落ちていた。1竜種ずつ選んで見る -->
+  <div class="chips" id="pick"></div>
   <p id="status">ゲームの絵を読み込み中…</p>
 
   <section class="species">
@@ -137,7 +139,7 @@ const SPIN_SPEED_SLOW = 0.15;
 const FLAP_SPEED = 3.2;           // 羽ばたきの速さ（ラジアン/秒）。ゲームの群れより遅い
 const FLAP_STEPS = 16;            // ゲームと同じ羽ばたきのコマ数
 const MAX_WING_ANGLE = Math.PI * 0.65;
-const SPARKLE_LAYER_DPR = 3;      // きらめきの層の作り置きの解像度（ゲームは最大2）。大きく見ても粗くならないよう上げる
+const SPARKLE_LAYER_DPR = 2;      // きらめきの層の作り置きの解像度（ゲームと同じ最大2）。3にすると1つの層が倍以上になり、スマホでメモリが足りなくなった（DT-609 手直し）
 const VIEW_ZOOM = 1.0;            // 1コマ（論理66）を枠いっぱいに。1より大きくすると回ったとき翼の先や飾りが枠で切れる
 const STATIC_FLAP_STEP = 3;       // 羽ばたかないときの翼のコマ（ほぼ水平に開いた形）
 
@@ -148,13 +150,40 @@ for (const [btn, key] of [[spinBtn, "spin"], [flapBtn, "flap"], [slowBtn, "slow"
   btn.addEventListener("click", () => { state[key] = !state[key]; btn.setAttribute("aria-pressed", String(state[key])); });
 }
 
-const cells = [];   // { canvas, ctx, speciesId, tier, index }
+const cells = [];   // { canvas, ctx, speciesId, tier, index }。いま選んでいる1竜種のぶんだけ
 let angleOffset = 0;
+let current = SPECIES.some(sp => sp.id === location.hash.slice(1)) ? location.hash.slice(1) : SPECIES[0].id;
+const sections = new Map(SPECIES.map(sp => [sp.id, document.getElementById(sp.rowId).closest(".species")]));
 
+/** 竜種を選ぶボタン（見出しの名前をそのまま使う） */
+function buildPicker(onPick) {
+  const pick = document.getElementById("pick");
+  for (const sp of SPECIES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = sections.get(sp.id).querySelector("h2").textContent;
+    b.setAttribute("aria-pressed", String(sp.id === current));
+    b.addEventListener("click", () => {
+      if (sp.id === current) return;
+      current = sp.id;
+      history.replaceState(null, "", "#" + sp.id);
+      for (const x of pick.children) x.setAttribute("aria-pressed", String(x === b));
+      onPick();
+    });
+    pick.append(b);
+  }
+}
+
+/** いまの竜種の3段階だけ枠を作る。前の竜種の枠は canvas の中身ごと捨てる（作り置きの絵は呼ぶ側で捨てる） */
 function buildCells() {
+  for (const cell of cells) { cell.canvas.width = cell.canvas.height = 0; }
+  cells.length = 0;
   let index = 0;
   for (const sp of SPECIES) {
     const row = document.getElementById(sp.rowId);
+    row.replaceChildren();
+    sections.get(sp.id).hidden = sp.id !== current;
+    if (sp.id !== current) continue;
     for (const st of STAGES) {
       const box = document.createElement("div");
       box.className = "stage";
@@ -182,16 +211,18 @@ async function loadGame() {
   html = html.replace(/(function renderGemSparkleLayer\([^)]*\)\s*\{[\s\S]*?const spriteDpr = )Math\.min\(window\.devicePixelRatio \|\| 1, 2\)/,
     "$1window.__sampleSparkleDpr || Math.min(window.devicePixelRatio || 1, 2)");
   const base = new URL(GAME_URL, location.href).href.replace(/[^/]*$/, "");
+  // 見えない側のゲームの時計（ゲームの1歩と描画）を最初から回さない。絵と描く関数だけ使うので要らず、回すと地図や群れを描き続けて重い（DT-609 手直し）
+  html = html.replace("setInterval(tick, BASE_CFG.fixedStepMs);", "/* 見本では回さない */");
   html = html.replace("<head>", `<head><base href="${base}"><script>window.__sampleSparkleDpr = ${SPARKLE_LAYER_DPR};<\/script>`);
   await new Promise((resolve) => { iframe.addEventListener("load", resolve, { once: true }); iframe.srcdoc = html; });
   const win = iframe.contentWindow;
-  const api = win.eval("({ renderDragonFrame, gemSparkleLayer, gemSparkleHeading, gemSparkleForSpecies, dragonPartImages, DRAGON_SPRITE_LOGICAL, GAME_VERSION })");
+  const api = win.eval("({ renderDragonFrame, gemSparkleLayer, gemSparkleHeading, gemSparkleForSpecies, dragonPartImages, DRAGON_SPRITE_LOGICAL, GAME_VERSION, gemSparkleLayers })");
   return { win, api };
 }
 
 function allLooks(api) {
   const looks = new Set();
-  for (const sp of SPECIES) for (const st of STAGES) looks.add(api.gemSparkleForSpecies(sp.id, st.tier).look);
+  for (const sp of SPECIES) if (sp.id === current) for (const st of STAGES) looks.add(api.gemSparkleForSpecies(sp.id, st.tier).look);
   return [...looks];
 }
 
@@ -235,6 +266,16 @@ async function main() {
   }
   fitCanvases();
   window.addEventListener("resize", fitCanvases);
+  buildPicker(async () => {
+    // 前の竜種の作り置き（羽ばたきのコマ・ゲーム側のきらめきの層）を捨ててから作り直す。捨てないと見るほど増えてタブが落ちる
+    frameCache.clear();
+    api.gemSparkleLayers.clear();
+    buildCells();
+    fitCanvases();
+    statusEl.textContent = "絵を読み込み中…";
+    await waitImages(api, allLooks(api));
+    statusEl.textContent = "ゲーム " + api.GAME_VERSION + " の絵で表示中";
+  });
 
   let last = performance.now(), time = 0;
   function tick(now) {
