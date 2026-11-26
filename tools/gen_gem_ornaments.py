@@ -1,6 +1,6 @@
 """Dragon Tide（DT-609）: 2回目の進化の飾りを、全身カットの宝石の絵（*_sparkle）に描き足して *_jewel を作る。
 
-  python3 tools/gen_gem_ornaments.py [竜種...]   # 火竜・氷竜・影竜・緋竜・飛竜（名指しでその竜種だけ）の *_jewel_body.png / *_jewel_wing.png を書き出し、DRAGON_PART_SPRITES に貼る値を出す
+  python3 tools/gen_gem_ornaments.py [竜種...]   # 火竜・氷竜・影竜・緋竜・飛竜・隼竜・燕竜・蜂竜（名指しでその竜種だけ）の *_jewel_body.png / *_jewel_wing.png を書き出し、DRAGON_PART_SPRITES に貼る値を出す
 
 前の版（v3.191.0）は画像生成で「全身の金の縁取り＋細かい飾り」を描いたので、全体を縁取っただけに見えた。
 こちらは手で形を決めて飾る部位だけを太く描き、**元の輪郭からはみ出させる**（画像の余白を足して広げる）。
@@ -552,6 +552,94 @@ def wyvern_wing(src):
     return None
 
 
+# ---------------------------------------------------------------- 隼竜・燕竜・蜂竜（v3.216.0・DT-609「引き続きお願いします」）
+SAPPHIRE = dict(light=(170, 210, 255), base=(40, 84, 200), dark=(14, 30, 110), line=(6, 12, 50))
+SILVER = dict(light=(255, 255, 255), base=(214, 220, 230), dark=(128, 138, 156), line=(30, 34, 48))
+LACQUER = dict(light=(150, 150, 170), base=(28, 26, 34), dark=(6, 6, 10), line=(0, 0, 0))
+PEARL = dict(light=(255, 255, 255), base=(244, 236, 236), dark=(190, 176, 196), line=(60, 44, 70))
+HONEY = dict(light=(255, 238, 150), base=(236, 146, 20), dark=(150, 66, 6), line=(60, 26, 2))
+ONYX = dict(light=(150, 150, 160), base=(30, 30, 36), dark=(4, 4, 8), line=(0, 0, 0))
+
+FALCON_PAD = dict(left=46, top=0, right=46, bottom=0)    # 後頭部から左右・後ろへ流れる羽根飾りの分
+
+
+def falcon_body(src):
+    """隼竜（水晶）：後頭部から後ろ・外へ流れる藍玉色（サファイア）の飾り羽根を左右2枚ずつ。根元に銀の留め具。
+    頭の前・首には巻かない（DT-609 の決まり）。翼は飾らない（羽根の翼なので、頭の羽根飾りと重ねると羽根だらけになる）"""
+    p = FALCON_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + 63.0
+    for sd in (-1, 1):
+        rx, ry = cx + sd * 26, 84          # 後頭部の左右の角
+        for ang, length, width, bend in ((180 + sd * -38, 84, 20, sd * -0.35), (180 + sd * -62, 64, 16, sd * -0.3)):
+            poly, spine = feather(rx, ry, length, width, ang, bend)
+            back.shape([poly], SAPPHIRE, axis=(0.3, 1.0), outline=3.5, ridge=spine)
+        front.shape([ellipse_poly(rx, ry, 7, 6, 16)], SILVER, axis=(0.4, 1.0), outline=2.5)
+    return stack(back, sprite, front)
+
+
+def falcon_wing(src):
+    return None
+
+
+SWALLOW_PAD = dict(left=34, top=0, right=34, bottom=118)   # 尾の先から後ろへ伸びる燕尾の飾り紐の分
+
+
+def swallow_body(src):
+    """燕竜（パライバ）：尾の先から後ろ・外へ二又に伸びる黒漆の飾り紐（燕の尾羽）と、その先の真珠。背に真珠を3つ乗せる"""
+    p = SWALLOW_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + 53.0
+    tx, ty = cx, 306
+    for sd in (-1, 1):
+        poly, spine = curved_blade(tx, ty, 118, 13, math.radians(180 - sd * 16), sd * 0.32)
+        back.shape([poly], LACQUER, axis=(1.0, 0.4), outline=3.0, ridge=spine)
+        ex, ey = spine[-1]
+        back.shape([ellipse_poly(ex, ey + 4, 7, 8, 16)], PEARL, axis=(-0.4, 1.0), outline=2.5)
+    back.shape([ellipse_poly(tx, ty + 2, 9, 8, 16)], GOLD, axis=(0.4, 1.0), outline=2.5)   # 付け根の金の留め具
+    for y in (120, 140, 158):          # 背骨に乗る真珠（首の付け根から肩の間）
+        front.shape([ellipse_poly(cx, y, 6.5, 6.5, 16)], PEARL, axis=(-0.4, 1.0), outline=2.5)
+    return stack(back, sprite, front)
+
+
+def swallow_wing(src):
+    return None
+
+
+HORNET_PAD = dict(left=0, top=0, right=0, bottom=60)     # 尾の先から後ろへ伸びる黒瑪瑙の針の分
+
+
+def hexagon(cx, cy, r):
+    return [(cx + r * math.cos(math.radians(30 + 60 * i)), cy + r * math.sin(math.radians(30 + 60 * i))) for i in range(6)]
+
+
+def hornet_body(src):
+    """蜂竜（シトリン＋オニキス）：背に乗る蜂蜜色の蜜蝋の巣板（六角の房4つ）と、尾の先から後ろへ伸びる黒瑪瑙の針（根元に金）"""
+    p = HORNET_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + 82.3
+    r = 13
+    dx, dy = r * math.sqrt(3), r * 1.5
+    for hx, hy in ((cx - dx / 2, 186), (cx + dx / 2, 186), (cx - dx, 186 + dy), (cx, 186 + dy), (cx + dx, 186 + dy), (cx, 186 - dy)):
+        front.shape([hexagon(hx, hy, r - 1)], HONEY, axis=(0.4, 1.0), outline=3.0,
+                    facet=[(hx, hy), *hexagon(hx, hy, r - 1)[:3]])
+    ty = 312
+    back.shape([[(cx - 9, ty - 4), (cx + 9, ty - 4), (cx + 3, ty + 40), (cx, ty + 56), (cx - 3, ty + 40)]], ONYX, axis=(1.0, 0.3),
+               ridge=[(cx, ty), (cx, ty + 48)])
+    back.shape([ellipse_poly(cx, ty - 2, 11, 7, 18)], GOLD, axis=(0.4, 1.0), outline=2.5)
+    return stack(back, sprite, front)
+
+
+def hornet_wing(src):
+    return None
+
+
 SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel はここに余白を足して作る）
     "fire": dict(cx=62.4, cy=169.4, sl=(14.2, 152), sr=(110.8, 152), wa=(319, 64.1)),
     "ice": dict(cx=81.5, cy=175.6, sl=(21.4, 152), sr=(141.6, 152), wa=(319, 69.0)),
@@ -559,6 +647,10 @@ SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel 
     "shadow": dict(cx=74.5, cy=174.7, sl=(22.8, 177), sr=(126.2, 177), wa=(317, 63.4)),
     "crimson": dict(cx=97.5, cy=176.6, sl=(18.1, 161), sr=(176.9, 161), wa=(316, 66.7)),
     "wyvern": dict(cx=64.4, cy=169.1, sl=(17.0, 152), sr=(112.0, 152), wa=(317, 64.7)),
+    # v3.216.0: 隼竜・燕竜・蜂竜も tools/gen_gem_restyle.py で元の輪郭のまま描き直したので、元の竜種の値
+    "falcon": dict(cx=63.0, cy=179.6, sl=(32.8, 183), sr=(93.2, 183), wa=(316, 55.0)),
+    "swallow": dict(cx=53.0, cy=179.7, sl=(12.7, 182), sr=(93.3, 182), wa=(317, 60.2)),
+    "hornet": dict(cx=82.3, cy=173.0, sl=(22.4, 139), sr=(142.6, 139), wa=(316, 18.1)),
 }
 
 
@@ -580,6 +672,9 @@ def main():
         ("shadow", shadow_body, shadow_wing, SHADOW_PAD, SHADOW_WING_PAD),
         ("crimson", crimson_body, crimson_wing, CRIMSON_PAD, dict(left=0, top=0, right=0, bottom=0)),
         ("wyvern", wyvern_body, wyvern_wing, WYVERN_PAD, dict(left=0, top=0, right=0, bottom=0)),
+        ("falcon", falcon_body, falcon_wing, FALCON_PAD, dict(left=0, top=0, right=0, bottom=0)),
+        ("swallow", swallow_body, swallow_wing, SWALLOW_PAD, dict(left=0, top=0, right=0, bottom=0)),
+        ("hornet", hornet_body, hornet_wing, HORNET_PAD, dict(left=0, top=0, right=0, bottom=0)),
     ):
         if only and element not in only:
             continue
