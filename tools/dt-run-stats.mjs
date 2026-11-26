@@ -3,7 +3,7 @@
 //
 //   node tools/dt-run-stats.mjs [--species fire,wyvern | all | random] [--seeds 1,2,3 | --runs 10 --seed-base 100]
 //        [--parallel 4] [--out runs.json] [--stage-limit-min 30] [--stall-min 5] [--run-limit-min 240]
-//        [--sample-sec 30] [--setup "式"] [--file prototypes/dragon-tide/index.html] [--resume]
+//        [--sample-sec 30] [--setup "式"] [--file prototypes/dragon-tide/index.html] [--resume] [--perf]
 //   --out の JSON は1ラン終わるたびに書き足す。--resume で、そこにある竜種・シードのランは回さずに使う（途中で止まった計測の続き）
 //
 // オートプレイでランを最初から最後まで回し、1ランごとの記録を JSON に書き出して、竜種ごとの表を出す。
@@ -16,6 +16,12 @@
 // - 時間はすべてゲームの中の時計（1歩16ms）。強化カードで止まっている間も数える（実プレイで画面の前にいる時間に近い）
 // - 竜種は鍵が掛かっていても選べる（調整のため。実プレイでは解放が要る）
 // - 世界図で次に攻める国はオートプレイが選ぶ（シードで決まる）
+//
+// --perf（案帳 DT-638）：重い場面を拾う。ゲームの1秒ごとに「ロジック1歩の本物の時間（その1秒の平均）」と、
+//   そこで1枚だけ本物の描画をしたときの時間を測り、盤面の様子（竜・建物・敵・弾・火の粉の数）と一緒に記録する。
+//   ランごとに重い順の上位（30秒以上離れたもの）を perf.top に残し、最後に全部のランから重い場面の一覧を出す。
+//   どの場面も「竜種・シード・ランの頭からの時刻」で決まるので、tools/dt-perf-replay.mjs でいつでも同じ場面を開き直して測れる。
+//   時間は計測する機械と同時に回す本数で変わるので、場面どうしの比べ（どこが重いか）に使う。
 //
 // 数値を変える案は、書き換えた写しを --file に渡し、同じ --species / --seeds で回して表を比べる。
 // AI は人と腕前が違うので、出てくる数字は「前後の比べ」「竜種どうし・地域どうしの比べ」に使う（難しさの絶対の高さは実プレイで合わせる）。
@@ -40,6 +46,10 @@ const CHUNK_STEPS = Math.round(1000 / STEP_MS);
 const setupExpr = arg("setup", "");
 const parallel = Math.max(1, Number(arg("parallel", "4")));
 const outPath = arg("out", "");
+const perf = args.includes("--perf");
+const PERF_TOP_PER_RUN = 8;           // ランごとに残す重い場面の数
+const PERF_TOP_SPACING_MS = 30000;    // 同じ場面を何度も拾わないよう、これより近い場面は重い方だけ残す
+const PERF_WARMUP_MS = 20000;         // ランの頭（読み込み直後でコンパイルが済んでいない）は測らない
 
 const seeds = arg("seeds", "")
   ? arg("seeds", "").split(",").map((s) => s.trim()).filter(Boolean)
@@ -115,6 +125,21 @@ function installRecorder() {
   const perkArmed = () => perkOfferVisible && perkOfferEl.classList.contains("armed");
   wrap("takePerkCard", (orig, self, a) => { if (perkArmed() && a[0]) noteCard(a[0], "強化カード"); return orig.apply(self, a); });
   wrap("takeSpecialLevel", (orig, self, a) => { if (perkArmed() && a[0]) noteCard(a[0], "特殊個体"); return orig.apply(self, a); });
+  // DT-638: 重さの記録（--perf）。盤面の様子は重さの原因の見当を付けるため
+  rec.perfList = [];
+  const len = (x) => (x && typeof x.length === "number" ? x.length : 0);
+  const countOn = (arr) => { if (!arr) return 0; let n = 0; for (let i = 0; i < arr.length; i++) if (arr[i]) n++; return n; };
+  rec.perfScene = () => ({
+    stage: runStageNumber, eraName: CONTINENT_DEFS[runStageIndex] ? CONTINENT_DEFS[runStageIndex].name : "",
+    shapeName: STRINGS.shapeNames[runShape] ?? String(runShape), tier: powerTier + 1,
+    flock: flock(), buildings: aliveBuildings(), settlements: len(settlements),
+    movers: len(typeof movers !== "undefined" ? movers : null),
+    // 弾・火の粉・火は決まった大きさの配列に「使っている」印を立てる作りなので、印を数える
+    projectiles: countOn(typeof projActive !== "undefined" ? projActive : null),
+    particles: countOn(typeof partActive !== "undefined" ? partActive : null),
+    fires: countOn(typeof fireActive !== "undefined" ? fireActive : null),
+    state: gameState,
+  });
   rec.sample = () => rec.samples.push({ t: t(), stage: runStageNumber, flock: flock(), joined: countJoinedBoids() + flockOverflow,
     level: playerLevel, tier: powerTier + 1, lives: runLives, buildings: aliveBuildings(), species: flockSpecies,
       speciesName: SPECIES_DEFS[flockSpecies] ? SPECIES_DEFS[flockSpecies].ja : flockSpecies, state: gameState });
@@ -135,7 +160,25 @@ async function runOne({ seed, species }) {
     if (setupExpr) await page.evaluate((expr) => (0, eval)(expr), setupExpr);
     let stopReason = null, nextSample = 0;
     for (;;) {
-      await stepMany(page, CHUNK_STEPS, { stepMs: STEP_MS, stopExpr: "window.__dtRec.result !== null" });
+      if (perf) {
+        // DT-638: この1秒の歩を本物の時計で測り、そのあと1枚だけ本物の描画をして測る
+        await page.evaluate(([n, ms, warm]) => {
+          const rec = window.__dtRec, t0 = window.__dtRealNow();
+          const k = window.__dtStepMany(ms, n, () => rec.result !== null);
+          const logicMs = (window.__dtRealNow() - t0) / Math.max(1, k);
+          const t = Math.round(performance.now() - runStartTime);
+          if (rec.result || t < warm || gameState !== "playing") return;
+          // 1枚目は前の測定から1秒ぶん進んだ分の作り置き（地面・建物の絵）を作り直す時間が混ざるので、2枚描いて2枚目を取る
+          // （実プレイは毎歩描くので、作り置きは温まっている）
+          window.__dtRealRender(performance.now());
+          const r0 = window.__dtRealNow();
+          window.__dtRealRender(performance.now());
+          const renderMs = window.__dtRealNow() - r0;
+          rec.perfList.push({ t, logicMs: +logicMs.toFixed(3), renderMs: +renderMs.toFixed(2), ...rec.perfScene() });
+        }, [CHUNK_STEPS, STEP_MS, PERF_WARMUP_MS]);
+      } else {
+        await stepMany(page, CHUNK_STEPS, { stepMs: STEP_MS, stopExpr: "window.__dtRec.result !== null" });
+      }
       if (errors.length) { stopReason = "error"; break; }
       const st = await page.evaluate(([stageLimitMs, stallMs, runLimitMs, sampleMs, nextSample]) => {
         const rec = window.__dtRec, t = performance.now() - runStartTime;
@@ -167,8 +210,12 @@ async function runOne({ seed, species }) {
         wipes: rec.wipes.length, livesLeft: runLives, level: playerLevel, maxFlock: runMaxFlock, kills: runKills,
         specials: runSpecials.map((k) => (SPECIAL_DEFS[k] ? SPECIAL_DEFS[k].name : k)),
         stages: rec.stages, wipeList: rec.wipes, cards: rec.cards, samples: rec.samples,
+        perfList: rec.perfList,
       };
     }, stopReason);
+    // DT-638: 重さの記録は大きいので、ページから受け取ってここでまとめ、上位だけ残す
+    const perfList = rec.perfList; delete rec.perfList;
+    if (perfList.length) rec.perf = summarizePerf(perfList);
     rec.startSpecies = sid;
     rec.startSpeciesName = await page.evaluate((id) => (SPECIES_DEFS[id] ? SPECIES_DEFS[id].ja : id), sid);
     if (errors.length) rec.errors = errors.slice(0, 5);
@@ -176,6 +223,20 @@ async function runOne({ seed, species }) {
   } finally {
     await browser.close();
   }
+}
+
+/** DT-638: 重い順に、PERF_TOP_SPACING_MS 以上離れた場面を上位から残す（同じ場面の続きを何度も拾わない） */
+function summarizePerf(list) {
+  const cost = (p) => p.logicMs + p.renderMs;
+  const sorted = list.slice().sort((a, b) => cost(b) - cost(a));
+  const top = [];
+  for (const p of sorted) {
+    if (top.length >= PERF_TOP_PER_RUN) break;
+    if (top.some((q) => Math.abs(q.t - p.t) < PERF_TOP_SPACING_MS)) continue;
+    top.push(p);
+  }
+  const avg = (key) => +(list.reduce((a, p) => a + p[key], 0) / list.length).toFixed(3);
+  return { samples: list.length, logicMsAvg: avg("logicMs"), renderMsAvg: avg("renderMs"), top };
 }
 
 // 竜種の一覧（all のとき）はページから取る
@@ -258,5 +319,19 @@ const cut = results.filter((r) => !["complete", "defeat"].includes(r.outcome));
 for (const r of cut) {
   const s = (r.stages || []).at(-1);
   console.log(`打ち切り: ${runLabel(r)} seed=${r.seed} ${r.outcome}${s ? ` ステージ${s.number}（${s.eraName}／${s.shapeName}）残り${s.buildingsLeft}棟` : ""}${r.errors ? " " + r.errors[0].split("\n")[0] : ""}`);
+}
+// DT-638: 全部のランから重い場面の一覧（重い順）。dt-perf-replay.mjs で開き直す引数も添える
+if (perf) {
+  const all = [];
+  for (const r of results) for (const p of (r.perf && r.perf.top) || []) all.push({ r, p });
+  all.sort((a, b) => (b.p.logicMs + b.p.renderMs) - (a.p.logicMs + a.p.renderMs));
+  console.log(`\n重い場面（ロジック1歩＋描画1枚の本物の時間・ms）`);
+  console.log(`順\t合計\tロジック\t描画\t竜種\tシード\t時刻\tステージ\t地域\t警戒度\t群れ\t建物\t敵\t弾\t火の粉\t火\t開き直す`);
+  all.slice(0, 30).forEach(({ r, p }, k) => {
+    const at = `${Math.floor(p.t / 60000)}:${String(Math.floor(p.t / 1000) % 60).padStart(2, "0")}`;
+    console.log([k + 1, (p.logicMs + p.renderMs).toFixed(1), p.logicMs.toFixed(2), p.renderMs.toFixed(1), r.startSpeciesName || r.species, r.seed, at,
+      `${p.stage}（${p.eraName}）`, p.shapeName, p.tier, p.flock, p.buildings, p.movers, p.projectiles, p.particles, p.fires,
+      `node tools/dt-perf-replay.mjs --species ${r.startSpecies || r.species} --seed ${r.seed} --at-ms ${p.t}`].join("\t"));
+  });
 }
 console.error(`elapsed ${((Date.now() - started) / 1000).toFixed(0)}s`);

@@ -27,6 +27,9 @@ export async function openGame({ file, seed, noRender = false }) {
     // 時計を手で進める。起動時刻は固定（Date.now をシードに使う箇所があっても ?seed= で上書きされる）
     let fakeNow = 1000;
     const epoch = Date.UTC(2026, 0, 1);
+    // DT-638: 重さを測るための本物の時計（ゲームには渡さない。dt-run-stats --perf・dt-perf-replay が使う）
+    const realNow = performance.now.bind(performance);
+    window.__dtRealNow = () => realNow();
     performance.now = () => fakeNow;
     Date.now = () => epoch + fakeNow;
     // タイマーも全部この時計に載せる。本物の setTimeout / requestAnimationFrame が残っていると、
@@ -82,7 +85,8 @@ export async function openGame({ file, seed, noRender = false }) {
     if (waited > 60000) throw new Error("ゲームループが始まらなかった");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  if (noRender) await page.evaluate(() => { window.render = () => {}; window.drawMinimap = () => {}; });
+  // DT-638: 本物の描画は __dtRealRender に取っておく（描かずに回しながら、ときどき1枚だけ描いて重さを測るため）
+  if (noRender) await page.evaluate(() => { window.__dtRealRender = window.render; window.__dtRealMinimap = window.drawMinimap; window.render = () => {}; window.drawMinimap = () => {}; });
   return { browser, page, errors };
 }
 
