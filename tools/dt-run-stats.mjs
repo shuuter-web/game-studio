@@ -216,6 +216,9 @@ async function runOne({ seed, species }) {
     // DT-638: 重さの記録は大きいので、ページから受け取ってここでまとめ、上位だけ残す
     const perfList = rec.perfList; delete rec.perfList;
     if (perfList.length) rec.perf = summarizePerf(perfList);
+    // ランが終わるとタイトルに戻ってレベルが1に戻るので、最後のレベルは最後に遊んでいた時の記録から取る（DT-615 11/26）
+    const lastPlay = (rec.samples || []).findLast((x) => x.state !== "title");
+    if (lastPlay) rec.level = lastPlay.level;
     rec.startSpecies = sid;
     rec.startSpeciesName = await page.evaluate((id) => (SPECIES_DEFS[id] ? SPECIES_DEFS[id].ja : id), sid);
     if (errors.length) rec.errors = errors.slice(0, 5);
