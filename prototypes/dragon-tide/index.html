@@ -1381,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.210.0";
+const GAME_VERSION = "v3.211.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2841,9 +2841,10 @@ const ATTACK_DEFS = {
   flamebreath:    { ja: "炎息",       en: "Flamebreath",       kind: "beam",      recoilDist: 0,  fireStun: 0,    attribute: ATTRIBUTE_FIRE },
   // recoilDist 28: 実機で 0/40/100/240 を比べたユーザー判断（v0.35.2）
   icelance:       { ja: "氷槍",       en: "Ice Lance",         kind: "bullet",    recoilDist: 28, fireStun: 0,    attribute: ATTRIBUTE_ICE },
-  // v2.13.0: 城壁には当たらない（飛び越えて、壁の内側を狙う。仕様書 §8.1 の「MISSILE のみ越える」）
+  // v2.13.0: 城壁を狙わない（壁の内側の建物をロックする）。
+  // v3.211.0（案帳 DT-068 手直し）: 城壁を飛び越えるのは強すぎたので、狙わないが当たる（壁で爆ぜて壁を削る）にした
   shadowbolt:     { ja: "影弾",       en: "Shadow Bolt",       kind: "missile",   recoilDist: 0,  fireStun: 0,
-                    targets: { building: TARGET_AIM, mover: TARGET_AIM, wall: TARGET_NONE } },
+                    targets: { building: TARGET_AIM, mover: TARGET_AIM, wall: TARGET_HIT } },
   rend:           { ja: "爪撃",       en: "Rend",              kind: "melee",     recoilDist: 0,  fireStun: 0.14 },
   // v0.35: Ⅱ群＋ガーゴイルぶん
   wingblade:      { ja: "刃翼",       en: "Wing Blade",        kind: "blade",     recoilDist: 0,  fireStun: 0    },
@@ -36087,7 +36088,8 @@ const BULLET_INTERVAL   = 1.2;  // 発射間隔（秒）
 const BULLET_MAX_TRAVEL = 300;  // 弾の最大飛距離（px）
 
 // ---- MISSILE（影竜・加速ホーミング）基礎性能（仕様 §6.3）----
-const MISSILE_RANGE      = 300;   // ロックオン距離（px）
+const MISSILE_RANGE      = 210;   // ロックオン距離（px）。v3.211.0（案帳 DT-068 手直し）: 300→210（3割短く）
+const MISSILE_RELOCK_RANGE = 175; // 狙った相手が消えたときに狙い直す距離（px）。v3.211.0: 250→175（射程と同じく3割短く）
 const MISSILE_DAMAGE     = 15;    // 直撃ダメージ
 const MISSILE_INTERVAL   = 2.5;   // 発射間隔（秒）
 const MISSILE_INIT_SPEED = 60;    // 初速（px/s）
@@ -36360,7 +36362,7 @@ function updateMissileAttacks(dt) {
     boidFireTimer[i] -= dt;
     if (boidFireTimer[i] > 0) continue;
 
-    // v0.6-p3: ミサイルは城壁を狙わない（壁越しに内部の建物をロックする）
+    // v0.6-p3: ミサイルは城壁を狙わない（壁の内側の建物をロックする。v3.211.0 から飛ぶ途中の壁には当たる）
     // v2.12.0: 動く敵も狙う。v2.13.0: 対象の設定（ATTACK_DEFS.shadowbolt.targets）から引く
     const tg = findNearestAimTarget(px[i], py[i], range, attackTargets(ATTACK_DEFS.shadowbolt), i, arcHalf);
     if (!tg) continue;
@@ -36392,7 +36394,7 @@ function updateDragonProjectiles(dt) {
       }
       if (!target) {
         // 対象消失: 現在位置周辺で再ロック（城壁は対象外。見つからなければ直進して寿命切れ）
-        const tg = findNearestAimTarget(dprojX[i], dprojY[i], 250, attackTargets(ATTACK_DEFS.shadowbolt));
+        const tg = findNearestAimTarget(dprojX[i], dprojY[i], MISSILE_RELOCK_RANGE, attackTargets(ATTACK_DEFS.shadowbolt));
         dprojTarget[i] = tg ? tg.sIdx : -1;
         dprojTargetMover[i] = tg ? tg.mover : null;
         target = tg ? aimTargetPos(tg) : null;
@@ -36486,8 +36488,8 @@ function updateDragonProjectiles(dt) {
     for (const sIdx of _dprojNeighbourBuf) {
       const s = settlements[sIdx];
       if (!s || s.fallen) continue;
-      // v0.6-p3: ミサイルは城壁を飛び越える（唯一の壁越し攻撃。仕様 §6.3）
-      // v2.13.0: 「当たらない」分類は飛び越える（影弾の城壁はここで落ちる）
+      // v2.13.0: 「当たらない」分類は飛び越える
+      // v3.211.0（案帳 DT-068 手直し）: 影弾も城壁は「狙わないが当たる」になり、壁で爆ぜる（前は飛び越えた）
       if (!targetHittable(projTargets, settlementTargetClass(s))) continue;
       if (dprojKind[i] === 0 && sIdx === dprojLastHit[i]) continue; // 同じ建物への多段ヒット防止
       const hitR = s.radius + 3;
@@ -36525,7 +36527,7 @@ function missileExplode(x, y, dmg, targets, skipIdx, skipMover) {
     if (aIdx === skipIdx) continue;
     const a = settlements[aIdx];
     if (!a || a.fallen) continue;
-    // v2.13.0: 爆発も「当たらない」分類には入れない（影弾の爆風は城壁を削らない）
+    // v2.13.0: 爆発も「当たらない」分類には入れない（v3.211.0 から影弾の爆風は城壁も削る）
     if (!targetHittable(targets, settlementTargetClass(a))) continue;
     const adx = a.wx - x, ady = a.wy - y;
     if (adx * adx + ady * ady < (aoeR + a.radius) * (aoeR + a.radius)) hitBuilding(aIdx, blast, x, y);
