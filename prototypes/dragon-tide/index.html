@@ -1053,6 +1053,14 @@
   /* v3.222.0（案帳 DT-640）: 竜を選ぶ画面の ✕（ほかの画面の ✕ と同じ色・大きさで右上） */
   #levelup-overlay .species-close { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px); right: 12px; z-index: 5;
     font-size: 20px; color: #ff8888; background: none; border: none; cursor: pointer; min-width: 40px; min-height: 40px; }
+  /* v3.223.0（DT-642 手直し）: 完走のリザルトは竜と地面の上に、題名・Thank you・★と数字だけ（上の HUD・ボタン類は隠す） */
+  body.run-finale #hud-topbar, body.run-finale #hud-left, body.run-finale #minimap-container, body.run-finale #hud,
+  body.run-finale #xp-bar, body.run-finale #report-btn, body.run-finale #assist-btn, body.run-finale #assist-note,
+  body.run-finale #stage-overlay, body.run-finale #hud-version, body.run-finale #tr-bar { display: none !important; }
+  body.run-finale #overlay-title { display: none; }
+  #result-stats .finale-credit { text-align: center; margin: 0 0 18px; font-family: "Shippori Mincho", "Hiragino Mincho ProN", "Yu Mincho", serif; }
+  #result-stats .finale-credit div:first-child { font-size: 26px; font-weight: 800; letter-spacing: 0.14em; color: #ffe8b0; }
+  #result-stats .finale-credit div + div { font-size: 18px; letter-spacing: 0.1em; color: #e8dcc0; margin-top: 6px; }
   /* v3.221.0（案帳 DT-642）: 完走の締め。世界図の入れ物を借りる */
   #world-map-overlay.ending { display: flex; align-items: center; justify-content: center; overflow: hidden; z-index: 70; }
   #world-map-overlay .ending-stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; }
@@ -33658,10 +33666,9 @@ const STRINGS = {
   endingFlock: (n, lv) => `群れ ${n}匹 ・ Lv.${lv}`,
   endingRouteTitle: "竜がたどった道",
   endingEraNames: ["石器時代", "古代文明", "中世", "近世要塞", "産業時代", "電気時代", "大戦時代", "最終王朝"],
+  // DT-642 手直し（11/26 Shooter「クレジットは無しで、タイトルとThank you文だけに」）
   endingCredits: [
     { role: "", name: "DRAGON TIDE" },
-    { role: "企画・ディレクション", name: "Shooter" },
-    { role: "ゲームデザイン・プログラム・音", name: "Claude" },
     { role: "", name: "Thank you for playing" },
   ],
   statTime: "クリア時間",
@@ -46612,7 +46619,7 @@ function createWorld(seed) {
   buildGeometry(seed);
   const state = {
     seed, turn: 1, regions: [], cellOwner: [], burned: new Set(), burnedNames: [], usedRegions: new Set(),
-    history: [], unclaimed: [], merges: 0, specials: 0, done: false, flashIds: new Set(), eggRegionId: null, eggRegion: null, lastBurnedCell: null,
+    history: [], route: [], unclaimed: [], merges: 0, specials: 0, done: false, flashIds: new Set(), eggRegionId: null, eggRegion: null, lastBurnedCell: null,
     ruinTurn: [],
   };
   rollLayout(seed).forEach((entry, cellIndex) => {
@@ -46689,6 +46696,9 @@ function destroyRegion(regionId) {
   world.ruinTurn[ruinCell] = playedTurn;
   if (regionId === world.eggRegionId) world.eggRegion = region.region;
   world.lastBurnedCell = ruinCell;
+  // v3.223.0（DT-642 手直し）: 竜がたどった道。廃墟の区画は後で別の国が併合し、また廃墟になることがある（同じ区画を2度通る）ので、
+  // 区画ごとの記録（ruinTurn）とは別に、滅ぼした順に持つ
+  world.route.push({ cell: ruinCell, region: region.region, era: region.era });
   world.regions = world.regions.filter((r) => r.id !== regionId);
   world.history.push({ turn: playedTurn, region: region.region, era: region.era, cells: region.cells.length });
   selectedRegionId = null;
@@ -47370,12 +47380,13 @@ function changeRules() {
 /** v3.221.0（案帳 DT-642）: 完走の締めで道のりをたどるため、滅ぼした順の廃墟の区画の中心（地図の座標）と国 */
 function endingRoute() {
   if (!world) return { w: MAP_W, h: MAP_H, points: [] };
-  const cells = Object.keys(world.ruinTurn).map(Number).sort((a, b) => world.ruinTurn[a] - world.ruinTurn[b]);
   return {
     w: MAP_W, h: MAP_H,
-    points: cells.map((c, k) => {
-      const hist = world.history[k] || {};
-      return { x: CELL_CENTERS[c][0], y: CELL_CENTERS[c][1], region: world.burnedNames[c], era: hist.era || k + 1 };
+    // 同じ区画を2度目に通ったときは、印が重ならないよう少しずらす
+    points: (world.route || []).map((st, k, all) => {
+      const seen = all.slice(0, k).filter((o) => o.cell === st.cell).length;
+      const ang = seen * 2.1;
+      return { x: CELL_CENTERS[st.cell][0] + Math.cos(ang) * 13 * seen, y: CELL_CENTERS[st.cell][1] + Math.sin(ang) * 13 * seen, region: st.region, era: st.era };
     }),
   };
 }
@@ -48812,11 +48823,16 @@ function triggerRunComplete() {
 }
 
 /** ラン完走のリザルト（締めとクレジットのあと） */
+// v3.223.0（DT-642 手直し・11/26 Shooter「クレジットの後マップに戻ってくるなら、クレジットの文字と、プレイ結果フィードバック部分と、
+// 竜たちとフィールドだけがいい。フレーバー文や All civilizations… や上部の各種UIは無しで」）:
+// 物語の一文（締めの中で見せた）と見出しを出さず、題名と Thank you の文、★と数字だけを、竜と地面の上に出す。上の HUD は隠す
 function showRunCompleteResult(storyLines, stars, starsBest, runTimeMs) {
+  void storyLines;
+  document.body.classList.add("run-finale");
   overlayEl.classList.add("visible");
-  overlayTitle.textContent = STRINGS.resultTitle;
+  overlayTitle.textContent = "";
   resultStatsEl.innerHTML =
-    resultStoryHtml(storyLines) +   // v3.14.0
+    `<div class="finale-credit">${STRINGS.endingCredits.map(c => `<div>${endingEscape(c.name)}</div>`).join("")}</div>` +
     `<div class="result-stars">${starsText(stars)}</div>` +
     `<div class="result-rank">${clearRankName(stars)}` +
       `${starsBest ? ' <span class="result-best">自己ベスト更新</span>' : ""}</div>` +
@@ -50242,6 +50258,7 @@ function setupStageForResume(tier, fallenPacked) {
  */
 function returnToTitle() {
   overlayEl.classList.remove("result-mode");   // v3.59.1
+  document.body.classList.remove("run-finale");   // v3.223.0（DT-642 手直し）
   stageIntroShowing = false;   // v3.15.0
   gameState       = "title";
   dismissRegionPick();      // v3.185.0（DT-610）: 世界図を出したままタイトルへ戻らない
