@@ -326,6 +326,96 @@ function brush(rate) {
   return fadeEdges(out, rate, 0.002, 0.04);
 }
 
+// --- DT-624 手直し4（エレクトロニカ・11/26 Shooter「音色を現代的なかっこいいエレクトロニカに」）---
+/** のこぎり波（帯域を少し丸めた近似。高い倍音でざらつかないよう倍音を数で打ち切る） */
+function sawH(phase, maxH) { let v = 0; for (let h = 1; h <= maxH; h++) v += Math.sin(TAU * phase * h) / h; return v; }
+/** スーパーソウ：7本の少しずつずらしたのこぎり波を重ねた厚いパッド */
+function synpad(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  const det = [-0.011, -0.0065, -0.003, 0, 0.0032, 0.0068, 0.0105], ph = [0, 0.13, 0.41, 0.77, 0.29, 0.58, 0.91];
+  const maxH = Math.max(1, Math.floor(rate / 2 / (f * 1.02)) - 1);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    for (let k = 0; k < 7; k++) v += sawH(f * (1 + det[k]) * t + ph[k], Math.min(maxH, 24)) * (k === 3 ? 1 : 0.7);
+    out[i] = v / 5;
+  }
+  onePoleLow(out, rate, 3600);
+  return fadeEdges(out, rate, 0.02, 0.4);
+}
+/** プラック：明るく弾いてすぐ暗くなるシンセ（倍音ほど早く消える＝フィルターが閉じる感じ） */
+function pluck(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  const maxH = Math.min(30, Math.floor(rate / 2 / f) - 1);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    for (let h = 1; h <= maxH; h++) v += Math.sin(TAU * f * h * t + (h % 2) * 0.3) / h * Math.exp(-t * (3 + h * 2.2));
+    v += 0.35 * Math.sin(TAU * f * 1.004 * t) * Math.exp(-t * 4);
+    out[i] = v;
+  }
+  return fadeEdges(out, rate, 0.001, 0.05);
+}
+/** サブベース：低い正弦にうすいのこぎりの歪みを足した太いベース */
+function subbass(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const v = Math.sin(TAU * f * t) + 0.28 * sawH(f * t, 6) * Math.exp(-t * 3);
+    out[i] = Math.tanh(v * 1.6) * Math.min(1, t / 0.004);
+  }
+  return fadeEdges(out, rate, 0.002, 0.06);
+}
+/** 電子のキック：深く下がる正弦と短いクリック */
+function kick808(rate) {
+  const len = Math.floor(rate * 0.55), out = new Float32Array(len);
+  let phase = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    phase += (46 + 140 * Math.exp(-t * 38)) / rate;
+    out[i] = Math.tanh(1.8 * Math.sin(TAU * phase) * Math.exp(-t * 6.5)) + (t < 0.004 ? (1 - t / 0.004) * 0.6 : 0);
+  }
+  return fadeEdges(out, rate, 0.0003, 0.04);
+}
+/** 電子のハイハット：高い矩形波を何本か重ねた金属の音（808 の作り方） */
+function ehat(rate) {
+  const len = Math.floor(rate * 0.07), out = new Float32Array(len);
+  const fr = [3140, 4170, 5220, 6010, 7330, 8150];
+  let prev = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    for (const q of fr) v += ((q * t) % 1) < 0.5 ? 1 : -1;
+    const hp = v - prev; prev = v;   // 低い所を削る
+    out[i] = hp * Math.exp(-t * 70);
+  }
+  return fadeEdges(out, rate, 0.0002, 0.01);
+}
+/** リード：細いのこぎり2本＋ビブラート。角笛のかわりに竜の主題を吹く */
+function lead(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  let p1 = 0, p2 = 0;
+  const maxH = Math.min(18, Math.floor(rate / 2 / f) - 1);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const vib = t > 0.2 ? 0.006 * Math.min(1, (t - 0.2) * 3) * Math.sin(TAU * 5.6 * t) : 0;
+    p1 += f * (1 + vib) / rate; p2 += f * (1.006 + vib) / rate;
+    out[i] = (sawH(p1, maxH) + sawH(p2, maxH)) * 0.5 * Math.min(1, t / 0.01);
+  }
+  onePoleLow(out, rate, 4200);
+  return fadeEdges(out, rate, 0.003, 0.12);
+}
+/** FMベル：きらっとした金属の鈴（合いの手） */
+function fmbell(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const idx = 3.2 * Math.exp(-t * 5);
+    out[i] = Math.sin(TAU * f * t + idx * Math.sin(TAU * f * 3.5 * t)) * Math.exp(-t * 3.2);
+  }
+  return fadeEdges(out, rate, 0.001, 0.08);
+}
+
 const INSTRUMENTS = [
   // [ファイル名, 作り方, 基準の MIDI, 長さ（秒）, サンプリング周波数]
   ["harp.wav",     (r) => harp(r, 60, 1.6),     22050],
@@ -351,6 +441,14 @@ const INSTRUMENTS = [
   ["rim.wav",      (r) => rim(r),               22050],
   ["clap.wav",     (r) => clap(r),              22050],
   ["brush.wav",    (r) => brush(r),             22050],
+  // DT-624 手直し4（エレクトロニカ）
+  ["synpad.wav",   (r) => synpad(r, 48, 3.0),   22050],
+  ["pluck.wav",    (r) => pluck(r, 60, 0.7),    22050],
+  ["subbass.wav",  (r) => subbass(r, 36, 1.0),  16000],
+  ["kick808.wav",  (r) => kick808(r),           22050],
+  ["ehat.wav",     (r) => ehat(r),              32000],
+  ["lead.wav",     (r) => lead(r, 60, 2.2),     22050],
+  ["fmbell.wav",   (r) => fmbell(r, 72, 1.6),   22050],
 ];
 
 mkdirSync(OUT, { recursive: true });
