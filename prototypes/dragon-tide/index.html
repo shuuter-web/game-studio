@@ -1388,7 +1388,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.216.0";
+const GAME_VERSION = "v3.217.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -43098,6 +43098,14 @@ function soundSchedule() {
     soundNextStep++;
   }
 }
+/** 跳ね（スウィング）：裏の音を何16分音符ぶん遅らせるか（DT-624 手直し3）。
+ *  曲の swing＝{unit: 8, amount}（8分の裏＝拍の3つ目の16分を遅らせる。ジャズ）か {unit: 16, amount}（16分の裏を遅らせる。ソウル・フュージョン）。書かなければ跳ねない */
+function soundSwingSteps(s) {
+  const sw = soundMusic.swing;
+  if (!sw || !sw.amount) return 0;
+  if (sw.unit === 8) return (s % 4 === 2) ? sw.amount : 0;
+  return (s % 2 === 1) ? sw.amount : 0;
+}
 /** 16分音符1つぶんを予約する */
 function soundPlayStep(step, t) {
   const m = soundMusic, spb = m.stepsPerBar, bars = soundBarCount();
@@ -43107,15 +43115,25 @@ function soundPlayStep(step, t) {
   const stepSec = soundStepSec();
   const tier = (typeof powerTier === "number" ? powerTier : 0);
   const ducked = step < soundRun.duckUntilStep;   // 警戒度の鐘のあと1小節は伴奏を引いて「空気が変わった」を作る
+  const tSwing = t + soundSwingSteps(s) * stepSec;   // DT-624 手直し3: 跳ねる曲（ジャズ・ソウル）は裏の音を少し遅らせる
   for (const tr of m.tracks) {
     if (ducked && tr.type !== "chord") continue;
     if (tier < (tr.minTier || 0)) continue;   // DT-624 手直し2: 警戒度で足す層は打楽器に限らない
+    if (tr.onBars && !tr.onBars.includes(bar)) continue;   // DT-624 手直し3: ループの決まった小節だけ鳴らす（合いの手・決め）
+    const tt = tr.straight ? t : tSwing;
     if (tr.type === "chord") {
       if (s === 0) for (const n of chord.tones) soundPlay(bus, tr.inst, n + (tr.octave || 0), t, tr.gain, { attack: tr.attack, len: spb * stepSec, release: tr.release });
+    } else if (tr.type === "comp") {
+      // DT-624 手直し3: 和音を決まった拍で短く刻む（エレピ・オルガン・金管の一撃）。[step, 長さ（16分音符）, 強さ]
+      for (const [at, len, vel] of tr.notes) if (at === s) for (const n of chord.tones) soundPlay(bus, tr.inst, n + (tr.octave || 0), tt, tr.gain * (vel ?? 1), { attack: tr.attack, len: len * stepSec, release: tr.release || 0.06 });
     } else if (tr.type === "arp") {
-      for (const [at, idx] of tr.notes) if (at === s) soundPlay(bus, tr.inst, soundChordNote(chord, idx), t, tr.gain);
+      for (const [at, idx, vel] of tr.notes) if (at === s) soundPlay(bus, tr.inst, soundChordNote(chord, idx) + (tr.octave || 0), tt, tr.gain * (vel ?? 1));
     } else if (tr.type === "bass") {
-      for (const [at, semi, len] of tr.notes) if (at === s) soundPlay(bus, tr.inst, chord.root + semi, t, tr.gain, { len: len * stepSec * 0.9, release: 0.05 });
+      for (const [at, semi, len, vel] of tr.notes) if (at === s) soundPlay(bus, tr.inst, chord.root + semi, tt, tr.gain * (vel ?? 1), { len: len * stepSec * 0.9, release: 0.05 });
+    } else if (tr.type === "walk") {
+      // DT-624 手直し3: 歩くベース。和音ごとに書いた4つの音（chords の walk。根音からの半音）を4分音符で
+      const k = tr.steps.indexOf(s);
+      if (k >= 0 && chord.walk) soundPlay(bus, tr.inst, chord.root + chord.walk[k % chord.walk.length], tt, tr.gain * (k === 0 ? 1 : 0.85), { len: 4 * stepSec * 0.85, release: 0.06 });
     } else if (tr.type === "drum") {
       // everyBars 小節ごとに1回。鳴らす小節は barOffset（書かなければ組の最後の小節＝フィル）
       if (tr.everyBars && (barAbs % tr.everyBars) !== (typeof tr.barOffset === "number" ? tr.barOffset : tr.everyBars - 1)) continue;
@@ -43123,13 +43141,13 @@ function soundPlayStep(step, t) {
       if (k < 0) continue;
       const def = m.instruments[tr.inst];
       const pitch = tr.pitchSteps ? chord.root + 12 + tr.pitchSteps[k] : def.base;
-      soundPlay(bus, tr.inst, pitch, t, tr.gain);
+      soundPlay(bus, tr.inst, pitch, tt, tr.gain * (tr.accents ? tr.accents[k] : 1));   // accents＝その拍の強さ（ゴースト・アクセント）
     }
   }
   // 竜の主題（角笛）。DT-624 手直し: いつもは吹かず、呼ばれたフレーズの間だけ吹く
   const mel = m.melody;
   if (!ducked && step >= soundRun.melodyFrom && step < soundRun.melodyUntil) {
-    for (const [at, midi, len] of mel.bars[bar]) if (at === s) soundPlay(bus, mel.inst, midi, t, mel.gain, { attack: 0.02, len: len * stepSec * 0.92, release: 0.12 });
+    for (const [at, midi, len] of mel.bars[bar]) if (at === s) soundPlay(bus, mel.inst, midi, tSwing, mel.gain, { attack: 0.02, len: len * stepSec * 0.92, release: 0.12 });
   }
   // 息：竜のブレスが建物に当たっている量に合わせて、シェイカーを刻む（1匹ずつは鳴らさない）
   const br = m.sfx.breath;
@@ -43380,7 +43398,7 @@ function renderOptions() {
     `<div class="op-row" data-sound="song">` +
       `<div class="op-body">` +
         `<div class="op-name">BGM の曲：<span class="op-song-val">${soundSongName()}</span></div>` +
-        `<div class="op-desc">たたくたびに曲が替わる。標準＝角笛の曲／ループ＝刻みが前に出る短いループ。どちらも竜の主題は出来事のときだけ鳴る。</div>` +
+        `<div class="op-desc">たたくたびに曲が替わる。標準＝角笛の曲／ループ＝刻みが前に出る短いループ／ジャズ・フュージョン・ソウル＝跳ねや刻みの違うループ。どの曲も竜の主題は出来事のときだけ鳴る。</div>` +
       `</div>` +
     `</div>`;
   // v3.185.0（案帳 DT-610・Shooter「地域のみのサンプルは、デバッグ版のみでオプションあたりから行けるように」）
