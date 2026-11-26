@@ -1429,7 +1429,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.228.0";
+const GAME_VERSION = "v3.229.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -34036,6 +34036,16 @@ const STRINGS = {
   openChallenges: (done, total) => `チャレンジ・解放　${done}/${total}`,
   openCodex: "図鑑",
   openOptions: "オプション",
+  // v3.229.0（案帳 DT-642 2回目）: ヴァルハラモード
+  valhallaOpen: (n) => `⚔ ヴァルハラ　${n}`,
+  valhallaTitle: "ヴァルハラ",
+  valhallaHint: "ランを終えた群れ（完走・全滅のどちらも）がここに集まる。選ぶと、その群れが残機無限で国を滅ぼし続けるのをオートで眺められる。世界を呑み尽くしたら、また新しい世界へ。止めるときは画面をたたいて一時停止から。",
+  valhallaEmpty: "まだ群れがいない。ランを終えるとここに残る。",
+  valhallaClear: "完走",
+  valhallaDefeat: "全滅",
+  valhallaRow: (result, nations, lv, flock, date) => `${result}・${nations}か国・Lv.${lv}・群れ ${flock}・${date}`,
+  valhallaSpecials: (names) => `特殊個体：${names}`,
+  valhallaSaved: "群れをヴァルハラに残した",
   // v3.226.0（案帳 DT-633）: 言語。初回のタイトルの2つの開始ボタンと、オプションの切り替え
   langStartJa: "日本語ではじめる",
   langStartEn: "Start in English",
@@ -34238,6 +34248,15 @@ const STRINGS = {
 // 英語にしていく順：タイトル・オプション・竜を選ぶ（1回目）→ HUD・レベルアップ・結果 → 強化カード・特殊個体 → 図鑑 → 物語
 // -----------------------------------------------------------------
 const STRINGS_EN = {
+  valhallaOpen: (n) => `⚔ Valhalla　${n}`,
+  valhallaTitle: "Valhalla",
+  valhallaHint: "Flocks that finished a run (cleared or wiped out) gather here. Pick one to watch it conquer nation after nation on autoplay with infinite lives. When it has devoured a world, a new one begins. Tap the screen to pause and stop.",
+  valhallaEmpty: "No flocks yet. Finish a run and your flock will rest here.",
+  valhallaClear: "Cleared",
+  valhallaDefeat: "Wiped out",
+  valhallaRow: (result, nations, lv, flock, date) => `${result} · ${nations} nations · Lv.${lv} · flock ${flock} · ${date}`,
+  valhallaSpecials: (names) => `Specials: ${names}`,
+  valhallaSaved: "Your flock now rests in Valhalla",
   chooseDragon: "Choose a dragon",
   autoplayChoose: "Choose a dragon to watch",
   randomDragon: "Random",
@@ -45979,6 +45998,15 @@ function refreshTitleMenu() {
     // v3.123.0（DT-538 手直し・Shooter「やはり竜種は選べるように。竜種でランダムも選べますし」）: 竜の一覧から選んで始める
     autoBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); showSpeciesSelect(true); });
     titleMenuEl.appendChild(autoBtn);
+    // v3.229.0（案帳 DT-642 2回目）: ヴァルハラ（ランを終えた群れを眺める）。1つでも残っていれば出す
+    const vh = loadValhalla();
+    if (vh.length > 0) {
+      const vBtn = document.createElement("button");
+      vBtn.className = "title-btn";
+      vBtn.textContent = STRINGS.valhallaOpen(vh.length);
+      vBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openValhalla(); });
+      titleMenuEl.appendChild(vBtn);
+    }
   }
 
   // v0.20: 恒常強化ツリー（竜晶を持っていなくても開けて、何が伸ばせるか見せる）
@@ -46060,6 +46088,8 @@ let speciesSelecting = false;
 const FLOCK_START_BASE      = 5;    // v0.29.2: 通常ランのステージ開始数（1体は辛すぎたので5に）
 const FLOCK_START_FIRST_RUN = 10;   // 一番最初のランだけの特別値
 function stageStartFlockCount() {
+  // v3.229.0（DT-642 2回目）: ヴァルハラの群れは、残したときの数で毎ステージ始める
+  if (valhalla.active && valhalla.entry) return Math.max(FLOCK_START_BASE, Math.min(MAX_BOIDS, valhalla.entry.flockCount | 0));
   const base = currentRunIsFirst ? FLOCK_START_FIRST_RUN : FLOCK_START_BASE;
   return base + permaBuff.startFlock;   // v0.20: 恒常ツリーで初期数を底上げ
 }
@@ -48416,7 +48446,7 @@ function checkFlockWipe(dt) {
 
 function triggerWipe() {
   cancelTierRush(true);   // v3.16.0: 全滅したらラッシュは終わり
-  runLives--;
+  if (!valhalla.active) runLives--;   // v3.229.0（DT-642 2回目）: ヴァルハラは残機無限
   // v3.12.2: すぐには戻さず、その場で全滅の様子を見せる（この間は復活しない）
   wipeShowTimer = WIPE_SHOW_SECONDS;
   triggerFlash("rgba(40,0,0,0.6)", 0.5);
@@ -48546,6 +48576,7 @@ function finishWipe() {
 
 /** 残機0。そこまでの竜晶と解放は残る。 */
 function triggerRunDefeat() {
+  recordValhallaFlock(false);   // v3.229.0（DT-642 2回目）: 全滅した群れもヴァルハラに残す（11/26 Shooter）
   gameState = "all-clear";   // リザルト画面の状態（R キー・ボタンでタイトルへ）
   const runTimeMs = performance.now() - runStartTime;
   evaluateChallenges();
@@ -48960,6 +48991,7 @@ function recordPanelStars(era, shape, stars) {
 
 // ---- ラン完了（v3.0.0: 8ステージ目＝時代 VIII の首都撃破）→ リザルト表示 ----
 function triggerRunComplete() {
+  recordValhallaFlock(true);   // v3.229.0（DT-642 2回目）: 完走した群れをヴァルハラに残す
   gameState = "all-clear";
   const runTimeMs = performance.now() - runStartTime;
   // v0.99.8: 評価は**ボスが落ちた瞬間の状態**で決まる。後で powerTier を触られる前に取る。
@@ -51005,6 +51037,7 @@ function resumeAutoplay() {
 function stopAutoplay() {
   if (!autoplayActive) return;
   autoplayActive = false;
+  valhalla.active = false; valhalla.entry = null;   // v3.229.0（DT-642 2回目）
   autoplayPaused = false;
   document.body.classList.remove("autoplay", "autoplay-paused", "autoplay-ui");
   lastTickTs = performance.now();
@@ -51017,6 +51050,120 @@ function stopAutoplay() {
   profile = loadProfile();
   if (gameState !== "title") returnToTitle();
   else { refreshTitleBest(); refreshTitleMenu(); titleOverlayEl.classList.add("visible"); }
+}
+
+// =====================================================================
+// v3.229.0（案帳 DT-642 2回目・11/26 Shooter「遊び続ける理由はヴァルハラモード。ランクリアした群れを保存、読み込んでオートで戦い続けるのを
+// 眺めるモード。残機無限」「ゲームオーバーした群れも保存するように」）:
+// ランを終えた群れ（竜種・進化・強化カードとアーティファクト・特殊個体・数・レベル）をこの端末に残し、タイトルの「ヴァルハラ」から選んで眺める。
+// 眺めるのはオートプレイの仕組みそのまま（竜晶・解放・記録・つづきからは残さない）。ふつうのランを最初の国から始め、
+// 始めた直後に残した群れの形へ差し替える。全滅しても残機は減らず、世界を呑み尽くしたら同じ群れで新しい世界へ。
+// 次の回：自分の群れは手動に切り替え／竜晶で開くオプション（AI の性向・出る地域・敵の出方）／URL で共有
+// =====================================================================
+const VALHALLA_KEY = "dragonTide_valhalla";
+const VALHALLA_VERSION = 1;
+const VALHALLA_MAX = 30;   // 残す群れの数（古いものから消す）。localStorage の容量を食い過ぎないように
+const valhalla = { active: false, entry: null };
+
+function loadValhalla() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(VALHALLA_KEY) || "null");
+    return raw && raw.version === VALHALLA_VERSION && Array.isArray(raw.flocks) ? raw.flocks.filter(f => f && SPECIES_DEFS[f.species]) : [];
+  } catch (_) { return []; }
+}
+function saveValhalla(flocks) {
+  try { localStorage.setItem(VALHALLA_KEY, JSON.stringify({ version: VALHALLA_VERSION, flocks: flocks.slice(0, VALHALLA_MAX) })); } catch (_) {}
+}
+/** ランの終わり（完走・全滅）に、いまの群れを残す。眺めているラン（オートプレイ・ヴァルハラ）は残さない */
+function recordValhallaFlock(cleared) {
+  if (autoplayActive || valhalla.active) return;
+  const flocks = loadValhalla();
+  flocks.unshift({
+    savedAt: new Date().toISOString(),
+    result: cleared ? "clear" : "defeat",
+    species: flockSpecies,
+    nations: cleared ? runWorldOrder.length + 1 : runWorldOrder.length,   // 落とした国の数（完走は最後の国も数える）
+    level: playerLevel,
+    flockCount: Math.max(N, countFlockNow()),
+    maxFlock: runMaxFlock,
+    build: {
+      upgradeCounts: Object.assign({}, upgradeCounts),
+      stageCards: Object.assign({}, stageCards),
+      runSpecials: runSpecials.slice(),
+      runSpeciesBranch: JSON.parse(JSON.stringify(runSpeciesBranch)),
+      runSpLv: Object.assign({}, runSpLv), runSpBranch: Object.assign({}, runSpBranch),
+      runFormLv, runSpFormLv: Object.assign({}, runSpFormLv), runFuseOffered: Object.assign({}, runFuseOffered),
+    },
+  });
+  saveValhalla(flocks);
+  showUnlockToast(STRINGS.valhallaSaved);
+}
+/** 残した群れで眺めるランを始める（タイトルから・世界を呑み尽くした後の両方） */
+function startValhallaRun(entry) {
+  if (gameState !== "title") return;
+  if (!autoplayActive) startAutoplay(entry.species);
+  valhalla.active = true; valhalla.entry = entry;
+  beginRun(entry.species);
+  applyValhallaBuild(entry);
+}
+/** 始めたランの群れを、残した形へ差し替える（つづきからの読み込み resumeRun と同じ順で戻す） */
+function applyValhallaBuild(entry) {
+  const b = entry.build || {};
+  for (const k of Object.keys(upgradeCounts)) delete upgradeCounts[k];
+  Object.assign(upgradeCounts, b.upgradeCounts || {});
+  runSpeciesBranch = b.runSpeciesBranch || {};
+  runSpLv = b.runSpLv || {};
+  runSpBranch = b.runSpBranch || {};
+  runFormLv = Math.max(1, Math.min(FORM_LV_MAX, b.runFormLv | 0 || 1));
+  runSpFormLv = b.runSpFormLv || {};
+  runFuseOffered = b.runFuseOffered || {};
+  runSpecials.length = 0;
+  for (const k of b.runSpecials || []) if (SPECIAL_DEFS[k | 0]) runSpecials.push(k | 0);
+  for (const [k, v] of Object.entries(b.stageCards || {})) if (PERK_CARD_DEFS.some(d => d.id === k)) stageCards[k] = v | 0;
+  playerLevel = Math.max(1, entry.level | 0);
+  invalidateEvo();
+  renderStageCardIcons();
+  resetBoidsForStageStart(stageStartFlockCount());
+  resetLeader();
+  reapplyPermanentCards();
+  updateHUDWeapon();
+  updateXpHud();
+  updateHUDLevel();
+}
+function openValhalla() {
+  renderValhalla();
+  optionsOverlayEl.classList.add("visible");   // オプションと同じ入れ物を使う（見た目をそろえる）
+}
+function renderValhalla() {
+  const flocks = loadValhalla();
+  let html =
+    `<div class="tree-head"><div class="tree-title">${STRINGS.valhallaTitle}</div><button class="tree-close">✕</button></div>` +
+    `<div class="tree-hint">${STRINGS.valhallaHint}</div><div class="cx-list">`;
+  if (flocks.length === 0) html += `<div class="tree-hint">${STRINGS.valhallaEmpty}</div>`;
+  flocks.forEach((f, i) => {
+    const s = SPECIES_DEFS[f.species];
+    const date = (f.savedAt || "").slice(0, 10);
+    const specials = (f.build && f.build.runSpecials || []).filter(k => SPECIAL_DEFS[k]).map(k => SPECIAL_DEFS[k].name);
+    html +=
+      `<div class="op-row" data-vh="${i}">` +
+        `<div class="op-body">` +
+          `<div class="op-name" style="color:${s.color}">${s.icon} ${speciesName(s)}</div>` +
+          `<div class="op-desc">${STRINGS.valhallaRow(f.result === "clear" ? STRINGS.valhallaClear : STRINGS.valhallaDefeat, f.nations | 0, f.level | 0, f.flockCount | 0, date)}</div>` +
+          (specials.length ? `<div class="op-desc">${STRINGS.valhallaSpecials([...new Set(specials)].join("・"))}</div>` : "") +
+        `</div>` +
+      `</div>`;
+  });
+  html += `</div>`;
+  optionsOverlayEl.innerHTML = html;
+  optionsOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => { e.stopPropagation(); closeOptions(); });
+  for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-vh]")) {
+    row.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      const f = flocks[row.getAttribute("data-vh") | 0];
+      optionsOverlayEl.classList.remove("visible");
+      if (f) startValhallaRun(f);
+    });
+  }
 }
 
 /** 画面のボタンを人の指と同じように押す（押して離す＋クリック）。ボタンごとに付いている入口が違うので3つとも送る */
@@ -51123,6 +51270,7 @@ function updateAssist(dt) {
 
 function autoplayTitle() {
   if (autoplay.wait > 0) return;
+  if (valhalla.active && valhalla.entry) { autoplay.wait = AUTO_UI_WAIT_S; startValhallaRun(valhalla.entry); return; }   // v3.229.0: 世界を呑み尽くしたら同じ群れで次の世界へ
   // 「今選べる竜種」＝竜種の一覧で鍵の付いていないもの。v3.123.0: 一覧で選んだ竜（ランダムならランのたびに引く）
   const unlocked = SPECIES_CHOICES.map(ch => ch.species).filter(isSpeciesUnlocked);
   const sid = autoplay.species !== AUTO_SPECIES_RANDOM && unlocked.includes(autoplay.species) ? autoplay.species
