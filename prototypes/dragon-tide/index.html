@@ -1388,7 +1388,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.213.0";
+const GAME_VERSION = "v3.214.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -42830,7 +42830,8 @@ const SOUND_PAN_WIDTH       = 0.75;   // 画面の端の音をどこまで左右
 
 let soundCtx = null;
 let soundNodes = null;          // { seBus, bgmBus, bgmVol, duck, echoDelay }
-let soundMusic = null;          // music.json の中身（読み終えるまで null）
+let soundMusic = null;          // music.json の中身に、選んだ曲（songs）の差し替えを重ねたもの（読み終えるまで null）
+let soundMusicBase = null;      // music.json の中身そのまま（DT-624 手直し2: 曲を切り替えるときの元）
 const soundBuffers = {};        // 楽器名 → AudioBuffer
 let soundReady = false;         // かけらと譜面を読み終えた
 let soundTimer = null;
@@ -42854,6 +42855,30 @@ function soundOptions() { return (profile && profile.options) || {}; }
 function soundOn() { return soundOptions().sound !== false; }
 function soundSeVolume() { const v = soundOptions().seVolume; return typeof v === "number" ? v : SOUND_DEFAULT_SE; }
 function soundBgmVolume() { const v = soundOptions().bgmVolume; return typeof v === "number" ? v : SOUND_DEFAULT_BGM; }
+// v3.214.0（案帳 DT-624 手直し2）: BGM の曲（music.json の songs の名前）。既定は標準
+const SOUND_DEFAULT_SONG = "standard";
+function soundSongId() { const v = soundOptions().bgmSong; return typeof v === "string" ? v : SOUND_DEFAULT_SONG; }
+/** 選んだ曲を標準の譜面に重ねて soundMusic にする（書いた項目だけ差し替え）。曲の頭から始め直す */
+function soundApplySong() {
+  if (!soundMusicBase) return;
+  const songs = soundMusicBase.songs || {};
+  const song = songs[soundSongId()] || songs[SOUND_DEFAULT_SONG] || {};
+  soundMusic = Object.assign({}, soundMusicBase, song);
+  if (soundNodes) soundNodes.echoDelay.delayTime.value = soundStepSec() * SOUND_ECHO_STEPS;
+  soundSongStart = 0;   // 次の予約で曲の頭から
+}
+/** オプションの「BGM の曲」をたたくたびに次の曲へ */
+function soundNextSong() {
+  const ids = Object.keys((soundMusicBase && soundMusicBase.songs) || { [SOUND_DEFAULT_SONG]: 1, loop: 1 });
+  const k = ids.indexOf(soundSongId());
+  soundSetOption("bgmSong", ids[(k + 1) % ids.length]);
+  soundApplySong();
+}
+function soundSongName() {
+  const songs = (soundMusicBase && soundMusicBase.songs) || {};
+  const song = songs[soundSongId()];
+  return song && song.name ? song.name : soundSongId();
+}
 function soundSetOption(key, value) {
   if (!profile.options) profile.options = {};
   profile.options[key] = value;
@@ -42927,8 +42952,8 @@ async function soundLoad() {
     const r = await fetch(SOUND_DIR + def.file);
     soundBuffers[name] = await soundDecode(await r.arrayBuffer());
   }));
-  soundMusic = music;
-  soundNodes.echoDelay.delayTime.value = soundStepSec() * SOUND_ECHO_STEPS;
+  soundMusicBase = music;
+  soundApplySong();   // DT-624 手直し2: 選んだ曲を重ねる（エコーの遅れもその曲の速さで）
   soundReady = true;
   soundTimer = setInterval(soundSchedule, SOUND_SCHEDULE_MS);
 }
@@ -43080,6 +43105,7 @@ function soundPlayStep(step, t) {
   const ducked = step < soundRun.duckUntilStep;   // 警戒度の鐘のあと1小節は伴奏を引いて「空気が変わった」を作る
   for (const tr of m.tracks) {
     if (ducked && tr.type !== "chord") continue;
+    if (tier < (tr.minTier || 0)) continue;   // DT-624 手直し2: 警戒度で足す層は打楽器に限らない
     if (tr.type === "chord") {
       if (s === 0) for (const n of chord.tones) soundPlay(bus, tr.inst, n + (tr.octave || 0), t, tr.gain, { attack: tr.attack, len: spb * stepSec, release: tr.release });
     } else if (tr.type === "arp") {
@@ -43087,8 +43113,8 @@ function soundPlayStep(step, t) {
     } else if (tr.type === "bass") {
       for (const [at, semi, len] of tr.notes) if (at === s) soundPlay(bus, tr.inst, chord.root + semi, t, tr.gain, { len: len * stepSec * 0.9, release: 0.05 });
     } else if (tr.type === "drum") {
-      if (tier < (tr.minTier || 0)) continue;
-      if (tr.everyBars && (barAbs % tr.everyBars) !== tr.everyBars - 1) continue;
+      // everyBars 小節ごとに1回。鳴らす小節は barOffset（書かなければ組の最後の小節＝フィル）
+      if (tr.everyBars && (barAbs % tr.everyBars) !== (typeof tr.barOffset === "number" ? tr.barOffset : tr.everyBars - 1)) continue;
       const k = tr.steps.indexOf(s);
       if (k < 0) continue;
       const def = m.instruments[tr.inst];
@@ -43345,6 +43371,13 @@ function renderOptions() {
         `<div class="op-name">BGM の音量 <span class="op-vol-val">${soundBgmVolume()}</span></div>` +
         `<input class="op-range" type="range" min="0" max="100" step="5" value="${soundBgmVolume()}" data-vol="bgmVolume">` +
       `</div>` +
+    `</div>` +
+    // v3.214.0（DT-624 手直し2）: BGM の曲。たたくたびに次の曲へ
+    `<div class="op-row" data-sound="song">` +
+      `<div class="op-body">` +
+        `<div class="op-name">BGM の曲：<span class="op-song-val">${soundSongName()}</span></div>` +
+        `<div class="op-desc">たたくたびに曲が替わる。標準＝角笛の曲／ループ＝刻みが前に出る短いループ。どちらも竜の主題は出来事のときだけ鳴る。</div>` +
+      `</div>` +
     `</div>`;
   // v3.185.0（案帳 DT-610・Shooter「地域のみのサンプルは、デバッグ版のみでオプションあたりから行けるように」）
   if (DEBUG_FEATURES_ENABLED) html +=
@@ -43359,6 +43392,11 @@ function renderOptions() {
   for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-link]")) {
     row.addEventListener("pointerdown", (e) => { e.stopPropagation(); window.open(row.getAttribute("data-link"), "_blank"); });
   }
+  optionsOverlayEl.querySelector('[data-sound="song"]').addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    soundNextSong();
+    optionsOverlayEl.querySelector(".op-song-val").textContent = soundSongName();
+  });
   const soundRow = optionsOverlayEl.querySelector('[data-sound="toggle"]');
   soundRow.addEventListener("pointerdown", (e) => {
     e.stopPropagation();
