@@ -1443,7 +1443,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.237.0";
+const GAME_VERSION = "v3.238.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -51107,10 +51107,18 @@ const AUTO_BIG_MOVER_NEAR    = 420;    // 大きい動く敵がこの距離に�
 const AUTO_EGG_RANGE         = 800;    // この距離の卵は先に拾いに行く
 const AUTO_EGG_OVERSHOOT     = 140;    // 卵を拾う線を卵の先まで伸ばす長さ
 const AUTO_STRONG_MIN_FLOCK  = 28;     // これ未満の群れでは、格上の街・要塞都市を後回しにする
-const AUTO_BOSS_MIN_FLOCK    = 70;     // 首都を狙い始める群れの大きさ（立っている竜の数）
+// v3.238.0（案帳 DT-646・Shooter「バランス的には300匹でボスを倒せる、ということにしたと思いますが」「500匹いるのに全然ボスに向かわなかったり」）:
+// 前は「動く竜（最大150）のうち立っている数が70以上」で首都へ向かい始めていた。上限超えの竜（flockOverflow）を数えておらず、
+// 首都の強さを合わせた想定の群れ（DT-594・300体前後）とずれていた。立っている竜＋上限超えの竜で数え、300 から首都へ向かう。
+// 上限が300に届かない竜種（鯨竜など）は、上限の AUTO_BOSS_MIN_CAP_RATIO 倍で向かう。
+// 500匹で向かわなかったのは卵のせい：首都を狙ってよくなっても、800px 以内に卵があると先に卵を拾いに行っていた。
+// 育った群れは町を崩しながら進むので卵がいつも足元にあり、首都へ向かう線が引かれなかった（首都を選ぶのも7割で、残りはほかの町へ逸れていた）。
+// 首都を狙ってよくなったら卵は拾わず、首都だけを狙い続ける
+const AUTO_BOSS_MIN_FLOCK    = 300;    // 首都を狙い始める群れの大きさ（立っている竜＋上限超えの竜。DT-594 の想定の群れ）
+const AUTO_BOSS_MIN_CAP_RATIO = 0.8;   // 群れの上限が小さい竜種は、上限のこの割合で首都へ
 const AUTO_BOSS_LATE_S       = 900;    // ステージがこれより長引いたら、群れが小さくても首都へ（終わらないのを避ける）
 const AUTO_BOSS_LEFT_RATIO   = 0.12;   // 首都以外の建物がこの割合まで減ったら首都へ
-const AUTO_BOSS_PICK_P       = 0.7;    // 首都を狙ってよいとき、首都を選ぶ割合
+const AUTO_BOSS_PICK_P       = 1;      // 首都を狙ってよいとき、首都を選ぶ割合（DT-646: 0.7 だと3割はほかの町へ逸れて、首都への攻めが途切れた）
 const AUTO_BOSS_AVOID_R      = 1400;   // 首都を狙わないうちは、首都からこの距離の建物も狙わない
 const AUTO_STRONG_PENALTY    = 2600;   // 強い町の建物の点に足す距離（後回し）
 const AUTO_BOSS_AREA_PENALTY = 5000;   // 首都のそばの建物の点に足す距離
@@ -51635,21 +51643,22 @@ function autoplayPlan(c) {
     if (d < 1e-9) { ax = START_X - c.x; ay = START_Y - c.y; d = Math.hypot(ax, ay) || 1; }
     return { kind: "retreat", x: c.x + ax / d * AUTO_RETREAT_LEN, y: c.y + ay / d * AUTO_RETREAT_LEN };
   }
-  // 卵（群れが増える＝この先が楽になる）
-  let egg = -1, ed = AUTO_EGG_RANGE * AUTO_EGG_RANGE;
+  // 首都を狙ってよいか：群れが育つか、ステージが長引くか、ほかが残り少なくなってから
+  const boss = bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null;
+  const stageS = (performance.now() - stageStartTime) / 1000;
+  let left = 0, all = 0;
+  for (const b of settlements) { if (!b || b.isBoss || b._isWall) continue; all++; if (!b.fallen) left++; }
+  const bossFlock = Math.min(AUTO_BOSS_MIN_FLOCK, Math.max(1, Math.round(effFlockTotalCap() * AUTO_BOSS_MIN_CAP_RATIO)));   // DT-646
+  const bossOk = !!boss && !boss.fallen && !boss._starHidden &&   // v3.218.0（案帳 DT-034）: 出る前の天守は狙わない
+    (standing + flockOverflow >= bossFlock || stageS > AUTO_BOSS_LATE_S || (all > 0 && left / all < AUTO_BOSS_LEFT_RATIO));
+  // 卵（群れが増える＝この先が楽になる）。首都を狙ってよくなったら拾わない（DT-646: 卵を追って首都へ向かえなかった）
+  let egg = -1, ed = bossOk ? 0 : AUTO_EGG_RANGE * AUTO_EGG_RANGE;
   for (let e = 0; e < MAX_EGGS; e++) {
     if (!eggActive[e]) continue;
     const d2 = dist2(eggWx[e], eggWy[e], c.x, c.y);
     if (d2 < ed) { ed = d2; egg = e; }
   }
   if (egg >= 0) return { kind: "egg", x: eggWx[egg], y: eggWy[egg] };
-  // 建物：近くて弱い所から。首都は群れが育つか、ステージが長引くか、ほかが残り少なくなってから
-  const boss = bossSettlementIdx >= 0 ? settlements[bossSettlementIdx] : null;
-  const stageS = (performance.now() - stageStartTime) / 1000;
-  let left = 0, all = 0;
-  for (const b of settlements) { if (!b || b.isBoss || b._isWall) continue; all++; if (!b.fallen) left++; }
-  const bossOk = !!boss && !boss.fallen && !boss._starHidden &&   // v3.218.0（案帳 DT-034）: 出る前の天守は狙わない
-    (standing >= AUTO_BOSS_MIN_FLOCK || stageS > AUTO_BOSS_LATE_S || (all > 0 && left / all < AUTO_BOSS_LEFT_RATIO));
   if (bossOk && boss._railRide && autoRandom() < AUTO_RAIL_BOSS_PICK_P) {
     // v3.164.0（DT-599）: 走る司令列車は、群れが着くころの位置を狙う
     const lead = autoplayRailBossLead(boss, c);
