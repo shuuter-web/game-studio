@@ -1429,7 +1429,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.229.0";
+const GAME_VERSION = "v3.230.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -34495,6 +34495,9 @@ for (const d of PERK_CARD_DEFS) {
   d.max = a.picks * a.boost;   // 上限は枚数（stageCards）で数える。1回で boost 枚
 }
 /** カードを何回取ったか（アーティファクトになった通常カードは1回で boost 枚） */
+// v3.230.0（案帳 DT-645・Shooter「2つ以上重ねる効果は全て一つにしましょう」）: アーティファクトはどれも1回まで（重ねない）。
+// 1回で boost 枚分のもの（DT-593）は、その1回ぶんの枚数が上限。枚数で伸びる表（…_BY_COUNT）は1回目の値だけが使われる
+for (const d of PERK_CARD_DEFS) if (d.artifact) d.max = d.boost || 1;
 function perkPicks(def, stacks) { return Math.floor(stacks / (def.boost || 1)); }
 // 群れが持っていない攻撃の強化は出さない（Shooter指示）。カード → 見る攻撃の成分（special＝特殊個体の攻撃だけを見る）
 const PERK_CARD_NEEDS = {
@@ -44525,16 +44528,14 @@ function codexIntentHtml() {
 
   // 警戒度とアーティファクト（DT-592・DT-593）
   const total = TREASURE_TOWN_COUNT + STAGE_CARD_EXPECTED;
-  const marks = ARTIFACT_MILESTONE_TIERS.map(t => Math.max(1, Math.round((codexTierQuotaExample(t - 1) + codexTierQuotaExample(t)) / 2)));   // artifactMilestones と同じ式
   const tierRows = [];
   for (let t = 1; t < TIER_ADVANCE_CARD_RATIO.length; t++) {
-    const mi = ARTIFACT_MILESTONE_TIERS.indexOf(t);
-    tierRows.push([`${TIER_NAMES[t - 1]}→${TIER_NAMES[t]}`, `${Math.round(TIER_ADVANCE_CARD_RATIO[t] * 100)}%`, `${codexTierQuotaExample(t)}回`, mi >= 0 ? `${marks[mi]}回目` : "—"]);
+    tierRows.push([`${TIER_NAMES[t - 1]}→${TIER_NAMES[t]}`, `${Math.round(TIER_ADVANCE_CARD_RATIO[t] * 100)}%`, `${codexTierQuotaExample(t)}回`]);
   }
   html += box("警戒度とアーティファクト（DT-592・DT-593）",
     `警戒度はこのステージで取ったレベルアップの回数で上がる。必要数＝そのステージで取れる見込み（竜玉の町${TREASURE_TOWN_COUNT}＋経験値で${STAGE_CARD_EXPECTED}＝${total}回。大陸の例）× 割合。` +
-    `アーティファクトは前後の警戒度の必要数のちょうど中間で出る（警戒度の回数には数えない）。目安：大陸・時代I・オートプレイで動員まで約4分`,
-    table(["段", "割合", "必要な回数", "アーティファクト"], tierRows));
+    `アーティファクトはステージクリアの結果の次に1回だけ出る（DT-645。警戒度の回数には数えない）。目安：大陸・時代I・オートプレイで動員まで約4分`,
+    table(["段", "割合", "必要な回数"], tierRows));
 
   // 上限超えの竜（DT-594）
   const ovRows = [150, 300, 500, 1000].filter(n => n <= FLOCK_TOTAL_CAP).map(n => {
@@ -45508,7 +45509,7 @@ function codexCardHtml() {
       `竜玉施設のある町を落としたときも、レベルアップ1回ぶんの三択が出る。強化カードは<b>アーティファクト</b>だけ。アーティファクトの効果はランのあいだずっと残り、同じものは最大回数まで重ねられる。</div>`;
   const groups = [
     { name: "通常", hint: "強化カードのレベルアップで出る。", pick: (d) => !d.artifact && !d.stageOnly },
-    { name: STRINGS.perkCardArtifact, hint: `強すぎるカード。1ステージに${ARTIFACT_MILESTONE_TIERS.length}回、警戒度が上がる前のちょうど中間（${ARTIFACT_MILESTONE_TIERS.map(t => TIER_NAMES[t - 1] + "と" + TIER_NAMES[t]).join("・")}のあいだ）で、時間が止まってアーティファクトだけの三択になる（レベルアップのおまけで、警戒度の回数には数えない）。`, pick: (d) => d.artifact },
+    { name: STRINGS.perkCardArtifact, hint: `強すぎるカード。ステージをクリアするたびに、結果の次にアーティファクトだけの三択が1回出る。どれも1回まで（重ねない）。効果はランのあいだずっと残る。`, pick: (d) => d.artifact },   // v3.230.0（DT-645）
   ];
   for (const g of groups) {
     const list = PERK_CARD_DEFS.filter((d) => !d.stageJoin && g.pick(d));
@@ -48414,12 +48415,19 @@ function renderShopSpecial() {
 function proceedToNextStage() {
   if (gameState !== "stage-clear" || regionPicking || shopOpen) return;
   if (stageClearPhase === "clear" && stageResult) { showStageResult(); return; }   // v3.58.2: まずリザルトへ
+  if (stageClearPhase === "artifact") return;   // v3.230.0（DT-645）: アーティファクトを選ぶまで待つ
   if (!retryBtn.classList.contains("visible")) return;   // 数え上げの途中に押した指で店へ飛ばない
   overlayEl.classList.remove("visible", "result-mode");
   overlayTitle.classList.remove("show");
   retryBtn.classList.remove("visible");
   resultStatsEl.classList.remove("visible");
+  if (openStageClearArtifact()) return;   // v3.230.0（DT-645）: 結果の次にアーティファクトの三択。選んだら国選びへ
   showRegionPick();   // v3.65.0（DT-497）: 店（竜の巣）はやめた。リザルトから地域3択へ
+}
+/** v3.230.0（DT-645）: ステージクリアの後のアーティファクトを選び終えた → 国選びへ */
+function proceedAfterStageClearArtifact() {
+  stageClearPhase = "artifact-done";
+  showRegionPick();
 }
 
 // -----------------------------------------------------------------
@@ -49927,15 +49935,19 @@ function artifactMilestones() {
   return ARTIFACT_MILESTONE_TIERS.map(t => Math.max(1, Math.round((tierCardQuota(t - 1) + tierCardQuota(t)) / 2)));
 }
 /** レベルアップを1回数える（警戒度の回数）。アーティファクトを出す回数に届いたら、アーティファクトの三択を順番待ちに足す */
+// v3.230.0（案帳 DT-645・Shooter「アーティファクトはステージクリアで1つ手に入る形に。ステージクリアの結果画面の次にアーティファクト入手画面」）:
+// ステージの途中（警戒度の中間）で出すのをやめ、ステージクリアの結果のあとに1回だけ三択を出す（openStageClearArtifact）。
+// ARTIFACT_MILESTONE_TIERS・stageArtifactsGiven は途中セーブの互換のために残しているだけで、もう三択は出さない
 function countStageLevelUp() {
   stageLevelUps++;
-  const marks = artifactMilestones();
-  while (stageArtifactsGiven < marks.length && stageLevelUps >= marks[stageArtifactsGiven]) {
-    stageArtifactsGiven++;
-    if (!artifactAvailable()) continue;
-    perkOfferQueue.push({ townIndex: -1, rare: false, artifact: true, kind: null });
-    if (!perkOfferVisible) openNextPerkOffer();
-  }
+}
+/** ステージクリアの結果のあと：アーティファクトの三択を1回出す。出せる物が無ければ false（そのまま次へ） */
+function openStageClearArtifact() {
+  if (!artifactAvailable()) return false;
+  stageClearPhase = "artifact";
+  perkOfferQueue.push({ townIndex: -1, rare: false, artifact: true, kind: null });
+  openNextPerkOffer();
+  return true;
 }
 const ARTIFACT_OFFER_MAX = 3;   // アーティファクトの三択の枚数（残りが少なければその数だけ）
 function artifactAvailable() { return pickPerkCards(false, true).length > 0; }
@@ -50119,7 +50131,8 @@ function pickPerkCards(rare, artifact = false) {
 }
 
 function openNextPerkOffer() {
-  if (gameState !== "playing" || perkOfferQueue.length === 0) return;
+  const clearArtifact = gameState === "stage-clear" && stageClearPhase === "artifact";   // v3.230.0（DT-645）: ステージクリアの後の三択
+  if ((gameState !== "playing" && !clearArtifact) || perkOfferQueue.length === 0) return;
   if (upgradeCardsVisible) return;   // v3.49.0: レベルアップを選んでいる間は待つ（閉じたら開く）
   const { townIndex, rare, artifact, kind } = perkOfferQueue.shift();
   // v3.66.0（DT-497・Shooter指示「特殊個体の加入はスローでツリー表示なしのメニューに戻す」）: 特殊個体のレベルアップもこの下の三択で出す
@@ -50207,7 +50220,9 @@ function takePerkCard(def, townIndex) {
   // DT-593: 決まった時に出るアーティファクトはレベルアップのおまけなので数えない（数えると警戒度が早まる）
   if (!perkOfferArtifact) countStageLevelUp();
   renderStageCardIcons();
+  const afterClear = gameState === "stage-clear";
   closePerkOffer();
+  if (afterClear) { proceedAfterStageClearArtifact(); return; }   // v3.230.0（DT-645）: ステージクリアの後の三択なら、そのまま国選びへ
   maybeAdvanceTier(true);
   updateHUDBuildings();
 }
