@@ -147,6 +147,8 @@ CPU の使い方の上位（描画の命令は呼んだ関数つき・行は ind
 は、決まった時代・地域（番号は `STAGE_SHAPES` の順）でオートプレイを回し、式の値と画面の絵を取る（`--setup`・`--each` で群れを置き直せる）。
 指紋を比べる `dt-headless.mjs` と違い、新しい地域・敵が動いているか・どう見えるかを見るための道具。
 
+**Dragon Tide の名前の表**（DT-635〜）: `node tools/dt-names.mjs` は、ゲームを開いて竜種・特殊個体・敵・強化カード・アーティファクト・地域の内部の名前・画面の名前・図鑑に載っているかを `docs/narrative/dragon-tide-names.md` に書き出し、図鑑の抜けとデバッグの名札のずれを一覧にする。名前を足す・変えたら作り直す。
+
 **クラウド（定時チェック）からの画像生成**（DT-579〜）: `python3 tools/gen_sprite_cloud.py <out.png> "<描写>" [長辺px]`
 （生成→緑抜き→余白詰め→縮小。`pip` が要るときは `python3 -m pip install numpy pillow`）。`tools/gen_*_sprite.sh` は手元の Windows 用でクラウドでは動かない。
 
