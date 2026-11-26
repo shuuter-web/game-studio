@@ -1,6 +1,6 @@
 """Dragon Tide（DT-609）: 2回目の進化の飾りを、全身カットの宝石の絵（*_sparkle）に描き足して *_jewel を作る。
 
-  python3 tools/gen_gem_ornaments.py [竜種...]   # 火竜・氷竜・影竜・緋竜・飛竜・隼竜・燕竜・蜂竜（名指しでその竜種だけ）の *_jewel_body.png / *_jewel_wing.png を書き出し、DRAGON_PART_SPRITES に貼る値を出す
+  python3 tools/gen_gem_ornaments.py [竜種...]   # 火竜・氷竜・影竜・緋竜・飛竜・隼竜・燕竜・蜂竜・鮫竜・雷雲竜・亀竜・蛙竜（名指しでその竜種だけ）の *_jewel_body.png / *_jewel_wing.png を書き出し、DRAGON_PART_SPRITES に貼る値を出す
 
 前の版（v3.191.0）は画像生成で「全身の金の縁取り＋細かい飾り」を描いたので、全体を縁取っただけに見えた。
 こちらは手で形を決めて飾る部位だけを太く描き、**元の輪郭からはみ出させる**（画像の余白を足して広げる）。
@@ -735,6 +735,202 @@ def hornet_wing(src):
     return None
 
 
+# ---------------------------------------------------------------- 鮫竜・蛙竜・亀竜・雷雲竜（v3.235.0・DT-609「続けて他の竜もお願いします」）
+# 鮫竜・亀竜・雷雲竜は専用の絵が無く別の竜種の絵を借りている（鮫竜＝燕竜・亀竜＝ガーゴイル・雷雲竜＝影竜）ので、宝石の絵もその輪郭のまま
+# （tools/gen_gem_restyle.py の SOURCE）。尾の飾りは4竜種とも動く尻尾の先（"tip"）を既定にする
+NACRE = dict(light=(255, 255, 255), base=(230, 234, 246), dark=(146, 158, 198), line=(20, 32, 78))
+CORAL = dict(light=(255, 196, 186), base=(228, 72, 72), dark=(140, 20, 36), line=(60, 6, 14))
+VERMILION = dict(light=(255, 176, 146), base=(212, 44, 30), dark=(118, 10, 10), line=(40, 0, 0))
+DRUMHEAD = dict(light=(255, 252, 236), base=(242, 228, 192), dark=(192, 162, 112), line=(40, 10, 10))
+ELECTRIC = dict(light=(240, 255, 255), base=(96, 204, 255), dark=(30, 92, 206), line=(8, 18, 70))
+TORTOISESHELL = dict(light=(255, 216, 146), base=(200, 116, 38), dark=(96, 42, 8), line=(40, 16, 2))
+WHITE_JADE = dict(light=(255, 255, 250), base=(236, 240, 226), dark=(168, 184, 158), line=(36, 50, 36))
+LOTUS = dict(light=(255, 238, 248), base=(246, 150, 192), dark=(196, 70, 130), line=(90, 20, 60))
+LILYPAD = dict(light=(170, 236, 200), base=(36, 146, 110), dark=(12, 78, 60), line=(4, 38, 28))
+
+SHARK_PAD_ROOT = dict(left=26, top=0, right=26, bottom=56)    # 後頭部の鰭が左右へ、尾びれが尾の先から後ろへはみ出す分
+SHARK_PAD_TIP = dict(left=26, top=0, right=26, bottom=0)
+SHARK_TAIL_Y = 308
+
+
+def shark_caudal(canvas, tx, ty):
+    """鮫竜の尾の飾り：真珠層（螺鈿の白）の三日月の尾びれと、根元の赤珊瑚の玉"""
+    for sd in (-1, 1):
+        poly, spine = curved_blade(tx, ty, 52, 18, math.radians(180 - sd * 42), sd * 0.7)
+        canvas.shape([poly], NACRE, axis=(0.4, 1.0), outline=3.5, ridge=spine)
+    canvas.shape([ellipse_poly(tx, ty + 2, 7, 7, 16)], CORAL, axis=(-0.4, 1.0), outline=2.5)
+
+
+def shark_body(src, tail="root"):
+    """鮫竜（サファイア）：背骨に乗って後ろへ反る真珠層の背びれ（右へ傾けて面を見せる）・後頭部から後ろ・外へ流れる真珠層の鰭1対（根元に赤珊瑚の玉）。
+    尾の先に三日月の尾びれ。翼は飾らない"""
+    p = SHARK_PAD_ROOT if tail == "root" else SHARK_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + 53.0
+    for sd in (-1, 1):
+        rx, ry = cx + sd * 16, 100
+        poly, spine = curved_blade(rx, ry, 64, 22, math.radians(180 - sd * 44), sd * 0.35)
+        back.shape([poly], NACRE, axis=(0.4, 1.0), outline=3.5, ridge=spine)
+        front.shape([ellipse_poly(rx, ry, 5.5, 5.5, 14)], CORAL, axis=(-0.4, 1.0), outline=2.2)
+    fin = [(cx - 6, 150), (cx + 6, 148), (cx + 20, 196), (cx + 34, 250), (cx + 6, 226), (cx - 6, 212)]
+    front.shape([fin], NACRE, axis=(1.0, 0.5), outline=4.0, ridge=[(cx, 154), (cx + 10, 200), (cx + 32, 246)],
+                facet=[(cx + 6, 148), (cx + 20, 196), (cx + 34, 250), (cx + 10, 200)])
+    if tail == "root":
+        shark_caudal(back, cx, SHARK_TAIL_Y)
+    return stack(back, sprite, front)
+
+
+def shark_tailtip():
+    c = Canvas(110, 70)
+    shark_caudal(c, 55, 6)
+    return c.finish(), (55, 6)
+
+
+def shark_wing(src):
+    return None
+
+
+THUNDER_PAD_ROOT = dict(left=54, top=0, right=54, bottom=84)   # 後頭部の雷太鼓の輪が左右へ、稲妻が尾の先から後ろへはみ出す分
+THUNDER_PAD_TIP = dict(left=54, top=0, right=54, bottom=0)
+THUNDER_TAIL_Y = 308
+THUNDER_BOLT = [(-8, 0), (8, 0), (4, 24), (14, 24), (-1, 52), (8, 52), (-10, 84), (-5, 58), (-14, 58), (-3, 30), (-13, 30)]
+
+
+def thunder_bolt(canvas, tx, ty):
+    """雷雲竜の尾の飾り：青白い水晶の稲妻と、根元の朱漆の玉"""
+    canvas.shape([[(tx + x, ty + y) for x, y in THUNDER_BOLT]], ELECTRIC, axis=(0.6, 1.0), outline=3.5,
+                 ridge=[(tx, ty + 4), (tx + 6, ty + 25), (tx - 2, ty + 54), (tx - 9, ty + 80)])
+    canvas.shape([ellipse_poly(tx, ty + 1, 8, 6, 16)], VERMILION, axis=(0.4, 1.0), outline=2.5)
+
+
+def drum(canvas, x, y, r):
+    """雷太鼓：朱漆の胴の縁＋生成りの皮＋三つ巴（巴は3つの小さな玉で描く）"""
+    canvas.shape([ellipse_poly(x, y, r, r, 24)], VERMILION, axis=(0.4, 1.0), outline=3.0)
+    canvas.shape([ellipse_poly(x, y, r * 0.7, r * 0.7, 24)], DRUMHEAD, axis=(-0.3, 1.0), outline=1.8)
+    for k in range(3):
+        a = math.radians(90 + k * 120)
+        canvas.shape([ellipse_poly(x + math.cos(a) * r * 0.32, y + math.sin(a) * r * 0.32, r * 0.2, r * 0.2, 12)], VERMILION, outline=1.2)
+
+
+def thunder_body(src, tail="root"):
+    """雷雲竜（ヘリオドール）：雷神の太鼓の輪。後頭部の後ろで弓なりに張った黒漆の輪が首の下を通って左右へ広がり、
+    輪の左右に朱漆の雷太鼓を2つずつ（顔の前へは出さず、頭の横より後ろ）。尾の先に青白い水晶の稲妻。翼は飾らない"""
+    p = THUNDER_PAD_ROOT if tail == "root" else THUNDER_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + 74.5
+
+    def ring(t):   # 輪の上の点（t＝-1 左端〜1 右端）。真ん中が後ろ（首の下）へ垂れる弓
+        return cx + t * 110, 96 + 42 * (1 - t * t)
+    back.stroke([ring(i / 20 * 2 - 1) for i in range(21)], 7, LACQUER, axis=(0.3, 1.0), outline=3.0)
+    for t in (-1, -0.74, 0.74, 1):
+        drum(front, *ring(t), 15)
+    if tail == "root":
+        thunder_bolt(back, cx, THUNDER_TAIL_Y)
+    return stack(back, sprite, front)
+
+
+def thunder_tailtip():
+    c = Canvas(40, 96)
+    thunder_bolt(c, 20, 6)
+    return c.finish(), (20, 6)
+
+
+def thunder_wing(src):
+    return None
+
+
+TORTOISE_PAD_ROOT = dict(left=0, top=0, right=0, bottom=80)   # 尾の先の白玉の璧と朱の房の分
+TORTOISE_PAD_TIP = dict(left=0, top=0, right=0, bottom=0)
+TORTOISE_TAIL_Y = 306
+
+
+def tortoise_pendant(canvas, tx, ty):
+    """亀竜の尾の飾り：白玉（白い翡翠）の璧（真ん中に穴のある円盤）と、その下に垂れる朱の絹の房"""
+    canvas.stroke([(tx, ty), (tx, ty + 14)], 3.0, VERMILION, outline=1.5, ridge=False)
+    canvas.shape([ellipse_poly(tx, ty + 24, 14, 14, 28)], WHITE_JADE, axis=(-0.4, 1.0), outline=3.0)
+    canvas.shape([ellipse_poly(tx, ty + 24, 4.5, 4.5, 16)], LILYPAD, outline=1.5)
+    canvas.shape([ellipse_poly(tx, ty + 43, 4.5, 4.5, 14)], VERMILION, outline=2.0)   # 房の結び目
+    canvas.shape([[(tx - 4, ty + 46), (tx + 4, ty + 46), (tx + 12, ty + 76), (tx - 12, ty + 76)]], VERMILION, axis=(1.0, 0.2), outline=2.5,
+                 ridge=[(tx, ty + 48), (tx, ty + 74)])
+
+
+def tortoise_body(src, tail="root"):
+    """亀竜（翡翠）：背に乗るべっ甲（鼈甲）の甲羅。腰の細い所では胴の輪郭からはみ出す。甲羅は六角の甲板（背の3枚・左右の2枚ずつ）と縁で描く。
+    尾の先に白玉の璧と朱の房。翼は飾らない"""
+    p = TORTOISE_PAD_ROOT if tail == "root" else TORTOISE_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx, cy = p["left"] + 115.0, 204
+    front.shape([ellipse_poly(cx, cy, 66, 78, 40)], TORTOISESHELL, axis=(0.3, 1.0), outline=4.5)
+    plates = [(cx, cy - 42, 17), (cx, cy, 17), (cx, cy + 42, 17)] + [(cx + sd * 38, cy + dy, 15) for sd in (-1, 1) for dy in (-22, 22)]
+    for hx, hy, r in plates:
+        front.shape([hexagon(hx, hy, r)], TORTOISESHELL, axis=(-0.5, 1.0), outline=2.5, facet=[(hx, hy), *hexagon(hx, hy, r)[:3]])
+    if tail == "root":
+        tortoise_pendant(back, cx, TORTOISE_TAIL_Y)
+    return stack(back, sprite, front)
+
+
+def tortoise_tailtip():
+    c = Canvas(40, 86)
+    tortoise_pendant(c, 20, 4)
+    return c.finish(), (20, 4)
+
+
+def tortoise_wing(src):
+    return None
+
+
+FROG_LOTUS_BODY = (129, 180, 1.2)      # 蓮を乗せる所（胴の絵）と大きさ
+FROG_LOTUS_AIR = (160, 120, 1.0)       # 跳んでいるときの胴の絵（dragon_frog_*_body_air）
+
+
+def lotus(canvas, x, y, s):
+    """背に乗る蓮：深い青緑の蓮の葉（切れ込み）の上に、桃色の蓮の花（外の8枚・内の5枚）と金の花托"""
+    pad = []
+    for i in range(41):   # 葉：後ろ（+y）に切れ込み
+        a = math.radians(90 + 14 + i / 40 * (360 - 28))
+        pad.append((x + math.cos(a) * 46 * s, y + math.sin(a) * 43 * s))
+    pad.append((x, y + 6 * s))
+    canvas.shape([pad], LILYPAD, axis=(0.3, 1.0), outline=3.5)
+    for k in range(8):
+        poly, spine = feather(x, y, 42 * s, 24 * s, k * 45 + 22.5, 0.0)
+        canvas.shape([poly], LOTUS, axis=(0.0, 1.0), outline=2.5, ridge=spine)
+    for k in range(5):
+        poly, spine = feather(x, y, 27 * s, 17 * s, k * 72, 0.0)
+        canvas.shape([poly], LOTUS, axis=(0.5, 1.0), outline=2.2, ridge=spine)
+    canvas.shape([ellipse_poly(x, y, 7.5 * s, 7.5 * s, 16)], HONEY, axis=(0.4, 1.0), outline=2.0)
+
+
+def frog_body(src, tail="tip", air=False):
+    """蛙竜（ペリドット）：背に乗る蓮の葉と桃色の蓮の花。尾の先に蓮の蕾（動く尻尾の先だけ。胴の絵の寸法を跳んでいるときの絵と
+    共有しているので、胴の絵に余白を足して尾の付け根に描く形は作らない）。翼は飾らない"""
+    sprite = padded(src, 0, 0, 0, 0)
+    front = Canvas(*sprite.size)
+    lotus(front, *(FROG_LOTUS_AIR if air else FROG_LOTUS_BODY))
+    return stack(Canvas(*sprite.size), sprite, front)
+
+
+def frog_tailtip():
+    c = Canvas(44, 60)
+    x, y = 22, 4
+    poly, spine = feather(x, y + 6, 46, 26, 180, 0.0)
+    c.shape([poly], LOTUS, axis=(1.0, 0.3), outline=3.0, ridge=spine)
+    for sd in (-1, 1):
+        poly, spine = feather(x, y + 4, 22, 11, 180 - sd * 34, 0.0)
+        c.shape([poly], LILYPAD, axis=(0.4, 1.0), outline=2.2)
+    c.shape([ellipse_poly(x, y + 3, 5, 4, 12)], LILYPAD, outline=1.8)
+    return c.finish(), (x, y)
+
+
+def frog_wing(src):
+    return None
+
+
 SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel はここに余白を足して作る）
     "fire": dict(cx=62.4, cy=169.4, sl=(14.2, 152), sr=(110.8, 152), wa=(319, 64.1)),
     "ice": dict(cx=81.5, cy=175.6, sl=(21.4, 152), sr=(141.6, 152), wa=(319, 69.0)),
@@ -746,6 +942,11 @@ SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel 
     "falcon": dict(cx=63.0, cy=179.6, sl=(32.8, 183), sr=(93.2, 183), wa=(316, 55.0)),
     "swallow": dict(cx=53.0, cy=179.7, sl=(12.7, 182), sr=(93.3, 182), wa=(317, 60.2)),
     "hornet": dict(cx=82.3, cy=173.0, sl=(22.4, 139), sr=(142.6, 139), wa=(316, 18.1)),
+    # v3.235.0: 鮫竜・亀竜・雷雲竜は借りている絵（燕竜・ガーゴイル（*_classic）・影竜）の値。蛙竜は元の値
+    "shark": dict(cx=53.0, cy=179.7, sl=(12.7, 182), sr=(93.3, 182), wa=(317, 60.2)),
+    "tortoise": dict(cx=115.0, cy=173.2, sl=(20.9, 110), sr=(209.1, 110), wa=(317, 68.0)),
+    "thunder": dict(cx=74.5, cy=174.7, sl=(22.8, 177), sr=(126.2, 177), wa=(317, 63.4)),
+    "frog": dict(cx=139.9, cy=185.3, sl=(71.0, 182), sr=(208.0, 182), wa=(317, 66.1)),
 }
 
 
@@ -764,6 +965,9 @@ TAIL_TIP = {   # v3.233.0: 尾の飾りを動く尻尾の先にも付けられ�
     "falcon": (FALCON_PAD_TIP, falcon_tailtip),
     "swallow": (SWALLOW_PAD_TIP, swallow_tailtip),
     "hornet": (HORNET_PAD_TIP, hornet_tailtip),
+    "shark": (SHARK_PAD_TIP, shark_tailtip),        # v3.235.0
+    "thunder": (THUNDER_PAD_TIP, thunder_tailtip),
+    "tortoise": (TORTOISE_PAD_TIP, tortoise_tailtip),
 }
 
 
@@ -778,6 +982,10 @@ def main():
         ("falcon", falcon_body, falcon_wing, FALCON_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("swallow", swallow_body, swallow_wing, SWALLOW_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("hornet", hornet_body, hornet_wing, HORNET_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("shark", shark_body, shark_wing, SHARK_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),   # v3.235.0
+        ("thunder", thunder_body, thunder_wing, THUNDER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("tortoise", tortoise_body, tortoise_wing, TORTOISE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("frog", frog_body, frog_wing, dict(left=0, top=0, right=0, bottom=0), dict(left=0, top=0, right=0, bottom=0)),
     ):
         if only and element not in only:
             continue
@@ -791,6 +999,12 @@ def main():
             jw.save(os.path.join(ASSETS, f"dragon_{element}_jewel_wing.png"), optimize=True)
         print(element, "body", sb.size, "->", jb.size, "wing", sw.size, "->", jw.size)
         report(element, jb, jw, pad_b, pad_w)
+        if element == "frog":   # v3.235.0: 蛙竜は跳んでいるときの胴の絵も（尾の飾りは動く尻尾の先だけ）
+            sa = Image.open(os.path.join(ASSETS, "dragon_frog_sparkle_body_air.png")).convert("RGBA")
+            frog_body(sa, air=True).save(os.path.join(ASSETS, "dragon_frog_jewel_body_air.png"), optimize=True)
+            tip, (ax, ay) = frog_tailtip()
+            tip.save(os.path.join(ASSETS, "dragon_frog_tailtip.png"), optimize=True)
+            print(f"  frog_tailtip: w: {tip.width}, h: {tip.height}, anchor: {{ x: {ax}, y: {ay} }}")
         # v3.233.0（DT-609 手直し）: 尾の飾りを動く尻尾の先に付ける形（胴の絵 *_jewelt と、尻尾の先の絵 *_tailtip）
         if element in TAIL_TIP:
             pad_t, tip_fn = TAIL_TIP[element]
