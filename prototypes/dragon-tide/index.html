@@ -906,6 +906,10 @@
     border: 1px solid #5a6a90; border-radius: 10px; padding: 8px 14px; cursor: pointer;
   }
   .species-locked { opacity: 0.5; cursor: default; }
+  /* v3.237.0（案帳 DT-644）: 条件を満たした竜（竜晶で解放できる）。竜晶が足りないときは少しだけ沈める */
+  .species-locked.species-ready { opacity: 1; cursor: pointer; border-color: rgba(120, 200, 255, 0.85); }
+  .species-locked.species-ready .card-desc { color: #9fd8ff; }
+  .species-locked.species-ready.species-short { opacity: 0.75; cursor: default; }
   .card-tool.armed { border-color: #ff6a6a; color: #ffb0b0; box-shadow: 0 0 10px rgba(255,90,90,0.4); }
   #tree-overlay .tree-head {
     display: flex; align-items: center; gap: 12px; margin-bottom: 4px;
@@ -1439,7 +1443,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.236.0";
+const GAME_VERSION = "v3.237.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -33966,6 +33970,7 @@ const STRINGS = {
   tierUpMax: "最大",
   tierUpSub: (name, detail) => `人間の守りが「${name}」の段階に\n敵の強化：${detail}`,
   speciesUnlocked: (name) => `🔓 ${name} が解放された（次のランから選べる）`,
+  speciesUnlockedNow: (name) => `🔓 ${name} を解放した`,
   rerollButton: (n) => `🎲 引き直す（残り${n}）`,
   unlockedToast: (names) => `🔓 解放: ${names}`,
   // v3.4.2: 進化カードの札
@@ -33977,7 +33982,18 @@ const STRINGS = {
                  : "竜の進化",
   evoRecorded: (name, reward) => `📖 進化図鑑に記録: ${name}  +${reward}🔷`,
   // v3.197.0（案帳 DT-618・Shooter指示「A」）: 竜の突然変異をやめ、その組み合わせで解放する。竜種選択の鍵と図鑑の解放の一覧に出す
-  lockedSpeciesPair: (needText) => `${needText} を連れてステージをクリア`,
+  lockedSpeciesPair: (needText) => `${needText} を連れて地域を滅ぼす`,
+  // v3.237.0（案帳 DT-644）: 竜種の解放の条件と、竜晶で解放する鍵のカード（「買う」は使わない）
+  unlockCondAnyRegion: (stars) => stars > 0 ? `難しさ★${stars}以上の地域を滅ぼす` : "地域を滅ぼす",
+  unlockCondRegion: (name, stars) => `難しさ★${stars}以上の「${name}」を滅ぼす`,
+  unlockCondWith: (need, where) => `${need} を連れて${where}`,
+  unlockCondSpecials: (n) => `特殊個体を${n}体同時に連れて`,
+  unlockCondNations: (n) => `1ランで地域を${n}つ滅ぼす`,
+  unlockCondComplete: (name) => `${name}で完走`,
+  unlockReadyToast: (names) => `🔓 ${names} の解放の条件を満たした（竜を選ぶ画面で竜晶を使って解放できる）`,
+  unlockCostLine: (cost) => `🔷${cost}`,
+  unlockReadyLine: (cost) => `🔷${cost} で解放する`,
+  unlockShortLine: (short) => `竜晶が足りない（あと 🔷${short}）`,
   speciesPairNeed: (name, count) => count > 1 ? `${name}×${count}` : name,   // 1体ずつの組み合わせは「煽る風・穿つ楔」
   // v3.52.0: 進化ツリーの選択画面
   treeDragon: "竜の進化", treeSpecials: "特殊個体の進化", treeJoin: "特殊個体の加入", treeOther: "そのほか",
@@ -35159,6 +35175,7 @@ SPECIES_EVO_SPEC.wayward = {
 
 /** v3.197.0（DT-618）: その竜種の解放の条件の文（「ロケットマン×2 を連れてステージをクリア」）。組み合わせで解放する竜種でなければ ""。 */
 function speciesPairUnlockText(sid) {
+  if (SPECIES_UNLOCK_PLAN[sid]) return `${speciesUnlockText(sid)}（${STRINGS.unlockCostLine(speciesUnlockCost(sid))}）`;   // v3.237.0（DT-644）: 段と地域の条件・値段
   const cx = SPECIES_PAIR_UNLOCKS.find(c => c.to === sid);
   if (!cx) return "";
   return STRINGS.lockedSpeciesPair(Object.keys(cx.needs)
@@ -47761,23 +47778,81 @@ const INITIAL_SPECIALS = [SPECIAL_RAINBOW, SPECIAL_BEACON, SPECIAL_HEAVY, SPECIA
 
 // ctx = { clearedIdx: さっきクリアした時代の添字（無ければ -1）, runComplete: ラン完走か }
 const UNLOCK_DEFS = [
-  { kind: "species", id: "ice",     text: "1ランで時代 III をクリア",         done: (c) => c.clearedIdx >= 2 },
-  { kind: "species", id: "hornet",  text: "特殊個体を3体同時に連れる",         done: () => runSpecials.length >= 3 },
-  { kind: "species", id: "wayward", text: "爆竜で完走",                       done: (c) => c.runComplete && flockSpecies === "bomber" },
   // v3.7.0: 地域の解放は列車だけ。4ステージ目をクリア＝5ステージ目の地域3択の直前に開く
   { kind: "region", id: SHAPE_RAILWAY, text: "ステージ5に到達", done: (c) => c.clearedIdx >= 3 },
 ];
 // v3.197.0（案帳 DT-618・Shooter指示「A」）: 竜の突然変異の条件だった特殊個体の組み合わせを連れてステージをクリアすると、その竜種を解放する。
 // ステージクリアと完走の evaluateUnlocks だけが clearedIdx を渡す（加入のたびの呼び出しでは開かない）
-for (const cx of SPECIES_PAIR_UNLOCKS) {
-  if (!SPECIES_DEFS[cx.to] || UNLOCK_DEFS.some(d => d.kind === "species" && d.id === cx.to)) continue;
-  UNLOCK_DEFS.push({ kind: "species", id: cx.to, text: speciesPairUnlockText(cx.to), done: (c) => c.clearedIdx >= 0 && specialsSatisfy(cx.needs) });
+// v3.237.0（案帳 DT-644・11/26 Shooter「条件を満たす → 竜晶で買うの2段に」「時代ではなく難易度で」「特殊個体条件だけでなく地域条件も混ぜて」
+//   「竜は買うものではない（ゲームの中で「買う」は使わない）」「ステージ・国は「地域」、落とすは「滅ぼす」」）:
+// 竜種は「条件を満たす → 竜を選ぶ画面の鍵のカードで竜晶を払って解放する」の2段。難しさは段で分け、段2・段3は
+// 世界図の地域のカードの「難しさ★」（地域の時代の番号＝星の数）がその数以上の地域を滅ぼしたときだけ満たす。
+// 条件は特殊個体の組み合わせ（SPECIES_PAIR_UNLOCKS の needs）か、地域（その地域を滅ぼす。連れている特殊個体は問わない）か、下の特別なもの。
+// もう解放済みの竜種はそのまま解放済み（profile.unlocks.species）。条件を満たした印は profile.unlocks.speciesReady
+const SPECIES_UNLOCK_TIERS = {
+  1: { stars: 0, cost: 60 },    // どの地域でも
+  2: { stars: 4, cost: 150 },   // 難しさ★4以上の地域で
+  3: { stars: 7, cost: 300 },   // 難しさ★7以上の地域で
+};
+const SPECIES_UNLOCK_PLAN = {
+  shadow: { tier: 1 }, swallow: { tier: 1 }, falcon: { tier: 1 }, gargoyle: { tier: 1 }, frog: { tier: 1 }, crimson: { tier: 1 },
+  ice: { tier: 1, nations: 3 },                       // 1ランで地域を3つ滅ぼす
+  bomber: { tier: 2 }, tortoise: { tier: 2 }, twin: { tier: 2 }, flail: { tier: 2 },
+  hornet: { tier: 2, specials: 3 },                   // 特殊個体を3体同時に連れて
+  shark: { tier: 2, region: SHAPE_RIVERLINE }, mole: { tier: 2, region: SHAPE_FRONTLINE }, ball: { tier: 2, region: SHAPE_CITADEL },
+  magnet: { tier: 2, region: SHAPE_METRO }, comet: { tier: 2, region: SHAPE_ASTEROIDS },
+  thunder: { tier: 3 }, cannon: { tier: 3 }, ray: { tier: 3 }, ufo: { tier: 3 },
+  wisp: { tier: 3, region: SHAPE_FOREST }, whale: { tier: 3, region: SHAPE_BEACH }, bone: { tier: 3, region: SHAPE_SERPENT },
+  wayward: { tier: 3, complete: "bomber" },           // 爆竜で完走
+};
+/** 竜種の解放の値段（竜晶）。条件で解放する竜種でなければ 0 */
+function speciesUnlockCost(sid) { const p = SPECIES_UNLOCK_PLAN[sid]; return p ? SPECIES_UNLOCK_TIERS[p.tier].cost : 0; }
+function speciesUnlockText(sid) {
+  const p = SPECIES_UNLOCK_PLAN[sid];
+  if (!p) return "";
+  const stars = SPECIES_UNLOCK_TIERS[p.tier].stars;
+  if (p.complete) return STRINGS.unlockCondComplete(SPECIES_DEFS[p.complete].ja);
+  if (p.nations) return STRINGS.unlockCondNations(p.nations);
+  const where = p.region !== undefined ? STRINGS.unlockCondRegion(STRINGS.shapeNames[p.region], stars) : STRINGS.unlockCondAnyRegion(stars);
+  if (p.region !== undefined) return where;
+  if (p.specials) return STRINGS.unlockCondSpecials(p.specials) + where;
+  const cx = SPECIES_PAIR_UNLOCKS.find(c => c.to === sid);
+  return cx ? STRINGS.unlockCondWith(Object.keys(cx.needs)
+    .map(k => STRINGS.speciesPairNeed(SPECIAL_DEFS[SPECIAL_KIND_BY_KEY[k]].name, cx.needs[k])).join("・"), where) : where;
+}
+/** c＝evaluateUnlocks の ctx。地域を滅ぼしたとき（stars・shape あり）か完走のときだけ満たす */
+function speciesUnlockDone(sid, c) {
+  const p = SPECIES_UNLOCK_PLAN[sid];
+  if (p.complete) return c.runComplete && flockSpecies === p.complete;
+  if (!(c.stars > 0) || c.stars < SPECIES_UNLOCK_TIERS[p.tier].stars) return false;
+  if (p.nations) return runWorldOrder.length >= p.nations;
+  if (p.region !== undefined) return c.shape === p.region;
+  if (p.specials) return runSpecials.length >= p.specials;
+  const cx = SPECIES_PAIR_UNLOCKS.find(x => x.to === sid);
+  return !!cx && specialsSatisfy(cx.needs);
+}
+for (const sid of Object.keys(SPECIES_UNLOCK_PLAN)) {
+  if (!SPECIES_DEFS[sid]) continue;
+  UNLOCK_DEFS.push({ kind: "species", id: sid, text: speciesUnlockText(sid), done: (c) => speciesUnlockDone(sid, c) });
 }
 
 function ensureUnlocks() {
   if (!profile.unlocks) profile.unlocks = {};
   for (const k of ["species", "specials", "regions"]) if (!profile.unlocks[k]) profile.unlocks[k] = {};
   return profile.unlocks;
+}
+/** v3.237.0（DT-644）: 条件を満たして、竜晶を払えば解放できる竜種か */
+function isSpeciesReady(id) {
+  return !isSpeciesUnlocked(id) && !!(profile && profile.unlocks && profile.unlocks.speciesReady && profile.unlocks.speciesReady[id]);
+}
+/** 竜を選ぶ画面で竜晶を払って解放する。足りなければ何もしない */
+function spendToUnlockSpecies(id) {
+  const cost = speciesUnlockCost(id);
+  if (!isSpeciesReady(id) || profile.crystals < cost) return false;
+  profile.crystals -= cost;
+  ensureUnlocks().species[id] = true;
+  saveProfile();
+  return true;
 }
 function isSpeciesUnlocked(id) {
   return INITIAL_SPECIES.includes(id) || !!(profile && profile.unlocks && profile.unlocks.species && profile.unlocks.species[id]);
@@ -47802,15 +47877,25 @@ function evaluateUnlocks(ctx = {}) {
   const c = Object.assign({ clearedIdx: -1, runComplete: false }, ctx);
   const u = ensureUnlocks();
   const opened = [];
+  const ready = [];
+  if (!u.speciesReady) u.speciesReady = {};
   for (const def of UNLOCK_DEFS) {
     if (isUnlockedByDef(def) || !def.done(c)) continue;
+    // v3.237.0（DT-644）: 竜種は解放せず「解放できる」にする（竜を選ぶ画面で竜晶を払う）
+    if (def.kind === "species" && SPECIES_UNLOCK_PLAN[def.id]) {
+      if (!u.speciesReady[def.id]) { u.speciesReady[def.id] = true; ready.push(unlockLabel(def)); }
+      continue;
+    }
     const bucket = def.kind === "species" ? u.species : def.kind === "special" ? u.specials : u.regions;
     bucket[def.id] = true;
     opened.push(unlockLabel(def));
   }
-  if (opened.length === 0) return;
+  if (opened.length === 0 && ready.length === 0) return;
   saveProfile();
-  showUnlockToast(STRINGS.unlockedToast(opened.join("・")));
+  const msgs = [];
+  if (opened.length) msgs.push(STRINGS.unlockedToast(opened.join("・")));
+  if (ready.length) msgs.push(STRINGS.unlockReadyToast(ready.join("・")));
+  showUnlockToast(msgs.join(" ／ "));
 }
 
 /**
@@ -48053,7 +48138,7 @@ function triggerStageCleared() {
   updateXpHud();
   evaluateChallenges();
   const railwayBefore = isRegionUnlocked(SHAPE_RAILWAY);
-  evaluateUnlocks({ clearedIdx: runStageIndex });   // v3.3.0
+  evaluateUnlocks({ clearedIdx: runStageIndex, stars: runStageIndex + 1, shape: runShape });   // v3.3.0（v3.237.0: 滅ぼした地域の難しさ★と地域）
   const railwayJustOpened = !railwayBefore && isRegionUnlocked(SHAPE_RAILWAY);
   saveProfile();
 
@@ -48730,11 +48815,24 @@ function showSpeciesSelect(forAutoplay = false) {
     if (!isSpeciesUnlocked(ch.species)) {
       const cond = UNLOCK_DEFS.find(d => d.kind === "species" && d.id === ch.species);
       const hidden = ch.species === "ufo";
+      const cost = speciesUnlockCost(ch.species);
+      // v3.237.0（案帳 DT-644）: 条件を満たしたら鍵が開き、竜晶を払って解放する。値段は満たす前から出す
+      if (isSpeciesReady(ch.species)) {
+        const short = cost - profile.crystals;
+        btn.className = "upgrade-card species-locked species-ready" + (short > 0 ? " species-short" : "");
+        btn.innerHTML =
+          `<span class="card-icon">🔓</span>` +
+          `<span><div class="card-name">${hidden ? "？？？" : speciesName(s)}</div>` +
+          `<div class="card-desc">${short > 0 ? STRINGS.unlockShortLine(short) : STRINGS.unlockReadyLine(cost)}</div></span>`;
+        if (short <= 0) freshTap(btn, (e) => { e.preventDefault(); if (spendToUnlockSpecies(ch.species)) { showUnlockToast(STRINGS.speciesUnlockedNow(speciesName(s))); showSpeciesSelect(speciesSelectForAutoplay); } });
+        cardListEl.appendChild(btn);
+        continue;
+      }
       btn.className = "upgrade-card species-locked";
       btn.innerHTML =
         `<span class="card-icon">🔒</span>` +
         `<span><div class="card-name">${hidden ? "？？？" : speciesName(s)}</div>` +
-        `<div class="card-desc">${cond ? cond.text : "—"}</div></span>`;
+        `<div class="card-desc">${cond ? cond.text : "—"}${cost > 0 ? `<br>${STRINGS.unlockCostLine(cost)}` : ""}</div></span>`;
       cardListEl.appendChild(btn);
       continue;
     }
@@ -49122,7 +49220,7 @@ function triggerRunComplete() {
   // 最終ステージぶん＋完走ボーナスの竜晶（awardCrystals が saveProfile 済み）
   awardCrystals(crystalsForStageClear(runStageIndex) + CRYSTAL_ALLCLEAR_BONUS);
   evaluateChallenges();               // v0.25: 全クリア・累計系チャレンジを判定
-  evaluateUnlocks({ clearedIdx: RUN_STAGES - 1, runComplete: true });   // v3.3.0
+  evaluateUnlocks({ clearedIdx: RUN_STAGES - 1, runComplete: true, stars: runStageIndex + 1, shape: runShape });   // v3.3.0
   saveProfile();
   clearRunSave();            // 全クリア＝再開データは不要
   stageOverlayEl.classList.remove("visible");   // v3.14.0: 開始の見出しが残っていたら下げる
