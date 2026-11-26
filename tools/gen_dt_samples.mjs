@@ -191,6 +191,141 @@ function noiseHit(rate, sec, seed, lowHz, highHz, decay, tone = null) {
   return fadeEdges(out, rate, 0.0005, 0.03);
 }
 
+// --- DT-624 手直し3：ジャズ・フュージョン・ソウルの曲のための楽器 ---
+/** エレピ（電気ピアノ）：FM（変調の深さが減っていく）＋叩いた瞬間の金属の「きん」。和音の刻み */
+function epiano(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const index = 1.6 * Math.exp(-t * 6) + 0.25;
+    const mod = Math.sin(TAU * f * t) * index;
+    out[i] = Math.sin(TAU * f * t + mod) * Math.exp(-t * 1.6) * (1 + 0.08 * Math.sin(TAU * 4.5 * t))
+           + 0.28 * Math.sin(TAU * f * 14 * t) * Math.exp(-t * 45);
+  }
+  onePoleLow(out, rate, 4200);
+  return fadeEdges(out, rate, 0.001, 0.15);
+}
+/** オルガン：引き出し（倍音）を重ね、ゆっくり揺らす（回るスピーカーの揺れ）。伸ばして和音の床 */
+function organ(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  const bars = [[0.5, 0.5], [1, 1], [1.5, 0.45], [2, 0.6], [3, 0.3], [4, 0.25]];
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const trem = 1 + 0.12 * Math.sin(TAU * 6.3 * t);
+    let v = 0;
+    for (const [ratio, amp] of bars) v += amp * Math.sin(TAU * f * ratio * t + 0.4 * Math.sin(TAU * 6.3 * t) * ratio * 0.05);
+    out[i] = v * trem + (t < 0.012 ? 0.3 * Math.sin(TAU * f * 6 * t) * (1 - t / 0.012) : 0);   // 鍵の「かち」
+  }
+  onePoleLow(out, rate, 3600);
+  return fadeEdges(out, rate, 0.004, 0.1);
+}
+/** ウッドベース：はじいた低い弦（Karplus-Strong）に胴の「ぼん」を足す。歩くベース */
+function upright(rate, midi, sec) {
+  const rnd = makeRandom(61);
+  const f = midiHz(midi), n = Math.round(rate / f), len = Math.floor(rate * sec);
+  const ring = new Float32Array(n), out = new Float32Array(len);
+  for (let i = 0; i < n; i++) ring[i] = rnd() * 2 - 1;
+  onePoleLow(ring, rate, 700);
+  let idx = 0;
+  for (let i = 0; i < len; i++) {
+    const next = (idx + 1) % n, v = ring[idx];
+    ring[idx] = (v + ring[next]) * 0.5 * 0.996;
+    const t = i / rate;
+    out[i] = v * 0.8 + 0.9 * Math.sin(TAU * f * t) * Math.exp(-t * 3.2);
+    idx = next;
+  }
+  onePoleLow(out, rate, 1600);
+  return fadeEdges(out, rate, 0.002, 0.08);
+}
+/** クラビネット：細い矩形波を弾いた明るく短い音。ソウル・ファンクの刻み */
+function clav(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate, p = (f * t) % 1;
+    const pulse = p < 0.22 ? 1 : -0.28;
+    out[i] = pulse * Math.exp(-t * 7);
+  }
+  // 弾いた瞬間だけ明るく、すぐこもる
+  const k0 = 1 - Math.exp(-TAU * 5000 / rate);
+  let y = 0;
+  for (let i = 0; i < len; i++) { const t = i / rate; const k = k0 * (0.25 + 0.75 * Math.exp(-t * 18)); y += k * (out[i] - y); out[i] = y; }
+  return fadeEdges(out, rate, 0.0008, 0.05);
+}
+/** 金管の重奏（ブラスの一撃）：少しずらした鋸波2本に、吹いた瞬間に開く明るさ。ソウルの合いの手 */
+function brass(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  const detune = [-0.006, 0.006];
+  let y = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    for (const d of detune) { const p = (f * (1 + d) * t) % 1; v += p * 2 - 1; }
+    const cutoff = 900 + 3200 * Math.min(1, t / 0.05) * (0.55 + 0.45 * Math.exp(-t * 6));
+    const k = 1 - Math.exp(-TAU * cutoff / rate);
+    y += k * (v * 0.5 - y);
+    out[i] = y * Math.min(1, t / 0.02);
+  }
+  return fadeEdges(out, rate, 0.004, 0.12);
+}
+/** ライド（シンバル）：金属の倍音の束とノイズ。ジャズの刻み */
+function ride(rate) {
+  const rnd = makeRandom(71);
+  const len = Math.floor(rate * 1.1), out = new Float32Array(len);
+  const partials = [3170, 4120, 5230, 6370, 7410, 8730];
+  let hp = 0, lp = 0;
+  const kh = 1 - Math.exp(-TAU * 9000 / rate), kl = 1 - Math.exp(-TAU * 4000 / rate);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    for (let k = 0; k < partials.length; k++) v += Math.sign(Math.sin(TAU * partials[k] * t + k)) * 0.12;
+    const n = rnd() * 2 - 1;
+    lp += kh * (n - lp); hp += kl * (lp - hp);
+    out[i] = (v * 0.5 + (lp - hp) * 1.2) * (Math.exp(-t * 3.2) * 0.7 + Math.exp(-t * 40) * 0.6);
+  }
+  return fadeEdges(out, rate, 0.0005, 0.1);
+}
+/** リム（スティックで縁を打つ「こっ」） */
+function rim(rate) {
+  const len = Math.floor(rate * 0.09), out = new Float32Array(len);
+  const rnd = makeRandom(73);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    out[i] = Math.sin(TAU * 1750 * t) * Math.exp(-t * 70) + 0.6 * Math.sin(TAU * 520 * t) * Math.exp(-t * 55) + (rnd() * 2 - 1) * 0.4 * Math.exp(-t * 120);
+  }
+  return fadeEdges(out, rate, 0.0003, 0.02);
+}
+/** 手拍子：少しずつずれた数人ぶんのノイズの束 */
+function clap(rate) {
+  const rnd = makeRandom(79);
+  const len = Math.floor(rate * 0.3), out = new Float32Array(len);
+  const hits = [0, 0.009, 0.019, 0.027];
+  let lp = 0, hp = 0;
+  const kh = 1 - Math.exp(-TAU * 3200 / rate), kl = 1 - Math.exp(-TAU * 800 / rate);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let env = 0;
+    for (const h of hits) if (t >= h) env = Math.max(env, Math.exp(-(t - h) * (h === hits[hits.length - 1] ? 22 : 140)));
+    const n = rnd() * 2 - 1;
+    lp += kh * (n - lp); hp += kl * (lp - hp);
+    out[i] = (lp - hp) * env;
+  }
+  return fadeEdges(out, rate, 0.0003, 0.03);
+}
+/** ブラシ（スネアを擦る「さー」）：ゆっくり立ち上がって消えるノイズ */
+function brush(rate) {
+  const rnd = makeRandom(83);
+  const len = Math.floor(rate * 0.35), out = new Float32Array(len);
+  let lp = 0, hp = 0;
+  const kh = 1 - Math.exp(-TAU * 6000 / rate), kl = 1 - Math.exp(-TAU * 1500 / rate);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const n = rnd() * 2 - 1;
+    lp += kh * (n - lp); hp += kl * (lp - hp);
+    out[i] = (lp - hp) * Math.min(1, t / 0.06) * Math.exp(-t * 7);
+  }
+  return fadeEdges(out, rate, 0.002, 0.04);
+}
+
 const INSTRUMENTS = [
   // [ファイル名, 作り方, 基準の MIDI, 長さ（秒）, サンプリング周波数]
   ["harp.wav",     (r) => harp(r, 60, 1.6),     22050],
@@ -206,6 +341,16 @@ const INSTRUMENTS = [
   ["hat.wav",      (r) => noiseHit(r, 0.08, 43, 5000, 10000, 60), 22050],
   ["shaker.wav",   (r) => noiseHit(r, 0.12, 47, 3000, 9000, 35), 22050],
   ["crash.wav",    (r) => noiseHit(r, 1.6, 53, 2500, 7500, 2.4), 16000],
+  // DT-624 手直し3（ジャズ・フュージョン・ソウル）
+  ["epiano.wav",   (r) => epiano(r, 60, 1.8),   16000],
+  ["organ.wav",    (r) => organ(r, 60, 2.2),    16000],
+  ["upright.wav",  (r) => upright(r, 36, 1.0),  16000],
+  ["clav.wav",     (r) => clav(r, 60, 0.6),     16000],
+  ["brass.wav",    (r) => brass(r, 60, 1.0),    16000],
+  ["ride.wav",     (r) => ride(r),              22050],
+  ["rim.wav",      (r) => rim(r),               22050],
+  ["clap.wav",     (r) => clap(r),              22050],
+  ["brush.wav",    (r) => brush(r),             22050],
 ];
 
 mkdirSync(OUT, { recursive: true });
