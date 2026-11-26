@@ -1381,7 +1381,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.211.0";
+const GAME_VERSION = "v3.212.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -18468,15 +18468,18 @@ const BEACH_DECOR_SHORE   = 260;         // 波打ち際からこの距離まで
 const BEACH_DECOR_ROCKSIDE = 320;        // 岩場の縁からこの距離までを「岩場の近く」とみなす
 const BEACH_DECOR_ALPHA   = 0.92;        // 飾りの濃さ（竜・家より目立たないよう少しだけ透かす）
 // 種類ごとの絵・大きさ（長い辺のpx）・回すか・場所ごとの出やすさ [波打ち際, 真ん中, 岩場の近く]
+// v3.212.0（DT-293 手直し・11/26 Shooter「背景オブジェクトのサイズ感が大きすぎる」）: どれもおよそ半分にした（家1軒が約20〜30px）
+// overhead: 椰子は背が高いので地面に焼かず、建物・地上の敵より上（竜の下）に毎フレーム描く（11/26 Shooter「椰子の木は建物や地上の敵よりは上」）
 const BEACH_DECOR_KINDS   = [
-  { img: "beachSeaweed",   size: 92,  turn: true,  w: [5, 0, 0] },
-  { img: "beachShells",    size: 54,  turn: true,  w: [4, 2, 1] },
-  { img: "beachStarfish",  size: 38,  turn: true,  w: [3, 1, 0] },
-  { img: "beachGrass",     size: 66,  turn: true,  w: [0, 5, 4] },
-  { img: "beachDriftwood", size: 150, turn: true,  w: [1, 2, 0] },
-  { img: "beachPalm",      size: 230, turn: true,  w: [0, 1, 3] },
-  { img: "beachTidepool",  size: 150, turn: true,  w: [0, 0, 3] },
+  { img: "beachSeaweed",   size: 46,  turn: true,  w: [5, 0, 0] },
+  { img: "beachShells",    size: 26,  turn: true,  w: [4, 2, 1] },
+  { img: "beachStarfish",  size: 20,  turn: true,  w: [3, 1, 0] },
+  { img: "beachGrass",     size: 34,  turn: true,  w: [0, 5, 4] },
+  { img: "beachDriftwood", size: 72,  turn: true,  w: [1, 2, 0] },
+  { img: "beachPalm",      size: 120, turn: true,  w: [0, 1, 3], overhead: true },
+  { img: "beachTidepool",  size: 78,  turn: true,  w: [0, 0, 3] },
 ];
+const BEACH_DECOR_REACH   = 75;          // いちばん大きい飾りの半分（マスの外へはみ出す分。椰子120×1.2÷2）
 const BEACH_SAND_BG       = "#c4ae7e";   // 明るい砂色（竜と弾が沈まないよう、白っぽくはしない）
 const BEACH_WET_SAND      = "rgba(120,100,62,0.45)";   // 波打ち際の濡れた砂
 const BEACH_WET_W         = 90;          // 濡れた砂の帯の幅
@@ -19179,37 +19182,66 @@ function beachDecorHash(ix, iy, k) {
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
 }
-/** v3.200.0（DT-293 手直し）: 浜の飾りの絵を地面の層に焼く（上の BEACH_DECOR_* の説明） */
+/** 格子のマス (ix, iy) に置く浜の飾り（位置だけで決まる。置かないマスは null）。_beachDecorOut を書き換えて返す */
+const _beachDecorOut = { kind: null, x: 0, y: 0, size: 0, rot: 0 };
+function beachDecorAt(ix, iy) {
+  const C = BEACH_DECOR_CELL;
+  if (beachDecorHash(ix, iy, 0) > BEACH_DECOR_FILL) return null;
+  const x = (ix + 0.15 + 0.7 * beachDecorHash(ix, iy, 1)) * C;
+  const y = (iy + 0.15 + 0.7 * beachDecorHash(ix, iy, 2)) * C;
+  if (x < 0 || x > WORLD_W) return null;
+  const fromSea = y - beachSeaY(x), toRock = beachRockY(x) - y;
+  if (fromSea < 20 || toRock < -10) return null;   // 海の中・岩場の中には置かない
+  const zone = fromSea < BEACH_DECOR_SHORE ? 0 : toRock < BEACH_DECOR_ROCKSIDE ? 2 : 1;
+  let total = 0;
+  for (const kd of BEACH_DECOR_KINDS) total += kd.w[zone];
+  let pick = beachDecorHash(ix, iy, 3) * total, kind = null;
+  for (const kd of BEACH_DECOR_KINDS) { pick -= kd.w[zone]; if (pick < 0) { kind = kd; break; } }
+  if (!kind) return null;
+  const o = _beachDecorOut;
+  o.kind = kind; o.x = x; o.y = y;
+  o.size = kind.size * (0.8 + 0.4 * beachDecorHash(ix, iy, 4));
+  o.rot = kind.turn ? beachDecorHash(ix, iy, 5) * Math.PI * 2 : 0;
+  return o;
+}
+function drawBeachDecorItem(c, o, img) {
+  const scale = o.size / Math.max(img.width, img.height), w = img.width * scale, h = img.height * scale;
+  c.save();
+  c.translate(o.x, o.y);
+  if (o.rot) c.rotate(o.rot);
+  c.drawImage(img, -w / 2, -h / 2, w, h);
+  c.restore();
+}
+/** v3.200.0（DT-293 手直し）: 浜の飾りの絵を地面の層に焼く（上の BEACH_DECOR_* の説明）。v3.212.0: 椰子（overhead）は焼かない */
 function drawBeachDecorOnLayer(bctx, bounds) {
-  const C = BEACH_DECOR_CELL, reach = 140;   // reach：いちばん大きい飾りの半分（マスの外へはみ出す分）
+  const C = BEACH_DECOR_CELL, reach = BEACH_DECOR_REACH;
   const ix0 = Math.floor((bounds.x0 - reach) / C), ix1 = Math.floor((bounds.x1 + reach) / C);
   const iy0 = Math.floor((bounds.y0 - reach) / C), iy1 = Math.floor((bounds.y1 + reach) / C);
   bctx.save();
   bctx.globalAlpha = BEACH_DECOR_ALPHA;
   for (let iy = iy0; iy <= iy1; iy++) for (let ix = ix0; ix <= ix1; ix++) {
-    if (beachDecorHash(ix, iy, 0) > BEACH_DECOR_FILL) continue;
-    const x = (ix + 0.15 + 0.7 * beachDecorHash(ix, iy, 1)) * C;
-    const y = (iy + 0.15 + 0.7 * beachDecorHash(ix, iy, 2)) * C;
-    if (x < 0 || x > WORLD_W) continue;
-    const fromSea = y - beachSeaY(x), toRock = beachRockY(x) - y;
-    if (fromSea < 20 || toRock < -10) continue;   // 海の中・岩場の中には置かない
-    const zone = fromSea < BEACH_DECOR_SHORE ? 0 : toRock < BEACH_DECOR_ROCKSIDE ? 2 : 1;
-    let total = 0;
-    for (const kd of BEACH_DECOR_KINDS) total += kd.w[zone];
-    let pick = beachDecorHash(ix, iy, 3) * total, kind = null;
-    for (const kd of BEACH_DECOR_KINDS) { pick -= kd.w[zone]; if (pick < 0) { kind = kd; break; } }
-    const img = kind && terrainImages[kind.img];
-    if (!img) continue;
-    const size = kind.size * (0.8 + 0.4 * beachDecorHash(ix, iy, 4));
-    if (!layerBoundsHitCircle(bounds, x, y, size)) continue;
-    const scale = size / Math.max(img.width, img.height), w = img.width * scale, h = img.height * scale;
-    bctx.save();
-    bctx.translate(x, y);
-    if (kind.turn) bctx.rotate(beachDecorHash(ix, iy, 5) * Math.PI * 2);
-    bctx.drawImage(img, -w / 2, -h / 2, w, h);
-    bctx.restore();
+    const o = beachDecorAt(ix, iy);
+    if (!o || o.kind.overhead) continue;
+    const img = terrainImages[o.kind.img];
+    if (!img || !layerBoundsHitCircle(bounds, o.x, o.y, o.size)) continue;
+    drawBeachDecorItem(bctx, o, img);
   }
   bctx.restore();
+}
+/** v3.212.0（DT-293 手直し）: 椰子の木を建物・地上の敵の上（竜の下）に描く。カメラ変換の中で毎フレーム呼ぶ（画面に入るマスだけ） */
+function drawBeachOverheadDecor() {
+  if (worldShape !== SHAPE_BEACH) return;
+  const v = viewWorldRect(BEACH_DECOR_REACH), C = BEACH_DECOR_CELL;
+  const ix0 = Math.floor(v.x0 / C), ix1 = Math.floor(v.x1 / C), iy0 = Math.floor(v.y0 / C), iy1 = Math.floor(v.y1 / C);
+  ctx.save();
+  ctx.globalAlpha = BEACH_DECOR_ALPHA;
+  for (let iy = iy0; iy <= iy1; iy++) for (let ix = ix0; ix <= ix1; ix++) {
+    const o = beachDecorAt(ix, iy);
+    if (!o || !o.kind.overhead) continue;
+    const img = terrainImages[o.kind.img];
+    if (img) drawBeachDecorItem(ctx, o, img);
+  }
+  ctx.restore();
 }
 
 /** ヤドカリの体（殻・脚・はさみ）の絵。向きは +x が前（はさみ）、脚は左右（±y）。大きさと姿勢ごとに1回だけ描いて使い回す */
@@ -54097,6 +54129,7 @@ function render(now) {
   drawMushroomMoverCaps();   // v3.131.0（DT-551 手直し）: 増えるキノコの里の動く敵にキノコの笠
   drawRailExtras();          // v2.0.0: 前照灯・粘着編成の標識
   drawCanopy();              // v3.17.0: 大樹海の樹冠（敵と街の上・竜とブレスの下）
+  drawBeachOverheadDecor();  // v3.212.0（DT-293 手直し）: 宿借りの浜の椰子（家・地上の敵の上、竜の下）
   drawSkylandCloudShadows(); // v3.78.0: 浮き城の空の雲の影（町・地面・地上の敵の上、竜の下）
   drawBeams(now);            // v3.34.0: 光線の高原の光線・塔のレンズ・プリズム（竜の下）
   drawFlames(now);           // v3.193.0（案帳 DT-611）: 烽火の連なる丘陵の火炎と炉（竜の下）
