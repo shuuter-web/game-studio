@@ -1421,7 +1421,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.222.0";
+const GAME_VERSION = "v3.223.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -25908,10 +25908,13 @@ function updateDamageNumbers(dt) {
 
 /** プール1つぶんを描く。onDragon=true は竜の被ダメージ（赤・「−」付き・下へ沈む）。 */
 function drawDamageNumberPool(pool, onDragon) {
+  // v3.223.0（DT-066）: 重いのが続いた最後の段だけ、小さい数字を半分にする（大きい数字は残す）
+  const thinSmall = gfxLevel >= GFX_AUTO.maxLevel;
   for (let i = 0; i < pool.size; i++) {
     if (!pool.active[i]) continue;
     const n = Math.round(pool.val[i]);
     if (n < 1) continue;                     // 端数だけの間は出さない
+    if (thinSmall && (i & 1) && (onDragon || n < DMG_NUM_BIG)) continue;
     const t    = pool.age[i] / DMG_NUM_LIFE;   // 0..1
     // 出た瞬間だけ少し大きい（弾んで出る）
     const pop  = t < 0.14 ? 1 + (1 - t / 0.14) * 0.35 : 1;
@@ -33433,8 +33436,11 @@ function updateFires(dt) {
 
 // ember描画（カメラ変換内・ワールド座標）。竜より下の地上レイヤーで呼ぶ。
 function drawEmbers() {
+  // v3.223.0（DT-066）: 重い端末では煙・火の粉を n 個に1個だけ描く（どれを描くかは番号で決める＝乱数を使わない）
+  const smokeStride = gfxStride("smoke"), emberStride = gfxStride("ember");
   for (let i = 0; i < MAX_EMBERS; i++) {
     if (!emberActive[i]) continue;
+    if (i % (emberType[i] === 1 ? smokeStride : emberStride) !== 0) continue;
     const t = emberLife[i] / emberMaxLife[i];   // 1→0
     if (emberType[i] === 1) {
       // 煙: 灰、寿命で膨張＆フェード（アルファ抑えめでユニット視認性を守る）
@@ -34026,6 +34032,10 @@ const STRINGS = {
   openChallenges: (done, total) => `チャレンジ・解放　${done}/${total}`,
   openCodex: "図鑑",
   openOptions: "オプション",
+  // v3.223.0（案帳 DT-066）: 画質
+  gfxOptionName: "画質",
+  gfxModeName: { auto: "自動", high: "高", low: "低" },
+  gfxOptionDesc: "たたくたびに替わる。自動＝重い状態が続くと火の粉・煙・光の粒を減らし、さらに続いたときだけ小さいダメージ数字を間引く（軽くなれば戻す）／高＝いつも全部描く／低＝火の粉・煙・光の粒をいつも減らす（数字は減らさない）。見た目だけが変わり、ゲームの進み方は変わらない。",
   challengeDone: (name, reward) => `チャレンジ達成: ${name}  +${reward}🔷`,
   continueRun: (stageNum) => `つづきから　STAGE ${stageNum}/8`,
   heroRepelled: "英雄 撃退",   // v3.35.0
@@ -43869,6 +43879,14 @@ function renderOptions() {
         `<div class="op-switch ${on ? "on" : ""}"></div>` +
       `</div>`;
   }
+  // v3.223.0（案帳 DT-066）: 画質。たたくたびに 自動→高→低
+  html +=
+    `<div class="op-row" data-gfx="mode">` +
+      `<div class="op-body">` +
+        `<div class="op-name">${STRINGS.gfxOptionName}：<span class="op-gfx-val">${STRINGS.gfxModeName[gfxMode()]}</span></div>` +
+        `<div class="op-desc">${STRINGS.gfxOptionDesc}</div>` +
+      `</div>` +
+    `</div>`;
   // v3.176.0（案帳 DT-075）: 音。切り替えと音量（0〜100）。BGM の音量は BGM を入れる回に足す
   html +=
     `<div class="op-row" data-sound="toggle">` +
@@ -43922,6 +43940,11 @@ function renderOptions() {
     e.stopPropagation();
     soundNextSong();
     optionsOverlayEl.querySelector(".op-song-val").textContent = soundSongName();
+  });
+  optionsOverlayEl.querySelector('[data-gfx="mode"]').addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    gfxSetMode(GFX_MODES[(GFX_MODES.indexOf(gfxMode()) + 1) % GFX_MODES.length]);
+    optionsOverlayEl.querySelector(".op-gfx-val").textContent = STRINGS.gfxModeName[gfxMode()];
   });
   optionsOverlayEl.querySelector('[data-sound="civ"]').addEventListener("pointerdown", (e) => {
     e.stopPropagation();
@@ -56808,8 +56831,10 @@ function drawEraShot(c, key, x, y, ang, color, sc, seed, lifeFrac) {
 
 function drawParticles() {
   ctx.save();
+  const sparkStride = gfxStride("spark");   // v3.223.0（DT-066）
   for (let i = 0; i < MAX_PARTICLES; i++) {
     if (!partActive[i]) continue;
+    if (i % sparkStride !== 0) continue;
     if (partType[i] === 1) {
       // 出現エフェクト火花: 金〜白〜薄橙。寿命が長いので基準を0.55秒にする
       const lifeRatio = Math.max(0, partLife[i] / 0.55);
@@ -57406,8 +57431,74 @@ function tickFps(now) {
     fpsEma     = fpsEma === 0 ? fps : fpsEma * 0.7 + fps * 0.3;
     fpsFrames  = 0;
     fpsLast    = now;
-    hudFps.textContent = fps.toFixed(1);
+    hudFps.textContent = fps.toFixed(1) + (gfxLevel > 0 ? " G" + gfxLevel : "");
   }
+}
+
+// -----------------------------------------------------------------
+// v3.223.0（案帳 DT-066）: 重い端末で見た目だけの演出を自動で減らす
+// -----------------------------------------------------------------
+// フレームの間隔（実時間）を1秒ずつ平均して、重いのが続いたら段を上げる。
+// 段で減らすのは描画だけ（火の粉・煙・粒・ダメージ数字）。ゲームの判定と乱数は触らないので、同じシードで同じランになる。
+// ダメージ数字は Shooter 指示（DT-066「数字は他のものより優先で残す。処理落ちが継続している場合のみ消す」）で
+// 一番最後の段にし、2段目のまま重いのがさらに続いたときだけ間引く。
+const GFX_AUTO = {
+  sampleSec:       1.0,   // この長さごとにフレームの間隔を平均する
+  heavyFrameMs:    24,    // 平均がこれより長い＝重い（約42fps未満）。1歩は 16ms
+  lightFrameMs:    18,    // 平均がこれより短い＝軽い（段を下げる）。重いとの間を空けて、行ったり来たりしにくくする
+  stepUpSec:       2,     // 重いのがこの秒数続いたら1段上げる（1→2段）
+  numbersAfterSec: 10,    // 2段目のまま重いのがこの秒数続いたら3段目（ダメージ数字を間引く）
+  stepDownSec:     6,     // 軽いのがこの秒数続いたら1段下げる
+  ignoreGapMs:     250,   // これより長い間隔はタブを離れた・止めたなどなので数えない
+  lowFixedLevel:   2,     // オプション「画質：低」の段（数字は減らさない）
+  maxLevel:        3,
+};
+// 段ごとの間引き（n 個に1個だけ描く）。0段＝全部描く
+const GFX_STRIDE = {
+  smoke:  [1, 2, 4, 4],
+  ember:  [1, 2, 2, 3],
+  spark:  [1, 1, 2, 3],
+};
+const GFX_MODES = ["auto", "high", "low"];
+let gfxLevel = 0;
+const gfxAuto = { sumMs: 0, frames: 0, sampled: 0, heavyFor: 0, lightFor: 0 };
+
+function gfxMode() {
+  const m = profile && profile.options && profile.options.gfx;
+  return GFX_MODES.includes(m) ? m : "auto";
+}
+function gfxSetMode(mode) {
+  if (!profile.options) profile.options = {};
+  profile.options.gfx = mode;
+  saveProfile();
+  gfxResetAuto();
+}
+function gfxResetAuto() {
+  gfxAuto.sumMs = 0; gfxAuto.frames = 0; gfxAuto.sampled = 0; gfxAuto.heavyFor = 0; gfxAuto.lightFor = 0;
+  const mode = gfxMode();
+  gfxLevel = mode === "low" ? GFX_AUTO.lowFixedLevel : 0;
+}
+function gfxStride(kind) { return GFX_STRIDE[kind][gfxLevel]; }
+
+/** 毎歩：実時間のフレーム間隔を数えて、重さが続いたら段を上げ下げする */
+function updateGfxAuto(dtMs) {
+  // ヘッドレスの道具は時計を差し替えて回す。描く量を道具の歩幅で変えると重さの計測が狂うので、自動では動かさない
+  if (typeof window.__dtStep === "function") return;
+  const mode = gfxMode();
+  if (mode !== "auto") { gfxLevel = mode === "low" ? GFX_AUTO.lowFixedLevel : 0; return; }   // 固定の画質（起動時・切り替え時もここで効く）
+  if (gameState !== "playing" || document.hidden || dtMs <= 0 || dtMs > GFX_AUTO.ignoreGapMs) return;
+  gfxAuto.sumMs += dtMs;
+  gfxAuto.frames++;
+  if (gfxAuto.sumMs < GFX_AUTO.sampleSec * 1000) return;
+  const avg = gfxAuto.sumMs / gfxAuto.frames;
+  const sec = gfxAuto.sumMs / 1000;
+  gfxAuto.sumMs = 0; gfxAuto.frames = 0;
+  if (avg > GFX_AUTO.heavyFrameMs) { gfxAuto.heavyFor += sec; gfxAuto.lightFor = 0; }
+  else if (avg < GFX_AUTO.lightFrameMs) { gfxAuto.lightFor += sec; gfxAuto.heavyFor = 0; }
+  else { gfxAuto.heavyFor = 0; gfxAuto.lightFor = 0; }   // 間の重さは今の段のまま
+  const upNeed = gfxLevel >= 2 ? GFX_AUTO.numbersAfterSec : GFX_AUTO.stepUpSec;
+  if (gfxLevel < GFX_AUTO.maxLevel && gfxAuto.heavyFor >= upNeed) { gfxLevel++; gfxAuto.heavyFor = 0; }
+  else if (gfxLevel > 0 && gfxAuto.lightFor >= GFX_AUTO.stepDownSec) { gfxLevel--; gfxAuto.lightFor = 0; }
 }
 
 // -----------------------------------------------------------------
@@ -59802,6 +59893,7 @@ function tick() {
   if (shakeTimer > 0) shakeTimer = Math.max(0, shakeTimer - dt);
   if ((autoplayActive || assistMode !== ASSIST_MANUAL) && !reportPaused) updateAutoplay(dt);   // v3.120.0（DT-538）: 実時間で動かす（レベルアップで時間が止まっていても選べるように）
 
+  updateGfxAuto(dtMs);   // v3.223.0（DT-066）: 重さが続いたら見た目だけの演出を減らす
   render(now);
   // v3.71.0（案帳 DT-505）: タイトル画面では上部の UI を隠す。切り替わった時だけ class を触る
   const onTitle = gameState === "title";
