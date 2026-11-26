@@ -560,80 +560,151 @@ PEARL = dict(light=(255, 255, 255), base=(244, 236, 236), dark=(190, 176, 196), 
 HONEY = dict(light=(255, 238, 150), base=(236, 146, 20), dark=(150, 66, 6), line=(60, 26, 2))
 ONYX = dict(light=(150, 150, 160), base=(30, 30, 36), dark=(4, 4, 8), line=(0, 0, 0))
 
-FALCON_PAD = dict(left=46, top=0, right=46, bottom=0)    # 後頭部から左右・後ろへ流れる羽根飾りの分
+# v3.233.0（DT-609 手直し・11/26 Shooter「三体とも、2進化の追加パーツがやや地味なのでもう一要素くらい追加できますか」
+# 「蜂は、追加パーツが黄色くて目立たないので違う色に」「尻尾にパーツを追加する場合、ゲームで描画される動く尻尾の先端も選択肢にできますか」）:
+#   尾の飾りは2通り作る。tail="root"＝今までどおり胴の絵の尾の付け根に描く（*_jewel）。tail="tip"＝胴の絵には描かず（*_jewelt）、
+#   別の絵（*_tailtip。根元が上・飾りは下へ伸びる）にして、ゲームが動く尻尾の先に向きを合わせて重ねる。
+AMETHYST = dict(light=(236, 200, 255), base=(150, 70, 210), dark=(64, 18, 110), line=(26, 4, 50))
+
+FALCON_PAD_ROOT = dict(left=58, top=0, right=58, bottom=78)   # 後頭部の飾り羽根（3枚ずつ）と、尾の先の羽根の扇の分
+FALCON_PAD_TIP = dict(left=58, top=0, right=58, bottom=0)
+FALCON_TAIL_Y = 300          # 尾の先（元の絵の画素）
 
 
-def falcon_body(src):
-    """隼竜（水晶）：後頭部から後ろ・外へ流れる藍玉色（サファイア）の飾り羽根を左右2枚ずつ。根元に銀の留め具。
-    頭の前・首には巻かない（DT-609 の決まり）。翼は飾らない（羽根の翼なので、頭の羽根飾りと重ねると羽根だらけになる）"""
-    p = FALCON_PAD
+def falcon_tail_fan(canvas, tx, ty):
+    """隼竜の尾の飾り：サファイアの羽根3枚の扇（下へ）と、根元の銀の留め具"""
+    for ang, length, width, bend in ((180, 78, 22, 0.0), (154, 62, 17, -0.25), (206, 62, 17, 0.25)):
+        poly, spine = feather(tx, ty, length, width, ang, bend)
+        canvas.shape([poly], SAPPHIRE, axis=(0.3, 1.0), outline=3.5, ridge=spine)
+    canvas.shape([ellipse_poly(tx, ty + 2, 8, 6, 16)], SILVER, axis=(0.4, 1.0), outline=2.5)
+
+
+def falcon_body(src, tail="root"):
+    """隼竜（水晶）：後頭部から後ろ・外へ流れるサファイアの飾り羽根を左右3枚ずつ（v3.233.0 で2→3枚・長く）。根元に銀の留め具とサファイアの粒。
+    尾の先にサファイアの羽根の扇（v3.233.0 で足した）。頭の前・首には巻かない。翼は飾らない（羽根の翼なので羽根だらけになる）"""
+    p = FALCON_PAD_ROOT if tail == "root" else FALCON_PAD_TIP
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
     cx = p["left"] + 63.0
     for sd in (-1, 1):
         rx, ry = cx + sd * 26, 84          # 後頭部の左右の角
-        for ang, length, width, bend in ((180 + sd * -38, 84, 20, sd * -0.35), (180 + sd * -62, 64, 16, sd * -0.3)):
+        for ang, length, width, bend in ((180 + sd * -30, 104, 22, sd * -0.35), (180 + sd * -52, 86, 19, sd * -0.3), (180 + sd * -76, 64, 15, sd * -0.25)):
             poly, spine = feather(rx, ry, length, width, ang, bend)
             back.shape([poly], SAPPHIRE, axis=(0.3, 1.0), outline=3.5, ridge=spine)
-        front.shape([ellipse_poly(rx, ry, 7, 6, 16)], SILVER, axis=(0.4, 1.0), outline=2.5)
+        front.shape([ellipse_poly(rx, ry, 8, 7, 16)], SILVER, axis=(0.4, 1.0), outline=2.5)
+        front.shape([ellipse_poly(rx, ry, 3.5, 3.5, 12)], SAPPHIRE, axis=(0.4, 1.0), outline=1.5)
+    if tail == "root":
+        falcon_tail_fan(back, cx, FALCON_TAIL_Y)
     return stack(back, sprite, front)
+
+
+def falcon_tailtip():
+    c = Canvas(92, 92)
+    falcon_tail_fan(c, 46, 6)
+    return c.finish(), (46, 6)
 
 
 def falcon_wing(src):
     return None
 
 
-SWALLOW_PAD = dict(left=34, top=0, right=34, bottom=118)   # 尾の先から後ろへ伸びる燕尾の飾り紐の分
+SWALLOW_PAD_ROOT = dict(left=40, top=0, right=40, bottom=150)   # 尾の先から後ろへ伸びる燕尾の飾り紐（2対）の分
+SWALLOW_PAD_TIP = dict(left=40, top=0, right=40, bottom=0)
+SWALLOW_TAIL_Y = 306
 
 
-def swallow_body(src):
-    """燕竜（パライバ）：尾の先から後ろ・外へ二又に伸びる黒漆の飾り紐（燕の尾羽）と、その先の真珠。背に真珠を3つ乗せる"""
-    p = SWALLOW_PAD
+def swallow_streamers(canvas, tx, ty):
+    """燕竜の尾の飾り：黒漆の飾り紐（燕の尾羽）を外側の長い1対・内側の短い1対、その先の真珠。付け根に金の留め具"""
+    for sd in (-1, 1):
+        for length, width, spread, bend, pearl in ((150, 16, 18, 0.34, 8), (92, 11, 8, 0.2, 6)):
+            poly, spine = curved_blade(tx, ty, length, width, math.radians(180 - sd * spread), sd * bend)
+            canvas.shape([poly], LACQUER, axis=(1.0, 0.4), outline=3.0, ridge=spine)
+            ex, ey = spine[-1]
+            canvas.shape([ellipse_poly(ex, ey + 4, pearl, pearl + 1, 16)], PEARL, axis=(-0.4, 1.0), outline=2.5)
+    canvas.shape([ellipse_poly(tx, ty + 2, 10, 9, 16)], GOLD, axis=(0.4, 1.0), outline=2.5)
+
+
+def swallow_body(src, tail="root"):
+    """燕竜（パライバ）：尾の先から二又に伸びる黒漆の飾り紐（v3.233.0 で長く・内側にもう1対）と先の真珠。
+    背骨の真珠3つに加えて、左の肩から右の腰へ斜めに掛かる真珠の連（襷掛け。v3.233.0 で足した）"""
+    p = SWALLOW_PAD_ROOT if tail == "root" else SWALLOW_PAD_TIP
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
     cx = p["left"] + 53.0
-    tx, ty = cx, 306
-    for sd in (-1, 1):
-        poly, spine = curved_blade(tx, ty, 118, 13, math.radians(180 - sd * 16), sd * 0.32)
-        back.shape([poly], LACQUER, axis=(1.0, 0.4), outline=3.0, ridge=spine)
-        ex, ey = spine[-1]
-        back.shape([ellipse_poly(ex, ey + 4, 7, 8, 16)], PEARL, axis=(-0.4, 1.0), outline=2.5)
-    back.shape([ellipse_poly(tx, ty + 2, 9, 8, 16)], GOLD, axis=(0.4, 1.0), outline=2.5)   # 付け根の金の留め具
+    if tail == "root":
+        swallow_streamers(back, cx, SWALLOW_TAIL_Y)
     for y in (120, 140, 158):          # 背骨に乗る真珠（首の付け根から肩の間）
         front.shape([ellipse_poly(cx, y, 6.5, 6.5, 16)], PEARL, axis=(-0.4, 1.0), outline=2.5)
+    # 真珠の連の襷：左の肩から右の腰へ。少し弓なりに。粒と粒の間に金の小さな留め
+    x0, y0, x1, y1 = cx - 38, 168, cx + 36, 262
+    for k in range(10):
+        t = k / 9
+        x = x0 + (x1 - x0) * t
+        y = y0 + (y1 - y0) * t + 10 * math.sin(math.pi * t)
+        front.shape([ellipse_poly(x, y, 5.2, 5.2, 14)], PEARL, axis=(-0.4, 1.0), outline=2.2)
     return stack(back, sprite, front)
+
+
+def swallow_tailtip():
+    c = Canvas(130, 168)
+    swallow_streamers(c, 65, 8)
+    return c.finish(), (65, 8)
 
 
 def swallow_wing(src):
     return None
 
 
-HORNET_PAD = dict(left=0, top=0, right=0, bottom=60)     # 尾の先から後ろへ伸びる黒瑪瑙の針の分
+HORNET_PAD_ROOT = dict(left=40, top=0, right=40, bottom=76)    # 後頭部の触角の飾りと、尾の先から後ろへ伸びる針の分
+HORNET_PAD_TIP = dict(left=40, top=0, right=40, bottom=0)
+HORNET_TAIL_Y = 312
 
 
 def hexagon(cx, cy, r):
     return [(cx + r * math.cos(math.radians(30 + 60 * i)), cy + r * math.sin(math.radians(30 + 60 * i))) for i in range(6)]
 
 
-def hornet_body(src):
-    """蜂竜（シトリン＋オニキス）：背に乗る蜂蜜色の蜜蝋の巣板（六角の房4つ）と、尾の先から後ろへ伸びる黒瑪瑙の針（根元に金）"""
-    p = HORNET_PAD
+def hornet_stinger(canvas, tx, ty):
+    """蜂竜の尾の飾り：紫水晶の大きな針（芯に黒瑪瑙）と、根元の金の留め具"""
+    canvas.shape([[(tx - 12, ty - 4), (tx + 12, ty - 4), (tx + 4, ty + 48), (tx, ty + 70), (tx - 4, ty + 48)]], AMETHYST, axis=(1.0, 0.3),
+                 outline=3.0, ridge=[(tx, ty), (tx, ty + 60)], facet=[(tx, ty - 4), (tx + 12, ty - 4), (tx + 4, ty + 48), (tx, ty + 70)])
+    canvas.shape([ellipse_poly(tx, ty - 2, 13, 8, 18)], GOLD, axis=(0.4, 1.0), outline=2.5)
+
+
+def hornet_body(src, tail="root"):
+    """蜂竜（シトリン＋オニキス）：背に乗る紫水晶の巣板（v3.233.0 で蜜蝋の黄色→紫水晶、房を6→10に）。
+    後頭部から後ろ・外へ反る黒瑪瑙の触角の飾り（先に紫水晶の粒。v3.233.0 で足した）。尾の先に紫水晶の針"""
+    p = HORNET_PAD_ROOT if tail == "root" else HORNET_PAD_TIP
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
     cx = p["left"] + 82.3
-    r = 13
+    # 触角の飾り：後頭部の左右から後ろ・外へ大きく反る
+    for sd in (-1, 1):
+        rx, ry = cx + sd * 20, 62
+        poly, spine = curved_blade(rx, ry, 100, 12, math.radians(180 + sd * -42), sd * -0.3)
+        back.shape([poly], ONYX, axis=(1.0, 0.4), outline=3.0, ridge=spine)
+        ex, ey = spine[-1]
+        back.shape([ellipse_poly(ex, ey, 8, 8, 16)], AMETHYST, axis=(-0.4, 1.0), outline=2.5)
+        front.shape([ellipse_poly(rx, ry, 6, 5, 14)], GOLD, axis=(0.4, 1.0), outline=2.0)
+    # 巣板：腰の上に10房（3・4・3）
+    r = 14
     dx, dy = r * math.sqrt(3), r * 1.5
-    for hx, hy in ((cx - dx / 2, 186), (cx + dx / 2, 186), (cx - dx, 186 + dy), (cx, 186 + dy), (cx + dx, 186 + dy), (cx, 186 - dy)):
-        front.shape([hexagon(hx, hy, r - 1)], HONEY, axis=(0.4, 1.0), outline=3.0,
+    cells = [(cx + (k - 1) * dx, 176) for k in range(3)] + [(cx + (k - 1.5) * dx, 176 + dy) for k in range(4)] + [(cx + (k - 1) * dx, 176 + 2 * dy) for k in range(3)]
+    for hx, hy in cells:
+        front.shape([hexagon(hx, hy, r - 1)], AMETHYST, axis=(0.4, 1.0), outline=3.0,
                     facet=[(hx, hy), *hexagon(hx, hy, r - 1)[:3]])
-    ty = 312
-    back.shape([[(cx - 9, ty - 4), (cx + 9, ty - 4), (cx + 3, ty + 40), (cx, ty + 56), (cx - 3, ty + 40)]], ONYX, axis=(1.0, 0.3),
-               ridge=[(cx, ty), (cx, ty + 48)])
-    back.shape([ellipse_poly(cx, ty - 2, 11, 7, 18)], GOLD, axis=(0.4, 1.0), outline=2.5)
+    if tail == "root":
+        hornet_stinger(back, cx, HORNET_TAIL_Y)
     return stack(back, sprite, front)
+
+
+def hornet_tailtip():
+    c = Canvas(40, 86)
+    hornet_stinger(c, 20, 8)
+    return c.finish(), (20, 8)
 
 
 def hornet_wing(src):
@@ -654,14 +725,21 @@ SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel 
 }
 
 
-def report(element, body, wing, pad_b, pad_w):
+def report(element, body, wing, pad_b, pad_w, spec_of=None):
     """DRAGON_PART_SPRITES に貼る値。元の胴の重心・肩・翼の付け根を、余白ぶんずらして写す（胴の高さ 27・翼の幅 25 は絵の大きさに比例）"""
-    s = SPARKLE_SPEC[element]
+    s = SPARKLE_SPEC[spec_of or element]
     L, T = pad_b["left"], pad_b["top"]
     print(f"  {element}_jewel: bodyPivot {{ cx: {s['cx'] + L:.1f}, cy: {s['cy'] + T:.1f}, w: {body.width}, h: {body.height} }}"
           f" shoulder L({s['sl'][0] + L:.1f},{s['sl'][1] + T}) R({s['sr'][0] + L:.1f},{s['sr'][1] + T})"
           f" wingAnchor {{ x: {s['wa'][0] + pad_w['left']}, y: {s['wa'][1] + pad_w['top']:.1f} }}"
           f" bodyDrawH: {27 * body.height / 320:.2f} wingDrawW: {25 * wing.width / 320:.2f}")
+
+
+TAIL_TIP = {   # v3.233.0: 尾の飾りを動く尻尾の先にも付けられる竜種（胴の余白, 尻尾の先の絵を作る関数）
+    "falcon": (FALCON_PAD_TIP, falcon_tailtip),
+    "swallow": (SWALLOW_PAD_TIP, swallow_tailtip),
+    "hornet": (HORNET_PAD_TIP, hornet_tailtip),
+}
 
 
 def main():
@@ -672,9 +750,9 @@ def main():
         ("shadow", shadow_body, shadow_wing, SHADOW_PAD, SHADOW_WING_PAD),
         ("crimson", crimson_body, crimson_wing, CRIMSON_PAD, dict(left=0, top=0, right=0, bottom=0)),
         ("wyvern", wyvern_body, wyvern_wing, WYVERN_PAD, dict(left=0, top=0, right=0, bottom=0)),
-        ("falcon", falcon_body, falcon_wing, FALCON_PAD, dict(left=0, top=0, right=0, bottom=0)),
-        ("swallow", swallow_body, swallow_wing, SWALLOW_PAD, dict(left=0, top=0, right=0, bottom=0)),
-        ("hornet", hornet_body, hornet_wing, HORNET_PAD, dict(left=0, top=0, right=0, bottom=0)),
+        ("falcon", falcon_body, falcon_wing, FALCON_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("swallow", swallow_body, swallow_wing, SWALLOW_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("hornet", hornet_body, hornet_wing, HORNET_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
     ):
         if only and element not in only:
             continue
@@ -688,6 +766,15 @@ def main():
             jw.save(os.path.join(ASSETS, f"dragon_{element}_jewel_wing.png"), optimize=True)
         print(element, "body", sb.size, "->", jb.size, "wing", sw.size, "->", jw.size)
         report(element, jb, jw, pad_b, pad_w)
+        # v3.233.0（DT-609 手直し）: 尾の飾りを動く尻尾の先に付ける形（胴の絵 *_jewelt と、尻尾の先の絵 *_tailtip）
+        if element in TAIL_TIP:
+            pad_t, tip_fn = TAIL_TIP[element]
+            jt = body_fn(sb, tail="tip")
+            jt.save(os.path.join(ASSETS, f"dragon_{element}_jewelt_body.png"), optimize=True)
+            report(element + "t", jt, jw, pad_t, pad_w, spec_of=element)
+            tip, (ax, ay) = tip_fn()
+            tip.save(os.path.join(ASSETS, f"dragon_{element}_tailtip.png"), optimize=True)
+            print(f"  {element}_tailtip: w: {tip.width}, h: {tip.height}, anchor: {{ x: {ax}, y: {ay} }}  （胴と同じ縮尺：27/320 論理px／画素）")
 
 
 if __name__ == "__main__":
