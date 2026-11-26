@@ -1429,7 +1429,7 @@
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.226.0";
+const GAME_VERSION = "v3.227.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -34060,7 +34060,7 @@ const STRINGS = {
   optSongDesc: "たたくたびに曲が替わる。標準＝角笛の曲／ループ＝刻みが前に出る短いループ／ジャズ・フュージョン・ソウル＝跳ねや刻みの違うループ／エレクトロニカ＝シンセの音色のループ。どの曲も竜の主題は出来事のときだけ鳴る。",
   optCivName: "文明の音楽",
   optCivOn: "あり", optCivOff: "なし",
-  optCivDesc: "ありにすると、その時代の文明の音楽（石器時代＝皮の太鼓と骨の笛、中世＝リュートと教会の鐘…）が上の曲に重なる。始めは文明の音楽が主で、街を落とすほど竜の曲が前に出て、首都を落とすと文明の音楽が止む。",
+  optCivDesc: "ありにすると、4小節ごとに、その時代の文明の音楽（石器時代＝太鼓と骨の笛の重い刻み、中世＝リュートと鐘の古い旋法…和音の進みも刻みも違う曲）と上の竜の曲が入れ替わりで鳴る。始めは文明の音楽が多く、街を落とすほど竜の曲が奪い返し、首都を落とすと竜の曲だけになる。",
   titleHint: "TAP TO START",
   // v3.224.0（案帳 DT-066）: 画質
   gfxOptionName: "画質",
@@ -34273,7 +34273,7 @@ const STRINGS_EN = {
   optSongDesc: "Tap to change the song. Standard = horn theme / Loop = short, beat-forward loop / Jazz, Fusion, Soul = loops with different swing and groove / Electronica = synth loop. In every song the dragon theme plays only on big events.",
   optCivName: "Civilization music",
   optCivOn: "On", optCivOff: "Off",
-  optCivDesc: "When on, the music of the current era's civilization (Stone Age = hide drums and bone flutes, Medieval = lute and church bells…) plays over the song. It leads at first; the more towns you burn, the more the dragon song takes over, and it falls silent when the capital falls.",
+  optCivDesc: "When on, every 4 bars the music alternates between the current era's civilization (Stone Age = heavy hide drums and bone flute, Medieval = lute and bells in an old mode… each with its own chords and groove) and the dragon song above. The civilization holds most phrases at first; the more towns you burn, the more the dragon song takes back, and only the dragon song remains once the capital falls.",
   gfxOptionName: "Graphics",
   gfxModeName: { auto: "Auto", high: "High", low: "Low" },
   gfxOptionDesc: "Tap to switch. Auto = if the game stays slow, fewer sparks, smoke and light particles; only if it stays slow even longer, small damage numbers are thinned out (restored once it runs smoothly) / High = always draw everything / Low = always fewer sparks, smoke and particles (numbers untouched). Only visuals change, never the gameplay.",
@@ -43408,8 +43408,12 @@ const soundRun = {              // 続けて鳴らす効果音の今の位置（
   duckUntilStep: -1,
   melodyFrom: -1, melodyUntil: -1,   // DT-624 手直し: 角笛の主題を吹く16分音符の範囲（いつもは吹かない）
   playSec: 0, melodyLastSec: 0,      // プレイ中の時間（ステージの頭から）と、最後に吹いた時刻（思い出したように吹くため）
-  // DT-624 手直し5: 文明の音楽と竜の曲の綱引き。progress＝ステージの進み具合（0〜1）、civMix・dragonMix＝いまの大きさ（ならしたもの）
-  progress: 0, progressAt: -9, civStopped: false, civMix: 0, dragonMix: 1,
+  // DT-624 手直し5: 文明の音楽と竜の曲の綱引き。progress＝ステージの進み具合（0〜1）
+  progress: 0, progressAt: -9, civStopped: false,
+  // DT-624 手直し6: フレーズ（4小節）ごとに、文明の側と竜の側のどちらが鳴らすかを決める。
+  // phraseIdx＝いま決めてあるフレーズの番号、phraseSide＝"civ" か "dragon"、songBase＝竜の側のフレーズで曲のどの小節から弾くか、
+  // dragonPhrases＝これまでに竜の側が弾いたフレーズの数（曲は竜の側のフレーズだけで続きから進む）、shareAcc＝竜の側に回す割合の貯め
+  phraseIdx: -1, phraseSide: "dragon", songBase: 0, dragonPhrases: 0, shareAcc: 0,
 };
 
 function soundOptions() { return (profile && profile.options) || {}; }
@@ -43548,7 +43552,11 @@ function soundStepTime(step) { return soundSongStart + step * soundStepSec(); }
 function soundChordAtStep(step) {
   const bar = Math.floor(step / soundMusic.stepsPerBar);
   const n = soundBarCount();
-  return soundMusic.chords[((bar % n) + n) % n];
+  // DT-624 手直し6: 文明の側のフレーズの間は、その時代の和音（効果音もそれに合わせて鳴る）
+  const ph = soundPhraseAt(step);
+  if (ph.side === "civ" && ph.era) return ph.era.chords[ph.barIn % ph.era.chords.length];
+  const songBar = ph.songBase + ph.barIn;
+  return soundMusic.chords[((songBar % n) + n) % n];
 }
 /** 次の16分音符の格子（間に合わない近さなら1つ先）。返すのは番号 */
 function soundNextGridStep(every = 1) {
@@ -43662,6 +43670,7 @@ function soundSchedule() {
     soundSongStart = now + 0.05;
     soundNextStep = 0;
     soundRun.melodyFrom = soundRun.melodyUntil = -1;   // 数え直すので、予約していた主題の範囲は捨てる
+    soundRun.phraseIdx = -1;   // DT-624 手直し6: フレーズも数え直す
   }
   while (soundStepTime(soundNextStep) < now + SOUND_LOOKAHEAD) {
     soundPlayStep(soundNextStep, soundStepTime(soundNextStep));
@@ -43677,11 +43686,11 @@ function soundSwingSteps(s) {
   return (s % 2 === 1) ? sw.amount : 0;
 }
 /** 伴奏の層を16分音符1つぶん鳴らす。mix＝層ぜんたいの大きさ（DT-624 手直し5: 竜の曲と文明の音楽の綱引き） */
-function soundPlayTracks(tracks, mix, step, t, tSwing, tier, ducked) {
-  const m = soundMusic, spb = m.stepsPerBar, bars = soundBarCount();
+function soundPlayTracks(tracks, mix, step, t, tSwing, tier, ducked, chord, barAbs, bar) {
+  // DT-624 手直し6: 和音と小節の番号は呼ぶ側が渡す（竜の側＝曲の和音と曲の小節、文明の側＝その時代の和音とフレーズの中の小節）
+  const m = soundMusic, spb = m.stepsPerBar;
   const bus = soundNodes.bgmBus;
-  const barAbs = Math.floor(step / spb), bar = barAbs % bars, s = step % spb;
-  const chord = m.chords[bar];
+  const s = step % spb;
   const stepSec = soundStepSec();
   for (const tr of tracks) {
     if (ducked && tr.type !== "chord") continue;
@@ -43719,21 +43728,30 @@ function soundPlayTracks(tracks, mix, step, t, tSwing, tier, ducked) {
 function soundPlayStep(step, t) {
   const m = soundMusic, spb = m.stepsPerBar, bars = soundBarCount();
   const bus = soundNodes.bgmBus;
-  const barAbs = Math.floor(step / spb), bar = barAbs % bars, s = step % spb;
-  const chord = m.chords[bar];
+  const s = step % spb;
   const stepSec = soundStepSec();
   const tier = (typeof powerTier === "number" ? powerTier : 0);
   const ducked = step < soundRun.duckUntilStep;   // 警戒度の鐘のあと1小節は伴奏を引いて「空気が変わった」を作る
   const tSwing = t + soundSwingSteps(s) * stepSec;   // DT-624 手直し3: 跳ねる曲（ジャズ・ソウル）は裏の音を少し遅らせる
-  // DT-624 手直し5: 選んだ曲（竜の側）と、時代の文明の音楽（町の側）を、綱引きの大きさで重ねる
-  soundPlayTracks(m.tracks, soundRun.dragonMix, step, t, tSwing, tier, ducked);
-  const civ = soundCivEra();
-  if (civ && soundRun.civMix > 0.01) soundPlayTracks(civ.tracks, soundRun.civMix, step, t, tSwing, tier, ducked);
-  // 竜の主題（角笛）。DT-624 手直し: いつもは吹かず、呼ばれたフレーズの間だけ吹く
-  const mel = m.melody;
-  if (!ducked && step >= soundRun.melodyFrom && step < soundRun.melodyUntil) {
-    const melGain = mel.gain * Math.max(m.civ ? m.civ.melodyFloor : 1, soundRun.dragonMix);   // DT-624 手直し5: 始めはかすか、街を落とすほど前に出る
-    for (const [at, midi, len] of mel.bars[bar]) if (at === s) soundPlay(bus, mel.inst, midi, tSwing, melGain, { attack: 0.02, len: len * stepSec * 0.92, release: 0.12 });
+  // v3.227.0 DT-624 手直し6（11/26 Shooter「音色が変わっても押し引きには聞こえない。曲調が変わらないとダメ」）:
+  // 2つを重ねて大きさを動かすのをやめ、フレーズ（4小節）ごとにどちらか一方だけが鳴る。
+  // 文明の側はその時代の和音の進み・刻み・旋律で弾き（曲調ごと替わる）、竜の側は選んだ曲を続きから弾く。
+  // 街を落とすほど竜の側のフレーズが増え、首都を落とすと竜の側だけになる＝曲が奪い合いで切り替わるのが聞こえる。
+  const ph = soundPhraseAt(step, true);
+  if (ph.side === "civ" && ph.era) {
+    const civBarAbs = ph.index * ph.bars + ph.barIn;
+    soundPlayTracks(ph.era.tracks, 1, step, t, tSwing, tier, ducked, ph.era.chords[ph.barIn % ph.era.chords.length], civBarAbs, ph.barIn);
+    if (s === 0 && ph.barIn === 0 && ph.switched && ph.era.enter) soundPlay(bus, ph.era.enter.inst, ph.era.enter.midi, t, ph.era.enter.gain);   // 文明が取り返した合図
+  } else {
+    const songBar = ((ph.songBase + ph.barIn) % bars + bars) % bars;
+    soundPlayTracks(m.tracks, 1, step, t, tSwing, tier, ducked, m.chords[songBar], ph.songBase + ph.barIn, songBar);
+    const civ = m.civ;
+    if (s === 0 && ph.barIn === 0 && ph.switched && civ && civ.dragonEnter) soundPlay(bus, civ.dragonEnter.inst, civ.dragonEnter.midi, t, civ.dragonEnter.gain);   // 竜が奪い返した合図
+    // 竜の主題（角笛）。DT-624 手直し: いつもは吹かず、呼ばれたフレーズの間だけ吹く（竜の側のフレーズの間だけ）
+    const mel = m.melody;
+    if (!ducked && step >= soundRun.melodyFrom && step < soundRun.melodyUntil) {
+      for (const [at, midi, len] of mel.bars[songBar]) if (at === s) soundPlay(bus, mel.inst, midi, tSwing, mel.gain, { attack: 0.02, len: len * stepSec * 0.92, release: 0.12 });
+    }
   }
   // 息：竜のブレスが建物に当たっている量に合わせて、シェイカーを刻む（1匹ずつは鳴らさない）
   const br = m.sfx.breath;
@@ -43749,6 +43767,37 @@ function soundPlayStep(step, t) {
 // 進み具合を耳で聞かせるため（11/26 Shooter「時代の文明の音楽と竜の主題の綱引き、というのも盛り込んで見ることは可能ですか」）。
 // 大きさは鳴らす音ごとに掛けるだけ（ゲームの状態は読むだけで、乱数にも触らない）。
 const SOUND_PROGRESS_EVERY_SEC = 0.5;   // 進み具合を数え直す間隔（建物を全部数えるので毎回はやらない）
+/** step を含むフレーズ（4小節）の、鳴らす側と小節の位置。decide＝新しいフレーズに入ったらここで側を決める（鳴らす順に呼ぶ soundPlayStep だけが真）。
+ *  まだ決めていない先のフレーズを聞かれたときは、今のフレーズと同じ側が続くとみなす（効果音の和音を合わせるだけの用途） */
+function soundPhraseAt(step, decide = false) {
+  const civ = soundMusic.civ;
+  const bars = civ ? civ.phraseBars : 4;
+  const phraseSteps = soundMusic.stepsPerBar * bars;
+  const index = Math.floor(step / phraseSteps);
+  const barIn = Math.floor((step - index * phraseSteps) / soundMusic.stepsPerBar);
+  let switched = false;
+  if (decide && index !== soundRun.phraseIdx) {
+    const before = soundRun.phraseIdx < 0 ? null : soundRun.phraseSide;
+    if (soundRun.phraseSide === "dragon" && soundRun.phraseIdx >= 0) soundRun.dragonPhrases++;
+    soundRun.phraseIdx = index;
+    soundRun.phraseSide = soundDecideSide(index * phraseSteps, (index + 1) * phraseSteps);
+    soundRun.songBase = soundRun.dragonPhrases * bars;
+    switched = before !== null && before !== soundRun.phraseSide;
+  }
+  const side = index === soundRun.phraseIdx || !decide ? soundRun.phraseSide : "dragon";
+  const songBase = index === soundRun.phraseIdx ? soundRun.songBase : soundRun.songBase + (index - soundRun.phraseIdx) * bars;
+  return { index, bars, barIn, side, era: side === "civ" ? soundCivEra() : null, songBase, switched };
+}
+/** 新しいフレーズをどちらが鳴らすか。竜の側に回す割合は、進み具合で civ.dragonShare.start → end（貯めて1を超えたら竜の側） */
+function soundDecideSide(fromStep, untilStep) {
+  const civ = soundMusic.civ;
+  if (!civ || !soundCivEra() || soundRun.civStopped) return "dragon";
+  if (soundRun.melodyFrom < untilStep && soundRun.melodyUntil > fromStep) return "dragon";   // 竜の主題を吹くフレーズは竜の側（出来事で竜が割り込む）
+  const share = civ.dragonShare.start + (civ.dragonShare.end - civ.dragonShare.start) * soundRun.progress;
+  soundRun.shareAcc += share;
+  if (soundRun.shareAcc >= 1) { soundRun.shareAcc -= 1; return "dragon"; }
+  return "civ";
+}
 /** いまの時代の文明の音楽（プレイ中で、オプションで切っていないときだけ） */
 function soundCivEra() {
   const civ = soundMusic.civ;
@@ -43777,13 +43826,7 @@ function soundCivUpdate(dt) {
     soundRun.progress = pr.p;
     soundRun.civStopped = pr.bossFallen;
   }
-  const p = soundRun.progress;
-  const civTarget = !active || soundRun.civStopped ? 0 : civ.civGain.start + (civ.civGain.end - civ.civGain.start) * p;
-  const dragonTarget = !active ? 1 : civ.dragonGain.start + (civ.dragonGain.end - civ.dragonGain.start) * p;
-  const k = Math.min(1, dt / civ.smoothSec);
-  // 首都の陥落で文明の音楽はすぐ止める（ならすと「止んだ」に聞こえない）
-  soundRun.civMix = civTarget === 0 && soundRun.civStopped ? 0 : soundRun.civMix + (civTarget - soundRun.civMix) * k;
-  soundRun.dragonMix += (dragonTarget - soundRun.dragonMix) * k;
+  // DT-624 手直し6: 大きさの綱引き（civMix・dragonMix）はやめ、進み具合はフレーズの割り振り（soundDecideSide）に使う
 }
 
 // --- 竜の主題を呼ぶ（DT-624 手直し） ---
@@ -43824,6 +43867,7 @@ function soundMelodyRemember(dt) {
 function soundStageStart() {
   soundRun.playSec = 0;
   soundRun.progress = 0; soundRun.progressAt = -9; soundRun.civStopped = false;
+  soundRun.shareAcc = 0;   // DT-624 手直し6: ステージの頭は文明の側から始まる
   soundRun.melodyLastSec = 0;
   soundRun.melodyFrom = soundRun.melodyUntil = -1;
 }
