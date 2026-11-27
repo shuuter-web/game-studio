@@ -12,7 +12,7 @@ MIDI の番号と伴奏の譜面に展開する。ゲームは music.json だけ
   ・1地域1曲。同じ調・同じ速さの中に「文明の主題」（その地域の人々の曲）と「竜の主題」（攻め込む竜の側の曲）を持つ。
     4小節（phraseBars）ごとにどちらか一方の主題を弾く。竜の側に回す割合は攻略の進み具合で tug.start → tug.end（ゲーム側）。
     主題はそれぞれ8小節で、そちらの側が弾く2回に1回ずつ前半・後半を弾く。
-  ・楽団（band）：攻略の進み具合（壊した街の割合）で段が上がり、鳴る楽器が増える（0＝和音の床と主題だけ → 1＝低音 →
+  ・楽団（band）：攻略の進み具合（壊した街の割合）で段が上がり、鳴る楽器が増える（0＝和音の線と主題だけ → 1＝低音 →
     2＝刻み（打楽器）→ 3＝対旋律（分散和音）→ 4＝主題の重ね（別の楽器で）・節目のシンバル・フィル）。段はフレーズの頭でだけ変わる。
   ・壊している間のパート（destroy）：建物が続けて崩れている間だけ、刻みの弦（drive）と太鼓（driveDrum）がふくらむ。
   ・曲調：能天気にしない。文明の側も「攻め込まれる国の誇りと不安」を、その地域の楽器と旋法で。竜の側は同じ調で低く重く。
@@ -39,7 +39,6 @@ LEAD_GAIN = {"flute": 0.12, "horn": 0.13, "brass": 0.10, "organ": 0.075, "choir"
 # 主題の高さの真ん中の目安（楽器の鳴りのよい音域。主題はここに近い高さへオクターブ単位でずらす。spec の octave は使わない）
 LEAD_CENTER = {"flute": 76, "musicbox": 79, "fmbell": 76, "theremin": 74, "horn": 60, "brass": 60, "choir": 62, "organ": 69,
                "strings": 57, "lead": 64, "clav": 69, "epiano": 69, "accordion": 67}
-PAD_GAIN = {"pad": 0.06, "strings": 0.045, "organ": 0.04, "synpad": 0.05, "choir": 0.05}
 COUNTER_GAIN = {"flute": 0.06, "harp": 0.06, "lute": 0.08, "marimba": 0.08, "pluck": 0.06, "fmbell": 0.05, "musicbox": 0.06, "bell": 0.04, "clav": 0.06}
 BASS_GAIN = {"bass": 0.12, "upright": 0.12, "subbass": 0.12}
 
@@ -85,6 +84,10 @@ COUNTER = {   # [step, 和音の何番目の音]（3＝1番目の1オクター�
     "roll": [[0, 0], [3, 1], [6, 2], [8, 3], [11, 2], [14, 1]],
     "bells": [[0, 3], [4, 2], [8, 4], [12, 2]],
 }
+LINE = {   # 和音の線 [step, 和音の根音から数えた何番目の音（3＝根音の1オクターブ上）, 長さ]。根音は 48〜57 のあたり
+    "walk": [[0, 0, 4], [4, 2, 4], [8, 1, 4], [12, 2, 4]],
+}
+LINE_GAIN = 0.07
 DRIVE = [[0, 0, 2], [2, 0, 2], [4, 7, 2], [6, 0, 2], [8, 0, 2], [10, 0, 2], [12, 7, 2], [14, 12, 2]]   # 壊している間の弦の刻み（8分）
 
 #  曲の書き方：
@@ -92,158 +95,158 @@ DRIVE = [[0, 0, 2], [2, 0, 2], [4, 7, 2], [6, 0, 2], [8, 0, 2], [10, 0, 2], [12,
 #   civ / dragon: chords＝8小節の和音（"度数（0から）＋性質"。度数の前の b/# で半音下げ・上げ。性質 m M d p s 7 m7 M7）、
 #                 theme＝8小節の主題（"度数:長さ" を空白で、小節を | で。度数は旋法の音の番号（0から・7で1オクターブ上・負は下）、
 #                 + / - で半音上げ・下げ、r は休み。長さは16分音符の数で、1小節で16）、lead（楽器）・octave（主題をずらす半音）
-#   pal: pad（和音の床）・counter（対旋律）・double（band 4 で主題を重ねる楽器）・doubleOctave・bassInst・drive（壊している間の刻み）・driveDrum
+#   pal: counter（対旋律）・double（band 4 で主題を重ねる楽器）・doubleOctave・bassInst・drive（壊している間の刻み）・driveDrum
 SONGS = {
     "title": dict(name="タイトル", mood="静かな序曲。笛の文明の主題と、角笛の竜の主題がゆっくり交互に", mode="aeolian", tonic=62, tempo=76,
         groove=None, bass="drone", counter="sparse", fixedBand=1,
-        pal=dict(pad="strings", counter="harp", double="choir", bassInst="bass", drive="strings", driveDrum="timpani"),
+        pal=dict(counter="harp", double="choir", bassInst="bass", drive="strings", driveDrum="timpani"),
         civ=dict(lead="flute", octave=12, chords="0m 5M 2M 6M 0m 5M 6M 4M",
                  theme="4:8 2:8 | 2:8 0:8 | 4:6 6:2 9:8 | 8:16 | 7:6 4:2 2:8 | 5:8 2:8 | 6:8 3:8 | 4:16"),
         dragon=dict(lead="horn", octave=-12, chords="0m 0m 5M 4M 0m 0m 5M 4M",
                     theme="0:8 4:8 | 2:8 0:8 | 5:8 2:8 | 1:8 4:8 | 0:4 2:4 4:8 | 7:16 | 5:6 4:2 2:8 | 4:16")),
     "continent": dict(name="大陸", mood="平原の町々の古い民謡（ドリア）。笛は郷愁、竜は重い角笛", mode="dorian", tonic=62, tempo=100,
         groove="folk", bass="rootfifth", counter="up8",
-        pal=dict(pad="strings", counter="lute", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
+        pal=dict(counter="lute", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
         civ=dict(lead="flute", octave=12, chords="0m 6M 3M 0m 0m 6M 3M 4M",
                  theme="7:4 4:4 2:4 4:4 | 6:6 3:2 1:8 | 5:6 3:2 0:8 | 2:4 1:4 0:8 | 7:4 4:4 2:4 4:4 | 6:4 7:4 8:8 | 7:6 5:2 3:8 | 4:12 r:4"),
         dragon=dict(lead="horn", octave=-12, chords="0m 2M 6M 0m 0m b5M 6M 4M",
                     theme="0:6 4:2 2:4 0:4 | 2:8 4:4 6:4 | 6:6 3:2 1:8 | 0:12 r:4 | 4:4 7:4 4:4 2:4 | 5-:8 2:4 0:4 | 1:4 3:4 6:8 | 4:8 1:8")),
     "riverline": dict(name="大河の線状都市", mood="大河に沿った都の祈り。流れる竪琴と笛、竜は低い金管", mode="aeolian", tonic=57, tempo=92,
         groove="river", bass="synco", counter="flow16",
-        pal=dict(pad="pad", counter="harp", double="strings", doubleOctave=12, bassInst="upright", drive="strings", driveDrum="timpani"),
+        pal=dict(counter="harp", double="strings", doubleOctave=12, bassInst="upright", drive="strings", driveDrum="timpani"),
         civ=dict(lead="flute", octave=12, chords="0m 5M 2M 6M 0m 5M 3m 4M",
                  theme="4:4 2:2 4:2 7:8 | 7:4 5:4 2:8 | 4:6 2:2 6:8 | 6:4 3:4 1:8 | 4:4 7:4 9:4 7:4 | 7:6 5:2 2:8 | 3:4 5:4 7:8 | 6+:4 4:4 r:8"),
         dragon=dict(lead="brass", octave=0, chords="0m 0m 5M 4M 0m 3m 5M 4M",
                     theme="0:4 0:2 2:2 4:8 | 7:6 6:2 4:8 | 5:4 4:4 2:8 | 4:12 r:4 | 4:4 7:4 4:4 2:4 | 3:6 5:2 7:8 | 5:8 2:8 | 6+:4 4:4 1:8")),
     "citadel": dict(name="同心円の城塞都市", mood="鐘とオルガンの荘重な城塞（短調）。竜は低い金管で門を叩く", mode="aeolian", tonic=60, tempo=84,
         groove="court", bass="rootfifth", counter="bells",
-        pal=dict(pad="organ", counter="harp", double="choir", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="timpani"),
+        pal=dict(counter="harp", double="choir", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="timpani"),
         civ=dict(lead="organ", octave=12, chords="0m 5M 3m 4M 0m 2M 5M 4M",
                  theme="7:8 4:4 2:4 | 5:8 7:4 5:4 | 3:8 5:4 3:4 | 6+:8 4:8 | 7:4 9:4 11:8 | 9:8 6:4 4:4 | 7:6 5:2 2:8 | 1:8 4:8"),
         dragon=dict(lead="brass", octave=-12, chords="0m 0m 5M 6M 0m 3m 5M 4M",
                     theme="0:4 2:4 4:8 | 7:6 6:2 4:8 | 5:8 0:8 | 6:8 3:4 1:4 | 4:4 7:4 4:4 2:4 | 3:8 5:8 | 2:8 0:8 | -1+:8 1:8")),
     "frontline": dict(name="長城の防衛線", mood="長城を守る兵の緊張した軍楽（短調の行進）。竜は角笛で城壁に迫る", mode="aeolian", tonic=62, tempo=112,
         groove="march", bass="root4", counter="up8",
-        pal=dict(pad="strings", counter="flute", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
+        pal=dict(counter="flute", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
         civ=dict(lead="brass", octave=0, chords="0m 6M 5M 4M 0m 6M 5M 4M",
                  theme="0:2 0:2 4:4 4:2 2:2 0:4 | 6:4 3:4 1:8 | 5:4 2:4 0:4 2:4 | 1:8 4:8 | 4:2 4:2 7:4 7:4 4:4 | 6:4 8:4 6:4 3:4 | 5:4 4:4 2:8 | 4:12 r:4"),
         dragon=dict(lead="horn", octave=-12, chords="0m 0m 5M 5M 3m 3m 4M 4M",
                     theme="0:6 2:2 4:8 | 7:6 6:2 4:8 | 5:6 4:2 2:8 | 0:8 2:8 | 3:6 5:2 7:8 | 5:4 3:4 0:8 | 1:6 4:2 6+:8 | 4:16")),
     "sanctuary": dict(name="四方の祠の結界", mood="祠を結ぶ祈り（都節）。尺八のような笛、竜は低い合唱でにじり寄る", mode="in", tonic=64, tempo=76,
         groove="ritual", bass="drone", counter="sparse",
-        pal=dict(pad="choir", counter="lute", double="strings", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="taiko", dragonPad="pad"),
+        pal=dict(counter="lute", double="strings", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="taiko"),
         civ=dict(lead="flute", octave=12, chords="0p 1M 2m 0p 0p 2m 1M 0p",
                  theme="0:6 1:2 0:8 | 1:8 2:4 4:4 | 2:6 4:2 5:8 | 3:4 1:4 0:8 | 5:6 4:2 3:8 | 2:8 4:4 2:4 | 1:6 2:2 4:8 | 0:16"),
         dragon=dict(lead="choir", octave=0, chords="0p 0p 1M 1M 2m 2m 1M 0p",
                     theme="0:8 0:4 1:4 | 3:8 0:8 | 1:8 2:8 | 4:8 2:8 | 2:4 4:4 5:8 | 4:8 2:8 | 1:8 4:8 | 0:16")),
     "asteroids": dict(name="漂う岩塊の小惑星帯", mood="無重力の冷たい漂い。テルミンの文明の主題、竜はシンセのリード", mode="aeolian", tonic=59, tempo=90,
         groove="space", bass="synco", counter="flow16", muffleHz=7000,
-        pal=dict(pad="synpad", counter="fmbell", double="strings", doubleOctave=0, bassInst="subbass", drive="pluck", driveDrum="tom"),
+        pal=dict(counter="fmbell", double="strings", doubleOctave=0, bassInst="subbass", drive="pluck", driveDrum="tom"),
         civ=dict(lead="theremin", octave=12, chords="0m7 5M7 2M 6M 0m7 5M7 3m 4m",
                  theme="4:12 2:4 | 4:8 0:8 | 2:8 6:8 | 1:12 r:4 | 7:8 6:4 4:4 | 7:4 4:4 2:8 | 3:8 5:8 | 4:16"),
         dragon=dict(lead="lead", octave=0, chords="0m 0m 5M 4m 0m 0m 5M 6M",
                     theme="0:4 4:4 7:8 | 7:4 4:4 2:8 | 5:8 7:8 | 4:8 1:8 | 7:4 9:4 11:8 | 9:8 7:8 | 5:4 4:4 2:8 | 6:8 1:8")),
     "railway": dict(name="無人列車の走る軌道", mood="誰もいない列車の機械の反復と追走（ドリア）。クラビネットと金管", mode="dorian", tonic=55, tempo=120,
         groove="train", bass="root8", counter="up8",
-        pal=dict(pad="pad", counter="marimba", double="strings", doubleOctave=12, bassInst="bass", drive="strings", driveDrum="snare"),
+        pal=dict(counter="marimba", double="strings", doubleOctave=12, bassInst="bass", drive="strings", driveDrum="snare"),
         civ=dict(lead="clav", octave=12, chords="0m 0m 3M 3M 6M 6M 0m 4m",
                  theme="4:2 4:2 2:2 0:2 4:4 2:4 | 7:4 4:4 2:8 | 3:2 3:2 5:4 7:8 | 5:4 3:4 0:8 | 6:2 6:2 8:4 6:8 | 3:4 1:4 -1:8 | 0:4 2:4 4:8 | 4:8 1:8"),
         dragon=dict(lead="brass", octave=0, chords="0m 2M 3M 0m 0m 2M 6M 4M",
                     theme="0:6 2:2 4:8 | 6:6 4:2 2:8 | 3:4 5:4 7:8 | 4:12 r:4 | 7:4 4:4 2:4 4:4 | 4:8 6:8 | 8:6 6:2 3:8 | 4:8 6+:8")),
     "forest": dict(name="森に覆われた大樹海", mood="深い森の神秘と危うさ（ドリア）。マリンバと笛、竜は合唱で木々を揺らす", mode="dorian", tonic=64, tempo=96,
         groove="forest", bass="synco", counter="roll",
-        pal=dict(pad="pad", counter="marimba", double="horn", doubleOctave=-12, bassInst="upright", drive="strings", driveDrum="taiko", dragonPad="strings"),
+        pal=dict(counter="marimba", double="horn", doubleOctave=-12, bassInst="upright", drive="strings", driveDrum="taiko"),
         civ=dict(lead="flute", octave=12, chords="0m 6M 0m 3M 0m 6M 2M 4m",
                  theme="4:4 2:4 0:8 | 1:6 6:2 3:8 | 2:4 4:4 7:8 | 5:8 3:8 | 7:4 9:4 7:4 4:4 | 6:6 8:2 6:8 | 4:8 2:8 | 1:8 4:8"),
         dragon=dict(lead="choir", octave=0, chords="0m 0m 6M 6M 2M 2M 3M 4m",
                     theme="0:8 4:8 | 2:6 4:2 7:8 | 6:8 3:8 | 1:16 | 2:8 4:8 | 6:4 4:4 2:8 | 3:8 5:8 | 4:16")),
     "metro": dict(name="車列の流れる大都会", mood="夜の大都会の冷たい疾走（短調）。エレピの文明の主題、竜はシンセのリード", mode="aeolian", tonic=53, tempo=124,
         groove="electro", bass="pulse", counter="flow16", muffleHz=9000,
-        pal=dict(pad="synpad", counter="pluck", double="strings", doubleOctave=12, bassInst="subbass", drive="pluck", driveDrum="kick808"),
+        pal=dict(counter="pluck", double="strings", doubleOctave=12, bassInst="subbass", drive="pluck", driveDrum="kick808"),
         civ=dict(lead="epiano", octave=12, chords="0m7 5M7 2M 6M 0m7 5M7 3m7 4m7",
                  theme="4:4 6:4 7:4 6:4 | 4:8 2:8 | 6:6 4:2 2:8 | 1:8 6:8 | 7:4 9:4 11:4 9:4 | 9:8 7:8 | 7:4 5:4 3:8 | 4:16"),
         dragon=dict(lead="lead", octave=0, chords="0m 0m 5M 6M 0m 0m 3m 4M",
                     theme="0:2 0:2 7:4 4:6 6:2 | 2:8 0:8 | 5:4 7:4 9:8 | 8:8 6:8 | 7:4 4:4 2:4 4:4 | 0:16 | 3:8 5:8 | 6+:8 4:8")),
     "plateau": dict(name="光線の塔が立つ高原", mood="澄んだ高原と光線の塔の不穏な唸り（ドリア）。FM の鐘と金管", mode="dorian", tonic=57, tempo=108,
         groove="pulse", bass="rootfifth", counter="up8",
-        pal=dict(pad="synpad", counter="pluck", double="strings", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="tom"),
+        pal=dict(counter="pluck", double="strings", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="tom"),
         civ=dict(lead="fmbell", octave=12, chords="0m 3M 6M 0m 0m 3M 2M 4m",
                  theme="4:4 7:4 4:8 | 5:8 3:8 | 6:6 8:2 6:8 | 4:12 r:4 | 7:4 9:4 11:8 | 10:8 7:8 | 9:6 6:2 4:8 | 4:16"),
         dragon=dict(lead="brass", octave=0, chords="0m 0m b5M 6M 0m 0m b5M 4M",
                     theme="0:6 2:2 4:8 | 7:8 4:8 | 5-:8 0:8 | 6:8 1:8 | 4:4 7:4 9:8 | 7:16 | 9:8 7:4 5-:4 | 6+:8 4:8")),
     "heroland": dict(name="英雄が守る王国", mood="英雄の国の気高い国歌（ヘ長調の響き）と、それを呑む竜のニ短調の合唱", mode="aeolian", tonic=62, tempo=96,
         groove="court", bass="root4", counter="up8",
-        pal=dict(pad="strings", counter="harp", double="brass", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="timpani"),
+        pal=dict(counter="harp", double="brass", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="timpani"),
         civ=dict(lead="horn", octave=0, chords="2M 6M 5M 2M 2M 5M 6M 2M",
                  theme="2:4 4:4 6:4 9:4 | 8:8 6:8 | 7:6 5:2 2:8 | 4:12 r:4 | 9:4 8:4 9:4 11:4 | 12:8 9:8 | 8:6 6:2 3:8 | 2:16"),
         dragon=dict(lead="choir", octave=0, chords="0m 5M 6M 0m 0m 5M 4M 4M",
                     theme="0:4 2:4 4:8 | 5:8 2:8 | 3:8 6:8 | 4:6 2:2 0:8 | 7:6 4:2 2:8 | 5:8 7:8 | 6+:8 4:8 | 1:8 4:8")),
     "wasteland": dict(name="巨岩を拝む荒地", mood="乾いた荒地の岩への祈り（フリギア）。合唱と和太鼓・金床、竜は角笛", mode="phrygian", tonic=60, tempo=80,
         groove="heavy", bass="drone", counter="sparse",
-        pal=dict(pad="pad", counter="marimba", double="brass", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
+        pal=dict(counter="marimba", double="brass", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
         civ=dict(lead="choir", octave=0, chords="0p 1M 0p 6m 0p 1M 5M 0p",
                  theme="0:6 1:2 0:8 | 1:8 3:8 | 4:8 4:4 2:4 | 6:8 1:8 | 7:8 4:8 | 8:8 5:8 | 7:6 5:2 2:8 | 0:16"),
         dragon=dict(lead="horn", octave=-12, chords="0p 0p 1M 1M 6m 6m 1M 0p",
                     theme="0:4 0:4 4:8 | 7:6 6:2 4:8 | 8:8 5:8 | 3:16 | 6:8 8:8 | 10:8 8:8 | 8:6 5:2 3:8 | 0:16")),
     "skyland": dict(name="雲海に浮かぶ浮き城の空", mood="雲海に浮かぶ城の浮遊感と寂しさ（リディア）。オルゴールと竪琴、竜は弦で影を落とす", mode="lydian", tonic=65, tempo=88,
         groove="airy", bass="rootfifth", counter="flow16",
-        pal=dict(pad="pad", counter="harp", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="timpani"),
+        pal=dict(counter="harp", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="timpani"),
         civ=dict(lead="musicbox", octave=12, chords="0M7 1M 0M7 1M 5m 1M 0M7 4M",
                  theme="4:4 6:4 4:8 | 5:8 3:8 | 2:4 4:4 6:8 | 1:12 r:4 | 5:4 7:4 9:8 | 8:8 5:8 | 6:6 4:2 2:8 | 4:16"),
         dragon=dict(lead="strings", octave=-12, chords="5m 2m 1M 5m 5m 2m 6m 1M",
                     theme="5:8 2:8 | 2:6 4:2 6:8 | 1:8 5:8 | 5:16 | 9:8 7:8 | 6:8 4:8 | 6:8 3:8 | 1:16")),
     "serpent": dict(name="蛇神を祀る密林の国", mood="蛇神の妖しさ（フリギア・ドミナント）。蛇使いの笛、竜は金管で絡みつく", mode="phrygdom", tonic=64, tempo=104,
         groove="jungle", bass="synco", counter="roll",
-        pal=dict(pad="strings", counter="marimba", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
+        pal=dict(counter="marimba", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
         civ=dict(lead="flute", octave=12, chords="0M 1M 0M 1M 6m 3m 1M 0M",
                  theme="0:2 1:2 2:4 4:4 2:4 | 3:6 1:2 5:8 | 4:4 2:4 0:8 | 1:12 r:4 | 6:4 8:4 10:8 | 7:6 5:2 3:8 | 1:6 3:2 5:8 | 0:16"),
         dragon=dict(lead="brass", octave=-12, chords="0M 0M 1M 1M 3m 3m 1M 0M",
                     theme="0:4 2:4 4:8 | 7:6 6:2 4:8 | 5:8 3:8 | 1:16 | 3:4 5:4 7:8 | 5:8 3:8 | 1:6 3:2 5:8 | 4:8 0:8")),
     "swordway": dict(name="剣の道の国", mood="張りつめた剣気（都節）。笛と琴、和太鼓、竜は低い合唱", mode="in", tonic=57, tempo=92,
         groove="taiko", bass="drone", counter="roll",
-        pal=dict(pad="pad", counter="lute", double="horn", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko", dragonPad="strings"),
+        pal=dict(counter="lute", double="horn", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="taiko"),
         civ=dict(lead="flute", octave=12, chords="0p 1M 2m 0p 0p 2m 1M 0p",
                  theme="0:6 1:2 0:8 | 1:8 2:8 | 2:6 4:2 5:8 | 3:8 0:8 | 5:6 4:2 3:8 | 4:8 2:8 | 1:6 2:2 4:8 | 0:16"),
         dragon=dict(lead="choir", octave=0, chords="0p 0p 2m 2m 1M 1M 0p 0p",
                     theme="0:8 3:8 | 5:8 3:8 | 2:8 4:8 | 5:8 2:8 | 1:8 4:8 | 6:8 4:8 | 5:8 3:8 | 0:16")),
     "mushroom": dict(name="増えるキノコの里", mood="ひそかに増えるキノコの不思議と不気味さ（ドリア）。オルゴールとマリンバ、竜はシンセ", mode="dorian", tonic=59, tempo=100,
         groove="hop", bass="synco", counter="roll",
-        pal=dict(pad="pad", counter="marimba", double="strings", doubleOctave=0, bassInst="upright", drive="marimba", driveDrum="tom"),
+        pal=dict(counter="marimba", double="strings", doubleOctave=0, bassInst="upright", drive="marimba", driveDrum="tom"),
         civ=dict(lead="musicbox", octave=12, chords="0m 3M 0m 3M 2M 6M 0m 4m",
                  theme="4:4 2:4 0:4 2:4 | 3:4 5:4 7:8 | 4:6 7:2 4:8 | 5:12 r:4 | 6:4 4:4 2:8 | 8:8 6:8 | 7:4 4:4 2:8 | 4:16"),
         dragon=dict(lead="lead", octave=0, chords="0m 0m 2M 3M 0m 0m 6M 4M",
                     theme="0:4 0:4 4:8 | 7:8 4:8 | 6:8 2:8 | 5:8 3:8 | 4:4 2:4 0:8 | 2:16 | 6:8 1:8 | 6+:8 4:8")),
     "bombland": dict(name="爆弾玉の国", mood="火薬の国の暗い行進（和声的短音階）。アコーディオンのずんちゃっ、竜は低い金管", mode="harmonic", tonic=62, tempo=116,
         groove="oompah", bass="oompah", counter="up8",
-        pal=dict(pad="pad", counter="marimba", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="tom"),
+        pal=dict(counter="marimba", double="choir", doubleOctave=-12, bassInst="bass", drive="strings", driveDrum="tom"),
         civ=dict(lead="accordion", octave=0, chords="0m 4M 0m 4M 3m 0m 4M 0m",
                  theme="4:2 4:2 2:2 0:2 2:8 | 6:4 1:4 4:8 | 7:4 4:4 2:8 | 1:12 r:4 | 5:4 3:4 0:8 | 2:4 4:4 7:8 | 6:6 5:2 4:8 | 0:16"),
         dragon=dict(lead="brass", octave=-12, chords="0m 0m 5M 4M 0m 3m 5M 4M",
                     theme="0:4 4:4 7:8 | 7:4 4:4 2:8 | 5:8 2:8 | 4:4 6:4 8:8 | 7:6 4:2 2:8 | 3:8 5:8 | 5:4 4:4 2:8 | 1:8 4:8")),
     "flowergarden": dict(name="竜食い花の園", mood="甘く妖しい罠の花園（和声的短音階）。オルゴールと竪琴、竜は合唱", mode="harmonic", tonic=57, tempo=84,
         groove="gentle", bass="rootfifth", counter="flow16",
-        pal=dict(pad="pad", counter="harp", double="strings", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="timpani", dragonPad="strings"),
+        pal=dict(counter="harp", double="strings", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="timpani"),
         civ=dict(lead="musicbox", octave=12, chords="0m 5M 3m 4M 0m 5M 3m 4M",
                  theme="4:4 7:4 9:8 | 7:4 5:4 2:8 | 5:6 3:2 0:8 | 6:8 4:8 | 9:4 11:4 9:8 | 7:6 5:2 2:8 | 3:4 5:4 7:8 | 4:16"),
         dragon=dict(lead="choir", octave=0, chords="0m 0m 3m 3m 5M 5M 4M 4M",
                     theme="0:8 4:8 | 2:6 0:2 4:8 | 3:8 5:8 | 7:16 | 5:8 2:8 | 0:8 2:8 | 6:8 4:8 | 1:8 4:8")),
     "beach": dict(name="宿借りの浜", mood="寄せては返す波と、殻にこもる浜の不穏（ドリア）。FM の鐘とマリンバ、竜は金管", mode="dorian", tonic=54, tempo=104,
         groove="tide", bass="synco", counter="roll",
-        pal=dict(pad="pad", counter="marimba", double="strings", doubleOctave=12, bassInst="upright", drive="strings", driveDrum="tom"),
+        pal=dict(counter="marimba", double="strings", doubleOctave=12, bassInst="upright", drive="strings", driveDrum="tom"),
         civ=dict(lead="fmbell", octave=12, chords="0m 3M 0m 3M 6M 2M 3M 4m",
                  theme="4:4 2:4 0:8 | 3:6 5:2 7:8 | 2:4 4:4 7:8 | 5:12 r:4 | 6:4 8:4 10:8 | 9:8 6:8 | 7:6 5:2 3:8 | 4:16"),
         dragon=dict(lead="brass", octave=0, chords="0m 0m 6M 6M 2M 3M 4m 4m",
                     theme="0:4 4:4 7:8 | 7:6 4:2 2:8 | 6:8 3:8 | 8:8 6:8 | 2:6 4:2 6:8 | 3:8 7:8 | 4:8 6:8 | 4:16")),
     "beacon": dict(name="烽火の連なる丘陵", mood="丘から丘へ呼び交わす角笛と烽火の警戒（短調）。竜は合唱で丘を越える", mode="aeolian", tonic=61, tempo=98,
         groove="beacon", bass="rootfifth", counter="up8",
-        pal=dict(pad="strings", counter="lute", double="brass", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="taiko"),
+        pal=dict(counter="lute", double="brass", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="taiko"),
         civ=dict(lead="horn", octave=0, chords="0m 6M 5M 6M 0m 6M 5M 4m",
                  theme="0:4 4:4 7:8 | 6:6 3:2 1:8 | 5:4 7:4 9:8 | 8:12 r:4 | 7:4 4:4 2:4 4:4 | 6:8 3:8 | 5:6 2:2 0:8 | 4:16"),
         dragon=dict(lead="choir", octave=0, chords="0m 0m 5M 5M 3m 3m 4M 4M",
                     theme="0:8 2:8 | 4:6 2:2 0:8 | 5:8 2:8 | 0:16 | 3:8 5:8 | 7:6 5:2 3:8 | 6+:8 4:8 | 1:8 4:8")),
     "starfort": dict(name="星形の巨城", mood="壮麗な宮廷と攻城の緊迫（短調）。オルガン・弦・ティンパニ、竜は金管の行進", mode="aeolian", tonic=62, tempo=90,
         groove="baroque", bass="root4", counter="flow16",
-        pal=dict(pad="organ", counter="harp", double="choir", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="timpani", dragonPad="strings"),
+        pal=dict(counter="harp", double="choir", doubleOctave=0, bassInst="bass", drive="strings", driveDrum="timpani"),
         civ=dict(lead="organ", octave=12, chords="0m 4M 5M 2M 3m 0m 3m 4M",
                  theme="7:4 6+:4 7:8 | 8:8 4:8 | 5:4 7:4 9:8 | 6:6 4:2 2:8 | 3:4 5:4 7:8 | 9:6 7:2 4:8 | 5:8 3:8 | 4:4 6+:4 8:8"),
         dragon=dict(lead="brass", octave=-12, chords="0m 5M 6M 4M 0m 5M 6M 4M",
@@ -374,12 +377,9 @@ def build_song(song_id, s):
     song["civ"]["enter"] = {"inst": "bell", "midi": tonic % 12 + 72, "gain": 0.08}
     song["dragon"]["enter"] = {"inst": "crash", "midi": 60, "gain": 0.06}
     tracks = []
-    pad = pal["pad"]
-    tracks.append({"name": "pad", "inst": pad, "type": "chord", "gain": PAD_GAIN[pad], "octave": -12, "attack": 0.35, "release": 0.8, "band": 0,
-                   **({"side": "civ"} if pal.get("dragonPad") else {})})
-    if pal.get("dragonPad"):
-        dp = pal["dragonPad"]
-        tracks.append({"name": "dragonPad", "inst": dp, "type": "chord", "gain": PAD_GAIN[dp], "octave": -12, "attack": 0.35, "release": 0.8, "band": 0, "side": "dragon"})
+    # v3.246.0（DT-624 手直し9・11/27 Shooter「伴奏なのであれば、単音で目立たせずにコード感のあるラインがいい」）:
+    # 和音を重ねて伸ばす床（pad）はやめ、柔らかい鍵盤の単音で和音の音を1つずつたどる線を、いちばん下の段で鳴らす
+    tracks.append({"name": "line", "inst": "warm", "type": "line", "gain": LINE_GAIN, "notes": LINE[s.get("line", "walk")], "band": 0})
     tracks.append({"name": "theme", "type": "theme", "band": 0})
     bi = pal.get("bassInst", "bass")
     tracks.append({"name": "bass", "inst": bi, "type": "bass", "gain": BASS_GAIN[bi], "notes": BASS[s["bass"]], "band": 1})
@@ -408,8 +408,8 @@ def build_song(song_id, s):
 def main():
     music = json.load(open(MUSIC, encoding="utf-8"))
     keep = {k: music[k] for k in ("instruments", "_sfx", "sfx", "_mix", "voiceLimit") if k in music}
-    for name in ("strings", "timpani", "taiko", "crumble"):
-        keep["instruments"][name] = {"file": f"{name}.wav", "base": {"strings": 60, "timpani": 41, "taiko": 45, "crumble": 60}[name]}
+    for name in ("strings", "timpani", "taiko", "crumble", "warm"):
+        keep["instruments"][name] = {"file": f"{name}.wav", "base": {"strings": 60, "timpani": 41, "taiko": 45, "crumble": 60, "warm": 60}[name]}
     songs = {sid: build_song(sid, s) for sid, s in SONGS.items()}
     out = {
         "_about": ("Dragon Tide の曲と効果音の譜面（DT-624）。ゲームの小さなトラッカーが読む。音の高さは MIDI の番号（60＝ド4）。"
@@ -421,10 +421,14 @@ def main():
         "songs": songs,
         "phraseBars": 4,
         "_band": ("楽団の段（0〜4）。攻略の進み具合（壊した街の割合）が thresholds を越えるごとに1段上がり、その段までの tracks が鳴る"
-                  "（0＝和音の床と主題・1＝低音・2＝刻み・3＝対旋律・4＝主題の重ねと節目）。首都を落とすと最後の段。段はフレーズの頭でだけ変わる"),
+                  "（0＝和音の線と主題・1＝低音・2＝刻み・3＝対旋律・4＝主題の重ねと節目）。首都を落とすと最後の段。段はフレーズの頭でだけ変わる"),
         "band": {"thresholds": [0, 0.12, 0.3, 0.55, 0.8]},
         "_tug": ("文明の主題と竜の主題の綱引き。フレーズ（phraseBars 小節）ごとにどちらか一方の主題を弾く。竜の側に回す割合は進み具合で start → end。"
                  "首都を落とすと竜の側だけ。calls＝出来事（警戒度アップ・大きな進化・首都の陥落）で、次から竜の側にするフレーズの数"),
+        "_melody": ("DT-624 手直し9（11/27 Shooter「主旋律を常に鳴らしてほしいわけでは無い」）：主題（とその重ね）を弾くのは restPhrases 回の伴奏だけのフレーズのあとの1回だけ。"
+                    "それ以外のフレーズは主題を弾かず、伴奏（和音の線・低音・刻み・対旋律）だけ。どちらの側の和音で弾くかの綱引きは毎フレーズ続く。"
+                    "出来事（tug.calls）で竜が割り込んだフレーズは主題を弾く"),
+        "melody": {"restPhrases": 2},
         "tug": {"start": 0.25, "end": 1.0, "calls": {"alert": 1, "evolve": 1, "capitalFall": 2}},
         "_destroy": ("壊している間のパート（tracks の destroy）。崩れた建物の数を windowSec 秒の窓でならし、fullCount 棟で最大。"
                      "minLevel より小さいときは鳴らさない（1棟崩れただけでは入らない）。attackSec でふくらみ、releaseSec で引く"),

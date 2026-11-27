@@ -1493,7 +1493,7 @@ window.addEventListener("error", function () { var el = document.getElementById(
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.245.0";
+const GAME_VERSION = "v3.246.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -43706,6 +43706,8 @@ const CODEX_SPECIAL_SHOTS = [
 //   下の音から省く。陥落・警戒度の鐘のときは他を一瞬下げる。大事な音は中音域に置く。
 // ・決定性：鳴らす高さ・時刻は譜面と時計だけで決め、ゲームの乱数に触らない（残響の響きだけ fxRandom）。
 //   音は人が画面に触れたとき（isTrusted）に初めて作り、かけらもそこで読む。合成の入力で回すヘッドレス再生では作られない＝鳴らない。
+// v3.246.0（案帳 DT-624 手直し9・11/27 Shooter「常に鳴ってる歪んだシンセ音」「主旋律を常に鳴らしてほしいわけでは無い」）: 和音を伸ばす床（pad）をやめ、
+//   柔らかい鍵盤の単音で和音をたどる線（warm）にした。主題は伴奏だけのフレーズ2回のあとに1回だけ弾く（music.json の melody）。pad の音は折り返しの歪みを除いた
 // v3.245.0（案帳 DT-624 手直し8・11/27 Shooter）: 曲を地域ごとの1曲にしてゼロから作り直した（tools/gen_dt_music.py → music.json の songs）。
 //   ・1曲の中に「文明の主題」と「竜の主題」（同じ調・同じ速さ）。4小節ごとにどちらかを弾き、街を落とすほど竜の主題が増える（綱引き）
 //   ・攻略の進み具合で楽団の段が上がり、鳴る楽器が増える（和音と主題 → 低音 → 刻み → 対旋律 → 主題の重ねと節目）
@@ -43760,6 +43762,8 @@ const soundRun = {              // 続けて鳴らす効果音の今の位置（
   // phraseIdx＝いま決めてあるフレーズの番号、phraseSide＝"civ" か "dragon"、phraseHalf＝その側の主題（8小節）の前半 0・後半 1、
   // phraseBand＝そのフレーズの楽団の段、sideCount＝それぞれの側が弾いたフレーズの数、shareAcc＝竜の側に回す割合の貯め、forceDragon＝出来事で竜の側にするフレーズの残り
   phraseIdx: -1, phraseSide: "civ", phraseHalf: 0, phraseBand: 0, sideCount: { civ: 0, dragon: 0 }, shareAcc: 0, forceDragon: 0,
+  // DT-624 手直し9: phraseMelody＝そのフレーズで主題を弾くか、melodyRest＝主題を弾かなかったフレーズが続いた数（大きい値＝次は弾く）、decidedForced＝出来事で竜が割り込んだフレーズ
+  phraseMelody: true, melodyRest: 99, decidedForced: false,
   // 壊している間のパート：崩れた建物の数（destroyHits）を窓でならした量（destroyRate）と、パートの大きさ（destroyLevel 0〜1）
   destroyHits: 0, destroyRate: 0, destroyLevel: 0,
 };
@@ -43911,6 +43915,13 @@ function soundScaleNote(chord, start, n) {
   const k = idx + n;
   return (octave + Math.floor(k / pcs.length)) * 12 + pcs[((k % pcs.length) + pcs.length) % pcs.length];
 }
+/** 和音の音を根音（48〜57 のあたり）から上へ順に n 番目（和音の音の種類の数で1オクターブ上がる）。和音の線（DT-624 手直し9）が使う */
+function soundChordStack(chord, n) {
+  const root = chord.root + 12, rootPc = ((root % 12) + 12) % 12;
+  const ups = [...new Set(chord.tones.map(x => (((x - rootPc) % 12) + 12) % 12))].filter(x => x > 0).sort((a, b) => a - b);
+  const stack = [0, ...ups], k = stack.length;
+  return root + stack[((n % k) + k) % k] + 12 * Math.floor(n / k);
+}
 /** 和音の音を下から順に n 番目（3つで1オクターブ上がる） */
 function soundChordNote(chord, n) {
   const k = chord.tones.length;
@@ -44020,7 +44031,8 @@ function soundPlayTracks(tracks, step, t, ducked, chord, barAbs, ph) {
   const stepSec = soundStepSec();
   const destroy = soundRun.destroyLevel;
   for (const tr of tracks) {
-    if (ducked && tr.type !== "chord") continue;
+    if (ducked && tr.type !== "chord" && tr.type !== "line") continue;
+    if (tr.type === "theme" && !ph.melody) continue;   // DT-624 手直し9: 主題（と重ね）は主題を弾くフレーズだけ
     if (tr.side && tr.side !== ph.side) continue;   // その側のフレーズだけ鳴らす層（竜の側の和音の床など）
     let mix = 1;
     if (tr.destroy) {   // 壊している間のパート：崩れている量で大きさが変わる（段に関係なく）
@@ -44035,6 +44047,9 @@ function soundPlayTracks(tracks, step, t, ducked, chord, barAbs, ph) {
       const bar = side.theme[(ph.half * ph.bars + ph.barIn) % side.theme.length];
       const inst = tr.inst || side.lead, gain = tr.gain || side.gain;
       for (const [at, midi, len] of bar) if (at === s) soundPlay(bus, inst, midi + (tr.octave || 0), t, gain * mix, { attack: 0.02, len: len * stepSec * 0.92, release: 0.15 });
+    } else if (tr.type === "line") {
+      // v3.246.0（DT-624 手直し9・11/27 Shooter「単音で目立たせずにコード感のあるライン」）: 和音の音を根音から1つずつ、単音でたどる
+      for (const [at, idx, len] of tr.notes) if (at === s) soundPlay(bus, tr.inst, soundChordStack(chord, idx) + (tr.octave || 0), t, tr.gain * mix, { len: len * stepSec * 0.95, release: 0.2 });
     } else if (tr.type === "arp") {
       for (const [at, idx, vel] of tr.notes) if (at === s) soundPlay(bus, tr.inst, soundChordNote(chord, idx) + (tr.octave || 0), t, tr.gain * mix * (vel ?? 1));
     } else if (tr.type === "bass") {
@@ -44094,15 +44109,22 @@ function soundPhraseAt(step, decide = false) {
     soundRun.phraseHalf = soundRun.sideCount[side] % 2;   // その側が弾くたびに主題の前半・後半を交互に
     soundRun.sideCount[side]++;
     soundRun.phraseBand = typeof soundMusic.fixedBand === "number" ? soundMusic.fixedBand : soundRun.band;
-    switched = before !== null && before !== side;
+    // v3.246.0（DT-624 手直し9・11/27 Shooter「主旋律を常に鳴らしてほしいわけでは無い」）: 主題を弾くのは、
+    // 伴奏だけのフレーズが melody.restPhrases 回続いたあとの1回と、出来事で竜が割り込んだフレーズだけ
+    const rest = soundMusic.melody ? soundMusic.melody.restPhrases : 0;
+    const melody = soundRun.decidedForced || soundRun.melodyRest >= rest;
+    soundRun.phraseMelody = melody;
+    soundRun.melodyRest = melody ? 0 : soundRun.melodyRest + 1;
+    switched = melody && before !== null && before !== side;   // 入れ替わりの合図は主題を弾くフレーズの頭だけ
   }
-  return { index, bars, barIn, side: soundRun.phraseSide, half: soundRun.phraseHalf, band: soundRun.phraseBand, switched };
+  return { index, bars, barIn, side: soundRun.phraseSide, half: soundRun.phraseHalf, band: soundRun.phraseBand, switched, melody: soundRun.phraseMelody };
 }
 /** 新しいフレーズをどちらの主題で弾くか。竜の側に回す割合は進み具合で tug.start → end（貯めて1を超えたら竜の側） */
 function soundDecideSide() {
   const tug = soundMusic.tug;
+  soundRun.decidedForced = false;
+  if (soundRun.forceDragon > 0) { soundRun.forceDragon--; soundRun.decidedForced = true; return "dragon"; }   // 出来事で竜が割り込む（主題も弾く）
   if (soundRun.civStopped) return "dragon";
-  if (soundRun.forceDragon > 0) { soundRun.forceDragon--; return "dragon"; }   // 出来事で竜が割り込む
   const playing = soundSongId !== SOUND_TITLE_SONG;
   const share = playing ? tug.start + (tug.end - tug.start) * soundRun.progress : 0.5;   // タイトルは交互
   soundRun.shareAcc += share;
@@ -44151,7 +44173,7 @@ function soundMelodyEvent(kind) {
 /** ステージの頭：進み具合・楽団の段・綱引きを始めから（文明の主題から始まる） */
 function soundStageStart() {
   soundRun.progress = 0; soundRun.progressAt = SOUND_PROGRESS_EVERY_SEC; soundRun.civStopped = false; soundRun.band = 0;   // すぐ数え直す
-  soundRun.shareAcc = 0; soundRun.forceDragon = 0;
+  soundRun.shareAcc = 0; soundRun.forceDragon = 0; soundRun.melodyRest = 99;   // ステージの頭のフレーズは主題から
   soundRun.destroyRate = 0; soundRun.destroyLevel = 0;
 }
 
