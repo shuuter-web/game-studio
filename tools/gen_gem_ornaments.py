@@ -748,39 +748,60 @@ WHITE_JADE = dict(light=(255, 255, 250), base=(236, 240, 226), dark=(168, 184, 1
 LOTUS = dict(light=(255, 238, 248), base=(246, 150, 192), dark=(196, 70, 130), line=(90, 20, 60))
 LILYPAD = dict(light=(170, 236, 200), base=(36, 146, 110), dark=(12, 78, 60), line=(4, 38, 28))
 
-SHARK_PAD_ROOT = dict(left=26, top=0, right=26, bottom=56)    # 後頭部の鰭が左右へ、尾びれが尾の先から後ろへはみ出す分
-SHARK_PAD_TIP = dict(left=26, top=0, right=26, bottom=0)
+# v3.253.0（DT-650 11/28 Shooter「鮫竜の2進化の飾りが地味なので、もう少し目立つものに。輪郭が変わるパーツが欲しい」）:
+# 前の飾り（真珠層の鰭・背びれ）は胴の輪郭の内側に収まって目立たなかった。後頭部の鰭を、えらの後ろから横・後ろへ大きく枝を張る
+# 赤珊瑚の枝（石の青と反対の色）に替え、胸びれの翼の後ろの縁に真珠層の鮫の歯の列を並べ、尾びれを大きくして、輪郭そのものを変える
+SHARK_PAD_ROOT = dict(left=120, top=0, right=120, bottom=84)    # 赤珊瑚の枝が左右へ、尾びれが尾の先から後ろへはみ出す分
+SHARK_PAD_TIP = dict(left=120, top=0, right=120, bottom=0)
+SHARK_WING_PAD = dict(left=0, top=0, right=0, bottom=70)       # 翼の後ろの縁から後ろへ突き出る鮫の歯の分
 SHARK_TAIL_Y = 312
 # v3.252.0（DT-650）: 新しいデザイン（ホホジロザメの胴・幅 147）に合わせた位置
 SHARK_CX = 73.5          # 胴の真ん中（dragon_shark_body.png・幅 147）
-SHARK_HEAD_BACK_Y = 104  # 後頭部（えらの後ろ）
-SHARK_HEAD_BACK_DX = 24  # 後頭部の鰭の根元の左右のずれ（胴が太くなったので外へ）
+SHARK_HEAD_BACK_Y = 100  # 後頭部（えらの後ろ）
+SHARK_HEAD_BACK_DX = 30  # 赤珊瑚の枝の根元の左右のずれ（胴の縁の近く）
 SHARK_FIN_Y = 122        # 背びれの付け根の先（胴の絵の背びれに重ねる）
+# 赤珊瑚の枝：（根元からの割合, 向きのずれ°, 長さ, 太さ）。幹は横・後ろへ、枝は前と後ろへ分かれる
+SHARK_CORAL_TRUNK = (108, 136, 26)            # 幹の向き（0＝顔の向き・90＝真横）・長さ・太さ
+SHARK_CORAL_BRANCHES = ((0.3, 50, 66, 17), (0.5, -42, 56, 15), (0.75, 44, 46, 13))
+SHARK_TEETH = 4          # 翼の後ろの縁に並べる鮫の歯の数
 
 
 def shark_caudal(canvas, tx, ty):
-    """鮫竜の尾の飾り：真珠層（螺鈿の白）の三日月の尾びれと、根元の赤珊瑚の玉"""
+    """鮫竜の尾の飾り：真珠層（螺鈿の白）の大きな三日月の尾びれと、根元の赤珊瑚の玉"""
     for sd in (-1, 1):
-        poly, spine = curved_blade(tx, ty, 52, 18, math.radians(180 - sd * 42), sd * 0.7)
+        poly, spine = curved_blade(tx, ty, 78, 26, math.radians(180 - sd * 46), sd * 0.8)
         canvas.shape([poly], NACRE, axis=(0.4, 1.0), outline=3.5, ridge=spine)
-    canvas.shape([ellipse_poly(tx, ty + 2, 7, 7, 16)], CORAL, axis=(-0.4, 1.0), outline=2.5)
+    canvas.shape([ellipse_poly(tx, ty + 3, 9, 9, 16)], CORAL, axis=(-0.4, 1.0), outline=2.5)
+
+
+def coral_branch(canvas, rx, ry, sd):
+    """赤珊瑚の枝（sd＝-1 左・1 右）。幹から3本の枝が分かれ、先に丸い珊瑚の粒"""
+    ang, length, width = SHARK_CORAL_TRUNK
+    trunk, spine = curved_blade(rx, ry, length, width, math.radians(sd * ang), sd * 0.35)
+    shapes = [(trunk, spine)]
+    pts = spine + [spine[-1]]
+    for at, dang, blen, bw in SHARK_CORAL_BRANCHES:
+        bx, by = pts[min(len(pts) - 1, int(at * len(pts)))]
+        shapes.append(curved_blade(bx, by, blen, bw, math.radians(sd * (ang + dang)), sd * 0.3))
+    for poly, sp in shapes:
+        canvas.shape([poly], CORAL, axis=(0.4, 1.0), outline=4.0, ridge=sp)
+    for poly, sp in shapes:   # 枝の先の粒（先の少し手前に置いて、細い先を丸くする）
+        ex, ey = sp[-1]
+        canvas.shape([ellipse_poly(ex, ey, 9, 9, 14)], CORAL, axis=(-0.4, 1.0), outline=2.0)
+    canvas.shape([ellipse_poly(rx, ry, 12, 12, 16)], NACRE, axis=(-0.4, 1.0), outline=2.5)   # 根元の真珠
 
 
 def shark_body(src, tail="root"):
-    """鮫竜（サファイア）：背骨に乗って後ろへ反る真珠層の背びれ（右へ傾けて面を見せる）・後頭部から後ろ・外へ流れる真珠層の鰭1対（根元に赤珊瑚の玉）。
-    尾の先に三日月の尾びれ。翼は飾らない"""
+    """鮫竜（サファイア）：えらの後ろから横・後ろへ大きく枝を張る赤珊瑚（根元に真珠）・背骨に乗って後ろへ反る真珠層の背びれ。
+    尾の先に大きな三日月の尾びれ。翼の後ろの縁に真珠層の鮫の歯"""
     p = SHARK_PAD_ROOT if tail == "root" else SHARK_PAD_TIP
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
     cx = p["left"] + SHARK_CX
-    # v3.252.0（DT-650）: 新しい胴は太く、後ろに描くと鰭が胴と胸びれの翼に隠れて根元の赤珊瑚だけが目のように見えたので、
-    # 鰭は胴の上（front）に描き、えらの後ろから後ろ・外へ長く流す。赤珊瑚の玉は小さく
+    # 胴の上（front）に描く（v3.252.0: 後ろに描くと太い胴と胸びれの翼に隠れた）
     for sd in (-1, 1):
-        rx, ry = cx + sd * SHARK_HEAD_BACK_DX, SHARK_HEAD_BACK_Y
-        poly, spine = curved_blade(rx, ry, 74, 20, math.radians(180 - sd * 34), sd * 0.35)
-        front.shape([poly], NACRE, axis=(0.4, 1.0), outline=3.5, ridge=spine)
-        front.shape([ellipse_poly(rx, ry, 4.5, 4.5, 14)], CORAL, axis=(-0.4, 1.0), outline=2.0)
+        coral_branch(front, cx + sd * SHARK_HEAD_BACK_DX, SHARK_HEAD_BACK_Y, sd)
     f = SHARK_FIN_Y - 148   # 背びれを胴の絵の背びれの位置へずらす分
     fin = [(cx - 6, 150 + f), (cx + 6, 148 + f), (cx + 20, 196 + f), (cx + 34, 250 + f), (cx + 6, 226 + f), (cx - 6, 212 + f)]
     front.shape([fin], NACRE, axis=(1.0, 0.5), outline=4.0, ridge=[(cx, 154 + f), (cx + 10, 200 + f), (cx + 32, 246 + f)],
@@ -791,13 +812,29 @@ def shark_body(src, tail="root"):
 
 
 def shark_tailtip():
-    c = Canvas(110, 70)
-    shark_caudal(c, 55, 6)
-    return c.finish(), (55, 6)
+    c = Canvas(150, 96)
+    shark_caudal(c, 75, 8)
+    return c.finish(), (75, 8)
 
 
 def shark_wing(src):
-    return None
+    """胸びれの翼の後ろの縁に、真珠層の鮫の歯（三角）を並べて後ろへ突き出す。翼の下に敷いて、はみ出た所だけを見せる"""
+    p = SHARK_WING_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    a = body_alpha(sprite)
+    xs = np.nonzero(a.any(axis=0))[0]
+    x0, x1 = xs.min(), xs.max()
+    edge = edge_line(a, x0 + (x1 - x0) * 0.12, x0 + (x1 - x0) * 0.78, "lower", -10)
+    back = Canvas(*sprite.size)
+    for k in range(SHARK_TEETH):
+        x, y = edge[int((k + 0.5) / SHARK_TEETH * len(edge))]
+        size = 66 - abs(k - (SHARK_TEETH - 1) / 2) * 8   # 真ん中が大きい
+        back.shape([spike(x, y, size, 32, math.radians(168), base_w=38)], NACRE, axis=(0.4, 1.0), outline=4.0,
+                   ridge=[(x, y), (x + math.sin(math.radians(168)) * size * 0.8, y - math.cos(math.radians(168)) * size * 0.8)])
+    out = Image.new("RGBA", sprite.size, (0, 0, 0, 0))
+    out.alpha_composite(back.finish())
+    out.alpha_composite(sprite)
+    return out
 
 
 THUNDER_PAD_ROOT = dict(left=54, top=0, right=54, bottom=84)   # 後頭部の雷太鼓の輪が左右へ、稲妻が尾の先から後ろへはみ出す分
@@ -1012,7 +1049,7 @@ def main():
         ("falcon", falcon_body, falcon_wing, FALCON_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("swallow", swallow_body, swallow_wing, SWALLOW_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("hornet", hornet_body, hornet_wing, HORNET_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
-        ("shark", shark_body, shark_wing, SHARK_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),   # v3.235.0
+        ("shark", shark_body, shark_wing, SHARK_PAD_ROOT, SHARK_WING_PAD),   # v3.235.0
         ("thunder", thunder_body, thunder_wing, THUNDER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("tortoise", tortoise_body, tortoise_wing, TORTOISE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("frog", frog_body, frog_wing, dict(left=0, top=0, right=0, bottom=0), dict(left=0, top=0, right=0, bottom=0)),

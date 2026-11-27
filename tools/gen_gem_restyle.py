@@ -54,6 +54,12 @@ EXTRA = {
     "frog": (" The WHOLE creature must be gemstone: the head, the eyes, all four legs, the feet and the toes are ALL cut into many "
              "SMALL facets of the same brilliant {gem}, evenly all over the body like a cut gem figurine. NO plain skin areas, NO "
              "single big round gem in the middle of the back, ignore the spots and the belly pattern of the input. Keep it BRIGHT, light and luminous like the brightest parts of the input (glowing light lime green), not dark."),
+    # v3.253.0（DT-650 11/28 Shooter「雷雲竜の黒い部分がかっこいいので、宝石になっても黒さは維持して欲しい。特に翼」）:
+    # 全身カットにすると翼の雷雲の膜まで黄金になり、背の雷雲も銀に褪せた。雷雲の所だけ黒い石で切る
+    "thunder": (" IMPORTANT: keep the two-tone colour scheme of the input. Only the lightning-bolt bones, horns, claws and the yellow "
+                "scales are {gem}. Every DARK storm-cloud part (the whole wing membrane between the lightning bones, and the cloud "
+                "mane along the back) must stay DARK: cut it as polished jet-black onyx / black diamond facets (near-black charcoal "
+                "with steel-blue glints and thin white facet edges). Do NOT turn the dark cloud parts yellow, gold, grey or silver."),
 }
 MAGENTA_BG = {"frog", "tortoise"}
 
