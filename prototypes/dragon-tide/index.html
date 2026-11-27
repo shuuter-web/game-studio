@@ -1493,7 +1493,7 @@ window.addEventListener("error", function () { var el = document.getElementById(
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.249.0";
+const GAME_VERSION = "v3.250.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -41294,12 +41294,28 @@ const LASER_TURN_GROW    = 9.0;    // 1秒ごとに曲がる速さが増える�
 const LASER_LIFETIME     = 2.4;    // 当たらなかったときに消えるまで（秒）
 const LASER_HIT_PAD      = 3;      // 相手の半径に足す当たりの幅
 const LASER_MAX          = 500;    // 同時に飛ぶレーザーの上限（超えたら撃たずに待つ）
-const LASER_TRAIL        = 14;     // 尾として覚える点の数（1歩ごと。見た目だけ）
+// 尾（見た目だけ）：v3.250.0（DT-651 手直し「もう少し細く長い線で、尾が消える時はフェードアウト。描く線みたいに」）
+//   点ごとに打った時刻を覚え、LASER_TRAIL_LIFE 秒かけて先から尾の端へ向けて薄く・細くなって消える。
+//   当たって消えたレーザーの尾もその場に残って同じように薄れる（パッと消えない）。
+const LASER_TRAIL_LIFE   = 0.55;   // 尾の点が消えるまで（秒）。長いほど尾が長い
+const LASER_TRAIL_MAX    = 64;     // 1本が覚える尾の点の上限（重さよけ）
+const LASER_TRAIL_BANDS  = 6;      // 尾を古さで何段に分けて描くか（段ごとにまとめて描いて軽くする）
+const LASER_GLOW_WIDTH   = 3.2;    // 外の光の太さ（先の太さ。尾の端ほど細い）
+const LASER_CORE_WIDTH   = 1.1;    // 白い芯の太さ
 const LASER_COLOR        = "#c890ff";
 const LASER_CORE_COLOR   = "#f4dcff";
 const LASER_LOST_LIFE    = 0.35;   // 狙う相手がいなくなったレーザーは、この秒数で消す（まっすぐ遠くへ飛び去る線が目立ったため）
-const homingLasers = [];   // { x, y, vx, vy, age, dmg, sIdx, mover, trail: [x0, y0, x1, y1, ...] }
-function clearHomingLasers() { homingLasers.length = 0; }
+const homingLasers = [];   // { x, y, vx, vy, age, dmg, sIdx, mover, trail: [x0, y0, t0, x1, y1, t1, ...] }（t は homingLaserClock）
+const homingLaserGhosts = [];   // 消えたレーザーの残った尾（trail だけ）。点が全部古くなったら捨てる
+let homingLaserClock = 0;
+function clearHomingLasers() { homingLasers.length = 0; homingLaserGhosts.length = 0; }
+/** 尾の古い点（LASER_TRAIL_LIFE 秒より前）を前から捨てる */
+function trimLaserTrail(trail) {
+  let k = 0;
+  while (k < trail.length && homingLaserClock - trail[k + 2] > LASER_TRAIL_LIFE) k += 3;
+  if (k > 0) trail.splice(0, k);
+  if (trail.length > LASER_TRAIL_MAX * 3) trail.splice(0, trail.length - LASER_TRAIL_MAX * 3);
+}
 function effLaserWays() { return LASER_WAYS + Math.round(upCount("count_homing")); }
 const _laserAimBuf = [];
 function updateHomingLaserAttacks(dt) {
@@ -41325,7 +41341,7 @@ function updateHomingLaserAttacks(dt) {
       const spreadMore = Math.floor(w / 2) * 0.35;             // 3本目からは少し外へ開く
       const a = heading + side * (LASER_LAUNCH_ANGLE - spreadMore) + (random() - 0.5) * 2 * LASER_LAUNCH_JITTER;
       homingLasers.push({ x: px[i], y: py[i], vx: Math.cos(a) * LASER_INIT_SPEED, vy: Math.sin(a) * LASER_INIT_SPEED,
-                          age: 0, dmg, sIdx: tg.sIdx, mover: tg.mover, trail: [px[i], py[i]] });
+                          age: 0, dmg, sIdx: tg.sIdx, mover: tg.mover, trail: [px[i], py[i], homingLaserClock] });
     }
   }
 }
@@ -41343,6 +41359,12 @@ function homingLaserTarget(b, targets) {
   return tg ? aimTargetPos(tg) : null;
 }
 function updateHomingLasers(dt) {
+  homingLaserClock += dt;
+  if (homingLaserGhosts.length > 0) {
+    let g = 0;
+    for (const t of homingLaserGhosts) { trimLaserTrail(t); if (t.length >= 6) homingLaserGhosts[g++] = t; }
+    homingLaserGhosts.length = g;
+  }
   if (homingLasers.length === 0) return;
   const targets = attackTargets(ATTACK_DEFS.hominglaser);
   const hitMovers = targetHittable(targets, "mover");
@@ -41350,9 +41372,9 @@ function updateHomingLasers(dt) {
   for (let n = 0; n < homingLasers.length; n++) {
     const b = homingLasers[n];
     b.age += dt;
-    if (b.age > LASER_LIFETIME) continue;
+    if (b.age > LASER_LIFETIME) { homingLaserGhosts.push(b.trail); continue; }
     const target = homingLaserTarget(b, targets);
-    if (!target) { b.lost = (b.lost || 0) + dt; if (b.lost > LASER_LOST_LIFE) continue; }
+    if (!target) { b.lost = (b.lost || 0) + dt; if (b.lost > LASER_LOST_LIFE) { homingLaserGhosts.push(b.trail); continue; } }
     const speed = Math.min(LASER_MAX_SPEED, Math.hypot(b.vx, b.vy) + LASER_ACCEL * dt);
     let heading = Math.atan2(b.vy, b.vx);
     if (target) {
@@ -41364,9 +41386,9 @@ function updateHomingLasers(dt) {
     }
     b.vx = Math.cos(heading) * speed; b.vy = Math.sin(heading) * speed;
     b.x += b.vx * dt; b.y += b.vy * dt;
-    if (b.x < -50 || b.x > WORLD_W + 50 || b.y < -50 || b.y > WORLD_H + 50) continue;
-    b.trail.push(b.x, b.y);
-    if (b.trail.length > LASER_TRAIL * 2) b.trail.splice(0, 2);
+    if (b.x < -50 || b.x > WORLD_W + 50 || b.y < -50 || b.y > WORLD_H + 50) { homingLaserGhosts.push(b.trail); continue; }
+    b.trail.push(b.x, b.y, homingLaserClock);
+    trimLaserTrail(b.trail);
     // 触れた相手に当たって消える（狙った相手でなくても）
     let hit = false;
     if (hitMovers) for (const m of moversNear(b.x, b.y, 0)) {
@@ -41390,34 +41412,47 @@ function updateHomingLasers(dt) {
         break;
       }
     }
-    if (hit) { spawnHitParticles(b.x, b.y); continue; }
+    if (hit) { spawnHitParticles(b.x, b.y); homingLaserGhosts.push(b.trail); continue; }
     homingLasers[w++] = b;
   }
   homingLasers.length = w;
 }
-/** 追尾レーザー：通った跡を細い光の線で描く（外の淡い紫の光＋白い芯）。先ほど明るく、尾の端は細い */
+/** 追尾レーザー：通った跡を細い光の線で描く（外の淡い紫の光＋白い芯）。
+ *  点の古さで LASER_TRAIL_BANDS 段に分け、新しい段ほど濃く太く、古い段ほど薄く細くして尾の端をフェードアウトさせる。
+ *  段ごとに全レーザーの線をまとめて1回で描く（1本ずつ・1区間ずつ描くと数百本で重いため） */
 function drawHomingLasers() {
-  if (homingLasers.length === 0) return;
+  if (homingLasers.length === 0 && homingLaserGhosts.length === 0) return;
   ctx.save();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   ctx.globalCompositeOperation = "lighter";
-  for (let pass = 0; pass < 2; pass++) {
-    ctx.globalAlpha = pass === 0 ? 0.55 : 0.9;
-    ctx.strokeStyle = pass === 0 ? LASER_COLOR : LASER_CORE_COLOR;
-    ctx.lineWidth = pass === 0 ? 6 : 1.8;
-    ctx.beginPath();
-    for (const b of homingLasers) {
-      const t = b.trail;
-      if (t.length < 4) continue;
-      ctx.moveTo(t[0], t[1]);
-      for (let k = 2; k < t.length; k += 2) ctx.lineTo(t[k], t[k + 1]);
+  const now = homingLaserClock;
+  const addBand = (t, band) => {
+    let open = false;
+    for (let k = 3; k < t.length; k += 3) {
+      // 区間の古さ（新しい方の点で決める）
+      const f = (now - t[k + 2]) / LASER_TRAIL_LIFE;
+      const bi = Math.min(LASER_TRAIL_BANDS - 1, Math.max(0, Math.floor(f * LASER_TRAIL_BANDS)));
+      if (bi !== band) { open = false; continue; }
+      if (!open) { ctx.moveTo(t[k - 3], t[k - 2]); open = true; }
+      ctx.lineTo(t[k], t[k + 1]);
     }
-    ctx.stroke();
+  };
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.strokeStyle = pass === 0 ? LASER_COLOR : LASER_CORE_COLOR;
+    for (let band = 0; band < LASER_TRAIL_BANDS; band++) {
+      const fresh = 1 - (band + 0.5) / LASER_TRAIL_BANDS;   // 1（先）→ 0（尾の端）
+      ctx.globalAlpha = (pass === 0 ? 0.5 : 0.9) * fresh;
+      ctx.lineWidth = (pass === 0 ? LASER_GLOW_WIDTH : LASER_CORE_WIDTH) * (0.45 + 0.55 * fresh);
+      ctx.beginPath();
+      for (const b of homingLasers) if (b.trail.length >= 6) addBand(b.trail, band);
+      for (const t of homingLaserGhosts) addBand(t, band);
+      ctx.stroke();
+    }
   }
   // 先の光の粒
   ctx.globalAlpha = 0.9; ctx.fillStyle = LASER_CORE_COLOR;
   ctx.beginPath();
-  for (const b of homingLasers) { ctx.moveTo(b.x + 2.4, b.y); ctx.arc(b.x, b.y, 2.4, 0, Math.PI * 2); }
+  for (const b of homingLasers) { ctx.moveTo(b.x + 1.6, b.y); ctx.arc(b.x, b.y, 1.6, 0, Math.PI * 2); }
   ctx.fill();
   ctx.restore();
 }
