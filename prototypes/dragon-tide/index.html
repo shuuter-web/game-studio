@@ -1493,7 +1493,7 @@ window.addEventListener("error", function () { var el = document.getElementById(
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.241.0";
+const GAME_VERSION = "v3.242.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -2239,10 +2239,7 @@ function debugStatusLine() {
  * click はスクロールになった操作では来ないので、スクロールと両立する。
  * pointerdown は盤面へ抜けないように止めるだけ（preventDefault するとスクロールが止まる）。
  */
-function dbgTap(el, fn) {
-  el.addEventListener("pointerdown", (e) => e.stopPropagation());
-  el.addEventListener("click", (e) => { e.stopPropagation(); fn(e); });
-}
+function dbgTap(el, fn) { uiTap(el, fn); }   // v3.241.0（DT-649）: 共通の uiTap にまとめた
 
 /**
  * 案帳 DT-503: 開いたタップの指離しで選ばれない dbgTap。
@@ -2250,12 +2247,54 @@ function dbgTap(el, fn) {
  * スマホ（タッチ）ではちょうど指の下に出てきたカードに届き、触っていない竜種で始まってしまっていた。
  * このボタンの上で押し始めたタップの click だけを受ける（キーボードの決定＝detail 0 は押し始めが無いので通す）。
  */
-function freshTap(el, fn) {
-  let pressedHere = false;
-  el.addEventListener("pointerdown", (e) => { e.stopPropagation(); pressedHere = true; });
+function freshTap(el, fn) { uiTap(el, fn); }   // v3.241.0（DT-649）: 共通の uiTap にまとめた
+
+/**
+ * v3.241.0（案帳 DT-649・Shooter「オプション画面でスクロールしようとするとボタンが反応してしまう。
+ * 色んな画面で同じことが起き続けているので、共通の仕組みを作って処理を共通化して」）:
+ * 画面のボタン（タイトル・オプション・図鑑・強化の木・チャレンジ・ヴァルハラ・竜や地域を選ぶ画面・デバッグ）はすべてこれで押す。
+ * - 押したことにするのは**指を離したとき**（click）。指でなぞってスクロールになった操作には click が来ない
+ * - このボタンの上で押し始めたタップだけを受ける（開いたタップの指離しが、出てきたボタンに届かないように。DT-503）
+ * - 押してから TAP_SLOP_PX より大きく指が動いたら押さない（スクロールにならない枠でも、なぞっただけで押されないように）
+ * - pointerdown は盤面・後ろの画面へ抜けないように止めるだけ（preventDefault するとスクロールが止まる）
+ * - キーボードの決定・オートプレイの autoTap（click の detail 0）は押し始めが無くても通す
+ * 新しい画面のボタンも pointerdown で直接動かさず、これを使うこと。
+ */
+const TAP_SLOP_PX = 12;
+/**
+ * uiTap の、ラン中に出る画面用（レベルアップ・強化カードの3択・オートプレイの一時停止の窓）。
+ * 線を描いている指の下に出てくるので、pointerdown で既定の動き（スクロール・文字選び）を止め、**同じ指をこのボタンの上で離したとき**に選ぶ。
+ * 押し始めが別の所（線を描いていた指）・ボタンの外へ出た・スクロールに変わった・TAP_SLOP_PX より動いたときは選ばない。
+ * stop: false で pointerdown を後ろへ通す（一時停止の窓は今までどおり）
+ */
+function uiRelease(el, fn, { stop = true } = {}) {
+  let pressedId = null, downX = 0, downY = 0;
+  el.addEventListener("pointerdown", (e) => {
+    if (stop) e.stopPropagation();
+    e.preventDefault();
+    pressedId = e.pointerId; downX = e.clientX; downY = e.clientY;
+  });
+  const cancel = () => { pressedId = null; };
+  el.addEventListener("pointerleave", cancel);
+  el.addEventListener("pointercancel", cancel);
+  el.addEventListener("pointerup", (e) => {
+    if (stop) e.stopPropagation();
+    e.preventDefault();
+    const ok = pressedId === e.pointerId && Math.hypot(e.clientX - downX, e.clientY - downY) <= TAP_SLOP_PX;
+    pressedId = null;
+    if (ok) fn(e);
+  });
+}
+function uiTap(el, fn) {
+  let pressedHere = false, downX = 0, downY = 0;
+  el.addEventListener("pointerdown", (e) => { e.stopPropagation(); pressedHere = true; downX = e.clientX; downY = e.clientY; });
+  el.addEventListener("pointercancel", () => { pressedHere = false; });   // スクロールに変わった
   el.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (!pressedHere && e.detail !== 0) return;
+    if (e.detail !== 0) {
+      if (!pressedHere) return;
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_SLOP_PX) { pressedHere = false; return; }
+    }
     pressedHere = false;
     fn(e);
   });
@@ -36644,15 +36683,10 @@ function armLevelUpCards() {
 }
 /** カードに「押して離したら選ぶ」を付ける */
 function bindCardRelease(btn, onPick) {
-  btn.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); btn.dataset.pressed = String(e.pointerId); });
-  btn.addEventListener("pointerup", (e) => {
-    e.stopPropagation(); e.preventDefault();
-    const ok = btn.dataset.pressed === String(e.pointerId) &&
-      ((!levelupOverlayEl.classList.contains("lv-center") && !levelupOverlayEl.classList.contains("shop-mode")) || levelupOverlayEl.classList.contains("armed"));
-    delete btn.dataset.pressed;
+  uiRelease(btn, () => {
+    const ok = (!levelupOverlayEl.classList.contains("lv-center") && !levelupOverlayEl.classList.contains("shop-mode")) || levelupOverlayEl.classList.contains("armed");
     if (ok) onPick();
   });
-  btn.addEventListener("pointerleave", () => { delete btn.dataset.pressed; });
 }
 
 /** 3択の中身を引く（描画しない。検証からも呼べるように分けた）。 */
@@ -36766,14 +36800,14 @@ function renderLevelUpCards(picks, opts = {}) {
       const b = document.createElement("button");
       b.className = "card-tool";
       b.textContent = STRINGS.rerollButton(runRerollsLeft);
-      b.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); rerollCards(); });
+      uiTap(b, (e) => { rerollCards(); });
       row.appendChild(b);
     }
     if (runBanishesLeft > 0) {
       const b = document.createElement("button");
       b.className = "card-tool" + (banishArmed ? " armed" : "");
       b.textContent = banishArmed ? STRINGS.banishArmed : STRINGS.banishButton(runBanishesLeft);
-      b.addEventListener("pointerdown", (e) => {
+      uiTap(b, (e) => {
         e.stopPropagation(); e.preventDefault();
         banishArmed = !banishArmed;
         renderLevelUpCards(picks);
@@ -42601,12 +42635,12 @@ function renderTree() {
   scroll.scrollTop = keepTop;
   scroll.scrollLeft = keepLeft;
 
-  treeOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+  uiTap(treeOverlayEl.querySelector(".tree-close"), (e) => {
     e.stopPropagation();
     closeTree();
   });
   treeOverlayEl.querySelectorAll(".tree-node").forEach((btn) => {
-    btn.addEventListener("pointerdown", (e) => {
+    uiTap(btn, (e) => {
       e.stopPropagation();
       // タップは「選ぶ」だけ。実行は詳細シートのボタン。
       treeSelectedId = btn.dataset.id;
@@ -42615,7 +42649,7 @@ function renderTree() {
   });
   const sheetClose = treeOverlayEl.querySelector(".tree-sheet .ts-x");
   if (sheetClose) {
-    sheetClose.addEventListener("pointerdown", (e) => {
+    uiTap(sheetClose, (e) => {
       e.stopPropagation();
       treeSelectedId = null;
       renderTree();
@@ -42623,7 +42657,7 @@ function renderTree() {
   }
   const act = treeOverlayEl.querySelector(".tree-sheet .ts-act");
   if (act) {
-    act.addEventListener("pointerdown", (e) => {
+    uiTap(act, (e) => {
       e.stopPropagation();
       const node = TREE_DEFS.find(n => n.id === treeSelectedId);
       if (!node) return;
@@ -42754,7 +42788,7 @@ function renderChallenges() {
   }
   html += `</div>`;
   challengeOverlayEl.innerHTML = html;
-  challengeOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+  uiTap(challengeOverlayEl.querySelector(".tree-close"), (e) => {
     e.stopPropagation();
     closeChallenges();
   });
@@ -44280,30 +44314,30 @@ function renderOptions() {
   html += `</div>`;
   optionsOverlayEl.innerHTML = html;
   for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-link]")) {
-    row.addEventListener("pointerdown", (e) => { e.stopPropagation(); window.open(row.getAttribute("data-link"), "_blank"); });
+    uiTap(row, (e) => { window.open(row.getAttribute("data-link"), "_blank"); });
   }
-  optionsOverlayEl.querySelector('[data-sound="song"]').addEventListener("pointerdown", (e) => {
+  uiTap(optionsOverlayEl.querySelector('[data-sound="song"]'), (e) => {
     e.stopPropagation();
     soundNextSong();
     optionsOverlayEl.querySelector(".op-song-val").textContent = soundSongName();
   });
-  optionsOverlayEl.querySelector('[data-lang="toggle"]').addEventListener("pointerdown", (e) => {
+  uiTap(optionsOverlayEl.querySelector('[data-lang="toggle"]'), (e) => {
     e.stopPropagation();
     setLanguage(currentLang === "en" ? "ja" : "en");
     renderOptions();   // 画面の文をまるごと新しい言語で組み直す
   });
-  optionsOverlayEl.querySelector('[data-gfx="mode"]').addEventListener("pointerdown", (e) => {
+  uiTap(optionsOverlayEl.querySelector('[data-gfx="mode"]'), (e) => {
     e.stopPropagation();
     gfxSetMode(GFX_MODES[(GFX_MODES.indexOf(gfxMode()) + 1) % GFX_MODES.length]);
     optionsOverlayEl.querySelector(".op-gfx-val").textContent = STRINGS.gfxModeName[gfxMode()];
   });
-  optionsOverlayEl.querySelector('[data-sound="civ"]').addEventListener("pointerdown", (e) => {
+  uiTap(optionsOverlayEl.querySelector('[data-sound="civ"]'), (e) => {
     e.stopPropagation();
     soundSetOption("civMusic", !soundCivOn());
     optionsOverlayEl.querySelector(".op-civ-val").textContent = soundCivOn() ? STRINGS.optCivOn : STRINGS.optCivOff;
   });
   const soundRow = optionsOverlayEl.querySelector('[data-sound="toggle"]');
-  soundRow.addEventListener("pointerdown", (e) => {
+  uiTap(soundRow, (e) => {
     e.stopPropagation();
     soundSetOption("sound", !soundOn());
     renderOptions();
@@ -44317,12 +44351,12 @@ function renderOptions() {
     range.addEventListener("change", () => { if (range.getAttribute("data-vol") === "seVolume") sfxEgg(); });   // 効果音は離したときに今の大きさで1つ鳴らす（BGM は流れている曲で分かる）
   }
 
-  optionsOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+  uiTap(optionsOverlayEl.querySelector(".tree-close"), (e) => {
     e.stopPropagation();
     closeOptions();
   });
   for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-key]")) {
-    row.addEventListener("pointerdown", (e) => {
+    uiTap(row, (e) => {
       e.stopPropagation();
       const key = row.getAttribute("data-key");
       optSet(key, !optGet(key));
@@ -44372,12 +44406,12 @@ function renderCodex() {
   if (codexTab === "dragon") codexFillDragonCanvases();
   if (codexTab === "special") codexFillSpecialCanvases();
   if (codexTab === "region") codexFillRegionCanvases();
-  codexOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => {
+  uiTap(codexOverlayEl.querySelector(".tree-close"), (e) => {
     e.stopPropagation();
     closeCodex();
   });
   for (const b of codexOverlayEl.querySelectorAll(".cx-tab")) {
-    b.addEventListener("pointerdown", (e) => {
+    uiTap(b, (e) => {
       e.stopPropagation();
       codexTab = b.getAttribute("data-tab");
       renderCodex();
@@ -46186,7 +46220,7 @@ function refreshTitleMenu() {
       const b = document.createElement("button");
       b.className = "title-btn" + (lang === "ja" ? " title-btn-primary" : "");
       b.textContent = label;
-      b.addEventListener("pointerdown", (e) => { e.stopPropagation(); setLanguage(lang); refreshTitleMenu(); onTitleStart(); });
+      uiTap(b, (e) => { setLanguage(lang); refreshTitleMenu(); onTitleStart(); });
       titleMenuEl.appendChild(b);
     }
     return;
@@ -46199,7 +46233,7 @@ function refreshTitleMenu() {
     const cont = document.createElement("button");
     cont.className = "title-btn title-btn-primary";
     cont.textContent = STRINGS.continueRun((save.runStageIndex | 0) + 1);
-    cont.addEventListener("pointerdown", (e) => { e.stopPropagation(); resumeRun(); });
+    uiTap(cont, (e) => { resumeRun(); });
     titleMenuEl.appendChild(cont);
     const note = document.createElement("div");
     note.className = "title-note";
@@ -46209,7 +46243,7 @@ function refreshTitleMenu() {
   const startBtn = document.createElement("button");
   startBtn.className = "title-btn";
   startBtn.textContent = STRINGS.startRun;
-  startBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); onTitleStart(); });
+  uiTap(startBtn, (e) => { onTitleStart(); });
   titleMenuEl.appendChild(startBtn);
 
   // v3.120.0（案帳 DT-538）: オートプレイ（解放済みの竜からランダムに選び、AIが進むのを眺める）
@@ -46218,7 +46252,7 @@ function refreshTitleMenu() {
     autoBtn.className = "title-btn";
     autoBtn.textContent = STRINGS.autoplayStart;
     // v3.123.0（DT-538 手直し・Shooter「やはり竜種は選べるように。竜種でランダムも選べますし」）: 竜の一覧から選んで始める
-    autoBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); showSpeciesSelect(true); });
+    uiTap(autoBtn, (e) => { showSpeciesSelect(true); });
     titleMenuEl.appendChild(autoBtn);
     // v3.229.0（案帳 DT-642 2回目）: ヴァルハラ（ランを終えた群れを眺める）。1つでも残っていれば出す
     const vh = loadValhalla();
@@ -46226,7 +46260,7 @@ function refreshTitleMenu() {
       const vBtn = document.createElement("button");
       vBtn.className = "title-btn";
       vBtn.textContent = STRINGS.valhallaOpen(vh.length);
-      vBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openValhalla(); });
+      uiTap(vBtn, (e) => { openValhalla(); });
       titleMenuEl.appendChild(vBtn);
     }
   }
@@ -46235,7 +46269,7 @@ function refreshTitleMenu() {
   const treeBtn = document.createElement("button");
   treeBtn.className = "title-btn";
   treeBtn.textContent = STRINGS.openTree(profile.crystals);
-  treeBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openTree(); });
+  uiTap(treeBtn, (e) => { openTree(); });
   titleMenuEl.appendChild(treeBtn);
 
   // v0.25: チャレンジ一覧（達成数を表示）
@@ -46243,21 +46277,21 @@ function refreshTitleMenu() {
   const chBtn = document.createElement("button");
   chBtn.className = "title-btn";
   chBtn.textContent = STRINGS.openChallenges(chRate.done, chRate.total);
-  chBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openChallenges(); });
+  uiTap(chBtn, (e) => { openChallenges(); });
   titleMenuEl.appendChild(chBtn);
 
   // v0.67: 敵図鑑（絵・名前・出る文明・攻撃方法の一覧）
   const cxBtn = document.createElement("button");
   cxBtn.className = "title-btn";
   cxBtn.textContent = STRINGS.openCodex;
-  cxBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openCodex(); });
+  uiTap(cxBtn, (e) => { openCodex(); });
   titleMenuEl.appendChild(cxBtn);
 
   // v0.99.1: オプション
   const opBtn = document.createElement("button");
   opBtn.className = "title-btn";
   opBtn.textContent = STRINGS.openOptions;
-  opBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); openOptions(); });
+  uiTap(opBtn, (e) => { openOptions(); });
   titleMenuEl.appendChild(opBtn);
 }
 
@@ -48098,7 +48132,7 @@ function showRegionPickCards() {
       `<span><div class="card-name">${STRINGS.shapeNames[sh]}` +
       ` <span class="${best > 0 ? "era-stars" : "era-stars-none"}">${starsText(best)}</span></div>` +
       `<div class="card-desc">${text.play}<br>${text.rule}</div></span>`;
-    btn.addEventListener("pointerdown", (e) => {
+    uiTap(btn, (e) => {
       e.stopPropagation();
       e.preventDefault();
       dismissRegionPick();
@@ -48991,7 +49025,7 @@ function showSpeciesSelect(forAutoplay = false) {
     const close = document.createElement("button");
     close.className = "species-close";
     close.textContent = "✕";
-    close.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); cancelSpeciesSelect(); });
+    uiTap(close, (e) => { cancelSpeciesSelect(); });
     levelupOverlayEl.appendChild(close);
   }
   // 「もどる」でタイトルへ戻れる（つづきから等を選び直せる）
@@ -50503,13 +50537,7 @@ function openNextPerkOffer() {
     // v3.47.0（案帳 DT-128・Shooter指摘「止めた直後に選択画面なので誤タップが頻発」）:
     // 押した瞬間ではなく、カードの上で押して離したときに選ぶ。押し始めがカードの上でないもの
     // （線を描いていた指が、出てきたカードの上で離れた）は選ばない
-    btn.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); btn.dataset.pressed = String(e.pointerId); });
-    btn.addEventListener("pointerup", (e) => {
-      e.stopPropagation(); e.preventDefault();
-      if (btn.dataset.pressed === String(e.pointerId)) { if (spDef) takeSpecialLevel(def); else takePerkCard(def, townIndex); }
-      delete btn.dataset.pressed;
-    });
-    btn.addEventListener("pointerleave", () => { delete btn.dataset.pressed; });
+    uiRelease(btn, () => { if (spDef) takeSpecialLevel(def); else takePerkCard(def, townIndex); });
     return btn;
   }));
   perkOfferVisible = true;
@@ -50847,8 +50875,7 @@ function returnToTitle() {
   titleOverlayEl.classList.add("visible");
 }
 
-retryBtn.addEventListener("pointerdown", (e) => {
-  e.stopPropagation();
+uiTap(retryBtn, (e) => {   // v3.241.0（DT-649）
   // v3.0.0: ステージクリアの画面では「次の時代へ」、リザルトでは「タイトルへ」
   if (gameState === "stage-clear") proceedToNextStage();
   else returnToTitle();
@@ -51325,15 +51352,7 @@ autoplayPauseEl.querySelector(".ap-stop").textContent = STRINGS.autoplayStop;
 autoplayPauseEl.querySelector(".ap-report").textContent = STRINGS.autoplayReport;
 // v3.123.0: ボタンは「その上で押して離した」ときだけ効かせる。一時停止を開いたタップの指がボタンの上で離れても押したことにしない
 function bindPauseButton(sel, fn) {
-  const btn = autoplayPauseEl.querySelector(sel);
-  btn.addEventListener("pointerdown", (e) => { e.preventDefault(); btn.dataset.pressed = String(e.pointerId); });
-  btn.addEventListener("pointerleave", () => { delete btn.dataset.pressed; });
-  btn.addEventListener("pointerup", (e) => {
-    e.preventDefault();
-    const ok = btn.dataset.pressed === String(e.pointerId);
-    delete btn.dataset.pressed;
-    if (ok) fn();
-  });
+  uiRelease(autoplayPauseEl.querySelector(sel), fn, { stop: false });   // v3.241.0（DT-649）: 共通の uiRelease に（窓の外のタップの扱いは今までどおり止めない）
 }
 bindPauseButton(".ap-resume", () => resumeAutoplay());
 bindPauseButton(".ap-stop", () => stopAutoplay());
@@ -51576,9 +51595,9 @@ function renderValhalla() {
   });
   html += `</div>`;
   optionsOverlayEl.innerHTML = html;
-  optionsOverlayEl.querySelector(".tree-close").addEventListener("pointerdown", (e) => { e.stopPropagation(); closeOptions(); });
+  uiTap(optionsOverlayEl.querySelector(".tree-close"), (e) => { closeOptions(); });
   for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-vh]")) {
-    row.addEventListener("pointerdown", (e) => {
+    uiTap(row, (e) => {
       e.stopPropagation();
       const f = flocks[row.getAttribute("data-vh") | 0];
       optionsOverlayEl.classList.remove("visible");
@@ -51586,7 +51605,7 @@ function renderValhalla() {
     });
   }
   for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-vh-opt]")) {
-    row.addEventListener("pointerdown", (e) => {
+    uiTap(row, (e) => {
       e.stopPropagation();
       const key = row.getAttribute("data-vh-opt");
       if (key === "arena") prefs.arena = VALHALLA_ARENAS[(VALHALLA_ARENAS.indexOf(prefs.arena) + 1) % VALHALLA_ARENAS.length];
