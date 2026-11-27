@@ -394,9 +394,11 @@ def build_song(song_id, s):
     if s.get("groove"):
         tracks += drum_tracks(FULL, 4, "full_")
     # 壊している間のパート（destroy: 建物が続けて崩れている間だけ、その強さで鳴る）
-    dv = pal["drive"]
-    tracks.append({"name": "drive", "inst": dv, "type": "bass", "gain": 0.06 if dv == "strings" else 0.07, "octave": 24 if dv == "strings" else 36,
-                   "notes": DRIVE, "destroy": True})
+    # v3.248.0（DT-624 手直し10・11/27 Shooter「ビブラートが常にかかっていて単音のラインを鳴らしているやつ」「八分音符で動き続けてる」）:
+    # 壊している間の刻みは、ビブラートのかかった弦（strings）を8分で伸ばしていたため、崩れ続ける間ずっと歪んだ単音が鳴って聞こえた。
+    # 揺れの無い、はじいてすぐ減るウッドベース（upright）の刻みにする（地域ごとの pal の drive は使わない）
+    tracks.append({"name": "drive", "inst": "upright", "type": "bass", "gain": 0.1, "octave": 12,
+                   "notes": [[st, semi, 1] for st, semi, _ in DRIVE], "destroy": True})
     dd = pal["driveDrum"]
     tracks.append({"name": "driveDrum", "inst": dd, "type": "drum", "gain": 0.14 if dd in ("taiko", "timpani") else 0.1,
                    "steps": [0, 4, 8, 10, 12], "accents": [1, 0.7, 0.9, 0.6, 0.8], "destroy": True,
