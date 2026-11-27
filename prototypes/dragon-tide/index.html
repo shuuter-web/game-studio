@@ -1493,7 +1493,7 @@ window.addEventListener("error", function () { var el = document.getElementById(
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.246.0";
+const GAME_VERSION = "v3.247.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -57011,7 +57011,7 @@ function drawBoids() {
     // 特殊個体は自分の絵で描くので、きらめきも特殊個体の key で引く（極光だけがきらめく）
     const sparkle = spSprites ? gemSparkleForSpecial(SPECIAL_DEFS[spKind].key) : sparkleFlock;
     if (sparkle && alpha * sparkle.gloss > GEM_SPARKLE_MIN_ALPHA) {
-      const layer = gemSparkleLayer(sparkle, gemSparkleHeading(angle, wx, wy, i, 0));
+      const layer = gemSparkleLayer(sparkle, gemSparkleHeading(angle, wx, wy, i, 0), !!(spritesAir && boidHopAir[i] > 0.15));   // 跳んでいる絵を使う竜は、きらめきも跳んでいる絵の形で
       if (layer) {
         ctx.globalAlpha = alpha * sparkle.gloss;
         ctx.globalCompositeOperation = "lighter";
@@ -59988,25 +59988,30 @@ function gemSparkleHue(h) {
  * きらめきの層（スプライトと同じ大きさ・同じ向き・同じ原点）を返す。光る面が無い向きは null。
  * 向きを GEM_SPARKLE_HEADING_STEPS に刻み、刻みごとに1度だけ作って取っておく
  */
-function gemSparkleLayer(cfg, heading) {
+function gemSparkleLayer(cfg, heading, air = false) {
   if (cfg.amount === "none") return null;   // v3.191.0（DT-609）: 進化前はきらめき無し（絵だけ段階のものを使う）
   const stepAngle = Math.PI * 2 / GEM_SPARKLE_HEADING_STEPS;
   const bucket = ((Math.round(heading / stepAngle) % GEM_SPARKLE_HEADING_STEPS) + GEM_SPARKLE_HEADING_STEPS) % GEM_SPARKLE_HEADING_STEPS;
-  const key = cfg.look + "|" + cfg.amount + "|" + (cfg.plain ? 1 : 0) + "|" + bucket;
+  const spec = DRAGON_PART_SPRITES[cfg.look];
+  // v3.247.0（DT-650 11/27 Shooter「蛙竜も他の竜同様輝きエフェクトを」）: 跳んでいる蛙竜は脚を伸ばした胴の絵（bodyAir）で描くので、
+  // きらめきもその絵の形・置き方で作る（地上の胴の形で重ねると、伸ばした脚が光らず、光る面が絵とずれていた）
+  const useAir = air && !!(spec && spec.bodyAir);
+  const key = cfg.look + "|" + cfg.amount + "|" + (cfg.plain ? 1 : 0) + "|" + bucket + (useAir ? "|air" : "");
   const cached = gemSparkleLayers.get(key);
   if (cached !== undefined) return cached;
-  const spec = DRAGON_PART_SPRITES[cfg.look];
-  const bodyImg = dragonPartImages[cfg.look] && dragonPartImages[cfg.look].body;
+  const imgs = dragonPartImages[cfg.look];
+  const bodyImg = imgs && (useAir ? imgs.bodyAir : imgs.body);
   if (!spec || !bodyImg || !bodyImg.naturalWidth) return null;   // 絵がまだ（覚えずに次の機会に作る）
-  const layer = renderGemSparkleLayer(cfg, spec, bodyImg, bucket * stepAngle);
+  const layer = renderGemSparkleLayer(cfg, spec, bodyImg, bucket * stepAngle, useAir);
   if (gemSparkleLayers.size >= GEM_SPARKLE_CACHE_MAX) gemSparkleLayers.delete(gemSparkleLayers.keys().next().value);
   gemSparkleLayers.set(key, layer);
   return layer;
 }
 
-function renderGemSparkleLayer(cfg, spec, bodyImg, heading) {
+function renderGemSparkleLayer(cfg, spec, bodyImg, heading, air = false) {
   const facetSize = cfg.amount === "rare" ? GEM_SPARKLE_RARE_FACET_SIZE : GEM_SPARKLE_FACET_SIZE;
-  const facets = gemSparkleFacets(cfg.look, bodyImg, facetSize);
+  const facets = gemSparkleFacets(cfg.look + (air ? ":air" : ""), bodyImg, facetSize);
+  const pivot = air ? spec.bodyAirPivot : spec.bodyPivot;   // 跳んでいる胴の絵の置き方（drawPartSeparatedDragon と同じ）
   const bodyW = bodyImg.naturalWidth, bodyH = bodyImg.naturalHeight;
   const spriteDpr = Math.min(window.devicePixelRatio || 1, 2);
   const spritePx  = Math.ceil(DRAGON_SPRITE_LOGICAL * spriteDpr);
@@ -60018,7 +60023,7 @@ function renderGemSparkleLayer(cfg, spec, bodyImg, heading) {
   g.translate(spritePx / 2, spritePx / 2);
   g.scale(spritePx / DRAGON_SPRITE_LOGICAL, spritePx / DRAGON_SPRITE_LOGICAL);
   g.rotate(Math.PI / 2);
-  g.translate(-spec.bodyPivot.cx * (bodyDrawW / spec.bodyPivot.w), -spec.bodyPivot.cy * (bodyDrawH / spec.bodyPivot.h));
+  g.translate(-pivot.cx * (bodyDrawW / pivot.w), -pivot.cy * (bodyDrawH / pivot.h));
   g.scale(bodyDrawW / bodyW, bodyDrawH / bodyH);
   if (!gemSparkleBloomSprite) {
     const n = 64, b = document.createElement("canvas");
