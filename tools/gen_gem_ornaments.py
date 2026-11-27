@@ -751,9 +751,11 @@ LILYPAD = dict(light=(170, 236, 200), base=(36, 146, 110), dark=(12, 78, 60), li
 SHARK_PAD_ROOT = dict(left=26, top=0, right=26, bottom=56)    # 後頭部の鰭が左右へ、尾びれが尾の先から後ろへはみ出す分
 SHARK_PAD_TIP = dict(left=26, top=0, right=26, bottom=0)
 SHARK_TAIL_Y = 312
-SHARK_CX = 43.0          # 胴の真ん中（dragon_shark_body.png・幅 86）
-SHARK_HEAD_BACK_Y = 84   # 後頭部（えらの後ろ）
-SHARK_FIN_Y = 98         # 背びれの付け根の先（胴の絵の背びれに重ねる）
+# v3.252.0（DT-650）: 新しいデザイン（ホホジロザメの胴・幅 147）に合わせた位置
+SHARK_CX = 73.5          # 胴の真ん中（dragon_shark_body.png・幅 147）
+SHARK_HEAD_BACK_Y = 104  # 後頭部（えらの後ろ）
+SHARK_HEAD_BACK_DX = 24  # 後頭部の鰭の根元の左右のずれ（胴が太くなったので外へ）
+SHARK_FIN_Y = 122        # 背びれの付け根の先（胴の絵の背びれに重ねる）
 
 
 def shark_caudal(canvas, tx, ty):
@@ -772,11 +774,13 @@ def shark_body(src, tail="root"):
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
     cx = p["left"] + SHARK_CX
+    # v3.252.0（DT-650）: 新しい胴は太く、後ろに描くと鰭が胴と胸びれの翼に隠れて根元の赤珊瑚だけが目のように見えたので、
+    # 鰭は胴の上（front）に描き、えらの後ろから後ろ・外へ長く流す。赤珊瑚の玉は小さく
     for sd in (-1, 1):
-        rx, ry = cx + sd * 14, SHARK_HEAD_BACK_Y
-        poly, spine = curved_blade(rx, ry, 64, 22, math.radians(180 - sd * 44), sd * 0.35)
-        back.shape([poly], NACRE, axis=(0.4, 1.0), outline=3.5, ridge=spine)
-        front.shape([ellipse_poly(rx, ry, 5.5, 5.5, 14)], CORAL, axis=(-0.4, 1.0), outline=2.2)
+        rx, ry = cx + sd * SHARK_HEAD_BACK_DX, SHARK_HEAD_BACK_Y
+        poly, spine = curved_blade(rx, ry, 74, 20, math.radians(180 - sd * 34), sd * 0.35)
+        front.shape([poly], NACRE, axis=(0.4, 1.0), outline=3.5, ridge=spine)
+        front.shape([ellipse_poly(rx, ry, 4.5, 4.5, 14)], CORAL, axis=(-0.4, 1.0), outline=2.0)
     f = SHARK_FIN_Y - 148   # 背びれを胴の絵の背びれの位置へずらす分
     fin = [(cx - 6, 150 + f), (cx + 6, 148 + f), (cx + 20, 196 + f), (cx + 34, 250 + f), (cx + 6, 226 + f), (cx - 6, 212 + f)]
     front.shape([fin], NACRE, axis=(1.0, 0.5), outline=4.0, ridge=[(cx, 154 + f), (cx + 10, 200 + f), (cx + 32, 246 + f)],
@@ -798,9 +802,9 @@ def shark_wing(src):
 
 THUNDER_PAD_ROOT = dict(left=54, top=0, right=54, bottom=84)   # 後頭部の雷太鼓の輪が左右へ、稲妻が尾の先から後ろへはみ出す分
 THUNDER_PAD_TIP = dict(left=54, top=0, right=54, bottom=0)
-THUNDER_TAIL_Y = 296
-THUNDER_TAIL_DX = 16     # 尾の先は右へ巻いている（dragon_thunder_body.png）
-THUNDER_CX = 71.5
+THUNDER_TAIL_Y = 306
+THUNDER_TAIL_DX = 0      # v3.252.0（DT-650）: 胴の絵の尻尾を除いたので、尾の付け根は真ん中の下
+THUNDER_CX = 76.5
 THUNDER_RING_Y = 84      # 輪の両端の高さ（稲妻の角の後ろ）
 THUNDER_BOLT = [(-8, 0), (8, 0), (4, 24), (14, 24), (-1, 52), (8, 52), (-10, 84), (-5, 58), (-14, 58), (-3, 30), (-13, 30)]
 
@@ -852,11 +856,15 @@ def thunder_wing(src):
 
 TORTOISE_PAD_ROOT = dict(left=0, top=0, right=0, bottom=80)   # 尾の先の白玉の璧と朱の房の分
 TORTOISE_PAD_TIP = dict(left=0, top=0, right=0, bottom=0)
-TORTOISE_TAIL_Y = 310
-TORTOISE_TAIL_DX = -22   # 尾の先は左へ寄っている（dragon_tortoise_body.png）
-TORTOISE_SHELL = (115.0, 171, 1.08)   # 胴の絵の甲羅の真ん中と大きさ
-TORTOISE_RIM = (86, 96)                # べっ甲の縁甲板を並べる楕円（甲羅の縁）
+# v3.252.0（DT-650）: 鎧竜（アンキロサウルス）の新しいデザイン（幅 181）に合わせた位置。背の装甲の縁にべっ甲の縁甲板を並べる
+TORTOISE_TAIL_Y = 308
+TORTOISE_TAIL_DX = 0     # 尾の付け根は真ん中の下
+TORTOISE_SHELL = (90.5, 172, 1.0)     # 胴の絵の背の装甲の真ん中と大きさ
+TORTOISE_RIM = (64, 86)                # べっ甲の縁甲板を並べる楕円（背の装甲の縁）
 TORTOISE_RIM_PLATES = 18
+TORTOISE_SPINE_PLATES = 5   # v3.252.0: 背骨の上の大きな甲板の数
+TORTOISE_SPINE_STEP = 34    # 甲板の間隔（px）
+TORTOISE_SIDE_DX = 36       # 左右の小さな甲板の列の、背骨からの距離
 
 
 def tortoise_pendant(canvas, tx, ty):
@@ -880,14 +888,17 @@ def tortoise_body(src, tail="root"):
     # 翡翠の甲羅の縁にべっ甲の縁甲板（TORTOISE_RIM_PLATES 枚）を並べ、背の真ん中の筋にだけ小さな甲板を3枚乗せる（翡翠が見えるように）
     scx, cy, k = TORTOISE_SHELL
     cx = p["left"] + scx
-    rx, ry = TORTOISE_RIM
-    for i in range(TORTOISE_RIM_PLATES):
-        a = math.radians(90 + 360 * (i + 0.5) / TORTOISE_RIM_PLATES)
-        hx, hy, r = cx + math.cos(a) * rx, cy + math.sin(a) * ry, 12.5
-        front.shape([hexagon(hx, hy, r)], TORTOISESHELL, axis=(-0.5, 1.0), outline=2.5, facet=[(hx, hy), *hexagon(hx, hy, r)[:3]])
-    for dy in (-46, 0, 46):
-        hx, hy, r = cx, cy + dy, 11
-        front.shape([hexagon(hx, hy, r)], TORTOISESHELL, axis=(-0.5, 1.0), outline=2.2, facet=[(hx, hy), *hexagon(hx, hy, r)[:3]])
+    # v3.252.0（DT-650）: 鎧竜の新しい胴では、縁に並べた甲板が数珠の輪に見えたので、背の装甲の上に乗るべっ甲の装甲板にした
+    # （背骨の上に大きな甲板 TORTOISE_SPINE_PLATES 枚、その左右に小さな甲板を1列ずつ。輪にはしない）
+    for k in range(TORTOISE_SPINE_PLATES):
+        dy = (k - (TORTOISE_SPINE_PLATES - 1) / 2) * TORTOISE_SPINE_STEP
+        hx, hy, r = cx, cy + dy, 14
+        front.shape([hexagon(hx, hy, r)], TORTOISESHELL, axis=(-0.5, 1.0), outline=2.6, facet=[(hx, hy), *hexagon(hx, hy, r)[:3]])
+    for sd in (-1, 1):
+        for k in range(TORTOISE_SPINE_PLATES - 1):
+            dy = (k - (TORTOISE_SPINE_PLATES - 2) / 2) * TORTOISE_SPINE_STEP
+            hx, hy, r = cx + sd * TORTOISE_SIDE_DX, cy + dy, 9.5
+            front.shape([hexagon(hx, hy, r)], TORTOISESHELL, axis=(-0.5, 1.0), outline=2.2, facet=[(hx, hy), *hexagon(hx, hy, r)[:3]])
     if tail == "root":
         tortoise_pendant(back, cx + TORTOISE_TAIL_DX, TORTOISE_TAIL_Y)
     return stack(back, sprite, front)
@@ -961,9 +972,10 @@ SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel 
     "swallow": dict(cx=53.0, cy=179.7, sl=(12.7, 182), sr=(93.3, 182), wa=(317, 60.2)),
     "hornet": dict(cx=82.3, cy=173.0, sl=(22.4, 139), sr=(142.6, 139), wa=(316, 18.1)),
     # v3.244.0: 鮫竜・亀竜・雷雲竜は専用の絵（tools/gen_dragon_design.py）の値（tools/sprite_meta.py の実測）。蛙竜は元の値
-    "shark": dict(cx=42.5, cy=155.1, sl=(7.6, 155), sr=(77.4, 155), wa=(319, 74.2)),
-    "tortoise": dict(cx=114.8, cy=162.4, sl=(19.2, 87), sr=(210.8, 87), wa=(319, 71.6)),
-    "thunder": dict(cx=71.4, cy=175.3, sl=(18.0, 162), sr=(113.0, 162), wa=(319, 64.8)),
+    # v3.252.0（DT-650）: 鮫竜・亀竜（鎧竜）・雷雲竜（尻尾なし）の新しいデザインの値
+    "shark": dict(cx=73.1, cy=163.5, sl=(30, 128), sr=(117, 128), wa=(319, 10.4)),
+    "tortoise": dict(cx=90.0, cy=167.6, sl=(12, 100), sr=(169, 100), wa=(319, 90.9)),
+    "thunder": dict(cx=75.8, cy=178.4, sl=(19, 162), sr=(133, 162), wa=(319, 64.8)),
     "frog": dict(cx=139.9, cy=185.3, sl=(71.0, 182), sr=(208.0, 182), wa=(317, 66.1)),
 }
 
