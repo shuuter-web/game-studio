@@ -48,6 +48,13 @@ SOURCE = {}
 
 # v3.235.0: 緑の宝石（ペリドット・翡翠）は緑の背景だと石まで抜け（覆いが2〜3割）、緑かぶり消しで色もくすむので、マゼンタの背景で抜く
 MAGENTA = (255, 0, 255)
+# v3.247.0（DT-650 11/27 Shooter「蛙竜の1進化は、一部しか宝石じゃないので、他の竜と同様全身宝石に」）: 竜種ごとに足す注意。
+# 蛙竜は背の模様の所だけが大きな1つの石になり、脚・頭はくすんだ緑の肌のまま残った（光る面も背中だけになった）
+EXTRA = {
+    "frog": (" The WHOLE creature must be gemstone: the head, the eyes, all four legs, the feet and the toes are ALL cut into many "
+             "SMALL facets of the same brilliant {gem}, evenly all over the body like a cut gem figurine. NO plain skin areas, NO "
+             "single big round gem in the middle of the back, ignore the spots and the belly pattern of the input. Keep it BRIGHT, light and luminous like the brightest parts of the input (glowing light lime green), not dark."),
+}
 MAGENTA_BG = {"frog", "tortoise"}
 
 STAGE_PROMPTS = {
@@ -125,6 +132,11 @@ def main():
     species, stage, part = sys.argv[1:4]
     gem = sys.argv[4] if len(sys.argv) > 4 else GEMS[species]
     src = Image.open(os.path.join(ASSETS, f"dragon_{SOURCE.get(species, species)}_{part}.png")).convert("RGBA")
+    if os.environ.get("GEM_SRC"):   # 下絵を別の絵にする（DT-650: 蛙竜は前の明るい全身カットを下絵に、カットを脚・頭まで広げる）。輪郭は元の絵のまま
+        alt = Image.open(os.environ["GEM_SRC"]).convert("RGBA")
+        alt_arr = np.array(alt)
+        alt_arr[..., 3] = np.array(src)[..., 3]
+        src = Image.fromarray(alt_arr, "RGBA")
     src_a = np.array(src)[..., 3]
     # 生成に渡す下絵：緑の上に置いて、余白を足して大きめに（小さい絵だと描き込みが粗くなる）
     pad = int(max(src.size) * PAD_RATIO)
@@ -140,7 +152,8 @@ def main():
     sb = bbox(src_a)
     best = None
     for attempt in range(TRIES):
-        raw = generate(PART_HINTS.get(part, "") + STAGE_PROMPTS[stage].format(gem=gem) + " " + common, canvas)
+        extra = EXTRA.get(species, "").format(gem=gem) if stage == "sparkle" else ""
+        raw = generate(PART_HINTS.get(part, "") + STAGE_PROMPTS[stage].format(gem=gem) + extra + " " + common, canvas)
         if os.environ.get("GEM_RAW_DIR"):
             raw.save(os.path.join(os.environ["GEM_RAW_DIR"], f"{species}_{stage}_{part}_{attempt}.png"))
         out = key(raw)
