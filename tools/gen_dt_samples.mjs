@@ -114,7 +114,8 @@ function bell(rate, midi, sec) {
   }
   return fadeEdges(out, rate, 0.001, 0.2);
 }
-/** パッド：少しずらした鋸波3本をこもらせた帯。和音の床 */
+const PAD_HARMONICS = 10;   // 基準 48（131Hz）を1オクターブ上げても 2.6kHz まで（22050Hz の半分より十分下）
+/** パッド：少しずらした鋸波3本をこもらせた帯（首都の陥落の和音に使う） */
 function pad(rate, midi, sec) {
   const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
   const detune = [-0.0045, 0, 0.0052];
@@ -122,7 +123,9 @@ function pad(rate, midi, sec) {
   for (let i = 0; i < len; i++) {
     const t = i / rate;
     let v = 0;
-    for (let k = 0; k < 3; k++) { const p = (f * (1 + detune[k]) * t + phase[k]) % 1; v += p * 2 - 1; }
+    // v3.246.0（DT-624 手直し9・11/27 Shooter「どの地域でも常に鳴ってる歪んだ音のシンセ音」）: 素の鋸波は標本化の半分より上の倍音が
+    // 折り返して、高さを上げて鳴らすほどざらついた歪みに聞こえた。倍音を数えて足す鋸波（sawH）にし、上の倍音も少なくする
+    for (let k = 0; k < 3; k++) v += sawH((f * (1 + detune[k]) * t + phase[k]) % 1, PAD_HARMONICS) * 0.6;
     out[i] = v / 3 * (1 + 0.06 * Math.sin(TAU * 0.7 * t));
   }
   onePoleLow(out, rate, 1400); onePoleLow(out, rate, 2200);
@@ -606,13 +609,25 @@ function crumble(rate) {
   return fadeEdges(onePoleLow(out, rate, 3200), rate, 0.0005, 0.1);
 }
 
+// --- DT-624 手直し9（11/27・主旋律を常に鳴らさない・伴奏は単音で目立たせずに和音の分かる線）---
+/** 柔らかい鍵盤（和音の線）：正弦の基音にわずかな2倍・3倍音。立ち上がりを丸め、ゆっくり減る。目立たずに和音の音を1つずつたどる */
+function warm(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const env = Math.min(1, t / 0.02) * (0.55 * Math.exp(-t * 2.2) + 0.45 * Math.exp(-t * 0.7));
+    out[i] = env * (Math.sin(TAU * f * t) + 0.22 * Math.sin(TAU * f * 2 * t) * Math.exp(-t * 3) + 0.06 * Math.sin(TAU * f * 3 * t) * Math.exp(-t * 5));
+  }
+  return fadeEdges(out, rate, 0.002, 0.25);
+}
+
 const INSTRUMENTS = [
   // [ファイル名, 作り方, 基準の MIDI, 長さ（秒）, サンプリング周波数]
   ["harp.wav",     (r) => harp(r, 60, 1.6),     22050],
   ["marimba.wav",  (r) => marimba(r, 60, 0.9),  22050],
   ["musicbox.wav", (r) => musicBox(r, 72, 1.4), 22050],
   ["bell.wav",     (r) => bell(r, 57, 2.6),     16000],
-  ["pad.wav",      (r) => pad(r, 48, 3.0),      16000],
+  ["pad.wav",      (r) => pad(r, 48, 3.0),      22050],
   ["bass.wav",     (r) => bass(r, 36, 1.0),     16000],
   ["horn.wav",     (r) => horn(r, 60, 2.2),     16000],
   ["kick.wav",     (r) => kick(r),              22050],
@@ -653,6 +668,8 @@ const INSTRUMENTS = [
   ["timpani.wav",  (r) => timpani(r),           16000],
   ["taiko.wav",    (r) => taiko(r),             16000],
   ["crumble.wav",  (r) => crumble(r),           22050],
+  // DT-624 手直し9（和音の線）
+  ["warm.wav",     (r) => warm(r, 60, 2.0),     22050],
 ];
 
 mkdirSync(OUT, { recursive: true });
