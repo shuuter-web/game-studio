@@ -543,6 +543,69 @@ function gong(rate) {
   return fadeEdges(onePoleLow(out, rate, 2600), rate, 0.002, 0.3);
 }
 
+// --- DT-624 手直し8（11/27・地域ごとの曲をゼロから作り直し、攻略が進むほど楽団が増える）---
+/** 弦の合奏：少しずつずらしたのこぎり波5本に、ゆっくりした揺れ。パッドより明るく、刻み（壊している間のパート）にも使える */
+function strings(rate, midi, sec) {
+  const f = midiHz(midi), len = Math.floor(rate * sec), out = new Float32Array(len);
+  const detune = [-0.006, -0.0025, 0, 0.003, 0.0065];
+  const phase = [0.1, 0.43, 0.77, 0.21, 0.58];
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    const vib = 1 + 0.0035 * Math.sin(TAU * 5.4 * t) * Math.min(1, t * 2);
+    let v = 0;
+    for (let k = 0; k < 5; k++) v += sawH((f * (1 + detune[k]) * vib * t + phase[k]) % 1, 12);
+    out[i] = v / 5 * Math.min(1, t / 0.05);
+  }
+  onePoleLow(out, rate, 3600); onePoleLow(out, rate, 5200);
+  return fadeEdges(out, rate, 0.004, 0.3);
+}
+/** ティンパニ：張った皮の大太鼓。高さを和音の根音に合わせて鳴らす（基準 MIDI 41） */
+function timpani(rate) {
+  const rnd = makeRandom(61);
+  const f = midiHz(41), len = Math.floor(rate * 1.6), out = new Float32Array(len);
+  const modes = [[1, 1.0, 2.2], [1.5, 0.45, 3.0], [1.98, 0.3, 4.0], [2.44, 0.15, 5.0]];
+  let nz = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    let v = 0;
+    for (const [m, a, d] of modes) v += a * Math.sin(TAU * f * m * t * (1 + 0.02 * Math.exp(-t * 20))) * Math.exp(-t * d);
+    nz += 0.3 * ((rnd() * 2 - 1) - nz);
+    out[i] = v + nz * 0.5 * Math.exp(-t * 40);
+  }
+  return fadeEdges(onePoleLow(out, rate, 2400), rate, 0.0005, 0.2);
+}
+/** 和太鼓：低く太い一打（胴鳴りが長い） */
+function taiko(rate) {
+  const rnd = makeRandom(67);
+  const len = Math.floor(rate * 0.9), out = new Float32Array(len);
+  let phase = 0, nz = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    phase += (62 + 70 * Math.exp(-t * 18)) / rate;
+    nz += 0.25 * ((rnd() * 2 - 1) - nz);
+    out[i] = Math.sin(TAU * phase) * Math.exp(-t * 4.5) + nz * 0.6 * Math.exp(-t * 28);
+  }
+  return fadeEdges(onePoleLow(out, rate, 1500), rate, 0.0005, 0.08);
+}
+/** 崩れる音（建物の崩壊の効果音。曲には組み込まない）：低い「どさっ」と、砕けた石がばらばら落ちる粒 */
+function crumble(rate) {
+  const rnd = makeRandom(71);
+  const len = Math.floor(rate * 0.7), out = new Float32Array(len);
+  let phase = 0, lp = 0, lp2 = 0;
+  const grains = [];
+  for (let k = 0; k < 18; k++) grains.push([0.03 + rnd() * 0.45, 0.25 + rnd() * 0.75]);
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    phase += (55 + 40 * Math.exp(-t * 25)) / rate;
+    const n = rnd() * 2 - 1;
+    lp += 0.35 * (n - lp); lp2 += 0.06 * (n - lp2);
+    let v = Math.sin(TAU * phase) * 0.9 * Math.exp(-t * 11) + lp2 * 2.2 * Math.exp(-t * 6);
+    for (const [at, a] of grains) { const dt = t - at; if (dt > 0 && dt < 0.03) v += lp * a * Math.exp(-dt * 160); }
+    out[i] = v;
+  }
+  return fadeEdges(onePoleLow(out, rate, 3200), rate, 0.0005, 0.1);
+}
+
 const INSTRUMENTS = [
   // [ファイル名, 作り方, 基準の MIDI, 長さ（秒）, サンプリング周波数]
   ["harp.wav",     (r) => harp(r, 60, 1.6),     22050],
@@ -585,6 +648,11 @@ const INSTRUMENTS = [
   ["accordion.wav",(r) => accordion(r, 60, 1.6), 16000],
   ["theremin.wav", (r) => theremin(r, 72, 2.0), 16000],
   ["gong.wav",     (r) => gong(r),              16000],
+  // DT-624 手直し8（地域ごとの曲の作り直し・楽団が増える・壊している間のパート・崩れる効果音）
+  ["strings.wav",  (r) => strings(r, 60, 2.4),  16000],
+  ["timpani.wav",  (r) => timpani(r),           16000],
+  ["taiko.wav",    (r) => taiko(r),             16000],
+  ["crumble.wav",  (r) => crumble(r),           22050],
 ];
 
 mkdirSync(OUT, { recursive: true });
