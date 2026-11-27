@@ -736,8 +736,8 @@ def hornet_wing(src):
 
 
 # ---------------------------------------------------------------- 鮫竜・蛙竜・亀竜・雷雲竜（v3.235.0・DT-609「続けて他の竜もお願いします」）
-# 鮫竜・亀竜・雷雲竜は専用の絵が無く別の竜種の絵を借りている（鮫竜＝燕竜・亀竜＝ガーゴイル・雷雲竜＝影竜）ので、宝石の絵もその輪郭のまま
-# （tools/gen_gem_restyle.py の SOURCE）。尾の飾りは4竜種とも動く尻尾の先（"tip"）を既定にする
+# v3.244.0（DT-609 11/27）: 鮫竜・亀竜・雷雲竜は専用の絵（tools/gen_dragon_design.py）ができたので、飾りの位置をその輪郭に合わせ直した
+# （それまでは燕竜・ガーゴイル・影竜の絵を借りていた）。尾の飾りは4竜種とも動く尻尾の先（"tip"）を既定にする
 NACRE = dict(light=(255, 255, 255), base=(230, 234, 246), dark=(146, 158, 198), line=(20, 32, 78))
 CORAL = dict(light=(255, 196, 186), base=(228, 72, 72), dark=(140, 20, 36), line=(60, 6, 14))
 VERMILION = dict(light=(255, 176, 146), base=(212, 44, 30), dark=(118, 10, 10), line=(40, 0, 0))
@@ -750,7 +750,10 @@ LILYPAD = dict(light=(170, 236, 200), base=(36, 146, 110), dark=(12, 78, 60), li
 
 SHARK_PAD_ROOT = dict(left=26, top=0, right=26, bottom=56)    # 後頭部の鰭が左右へ、尾びれが尾の先から後ろへはみ出す分
 SHARK_PAD_TIP = dict(left=26, top=0, right=26, bottom=0)
-SHARK_TAIL_Y = 308
+SHARK_TAIL_Y = 312
+SHARK_CX = 43.0          # 胴の真ん中（dragon_shark_body.png・幅 86）
+SHARK_HEAD_BACK_Y = 84   # 後頭部（えらの後ろ）
+SHARK_FIN_Y = 98         # 背びれの付け根の先（胴の絵の背びれに重ねる）
 
 
 def shark_caudal(canvas, tx, ty):
@@ -768,15 +771,16 @@ def shark_body(src, tail="root"):
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
-    cx = p["left"] + 53.0
+    cx = p["left"] + SHARK_CX
     for sd in (-1, 1):
-        rx, ry = cx + sd * 16, 100
+        rx, ry = cx + sd * 14, SHARK_HEAD_BACK_Y
         poly, spine = curved_blade(rx, ry, 64, 22, math.radians(180 - sd * 44), sd * 0.35)
         back.shape([poly], NACRE, axis=(0.4, 1.0), outline=3.5, ridge=spine)
         front.shape([ellipse_poly(rx, ry, 5.5, 5.5, 14)], CORAL, axis=(-0.4, 1.0), outline=2.2)
-    fin = [(cx - 6, 150), (cx + 6, 148), (cx + 20, 196), (cx + 34, 250), (cx + 6, 226), (cx - 6, 212)]
-    front.shape([fin], NACRE, axis=(1.0, 0.5), outline=4.0, ridge=[(cx, 154), (cx + 10, 200), (cx + 32, 246)],
-                facet=[(cx + 6, 148), (cx + 20, 196), (cx + 34, 250), (cx + 10, 200)])
+    f = SHARK_FIN_Y - 148   # 背びれを胴の絵の背びれの位置へずらす分
+    fin = [(cx - 6, 150 + f), (cx + 6, 148 + f), (cx + 20, 196 + f), (cx + 34, 250 + f), (cx + 6, 226 + f), (cx - 6, 212 + f)]
+    front.shape([fin], NACRE, axis=(1.0, 0.5), outline=4.0, ridge=[(cx, 154 + f), (cx + 10, 200 + f), (cx + 32, 246 + f)],
+                facet=[(cx + 6, 148 + f), (cx + 20, 196 + f), (cx + 34, 250 + f), (cx + 10, 200 + f)])
     if tail == "root":
         shark_caudal(back, cx, SHARK_TAIL_Y)
     return stack(back, sprite, front)
@@ -794,7 +798,10 @@ def shark_wing(src):
 
 THUNDER_PAD_ROOT = dict(left=54, top=0, right=54, bottom=84)   # 後頭部の雷太鼓の輪が左右へ、稲妻が尾の先から後ろへはみ出す分
 THUNDER_PAD_TIP = dict(left=54, top=0, right=54, bottom=0)
-THUNDER_TAIL_Y = 308
+THUNDER_TAIL_Y = 296
+THUNDER_TAIL_DX = 16     # 尾の先は右へ巻いている（dragon_thunder_body.png）
+THUNDER_CX = 71.5
+THUNDER_RING_Y = 84      # 輪の両端の高さ（稲妻の角の後ろ）
 THUNDER_BOLT = [(-8, 0), (8, 0), (4, 24), (14, 24), (-1, 52), (8, 52), (-10, 84), (-5, 58), (-14, 58), (-3, 30), (-13, 30)]
 
 
@@ -821,15 +828,15 @@ def thunder_body(src, tail="root"):
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
-    cx = p["left"] + 74.5
+    cx = p["left"] + THUNDER_CX
 
     def ring(t):   # 輪の上の点（t＝-1 左端〜1 右端）。真ん中が後ろ（首の下）へ垂れる弓
-        return cx + t * 110, 96 + 42 * (1 - t * t)
+        return cx + t * 110, THUNDER_RING_Y + 42 * (1 - t * t)
     back.stroke([ring(i / 20 * 2 - 1) for i in range(21)], 7, LACQUER, axis=(0.3, 1.0), outline=3.0)
     for t in (-1, -0.74, 0.74, 1):
         drum(front, *ring(t), 15)
     if tail == "root":
-        thunder_bolt(back, cx, THUNDER_TAIL_Y)
+        thunder_bolt(back, cx + THUNDER_TAIL_DX, THUNDER_TAIL_Y)
     return stack(back, sprite, front)
 
 
@@ -845,7 +852,11 @@ def thunder_wing(src):
 
 TORTOISE_PAD_ROOT = dict(left=0, top=0, right=0, bottom=80)   # 尾の先の白玉の璧と朱の房の分
 TORTOISE_PAD_TIP = dict(left=0, top=0, right=0, bottom=0)
-TORTOISE_TAIL_Y = 306
+TORTOISE_TAIL_Y = 310
+TORTOISE_TAIL_DX = -22   # 尾の先は左へ寄っている（dragon_tortoise_body.png）
+TORTOISE_SHELL = (115.0, 171, 1.08)   # 胴の絵の甲羅の真ん中と大きさ
+TORTOISE_RIM = (86, 96)                # べっ甲の縁甲板を並べる楕円（甲羅の縁）
+TORTOISE_RIM_PLATES = 18
 
 
 def tortoise_pendant(canvas, tx, ty):
@@ -865,13 +876,20 @@ def tortoise_body(src, tail="root"):
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
-    cx, cy = p["left"] + 115.0, 204
-    front.shape([ellipse_poly(cx, cy, 66, 78, 40)], TORTOISESHELL, axis=(0.3, 1.0), outline=4.5)
-    plates = [(cx, cy - 42, 17), (cx, cy, 17), (cx, cy + 42, 17)] + [(cx + sd * 38, cy + dy, 15) for sd in (-1, 1) for dy in (-22, 22)]
-    for hx, hy, r in plates:
+    # v3.244.0（DT-609 11/27）: 専用の絵は胴そのものが翡翠の甲羅になったので、甲羅を丸ごと覆わず、
+    # 翡翠の甲羅の縁にべっ甲の縁甲板（TORTOISE_RIM_PLATES 枚）を並べ、背の真ん中の筋にだけ小さな甲板を3枚乗せる（翡翠が見えるように）
+    scx, cy, k = TORTOISE_SHELL
+    cx = p["left"] + scx
+    rx, ry = TORTOISE_RIM
+    for i in range(TORTOISE_RIM_PLATES):
+        a = math.radians(90 + 360 * (i + 0.5) / TORTOISE_RIM_PLATES)
+        hx, hy, r = cx + math.cos(a) * rx, cy + math.sin(a) * ry, 12.5
         front.shape([hexagon(hx, hy, r)], TORTOISESHELL, axis=(-0.5, 1.0), outline=2.5, facet=[(hx, hy), *hexagon(hx, hy, r)[:3]])
+    for dy in (-46, 0, 46):
+        hx, hy, r = cx, cy + dy, 11
+        front.shape([hexagon(hx, hy, r)], TORTOISESHELL, axis=(-0.5, 1.0), outline=2.2, facet=[(hx, hy), *hexagon(hx, hy, r)[:3]])
     if tail == "root":
-        tortoise_pendant(back, cx, TORTOISE_TAIL_Y)
+        tortoise_pendant(back, cx + TORTOISE_TAIL_DX, TORTOISE_TAIL_Y)
     return stack(back, sprite, front)
 
 
@@ -942,10 +960,10 @@ SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel 
     "falcon": dict(cx=63.0, cy=179.6, sl=(32.8, 183), sr=(93.2, 183), wa=(316, 55.0)),
     "swallow": dict(cx=53.0, cy=179.7, sl=(12.7, 182), sr=(93.3, 182), wa=(317, 60.2)),
     "hornet": dict(cx=82.3, cy=173.0, sl=(22.4, 139), sr=(142.6, 139), wa=(316, 18.1)),
-    # v3.235.0: 鮫竜・亀竜・雷雲竜は借りている絵（燕竜・ガーゴイル（*_classic）・影竜）の値。蛙竜は元の値
-    "shark": dict(cx=53.0, cy=179.7, sl=(12.7, 182), sr=(93.3, 182), wa=(317, 60.2)),
-    "tortoise": dict(cx=115.0, cy=173.2, sl=(20.9, 110), sr=(209.1, 110), wa=(317, 68.0)),
-    "thunder": dict(cx=74.5, cy=174.7, sl=(22.8, 177), sr=(126.2, 177), wa=(317, 63.4)),
+    # v3.244.0: 鮫竜・亀竜・雷雲竜は専用の絵（tools/gen_dragon_design.py）の値（tools/sprite_meta.py の実測）。蛙竜は元の値
+    "shark": dict(cx=42.5, cy=155.1, sl=(7.6, 155), sr=(77.4, 155), wa=(319, 74.2)),
+    "tortoise": dict(cx=114.8, cy=162.4, sl=(19.2, 87), sr=(210.8, 87), wa=(319, 71.6)),
+    "thunder": dict(cx=71.4, cy=175.3, sl=(18.0, 162), sr=(113.0, 162), wa=(319, 64.8)),
     "frog": dict(cx=139.9, cy=185.3, sl=(71.0, 182), sr=(208.0, 182), wa=(317, 66.1)),
 }
 

@@ -43,7 +43,8 @@ GEMS = {
 }
 
 # 専用の絵が無く、別の竜種の絵を借りている竜種（index.html の DRAGON_PARTS_ALIAS と同じ）。宝石の絵はその輪郭のまま作る
-SOURCE = {"shark": "swallow", "tortoise": "gargoyle", "thunder": "shadow"}
+# v3.244.0（DT-609 11/27）: 鮫竜・亀竜・雷雲竜は専用の絵（tools/gen_dragon_design.py）ができたので、借りる絵は無くなった
+SOURCE = {}
 
 # v3.235.0: 緑の宝石（ペリドット・翡翠）は緑の背景だと石まで抜け（覆いが2〜3割）、緑かぶり消しで色もくすむので、マゼンタの背景で抜く
 MAGENTA = (255, 0, 255)
