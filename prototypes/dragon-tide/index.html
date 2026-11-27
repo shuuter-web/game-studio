@@ -1493,7 +1493,7 @@ window.addEventListener("error", function () { var el = document.getElementById(
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.242.0";
+const GAME_VERSION = "v3.243.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -13259,6 +13259,7 @@ function regionSpawnTable(table) {
 function barracksUnitFor(stageIdx) {
   if (worldShape === SHAPE_SWORD) return "sword_runner";   // v3.122.0（DT-535）: 道場（兵舎）は剣士を送り出す
   let key = BARRACKS_UNIT_BY_STAGE[stageIdx];
+  if (worldShape === SHAPE_STARFORT && key === "colossus") key = STARFORT_BARRACKS_UNIT_FALLBACK;   // v3.243.0（DT-034）: 城の兵舎は兵隊だけ
   if (key && !wastelandAllowsMover(key)) key = WASTELAND_BARRACKS_FALLBACK;
   return MOVER_DEFS[key] ? key : null;
 }
@@ -19961,6 +19962,29 @@ const STARFORT_POINT_KINDS = [
   { key: "push",   emplacement: "concussionBattery", color: KNOCKBACK_MARK_COLOR },
   { key: "spin",   emplacement: "spinTurret",        color: "#c080ff" },
 ];
+// v3.243.0（案帳 DT-034 手直し・11/27 Shooter「建物や動く敵はいっぱいいる方がいい。普通に建物で埋めて、兵舎から敵も出るように。
+//   城なので兵隊型の敵がいっぱい出てくるのがマッチしている」「五角形の城は角同士が援護し合うもの。頻度は少なくていいので隣の角から援護砲撃を」）:
+// 各段の石の星の中（稜堡の三角と、内の段より外の帯）を城下の建物で埋める。建物はその段といっしょに回り、段が開くまでは隠れている。
+// そのうち STARFORT_BARRACKS[段] 棟を兵舎にする（ほかの地域の兵舎と同じ仕組み。群れが近いと戸口から兵の隊を出す）。
+// 建物は町の家並みと同じく群れのえさ（卵・経験値）。先端の塔（角）を落としても建物は崩れない（段が開く条件は角だけのまま）
+const STARFORT_HOUSE_STEP    = [62, 54, 46];           // 段ごとの建物の間隔（px。格子に並べてから少し揺らす）
+const STARFORT_HOUSE_JITTER  = 0.32;                   // 揺らす幅（間隔に対する割合）
+const STARFORT_HOUSE_EDGE    = 30;                     // 星の縁（石の辺）からこれだけ内側にだけ建てる
+const STARFORT_HOUSE_TIP_CLEAR = 2.8;                  // 先端の塔のまわり（塔の半径×これ）は空ける
+const STARFORT_HOUSE_INNER_PAD = 70;                   // 内の段の先端の円（＋これ）より内には建てない（内の段は別の速さで回るので重ならないように）
+const STARFORT_HOUSE_SIZES   = [["small", 0.55], ["medium", 0.35], ["large", 0.10]];   // 大きさの割合
+const STARFORT_HOUSE_EGG_CHANCE = 0.12;                // 卵を持っている割合（町の家並みと同じくらい）
+const STARFORT_BARRACKS      = [10, 5, 0];             // 段ごとの兵舎の数（外の段は稜堡1つに2棟。3段目は狭くて建物がほぼ建たない）
+const STARFORT_BARRACKS_UNIT_FALLBACK = "shieldman";   // 兵舎が兵隊でない敵（電気の巨像）を出す時代の代わり
+// 援護砲撃：開いている段の角は、群れが隣の角（STARFORT_SUPPORT_NEAR 以内）に取りついていて自分からは遠い（STARFORT_SUPPORT_SELF_MIN より外）とき、
+// STARFORT_SUPPORT_INTERVAL 秒に1発、群れの真ん中へ主砲弾（落下点に予告円の出る重い1発）を撃つ
+const STARFORT_SUPPORT_INTERVAL = 9;
+const STARFORT_SUPPORT_JITTER   = 3;                   // 角ごとに間隔を少しずらす（秒）
+const STARFORT_SUPPORT_NEAR     = 650;
+const STARFORT_SUPPORT_SELF_MIN = 450;
+const STARFORT_SUPPORT_SPEED    = 620;
+const STARFORT_SUPPORT_DAMAGE   = 6.0;                 // 投石機の巨岩（TREBUCHET_DAMAGE 5.0）より少し重い
+const STARFORT_SUPPORT_AOE      = 110;
 const STARFORT_GROUND_BG  = "#3d4c2c";                 // 城のまわりの草地（暗めの緑。灰色の石と竜が浮いて見える明るさ）
 const STARFORT_COLORS = {
   moat: "#1f3a48", moatEdge: "#5a7a86",
@@ -20041,15 +20065,99 @@ function buildStarfort(result, boss, config, stageIndex) {
       }
       tier.bastions.push(B);
     }
+    tier.houses = starfortBuildHouses(t, T, tier, config, era, keepHp, boss);
     starfort.tiers.push(tier);
   });
-  for (const tier of starfort.tiers) for (const B of tier.bastions) { result.push(B.tip); for (const blk of B.blocks) result.push(blk); }
+  for (const tier of starfort.tiers) {
+    for (const B of tier.bastions) { result.push(B.tip); for (const blk of B.blocks) result.push(blk); }
+    for (const h of tier.houses) result.push(h);
+  }
   // 天守（首都）は3段目を落とすまで出てこない。生成時の中心は _capitalX に控える（capitalAnchor が動く敵の配置などに使う）
   boss._starKeep = true;
   boss.maxHp = boss.hp = Math.round(keepHp * STARFORT_KEEP_HP);   // v3.236.0
   boss._capitalX = boss.wx; boss._capitalY = boss.wy;
   boss._starHidden = true;
   starfortPlaceParts();
+}
+
+/**
+ * v3.243.0（DT-034 手直し）: 段 t の石の星の中を城下の建物で埋める（段の向き0のときの座標で並べ、_star に極座標で持たせて段と回す）。
+ * 内の段の先端の円より内・先端の塔のまわり・星の縁の近くは空ける。兵舎は内寄り（谷の側）の大きめの棟から選ぶ
+ */
+function starfortBuildHouses(t, T, tier, config, era, keepHp, boss) {
+  const houses = [];
+  const step = STARFORT_HOUSE_STEP[t];
+  const inner = t + 1 < STARFORT_TIERS.length ? STARFORT_TIERS[t + 1].ro + STARFORT_HOUSE_INNER_PAD : boss.radius + STARFORT_HOUSE_INNER_PAD;
+  // 星の頂点（先端と谷を交互に。段の向き0）
+  const poly = [];
+  for (let i = 0; i < STARFORT_POINTS; i++) {
+    const a = i * STARFORT_STEP, va = a + STARFORT_STEP / 2;
+    poly.push([T.ro * Math.cos(a), T.ro * Math.sin(a)], [T.ri * Math.cos(va), T.ri * Math.sin(va)]);
+  }
+  const inside = (x, y) => {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  const edgeDist = (x, y) => {
+    let best = Infinity;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [ax, ay] = poly[j], [bx, by] = poly[i];
+      const ex = bx - ax, ey = by - ay, len2 = ex * ex + ey * ey;
+      const u = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / len2));
+      best = Math.min(best, Math.hypot(x - ax - ex * u, y - ay - ey * u));
+    }
+    return best;
+  };
+  const tipR = T.ro - T.tipR * STARFORT_TIP_INSET, tipClear = T.tipR * STARFORT_HOUSE_TIP_CLEAR;
+  const pickSize = () => {
+    let r = random();
+    for (const [size, w] of STARFORT_HOUSE_SIZES) { if (r < w) return size; r -= w; }
+    return "small";
+  };
+  for (let gy = -T.ro; gy <= T.ro; gy += step) {
+    for (let gx = -T.ro; gx <= T.ro; gx += step) {
+      const x = gx + (random() - 0.5) * 2 * step * STARFORT_HOUSE_JITTER;
+      const y = gy + (random() - 0.5) * 2 * step * STARFORT_HOUSE_JITTER;
+      const r = Math.hypot(x, y);
+      if (r < inner || r > T.ro || !inside(x, y) || edgeDist(x, y) < STARFORT_HOUSE_EDGE) continue;
+      let nearTip = false;
+      for (let i = 0; i < STARFORT_POINTS && !nearTip; i++) {
+        const a = i * STARFORT_STEP;
+        nearTip = Math.hypot(x - tipR * Math.cos(a), y - tipR * Math.sin(a)) < tipClear;
+      }
+      if (nearTip) continue;
+      const size = pickSize();
+      const cfg = config.buildings[size];
+      const avg = (BUILDING_SIZE_PARAMS[size].hpMin + BUILDING_SIZE_PARAMS[size].hpMax) / 2;
+      const h = makeBuilding(0, 0, size, randChoice(cfg.colors), cfg, Math.round(avg * era.hp * T.blockHp));
+      h._fixedTier = maxPowerTier();   // 警戒度で建て直さない（回る城の部品。削った傷が残る）
+      h._noFlip = true;
+      h.isEggBearer = random() < STARFORT_HOUSE_EGG_CHANCE;
+      h._star = { tier: t, lr: r, la: Math.atan2(y, x), face: (random() - 0.5) * 0.4 };
+      h._starHouse = true;
+      houses.push(h);
+    }
+  }
+  // 兵舎：谷に近い（内寄りの）大きめの棟から、稜堡ごとに散らして選ぶ
+  const want = STARFORT_BARRACKS[t] || 0;
+  const pool = houses.filter(h => h.size !== "small").sort((a, b) => a._star.lr - b._star.lr);
+  for (let k = 0; k < want && pool.length > 0; k++) {
+    const aim = (k + 0.5) * Math.PI * 2 / want;
+    let best = 0, bestD = Infinity;
+    pool.forEach((h, i) => {
+      let d = Math.abs(((h._star.la - aim) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI);
+      d += h._star.lr / T.ro * 0.3;   // 内寄りを少し好む
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    const bk = pool.splice(best, 1)[0];
+    bk._townRole = "barracks";
+    bk.radius = Math.max(bk.radius, BUILDING_SIZE_PARAMS.medium.radiusBase + 4);
+  }
+  return houses;
 }
 
 /** 段の回転に合わせて部品の位置を決める。開いていない段の部品と出る前の天守は地図の外 */
@@ -20068,6 +20176,7 @@ function starfortPlaceParts() {
       place(B.tip, tier);
       for (const blk of B.blocks) place(blk, tier);
     }
+    for (const h of tier.houses || []) place(h, tier);
   }
   const keep = S.keep;
   if (keep && keep._starHidden) { keep.wx = STARFORT_OFFWORLD; keep.wy = STARFORT_OFFWORLD; }
@@ -20151,6 +20260,7 @@ function updateStarfort(dt) {
       emitNovaFrom(tip, STARFORT_BOSS_NOVA_RADIUS, B.kind.color);
       triggerShake(3, 0.2);
     }
+    starfortSupportFire(openTier, dt);
   }
   // 先端の塔が落ちた稜堡は、残りの石垣もまとめて崩れる（それぞれの経験値・卵も出る）
   while (S.pending.length > 0) {
@@ -20165,6 +20275,33 @@ function updateStarfort(dt) {
   const tier = S.tiers[S.active];
   if (tier && tier.open && !tier.done && tier.bastions.every(B => B.tip.fallen)) starfortOpenNext(true);
   if (++S.gridTick >= STARFORT_GRID_INTERVAL) { S.gridTick = 0; rebuildMovingBuildingGrid(); }
+}
+
+/**
+ * v3.243.0（DT-034 手直し）: 援護砲撃。隣の角に群れが取りついている間、ほかの生きている角がときどき群れの真ん中へ主砲弾を撃つ
+ * （群れが自分のすぐそばにいる角は撃たない＝自分の砲と衝撃波で戦っている）
+ */
+function starfortSupportFire(tier, dt) {
+  const c = calcFriendlyCentroid();
+  if (!c) return;
+  const near2 = STARFORT_SUPPORT_NEAR * STARFORT_SUPPORT_NEAR, self2 = STARFORT_SUPPORT_SELF_MIN * STARFORT_SUPPORT_SELF_MIN;
+  const list = tier.bastions;
+  for (let i = 0; i < list.length; i++) {
+    const tip = list[i].tip;
+    if (tip.fallen) continue;
+    if (tip._supportTimer === undefined) tip._supportTimer = STARFORT_SUPPORT_INTERVAL * 0.5 + random() * STARFORT_SUPPORT_JITTER;
+    tip._supportTimer -= dt;
+    if (tip._supportTimer > 0) continue;
+    if (dist2(tip.wx, tip.wy, c.x, c.y) < self2) { tip._supportTimer = 1; continue; }
+    let covering = false;
+    for (const j of [(i + 1) % list.length, (i + list.length - 1) % list.length]) {
+      const nb = list[j].tip;
+      if (!nb.fallen && dist2(nb.wx, nb.wy, c.x, c.y) < near2) covering = true;
+    }
+    if (!covering) { tip._supportTimer = 1; continue; }
+    tip._supportTimer = STARFORT_SUPPORT_INTERVAL + random() * STARFORT_SUPPORT_JITTER;
+    spawnShell(tip.wx, tip.wy, c.x, c.y, STARFORT_SUPPORT_SPEED, STARFORT_SUPPORT_DAMAGE, STARFORT_SUPPORT_AOE, list[i].kind.color, 5);
+  }
 }
 
 /** 段 tier の星の頂点（先端と谷を交互に）を ctx のパスに書く。pad だけ外へ広げる */
@@ -20251,6 +20388,15 @@ function drawStarfort() {
         }
         ctx.restore();
       }
+    }
+  }
+  // v3.243.0（DT-034 手直し）: 城下の建物（開いている段だけ。兵舎は戸口の演出も）
+  for (const tier of S.tiers) {
+    if (!tier.open) continue;
+    for (const h of tier.houses || []) {
+      if (h.wx < view.x0 - h.radius || h.wx > view.x1 + h.radius || h.wy < view.y0 - h.radius || h.wy > view.y1 + h.radius) continue;
+      drawSettlementOnLayer(ctx, h);
+      if (h._townRole === "barracks" && !h.fallen) drawBarracksDoor(h);
     }
   }
   // 先端の塔：色の付いた印（攻撃の型）の上に塔の絵。火炎の塔の炉は drawFlames が描く
