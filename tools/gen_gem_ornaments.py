@@ -1165,15 +1165,46 @@ def bomber_wing(src):
 
 
 # 屍竜（白いオパールの骨＋タンザナイトの膜）：後頭部から首の上を後ろへなびくウランガラス（緑に光るガラス）の鬼火の炎（舌3枚）・
-# 尾の骨の左右に後ろへ反る黒いガラスの棘3対・尾の先に黒いガラスの大鎌の刃（刃の縁はウランガラス）。紫の灯と反対の緑、骨の白と黒で締める。翼は飾らない
+# 尾の骨の左右に後ろへ反る黒いガラスの棘3対・尾の先に黒いガラスの大鎌の刃（刃の縁はウランガラス）。紫の灯と反対の緑、骨の白と黒で締める。
+# v3.259.0（DT-655 手直し・11/28 Shooter「進化後に光る場所があんまり無いので翼も光らせられますか」「鬼火の炎いい感じなのでもう1、2箇所に」）:
+#   翼の膜（タンザナイト）を内から光らせて縁に紫のにじみ、翼の手首の爪の骨と腰（骨盤の左右）にも小さな鬼火の炎、鬼火のまわりに緑のにじみ
 BONE_PAD_ROOT = dict(left=40, top=0, right=40, bottom=110)
 BONE_PAD_TIP = dict(left=40, top=0, right=40, bottom=0)
+BONE_WING_PAD = dict(left=10, top=10, right=10, bottom=10)   # 翼のにじみの分
 BONE_CX = 48.5
 BONE_WISP_ROOT = 54                   # 鬼火の炎の付け根（後頭部）の高さ
 BONE_WISP_TONGUES = ((-24, 58, 15, -0.6), (24, 58, 15, 0.6), (0, 84, 18, 0.45))   # 炎の舌（向きのずれ°, 長さ, 太さ, 揺れ）。左右へ広げると開いた翼にかかる
+BONE_HIP_WISP = (29, 184, 0.5, 26)   # 腰の鬼火（真ん中からのずれ, 高さ, 大きさ, 外への向き°）
+BONE_WING_WISP = (176, 12, 0.7, 28)   # 翼の手首の爪の骨の鬼火（x, y, 大きさ, 外への向き°。翼の絵は左の翼で、外＝左）
 BONE_SPINES = (228, 252, 276)         # 尾の骨の棘の高さ
 BONE_SPINE = (40, 16, 128)            # 棘の長さ・太さ・向き
 BONE_TAIL_Y = 312
+URANIUM_CORE = dict(URANIUM, base=(226, 255, 200), dark=(170, 240, 120))
+WISP_GLOW = (150, 255, 110)           # 鬼火のまわりのにじみの色
+MEMBRANE_GLOW = (160, 120, 255)       # 翼の膜の光とにじみの色
+
+
+def bone_wisp(canvas, x, y, scale=1.0, turn=0.0, spread=0.25):
+    """ウランガラスの鬼火の炎（舌3枚と芯の白い炎）。根元 (x,y) から後ろ（turn° だけ回す）へなびく"""
+    for dang, length, width, lean in BONE_WISP_TONGUES:
+        rx = x + dang * spread * scale   # 舌の付け根を少しずつ離す（くっつくと1枚の板に見えた）
+        canvas.shape([flame(rx, y, length * scale, width * scale, math.radians(180 + dang + turn), lean=lean)], URANIUM,
+                     axis=(0.0, 1.0), outline=3.0 * max(0.6, scale))
+    for dang, length, width, lean in BONE_WISP_TONGUES:   # 芯の白い炎（舌の内側）
+        canvas.shape([flame(x + dang * spread * scale, y + 3 * scale, length * 0.55 * scale, width * 0.45 * scale,
+                            math.radians(180 + dang + turn), lean=lean)], URANIUM_CORE, axis=(0.0, 1.0), outline=0.1)
+
+
+def glow_under(img, mask, color, radius, strength):
+    """mask（真偽の配列）のまわりに color のにじみを敷く（絵の下に置く）"""
+    m = Image.fromarray((mask * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(radius))
+    a = np.clip(np.array(m, np.float32) / 255 * 2.2, 0, 1) * strength   # 縁の近くまでしっかり、外へ行くほど薄く
+    halo = np.zeros((img.height, img.width, 4), np.uint8)
+    halo[..., :3] = color
+    halo[..., 3] = (a * 255).astype(np.uint8)
+    out = Image.fromarray(halo, "RGBA")
+    out.alpha_composite(img)
+    return out
 
 
 def bone_scythe(canvas, tx, ty):
@@ -1191,12 +1222,10 @@ def bone_body(src, tail="root"):
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
     cx = p["left"] + BONE_CX
-    for dang, length, width, lean in BONE_WISP_TONGUES:
-        rx = cx + dang * 0.25   # 舌の付け根を少しずつ離す（くっつくと1枚の板に見えた）
-        front.shape([flame(rx, BONE_WISP_ROOT, length, width, math.radians(180 + dang), lean=lean)], URANIUM, axis=(0.0, 1.0), outline=3.0)
-    for dang, length, width, lean in BONE_WISP_TONGUES:   # 芯の白い炎（舌の内側）
-        front.shape([flame(cx + dang * 0.25, BONE_WISP_ROOT + 3, length * 0.55, width * 0.45, math.radians(180 + dang), lean=lean)],
-                    dict(URANIUM, base=(226, 255, 200), dark=(170, 240, 120)), axis=(0.0, 1.0), outline=0.1)
+    bone_wisp(front, cx, BONE_WISP_ROOT)
+    hx, hy, hs, hturn = BONE_HIP_WISP
+    for sd in (-1, 1):
+        bone_wisp(front, cx + sd * hx, hy, hs, sd * -hturn)
     length, width, ang = BONE_SPINE
     for y in BONE_SPINES:
         for sd in (-1, 1):
@@ -1204,7 +1233,12 @@ def bone_body(src, tail="root"):
             back.shape([poly], BLACK_GLASS, axis=(0.4, 1.0), outline=3.0, ridge=spine)
     if tail == "root":
         bone_scythe(back, cx, BONE_TAIL_Y)
-    return stack(back, sprite, front)
+    fr = front.finish()   # 鬼火のまわりに緑のにじみを敷いてから、棘・骨・鬼火の順に重ねる
+    out = glow_under(Image.new("RGBA", sprite.size, (0, 0, 0, 0)), np.array(fr)[:, :, 3] > THRESH, WISP_GLOW, 4, 0.55)
+    out.alpha_composite(back.finish())
+    out.alpha_composite(sprite)
+    out.alpha_composite(fr)
+    return out
 
 
 def bone_tailtip():
@@ -1217,7 +1251,27 @@ def bone_tailtip():
 
 
 def bone_wing(src):
-    return None
+    """翼の膜（タンザナイト）を内から光らせる：膜の奥ほど明るい紫に寄せ、膜のまわりに紫のにじみ。手首の爪の骨に鬼火"""
+    p = BONE_WING_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    a = np.array(sprite).astype(np.float32)
+    r, g, b, al = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    membrane = (al > THRESH) & (b > r + 30) & (b > g + 30)
+    inner = np.array(Image.fromarray((membrane * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(5)), np.float32) / 255
+    k = (np.clip(inner, 0, 1) * 0.45 + 0.1)[..., None] * membrane[..., None]
+    glow = np.array(MEMBRANE_GLOW, np.float32)
+    rgb = a[..., :3]
+    lit = 255 - (255 - rgb) * (255 - glow) / 255   # スクリーンで重ねる（面の明暗は残す）
+    a[..., :3] = rgb * (1 - k) + lit * k
+    sprite = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "RGBA")
+    sprite = glow_under(sprite, membrane, MEMBRANE_GLOW, 4, 0.75)
+    front = Canvas(*sprite.size)
+    wx, wy, ws, wturn = BONE_WING_WISP
+    bone_wisp(front, wx + p["left"], wy + p["top"], ws, wturn)
+    fr = front.finish()
+    out = glow_under(sprite, np.array(fr)[:, :, 3] > THRESH, WISP_GLOW, 4, 0.55)
+    out.alpha_composite(fr)
+    return out
 
 
 SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel はここに余白を足して作る）
@@ -1288,7 +1342,7 @@ def main():
         ("ufo", ufo_body, ufo_wing, UFO_PAD, dict(left=0, top=0, right=0, bottom=0)),   # v3.258.0（DT-652〜655）
         ("comet", comet_body, comet_wing, COMET_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("bomber", bomber_body, bomber_wing, BOMBER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
-        ("bone", bone_body, bone_wing, BONE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("bone", bone_body, bone_wing, BONE_PAD_ROOT, BONE_WING_PAD),
     ):
         if only and element not in only:
             continue
