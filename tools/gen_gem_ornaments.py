@@ -761,8 +761,11 @@ SHARK_HEAD_BACK_Y = 100  # 後頭部（えらの後ろ）
 SHARK_HEAD_BACK_DX = 30  # 赤珊瑚の枝の根元の左右のずれ（胴の縁の近く）
 SHARK_FIN_Y = 122        # 背びれの付け根の先（胴の絵の背びれに重ねる）
 # 赤珊瑚の枝：（根元からの割合, 向きのずれ°, 長さ, 太さ）。幹は横・後ろへ、枝は前と後ろへ分かれる
-SHARK_CORAL_TRUNK = (108, 136, 26)            # 幹の向き（0＝顔の向き・90＝真横）・長さ・太さ
-SHARK_CORAL_BRANCHES = ((0.3, 50, 66, 17), (0.5, -42, 56, 15), (0.75, 44, 46, 13))
+# v3.255.0（DT-650 11/28 Shooter「サンゴのツノが翼にかかっちゃってるので、前後反転してかからないように」）:
+# 横・後ろへ張っていた枝（幹 108°）を前後に反転し、横・前へ張る（幹 72°・枝の向きのずれと反りも裏返す）
+SHARK_CORAL_TRUNK = (72, 136, 26)             # 幹の向き（0＝顔の向き・90＝真横）・長さ・太さ
+SHARK_CORAL_BRANCHES = ((0.3, -50, 66, 17), (0.5, 42, 56, 15), (0.75, -44, 46, 13))
+SHARK_CORAL_BEND = -0.35                      # 幹の反り（負＝前へ反る）。枝はこの 0.86 倍
 SHARK_TEETH = 4          # 翼の後ろの縁に並べる鮫の歯の数
 
 
@@ -777,12 +780,12 @@ def shark_caudal(canvas, tx, ty):
 def coral_branch(canvas, rx, ry, sd):
     """赤珊瑚の枝（sd＝-1 左・1 右）。幹から3本の枝が分かれ、先に丸い珊瑚の粒"""
     ang, length, width = SHARK_CORAL_TRUNK
-    trunk, spine = curved_blade(rx, ry, length, width, math.radians(sd * ang), sd * 0.35)
+    trunk, spine = curved_blade(rx, ry, length, width, math.radians(sd * ang), sd * SHARK_CORAL_BEND)
     shapes = [(trunk, spine)]
     pts = spine + [spine[-1]]
     for at, dang, blen, bw in SHARK_CORAL_BRANCHES:
         bx, by = pts[min(len(pts) - 1, int(at * len(pts)))]
-        shapes.append(curved_blade(bx, by, blen, bw, math.radians(sd * (ang + dang)), sd * 0.3))
+        shapes.append(curved_blade(bx, by, blen, bw, math.radians(sd * (ang + dang)), sd * SHARK_CORAL_BEND * 0.86))
     for poly, sp in shapes:
         canvas.shape([poly], CORAL, axis=(0.4, 1.0), outline=4.0, ridge=sp)
     for poly, sp in shapes:   # 枝の先の粒（先の少し手前に置いて、細い先を丸くする）
@@ -792,7 +795,7 @@ def coral_branch(canvas, rx, ry, sd):
 
 
 def shark_body(src, tail="root"):
-    """鮫竜（サファイア）：えらの後ろから横・後ろへ大きく枝を張る赤珊瑚（根元に真珠）・背骨に乗って後ろへ反る真珠層の背びれ。
+    """鮫竜（サファイア）：えらの後ろから横・前へ大きく枝を張る赤珊瑚（v3.255.0 で前後反転）（根元に真珠）・背骨に乗って後ろへ反る真珠層の背びれ。
     尾の先に大きな三日月の尾びれ。翼の後ろの縁に真珠層の鮫の歯"""
     p = SHARK_PAD_ROOT if tail == "root" else SHARK_PAD_TIP
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])

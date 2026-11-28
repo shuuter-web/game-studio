@@ -60,6 +60,11 @@ EXTRA = {
                 "scales are {gem}. Every DARK storm-cloud part (the whole wing membrane between the lightning bones, and the cloud "
                 "mane along the back) must stay DARK: cut it as polished jet-black onyx / black diamond facets (near-black charcoal "
                 "with steel-blue glints and thin white facet edges). Do NOT turn the dark cloud parts yellow, gold, grey or silver."),
+    # v3.255.0（DT-650 11/28 Shooter「鮫竜の進化の胴体が、小さなサメが大きな宝石の上に乗ってるみたいになってる」）:
+    # 全身カットで、輪郭いっぱいの宝石の塊の上に、ひと回り小さい鮫の線画（目・えら・背びれ）が乗った絵になった。鮫の形そのものを石で切らせる
+    "shark": (" The shark's OWN body is the gem: the facets follow the shark's anatomy (snout, eyes, gill slits, dorsal fin, pectoral "
+              "fins, belly, legs) at FULL SIZE, filling the input silhouette edge to edge. Do NOT draw a smaller shark, a shark outline "
+              "or shark line-art on top of / inside a big gem block, and no second inner outline. The outer ink outline IS the shark's outline."),
 }
 MAGENTA_BG = {"frog", "tortoise"}
 
