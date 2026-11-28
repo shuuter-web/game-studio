@@ -40,6 +40,11 @@ GEMS = {
     "frog": "vivid lime-green peridot gemstone (bright yellowish green)",
     "tortoise": "translucent VIVID saturated imperial-green jadeite jade gemstone (bright leaf green like a tortoise, recolour everything green, NOT grey, NOT stone grey)",
     "thunder": "bright lemon-gold heliodor (golden yellow beryl) gemstone, electric and luminous",
+    # v3.257.0（DT-652〜655）: UFO・彗星竜・爆竜・屍竜
+    "ufo": "rainbow moonstone gemstone: luminous milky silvery-white with a strong electric cyan-blue glow (adularescence), bright and cool, NOT dull grey",
+    "comet": "golden sunstone gemstone: BRIGHT luminous pale cream-gold and light honey-yellow (like the input colours, NOT brown, NOT tan, NOT pink), full of tiny glittering gold spangles like stardust",
+    "bomber": "imperial topaz gemstone: vivid saturated sherry-orange to reddish orange, warm and fiery",
+    "bone": "white precious opal for every bone (milky white with soft pastel rainbow play-of-colour flecks), and violet-blue tanzanite for the purple parts",
 }
 
 # 専用の絵が無く、別の竜種の絵を借りている竜種（index.html の DRAGON_PARTS_ALIAS と同じ）。宝石の絵はその輪郭のまま作る
@@ -65,6 +70,24 @@ EXTRA = {
     "shark": (" The shark's OWN body is the gem: the facets follow the shark's anatomy (snout, eyes, gill slits, dorsal fin, pectoral "
               "fins, belly, legs) at FULL SIZE, filling the input silhouette edge to edge. Do NOT draw a smaller shark, a shark outline "
               "or shark line-art on top of / inside a big gem block, and no second inner outline. The outer ink outline IS the shark's outline."),
+    # v3.257.0（DT-652〜655）: 鮫竜の「大きな宝石の上に小さな鮫」と同じ崩れを先に防ぐ（竜の形そのものを石で切らせる）
+    "comet": (" The dragon's OWN body is the gem: the facets follow its anatomy (head, neck, legs, toes, the glowing core on the back, "
+              "tail) at FULL SIZE, filling the input silhouette edge to edge. Do NOT draw a smaller dragon or dragon line-art on top of / "
+              "inside a big gem block, no second inner outline. Keep everything the input has (such as a glowing core) and add nothing new."),
+    "bomber": (" The dragon's OWN armoured body is the gem: keep the armour plate divisions and the rivets as the facet layout, at FULL "
+               "SIZE, filling the input silhouette edge to edge. Do NOT draw a smaller dragon on top of / inside a big gem block, no second inner outline."),
+    "bone": (" Keep it a SKELETON: every bone (skull, spine, ribs, leg bones, tail vertebrae, wing bones) is cut from {gem}, with the "
+             "gaps between the bones kept empty exactly like the input. The purple flame in the chest and the purple eye glow stay "
+             "glowing violet. On a wing, the torn membrane between the bones is the violet tanzanite, the bones are the white opal. "
+             "Do NOT fill the skeleton into a solid body, do NOT draw a smaller skeleton on top of a gem block. Do not add eyes, skulls or anything new."),
+    "ufo": (" It is a round flying-saucer disc seen from straight above: the WHOLE disc is the gem (the outer rim ring, the concentric "
+            "panels and the central glass dome), filling the input circle edge to edge. Keep the small glowing cyan lights around the "
+            "rim as little round cyan gems. No dragon, no other object, the same perfect circle."),
+}
+# v3.257.0: 原石にも効かせる注意（骨のすき間を埋めない・円盤のまま）
+EXTRA_ROUGH = {
+    "bone": " Keep it a SKELETON with the gaps between the bones empty exactly like the input; bones are rough white opal ore, the purple parts rough violet tanzanite.",
+    "ufo": " It is a round flying-saucer disc seen from straight above: keep the perfect circle, the rim ring, the concentric panels, the central dome and the little rim lights.",
 }
 MAGENTA_BG = {"frog", "tortoise"}
 
@@ -163,7 +186,7 @@ def main():
     sb = bbox(src_a)
     best = None
     for attempt in range(TRIES):
-        extra = EXTRA.get(species, "").format(gem=gem) if stage == "sparkle" else ""
+        extra = (EXTRA if stage == "sparkle" else EXTRA_ROUGH).get(species, "").format(gem=gem)
         raw = generate(PART_HINTS.get(part, "") + STAGE_PROMPTS[stage].format(gem=gem) + extra + " " + common, canvas)
         if os.environ.get("GEM_RAW_DIR"):
             raw.save(os.path.join(os.environ["GEM_RAW_DIR"], f"{species}_{stage}_{part}_{attempt}.png"))

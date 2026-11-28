@@ -1,6 +1,6 @@
 """Dragon Tide（DT-609）: 2回目の進化の飾りを、全身カットの宝石の絵（*_sparkle）に描き足して *_jewel を作る。
 
-  python3 tools/gen_gem_ornaments.py [竜種...]   # 火竜・氷竜・影竜・緋竜・飛竜・隼竜・燕竜・蜂竜・鮫竜・雷雲竜・亀竜・蛙竜（名指しでその竜種だけ）の *_jewel_body.png / *_jewel_wing.png を書き出し、DRAGON_PART_SPRITES に貼る値を出す
+  python3 tools/gen_gem_ornaments.py [竜種...]   # 火竜・氷竜・影竜・緋竜・飛竜・隼竜・燕竜・蜂竜・鮫竜・雷雲竜・亀竜・蛙竜・UFO・彗星竜・爆竜・屍竜（名指しでその竜種だけ）の *_jewel_body.png / *_jewel_wing.png を書き出し、DRAGON_PART_SPRITES に貼る値を出す
 
 前の版（v3.191.0）は画像生成で「全身の金の縁取り＋細かい飾り」を描いたので、全体を縁取っただけに見えた。
 こちらは手で形を決めて飾る部位だけを太く描き、**元の輪郭からはみ出させる**（画像の余白を足して広げる）。
@@ -1000,6 +1000,226 @@ def frog_wing(src):
     return None
 
 
+# ---------------------------------------------------------------- v3.257.0（案帳 DT-652〜655）: UFO・彗星竜・爆竜・屍竜
+# 4竜種とも専用の絵（DRAGON_PARTS_ALIAS で借りていない）なので、その輪郭のまま宝石にして飾る。尾の飾りは動く尻尾の先（"tip"）。UFO は尻尾が無い
+LAPIS = dict(light=(150, 176, 255), base=(34, 56, 176), dark=(12, 18, 86), line=(4, 6, 34))
+TURQUOISE = dict(light=(214, 255, 246), base=(46, 196, 192), dark=(14, 116, 128), line=(4, 40, 48))
+FIRE_OPAL = dict(light=(255, 234, 150), base=(252, 122, 30), dark=(186, 46, 10), line=(66, 14, 0))
+URANIUM = dict(light=(236, 255, 196), base=(124, 236, 72), dark=(38, 146, 30), line=(8, 48, 10))
+BLACK_GLASS = dict(light=(170, 176, 196), base=(34, 34, 44), dark=(6, 6, 12), line=(0, 0, 0))
+GLINT = dict(light=(255, 255, 255), base=(255, 255, 255), dark=(230, 236, 255), line=(255, 255, 255))   # 玉の照り（縁なし）
+
+
+def star4(cx, cy, r_out, r_in, rot_deg=0.0):
+    """4つの角の星（流れ星・火花の形）"""
+    pts = []
+    for i in range(8):
+        a = math.radians(rot_deg + i * 45)
+        r = r_out if i % 2 == 0 else r_in
+        pts.append((cx + math.sin(a) * r, cy - math.cos(a) * r))
+    return pts
+
+
+# UFO（ムーンストーン）：円盤の縁の下から、回る向きへ反る火蛋白石（ファイアオパール）の羽根を4枚（風車の形）。
+# 自転する円盤なので、向きを持つ飾り（後頭部・尾）ではなく、回る形で個性を出す。羽根の付け根の上に火蛋白石の粒を4つ乗せる
+UFO_PAD = dict(left=74, top=74, right=74, bottom=74)   # 羽根が縁から外へはみ出す分
+UFO_CX, UFO_CY, UFO_R = 159.5, 159.5, 156     # 円盤の真ん中と半径（dragon_ufo_body.png）
+UFO_BLADES = 4
+UFO_BLADE = (104, 60, 0.9)                    # 羽根の長さ（縁から）・幅・反り（ラジアン。回る向きへ）
+UFO_BLADE_FROM = 0.80                         # 羽根の付け根（半径の割合。縁の内側から生やして、縁の下から出てくるように）
+UFO_BLADE_TWIST = 28                          # 羽根の向きを外向きから回る向きへ傾ける角度
+
+
+def ufo_body(src, tail="root"):
+    p = UFO_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx, cy = p["left"] + UFO_CX, p["top"] + UFO_CY
+    length, width, bend = UFO_BLADE
+    for k in range(UFO_BLADES):
+        a = math.radians(45 + k * 360 / UFO_BLADES)
+        rx, ry = cx + math.sin(a) * UFO_R * UFO_BLADE_FROM, cy - math.cos(a) * UFO_R * UFO_BLADE_FROM
+        poly, spine = curved_blade(rx, ry, length + UFO_R * (1 - UFO_BLADE_FROM), width, a + math.radians(UFO_BLADE_TWIST), bend)
+        back.shape([poly], FIRE_OPAL, axis=(math.sin(a), -math.cos(a)), outline=4.5, ridge=spine)
+        bx, by = cx + math.sin(a) * UFO_R * 0.62, cy - math.cos(a) * UFO_R * 0.62
+        front.shape([ellipse_poly(bx, by, 13, 13, 20)], FIRE_OPAL, axis=(-0.4, 1.0), outline=3.0)
+        front.shape([ellipse_poly(bx - 4, by - 4, 4, 4, 10)], GLINT, outline=0.1)
+    return stack(back, sprite, front)
+
+
+def ufo_wing(src):
+    return None
+
+
+# 彗星竜（サンストーン）：後頭部（角の後ろ）から後ろ・外へなびく瑠璃（ラピスラズリ）の尾2本と、その先の金の星。
+# 尾の先に大きな瑠璃の4つの角の星（金の芯・後ろの角が長い流れ星）。夜空の青で、サンストーンの金と反対の色。翼は飾らない
+COMET_PAD_ROOT = dict(left=34, top=0, right=34, bottom=90)
+COMET_PAD_TIP = dict(left=34, top=0, right=34, bottom=0)
+COMET_CX = 58.5
+COMET_HEAD_BACK = (16, 74)            # 後頭部の左右の付け根（真ん中からのずれ, 高さ）
+COMET_STREAMER = (70, 28, 162, 0.35)  # 長さ・太さ・向き（0＝顔の向き・180＝真後ろ）・反り（外へ）。外へ広げすぎると開いた翼の前の縁にかかる
+COMET_TAIL_Y = 300
+
+
+def comet_star(canvas, tx, ty):
+    """彗星竜の尾の飾り：瑠璃の大きな4つの角の星（後ろの角が長い）と金の芯"""
+    pts = star4(tx, ty + 42, 42, 13)
+    pts[0] = (tx, ty - 2)
+    pts[4] = (tx, ty + 42 + 52)
+    canvas.shape([pts], LAPIS, axis=(0.5, 1.0), outline=3.5, ridge=[(tx, ty + 4), (tx, ty + 88)])
+    canvas.shape([star4(tx, ty + 42, 16, 6, 45)], GOLD, axis=(0.4, 1.0), outline=2.2)
+
+
+def comet_body(src, tail="root"):
+    p = COMET_PAD_ROOT if tail == "root" else COMET_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + COMET_CX
+    dx, hy = COMET_HEAD_BACK
+    length, width, ang, bend = COMET_STREAMER
+    for sd in (-1, 1):
+        rx = cx + sd * dx
+        poly, spine = curved_blade(rx, hy, length, width, math.radians(sd * ang), sd * bend)
+        back.shape([poly], LAPIS, axis=(0.3, 1.0), outline=4.0, ridge=spine)
+        ex, ey = spine[-1]
+        front.shape([star4(ex, ey, 17, 6)], GOLD, axis=(0.4, 1.0), outline=2.5)
+        front.shape([ellipse_poly(rx, hy + 2, 9, 9, 16)], GOLD, axis=(0.4, 1.0), outline=2.5)
+        front.shape([ellipse_poly(rx, hy + 2, 4, 4, 12)], LAPIS, outline=1.5)
+    if tail == "root":
+        comet_star(back, cx, COMET_TAIL_Y)
+    return stack(back, sprite, front)
+
+
+def comet_tailtip():
+    c = Canvas(96, 104)
+    comet_star(c, 48, 4)
+    return c.finish(), (48, 4)
+
+
+def comet_wing(src):
+    return None
+
+
+# 爆竜（インペリアル・トパーズ）：竜そのものを爆弾に見立てる。腰の左右から後ろ・外へ張るトルコ石の尾翼（水平尾翼。金の鋲）・
+# 背に乗る黒いガラスの丸い爆弾（金の口金・導火線の火花）・尾の先のトルコ石の爆弾の尾翼。翼は飾らない（肩が前にあり翼が胴の前半を覆う）
+BOMBER_PAD_ROOT = dict(left=44, top=0, right=44, bottom=80)
+BOMBER_PAD_TIP = dict(left=44, top=0, right=44, bottom=0)
+BOMBER_CX = 89.0
+BOMBER_FIN_ROOT = (46, 232)           # 水平尾翼の付け根（真ん中からのずれ, 高さ）
+BOMBER_FIN = (96, 40, 122)            # 長さ・付け根の幅・向き（90＝真横・180＝真後ろ）
+BOMBER_BOMB = (196, 25)               # 背の爆弾の高さ・半径
+BOMBER_TAIL_Y = 306
+
+
+def bomber_tailfins(canvas, tx, ty):
+    """爆竜の尾の飾り：爆弾の尾翼（左右に後ろへ反る2枚＋真ん中の縦の尾翼を上から見た筋）と、根元の金の輪"""
+    for sd in (-1, 1):
+        canvas.shape([[(tx + sd * 5, ty + 4), (tx + sd * 32, ty + 44), (tx + sd * 30, ty + 62), (tx + sd * 6, ty + 46)]], TURQUOISE,
+                     axis=(sd * 1.0, 0.4), outline=3.0)
+    canvas.shape([[(tx - 6, ty + 2), (tx + 6, ty + 2), (tx + 5, ty + 64), (tx - 5, ty + 64)]], TURQUOISE, axis=(1.0, 0.2), outline=3.0,
+                 ridge=[(tx, ty + 6), (tx, ty + 60)])
+    canvas.shape([ellipse_poly(tx, ty + 3, 11, 7, 18)], GOLD, axis=(0.4, 1.0), outline=2.5)
+
+
+def bomber_body(src, tail="root"):
+    p = BOMBER_PAD_ROOT if tail == "root" else BOMBER_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + BOMBER_CX
+    dx, fy = BOMBER_FIN_ROOT
+    length, base_w, ang = BOMBER_FIN
+    for sd in (-1, 1):
+        a = math.radians(sd * ang)
+        ux, uy = math.sin(a), -math.cos(a)          # 尾翼の向き
+        nx, ny = -uy, ux
+        rx, ry = cx + sd * dx, fy
+        tipx, tipy = rx + ux * length, ry + uy * length
+        poly = [(rx + nx * base_w / 2, ry + ny * base_w / 2), (tipx + nx * 9, tipy + ny * 9), (tipx - nx * 9, tipy - ny * 9),
+                (rx - nx * base_w / 2, ry - ny * base_w / 2)]
+        back.shape([poly], TURQUOISE, axis=(0.3, 1.0), outline=4.0, ridge=[(rx, ry), (tipx, tipy)])
+        for t in (0.55, 0.85):   # 金の鋲（爆竜の鋲留めの装甲に合わせる）
+            sx, sy = rx + ux * length * t, ry + uy * length * t
+            back.shape([ellipse_poly(sx, sy, 4.5, 4.5, 12)], GOLD, axis=(0.4, 1.0), outline=1.6)
+    by, br = BOMBER_BOMB
+    front.shape([ellipse_poly(cx, by, br, br, 32)], BLACK_GLASS, axis=(-0.6, 1.0), outline=4.0)
+    front.shape([ellipse_poly(cx - br * 0.38, by - br * 0.38, br * 0.26, br * 0.18, 16)], GLINT, outline=0.1)
+    front.shape([ellipse_poly(cx, by - br - 2, 9, 7, 16)], GOLD, axis=(0.4, 1.0), outline=2.5)   # 口金（前）
+    front.stroke([(cx, by - br - 6), (cx + 6, by - br - 16), (cx + 16, by - br - 20)], 4.5, IVORY, outline=2.0, ridge=False)   # 導火線
+    front.shape([star4(cx + 18, by - br - 22, 13, 5, 20)], FIRE_OPAL, axis=(0.3, 1.0), outline=2.2)   # 火花
+    if tail == "root":
+        bomber_tailfins(back, cx, BOMBER_TAIL_Y)
+    return stack(back, sprite, front)
+
+
+def bomber_tailtip():
+    c = Canvas(76, 72)
+    bomber_tailfins(c, 38, 4)
+    return c.finish(), (38, 4)
+
+
+def bomber_wing(src):
+    return None
+
+
+# 屍竜（白いオパールの骨＋タンザナイトの膜）：後頭部から首の上を後ろへなびくウランガラス（緑に光るガラス）の鬼火の炎（舌3枚）・
+# 尾の骨の左右に後ろへ反る黒いガラスの棘3対・尾の先に黒いガラスの大鎌の刃（刃の縁はウランガラス）。紫の灯と反対の緑、骨の白と黒で締める。翼は飾らない
+BONE_PAD_ROOT = dict(left=40, top=0, right=40, bottom=110)
+BONE_PAD_TIP = dict(left=40, top=0, right=40, bottom=0)
+BONE_CX = 48.5
+BONE_WISP_ROOT = 54                   # 鬼火の炎の付け根（後頭部）の高さ
+BONE_WISP_TONGUES = ((-24, 58, 15, -0.6), (24, 58, 15, 0.6), (0, 84, 18, 0.45))   # 炎の舌（向きのずれ°, 長さ, 太さ, 揺れ）。左右へ広げると開いた翼にかかる
+BONE_SPINES = (228, 252, 276)         # 尾の骨の棘の高さ
+BONE_SPINE = (40, 16, 128)            # 棘の長さ・太さ・向き
+BONE_TAIL_Y = 312
+
+
+def bone_scythe(canvas, tx, ty):
+    """屍竜の尾の飾り：黒いガラスの大鎌の刃（片側へ大きく反る）。刃の縁にウランガラスの筋、根元に骨の輪"""
+    poly, spine = curved_blade(tx, ty + 6, 126, 46, math.radians(132), -1.5)
+    canvas.shape([poly], BLACK_GLASS, axis=(0.6, 1.0), outline=3.5)
+    edge, _ = curved_blade(tx + 3, ty + 11, 118, 15, math.radians(130), -1.5)
+    canvas.shape([edge], URANIUM, axis=(0.6, 1.0), outline=1.6, ridge=spine)
+    canvas.shape([ellipse_poly(tx, ty + 3, 10, 8, 16)], IVORY, axis=(0.4, 1.0), outline=2.5)
+
+
+def bone_body(src, tail="root"):
+    p = BONE_PAD_ROOT if tail == "root" else BONE_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + BONE_CX
+    for dang, length, width, lean in BONE_WISP_TONGUES:
+        rx = cx + dang * 0.25   # 舌の付け根を少しずつ離す（くっつくと1枚の板に見えた）
+        front.shape([flame(rx, BONE_WISP_ROOT, length, width, math.radians(180 + dang), lean=lean)], URANIUM, axis=(0.0, 1.0), outline=3.0)
+    for dang, length, width, lean in BONE_WISP_TONGUES:   # 芯の白い炎（舌の内側）
+        front.shape([flame(cx + dang * 0.25, BONE_WISP_ROOT + 3, length * 0.55, width * 0.45, math.radians(180 + dang), lean=lean)],
+                    dict(URANIUM, base=(226, 255, 200), dark=(170, 240, 120)), axis=(0.0, 1.0), outline=0.1)
+    length, width, ang = BONE_SPINE
+    for y in BONE_SPINES:
+        for sd in (-1, 1):
+            poly, spine = curved_blade(cx + sd * 6, y, length, width, math.radians(sd * ang), sd * 0.35)
+            back.shape([poly], BLACK_GLASS, axis=(0.4, 1.0), outline=3.0, ridge=spine)
+    if tail == "root":
+        bone_scythe(back, cx, BONE_TAIL_Y)
+    return stack(back, sprite, front)
+
+
+def bone_tailtip():
+    c = Canvas(260, 160)
+    bone_scythe(c, 130, 4)
+    img = c.finish()
+    x0, y0, x1, y1 = img.getbbox()   # 刃がどちらへ反っても切れないよう大きく描いてから、余白を詰める（根元の位置もずらす）
+    x0, y0 = min(x0, 130 - 12), 0
+    return img.crop((x0, y0, x1 + 2, y1 + 2)), (130 - x0, 4)
+
+
+def bone_wing(src):
+    return None
+
+
 SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel はここに余白を足して作る）
     "fire": dict(cx=62.4, cy=169.4, sl=(14.2, 152), sr=(110.8, 152), wa=(319, 64.1)),
     "ice": dict(cx=81.5, cy=175.6, sl=(21.4, 152), sr=(141.6, 152), wa=(319, 69.0)),
@@ -1017,17 +1237,23 @@ SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel 
     "tortoise": dict(cx=90.0, cy=167.6, sl=(12, 100), sr=(169, 100), wa=(319, 90.9)),
     "thunder": dict(cx=75.8, cy=178.4, sl=(19, 162), sr=(133, 162), wa=(319, 64.8)),
     "frog": dict(cx=139.9, cy=185.3, sl=(71.0, 182), sr=(208.0, 182), wa=(317, 66.1)),
+    # v3.257.0: UFO・彗星竜・爆竜・屍竜も元の輪郭のまま描き直したので、元の竜種の値（UFO は翼が無い）
+    "ufo": dict(cx=159.5, cy=159.4, sl=(0, 0), sr=(0, 0), wa=(0, 0)),
+    "comet": dict(cx=58.3, cy=178.1, sl=(13.6, 180), sr=(103.4, 180), wa=(316, 69.3)),
+    "bomber": dict(cx=89.0, cy=171.9, sl=(16.8, 96), sr=(161.2, 96), wa=(317, 49.6)),
+    "bone": dict(cx=48.6, cy=137.7, sl=(8.6, 103), sr=(88.4, 103), wa=(319, 32.0)),
 }
 
 
 def report(element, body, wing, pad_b, pad_w, spec_of=None):
     """DRAGON_PART_SPRITES に貼る値。元の胴の重心・肩・翼の付け根を、余白ぶんずらして写す（胴の高さ 27・翼の幅 25 は絵の大きさに比例）"""
     s = SPARKLE_SPEC[spec_of or element]
+    base_h = 15 if (spec_of or element) == "ufo" else 27   # UFO の円盤は高さ 15 で描く（DRAGON_PART_SPRITES.ufo）
     L, T = pad_b["left"], pad_b["top"]
     print(f"  {element}_jewel: bodyPivot {{ cx: {s['cx'] + L:.1f}, cy: {s['cy'] + T:.1f}, w: {body.width}, h: {body.height} }}"
           f" shoulder L({s['sl'][0] + L:.1f},{s['sl'][1] + T}) R({s['sr'][0] + L:.1f},{s['sr'][1] + T})"
           f" wingAnchor {{ x: {s['wa'][0] + pad_w['left']}, y: {s['wa'][1] + pad_w['top']:.1f} }}"
-          f" bodyDrawH: {27 * body.height / 320:.2f} wingDrawW: {25 * wing.width / 320:.2f}")
+          f" bodyDrawH: {base_h * body.height / 320:.2f} wingDrawW: {25 * wing.width / 320 if wing is not None else 0:.2f}")
 
 
 TAIL_TIP = {   # v3.233.0: 尾の飾りを動く尻尾の先にも付けられる竜種（胴の余白, 尻尾の先の絵を作る関数）
@@ -1038,6 +1264,9 @@ TAIL_TIP = {   # v3.233.0: 尾の飾りを動く尻尾の先にも付けられ�
     "shark": (SHARK_PAD_TIP, shark_tailtip),        # v3.235.0
     "thunder": (THUNDER_PAD_TIP, thunder_tailtip),
     "tortoise": (TORTOISE_PAD_TIP, tortoise_tailtip),
+    "comet": (COMET_PAD_TIP, comet_tailtip),        # v3.257.0
+    "bomber": (BOMBER_PAD_TIP, bomber_tailtip),
+    "bone": (BONE_PAD_TIP, bone_tailtip),
 }
 
 
@@ -1056,18 +1285,23 @@ def main():
         ("thunder", thunder_body, thunder_wing, THUNDER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("tortoise", tortoise_body, tortoise_wing, TORTOISE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("frog", frog_body, frog_wing, dict(left=0, top=0, right=0, bottom=0), dict(left=0, top=0, right=0, bottom=0)),
+        ("ufo", ufo_body, ufo_wing, UFO_PAD, dict(left=0, top=0, right=0, bottom=0)),   # v3.257.0（DT-652〜655）
+        ("comet", comet_body, comet_wing, COMET_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("bomber", bomber_body, bomber_wing, BOMBER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("bone", bone_body, bone_wing, BONE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
     ):
         if only and element not in only:
             continue
         sb = Image.open(os.path.join(ASSETS, f"dragon_{element}_sparkle_body.png")).convert("RGBA")
-        sw = Image.open(os.path.join(ASSETS, f"dragon_{element}_sparkle_wing.png")).convert("RGBA")
-        jb, jw = body_fn(sb), wing_fn(sw)
+        wing_path = os.path.join(ASSETS, f"dragon_{element}_sparkle_wing.png")
+        sw = Image.open(wing_path).convert("RGBA") if os.path.exists(wing_path) else None   # v3.257.0: UFO は翼が無い
+        jb, jw = body_fn(sb), (wing_fn(sw) if sw is not None else None)
         jb.save(os.path.join(ASSETS, f"dragon_{element}_jewel_body.png"), optimize=True)
         if jw is None:     # 翼を飾らない竜種は *_sparkle の翼の絵を DRAGON_PART_SPRITES からそのまま指す（同じ絵を2枚置かない）
             jw = sw
         else:
             jw.save(os.path.join(ASSETS, f"dragon_{element}_jewel_wing.png"), optimize=True)
-        print(element, "body", sb.size, "->", jb.size, "wing", sw.size, "->", jw.size)
+        print(element, "body", sb.size, "->", jb.size, "wing", sw and sw.size, "->", jw and jw.size)
         report(element, jb, jw, pad_b, pad_w)
         if element == "frog":   # v3.235.0: 蛙竜は跳んでいるときの胴の絵も（尾の飾りは動く尻尾の先だけ）
             sa = Image.open(os.path.join(ASSETS, "dragon_frog_sparkle_body_air.png")).convert("RGBA")
