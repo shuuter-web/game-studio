@@ -192,6 +192,29 @@ EDITS_V4 = {
     },
 }
 DESIGNS_V4 = {
+    # DT-658（11/28 Shooter「U字磁石ではなく電磁石のイメージで」）
+    "magnet": {
+        "body": ("an ELECTROMAGNET DRAGON: a sleek dragon with lavender-purple (#b090e0) metallic scales whose body is built like an "
+                 "ELECTROMAGNET: thick shiny COPPER WIRE COILS wound tightly around the neck, the chest and the hips (several wide "
+                 "bands of many parallel copper windings), dark iron-grey CORE rods (bolt-like iron cores with flat ends) sticking out "
+                 "of the coils along the spine, two horns that are short iron cores each wrapped in copper wire, a couple of small "
+                 "blue-white electric sparks between the coils, dark violet (#6a4ea0) plates between the coils, clawed legs. "
+                 "NO horseshoe magnet, NO U-shaped magnet, NO red and silver poles."),
+        "wing": ("ONE wing of an electromagnet dragon: lavender-purple (#b090e0) metallic membrane, the wing bones are dark iron "
+                 "rods each WRAPPED in tight shiny COPPER WIRE COILS (windings along the bones), small blue-white sparks at the "
+                 "bone tips, dark violet (#6a4ea0) trailing edge. NO horseshoe magnet, NO red and silver poles."),
+    },
+    # DT-659（11/28 Shooter「相方がいる仕様なので1人で双子になってはダメ。左右非対称のデザインに。翼も片方は小さく」）:
+    # 1匹は頭1つで、左右の片側（右）にだけ相方へ雷を飛ばす避雷針の角と導線を付ける。ゲームでは2列の片方を鏡写しにして、
+    # 内側（相方の側）どうしが向き合うようにする。翼は同じ絵を内側だけ小さく描く（胴の絵だけ作り直す）
+    "twin": {
+        "body": ("a TWIN DRAGON drawn deliberately ASYMMETRIC (it is ONE dragon with ONE head and ONE neck; its partner is its mirror "
+                 "image): golden yellow (#ffe070) scales with darker gold (#e0c040) back plates. Its RIGHT side carries ONE big "
+                 "golden LIGHTNING-ROD horn (a tall pointed metal rod with rings) sticking out sideways to the RIGHT from the head, "
+                 "crackling with small white sparks, and the RIGHT half of the back has bright copper conductor plates and a "
+                 "zig-zag yellow-white electric stripe running down. The LEFT side is plain: only a small stubby horn, plain gold "
+                 "scales, no stripe. Clawed legs."),
+    },
     "cannon": {
         "body": ("a BOMBARD DRAGON built like a chunky cartoon TANK: a very STOCKY, WIDE, BIG and heavy rounded-boxy body (clearly "
                  "wider and bulkier than a normal dragon, like a tank hull), thick riveted brass armour plates, a short thick neck and "
@@ -232,6 +255,8 @@ def main():
     v3 = species in DESIGNS_V3
     if v4_edit:
         ref = os.path.join("design_candidates", f"dragon_{species}_{part}.png")   # 見せた絵を直す
+    elif v4 and part == "wing":
+        ref = f"dragon_{SOURCE_V3[species][1]}_wing.png"
     elif v4:
         ref = f"dragon_{SOURCE_V3[species][0]}_body.png"   # 砲塔も胴の見本（尻尾の無い絵）を絵柄の見本に
     elif v3:
