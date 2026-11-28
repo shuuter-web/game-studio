@@ -179,6 +179,35 @@ DESIGNS_V3 = {
                  "leading edge. Opaque cel-shaded, NO glow halo."),
     },
 }
+# DT-657・663（11/28 Shooter の手直し）: 見せた本デザインを直す。
+#   土竜「鼻の頭のイソギンチャクみたいな部分が気持ち悪い」→ 見せた絵（design_candidates）を下絵に、鼻の先だけ描き直す（EDITS_V4）
+#   砲撃竜「砲口を見せるのではなく、ずんぐりデカい体に砲塔が乗るかたちで。砲塔はパーツ分けして回転できるように。砲身は短く太く」
+#   → 胴（砲塔の台座だけ）と砲塔（別の絵。砲身は上＝頭の向き）を作り直す（DESIGNS_V4）
+EDITS_V4 = {
+    "mole": {
+        "body": ("Keep this exact mole dragon, its pose, colours, body, digging forepaws, claws, back and everything else EXACTLY as "
+                 "they are. ONLY change the tip of the snout: REMOVE the pink star-shaped nose with its many little tentacles "
+                 "completely, and give it instead a simple, cute, smooth rounded mole nose: a small plain pink oval nose pad with two "
+                 "tiny nostrils at the end of a tapered snout. No tentacles, no rays, no fleshy star. Nothing else changes."),
+    },
+}
+DESIGNS_V4 = {
+    "cannon": {
+        "body": ("a BOMBARD DRAGON built like a chunky cartoon TANK: a very STOCKY, WIDE, BIG and heavy rounded-boxy body (clearly "
+                 "wider and bulkier than a normal dragon, like a tank hull), thick riveted brass armour plates, a short thick neck and "
+                 "a small blunt helmeted head with two short horns at the front, four short thick stubby legs with big clawed feet "
+                 "sticking out at the four corners. In the middle of the back there is a flat round TURRET RING: an EMPTY circular "
+                 "mounting plate with rivets and NOTHING mounted on it (no cannon, no barrel, no muzzle: the turret is a separate "
+                 "sprite). Golden brass (#e8c050) with darker bronze (#a07830) plates and dark gunmetal details."),
+        "turret": ("strictly top-down view of ONE SINGLE TANK TURRET only (no dragon, no body, no legs, no wings): a big round chunky "
+                   "domed brass turret with rivets, a small round hatch and a little periscope, and ONE SHORT, VERY THICK, FAT cannon "
+                   "barrel lying HORIZONTALLY and pointing toward the TOP of the image, seen from directly ABOVE (we see the top side of a "
+                   "short fat cylinder, like a tank gun seen from a helicopter: a thick rectangle with rounded rivet bands, NOT looking "
+                   "into the muzzle hole). The barrel is SHORT (about as long as the turret's radius) and as wide as a third of the "
+                   "turret, with a thicker reinforced muzzle band at its tip. Golden brass (#e8c050), darker "
+                   "bronze (#a07830), dark gunmetal inside the muzzle. Chunky cartoon military style."),
+    },
+}
 OPAQUE = " The creature is fully OPAQUE inside its outline (no holes, no see-through parts)."
 
 FRAME = {
@@ -198,8 +227,14 @@ PAD_RATIO = 0.18
 def main():
     species, part = sys.argv[1:3]
     v2 = "--v2" in sys.argv   # DT-650: 2回目のデザインを assets/design_candidates/ に書く（ゲームの絵は書き換えない。見せて決まってから入れる）
+    v4_edit = "--v4" in sys.argv and species in EDITS_V4
+    v4 = "--v4" in sys.argv and species in DESIGNS_V4
     v3 = species in DESIGNS_V3
-    if v3:
+    if v4_edit:
+        ref = os.path.join("design_candidates", f"dragon_{species}_{part}.png")   # 見せた絵を直す
+    elif v4:
+        ref = f"dragon_{SOURCE_V3[species][0]}_body.png"   # 砲塔も胴の見本（尻尾の無い絵）を絵柄の見本に
+    elif v3:
         ref = f"dragon_{SOURCE_V3[species][0 if part == 'body' else 1]}_{part}.png"
     elif v2 and species in EDITS_V2:
         ref = f"dragon_{species}_{part}.png"   # いまの絵を直す
@@ -213,7 +248,15 @@ def main():
     canvas.alpha_composite(src, (pad, pad))
     scale = 1024 / max(canvas.size)
     canvas = canvas.resize((round(canvas.width * scale), round(canvas.height * scale)), Image.LANCZOS).convert("RGB")
-    if v3:
+    if v4_edit:
+        prompt = EDITS_V4[species][part] + " Same art style. Solid flat pure green background (#00FF00), no shadow, no text."
+    elif v4 and part == "turret":
+        prompt = ("Use the input sprite ONLY as a reference for the art style (flat cel-shaded, thick dark ink outline). Draw "
+                  + DESIGNS_V4[species][part] + OPAQUE + " " + STYLE)
+    elif v4:
+        tail = NO_TAIL if species not in TAILED_IN_BODY else ""
+        prompt = FRAME[part] + DESIGNS_V4[species][part] + tail + OPAQUE + " " + STYLE
+    elif v3:
         tail = NO_TAIL if part == "body" and species not in TAILED_IN_BODY else ""
         prompt = FRAME[part] + DESIGNS_V3[species][part] + tail + OPAQUE + " " + os.environ.get("DESIGN_EXTRA", "") + STYLE
     elif v2 and species in EDITS_V2:
@@ -227,10 +270,10 @@ def main():
         raw.save(os.path.join(os.environ["GEM_RAW_DIR"], f"design_{species}_{part}.png"))
     out = key_green(raw)
     out = out.crop(bbox(np.array(out)[..., 3]))
-    # 胴は高さ 320、翼は幅 320（ほかの竜種の絵と同じ決まり。DRAGON_PART_SPRITES の bodyDrawH・wingDrawW はこの寸法が前提）
-    k = 320 / (out.height if part == "body" else out.width)
+    # 胴は高さ 320、翼は幅 320（砲塔は高さ 200。胴に重ねる大きさは見本ページで決める）（ほかの竜種の絵と同じ決まり。DRAGON_PART_SPRITES の bodyDrawH・wingDrawW はこの寸法が前提）
+    k = (200 / out.height) if part == "turret" else 320 / (out.height if part == "body" else out.width)
     out = out.resize((max(1, round(out.width * k)), max(1, round(out.height * k))), Image.LANCZOS)
-    dest_dir = os.path.join(ASSETS, "design_candidates") if v2 or v3 else ASSETS
+    dest_dir = os.path.join(ASSETS, "design_candidates") if v2 or v3 or v4 or v4_edit else ASSETS
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, f"dragon_{species}_{part}.png")
     out.save(dest, optimize=True)

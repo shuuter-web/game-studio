@@ -1020,32 +1020,52 @@ def star4(cx, cy, r_out, r_in, rot_deg=0.0):
     return pts
 
 
-# UFO（ムーンストーン）：円盤の縁の下から、回る向きへ反る火蛋白石（ファイアオパール）の羽根を4枚（風車の形）。
-# 自転する円盤なので、向きを持つ飾り（後頭部・尾）ではなく、回る形で個性を出す。羽根の付け根の上に火蛋白石の粒を4つ乗せる
-UFO_PAD = dict(left=74, top=74, right=74, bottom=74)   # 羽根が縁から外へはみ出す分
+# UFO（ムーンストーン）：v3.258.0 は円盤の縁の下から回る向きへ反る火蛋白石の羽根4枚（風車）だった。
+# v3.261.0（DT-652 手直し・11/28 Shooter「2進化のパーツは、刃ではなくて、析出した結晶がUFOの外周を覆って少し大きくなってる感じに」）:
+# 円盤の縁の上に、火蛋白石の結晶の柱（先の尖った六角柱を上から見た形）がびっしり生えて外周を覆い、円盤がひと回り大きく見える形に。
+# 長い結晶と短い結晶を決まった並びで交互に置く（乱数は使わない）。自転するので、どの向きにも同じように並ぶ
+UFO_PAD = dict(left=40, top=40, right=40, bottom=40)   # 結晶が縁から外へはみ出す分
 UFO_CX, UFO_CY, UFO_R = 159.5, 159.5, 156     # 円盤の真ん中と半径（dragon_ufo_body.png）
-UFO_BLADES = 4
-UFO_BLADE = (104, 60, 0.9)                    # 羽根の長さ（縁から）・幅・反り（ラジアン。回る向きへ）
-UFO_BLADE_FROM = 0.80                         # 羽根の付け根（半径の割合。縁の内側から生やして、縁の下から出てくるように）
-UFO_BLADE_TWIST = 28                          # 羽根の向きを外向きから回る向きへ傾ける角度
+UFO_CLUSTERS = 16                             # 外周の結晶の房の数
+UFO_CRYSTAL_ROOT = 0.84                       # 結晶の根元（半径の割合。縁の帯を覆うように内側から生やす）
+# 房の中の結晶：（房の真ん中からの角度のずれ°, 傾き°, 縁から外へ出る長さ, 太さ）。房ごとに長さを UFO_CLUSTER_SCALE で変える
+UFO_CLUSTER = ((-7.5, -24, 14, 24), (7.0, 20, 18, 26), (0.0, -3, 30, 32))
+UFO_CLUSTER_SCALE = (1.0, 0.7, 0.9, 0.6)     # 房ごとの大きさの並び（4つごとに繰り返す。不揃いに見せる）
+UFO_CLUSTER_ROT = (0, 4, -3, 2)               # 房ごとの向きのずれ°
+def crystal(cx, cy, length, width, angle):
+    """先の尖った六角柱の結晶を上から見た形。根元 (cx,cy) から angle の向きへ。返り値は（形, 片側の暗い面, 芯）"""
+    dx, dy = math.sin(angle), -math.cos(angle)
+    nx, ny = -dy, dx
+    hw = width * 0.5
+    shoulder = length * 0.68
+    b_l, b_r = (cx + nx * hw * 0.9, cy + ny * hw * 0.9), (cx - nx * hw * 0.9, cy - ny * hw * 0.9)
+    s_l = (cx + nx * hw + dx * shoulder, cy + ny * hw + dy * shoulder)
+    s_r = (cx - nx * hw + dx * shoulder, cy - ny * hw + dy * shoulder)
+    tip = (cx + dx * length, cy + dy * length)
+    mid_b, mid_s = (cx, cy), (cx + dx * shoulder, cy + dy * shoulder)
+    return [b_l, s_l, tip, s_r, b_r], [mid_b, mid_s, tip, s_r, b_r], [mid_b, mid_s, tip]
 
 
 def ufo_body(src, tail="root"):
     p = UFO_PAD
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
-    back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
     cx, cy = p["left"] + UFO_CX, p["top"] + UFO_CY
-    length, width, bend = UFO_BLADE
-    for k in range(UFO_BLADES):
-        a = math.radians(45 + k * 360 / UFO_BLADES)
-        rx, ry = cx + math.sin(a) * UFO_R * UFO_BLADE_FROM, cy - math.cos(a) * UFO_R * UFO_BLADE_FROM
-        poly, spine = curved_blade(rx, ry, length + UFO_R * (1 - UFO_BLADE_FROM), width, a + math.radians(UFO_BLADE_TWIST), bend)
-        back.shape([poly], FIRE_OPAL, axis=(math.sin(a), -math.cos(a)), outline=4.5, ridge=spine)
-        bx, by = cx + math.sin(a) * UFO_R * 0.62, cy - math.cos(a) * UFO_R * 0.62
-        front.shape([ellipse_poly(bx, by, 13, 13, 20)], FIRE_OPAL, axis=(-0.4, 1.0), outline=3.0)
-        front.shape([ellipse_poly(bx - 4, by - 4, 4, 4, 10)], GLINT, outline=0.1)
-    return stack(back, sprite, front)
+    layers = [Canvas(*sprite.size) for _ in UFO_CLUSTER]   # 房の中の結晶ごとに層を分ける（真ん中の大きい結晶を手前に）
+    base = UFO_R * (1 - UFO_CRYSTAL_ROOT)
+    for k in range(UFO_CLUSTERS):
+        sc = UFO_CLUSTER_SCALE[k % len(UFO_CLUSTER_SCALE)]
+        rot = UFO_CLUSTER_ROT[k % len(UFO_CLUSTER_ROT)]
+        for layer, (da, lean, out_len, width) in zip(layers, UFO_CLUSTER):
+            a = math.radians(k * 360 / UFO_CLUSTERS + da + rot)
+            rx, ry = cx + math.sin(a) * UFO_R * UFO_CRYSTAL_ROOT, cy - math.cos(a) * UFO_R * UFO_CRYSTAL_ROOT
+            poly, dark, ridge = crystal(rx, ry, base + out_len * (0.55 + 0.45 * sc) + 6, width * (0.8 + 0.2 * sc), a + math.radians(lean))
+            layer.shape([poly], FIRE_OPAL, axis=(math.sin(a), -math.cos(a)), outline=3.8, ridge=ridge, facet=dark)
+    out = Image.new("RGBA", sprite.size, (0, 0, 0, 0))
+    out.alpha_composite(sprite)
+    for layer in layers:
+        out.alpha_composite(layer.finish())
+    return out
 
 
 def ufo_wing(src):
@@ -1292,6 +1312,235 @@ def bone_wing(src):
     return out
 
 
+# ---------------------------------------------------------------- DT-656・661・662・664（11/28）: 塊竜・鉄鎖竜・鯨竜・光線竜
+# 4竜種とも本デザイン（tools/gen_dragon_design.py）をゲームに入れてから、その輪郭のまま宝石にして飾る
+MALACHITE = dict(light=(190, 255, 214), base=(28, 158, 100), dark=(6, 82, 52), line=(2, 34, 20))
+RAY_CRYSTAL = dict(light=(246, 255, 255), base=(122, 247, 255), dark=(26, 150, 196), line=(6, 40, 62))
+RAY_GLOW = (122, 247, 255)
+
+# 塊竜（スペサタイト・ガーネット）：丸まった甲羅の縁から外へ突き出す孔雀石（マラカイト）の棘を左右3本ずつ（転がる玉を棘の玉に見せる）と、
+# 背の帯の上に乗る孔雀石の鋲4つ。尻尾は胴の絵の中に巻いてある（noTail）ので尾の飾りは無し
+BALL_PAD = dict(left=50, top=0, right=50, bottom=20)
+BALL_C = (118, 190)                   # 丸い甲羅の真ん中（dragon_ball_body.png）
+BALL_SPIKE_ROOT = 92                  # 棘の根元（真ん中からの距離。甲羅の縁の内側から生やす）
+BALL_SPIKES = ((30, 48, 30), (112, 66, 38), (148, 54, 32))   # （向き°（上＝0・右回り）, 長さ, 太さ）。左右対称。肩（翼の付け根）の横は翼に隠れるので避ける
+BALL_STUDS = (110, 152, 196, 238)     # 背の鋲の高さ
+
+
+def ball_body(src, tail="root"):
+    p = BALL_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx, cy = p["left"] + BALL_C[0], p["top"] + BALL_C[1]
+    for ang, length, width in BALL_SPIKES:
+        for sd in (-1, 1):
+            a = math.radians(sd * ang)
+            rx, ry = cx + math.sin(a) * BALL_SPIKE_ROOT, cy - math.cos(a) * BALL_SPIKE_ROOT
+            poly, dark, ridge = crystal(rx, ry, length + 18, width, a)
+            back.shape([poly], MALACHITE, axis=(math.sin(a), -math.cos(a)), outline=4.0, ridge=ridge, facet=dark)
+    for y in BALL_STUDS:
+        front.shape([ellipse_poly(cx, y, 15, 11, 20)], MALACHITE, axis=(-0.3, 1.0), outline=3.5)
+        front.shape([ellipse_poly(cx - 5, y - 4, 5, 3.5, 12)], GLINT, outline=0.1)
+    return stack(back, sprite, front)
+
+
+def ball_wing(src):
+    return None
+
+
+# 鉄鎖竜（スチールグレーのスピネル）：兜の頂から首の上を後ろへなびく緋色の羽根飾り（騎士の兜の飾り毛）・
+# 両肩の棘付きの肩当てから外へ扇に張る金の棘3本ずつ・尾の先に金の棘鉄球（モーニングスター）。斜めに掛けた鎖は胴の絵のまま（消さない）
+FLAIL_PAD_ROOT = dict(left=40, top=0, right=40, bottom=64)
+FLAIL_PAD_TIP = dict(left=40, top=0, right=40, bottom=0)
+FLAIL_CX = 96.5
+FLAIL_PLUME = ((0, 100, 30, 0.25), (-16, 82, 24, -0.5), (16, 82, 24, 0.5))   # 羽根飾りの房（向きのずれ°, 長さ, 太さ, 揺れ）
+FLAIL_PLUME_ROOT = 26                 # 兜の頂の高さ
+FLAIL_PAULDRON = (48, 140)            # 左の肩当ての真ん中（右は左右対称）
+FLAIL_PAULDRON_SPIKES = ((-60, 46, 16), (-92, 56, 18), (-122, 44, 16))   # 肩当ての棘（向き°, 長さ, 太さ。左の肩当て）
+FLAIL_TAIL_Y = 300
+
+
+def morning_star(canvas, x, y, r=22):
+    """金の棘鉄球：根元の輪から下へ、棘8本の玉"""
+    canvas.shape([ellipse_poly(x, y + 6, 8, 8, 16)], GOLD, axis=(0.4, 1.0), outline=3.0)
+    bx, by = x, y + 12 + r
+    for k in range(8):
+        a = math.radians(22.5 + k * 45)
+        canvas.shape([spike(bx + math.sin(a) * r * 0.7, by - math.cos(a) * r * 0.7, r * 0.75, 11, a)], GOLD,
+                     axis=(math.sin(a), -math.cos(a)), outline=3.0)
+    canvas.shape([ellipse_poly(bx, by, r, r, 28)], GOLD, axis=(-0.4, 1.0), outline=3.5)
+    canvas.shape([ellipse_poly(bx - r * 0.35, by - r * 0.35, r * 0.28, r * 0.2, 12)], GLINT, outline=0.1)
+
+
+def flail_body(src, tail="root"):
+    p = FLAIL_PAD_ROOT if tail == "root" else FLAIL_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx = p["left"] + FLAIL_CX
+    for dang, length, width, lean in FLAIL_PLUME:
+        front.shape([flame(cx + dang * 0.3, FLAIL_PLUME_ROOT, length, width, math.radians(180 + dang), lean=lean)], SCARLET,
+                    axis=(0.0, 1.0), outline=3.5)
+    px, py = FLAIL_PAULDRON
+    for sd in (-1, 1):
+        x = cx + sd * (FLAIL_CX - px)
+        for ang, length, width in FLAIL_PAULDRON_SPIKES:
+            a = math.radians(ang * -sd)
+            back.shape([spike(x + math.sin(a) * 14, py - math.cos(a) * 14, length + 14, width, a, base_w=width * 1.4)], GOLD,
+                       axis=(math.sin(a), -math.cos(a)), outline=3.5)
+    if tail == "root":
+        morning_star(back, cx, FLAIL_TAIL_Y)
+    return stack(back, sprite, front)
+
+
+def flail_tailtip():
+    c = Canvas(64, 84)
+    morning_star(c, 32, 4)
+    return c.finish(), (32, 4)
+
+
+def flail_wing(src):
+    return None
+
+
+# 鯨竜（ロンドン・ブルー・トパーズ）：頭の上の潮吹き穴から後ろ・外へ噴き上がる真珠層の潮（5本の筋の先に真珠の粒）・
+# 尾の先に真珠層の鯨の尾びれ（左右2枚）
+WHALE_PAD_ROOT = dict(left=40, top=0, right=40, bottom=70)
+WHALE_PAD_TIP = dict(left=40, top=0, right=40, bottom=0)
+WHALE_CX = 106.5
+WHALE_BLOWHOLE_Y = 66
+WHALE_SPOUT = ((180, 84, 18), (-150, 76, 17), (150, 76, 17), (-118, 64, 16), (118, 64, 16), (-88, 50, 14), (88, 50, 14))   # 潮の筋（向き°, 長さ, 太さ）。潮吹き穴のまわりに後ろ半分へ散るしぶき（v1 の長い筋は帯に見えた）
+WHALE_TAIL_Y = 306
+
+
+def whale_fluke(canvas, x, y, scale=1.0):
+    """真珠層の鯨の尾びれ：根元から左右へ広がる2枚（先が後ろへ反る）"""
+    for sd in (-1, 1):
+        poly, spine = curved_blade(x, y + 6 * scale, 62 * scale, 34 * scale, math.radians(sd * 118), sd * 0.7)
+        canvas.shape([poly], NACRE, axis=(sd * 0.5, 1.0), outline=3.5, ridge=spine)
+    canvas.shape([ellipse_poly(x, y + 6 * scale, 11 * scale, 9 * scale, 16)], NACRE, axis=(0.3, 1.0), outline=3.0)
+
+
+def whale_body(src, tail="root"):
+    p = WHALE_PAD_ROOT if tail == "root" else WHALE_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    front = Canvas(*sprite.size)
+    cx, by = p["left"] + WHALE_CX, WHALE_BLOWHOLE_Y + p["top"]
+    for ang, length, width in WHALE_SPOUT:
+        a = math.radians(ang)
+        poly, spine = curved_blade(cx + math.sin(a) * 8, by - math.cos(a) * 8, length, width, a, (0.35 if ang > 0 else -0.35) if abs(ang) != 180 else 0.0)
+        front.shape([poly], NACRE, axis=(math.sin(a), -math.cos(a)), outline=3.2, ridge=spine)
+        ex, ey = spine[-1] if spine else (cx, by)
+        tx, ty = ex + (spine[-1][0] - spine[-2][0]) * 3, ey + (spine[-1][1] - spine[-2][1]) * 3
+        front.shape([ellipse_poly(tx, ty, 11, 11, 16)], PEARL, axis=(-0.4, 1.0), outline=2.8)
+        front.shape([ellipse_poly(tx - 3, ty - 3, 3, 2.5, 10)], GLINT, outline=0.1)
+    front.shape([ellipse_poly(cx, by, 13, 11, 20)], PEARL, axis=(-0.4, 1.0), outline=3.0)
+    if tail == "root":
+        whale_fluke(back, cx, WHALE_TAIL_Y)
+    return stack(back, sprite, front)
+
+
+def whale_tailtip():
+    c = Canvas(160, 80)
+    whale_fluke(c, 80, 4)
+    img = c.finish()
+    x0, y0, x1, y1 = img.getbbox()
+    return img.crop((x0, 0, x1 + 2, y1 + 2)), (80 - x0, 4)
+
+
+def whale_wing(src):
+    return None
+
+
+# 光線竜（11/28 Shooter「全身を宝石化するのではなく、水晶の部分が増えて光る方向で。メカっぽさは残す」）：
+# 1回目の進化（*_sparkle）は紺の装甲のまま水晶の所を増やした絵。2回目はさらに、後頭部・両肩・腰から外へ突き出す水晶の柱と、
+# 翼の前の縁から突き出す水晶の列、尾の先の水晶の柱の房。どれも水色に光り、まわりに水色のにじみ
+RAY_PAD_ROOT = dict(left=44, top=0, right=44, bottom=60)
+RAY_PAD_TIP = dict(left=44, top=0, right=44, bottom=0)
+RAY_WING_PAD = dict(left=0, top=30, right=0, bottom=0)
+RAY_CX = 65
+RAY_CLUSTERS = (   # （左の付け根 x, y, [(向き°, 長さ, 太さ), ...]）。右は左右対称
+    (46, 92, ((-150, 46, 13), (-168, 34, 11))),                    # 後頭部から後ろ・外へ
+    (22, 150, ((-62, 40, 14), (-90, 52, 16), (-116, 38, 13))),     # 肩
+    (26, 226, ((-104, 40, 13), (-132, 34, 12))),                   # 腰
+)
+RAY_TAIL_Y = 306
+RAY_WING_SHARDS = (60, 110, 160, 210, 260)   # 翼の前の縁の水晶の x（翼の絵の画素。根元は右の端）
+
+
+def ray_crystal_tuft(canvas, x, y, scale=1.0):
+    """尾の先の水晶の柱の房（下へ3本）"""
+    for ang, length, width in ((180, 44, 15), (154, 32, 12), (206, 32, 12)):
+        a = math.radians(ang)
+        poly, dark, ridge = crystal(x, y + 4 * scale, length * scale, width * scale, a)
+        canvas.shape([poly], RAY_CRYSTAL, axis=(math.sin(a), -math.cos(a)), outline=3.0, ridge=ridge, facet=dark)
+
+
+def ray_body(src, tail="root"):
+    p = RAY_PAD_ROOT if tail == "root" else RAY_PAD_TIP
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    back = Canvas(*sprite.size)
+    cx = p["left"] + RAY_CX
+    for lx, ly, shards in RAY_CLUSTERS:
+        for sd in (-1, 1):
+            x = cx + sd * (RAY_CX - lx)
+            for ang, length, width in shards:
+                a = math.radians(ang * -sd)
+                poly, dark, ridge = crystal(x, ly, length + 10, width, a)
+                back.shape([poly], RAY_CRYSTAL, axis=(math.sin(a), -math.cos(a)), outline=3.0, ridge=ridge, facet=dark)
+    if tail == "root":
+        ray_crystal_tuft(back, cx, RAY_TAIL_Y)
+    bk = back.finish()
+    out = glow_under(Image.new("RGBA", sprite.size, (0, 0, 0, 0)), np.array(bk)[:, :, 3] > THRESH, RAY_GLOW, 5, 0.6)
+    out.alpha_composite(bk)
+    out.alpha_composite(sprite)
+    return out
+
+
+def ray_glow_mask(img):
+    """光線竜のきらめきを水晶の所だけに出すための形（index.html の GEM_SPARKLE_MASK の glowSrc）。
+    水色に光る所（水晶・光の筋）を拾って少し太らせ、縁をぼかした白の絵。紺の装甲（機械）と水晶のまわりのにじみ（半透明）は光らせない"""
+    a = np.array(img).astype(np.float32)
+    r, g, b, al = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    cyan = (al > 200) & (g > 140) & (b > 150) & ((g + b) / 2 - r > 55)
+    m = Image.fromarray((cyan * 255).astype(np.uint8), "L").filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(1.5))
+    out = Image.new("RGBA", img.size, (255, 255, 255, 0))
+    out.putalpha(m)
+    return out
+
+
+def ray_tailtip():
+    c = Canvas(80, 64)
+    ray_crystal_tuft(c, 40, 0)
+    img = c.finish()
+    out = glow_under(Image.new("RGBA", img.size, (0, 0, 0, 0)), np.array(img)[:, :, 3] > THRESH, RAY_GLOW, 4, 0.6)
+    out.alpha_composite(img)
+    return out, (40, 4)
+
+
+def ray_wing(src):
+    p = RAY_WING_PAD
+    sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
+    a = body_alpha(sprite)
+    back = Canvas(*sprite.size)
+    for i, x in enumerate(RAY_WING_SHARDS):
+        cols = np.nonzero(a[:, x])[0]
+        if not len(cols):
+            continue
+        y = float(cols.min()) + 8
+        ang = math.radians(-12 if i % 2 else 8)
+        poly, dark, ridge = crystal(x, y, 34 + (i % 2) * 8, 13, ang)
+        back.shape([poly], RAY_CRYSTAL, axis=(math.sin(ang), -math.cos(ang)), outline=3.0, ridge=ridge, facet=dark)
+    bk = back.finish()
+    out = glow_under(Image.new("RGBA", sprite.size, (0, 0, 0, 0)), np.array(bk)[:, :, 3] > THRESH, RAY_GLOW, 4, 0.55)
+    out.alpha_composite(bk)
+    out.alpha_composite(sprite)
+    return out
+
+
+
 SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel はここに余白を足して作る）
     "fire": dict(cx=62.4, cy=169.4, sl=(14.2, 152), sr=(110.8, 152), wa=(319, 64.1)),
     "ice": dict(cx=81.5, cy=175.6, sl=(21.4, 152), sr=(141.6, 152), wa=(319, 69.0)),
@@ -1314,6 +1563,11 @@ SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel 
     "comet": dict(cx=58.3, cy=178.1, sl=(13.6, 180), sr=(103.4, 180), wa=(316, 69.3)),
     "bomber": dict(cx=89.0, cy=171.9, sl=(16.8, 96), sr=(161.2, 96), wa=(317, 49.6)),
     "bone": dict(cx=48.6, cy=137.7, sl=(8.6, 103), sr=(88.4, 103), wa=(319, 32.0)),
+    # DT-656・661・662・664: 本デザインの値（design-preview.html の寸法。whale の肩は手で測った値）
+    "ball": dict(cx=120.7, cy=180.1, sl=(18.5, 142), sr=(212.5, 142), wa=(319, 83.2)),
+    "flail": dict(cx=96.2, cy=176.2, sl=(15.4, 162), sr=(176.6, 162), wa=(319, 69.1)),
+    "whale": dict(cx=106.1, cy=152.0, sl=(40, 125), sr=(172, 125), wa=(319, 38.5)),
+    "ray": dict(cx=64.5, cy=171.5, sl=(14.5, 159), sr=(114.5, 159), wa=(319, 63.7)),
 }
 
 
@@ -1339,6 +1593,9 @@ TAIL_TIP = {   # v3.233.0: 尾の飾りを動く尻尾の先にも付けられ�
     "comet": (COMET_PAD_TIP, comet_tailtip),        # v3.258.0
     "bomber": (BOMBER_PAD_TIP, bomber_tailtip),
     "bone": (BONE_PAD_TIP, bone_tailtip),
+    "flail": (FLAIL_PAD_TIP, flail_tailtip),        # DT-661
+    "whale": (WHALE_PAD_TIP, whale_tailtip),        # DT-662
+    "ray": (RAY_PAD_TIP, ray_tailtip),              # DT-664
 }
 
 
@@ -1361,6 +1618,10 @@ def main():
         ("comet", comet_body, comet_wing, COMET_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("bomber", bomber_body, bomber_wing, BOMBER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("bone", bone_body, bone_wing, BONE_PAD_ROOT, BONE_WING_PAD),
+        ("ball", ball_body, ball_wing, BALL_PAD, dict(left=0, top=0, right=0, bottom=0)),   # DT-656・661・662・664
+        ("flail", flail_body, flail_wing, FLAIL_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("whale", whale_body, whale_wing, WHALE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
+        ("ray", ray_body, ray_wing, RAY_PAD_ROOT, RAY_WING_PAD),
     ):
         if only and element not in only:
             continue
@@ -1381,12 +1642,17 @@ def main():
             tip, (ax, ay) = frog_tailtip()
             tip.save(os.path.join(ASSETS, "dragon_frog_tailtip.png"), optimize=True)
             print(f"  frog_tailtip: w: {tip.width}, h: {tip.height}, anchor: {{ x: {ax}, y: {ay} }}")
+        if element == "ray":   # DT-664: きらめきは水晶の所だけ（1回目・2回目の進化の胴）
+            ray_glow_mask(sb).save(os.path.join(ASSETS, "dragon_ray_sparkle_glowmask.png"), optimize=True)
+            ray_glow_mask(jb).save(os.path.join(ASSETS, "dragon_ray_jewel_glowmask.png"), optimize=True)
         # v3.233.0（DT-609 手直し）: 尾の飾りを動く尻尾の先に付ける形（胴の絵 *_jewelt と、尻尾の先の絵 *_tailtip）
         if element in TAIL_TIP:
             pad_t, tip_fn = TAIL_TIP[element]
             jt = body_fn(sb, tail="tip")
             jt.save(os.path.join(ASSETS, f"dragon_{element}_jewelt_body.png"), optimize=True)
             report(element + "t", jt, jw, pad_t, pad_w, spec_of=element)
+            if element == "ray":
+                ray_glow_mask(jt).save(os.path.join(ASSETS, "dragon_ray_jewelt_glowmask.png"), optimize=True)
             tip, (ax, ay) = tip_fn()
             tip.save(os.path.join(ASSETS, f"dragon_{element}_tailtip.png"), optimize=True)
             print(f"  {element}_tailtip: w: {tip.width}, h: {tip.height}, anchor: {{ x: {ax}, y: {ay} }}  （胴と同じ縮尺：27/320 論理px／画素）")
