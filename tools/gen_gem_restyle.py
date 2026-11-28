@@ -40,7 +40,7 @@ GEMS = {
     "frog": "vivid lime-green peridot gemstone (bright yellowish green)",
     "tortoise": "translucent VIVID saturated imperial-green jadeite jade gemstone (bright leaf green like a tortoise, recolour everything green, NOT grey, NOT stone grey)",
     "thunder": "bright lemon-gold heliodor (golden yellow beryl) gemstone, electric and luminous",
-    # v3.257.0（DT-652〜655）: UFO・彗星竜・爆竜・屍竜
+    # v3.258.0（DT-652〜655）: UFO・彗星竜・爆竜・屍竜
     "ufo": "rainbow moonstone gemstone: luminous milky silvery-white with a strong electric cyan-blue glow (adularescence), bright and cool, NOT dull grey",
     "comet": "golden sunstone gemstone: BRIGHT luminous pale cream-gold and light honey-yellow (like the input colours, NOT brown, NOT tan, NOT pink), full of tiny glittering gold spangles like stardust",
     "bomber": "imperial topaz gemstone: vivid saturated sherry-orange to reddish orange, warm and fiery",
@@ -70,7 +70,7 @@ EXTRA = {
     "shark": (" The shark's OWN body is the gem: the facets follow the shark's anatomy (snout, eyes, gill slits, dorsal fin, pectoral "
               "fins, belly, legs) at FULL SIZE, filling the input silhouette edge to edge. Do NOT draw a smaller shark, a shark outline "
               "or shark line-art on top of / inside a big gem block, and no second inner outline. The outer ink outline IS the shark's outline."),
-    # v3.257.0（DT-652〜655）: 鮫竜の「大きな宝石の上に小さな鮫」と同じ崩れを先に防ぐ（竜の形そのものを石で切らせる）
+    # v3.258.0（DT-652〜655）: 鮫竜の「大きな宝石の上に小さな鮫」と同じ崩れを先に防ぐ（竜の形そのものを石で切らせる）
     "comet": (" The dragon's OWN body is the gem: the facets follow its anatomy (head, neck, legs, toes, the glowing core on the back, "
               "tail) at FULL SIZE, filling the input silhouette edge to edge. Do NOT draw a smaller dragon or dragon line-art on top of / "
               "inside a big gem block, no second inner outline. Keep everything the input has (such as a glowing core) and add nothing new."),
@@ -84,7 +84,7 @@ EXTRA = {
             "panels and the central glass dome), filling the input circle edge to edge. Keep the small glowing cyan lights around the "
             "rim as little round cyan gems. No dragon, no other object, the same perfect circle."),
 }
-# v3.257.0: 原石にも効かせる注意（骨のすき間を埋めない・円盤のまま）
+# v3.258.0: 原石にも効かせる注意（骨のすき間を埋めない・円盤のまま）
 EXTRA_ROUGH = {
     "bone": " Keep it a SKELETON with the gaps between the bones empty exactly like the input; bones are rough white opal ore, the purple parts rough violet tanzanite.",
     "ufo": " It is a round flying-saucer disc seen from straight above: keep the perfect circle, the rim ring, the concentric panels, the central dome and the little rim lights.",

@@ -1000,7 +1000,7 @@ def frog_wing(src):
     return None
 
 
-# ---------------------------------------------------------------- v3.257.0（案帳 DT-652〜655）: UFO・彗星竜・爆竜・屍竜
+# ---------------------------------------------------------------- v3.258.0（案帳 DT-652〜655）: UFO・彗星竜・爆竜・屍竜
 # 4竜種とも専用の絵（DRAGON_PARTS_ALIAS で借りていない）なので、その輪郭のまま宝石にして飾る。尾の飾りは動く尻尾の先（"tip"）。UFO は尻尾が無い
 LAPIS = dict(light=(150, 176, 255), base=(34, 56, 176), dark=(12, 18, 86), line=(4, 6, 34))
 TURQUOISE = dict(light=(214, 255, 246), base=(46, 196, 192), dark=(14, 116, 128), line=(4, 40, 48))
@@ -1237,7 +1237,7 @@ SPARKLE_SPEC = {   # index.html の fire_sparkle / ice_sparkle の値（*_jewel 
     "tortoise": dict(cx=90.0, cy=167.6, sl=(12, 100), sr=(169, 100), wa=(319, 90.9)),
     "thunder": dict(cx=75.8, cy=178.4, sl=(19, 162), sr=(133, 162), wa=(319, 64.8)),
     "frog": dict(cx=139.9, cy=185.3, sl=(71.0, 182), sr=(208.0, 182), wa=(317, 66.1)),
-    # v3.257.0: UFO・彗星竜・爆竜・屍竜も元の輪郭のまま描き直したので、元の竜種の値（UFO は翼が無い）
+    # v3.258.0: UFO・彗星竜・爆竜・屍竜も元の輪郭のまま描き直したので、元の竜種の値（UFO は翼が無い）
     "ufo": dict(cx=159.5, cy=159.4, sl=(0, 0), sr=(0, 0), wa=(0, 0)),
     "comet": dict(cx=58.3, cy=178.1, sl=(13.6, 180), sr=(103.4, 180), wa=(316, 69.3)),
     "bomber": dict(cx=89.0, cy=171.9, sl=(16.8, 96), sr=(161.2, 96), wa=(317, 49.6)),
@@ -1264,7 +1264,7 @@ TAIL_TIP = {   # v3.233.0: 尾の飾りを動く尻尾の先にも付けられ�
     "shark": (SHARK_PAD_TIP, shark_tailtip),        # v3.235.0
     "thunder": (THUNDER_PAD_TIP, thunder_tailtip),
     "tortoise": (TORTOISE_PAD_TIP, tortoise_tailtip),
-    "comet": (COMET_PAD_TIP, comet_tailtip),        # v3.257.0
+    "comet": (COMET_PAD_TIP, comet_tailtip),        # v3.258.0
     "bomber": (BOMBER_PAD_TIP, bomber_tailtip),
     "bone": (BONE_PAD_TIP, bone_tailtip),
 }
@@ -1285,7 +1285,7 @@ def main():
         ("thunder", thunder_body, thunder_wing, THUNDER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("tortoise", tortoise_body, tortoise_wing, TORTOISE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("frog", frog_body, frog_wing, dict(left=0, top=0, right=0, bottom=0), dict(left=0, top=0, right=0, bottom=0)),
-        ("ufo", ufo_body, ufo_wing, UFO_PAD, dict(left=0, top=0, right=0, bottom=0)),   # v3.257.0（DT-652〜655）
+        ("ufo", ufo_body, ufo_wing, UFO_PAD, dict(left=0, top=0, right=0, bottom=0)),   # v3.258.0（DT-652〜655）
         ("comet", comet_body, comet_wing, COMET_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("bomber", bomber_body, bomber_wing, BOMBER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("bone", bone_body, bone_wing, BONE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
@@ -1294,7 +1294,7 @@ def main():
             continue
         sb = Image.open(os.path.join(ASSETS, f"dragon_{element}_sparkle_body.png")).convert("RGBA")
         wing_path = os.path.join(ASSETS, f"dragon_{element}_sparkle_wing.png")
-        sw = Image.open(wing_path).convert("RGBA") if os.path.exists(wing_path) else None   # v3.257.0: UFO は翼が無い
+        sw = Image.open(wing_path).convert("RGBA") if os.path.exists(wing_path) else None   # v3.258.0: UFO は翼が無い
         jb, jw = body_fn(sb), (wing_fn(sw) if sw is not None else None)
         jb.save(os.path.join(ASSETS, f"dragon_{element}_jewel_body.png"), optimize=True)
         if jw is None:     # 翼を飾らない竜種は *_sparkle の翼の絵を DRAGON_PART_SPRITES からそのまま指す（同じ絵を2枚置かない）
