@@ -609,6 +609,79 @@ function crumble(rate) {
   return fadeEdges(onePoleLow(out, rate, 3200), rate, 0.0005, 0.1);
 }
 
+// --- DT-624 手直し11（11/28 Shooter「建物が壊れる音が雑音ノイズみたいで気持ち良く無い。一番大事な音なのでちゃんと気持ちいい音に。
+//     建物の大きさや種類ごとに差をつけつつ」）---
+// 前の crumble は「低い正弦の どさっ」＋「ろ過した白い雑音」で、雑音の比が大きくシャーという砂嵐に聞こえた。
+// 雑音を音の芯に使うのをやめ、叩かれた物の鳴り（モード合成：減衰する正弦をいくつか重ねる＝木・石・金属の固有の響き）で組む。
+//   1. 割れ（0秒）：材質の固有の響きを強く短く。歯切れの「パキッ／ガッ」
+//   2. 胴（0秒〜）：高さが下がっていく低い正弦の「ドン」。大きい建物ほど低く長い＝重さ
+//   3. 崩れ（大きい建物だけ）：少し遅れて2〜3回、低めの響きで「ガラガラッ」と構造が落ちる
+//   4. 破片：材質の響きを高くした小さな粒を、跳ねて落ち着くように間隔を空けながら並べる（雑音でなく粒の音の連なり）
+// 材質は木（石器時代の小屋）・石（古代〜近世・城壁・首都）・金属（産業時代〜）。大きさは小（tiny・small）と大（medium・large・首都）。
+// 全部の粒を tanh で軽く飽和させて、音量を上げずに芯を太くする。
+const SMASH_MATERIALS = {
+  // 割れの響き：[Hz, 減り方（1秒あたり）, 大きさ]。木＝こもった低めの「コッ」、石＝硬く詰まった「ガッ」、金属＝長く残る非整数倍の「カーン」
+  wood:  { modes: [[260, 26, 1], [520, 34, 0.8], [830, 48, 0.45], [1390, 70, 0.28]], debrisScale: [1.6, 3.2], debrisDecay: 1.6, bodyHz: 1 },
+  stone: { modes: [[250, 40, 0.9], [610, 55, 0.7], [1180, 80, 0.5], [2150, 110, 0.32], [3300, 150, 0.18]], debrisScale: [1.3, 2.6], debrisDecay: 2.2, bodyHz: 0.85 },
+  metal: { modes: [[290, 7, 0.5], [781, 8, 0.45], [1270, 10, 0.4], [1935, 13, 0.3], [2890, 17, 0.2]], debrisScale: [1.2, 2.4], debrisDecay: 2.6, bodyHz: 0.9 },
+};
+const SMASH_SIZES = {
+  //  len＝長さ（秒）、bodyHz＝胴の高さ、bodyDecay＝胴の減り、bodyGain、breaks＝崩れの時刻、debris＝破片の数、debrisSpan＝破片が続く秒数
+  s: { len: 0.6, bodyHz: 130, bodyDecay: 14, bodyGain: 0.4, crackGain: 1.0, breaks: [], debris: 9, debrisSpan: 0.32, rumble: 0 },
+  l: { len: 1.4, bodyHz: 68, bodyDecay: 4.5, bodyGain: 0.5, crackGain: 1.0, breaks: [0.07, 0.16, 0.27], debris: 26, debrisSpan: 0.95, rumble: 0.08 },
+};
+function addModes(out, rate, at, amp, modes, scale, decayMul) {
+  const i0 = Math.floor(at * rate);
+  for (const [hz, dec, g] of modes) {
+    const f = hz * scale, d = dec * decayMul;
+    if (f > rate * 0.45) continue;
+    const n = Math.min(out.length - i0, Math.floor(rate * Math.min(2.5, 7 / d)));
+    for (let i = 0; i < n; i++) {
+      const t = i / rate;
+      // 立ち上がり 1ms（クリックにしない）
+      out[i0 + i] += amp * g * Math.min(1, t / 0.001) * Math.exp(-t * d) * Math.sin(TAU * f * t);
+    }
+  }
+}
+function smash(rate, material, size, seed) {
+  const m = SMASH_MATERIALS[material], z = SMASH_SIZES[size];
+  const rnd = makeRandom(seed);
+  const len = Math.floor(rate * z.len), out = new Float32Array(len);
+  // 1. 割れ
+  addModes(out, rate, 0, z.crackGain, m.modes, size === "l" ? 0.85 : 1.15, 1);
+  // ほんの短い硬い当たり（2ms の帯域の狭い粒。雑音でなく高い響きの頭）
+  addModes(out, rate, 0, 0.5, [[2600, 900, 1], [3900, 1200, 0.6]], 1, 1);
+  // 2. 胴
+  let phase = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / rate;
+    phase += (z.bodyHz * m.bodyHz * (1 + 1.2 * Math.exp(-t * 30))) / rate;
+    // 2倍・3倍の音も足す：スマホのスピーカーは 200Hz より下がほとんど出ないので、低い基音が聞こえなくても倍音で「ドン」が分かるように
+    out[i] += z.bodyGain * Math.min(1, t / 0.002) * Math.exp(-t * z.bodyDecay) *
+              (Math.sin(TAU * phase) + 0.7 * Math.sin(TAU * phase * 2) * Math.exp(-t * 6) + 0.35 * Math.sin(TAU * phase * 3) * Math.exp(-t * 10));
+  }
+  // 3. 崩れ
+  z.breaks.forEach((at, k) => addModes(out, rate, at + rnd() * 0.02, 0.75 - k * 0.15, m.modes, 0.7 + rnd() * 0.2, 0.8));
+  // 大きい建物の地鳴り：低い正弦の重なり（雑音を使わない）
+  if (z.rumble > 0) {
+    for (let i = 0; i < len; i++) {
+      const t = i / rate;
+      const env = Math.min(1, t / 0.08) * Math.exp(-t * 2.6);
+      out[i] += z.rumble * env * (Math.sin(TAU * 43 * t) + 0.6 * Math.sin(TAU * 61 * t + 1.3) + 0.4 * Math.sin(TAU * 89 * t + 0.4));
+    }
+  }
+  // 4. 破片：はじめは詰んで、だんだん間遠に（跳ねて落ち着く）。小さい欠片ほど高い
+  for (let k = 0; k < z.debris; k++) {
+    const u = (k + rnd() * 0.8) / z.debris;
+    const at = 0.025 + z.debrisSpan * Math.pow(u, 1.5);
+    const sc = m.debrisScale[0] + rnd() * (m.debrisScale[1] - m.debrisScale[0]);
+    const amp = 0.42 * Math.pow(1 - u, 1.2) * (0.6 + rnd() * 0.4);
+    addModes(out, rate, at, amp, m.modes.slice(1, 4), sc, m.debrisDecay);
+  }
+  for (let i = 0; i < len; i++) out[i] = Math.tanh(out[i] * 1.4);
+  return fadeEdges(onePoleLow(out, rate, 7000), rate, 0.0005, size === "l" ? 0.15 : 0.08);
+}
+
 // --- DT-624 手直し9（11/27・主旋律を常に鳴らさない・伴奏は単音で目立たせずに和音の分かる線）---
 /** 柔らかい鍵盤（和音の線）：正弦の基音にわずかな2倍・3倍音。立ち上がりを丸め、ゆっくり減る。目立たずに和音の音を1つずつたどる */
 function warm(rate, midi, sec) {
@@ -667,9 +740,16 @@ const INSTRUMENTS = [
   ["strings.wav",  (r) => strings(r, 60, 2.4),  16000],
   ["timpani.wav",  (r) => timpani(r),           16000],
   ["taiko.wav",    (r) => taiko(r),             16000],
-  ["crumble.wav",  (r) => crumble(r),           22050],
+  // crumble.wav は DT-624 手直し11 で smash_* に替えて外した
   // DT-624 手直し9（和音の線）
   ["warm.wav",     (r) => warm(r, 60, 2.0),     22050],
+  // DT-624 手直し11（建物が壊れる音：材質 × 大きさ）
+  ["smash_wood_s.wav",  (r) => smash(r, "wood", "s", 101),  22050],
+  ["smash_wood_l.wav",  (r) => smash(r, "wood", "l", 102),  22050],
+  ["smash_stone_s.wav", (r) => smash(r, "stone", "s", 103), 22050],
+  ["smash_stone_l.wav", (r) => smash(r, "stone", "l", 104), 22050],
+  ["smash_metal_s.wav", (r) => smash(r, "metal", "s", 105), 22050],
+  ["smash_metal_l.wav", (r) => smash(r, "metal", "l", 106), 22050],
 ];
 
 mkdirSync(OUT, { recursive: true });

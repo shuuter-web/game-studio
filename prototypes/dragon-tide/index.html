@@ -33080,7 +33080,7 @@ function settlementFall(settlementIndex) {
   const settlement = settlements[settlementIndex];
   settlement.fallen = true;
   settlement.hp = 0;
-  sfxCollapse(settlement.wx);   // v3.204.0（DT-624）: 次の空いた16分音符に並べてアルペジオにする（左右は建物の位置）
+  sfxCollapse(settlement);   // DT-624: 壊れる音（v3.256.0 から建物の大きさ・材質で音を選ぶ。左右は建物の位置）
   // v3.21.0: 壊れた建物に接している樹冠も一緒に崩れる（Shooter指示）
   // v3.21.3: 一瞬で消すのをやめ、火が付いて燃えて消える（Shooter指示）
   canopyIgniteCircle(settlement.wx, settlement.wy, (settlement.radius || 10) + CANOPY_FALL_MARGIN);
@@ -43957,6 +43957,7 @@ const CODEX_SPECIAL_SHOTS = [
 //   下の音から省く。陥落・警戒度の鐘のときは他を一瞬下げる。大事な音は中音域に置く。
 // ・決定性：鳴らす高さ・時刻は譜面と時計だけで決め、ゲームの乱数に触らない（残響の響きだけ fxRandom）。
 //   音は人が画面に触れたとき（isTrusted）に初めて作り、かけらもそこで読む。合成の入力で回すヘッドレス再生では作られない＝鳴らない。
+// v3.256.0（案帳 DT-624 手直し11・11/28）: 建物が壊れる音を、雑音の crumble から木・石・金属の響きの smash_*（材質×大きさ）に（tools/gen_dt_samples.mjs）
 // v3.248.0（案帳 DT-624 手直し10・11/27）: 壊している間の刻みを、ビブラートの弦の8分からはじくウッドベースに（tools/gen_dt_music.py）
 // v3.246.0（案帳 DT-624 手直し9・11/27 Shooter「常に鳴ってる歪んだシンセ音」「主旋律を常に鳴らしてほしいわけでは無い」）: 和音を伸ばす床（pad）をやめ、
 //   柔らかい鍵盤の単音で和音をたどる線（warm）にした。主題は伴奏だけのフレーズ2回のあとに1回だけ弾く（music.json の melody）。pad の音は折り返しの歪みを除いた
@@ -44432,18 +44433,26 @@ function soundStageStart() {
 // --- 効果音 ---
 /** 竜の攻撃が建物に当たった（息の大きさに数えるだけ。毎回は鳴らさない）。 */
 function sfxBreathHit() { if (soundCtx) soundRun.breathHits++; }
-/** 建物の崩壊：崩れる音（曲には組み込まない） */
-function sfxCollapse(wx) {
+/** 建物の崩壊：壊れる音（曲には組み込まない）。材質（時代・城壁）と大きさ（建物の大きさ・首都）で音を選ぶ */
+function sfxCollapse(settlement) {
   if (!soundCtx) return;
   soundRun.destroyHits++;   // 壊している間のパートの大きさに数える（鳴らせないときも数える）
   if (!soundLive()) return;
-  // v3.245.0（DT-624 手直し8・11/27 Shooter「破壊音を BGM に組み込むのはやめる。破壊音は破壊音で SE として」）:
-  // 拍に寄せず、和音にも合わせず、崩れる音をすぐ鳴らす。高さは pitches を順に回す（同じ音が続いて機械的にならないように。ゲームの乱数は使わない）
+  // v3.245.0（DT-624 手直し8・11/27 Shooter「破壊音は破壊音で SE として」）: 拍に寄せず、和音にも合わせず、すぐ鳴らす。
+  // v3.256.0（DT-624 手直し11・11/28 Shooter「雑音ノイズみたいで気持ち良く無い。一番大事な音。建物の大きさや種類ごとに差を」）:
+  //   雑音の crumble をやめ、木・石・金属の響きで組んだ smash_<材質>_<小|大> を、建物の大きさで選んで高さ・大きさを変えて鳴らす。
+  //   小と大で間引きの間隔を別に数える（小屋が続いても大きい建物の音は消えない）。同じ音の繰り返しは jitter を順に回して崩す（ゲームの乱数は使わない）
   const c = soundMusic.sfx.collapse;
-  if (!sfxGap("collapse", c.minGapSec) || !soundVoiceAllowed("collapse")) return;
-  const def = soundMusic.instruments[c.inst];
-  const p = c.pitches[soundRun.collapseIdx++ % c.pitches.length];
-  sfxPlay("collapse", c.inst, def.base + p, soundCtx.currentTime, c.gain, { pan: soundPanAt(wx) });
+  const sizeKey = settlement._isCapital ? "capital" : settlement._isWall ? "wall" : (c.size[settlement.size] ? settlement.size : "small");
+  const [scale, shift] = c.size[sizeKey];
+  if (!sfxGap("collapse_" + scale, c.minGapSec[scale]) || !soundVoiceAllowed("collapse")) return;
+  const material = settlement._isWall ? c.wallMaterial
+    : c.materialByStage[Math.max(0, Math.min(c.materialByStage.length - 1, currentStage))];
+  const inst = "smash_" + material + "_" + scale;
+  const def = soundMusic.instruments[inst];
+  if (!def) return;
+  const jitter = c.jitter[soundRun.collapseIdx++ % c.jitter.length];
+  sfxPlay("collapse", inst, def.base + shift + jitter, soundCtx.currentTime, c.gain[sizeKey], { pan: soundPanAt(settlement.wx) });
 }
 /** 町・首都の陥落：次の拍で鐘と和音（首都は角笛の主題の和音とシンバルを足して長く） */
 function sfxTownFall(capital) {

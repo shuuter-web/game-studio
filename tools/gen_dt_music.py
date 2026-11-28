@@ -407,11 +407,28 @@ def build_song(song_id, s):
     return song
 
 
+# DT-624 手直し11（11/28 Shooter「建物が壊れる音が雑音ノイズみたいで気持ち良く無い。建物の大きさや種類ごとに差をつけつつ」）:
+# 壊れる音を材質（木・石・金属）× 大きさ（小・大）の6つのかけら（tools/gen_dt_samples.mjs の smash）に。
+# 材質は STAGE_CONFIGS の時代の順（石器＝木の小屋、古代〜近世＝石、産業〜＝金属）。城壁は石。首都の区画の建物は capital
+COLLAPSE = {
+    "materialByStage": ["wood", "stone", "stone", "stone", "metal", "metal", "metal", "metal"],
+    "wallMaterial": "stone",
+    "size": {"tiny": ["s", 5], "small": ["s", 0], "medium": ["l", 4], "large": ["l", 0], "capital": ["l", -3], "wall": ["l", 2]},
+    "gain": {"tiny": 0.12, "small": 0.15, "medium": 0.19, "large": 0.23, "capital": 0.27, "wall": 0.17},
+    "jitter": [0, -1, 1, -0.5, 0.5, -1.5, 1.5],
+    "minGapSec": {"s": 0.04, "l": 0.07},
+}
+SMASH = [f"smash_{m}_{z}" for m in ("wood", "stone", "metal") for z in ("s", "l")]
+
+
 def main():
     music = json.load(open(MUSIC, encoding="utf-8"))
     keep = {k: music[k] for k in ("instruments", "_sfx", "sfx", "_mix", "voiceLimit") if k in music}
-    for name in ("strings", "timpani", "taiko", "crumble", "warm"):
-        keep["instruments"][name] = {"file": f"{name}.wav", "base": {"strings": 60, "timpani": 41, "taiko": 45, "crumble": 60, "warm": 60}[name]}
+    for name in ("strings", "timpani", "taiko", "warm"):
+        keep["instruments"][name] = {"file": f"{name}.wav", "base": {"strings": 60, "timpani": 41, "taiko": 45, "warm": 60}[name]}
+    keep["instruments"].pop("crumble", None)   # DT-624 手直し11: 崩れる音は smash_* に替えた
+    for name in SMASH:
+        keep["instruments"][name] = {"file": f"{name}.wav", "base": 60}
     songs = {sid: build_song(sid, s) for sid, s in SONGS.items()}
     out = {
         "_about": ("Dragon Tide の曲と効果音の譜面（DT-624）。ゲームの小さなトラッカーが読む。音の高さは MIDI の番号（60＝ド4）。"
@@ -438,9 +455,11 @@ def main():
     }
     out.update(keep)
     # 崩壊は曲に組み込まない（11/27 Shooter「破壊音は破壊音で SE として」）。拍に寄せず、崩れる音をそのまま鳴らす
-    out["sfx"]["collapse"] = {"inst": "crumble", "gain": 0.16, "pitches": [0, -3, -5, -1, -4, -2], "minGapSec": 0.035}
+    out["sfx"]["collapse"] = COLLAPSE
     out["_sfx"] = ("効果音。要所の単発（陥落・警戒度・レベルアップのチャイム・卵・線を引く音と薙ぎの和音）は次の16分音符の格子に寄せ、高さはその時の和音から選ぶ。"
-                   "建物の崩壊（collapse）は曲に組み込まず、崩れる音をすぐ鳴らす（高さは pitches を順に回す。ゲームの乱数は使わない）")
+                   "建物の崩壊（collapse）は曲に組み込まず、壊れる音をすぐ鳴らす。DT-624 手直し11（11/28）：材質（materialByStage＝時代ごと・城壁は wallMaterial）と"
+                   "大きさ（size＝建物の大きさごとの [s か l, 高さのずらし]、gain）で smash_<材質>_<s|l> を選ぶ。jitter を順に回して同じ音の繰り返しを崩す（ゲームの乱数は使わない）。"
+                   "minGapSec は小（s）と大（l）で別に数える（小屋が続いても大きい建物の音が消えないように）")
     json.dump(out, open(MUSIC, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"songs {len(songs)} → {MUSIC}")
     for w in WARN:
