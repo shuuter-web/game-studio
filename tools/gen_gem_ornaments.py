@@ -1318,35 +1318,97 @@ MALACHITE = dict(light=(190, 255, 214), base=(28, 158, 100), dark=(6, 82, 52), l
 RAY_CRYSTAL = dict(light=(246, 255, 255), base=(122, 247, 255), dark=(26, 150, 196), line=(6, 40, 62))
 RAY_GLOW = (122, 247, 255)
 
-# 塊竜（スペサタイト・ガーネット）：丸まった甲羅の縁から外へ突き出す孔雀石（マラカイト）の棘を左右3本ずつ（転がる玉を棘の玉に見せる）と、
-# 背の帯の上に乗る孔雀石の鋲4つ。尻尾は胴の絵の中に巻いてある（noTail）ので尾の飾りは無し
+# 塊竜：v3.261.0 の最初の版はスペサタイト・ガーネットの全身カット＋孔雀石の棘だったが、
+# DT-656（11/28 Shooter「進化の宝石は大きな宝石を埋め込んでカラフルにする方向で。2進化ではできれば竜ごとに色を変えて色数を増やし
+# 塊がカラフルになるように」）で、体は本デザインの橙の帯の鎧のまま、帯に金の座金で大きなカットの宝石を埋め込む形にした。
+#   進化前＝本デザインのまま（ball）
+#   1回目の進化＝背の帯の真ん中に大きな宝石4つ（ルビー・サファイア・エメラルド・アメジスト）と帯の脇に2つ、翼の帯の鎧に2つ（ball_sparkle）
+#   2回目の進化＝さらに帯の脇に4つ・翼に1つ足し、甲羅の縁から外へ突き出す結晶の棘を左右3本ずつ。色の並びを6通りに変えた絵
+#                （ball_jewel・ball_jewel_v1〜v5）を、ゲームは竜ごとに順に割り当てる（GEM_SPARKLE_SPECIES.ball の variants）。玉に固まった群れがカラフルになる
+# きらめきは宝石と結晶の所だけ（*_glowmask.png。光線竜と同じ glowSrc）
+RUBY = dict(light=(255, 176, 190), base=(222, 22, 64), dark=(112, 0, 30), line=(40, 0, 12))
+EMERALD = dict(light=(176, 255, 206), base=(18, 172, 92), dark=(0, 82, 42), line=(0, 30, 14))
+TOPAZ = dict(light=(255, 252, 190), base=(250, 206, 34), dark=(170, 112, 0), line=(60, 40, 0))
+AQUA = dict(light=(214, 255, 255), base=(56, 210, 242), dark=(8, 108, 162), line=(0, 40, 62))
+PINK = dict(light=(255, 214, 242), base=(240, 98, 190), dark=(148, 28, 108), line=(60, 10, 40))
+BALL_GEM_COLORS = (RUBY, SAPPHIRE, EMERALD, AMETHYST, TOPAZ, AQUA, PINK)
+BALL_VARIANTS = 6                     # 2回目の進化の色の並びの数（竜ごとに順に割り当てる）
 BALL_PAD = dict(left=50, top=0, right=50, bottom=20)
 BALL_C = (118, 190)                   # 丸い甲羅の真ん中（dragon_ball_body.png）
+# 宝石（x, y, 横の半径, 縦の半径）。1回目の進化で付けるもの → 2回目の進化で足すもの
+BALL_GEMS_1 = ((118, 90, 22, 16), (118, 145, 27, 18), (118, 200, 27, 18), (113, 249, 22, 15), (58, 150, 13, 10), (178, 150, 13, 10))
+BALL_GEMS_2 = ((64, 203, 14, 10), (172, 203, 14, 10), (70, 251, 12, 9), (160, 251, 12, 9))
+BALL_WING_GEMS_1 = ((68, 57, 11, 9), (140, 31, 12, 9))     # 翼の帯の鎧（翼の絵の画素）
+BALL_WING_GEMS_2 = ((214, 31, 12, 9),)
 BALL_SPIKE_ROOT = 92                  # 棘の根元（真ん中からの距離。甲羅の縁の内側から生やす）
 BALL_SPIKES = ((30, 48, 30), (112, 66, 38), (148, 54, 32))   # （向き°（上＝0・右回り）, 長さ, 太さ）。左右対称。肩（翼の付け根）の横は翼に隠れるので避ける
-BALL_STUDS = (110, 152, 196, 238)     # 背の鋲の高さ
 
 
-def ball_body(src, tail="root"):
-    p = BALL_PAD
+def cut_gem(canvas, cx, cy, rx, ry, pal):
+    """金の座金に埋め込んだ、上から見たカットの宝石（外の面・テーブル・暗い面・照り）"""
+    canvas.shape([ellipse_poly(cx, cy, rx + 4, ry + 4, 24)], GOLD, axis=(-0.4, 1.0), outline=3.0)
+    canvas.shape([ellipse_poly(cx, cy, rx, ry, 8)], pal, axis=(-0.5, 1.0), outline=2.0)
+    shade = dict(light=pal["dark"], base=pal["dark"], dark=pal["dark"], line=pal["dark"])
+    outer = ellipse_poly(cx, cy, rx, ry, 8)
+    table = ellipse_poly(cx, cy, rx * 0.48, ry * 0.48, 8)
+    for k in (1, 3, 4, 6):   # 下と右の面を暗く（光は左上から）
+        canvas.shape([[table[k], outer[k], outer[(k + 1) % 8], table[(k + 1) % 8]]], shade, outline=0.1)
+    canvas.shape([table], dict(light=pal["light"], base=pal["light"], dark=pal["base"], line=pal["light"]), axis=(-0.5, 1.0), outline=0.1)
+    canvas.shape([ellipse_poly(cx - rx * 0.32, cy - ry * 0.34, rx * 0.2, ry * 0.15, 10)], GLINT, outline=0.1)
+
+
+def ball_layers(src, gems, palettes, spikes=None, pad=None):
+    """胴（または翼）の絵に宝石（と棘）を描いた絵と、光らせる形（宝石・棘の所だけ）を返す"""
+    p = pad or dict(left=0, top=0, right=0, bottom=0)
     sprite = padded(src, p["left"], p["top"], p["right"], p["bottom"])
     back = Canvas(*sprite.size)
     front = Canvas(*sprite.size)
-    cx, cy = p["left"] + BALL_C[0], p["top"] + BALL_C[1]
-    for ang, length, width in BALL_SPIKES:
-        for sd in (-1, 1):
-            a = math.radians(sd * ang)
-            rx, ry = cx + math.sin(a) * BALL_SPIKE_ROOT, cy - math.cos(a) * BALL_SPIKE_ROOT
-            poly, dark, ridge = crystal(rx, ry, length + 18, width, a)
-            back.shape([poly], MALACHITE, axis=(math.sin(a), -math.cos(a)), outline=4.0, ridge=ridge, facet=dark)
-    for y in BALL_STUDS:
-        front.shape([ellipse_poly(cx, y, 15, 11, 20)], MALACHITE, axis=(-0.3, 1.0), outline=3.5)
-        front.shape([ellipse_poly(cx - 5, y - 4, 5, 3.5, 12)], GLINT, outline=0.1)
-    return stack(back, sprite, front)
+    for k, (x, y, rx, ry) in enumerate(gems):
+        cut_gem(front, x + p["left"], y + p["top"], rx, ry, palettes[k % len(palettes)])
+    if spikes:
+        cx, cy = p["left"] + BALL_C[0], p["top"] + BALL_C[1]
+        for j, (ang, length, width) in enumerate(BALL_SPIKES):
+            for sd in (-1, 1):
+                a = math.radians(sd * ang)
+                rx_, ry_ = cx + math.sin(a) * BALL_SPIKE_ROOT, cy - math.cos(a) * BALL_SPIKE_ROOT
+                poly, dark, ridge = crystal(rx_, ry_, length + 18, width, a)
+                back.shape([poly], spikes[j % len(spikes)], axis=(math.sin(a), -math.cos(a)), outline=4.0, ridge=ridge, facet=dark)
+    bk, fr = back.finish(), front.finish()
+    out = Image.new("RGBA", sprite.size, (0, 0, 0, 0))
+    out.alpha_composite(bk)
+    out.alpha_composite(sprite)
+    out.alpha_composite(fr)
+    lit = (np.array(bk)[:, :, 3] > 200) | (np.array(fr)[:, :, 3] > 200)
+    m = Image.fromarray((lit * 255).astype(np.uint8), "L").filter(ImageFilter.MinFilter(5)).filter(ImageFilter.GaussianBlur(1.2))
+    mask = Image.new("RGBA", sprite.size, (255, 255, 255, 0))
+    mask.putalpha(m)
+    return out, mask
 
 
-def ball_wing(src):
-    return None
+def ball_gem_set():
+    """塊竜の宝石の絵をまとめて書き出す（本デザインの絵 dragon_ball_{body,wing}.png に描き足す）"""
+    body = Image.open(os.path.join(ASSETS, "dragon_ball_body.png")).convert("RGBA")
+    wing = Image.open(os.path.join(ASSETS, "dragon_ball_wing.png")).convert("RGBA")
+    cols = BALL_GEM_COLORS
+    b1, m1 = ball_layers(body, BALL_GEMS_1, (cols[0], cols[1], cols[2], cols[3], cols[4], cols[5]))
+    w1, _ = ball_layers(wing, BALL_WING_GEMS_1, (cols[5], cols[4]))
+    b1.save(os.path.join(ASSETS, "dragon_ball_sparkle_body.png"), optimize=True)
+    w1.save(os.path.join(ASSETS, "dragon_ball_sparkle_wing.png"), optimize=True)
+    m1.save(os.path.join(ASSETS, "dragon_ball_sparkle_glowmask.png"), optimize=True)
+    for v in range(BALL_VARIANTS):
+        rot = cols[v:] + cols[:v]   # 色の並びを1つずつずらす（竜ごとに違う色が真ん中に来る）
+        gems = BALL_GEMS_1 + BALL_GEMS_2
+        palettes = rot + rot[2:5]
+        spikes = (rot[6], rot[3], rot[5])
+        bj, mj = ball_layers(body, gems, palettes, spikes, BALL_PAD)
+        wj, _ = ball_layers(wing, BALL_WING_GEMS_1 + BALL_WING_GEMS_2, (rot[5], rot[4], rot[1]))
+        suffix = "" if v == 0 else f"_v{v}"
+        bj.save(os.path.join(ASSETS, f"dragon_ball_jewel{suffix}_body.png"), optimize=True)
+        wj.save(os.path.join(ASSETS, f"dragon_ball_jewel{suffix}_wing.png"), optimize=True)
+        if v == 0:   # 宝石・棘の場所はどの色の並びでも同じなので、光らせる形は1枚
+            mj.save(os.path.join(ASSETS, "dragon_ball_jewel_glowmask.png"), optimize=True)
+    print("ball sparkle", b1.size, "jewel", bj.size, "×", BALL_VARIANTS)
+    report("ball", bj, wj, BALL_PAD, dict(left=0, top=0, right=0, bottom=0))
 
 
 # 鉄鎖竜（スチールグレーのスピネル）：兜の頂から首の上を後ろへなびく緋色の羽根飾り（騎士の兜の飾り毛）・
@@ -1601,6 +1663,8 @@ TAIL_TIP = {   # v3.233.0: 尾の飾りを動く尻尾の先にも付けられ�
 
 def main():
     only = set(sys.argv[1:])     # 竜種を名指しすると、その竜種だけ作り直す（ほかの竜種の絵を書き換えない）
+    if not only or "ball" in only:   # DT-656: 塊竜は全身カットの絵ではなく本デザインに宝石を埋め込む（ball_gem_set）
+        ball_gem_set()
     for element, body_fn, wing_fn, pad_b, pad_w in (
         ("fire", fire_body, fire_wing, FIRE_PAD, FIRE_WING_PAD),
         ("ice", ice_body, ice_wing, ICE_PAD, ICE_WING_PAD),
@@ -1618,7 +1682,6 @@ def main():
         ("comet", comet_body, comet_wing, COMET_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("bomber", bomber_body, bomber_wing, BOMBER_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("bone", bone_body, bone_wing, BONE_PAD_ROOT, BONE_WING_PAD),
-        ("ball", ball_body, ball_wing, BALL_PAD, dict(left=0, top=0, right=0, bottom=0)),   # DT-656・661・662・664
         ("flail", flail_body, flail_wing, FLAIL_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("whale", whale_body, whale_wing, WHALE_PAD_ROOT, dict(left=0, top=0, right=0, bottom=0)),
         ("ray", ray_body, ray_wing, RAY_PAD_ROOT, RAY_WING_PAD),

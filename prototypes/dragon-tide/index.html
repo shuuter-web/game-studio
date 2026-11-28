@@ -35110,7 +35110,7 @@ const EVO_TINT_GEM_LOOKS = new Set(["fire_sparkle", "ice_sparkle", "fire_jewel",
   "tortoise_sparkle", "tortoise_jewel", "tortoise_jewelt", "frog_sparkle", "frog_jewel",
   "ufo_sparkle", "ufo_jewel", "comet_sparkle", "comet_jewel", "comet_jewelt",   // v3.258.0: UFO・彗星竜・爆竜・屍竜
   "bomber_sparkle", "bomber_jewel", "bomber_jewelt", "bone_sparkle", "bone_jewel", "bone_jewelt",
-  "ball_sparkle", "ball_jewel", "flail_sparkle", "flail_jewel", "flail_jewelt", "whale_sparkle", "whale_jewel", "whale_jewelt",   // v3.261.0
+  "ball_sparkle", "ball_jewel", "ball_jewel_v1", "ball_jewel_v2", "ball_jewel_v3", "ball_jewel_v4", "ball_jewel_v5", "flail_sparkle", "flail_jewel", "flail_jewelt", "whale_sparkle", "whale_jewel", "whale_jewelt",   // v3.261.0
   "ray_sparkle", "ray_jewel", "ray_jewelt"]);   // v3.233.0: 尾の飾りを尻尾の先に付けるときの胴   // v3.216.0: 隼竜・燕竜・蜂竜   // v3.205.0: 影竜・緋竜・飛竜
 
 function evoCardId(key, kind) {
@@ -57173,6 +57173,14 @@ function drawBoids() {
   const paletteFlock  = DRAGON_ELEMENT_COLORS[element] ?? DRAGON_ELEMENT_COLORS.fire;
   // v3.188.0（DT-609）: 宝石のきらめき（GEM_SPARKLE_SPECIES にある竜種だけ。進化の段階で量が変わる）
   const sparkleFlock  = gemSparkleForSpecies(flockSpecies);
+  // v3.261.0（DT-656「2進化では竜ごとに色を変えて、塊がカラフルに」）: variants のある段階は、竜の番号の順に色の並びの違う絵ときらめきを割り当てる。
+  // 見た目だけ（番号で決まるので乱数を引かない）
+  const variantLooks  = sparkleFlock && sparkleFlock.variants;
+  const variantSprites = !variantLooks ? null : variantLooks.map((look) => {
+    const frames = getSpeciesSprites(flockSpecies, undefined, flockRes, look);
+    return evoVis ? tintedSprites(flockSpecies + "@" + look + "#" + flockRes, frames, evoVis.tint) : frames;
+  });
+  const variantSparkles = !variantLooks ? null : variantLooks.map((look) => ({ ...sparkleFlock, look }));
 
   // スプライトがまだ生成されていない場合はフォールバック描画しない（ちらつき防止）
   if (!sprites || sprites.length === 0) return;
@@ -57251,7 +57259,8 @@ function drawBoids() {
                     : spVis ? tintedSprites("sp:" + spKind + "#" + spRes, getSpecialSprites(spKind, spRes), spVis.tint)
                     : getSpecialSprites(spKind, spRes);
     const sprite    = spSprites ? spSprites[frameIdx]
-                    : (spritesAir && boidHopAir[i] > 0.15) ? spritesAir[frameIdx] : sprites[frameIdx];
+                    : (spritesAir && boidHopAir[i] > 0.15) ? spritesAir[frameIdx]
+                    : variantSprites ? variantSprites[i % variantSprites.length][frameIdx] : sprites[frameIdx];
     // 尾は毎フレーム描くので、胴体を差し替えたら尾の色も合わせる
     const palette   = spSprites
       ? (DRAGON_ELEMENT_COLORS[SPECIAL_DEFS[spKind].key] ?? paletteFlock)
@@ -57382,7 +57391,7 @@ function drawBoids() {
     );
     // ---- v3.188.0（DT-609）: 宝石のきらめき。向きと位置で決まる。光る面の無い竜は重ねない（1匹あたり drawImage +1 まで） ----
     // 特殊個体は自分の絵で描くので、きらめきも特殊個体の key で引く（極光だけがきらめく）
-    const sparkle = spSprites ? gemSparkleForSpecial(SPECIAL_DEFS[spKind].key) : sparkleFlock;
+    const sparkle = spSprites ? gemSparkleForSpecial(SPECIAL_DEFS[spKind].key) : variantSparkles ? variantSparkles[i % variantSparkles.length] : sparkleFlock;
     if (sparkle && alpha * sparkle.gloss > GEM_SPARKLE_MIN_ALPHA) {
       const layer = gemSparkleLayer(sparkle, gemSparkleHeading(angle, wx, wy, i, 0), !!(spritesAir && boidHopAir[i] > 0.15));   // 跳んでいる絵を使う竜は、きらめきも跳んでいる絵の形で
       if (layer) {
@@ -59880,15 +59889,6 @@ const DRAGON_PART_SPRITES = {
     bodyDrawH: 27,
     wingDrawW: 30,
   },
-  ball_rough: {
-    body: "assets/dragon_ball_rough_body.png",
-    wing: "assets/dragon_ball_rough_wing.png",
-    bodyPivot:  { cx: 120.7, cy: 180.1, w: 236, h: 320 },
-    shoulder:   { left: { x: 18.5, y: 142 }, right: { x: 212.5, y: 142 } },
-    wingAnchor: { x: 319, y: 83.2 },
-    bodyDrawH: 27,
-    wingDrawW: 30,
-  },
   ball_sparkle: {
     body: "assets/dragon_ball_sparkle_body.png",
     wing: "assets/dragon_ball_sparkle_wing.png",
@@ -59898,9 +59898,56 @@ const DRAGON_PART_SPRITES = {
     bodyDrawH: 27,
     wingDrawW: 30,
   },
+  // DT-656（11/28「進化の宝石は大きな宝石を埋め込んでカラフルに。2進化では竜ごとに色を変えて」）: 塊竜の *_sparkle・*_jewel は本デザインに宝石を埋め込んだ絵。
+  // *_jewel_v1〜v5 は宝石の色の並びを変えた絵（GEM_SPARKLE_SPECIES.ball の variants。竜ごとに順に割り当てる）
   ball_jewel: {
     body: "assets/dragon_ball_jewel_body.png",
-    wing: "assets/dragon_ball_sparkle_wing.png",
+    wing: "assets/dragon_ball_jewel_wing.png",
+    bodyPivot:  { cx: 170.7, cy: 180.1, w: 336, h: 340 },
+    shoulder:   { left: { x: 68.5, y: 142 }, right: { x: 262.5, y: 142 } },
+    wingAnchor: { x: 319, y: 83.2 },
+    bodyDrawH: 28.69,
+    wingDrawW: 30,
+  },
+  ball_jewel_v1: {
+    body: "assets/dragon_ball_jewel_v1_body.png",
+    wing: "assets/dragon_ball_jewel_v1_wing.png",
+    bodyPivot:  { cx: 170.7, cy: 180.1, w: 336, h: 340 },
+    shoulder:   { left: { x: 68.5, y: 142 }, right: { x: 262.5, y: 142 } },
+    wingAnchor: { x: 319, y: 83.2 },
+    bodyDrawH: 28.69,
+    wingDrawW: 30,
+  },
+  ball_jewel_v2: {
+    body: "assets/dragon_ball_jewel_v2_body.png",
+    wing: "assets/dragon_ball_jewel_v2_wing.png",
+    bodyPivot:  { cx: 170.7, cy: 180.1, w: 336, h: 340 },
+    shoulder:   { left: { x: 68.5, y: 142 }, right: { x: 262.5, y: 142 } },
+    wingAnchor: { x: 319, y: 83.2 },
+    bodyDrawH: 28.69,
+    wingDrawW: 30,
+  },
+  ball_jewel_v3: {
+    body: "assets/dragon_ball_jewel_v3_body.png",
+    wing: "assets/dragon_ball_jewel_v3_wing.png",
+    bodyPivot:  { cx: 170.7, cy: 180.1, w: 336, h: 340 },
+    shoulder:   { left: { x: 68.5, y: 142 }, right: { x: 262.5, y: 142 } },
+    wingAnchor: { x: 319, y: 83.2 },
+    bodyDrawH: 28.69,
+    wingDrawW: 30,
+  },
+  ball_jewel_v4: {
+    body: "assets/dragon_ball_jewel_v4_body.png",
+    wing: "assets/dragon_ball_jewel_v4_wing.png",
+    bodyPivot:  { cx: 170.7, cy: 180.1, w: 336, h: 340 },
+    shoulder:   { left: { x: 68.5, y: 142 }, right: { x: 262.5, y: 142 } },
+    wingAnchor: { x: 319, y: 83.2 },
+    bodyDrawH: 28.69,
+    wingDrawW: 30,
+  },
+  ball_jewel_v5: {
+    body: "assets/dragon_ball_jewel_v5_body.png",
+    wing: "assets/dragon_ball_jewel_v5_wing.png",
     bodyPivot:  { cx: 170.7, cy: 180.1, w: 336, h: 340 },
     shoulder:   { left: { x: 68.5, y: 142 }, right: { x: 262.5, y: 142 } },
     wingAnchor: { x: 319, y: 83.2 },
@@ -60468,7 +60515,10 @@ const GEM_SPARKLE_SPECIES = {
   bone:     { tiers: [{ look: "bone_rough", amount: "none" }, { look: "bone_sparkle", amount: "full" }, { look: "bone_jewel", amount: "full", tailTipLook: "bone_jewelt" }], gloss: 0.9 },
   // v3.261.0（案帳 DT-656・661・662・664）: 塊竜（スペサタイト・ガーネット）・鉄鎖竜（スチールグレーのスピネル。斜めの鎖は残す）・
   // 鯨竜（ロンドン・ブルー・トパーズ）・光線竜（全身は宝石にせず、水晶の所を増やして水晶の所だけ光らせる。GEM_SPARKLE_MASK の glowSrc）
-  ball:     { tiers: [{ look: "ball_rough", amount: "none" }, { look: "ball_sparkle", amount: "full" }, { look: "ball_jewel", amount: "full" }], gloss: 0.9 },
+  // 塊竜は DT-656（11/28 Shooter「進化の宝石は大きな宝石を埋め込んでカラフルに。2進化ではできれば竜ごとに色を変えて色数を増やし塊がカラフルに」）で、
+  // 全身を宝石にせず本デザインの帯の鎧に大きな宝石を埋め込む（進化前は本デザインのまま）。variants＝竜ごとに順に割り当てる絵（色の並びが違う）
+  ball:     { tiers: [{ look: "ball", amount: "none" }, { look: "ball_sparkle", amount: "full" },
+    { look: "ball_jewel", amount: "full", variants: ["ball_jewel", "ball_jewel_v1", "ball_jewel_v2", "ball_jewel_v3", "ball_jewel_v4", "ball_jewel_v5"] }], gloss: 0.9 },
   flail:    { tiers: [{ look: "flail_rough", amount: "none" }, { look: "flail_sparkle", amount: "full" }, { look: "flail_jewel", amount: "full", tailTipLook: "flail_jewelt" }], gloss: 0.9 },
   whale:    { tiers: [{ look: "whale_rough", amount: "none" }, { look: "whale_sparkle", amount: "full" }, { look: "whale_jewel", amount: "full", tailTipLook: "whale_jewelt" }], gloss: 0.9 },
   ray:      { tiers: [{ look: "ray", amount: "none" }, { look: "ray_sparkle", amount: "full" }, { look: "ray_jewel", amount: "full", tailTipLook: "ray_jewelt" }], gloss: 0.9 },
@@ -60479,11 +60529,17 @@ const GEM_SPARKLE_SPECIALS = {
   rainbow: { tiers: [{ look: "rainbow", amount: "none" }, { look: "rainbow_sparkle", amount: "full" }], gloss: 0.85 },
 };
 // 光を入れる形を胴の縁から内側へ縮める幅を、絵ごとに変える（ガーゴイルは手足が太いので強めに縮める）
-// v3.261.0（DT-656「塊竜はほかの竜種より小さく見えるので、カット面を大きく」）: facetSize＝面の大きさ（胴の絵の画素）を絵ごとに変える。
+// v3.261.0: facetSize＝面の大きさ（胴の絵の画素）を絵ごとに変える。
 // v3.261.0（DT-664「光線竜は水晶の部分が増えて光る方向で」）: glowSrc＝光を入れる形を胴の形ではなく別の絵（水晶の所だけ白い絵。
 // tools/gen_gem_ornaments.py の ray_glow_mask）にする。紺の装甲は光らない。面も細かく（水晶の柱が細いので）
 const GEM_SPARKLE_MASK = { gargoyle: { maskCut: 3.0, maskRegrow: 1.5 },
-  ball_sparkle: { facetSize: 64 }, ball_jewel: { facetSize: 64 },
+  ball_sparkle: { glowSrc: "assets/dragon_ball_sparkle_glowmask.png", facetSize: 22 },   // DT-656: 埋め込んだ宝石の所だけ光らせる
+  ball_jewel: { glowSrc: "assets/dragon_ball_jewel_glowmask.png", facetSize: 22 },
+  ball_jewel_v1: { glowSrc: "assets/dragon_ball_jewel_glowmask.png", facetSize: 22 },
+  ball_jewel_v2: { glowSrc: "assets/dragon_ball_jewel_glowmask.png", facetSize: 22 },
+  ball_jewel_v3: { glowSrc: "assets/dragon_ball_jewel_glowmask.png", facetSize: 22 },
+  ball_jewel_v4: { glowSrc: "assets/dragon_ball_jewel_glowmask.png", facetSize: 22 },
+  ball_jewel_v5: { glowSrc: "assets/dragon_ball_jewel_glowmask.png", facetSize: 22 },
   ray_sparkle: { glowSrc: "assets/dragon_ray_sparkle_glowmask.png", facetSize: 20 },
   ray_jewel: { glowSrc: "assets/dragon_ray_jewel_glowmask.png", facetSize: 20 },
   ray_jewelt: { glowSrc: "assets/dragon_ray_jewelt_glowmask.png", facetSize: 20 } };
@@ -60586,7 +60642,8 @@ function gemSparkleForSpecies(speciesId, tierIndex) {
   // v3.233.0（DT-609 手直し）: 尾の飾りを動く尻尾の先に付ける竜種は、2回目の進化の胴を尾の飾りの無い絵にして、尻尾の先の絵を添える
   const at = tier.tailTipLook ? gemTailOrnamentAt(GEM_TAIL_ORNAMENT[element], GEM_TAIL_TIPS[element]) : null;
   const tip = at ? GEM_TAIL_TIPS[element] : null;
-  return { look: tip ? tier.tailTipLook : tier.look, amount: tier.amount, gloss: def.gloss, plain: !!def.plain, tailTip: tip, tailAt: at };
+  return { look: tip ? tier.tailTipLook : tier.look, amount: tier.amount, gloss: def.gloss, plain: !!def.plain, tailTip: tip, tailAt: at,
+    variants: tier.variants || null };   // v3.261.0（DT-656）: 竜ごとに順に割り当てる絵（塊竜の2回目の進化）
 }
 /**
  * v3.234.0: GEM_TAIL_ORNAMENT の値 → 尾の飾りを付ける尻尾の上の場所 { seg: 節の番号（0 始まり）, along: 節の根元 0〜先 1 }。
@@ -61348,10 +61405,11 @@ function spriteResForScale(scale) {
  * v0.47.1: variant="air" で「跳躍ポーズ」の列を別に持てる（蛙竜の脚の動き）。
  * キャッシュキーを分けるだけなので、変種を持たない竜種では従来どおり1列しか作られない。
  */
-function getSpeciesSprites(speciesId, variant, res = 1) {
+function getSpeciesSprites(speciesId, variant, res = 1, lookOverride = null) {
   // v3.188.0（DT-609）: 宝石の竜は進化の段階で絵が変わる（原石→宝石→全身カットの宝石）。段階ごとに別の列として持つ
-  const gemSparkle = gemSparkleForSpecies(speciesId);
-  const gemLook = gemSparkle ? gemSparkle.look : null;
+  // v3.261.0（DT-656）: lookOverride＝竜ごとに色の並びを変えた絵（GEM_SPARKLE_SPECIES の variants）を引くとき
+  const gemSparkle = lookOverride ? null : gemSparkleForSpecies(speciesId);
+  const gemLook = lookOverride || (gemSparkle ? gemSparkle.look : null);
   const cacheKey = (variant ? speciesId + ":" + variant : speciesId) + (gemLook ? "@" + gemLook : "") + (res !== 1 ? "#" + res : "");
   let frames = spriteCache.get(cacheKey);
   if (frames) {
