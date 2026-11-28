@@ -1193,6 +1193,9 @@
   .op-switch.on::after { left: 23px; }
   .op-vol .op-body { width: 100%; }
   .op-range { width: 100%; margin-top: 8px; accent-color: #4adf80; }
+  .vh-ai-head { margin-top: 10px; }
+  .vh-ai-locked .op-name { color: #9aa6c0; }
+  .vh-ai-cost { flex: none; font-family: monospace; font-size: 12px; color: #8cd8ff; }
   #codex-overlay .tree-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
   #codex-overlay .tree-title { font-family: -apple-system, BlinkMacSystemFont, serif; font-size: 20px; font-weight: bold; color: #ffe0b0; letter-spacing: 0.12em; text-shadow: 0 0 20px rgba(255,140,40,0.6); }
   #codex-overlay .tree-crystals { font-family: monospace; font-size: 14px; color: #8cd8ff; margin-left: auto; }
@@ -1493,7 +1496,7 @@ window.addEventListener("error", function () { var el = document.getElementById(
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.255.0";
+const GAME_VERSION = "v3.256.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -34375,6 +34378,21 @@ const STRINGS = {
   },
   valhallaTakeControl: "✋ 自分で操作する",
   valhallaExit: "⚔ 出る",
+  // v3.256.0（DT-642 4回目）: AI の性向（項目ごとに竜晶で解放し、オンオフ・スライダーで変える）
+  valhallaAiHead: "AI の性向（竜晶で解放）",
+  valhallaAiHint: "解放した項目は、ヴァルハラで AI が戦うとき（眺める・半オート・オート）だけ効く。ふつうのランとオートプレイは変わらない。",
+  valhallaAi: {
+    caution:     { name: "慎重さ",           desc: "立っている竜がこの割合を切ったら退く。0% は退かない。" },
+    bossFlock:   { name: "首都へ向かう群れ", desc: "群れがこの大きさになったら首都を狙い始める。" },
+    sweep:       { name: "薙ぎの多さ",       desc: "囲む輪の代わりに、建物を突き抜けて薙ぐ線を引く割合。" },
+    tempo:       { name: "線を引く速さ",     desc: "次の線を引くまでの間を縮める（100% がいつもの速さ）。" },
+    eggs:        { name: "卵を拾いに行く",   desc: "近くの卵を先に拾って群れを増やす。切ると建物だけを狙う。" },
+    strongAvoid: { name: "強い町を後回し",   desc: "群れが小さいうちは格上の街・要塞都市を避ける。切ると近い順に挑む。" },
+    hamletSkip:  { name: "小集落を後回し",   desc: "町に属さない小集落より、ふつうの町を先に狙う。" },
+  },
+  valhallaAiUnit: { caution: "%", bossFlock: "匹", sweep: "%", tempo: "%" },
+  valhallaAiBuy: (cost) => `🔷 ${cost} で解放`,
+  valhallaAiPoor: (cost, short) => `🔷 ${cost}（あと ${short}）`,
   // v3.226.0（案帳 DT-633）: 言語。初回のタイトルの2つの開始ボタンと、オプションの切り替え
   langStartJa: "日本語ではじめる",
   langStartEn: "Start in English",
@@ -34595,6 +34613,20 @@ const STRINGS_EN = {
   },
   valhallaTakeControl: "✋ Take control",
   valhallaExit: "⚔ Leave",
+  valhallaAiHead: "AI temperament (unlock with crystals)",
+  valhallaAiHint: "Unlocked settings apply only while the AI fights in Valhalla (watch, semi-auto, auto). Normal runs and autoplay stay the same.",
+  valhallaAi: {
+    caution:     { name: "Caution",            desc: "Retreat when standing dragons drop below this share. 0% never retreats." },
+    bossFlock:   { name: "Flock for the capital", desc: "Start attacking the capital once the flock reaches this size." },
+    sweep:       { name: "Sweeps",             desc: "Share of strokes that slash through buildings instead of circling them." },
+    tempo:       { name: "Drawing speed",      desc: "Shortens the wait before the next stroke (100% is the usual pace)." },
+    eggs:        { name: "Collect eggs",       desc: "Grab nearby eggs first to grow the flock. Off: target buildings only." },
+    strongAvoid: { name: "Avoid strong towns", desc: "While the flock is small, skip superior towns and fortress cities. Off: take them in order of distance." },
+    hamletSkip:  { name: "Skip hamlets",       desc: "Target proper towns before the stray hamlets." },
+  },
+  valhallaAiUnit: { caution: "%", bossFlock: "", sweep: "%", tempo: "%" },
+  valhallaAiBuy: (cost) => `🔷 Unlock for ${cost}`,
+  valhallaAiPoor: (cost, short) => `🔷 ${cost} (${short} more)`,
   chooseDragon: "Choose a dragon",
   autoplayChoose: "Choose a dragon to watch",
   randomDragon: "Random",
@@ -51764,6 +51796,50 @@ function loadValhallaPrefs() {
 function saveValhallaPrefs(prefs) {
   try { localStorage.setItem(VALHALLA_PREFS_KEY, JSON.stringify(prefs)); } catch (_) { /* 覚えられなくても今の選択は効く */ }
 }
+// v3.256.0（DT-642 4回目・11/28 Shooter「AIの性向の部分は、色んなオプションをオンオフ(またはスライダーで調整)できるような形が良い。
+// その項目解放を竜晶で行う形」）: オートプレイの判断の決まった数字のうち、戦い方の癖として見て分かるものを項目にした。
+// 解放していない項目と、ヴァルハラの外（ふつうのオートプレイ・ヘッドレス）は既定の値（オートプレイの定数そのまま）。
+// 解放と値はプロファイルに残す（竜晶で買ったものなので、端末の好みではなくセーブの一部）。range の値は画面の数字のまま持つ（%・匹）
+const VALHALLA_AI_DEFS = [
+  { key: "caution",     kind: "range",  min: 0,  max: 80,  step: 10, def: Math.round(AUTO_RETREAT_RATIO * 100), cost: 40 },
+  { key: "bossFlock",   kind: "range",  min: 50, max: 600, step: 50, def: AUTO_BOSS_MIN_FLOCK,                  cost: 60 },
+  { key: "sweep",       kind: "range",  min: 0,  max: 100, step: 10, def: Math.round(AUTO_SWEEP_CHANCE * 100),  cost: 40 },
+  { key: "tempo",       kind: "range",  min: 50, max: 200, step: 10, def: 100,                                   cost: 50 },
+  { key: "eggs",        kind: "switch", def: true, cost: 30 },
+  { key: "strongAvoid", kind: "switch", def: true, cost: 30 },
+  { key: "hamletSkip",  kind: "switch", def: true, cost: 30 },
+];
+function valhallaAiStore() {
+  if (!profile.valhallaAi || typeof profile.valhallaAi !== "object") profile.valhallaAi = {};
+  const v = profile.valhallaAi;
+  v.unlocked = v.unlocked || {}; v.values = v.values || {};
+  return v;
+}
+/** 解放済みの項目の今の値（範囲の外・型違いは既定へ寄せる）。ヴァルハラでの判断に使うのは valhallaAi() */
+function valhallaAiSetting(def) {
+  const v = valhallaAiStore().values[def.key];
+  if (def.kind === "switch") return typeof v === "boolean" ? v : def.def;
+  return Number.isFinite(v) ? Math.max(def.min, Math.min(def.max, v)) : def.def;
+}
+/** オートプレイの判断に使う値：ヴァルハラで、その項目を解放していれば設定した値。ほかは既定 */
+function valhallaAi(key) {
+  const def = VALHALLA_AI_DEFS.find(d => d.key === key);
+  if (!inValhalla() || !profile || !valhallaAiStore().unlocked[key]) return def.def;
+  return valhallaAiSetting(def);
+}
+function buyValhallaAi(key) {
+  const def = VALHALLA_AI_DEFS.find(d => d.key === key);
+  const store = valhallaAiStore();
+  if (!def || store.unlocked[key] || profile.crystals < def.cost) return false;
+  profile.crystals -= def.cost;
+  store.unlocked[key] = true;
+  saveProfile();
+  return true;
+}
+function setValhallaAi(key, value) {
+  valhallaAiStore().values[key] = value;
+  saveProfile();
+}
 /** ヴァルハラで巨城に挑んでいるなら、その地域の番号。世界をめぐるなら null */
 function valhallaArenaShape() { return valhalla.active && valhalla.arena === "starfort" ? SHAPE_STARFORT : null; }
 /** 巨城に挑むときの最初の時代：その群れが滅ぼした地域の数ぶん進めた時代から（完走した群れは最後の時代から） */
@@ -51885,6 +51961,7 @@ function renderValhalla() {
       `<div class="op-desc">${STRINGS.valhallaArenaNote[prefs.arena]}</div></div></div>` +
     `<div class="op-row vh-opt" data-vh-opt="manual"><div class="op-body"><div class="op-name">${STRINGS.valhallaControlLabel[ctl]}</div>` +
       `<div class="op-desc">${STRINGS.valhallaControlNote[ctl]}</div></div></div>`;
+  html += renderValhallaAiRows();
   if (flocks.length === 0) html += `<div class="tree-hint">${STRINGS.valhallaEmpty}</div>`;
   flocks.forEach((f, i) => {
     const s = SPECIES_DEFS[f.species];
@@ -51910,6 +51987,7 @@ function renderValhalla() {
       if (f) startValhallaRun(f, { arena: prefs.arena, manual: prefs.manual });
     });
   }
+  bindValhallaAiRows();
   for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-vh-opt]")) {
     uiTap(row, (e) => {
       e.stopPropagation();
@@ -51918,6 +51996,51 @@ function renderValhalla() {
       else prefs.manual = !prefs.manual;
       saveValhallaPrefs(prefs);
       renderValhalla();
+    });
+  }
+}
+
+/** v3.256.0（DT-642 4回目）: ヴァルハラの画面の「AI の性向」の行。未解放は竜晶の値段、解放済みはスイッチかスライダー */
+function renderValhallaAiRows() {
+  const store = valhallaAiStore();
+  let html = `<div class="tree-hint vh-ai-head">${STRINGS.valhallaAiHead}　🔷 ${profile.crystals}<br>${STRINGS.valhallaAiHint}</div>`;
+  for (const def of VALHALLA_AI_DEFS) {
+    const t = STRINGS.valhallaAi[def.key];
+    if (!store.unlocked[def.key]) {
+      const act = profile.crystals >= def.cost ? STRINGS.valhallaAiBuy(def.cost) : STRINGS.valhallaAiPoor(def.cost, def.cost - profile.crystals);
+      html += `<div class="op-row vh-ai-locked" data-vh-buy="${def.key}"><div class="op-body"><div class="op-name">🔒 ${t.name}</div>` +
+        `<div class="op-desc">${t.desc}</div></div><div class="vh-ai-cost">${act}</div></div>`;
+    } else if (def.kind === "switch") {
+      html += `<div class="op-row" data-vh-ai="${def.key}"><div class="op-body"><div class="op-name">${t.name}</div>` +
+        `<div class="op-desc">${t.desc}</div></div><div class="op-switch ${valhallaAiSetting(def) ? "on" : ""}"></div></div>`;
+    } else {
+      const val = valhallaAiSetting(def);
+      html += `<div class="op-row op-vol"><div class="op-body">` +
+        `<div class="op-name">${t.name} <span class="op-vol-val">${val}</span>${STRINGS.valhallaAiUnit[def.key]}</div>` +
+        `<div class="op-desc">${t.desc}</div>` +
+        `<input class="op-range" type="range" min="${def.min}" max="${def.max}" step="${def.step}" value="${val}" data-vh-range="${def.key}">` +
+        `</div></div>`;
+    }
+  }
+  return html;
+}
+function bindValhallaAiRows() {
+  for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-vh-buy]")) {
+    uiTap(row, (e) => { e.stopPropagation(); if (buyValhallaAi(row.getAttribute("data-vh-buy"))) renderValhalla(); });
+  }
+  for (const row of optionsOverlayEl.querySelectorAll(".op-row[data-vh-ai]")) {
+    uiTap(row, (e) => {
+      e.stopPropagation();
+      const def = VALHALLA_AI_DEFS.find(d => d.key === row.getAttribute("data-vh-ai"));
+      setValhallaAi(def.key, !valhallaAiSetting(def));
+      renderValhalla();
+    });
+  }
+  for (const range of optionsOverlayEl.querySelectorAll(".op-range[data-vh-range]")) {
+    range.addEventListener("pointerdown", (e) => e.stopPropagation());   // スライダーを動かす指で行の下の群れを選ばないように
+    range.addEventListener("input", () => {
+      setValhallaAi(range.getAttribute("data-vh-range"), Number(range.value));
+      range.parentElement.querySelector(".op-vol-val").textContent = range.value;
     });
   }
 }
@@ -51968,7 +52091,7 @@ function updateAutoplay(dt) {
   if (wipeShowTimer > 0) return;   // 全滅の見せ場では動かさない
   autoplay.strokeWait -= dt;
   if (autoplay.strokeWait > 0) return;
-  autoplay.strokeWait = AUTO_STROKE_MIN_S + autoRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
+  autoplay.strokeWait = (AUTO_STROKE_MIN_S + autoRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S)) * 100 / valhallaAi("tempo");   // v3.256.0: tempo はヴァルハラの AI の性向（既定 100）
   dismissStageIntro();
   autoplayStroke();
 }
@@ -52019,7 +52142,7 @@ function updateAssist(dt) {
   if (wipeShowTimer > 0) return;
   autoplay.strokeWait -= dt;
   if (autoplay.strokeWait > 0) return;
-  autoplay.strokeWait = AUTO_STROKE_MIN_S + autoRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S);
+  autoplay.strokeWait = (AUTO_STROKE_MIN_S + autoRandom() * (AUTO_STROKE_MAX_S - AUTO_STROKE_MIN_S)) * 100 / valhallaAi("tempo");   // v3.256.0: tempo はヴァルハラの AI の性向（既定 100）
   dismissStageIntro();
   autoplayStroke();
 }
@@ -52106,7 +52229,7 @@ function autoplayPlan(c) {
     const w = AUTO_LETHAL_SHOT_WEIGHT / d2;
     ax += dx * w; ay += dy * w;
   }
-  if (total > 0 && (standing / total < AUTO_RETREAT_RATIO || bigNear)) {
+  if (total > 0 && (standing / total < valhallaAi("caution") / 100 || bigNear)) {
     let d = Math.hypot(ax, ay);
     if (d < 1e-9) { ax = START_X - c.x; ay = START_Y - c.y; d = Math.hypot(ax, ay) || 1; }
     return { kind: "retreat", x: c.x + ax / d * AUTO_RETREAT_LEN, y: c.y + ay / d * AUTO_RETREAT_LEN };
@@ -52116,7 +52239,7 @@ function autoplayPlan(c) {
   const stageS = (performance.now() - stageStartTime) / 1000;
   let left = 0, all = 0;
   for (const b of settlements) { if (!b || b.isBoss || b._isWall) continue; all++; if (!b.fallen) left++; }
-  const bossFlock = Math.min(AUTO_BOSS_MIN_FLOCK, Math.max(1, Math.round(effFlockTotalCap() * AUTO_BOSS_MIN_CAP_RATIO)));   // DT-646
+  const bossFlock = Math.min(valhallaAi("bossFlock"), Math.max(1, Math.round(effFlockTotalCap() * AUTO_BOSS_MIN_CAP_RATIO)));   // DT-646
   const bossOk = !!boss && !boss.fallen && !boss._starHidden &&   // v3.218.0（案帳 DT-034）: 出る前の天守は狙わない
     (standing + flockOverflow >= bossFlock || stageS > AUTO_BOSS_LATE_S || (all > 0 && left / all < AUTO_BOSS_LEFT_RATIO));
   // 卵（群れが増える＝この先が楽になる）。首都を狙ってよくなったら、すぐそばの卵と首都の方角の卵だけ拾う
@@ -52125,7 +52248,8 @@ function autoplayPlan(c) {
   if (bossOk) { bdx = boss.wx - c.x; bdy = boss.wy - c.y; bossD = Math.hypot(bdx, bdy) || 1; }
   const eggCos = Math.cos(AUTO_BOSS_EGG_CONE_DEG * Math.PI / 180);
   let egg = -1, ed = AUTO_EGG_RANGE * AUTO_EGG_RANGE;
-  for (let e = 0; e < MAX_EGGS; e++) {
+  const eggsOn = valhallaAi("eggs");   // v3.256.0（DT-642 4回目）: ヴァルハラの AI の性向で切れる
+  for (let e = 0; eggsOn && e < MAX_EGGS; e++) {
     if (!eggActive[e]) continue;
     const d2 = dist2(eggWx[e], eggWy[e], c.x, c.y);
     if (d2 >= ed) continue;
@@ -52148,11 +52272,12 @@ function autoplayPlan(c) {
   }
   if (bossOk && autoRandom() < AUTO_BOSS_PICK_P) return { kind: "target", x: boss.wx, y: boss.wy, t: boss };
   const near = [];
+  const strongAvoid = valhallaAi("strongAvoid"), hamletSkip = valhallaAi("hamletSkip");   // v3.256.0（DT-642 4回目）
   for (const b of settlements) {
     if (!b || b.fallen || b.isBoss || b._isWall || b._starHidden) continue;   // v3.218.0（案帳 DT-034）: 開いていない段は狙わない
     let score = Math.sqrt(dist2(b.wx, b.wy, c.x, c.y));
-    if (small && autoplayStrongBuilding(b)) score += AUTO_STRONG_PENALTY;
-    if (b._townIndex === undefined) score += AUTO_HAMLET_PENALTY;
+    if (small && autoplayStrongBuilding(b) && strongAvoid) score += AUTO_STRONG_PENALTY;
+    if (b._townIndex === undefined && hamletSkip) score += AUTO_HAMLET_PENALTY;
     if (ramparts.length && ramparts.some(r => r !== b && dist2(r.wx, r.wy, b.wx, b.wy) < AUTO_RAMPART_R * AUTO_RAMPART_R)) score += AUTO_RAMPART_PENALTY;
     if (!bossOk && boss && !boss.fallen && dist2(b.wx, b.wy, boss.wx, boss.wy) < AUTO_BOSS_AVOID_R * AUTO_BOSS_AVOID_R) score += AUTO_BOSS_AREA_PENALTY;
     if (b._starTip) score -= AUTO_STARFORT_TIP_PULL;   // v3.218.0（案帳 DT-034）: 星形の巨城は稜堡の先端の塔を落とすのが本筋（石垣だけ崩して回らないように）
@@ -52254,7 +52379,7 @@ function autoplayStroke() {
     const len = plan.kind === "egg" ? d + AUTO_EGG_OVERSHOOT : d, n = Math.max(2, Math.ceil(len / AUTO_LOOP_STEP_PX));
     for (let k = 0; k <= n; k++) pts.push({ x: c.x + dx / d * len * k / n, y: c.y + dy / d * len * k / n });
     if (plan.kind === "retreat") autoplay.strokeWait = Math.min(autoplay.strokeWait, AUTO_RETREAT_STROKE_S);
-  } else if (autoRandom() < AUTO_SWEEP_CHANCE) {
+  } else if (autoRandom() < valhallaAi("sweep") / 100) {
     // 薙ぐ：群れから建物を突き抜けて先まで
     const dx = t.wx - c.x, dy = t.wy - c.y, d = Math.hypot(dx, dy) || 1;
     const len = d + AUTO_SWEEP_OVERSHOOT, n = Math.max(2, Math.ceil(len / AUTO_LOOP_STEP_PX));
