@@ -1104,12 +1104,15 @@ def comet_wing(src):
 
 # 爆竜（インペリアル・トパーズ）：竜そのものを爆弾に見立てる。腰の左右から後ろ・外へ張るトルコ石の尾翼（水平尾翼。金の鋲）・
 # 背に乗る黒いガラスの丸い爆弾（金の口金・導火線の火花）・尾の先のトルコ石の爆弾の尾翼。翼は飾らない（肩が前にあり翼が胴の前半を覆う）
-BOMBER_PAD_ROOT = dict(left=44, top=0, right=44, bottom=80)
-BOMBER_PAD_TIP = dict(left=44, top=0, right=44, bottom=0)
+# v3.260.0（DT-654 手直し・11/28 Shooter「飛行機コンセプト面白くて良い。左右翼パーツはもうちょっとだけ長く、尾翼のパーツは尻尾の先ではなく根元で。
+#   爆弾のペイントは、丸い爆弾ではなくて飛行機に積まれる爆弾に」）: 腰の尾翼を長く（96→118）、尾翼の飾りはゲームでも胴の絵の尾の付け根（"root"）に、
+#   背の爆弾は細長い航空爆弾（前が丸い胴・金の帯・後ろに十字の尾翼を上から見た形）に
+BOMBER_PAD_ROOT = dict(left=64, top=0, right=64, bottom=80)   # v3.260.0: 尾翼を長くしたぶん左右の余白を足した（44→64）
+BOMBER_PAD_TIP = dict(left=64, top=0, right=64, bottom=0)
 BOMBER_CX = 89.0
 BOMBER_FIN_ROOT = (46, 232)           # 水平尾翼の付け根（真ん中からのずれ, 高さ）
-BOMBER_FIN = (96, 40, 122)            # 長さ・付け根の幅・向き（90＝真横・180＝真後ろ）
-BOMBER_BOMB = (196, 25)               # 背の爆弾の高さ・半径
+BOMBER_FIN = (118, 40, 122)           # 長さ・付け根の幅・向き（90＝真横・180＝真後ろ）
+BOMBER_BOMB = (122, 252, 21)          # 背の航空爆弾の鼻先の高さ・尾の端の高さ・胴の半径（前が鼻・後ろが尾翼）
 BOMBER_TAIL_Y = 306
 
 
@@ -1121,6 +1124,26 @@ def bomber_tailfins(canvas, tx, ty):
     canvas.shape([[(tx - 6, ty + 2), (tx + 6, ty + 2), (tx + 5, ty + 64), (tx - 5, ty + 64)]], TURQUOISE, axis=(1.0, 0.2), outline=3.0,
                  ridge=[(tx, ty + 6), (tx, ty + 60)])
     canvas.shape([ellipse_poly(tx, ty + 3, 11, 7, 18)], GOLD, axis=(0.4, 1.0), outline=2.5)
+
+
+def bomber_bomb(canvas, cx, nose_y, end_y, r):
+    """背に乗る航空爆弾を上から見た形：前が丸い細長い黒いガラスの胴・金の帯2本・後ろへすぼまる尾の筒と十字の尾翼（左右2枚と真ん中の縦の1枚）"""
+    body_end = end_y - r * 1.5            # 胴が尾の筒へすぼまり始める所
+    pts = []
+    for i in range(13):                   # 鼻先の半円
+        a = math.pi * i / 12
+        pts.append((cx - math.cos(a) * r, nose_y + r - math.sin(a) * r))
+    pts += [(cx + r, body_end - r * 0.6), (cx + r * 0.42, end_y - r * 0.2), (cx - r * 0.42, end_y - r * 0.2), (cx - r, body_end - r * 0.6)]
+    for sd in (-1, 1):                    # 尾翼（左右）：尾の筒から後ろ・外へ
+        canvas.shape([[(cx + sd * r * 0.4, body_end - r * 0.2), (cx + sd * r * 1.55, end_y - r * 0.1), (cx + sd * r * 1.55, end_y + r * 0.35),
+                       (cx + sd * r * 0.4, end_y + r * 0.1)]], TURQUOISE, axis=(sd * 1.0, 0.4), outline=3.0)
+    canvas.shape([pts], BLACK_GLASS, axis=(-0.6, 1.0), outline=4.0, ridge=[(cx, nose_y + 6), (cx, end_y - 6)])
+    canvas.shape([[(cx - 3.5, body_end - r * 0.3), (cx + 3.5, body_end - r * 0.3), (cx + 3, end_y + r * 0.45), (cx - 3, end_y + r * 0.45)]],
+                 TURQUOISE, axis=(1.0, 0.2), outline=2.4)   # 真ん中の縦の尾翼（上から見て細い筋）
+    for t in (0.22, 0.5):                 # 金の帯
+        y = nose_y + (body_end - nose_y) * t
+        canvas.shape([[(cx - r - 1, y - 4), (cx + r + 1, y - 4), (cx + r + 1, y + 4), (cx - r - 1, y + 4)]], GOLD, axis=(0.4, 1.0), outline=2.0)
+    canvas.shape([ellipse_poly(cx - r * 0.42, nose_y + r * 0.9, r * 0.22, r * 0.5, 14)], GLINT, outline=0.1)   # 照り
 
 
 def bomber_body(src, tail="root"):
@@ -1143,12 +1166,7 @@ def bomber_body(src, tail="root"):
         for t in (0.55, 0.85):   # 金の鋲（爆竜の鋲留めの装甲に合わせる）
             sx, sy = rx + ux * length * t, ry + uy * length * t
             back.shape([ellipse_poly(sx, sy, 4.5, 4.5, 12)], GOLD, axis=(0.4, 1.0), outline=1.6)
-    by, br = BOMBER_BOMB
-    front.shape([ellipse_poly(cx, by, br, br, 32)], BLACK_GLASS, axis=(-0.6, 1.0), outline=4.0)
-    front.shape([ellipse_poly(cx - br * 0.38, by - br * 0.38, br * 0.26, br * 0.18, 16)], GLINT, outline=0.1)
-    front.shape([ellipse_poly(cx, by - br - 2, 9, 7, 16)], GOLD, axis=(0.4, 1.0), outline=2.5)   # 口金（前）
-    front.stroke([(cx, by - br - 6), (cx + 6, by - br - 16), (cx + 16, by - br - 20)], 4.5, IVORY, outline=2.0, ridge=False)   # 導火線
-    front.shape([star4(cx + 18, by - br - 22, 13, 5, 20)], FIRE_OPAL, axis=(0.3, 1.0), outline=2.2)   # 火花
+    bomber_bomb(front, cx, *BOMBER_BOMB)
     if tail == "root":
         bomber_tailfins(back, cx, BOMBER_TAIL_Y)
     return stack(back, sprite, front)
