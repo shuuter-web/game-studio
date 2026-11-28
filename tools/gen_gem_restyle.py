@@ -45,6 +45,12 @@ GEMS = {
     "comet": "golden sunstone gemstone: BRIGHT luminous pale cream-gold and light honey-yellow (like the input colours, NOT brown, NOT tan, NOT pink), full of tiny glittering gold spangles like stardust",
     "bomber": "imperial topaz gemstone: vivid saturated sherry-orange to reddish orange, warm and fiery",
     "bone": "white precious opal for every bone (milky white with soft pastel rainbow play-of-colour flecks), and violet-blue tanzanite for the purple parts",
+    # DT-656・661・662（11/28）: 塊竜・鉄鎖竜・鯨竜（本デザインをゲームに入れて宝石に）
+    "ball": "mandarin spessartite garnet gemstone: vivid juicy tangerine orange, bright and fiery (NOT brown)",
+    "flail": "steel-grey spinel gemstone: cool silvery gunmetal grey with bright mirror-like silver reflections, like polished steel turned into a gem",
+    "whale": "London blue topaz gemstone: deep slate ocean blue, with the pale belly in milky white moonstone",
+    # DT-664（11/28 Shooter「全身を宝石化するのではなく、水晶の部分が増えて光る方向で。メカっぽさは残す」）: 光線竜は石の種類ではなく水晶の量
+    "ray": "glowing clear cyan quartz crystal",
 }
 
 # 専用の絵が無く、別の竜種の絵を借りている竜種（index.html の DRAGON_PARTS_ALIAS と同じ）。宝石の絵はその輪郭のまま作る
@@ -83,11 +89,24 @@ EXTRA = {
     "ufo": (" It is a round flying-saucer disc seen from straight above: the WHOLE disc is the gem (the outer rim ring, the concentric "
             "panels and the central glass dome), filling the input circle edge to edge. Keep the small glowing cyan lights around the "
             "rim as little round cyan gems. No dragon, no other object, the same perfect circle."),
+    # DT-656（11/28「ほかの竜種より小さく見えるので、カット面を大きく」）: 塊竜は帯の鎧を大きな面で切る
+    "ball": (" The dragon's OWN body is the gem at FULL SIZE, filling the input silhouette edge to edge, no smaller dragon on top of a gem block. "
+             "Use only a FEW BIG BOLD facets (each armour band is cut into 2-4 large flat facets), much larger facets than a usual cut gem, "
+             "so the facets stay readable when the sprite is tiny. Keep the curled round shape and the curled tail."),
+    # DT-661（11/28 Shooter「進化する時に鎖が消えないように注意して下さい」）
+    "flail": (" The dragon's OWN armoured body is the gem at FULL SIZE, filling the input silhouette edge to edge (keep the armour plate "
+              "divisions, the spiked pauldrons and the helmeted head). VERY IMPORTANT: the thick diagonal CHAIN across the back must stay "
+              "clearly visible as a chain of big separate links, cut from dark polished black hematite with bright silver edges, contrasting "
+              "with the grey spinel body. Do NOT dissolve or remove the chain."),
+    "whale": (" The whale dragon's OWN body is the gem at FULL SIZE, filling the input silhouette edge to edge: the facets follow its "
+              "anatomy (wide head, blowhole, spine knobs, pale belly edges, flipper legs). Do NOT draw a smaller whale on top of a gem block, no second inner outline."),
 }
 # v3.258.0: 原石にも効かせる注意（骨のすき間を埋めない・円盤のまま）
 EXTRA_ROUGH = {
     "bone": " Keep it a SKELETON with the gaps between the bones empty exactly like the input; bones are rough white opal ore, the purple parts rough violet tanzanite.",
     "ufo": " It is a round flying-saucer disc seen from straight above: keep the perfect circle, the rim ring, the concentric panels, the central dome and the little rim lights.",
+    "flail": " Keep the thick diagonal CHAIN across the back clearly visible as big separate links of rough dark hematite ore.",
+    "ball": " Keep the big armour bands and the curled tail; the ore chunks are big and simple.",
 }
 MAGENTA_BG = {"frog", "tortoise"}
 
@@ -98,6 +117,23 @@ STAGE_PROMPTS = {
     "sparkle": ("Redraw this exact creature as if its WHOLE BODY were a brilliant FACET-CUT {gem}: the surface is divided into many "
                 "triangular and kite-shaped polished facets with thin white edge highlights, deep saturated colour inside, bright "
                 "reflections and a few small white sparkle stars."),
+}
+
+# DT-664（11/28 Shooter「光線竜の進化は全身を宝石化するのではなく、水晶の部分が増えて光る方向で。メカっぽさは残すように」）:
+# 光線竜は石の種類で描き直さず、紺の装甲（機械）はそのままで水晶の所だけを増やす。進化前はいまの本デザイン（ray）のまま
+SPECIES_STAGE_PROMPTS = {
+    ("ray", "sparkle"): ("Keep this exact mecha laser dragon and its dark teal-navy METAL armour plates exactly as they are (matte metal "
+                         "with panel lines, NOT gemstone: keep the mechanical robot look). Only ADD MORE CRYSTAL: many clear glowing "
+                         "cyan quartz crystals now grow out of the armour: clusters of pointed crystals along the spine, on both shoulders, "
+                         "on the hips and at the back of the head, the snout lens bigger and brighter, and the glowing cyan circuit lines "
+                         "thicker and brighter. The crystals are faceted clear bright cyan with white edge highlights. About one third "
+                         "of the body is crystal, the rest stays dark navy mecha armour."),
+}
+SPECIES_STAGE_PROMPTS_WING = {
+    ("ray", "sparkle"): ("Keep this exact angular mecha wing and its dark teal-navy METAL membrane exactly as it is (matte metal, NOT "
+                         "gemstone, keep the mechanical look). Only ADD MORE CRYSTAL: a row of bigger pointed clear glowing cyan quartz "
+                         "crystals along the leading edge, small crystal clusters at the bone joints, and the glowing cyan light "
+                         "lines along the bones thicker and brighter. Crystals are faceted bright cyan with white edge highlights."),
 }
 
 COMMON = ("Keep EXACTLY the same silhouette, pose, outline, proportions, size and position as the input image: same head, horns, "
@@ -187,7 +223,9 @@ def main():
     best = None
     for attempt in range(TRIES):
         extra = (EXTRA if stage == "sparkle" else EXTRA_ROUGH).get(species, "").format(gem=gem)
-        raw = generate(PART_HINTS.get(part, "") + STAGE_PROMPTS[stage].format(gem=gem) + extra + " " + common, canvas)
+        stage_prompt = (SPECIES_STAGE_PROMPTS_WING if part == "wing" else SPECIES_STAGE_PROMPTS).get((species, stage)) \
+            or STAGE_PROMPTS[stage].format(gem=gem)
+        raw = generate(PART_HINTS.get(part, "") + stage_prompt + extra + " " + common, canvas)
         if os.environ.get("GEM_RAW_DIR"):
             raw.save(os.path.join(os.environ["GEM_RAW_DIR"], f"{species}_{stage}_{part}_{attempt}.png"))
         out = key(raw)

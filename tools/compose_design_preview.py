@@ -64,6 +64,10 @@ SHOULDER_FIX = {
     "whale": (40, 172, 125),   # 前脚の鰭（y 145〜200 で幅 210）の前、胴の横
 }
 
+# DT-663（11/28 Shooter「ずんぐりデカい体に砲塔が乗るかたちで。砲塔はパーツ分けして回転できるように」）: 砲塔は別の絵を胴の台座に重ねる。
+# pivot＝砲塔の絵の回る中心（丸い所の真ん中）、at＝胴の絵の台座の真ん中、scale＝胴の絵の画素に対する砲塔の絵の大きさ
+TURRET = {"cannon": dict(src="dragon_cannon_turret.png", pivot=(77, 122), at=(115, 165), scale=0.85)}
+
 
 def new_parts(species):
     bp, wp = (os.path.join(CAND, f"dragon_{species}_{p}.png") for p in ("body", "wing"))
@@ -90,7 +94,7 @@ def faded_wing(img, anchor_x):
     return Image.fromarray(a.astype(np.uint8), "RGBA")
 
 
-def compose(parts, species, tint, no_tail):
+def compose(parts, species, tint, no_tail, turret_deg=None):
     body = Image.open(parts["body"]).convert("RGBA")
     wing = Image.open(parts["wing"]).convert("RGBA")
     s = SCALE * SS
@@ -130,6 +134,19 @@ def compose(parts, species, tint, no_tail):
             canvas.alpha_composite(img, (round(px - (ww - rx)), round(py - ry)))
         else:
             canvas.alpha_composite(img, (round(px - rx), round(py - ry)))
+    if turret_deg is not None and species in TURRET:   # 砲塔（頭の向き＝上が 0°。右回りが正）
+        t = TURRET[species]
+        timg = Image.open(os.path.join(CAND, t["src"])).convert("RGBA")
+        kt = kb * t["scale"]
+        timg = timg.resize((round(timg.width * kt), round(timg.height * kt)), Image.LANCZOS)
+        px, py = t["pivot"][0] * kt, t["pivot"][1] * kt
+        # 回る中心を画布の真ん中に置いてから回す
+        side = int(max(timg.size) * 2.2)
+        holder = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        holder.alpha_composite(timg, (round(side / 2 - px), round(side / 2 - py)))
+        holder = holder.rotate(-turret_deg, resample=Image.BICUBIC)
+        cx, cy = o + (t["at"][0] - parts["cx"]) * kb, o + (t["at"][1] - parts["cy"]) * kb
+        canvas.alpha_composite(holder, (round(cx - side / 2), round(cy - side / 2)))
     if tint:   # 仮の絵の色寄せ（tintedSprites：source-atop で EVO_TINT_ALPHA）。尻尾には重ねない（ゲームも胴・翼の絵とは別に描く）
         rgb = tuple(int(tint[i:i + 2], 16) for i in (1, 3, 5))
         a = np.array(canvas).astype(np.float32)
@@ -147,7 +164,10 @@ def main():
         now = alias_parts(species)
         compose(now, species, d["tint"], d["noTail"]).save(os.path.join(CAND, f"preview_{species}_now.png"), optimize=True)
         new = new_parts(species)
-        compose(new, species, None, d["noTail"]).save(os.path.join(CAND, f"preview_{species}_new.png"), optimize=True)
+        compose(new, species, None, d["noTail"], 0 if species in TURRET else None).save(os.path.join(CAND, f"preview_{species}_new.png"), optimize=True)
+        if species in TURRET:   # 砲塔を回した姿（左へ40°・右へ70°）
+            for deg in (-40, 70):
+                compose(new, species, None, d["noTail"], deg).save(os.path.join(CAND, f"preview_{species}_new_turret{deg}.png"), optimize=True)
         b, wg = new["meta"]
         print(f"{species}: borrowed={now['key']} tint={d['tint']} noTail={d['noTail']} | "
               f"bodyPivot cx {b['cx']} cy {b['cy']} w {b['w']} h {b['h']} / shoulder L {b['shoulder_l']} R {b['shoulder_r']} y {b['shoulder_y']} "
