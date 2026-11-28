@@ -1493,7 +1493,7 @@ window.addEventListener("error", function () { var el = document.getElementById(
 // -----------------------------------------------------------------
 // バージョン定数（ここだけ更新すれば画面に反映される）
 // -----------------------------------------------------------------
-const GAME_VERSION = "v3.253.0";
+const GAME_VERSION = "v3.254.0";
 document.getElementById("hud-version").textContent = GAME_VERSION;
 
 // -----------------------------------------------------------------
@@ -41281,9 +41281,10 @@ function drawRayBolts() {
 // 撃ち出しの角度のゆらぎはゲームの乱数 random()（当たる場所が変わるので見た目だけの乱数にしない）
 const LASER_RANGE        = 180;    // 撃つ相手を探す距離（px）。影竜（210）より少し短い
 const LASER_RELOCK_RANGE = 150;    // 狙った相手が消えたときに狙い直す距離（px）
-const LASER_INTERVAL     = 1.5;    // 撃つ間隔（秒）
+const LASER_INTERVAL     = 3.0;    // 撃つ間隔（秒）。v3.254.0（DT-651 手直し）Shooter「乱れ打ちすぎる。発射頻度を半分に、威力は上げて」で 1.5→3.0
 const LASER_WAYS         = 2;      // 1回に撃つ本数（左右に1本ずつ。進化・カードで増える）
-const LASER_DAMAGE       = 7.5;    // 1本の威力（ブレス＝shot）。強さの計測（dt-bench・20匹・60秒）で影竜（約300/秒）と光線竜（225〜390）の少し下（約215）にした
+const LASER_DAMAGE       = 16;     // 1本の威力（ブレス＝shot）。強さの計測（dt-bench・20匹・60秒）で影竜（約300/秒）と光線竜（225〜390）の少し下にした。
+                                    // v3.254.0（DT-651 手直し）撃つ間隔を倍にしたので 7.5→16（1秒の傷を前と同じくらいに保つ）
 const LASER_LAUNCH_ANGLE = 2.2;    // 撃ち出す向き：進む向きから左右へ何ラジアン（π＝真後ろ。2.2 で斜め後ろ）
 const LASER_LAUNCH_JITTER = 0.35;  // 撃ち出す向きのゆらぎ（±ラジアン）
 const LASER_INIT_SPEED   = 230;    // 初速（px/s）
@@ -41301,9 +41302,14 @@ const LASER_TRAIL_LIFE   = 0.55;   // 尾の点が消えるまで（秒）。長
 const LASER_TRAIL_MAX    = 64;     // 1本が覚える尾の点の上限（重さよけ）
 const LASER_TRAIL_BANDS  = 6;      // 尾を古さで何段に分けて描くか（段ごとにまとめて描いて軽くする）
 const LASER_GLOW_WIDTH   = 3.2;    // 外の光の太さ（先の太さ。尾の端ほど細い）
-const LASER_CORE_WIDTH   = 1.1;    // 白い芯の太さ
-const LASER_COLOR        = "#c890ff";
-const LASER_CORE_COLOR   = "#f4dcff";
+const LASER_CORE_WIDTH   = 1.1;    // 芯の太さ
+// v3.254.0（DT-651 手直し）Shooter「真っ白に見える。もっと色が出るように」。
+//   外の光を加算（lighter）で重ねると線どうしが重なって白に飛ぶため、外の光はふつうの重ね方の濃い紫にし、
+//   芯も白ではなく明るい紫にして、加算は芯だけ・薄めにした
+const LASER_COLOR        = "#9a3cff";
+const LASER_CORE_COLOR   = "#e0b0ff";
+const LASER_TIP_LENGTH   = 9;      // 先端の鋭い針の長さ（px）。Shooter「先端は鋭角にできますか」
+const LASER_TIP_HALF_WIDTH = 1.9;  // 針の根元の半分の幅（px）
 const LASER_LOST_LIFE    = 0.35;   // 狙う相手がいなくなったレーザーは、この秒数で消す（まっすぐ遠くへ飛び去る線が目立ったため）
 const homingLasers = [];   // { x, y, vx, vy, age, dmg, sIdx, mover, trail: [x0, y0, t0, x1, y1, t1, ...] }（t は homingLaserClock）
 const homingLaserGhosts = [];   // 消えたレーザーの残った尾（trail だけ）。点が全部古くなったら捨てる
@@ -41424,7 +41430,6 @@ function drawHomingLasers() {
   if (homingLasers.length === 0 && homingLaserGhosts.length === 0) return;
   ctx.save();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
-  ctx.globalCompositeOperation = "lighter";
   const now = homingLaserClock;
   const addBand = (t, band) => {
     let open = false;
@@ -41438,10 +41443,12 @@ function drawHomingLasers() {
     }
   };
   for (let pass = 0; pass < 2; pass++) {
+    // 外の光はふつうに重ね（重なっても白に飛ばない）、芯だけ加算で光らせる
+    ctx.globalCompositeOperation = pass === 0 ? "source-over" : "lighter";
     ctx.strokeStyle = pass === 0 ? LASER_COLOR : LASER_CORE_COLOR;
     for (let band = 0; band < LASER_TRAIL_BANDS; band++) {
       const fresh = 1 - (band + 0.5) / LASER_TRAIL_BANDS;   // 1（先）→ 0（尾の端）
-      ctx.globalAlpha = (pass === 0 ? 0.5 : 0.9) * fresh;
+      ctx.globalAlpha = (pass === 0 ? 0.75 : 0.55) * fresh;
       ctx.lineWidth = (pass === 0 ? LASER_GLOW_WIDTH : LASER_CORE_WIDTH) * (0.45 + 0.55 * fresh);
       ctx.beginPath();
       for (const b of homingLasers) if (b.trail.length >= 6) addBand(b.trail, band);
@@ -41449,11 +41456,27 @@ function drawHomingLasers() {
       ctx.stroke();
     }
   }
-  // 先の光の粒
-  ctx.globalAlpha = 0.9; ctx.fillStyle = LASER_CORE_COLOR;
-  ctx.beginPath();
-  for (const b of homingLasers) { ctx.moveTo(b.x + 1.6, b.y); ctx.arc(b.x, b.y, 1.6, 0, Math.PI * 2); }
-  ctx.fill();
+  // 先端：進む向きへ尖った細い針（外の光の色で塗り、芯の色の細い針を重ねる）
+  ctx.globalCompositeOperation = "source-over";
+  for (let pass = 0; pass < 2; pass++) {
+    const len = LASER_TIP_LENGTH * (pass === 0 ? 1 : 0.7);
+    const hw  = LASER_TIP_HALF_WIDTH * (pass === 0 ? 1 : 0.45);
+    ctx.globalAlpha = pass === 0 ? 0.95 : 0.9;
+    ctx.fillStyle = pass === 0 ? LASER_COLOR : LASER_CORE_COLOR;
+    ctx.beginPath();
+    for (const b of homingLasers) {
+      const sp = Math.hypot(b.vx, b.vy) || 1;
+      const ux = b.vx / sp, uy = b.vy / sp;
+      // 根元は少し後ろ（尾の線とつなげる）、先は前へ
+      const bx = b.x - ux * 2, by = b.y - uy * 2;
+      ctx.moveTo(b.x + ux * len, b.y + uy * len);
+      ctx.lineTo(bx - uy * hw, by + ux * hw);
+      ctx.lineTo(bx - ux * 1.5, by - uy * 1.5);
+      ctx.lineTo(bx + uy * hw, by - ux * hw);
+      ctx.closePath();
+    }
+    ctx.fill();
+  }
   ctx.restore();
 }
 
