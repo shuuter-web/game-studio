@@ -68,13 +68,17 @@ SHOULDER_FIX = {
 # pivot＝砲塔の絵の回る中心（丸い所の真ん中）、at＝胴の絵の台座の真ん中、scale＝胴の絵の画素に対する砲塔の絵の大きさ
 TURRET = {"cannon": dict(src="dragon_cannon_turret.png", pivot=(77, 122), at=(115, 165), scale=0.85)}
 
+# DT-659（11/28 Shooter「相方がいる仕様なので1人で双子になってはダメ。左右非対称のデザインに。翼も片方は小さく」）:
+# 右（相方の側）の翼をこの倍率で小さく描く。ゲームでは2列の片方を鏡写しにして、小さい翼・避雷針の角の側どうしを向き合わせる
+WING_SCALE_R = {"twin": 0.6}
+
 
 def new_parts(species):
     bp, wp = (os.path.join(CAND, f"dragon_{species}_{p}.png") for p in ("body", "wing"))
     b, wg = body_meta(bp), wing_meta(wp)
     if species in SHOULDER_FIX:
         b["shoulder_l"], b["shoulder_r"], b["shoulder_y"] = SHOULDER_FIX[species]
-    return dict(body=bp, wing=wp, cx=b["cx"], cy=b["cy"], sl=(b["shoulder_l"], b["shoulder_y"]),
+    return dict(new=True, body=bp, wing=wp, cx=b["cx"], cy=b["cy"], sl=(b["shoulder_l"], b["shoulder_y"]),
                 sr=(b["shoulder_r"], b["shoulder_y"]), ax=wg["anchor_x"], ay=wg["anchor_y"],
                 wingDrawW=WING_DRAW_W, bodyDrawH=BODY_DRAW_H, meta=(b, wg))
 
@@ -125,10 +129,15 @@ def compose(parts, species, tint, no_tail, turret_deg=None):
     bimg = body.resize((round(bw), round(bh)), Image.LANCZOS)
     canvas.alpha_composite(bimg, (round(o - parts["cx"] * kb), round(o - parts["cy"] * kb)))
     fw = faded_wing(wing, parts["ax"]).resize((round(ww), round(wh)), Image.LANCZOS)
+    small = WING_SCALE_R.get(species, 1.0) if parts.get("new") else 1.0
     for (sx, sy), mirror in ((parts["sl"], False), (parts["sr"], True)):
         px, py = o + (sx - parts["cx"]) * kb, o + (sy - parts["cy"]) * kb
         rx, ry = parts["ax"] * kw, parts["ay"] * kw
         img = fw
+        if mirror and small != 1.0:   # 小さい翼（付け根の位置は同じ）
+            img = fw.resize((round(ww * small), round(wh * small)), Image.LANCZOS).transpose(Image.FLIP_LEFT_RIGHT)
+            canvas.alpha_composite(img, (round(px - (ww - rx) * small), round(py - ry * small)))
+            continue
         if mirror:
             img = fw.transpose(Image.FLIP_LEFT_RIGHT)
             canvas.alpha_composite(img, (round(px - (ww - rx)), round(py - ry)))
@@ -165,6 +174,13 @@ def main():
         compose(now, species, d["tint"], d["noTail"]).save(os.path.join(CAND, f"preview_{species}_now.png"), optimize=True)
         new = new_parts(species)
         compose(new, species, None, d["noTail"], 0 if species in TURRET else None).save(os.path.join(CAND, f"preview_{species}_new.png"), optimize=True)
+        if species in WING_SCALE_R:   # 相方と並んだ姿（右の竜は鏡写し。小さい翼の側どうしが向き合う）
+            one = compose(new, species, None, d["noTail"])
+            gap = round(one.width * 0.15)
+            pair = Image.new("RGBA", (one.width * 2 + gap, one.height), (0, 0, 0, 0))
+            pair.alpha_composite(one, (0, 0))
+            pair.alpha_composite(one.transpose(Image.FLIP_LEFT_RIGHT), (one.width + gap, 0))
+            pair.save(os.path.join(CAND, f"preview_{species}_pair.png"), optimize=True)
         if species in TURRET:   # 砲塔を回した姿（左へ40°・右へ70°）
             for deg in (-40, 70):
                 compose(new, species, None, d["noTail"], deg).save(os.path.join(CAND, f"preview_{species}_new_turret{deg}.png"), optimize=True)
