@@ -45,7 +45,7 @@ GEMS = {
     "comet": "golden sunstone gemstone: BRIGHT luminous pale cream-gold and light honey-yellow (like the input colours, NOT brown, NOT tan, NOT pink), full of tiny glittering gold spangles like stardust",
     "bomber": "imperial topaz gemstone: vivid saturated sherry-orange to reddish orange, warm and fiery",
     "bone": "white precious opal for every bone (milky white with soft pastel rainbow play-of-colour flecks), and violet-blue tanzanite for the purple parts",
-    # DT-656・661・662（11/28）: 塊竜・鉄鎖竜・鯨竜（本デザインをゲームに入れて宝石に）
+    # DT-661・662（11/28）: 鉄鎖竜・鯨竜（本デザインをゲームに入れて宝石に）。塊竜（ball）は使わない（DT-656 で宝石を埋め込む形にした。tools/gen_gem_ornaments.py の ball_gem_set）
     "ball": "mandarin spessartite garnet gemstone: vivid juicy tangerine orange, bright and fiery (NOT brown)",
     "flail": "steel-grey spinel gemstone: cool silvery gunmetal grey with bright mirror-like silver reflections, like polished steel turned into a gem",
     "whale": "London blue topaz gemstone: deep slate ocean blue, with the pale belly in milky white moonstone",
