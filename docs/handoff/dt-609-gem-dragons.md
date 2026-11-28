@@ -138,5 +138,9 @@ v3.216.0 で **隼竜・燕竜・蜂竜** を足して8竜種、v3.235.0 で **�
   **`gen_gem_restyle.py thunder sparkle body` を回すと黒い胴に戻ってしまう**（`EXTRA["thunder"]` は翼向け）ので、胴は作り直さないこと。
   「サンゴのツノが翼にかかっちゃってるので前後反転」→ 赤珊瑚の枝を横・前へ（`SHARK_CORAL_TRUNK` 72°・`SHARK_CORAL_BEND` 負）。
   「鮫竜の進化の胴体が、小さなサメが大きな宝石の上に乗ってるみたい」→ 全身カットの胴が、輪郭いっぱいの石の塊の上に小さな鮫の線画を重ねた絵になっていた。`EXTRA["shark"]` で鮫の形そのものを切らせて `sparkle_body` を作り直し、`jewel_body` も作り直した。
+- **11/28**（案帳 DT-656〜664）借りている絵のままだった9竜種（塊竜・土竜・磁竜・双子竜・鬼火・鉄鎖竜・鯨竜・砲撃竜・光線竜）の本デザイン（胴・翼）を作り、見本ページ `design-preview.html`（`#ball` など竜種ごとの見出し）に「いま」と並べた。**ゲームにはまだ入れていない**（Shooter「新デザインのものは宝石にする前に一度見せて下さい」）。
+  絵は `assets/design_candidates/dragon_<id>_{body,wing}.png`（`python3 tools/gen_dragon_design.py <id> <body|wing>`。描写は中の `DESIGNS_V3`、構図の見本は `SOURCE_V3`）、並べた絵は `python3 tools/compose_design_preview.py <id>…`（ゲームと同じ組み方・尻尾つき）。
+  胴の絵は尻尾なし（塊竜・鬼火は noTail なので尻尾を絵の中に）。全部アルファの中央値 255。寸法は見本ページの「寸法」に `sprite_meta.py` の値を載せた（土竜・鯨竜は自動の肩が前脚の所に付くので手で測った値。`compose_design_preview.py` の `SHOULDER_FIX`）。
+  OK が出たら `assets/` へ移し、`DRAGON_PART_SPRITES` に足して `DRAGON_PARTS_ALIAS` の行と `spriteTint` を消す。
 - 11/27 に DT-609 が長くなったので、**残りの竜種（UFO・彗星竜・爆竜・惑竜・塊竜・土竜・磁竜・双子竜・鬼火・鉄鎖竜・鯨竜・砲撃竜・光線竜・屍竜）は案帳 DT-650 に分けた**。
 - 画像生成は使える（11/26 にクレジットが足された）。専用の絵が無い竜種（`DRAGON_PARTS_ALIAS` にある塊竜・土竜・磁竜・双子竜・鬼火・鉄鎖竜・鯨竜・砲撃竜・光線竜）は、宝石にする前に「4. 作り方」の手順で専用の絵（本デザイン）を作る。

@@ -78,6 +78,109 @@ EDITS_V2 = {
 NO_TAIL = (" IMPORTANT: draw NO TAIL: like the input, the body ends just behind the hind legs with only a very short tapered stub "
            "(the game draws the tail separately).")
 
+# DT-656〜664（11/28）: 借りている絵のままの9竜種（塊竜・土竜・磁竜・双子竜・鬼火・鉄鎖竜・鯨竜・砲撃竜・光線竜）の本デザイン。
+# 見せて決まるまでゲームには入れないので assets/design_candidates/ に書く。構図の見本：胴は尻尾の無い絵（ゲームが尻尾を描く竜種は
+# NO_TAIL を足す。塊竜・鬼火は noTail＝ゲームが尻尾を描かないので、胴の絵の中に尻尾をまとめる）、翼は借りている翼。
+SOURCE_V3 = {
+    "ball": ("heavy", "fire"), "mole": ("fire", "crimson"), "magnet": ("fire", "shadow"), "twin": ("crimson", "swallow"),
+    "wisp": ("fire", "ice"), "flail": ("crimson", "heavy"), "whale": ("crimson", "gargoyle"), "cannon": ("crimson", "heavy"),
+    "ray": ("fire", "swallow"),
+}
+TAILED_IN_BODY = {"ball", "wisp"}   # SPECIES_DEFS の noTail
+DESIGNS_V3 = {
+    # 塊竜：群れが玉になって転がる。玉の表面に小さく貼り付くので、大きな面で読める丸い形（あとで面の大きい宝石にする）
+    "ball": {
+        "body": ("a CLUMP DRAGON curled up like a PANGOLIN / ARMADILLO: a short, very ROUND, compact chunky body whose whole back is covered "
+                 "by 5 big broad overlapping rounded ARMOUR BANDS running across the back (like a pill bug), a small round head with a "
+                 "short blunt snout and two tiny rounded horns, four short stubby clawed legs barely sticking out, and a short thick "
+                 "tail CURLED tightly around one side of the body so the whole silhouette is almost a circle. Warm orange (#e0904a) "
+                 "bands with darker burnt-orange (#c07030) rims and creamy tan belly edges. Big simple shapes that stay readable when tiny."),
+        "wing": ("ONE small round stubby wing of a pangolin-like clump dragon: a short rounded leathery orange (#e0904a) membrane between "
+                 "3 thick short finger bones, the leading edge covered by 3 big overlapping rounded armour bands like pangolin scales, "
+                 "darker burnt-orange (#c07030) rims. Compact, rounded, simple big shapes."),
+    },
+    # 土竜（もぐら）：地中を進み、線に沿って地面を割る
+    "mole": {
+        "body": ("a MOLE DRAGON (a burrowing dragon like a STAR-NOSED MOLE): a stout cylindrical body, a pointed snout ending in a pink "
+                 "fleshy STAR-SHAPED NOSE with many little tentacles, tiny eyes, two HUGE SPADE-LIKE DIGGING FOREPAWS with big ivory "
+                 "shovel claws held out to the sides at the front, small hind legs, short velvety earth-brown (#b08850) fur-like scales "
+                 "with darker brown (#8a6a40) stripes down the back, a few clods of dirt and small pebbles stuck on the back, a "
+                 "rocky ridge of short stone spikes along the spine."),
+        "wing": ("ONE wing of a mole dragon: an earth-brown (#b08850) leathery membrane between thick finger bones, the leading edge "
+                 "crusted with rocks and clumps of soil, a big ivory digging claw at the wrist, darker brown (#8a6a40) ragged edges."),
+    },
+    # 磁竜：壊れた建物の破片を周りに回す
+    "magnet": {
+        "body": ("a MAGNET DRAGON: a sleek dragon with lavender-purple (#b090e0) metallic scales, two big curved horns that together form a "
+                 "U-shaped HORSESHOE MAGNET above the back of the head, one horn tip painted RED and the other SILVER-WHITE (the two "
+                 "poles), dark violet (#6a4ea0) plates along the spine shaped like stacked bar magnets, small silver iron filings "
+                 "bristling in curved field-line arcs on the shoulders, clawed legs."),
+        "wing": ("ONE wing of a magnet dragon: lavender-purple (#b090e0) metallic membrane, the wing bones are curved silver bars bent "
+                 "like MAGNETIC FIELD LINES fanning out from the root, the tips of the bones alternately RED and SILVER-WHITE like "
+                 "magnet poles, dark violet (#6a4ea0) trailing edge."),
+    },
+    # 双子竜：群れが左右2列に分かれ、2列の間を雷のアーチで焼く
+    "twin": {
+        "body": ("a TWIN DRAGON: ONE body with TWO NECKS AND TWO HEADS side by side (a left head and a right head, both pointing "
+                 "forward/up, necks splitting at the shoulders in a V), a small crackling ELECTRIC ARC spark jumping between the two "
+                 "heads' horns, golden yellow (#ffe070) scales with darker gold (#e0c040) back plates, the left half has a thin white "
+                 "stripe and the right half a thin amber stripe along the spine, clawed legs."),
+        "wing": ("ONE wing of a twin dragon: golden yellow (#ffe070) membrane between finger bones, the bones are DOUBLED (each bone "
+                 "is a pair of parallel thin bones running side by side), a zig-zag crackle of white-yellow electricity running along "
+                 "the leading edge, darker gold (#e0c040) trailing edge."),
+    },
+    # 鬼火：ゲームでは灯（火）で描く。竜の絵は図鑑用
+    "wisp": {
+        "body": ("a WILL-O'-WISP DRAGON: a slender ghostly spirit dragon whose body is made of cold pale-blue FLAME: pale sky blue "
+                 "(#a0d8ff) body with white-blue hot core along the spine, flickering flame tongues rising from the back of the head "
+                 "and along the spine like a mane, big hollow glowing white eyes, thin wispy clawed legs, and a tail that "
+                 "DISSOLVES INTO A FLICKERING FLAME TIP curving to one side (the tail is part of this sprite). Deeper blue (#5a8ed0) "
+                 "flame shading. The flames are SOLID OPAQUE cel-shaded shapes with a thick dark navy outline, NOT translucent, NO glow halo."),
+        "wing": ("ONE wing of a will-o'-wisp dragon made of cold blue FIRE: the membrane is a row of pale sky blue (#a0d8ff) flame "
+                 "tongues streaming backward, thin white-blue bone-like flame veins, deeper blue (#5a8ed0) flame shading. SOLID OPAQUE "
+                 "cel-shaded flames with a thick dark navy outline, NOT translucent, NO glow halo."),
+    },
+    # 鉄鎖竜：群れ全体で鎖につないだ鉄球を引く
+    "flail": {
+        "body": ("an IRON CHAIN DRAGON (flail dragon): a heavy armoured dragon with steel grey (#b8bcc4) riveted iron plates like a "
+                 "knight's armour on the back, big round spiked iron shoulder pauldrons, a heavy CHAIN of thick iron links wrapped "
+                 "DIAGONALLY across the back from the left shoulder to the right hip, a few short iron spikes on the spine, a blunt "
+                 "helmeted head with two short horns, dark gunmetal (#6a6e76) shading and rust-brown rivets, clawed legs."),
+        "wing": ("ONE wing of an iron chain dragon: the wing bones are made of iron CHAIN LINKS, the membrane is overlapping riveted "
+                 "steel grey (#b8bcc4) iron plates like armour, dark gunmetal (#6a6e76) shading, a small spiked iron ball at the wrist."),
+    },
+    # 鯨竜：数体だけの巨体。止まると息を吸って周りを吸い寄せる
+    "whale": {
+        "body": ("a WHALE DRAGON: a huge massive broad body shaped like a SPERM/HUMPBACK WHALE seen from above, a very wide blunt "
+                 "rounded whale head with a BLOWHOLE (two dark slits) on top of the head, small eyes at the sides, a few white "
+                 "BARNACLE clusters on the head and back, slate blue (#5f8fb8) back with a darker navy (#3e6488) spine ridge of small "
+                 "rounded knobs, pale cream-white belly visible along both sides, four short thick flipper-like clawed legs."),
+        "wing": ("ONE wing of a whale dragon shaped like a long HUMPBACK WHALE FLIPPER: a long narrow slightly curved flipper with a "
+                 "bumpy KNOBBED leading edge (tubercles), slate blue (#5f8fb8) on top with white patches and white barnacles, no "
+                 "membrane and no finger bones, smooth whale skin."),
+    },
+    # 砲撃竜：旗へ山なりの砲弾を撃ち込む
+    "cannon": {
+        "body": ("a BOMBARD DRAGON (artillery dragon): a sturdy dragon carrying a short fat brass MORTAR CANNON mounted upright on the "
+                 "middle of its back (seen from above as a thick brass ring with a dark round open MUZZLE), riveted bronze armour "
+                 "plates around the mortar, a bandolier of round black cannonballs across the back, golden brass (#e8c050) scales "
+                 "with darker bronze (#a07830) plates, a blunt head with two short horns like a helmet, clawed legs."),
+        "wing": ("ONE wing of a bombard dragon: a golden brass (#e8c050) membrane reinforced with riveted bronze (#a07830) metal "
+                 "plates along the bones, the bones are brass rods with rivets, a small brass gear at the wrist."),
+    },
+    # 光線竜：向いている前へ細長い光線弾を撃ち続ける
+    "ray": {
+        "body": ("a LASER DRAGON: a sleek narrow streamlined dragon, a sharp pointed head with a big glowing cyan CRYSTAL LENS set at "
+                 "the tip of the snout, straight swept-back crystal horns, bright cyan (#7af7ff) glowing ENERGY LINES running in "
+                 "straight parallel lines along the body like circuit traces, dark teal-navy (#1e5068) armour plates, angular "
+                 "prism-like spines along the back, slim clawed legs. Opaque cel-shaded, NO glow halo."),
+        "wing": ("ONE wing of a laser dragon: a sharp angular swept-back wing, dark teal-navy (#1e5068) membrane with straight bright "
+                 "cyan (#7af7ff) glowing light-conduit lines running along each bone, a row of clear cyan PRISM crystals along the "
+                 "leading edge. Opaque cel-shaded, NO glow halo."),
+    },
+}
+OPAQUE = " The creature is fully OPAQUE inside its outline (no holes, no see-through parts)."
+
 FRAME = {
     "body": ("Use the input sprite ONLY as a reference for the camera, the framing and the art style: strictly top-down view looking "
              "straight down at the creature's back, the HEAD POINTS TO THE TOP of the image, symmetric pose, same overall length and "
@@ -95,7 +198,10 @@ PAD_RATIO = 0.18
 def main():
     species, part = sys.argv[1:3]
     v2 = "--v2" in sys.argv   # DT-650: 2回目のデザインを assets/design_candidates/ に書く（ゲームの絵は書き換えない。見せて決まってから入れる）
-    if v2 and species in EDITS_V2:
+    v3 = species in DESIGNS_V3
+    if v3:
+        ref = f"dragon_{SOURCE_V3[species][0 if part == 'body' else 1]}_{part}.png"
+    elif v2 and species in EDITS_V2:
         ref = f"dragon_{species}_{part}.png"   # いまの絵を直す
     elif v2:
         ref = f"dragon_{SOURCE_V2[part] or species}_{part}.png"
@@ -107,7 +213,10 @@ def main():
     canvas.alpha_composite(src, (pad, pad))
     scale = 1024 / max(canvas.size)
     canvas = canvas.resize((round(canvas.width * scale), round(canvas.height * scale)), Image.LANCZOS).convert("RGB")
-    if v2 and species in EDITS_V2:
+    if v3:
+        tail = NO_TAIL if part == "body" and species not in TAILED_IN_BODY else ""
+        prompt = FRAME[part] + DESIGNS_V3[species][part] + tail + OPAQUE + " " + os.environ.get("DESIGN_EXTRA", "") + STYLE
+    elif v2 and species in EDITS_V2:
         prompt = EDITS_V2[species][part] + " Same art style. Solid flat pure green background (#00FF00), no shadow, no text."
     elif v2:
         prompt = FRAME[part] + DESIGNS_V2[species][part] + (NO_TAIL if part == "body" else "") + " " + STYLE
@@ -121,11 +230,13 @@ def main():
     # 胴は高さ 320、翼は幅 320（ほかの竜種の絵と同じ決まり。DRAGON_PART_SPRITES の bodyDrawH・wingDrawW はこの寸法が前提）
     k = 320 / (out.height if part == "body" else out.width)
     out = out.resize((max(1, round(out.width * k)), max(1, round(out.height * k))), Image.LANCZOS)
-    dest_dir = os.path.join(ASSETS, "design_candidates") if v2 else ASSETS
+    dest_dir = os.path.join(ASSETS, "design_candidates") if v2 or v3 else ASSETS
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, f"dragon_{species}_{part}.png")
     out.save(dest, optimize=True)
-    print(dest, out.size)
+    alpha = np.array(out)[..., 3]
+    # 胴の絵は輪郭の中が不透明であること（v3.251.0 の蛙竜の教訓。中央値が255近いか）
+    print(dest, out.size, "alpha median", int(np.median(alpha[alpha > 40])))
 
 
 if __name__ == "__main__":
